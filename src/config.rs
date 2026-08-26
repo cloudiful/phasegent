@@ -87,11 +87,11 @@ const SECRET_GLOBAL_SETTING_NAMES: &[&str] = &["PHASEGENT_REDMINE_GIT_MIRROR_API
 
 /// Build a redacted snapshot of the local SQLite database. `role`
 /// restricts the `roles` array when supplied; passing `None` returns
-/// every known role.
-pub fn show(role: Option<Role>) -> Result<Value, String> {
-    let storage = Storage::open()?;
-    crate::auth::ensure_legacy_import(&storage)?;
-    let snapshot = config_snapshot::render(&storage, role)?;
+/// every known role. The caller supplies the [`Storage`] handle so
+/// production code can call [`Storage::open`] while tests can drive
+/// the snapshot against an isolated temp database.
+pub fn show(role: Option<Role>, storage: &Storage) -> Result<Value, String> {
+    let snapshot = config_snapshot::render(storage, role)?;
     serde_json::to_value(snapshot)
         .map_err(|error| format!("could not encode config snapshot: {error}"))
 }
@@ -147,10 +147,10 @@ pub fn role_scoped_env_names() -> &'static [&'static str] {
 /// Persist every currently-set `PHASEGENT_*` environment variable
 /// the import flow understands for `role`. Returns the structured
 /// outcome so the CLI layer can render a JSON report without echoing
-/// any secret value.
-pub fn import_env(role: Role) -> Result<ImportOutcome, String> {
-    let storage = Storage::open()?;
-    crate::auth::ensure_legacy_import(&storage)?;
+/// any secret value. The caller supplies the [`Storage`] handle so
+/// production code can call [`Storage::open`] while tests can drive
+/// the import against an isolated temp database.
+pub fn import_env(role: Role, storage: &Storage) -> Result<ImportOutcome, String> {
     let mut role_scoped = Vec::with_capacity(ROLE_SCOPED_ENV_NAMES.len());
     let mut imported = 0_usize;
     let mut skipped = 0_usize;
@@ -370,15 +370,15 @@ fn read_env_trimmed(name: &str) -> Option<String> {
 }
 
 /// Helper used by the CLI layer to render `ImportOutcome` as JSON.
-pub fn import_env_json(role: Role) -> Result<Value, String> {
-    let outcome = import_env(role)?;
+pub fn import_env_json(role: Role, storage: &Storage) -> Result<Value, String> {
+    let outcome = import_env(role, storage)?;
     serde_json::to_value(outcome)
         .map_err(|error| format!("could not encode import-env outcome: {error}"))
 }
 
 /// Helper used by the CLI layer to render `ConfigSnapshot` as JSON.
-pub fn show_json(role: Option<Role>) -> Result<Value, String> {
-    show(role)
+pub fn show_json(role: Option<Role>, storage: &Storage) -> Result<Value, String> {
+    show(role, storage)
 }
 
 /// Outcome of `config provider get`. `provider` is `null` when the
@@ -392,10 +392,11 @@ pub struct ProviderGetOutcome {
 /// Read the persisted `PHASEGENT_DEFAULT_PROVIDER` row. The value
 /// is validated through `ProviderKind::from_str` so a stale row
 /// that contains an unknown literal surfaces a structured config
-/// error rather than silently overriding the resolver.
-pub fn provider_get() -> Result<ProviderGetOutcome, String> {
-    let storage = Storage::open()?;
-    crate::auth::ensure_legacy_import(&storage)?;
+/// error rather than silently overriding the resolver. The caller
+/// supplies the [`Storage`] handle so production code can call
+/// [`Storage::open`] while tests can drive the helper against an
+/// isolated temp database.
+pub fn provider_get(storage: &Storage) -> Result<ProviderGetOutcome, String> {
     match storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")? {
         Some(value) => {
             let kind: ProviderKind = value.parse().map_err(|error| {
@@ -412,13 +413,14 @@ pub fn provider_get() -> Result<ProviderGetOutcome, String> {
 /// Validate and persist `PHASEGENT_DEFAULT_PROVIDER`. The value
 /// must round-trip through `ProviderKind::from_str` so a typo never
 /// lands in the database; the resolver consumes the same parser
-/// later, so the validation rules are identical end to end.
-pub fn provider_set(value: &str) -> Result<ProviderGetOutcome, String> {
+/// later, so the validation rules are identical end to end. The
+/// caller supplies the [`Storage`] handle so production code can
+/// call [`Storage::open`] while tests can drive the helper against an
+/// isolated temp database.
+pub fn provider_set(value: &str, storage: &Storage) -> Result<ProviderGetOutcome, String> {
     let kind: ProviderKind = value
         .parse()
         .map_err(|error| format!("invalid provider '{value}': {error}"))?;
-    let storage = Storage::open()?;
-    crate::auth::ensure_legacy_import(&storage)?;
     storage.save_global_setting("PHASEGENT_DEFAULT_PROVIDER", kind.as_str())?;
     Ok(ProviderGetOutcome {
         provider: Some(kind.as_str()),
@@ -429,15 +431,15 @@ pub fn provider_set(value: &str) -> Result<ProviderGetOutcome, String> {
 /// `cleared: true` when the row existed and was removed; returns
 /// `cleared: false` when the default was already absent so the
 /// operator can tell the two apart without inspecting the
-/// database.
+/// database. The caller supplies the [`Storage`] handle so
+/// production code can call [`Storage::open`] while tests can drive
+/// the helper against an isolated temp database.
 #[derive(Debug, Serialize)]
 pub struct ProviderClearOutcome {
     pub cleared: bool,
 }
 
-pub fn provider_clear() -> Result<ProviderClearOutcome, String> {
-    let storage = Storage::open()?;
-    crate::auth::ensure_legacy_import(&storage)?;
+pub fn provider_clear(storage: &Storage) -> Result<ProviderClearOutcome, String> {
     let cleared = storage.delete_global_setting("PHASEGENT_DEFAULT_PROVIDER")?;
     Ok(ProviderClearOutcome { cleared })
 }

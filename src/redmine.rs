@@ -735,7 +735,9 @@ pub fn register_git_mirror(
             "git mirror remote URL must not be empty",
         ));
     }
-    let bearer_key = crate::auth::redmine_git_mirror_api_key().map_err(ForgejoError::config)?;
+    let storage = crate::storage::Storage::open().map_err(ForgejoError::config)?;
+    let bearer_key =
+        crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
     let Some(bearer_key) = bearer_key else {
         return Err(ForgejoError::config(
             "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \

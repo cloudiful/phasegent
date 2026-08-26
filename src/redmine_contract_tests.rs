@@ -13,9 +13,8 @@ use crate::provider::{
 use crate::redmine_model::{RedmineRelationType, RedmineTimeEntryActivity};
 use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::storage::{Storage, TimerRun};
-use std::path::Path;
 use std::str::FromStr;
-use std::{env, ffi::OsString, fs, time};
+use std::{fs, time};
 use support::{
     MockResponse, TEST_API_KEY, issue_response, one, provider, sequence, time_entry_activities,
     time_entry_collection, time_entry_response,
@@ -520,7 +519,15 @@ fn user_membership_reconciliation_finds_roles_and_memberships_on_later_pages() {
 
 #[test]
 fn bootstrap_persists_role_scoped_ids_with_private_permissions() {
-    let directory = std::env::temp_dir().join(format!(
+    // The legacy `<role>.config.json` file layout was retired when
+    // the project migrated to a single SQLite database. The
+    // bootstrap path now lands every bootstrap result on the
+    // `role_redmine_config` row in SQLite via
+    // `Storage::persist_redmine_bootstrap`; verify the same
+    // round-trip behaviour the legacy test used to pin, with
+    // `Storage::open_at` against an isolated temp database so the
+    // operator's real config is never touched.
+    let temp_dir = std::env::temp_dir().join(format!(
         "phasegent-redmine-bootstrap-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -528,33 +535,53 @@ fn bootstrap_persists_role_scoped_ids_with_private_permissions() {
             .unwrap()
             .as_nanos()
     ));
-    auth::persist_redmine_bootstrap_for(
-        &directory,
-        Role::Orchestrator,
-        Some("https://redmine.example".to_owned()),
-        44,
-        5,
-    )
-    .unwrap();
-    let path = auth::redmine_config_path_for(&directory, Role::Orchestrator);
-    let config: auth::RedmineStoredConfig =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(config.project_id.as_deref(), Some("44"));
-    assert_eq!(config.close_status_id, Some(5));
-    assert_eq!(config.api_base.as_deref(), Some("https://redmine.example"));
-    // Active bootstrap no longer persists the legacy group fields; older
-    // configs that still carry them continue to decode via `serde(default)`.
-    assert_eq!(config.group_name, None);
-    assert_eq!(config.group_role, None);
+    let storage = Storage::open_at(&temp_dir.join(crate::storage::DB_FILENAME)).unwrap();
+    storage
+        .persist_redmine_bootstrap(
+            Role::Orchestrator,
+            Some("https://redmine.example".to_owned()),
+            44,
+            5,
+        )
+        .unwrap();
+
+    let loaded = storage
+        .load_redmine_config(Role::Orchestrator)
+        .unwrap()
+        .expect("bootstrap row must exist");
+    assert_eq!(loaded.project_id.as_deref(), Some("44"));
+    assert_eq!(loaded.close_status_id, Some(5));
+    assert_eq!(loaded.api_base.as_deref(), Some("https://redmine.example"));
+    // Active bootstrap no longer persists the legacy group fields;
+    // older configs that still carry them continue to decode via
+    // `serde(default)`.
+    assert!(loaded.group_name.is_none());
+    assert!(loaded.group_role.is_none());
+
+    let provider = storage
+        .load_role_config(Role::Orchestrator)
+        .unwrap()
+        .expect("role_config row must exist after bootstrap")
+        .provider;
+    assert_eq!(provider.as_deref(), Some("redmine"));
+
+    let db_path = storage.db_path().to_path_buf();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
+            fs::metadata(&db_path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "SQLite database file must be 0600"
         );
+        let parent_mode = fs::metadata(db_path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent_mode, 0o700, "SQLite database directory must be 0700");
     }
-    let _ = fs::remove_dir_all(directory);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -797,7 +824,7 @@ fn timer_projection_retry_is_local_only_after_a_synced_201_create() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .start_timer_run(
             "retry-run",
@@ -860,7 +887,7 @@ fn timer_projection_reconciles_a_204_before_creating_another_entry() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .start_timer_run(
             "unconfirmed-run",
@@ -1165,34 +1192,26 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", TEST_API_KEY)
+        .unwrap();
+    storage
+        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
+        .unwrap();
     let _mirror_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
     let _mirror_url = EnvGuard::set(
         "PHASEGENT_REDMINE_REPOSITORY_URL",
         "https://git.example.com/owner/repo.git",
     );
-    let config_directory = directory.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_directory).unwrap();
-    fs::write(
-        config_directory.join("redmine.orchestrator.key"),
-        TEST_API_KEY,
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.executor.key"),
-        "executor-redmine-key",
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.reviewer.key"),
-        "reviewer-redmine-key",
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.admin.key"),
-        "admin-redmine-key",
-    )
-    .unwrap();
 
     let (base, requests, server) = sequence(vec![
         // Bootstrap sequence (admin provider): project lookup, statuses,
@@ -1273,24 +1292,30 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
         // Explicit project id: bypasses bootstrap
         MockResponse::ok(support::issue_response(82, "Explicit", "Body", false, &[])),
     ]);
-    fs::write(
-        config_directory.join("redmine.orchestrator.config.json"),
-        serde_json::json!({
-            "api_base": base.clone(),
-            "project_id": "999",
-            "close_status_id": 5
-        })
-        .to_string(),
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.admin.config.json"),
-        serde_json::json!({
-            "api_base": base.clone(),
-        })
-        .to_string(),
-    )
-    .unwrap();
+    storage
+        .save_redmine_config(
+            Role::Orchestrator,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: Some("999".to_owned()),
+                close_status_id: Some(5),
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
+    storage
+        .save_redmine_config(
+            Role::Admin,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: None,
+                close_status_id: None,
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
     let args = strings([
         "--role",
         "orchestrator",
@@ -1522,11 +1547,14 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     support::assert_request(&requests[19], "GET", "/issues.json?", None);
     support::assert_request(&requests[20], "POST", "/issues.json", None);
     assert_eq!(
-        fs::read_to_string(config_directory.join("redmine.orchestrator.key")).unwrap(),
+        storage
+            .load_credential(Role::Orchestrator, "redmine")
+            .unwrap()
+            .expect("orchestrator credential must remain after bootstrap"),
         TEST_API_KEY
     );
     assert!(requests[20].contains(r#""project_id":99"#));
-    let stored = auth::load_redmine_config(Role::Orchestrator)
+    let stored = auth::load_redmine_config(Role::Orchestrator, &storage)
         .unwrap()
         .unwrap();
     assert_eq!(stored.project_id.as_deref(), Some("44"));
@@ -1549,29 +1577,21 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
-    let config_directory = directory.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_directory).unwrap();
-    fs::write(
-        config_directory.join("redmine.orchestrator.key"),
-        "orchestrator-redmine-key",
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.executor.key"),
-        "executor-redmine-key",
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.reviewer.key"),
-        "reviewer-redmine-key",
-    )
-    .unwrap();
-    fs::write(
-        config_directory.join("redmine.admin.key"),
-        "admin-redmine-key",
-    )
-    .unwrap();
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", "orchestrator-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
+        .unwrap();
 
     let (base, requests, server) = sequence(vec![
         // Admin-side project bootstrap gets us to the identity lookup phase.
@@ -1597,11 +1617,18 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
         // three pairwise comparisons have data.
         MockResponse::ok(support::current_user_response(33, "reviewer")),
     ]);
-    fs::write(
-        config_directory.join("redmine.admin.config.json"),
-        serde_json::json!({"api_base": base}).to_string(),
-    )
-    .unwrap();
+    storage
+        .save_redmine_config(
+            Role::Admin,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: None,
+                close_status_id: None,
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
 
     let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
         .expect_err("bootstrap must fail when two role keys resolve to the same Redmine user");
@@ -1642,10 +1669,13 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
 
     // Project bootstrap config must not be persisted on the admin role: the
     // workflow is not ready and we must not leave a partial identity mapping
-    // behind for the next operator run to discover.
-    let stored = auth::load_redmine_config(Role::Admin)
+    // behind for the next operator run to discover. The seeded api_base
+    // remains in place because the bootstrap returned early before
+    // `persist_redmine_bootstrap` could run, but the project id and
+    // close status must NOT have been written.
+    let stored = auth::load_redmine_config(Role::Admin, &storage)
         .expect("admin config must load")
-        .expect("admin config must exist");
+        .expect("admin config row must still exist");
     assert_eq!(stored.project_id, None);
     assert_eq!(stored.close_status_id, None);
     assert_eq!(stored.api_base.as_deref(), Some(base.as_str()));
@@ -1731,8 +1761,8 @@ fn parser_auth_config_and_provider_selection_regressions() {
         ProviderKind::Redmine
     );
 
-    let key_path = auth::redmine_key_path_for(Path::new("/tmp/phasegent-test"), Role::Executor);
-    assert!(key_path.ends_with("redmine.executor.key"));
+    let key_path = std::path::Path::new("/tmp/phasegent-test").join(crate::storage::DB_FILENAME);
+    assert!(key_path.ends_with("phasegent.sqlite3"));
     assert_eq!(
         auth::setup_provider(
             Role::Orchestrator,
@@ -1752,7 +1782,14 @@ fn parser_auth_config_and_provider_selection_regressions() {
 
 #[test]
 fn admin_auth_setup_writes_the_normal_role_scoped_private_key() {
-    let directory = std::env::temp_dir().join(format!(
+    // The legacy `<role>.key` file layout was retired when the
+    // project migrated to a single SQLite database. The admin role
+    // now persists its Redmine API key in the `role_credential`
+    // table; verify the round-trip and the file-mode invariant
+    // (the SQLite database file is 0600) the legacy test used to
+    // pin. The temp database is opened via `Storage::open_at` so
+    // the operator's real config is never touched.
+    let temp_dir = std::env::temp_dir().join(format!(
         "phasegent-redmine-admin-key-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -1761,25 +1798,36 @@ fn admin_auth_setup_writes_the_normal_role_scoped_private_key() {
             .as_nanos()
     ));
     let secret = "admin-secret";
-    auth::write_credential(&directory, Role::Admin, "redmine", secret).unwrap();
-    assert_eq!(
-        fs::read_to_string(auth::redmine_key_path_for(&directory, Role::Admin)).unwrap(),
-        secret
+    let storage = Storage::open_at(&temp_dir.join(crate::storage::DB_FILENAME)).unwrap();
+    storage
+        .save_credential(Role::Admin, "redmine", secret)
+        .unwrap();
+
+    let loaded = storage
+        .load_credential(Role::Admin, "redmine")
+        .unwrap()
+        .expect("admin redmine credential must exist after save");
+    assert_eq!(loaded, secret);
+
+    let other = storage
+        .load_credential(Role::Orchestrator, "redmine")
+        .unwrap();
+    assert!(
+        other.is_none(),
+        "orchestrator must not observe admin's redmine credential"
     );
-    assert!(!auth::redmine_key_path_for(&directory, Role::Orchestrator).exists());
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let db_path = storage.db_path();
         assert_eq!(
-            fs::metadata(auth::redmine_key_path_for(&directory, Role::Admin))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
+            fs::metadata(db_path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "SQLite database file must be 0600"
         );
     }
-    let _ = fs::remove_dir_all(directory);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -1793,14 +1841,12 @@ fn admin_provider_requires_admin_key_without_falling_back() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
-    let config_directory = directory.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_directory).unwrap();
-    fs::write(
-        config_directory.join("redmine.orchestrator.key"),
-        "normal-secret",
-    )
-    .unwrap();
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", "normal-secret")
+        .unwrap();
     let result = RedmineProvider::for_role(
         Role::Admin,
         RedmineConfig::new("http://redmine.test", "42", 37),
@@ -2089,14 +2135,12 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
-    let config_directory = directory.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_directory).unwrap();
-    fs::write(
-        config_directory.join("orchestrator.token"),
-        "test-forgejo-token",
-    )
-    .unwrap();
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "forgejo", "test-forgejo-token")
+        .unwrap();
 
     assert_eq!(
         crate::cli::run(strings([
@@ -2137,30 +2181,6 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(str::to_owned).collect()
-}
-
-struct HomeGuard(Option<OsString>);
-
-impl HomeGuard {
-    fn set(directory: &Path) -> Self {
-        let previous = env::var_os("HOME");
-        unsafe {
-            env::set_var("HOME", directory);
-        }
-        Self(previous)
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        unsafe {
-            if let Some(previous) = self.0.take() {
-                env::set_var("HOME", previous);
-            } else {
-                env::remove_var("HOME");
-            }
-        }
-    }
 }
 
 fn mirror_env() -> (EnvGuard, EnvGuard) {
@@ -2311,12 +2331,13 @@ fn mirror_plugin_404_triggers_post_and_carries_credential_free_url() {
 #[test]
 fn mirror_plugin_missing_key_fails_bootstrap_with_actionable_error() {
     let _environment_lock = lock_workflow_tests();
-    // Isolate the test behind a private HOME so the production SQLite
-    // database (which the operator may already have populated with a
-    // mirror key) cannot leak into the resolver through the env →
-    // SQLite fallback. A throwaway directory with an empty SQLite
-    // schema ensures the only way to satisfy the lookup is via the
-    // environment variable we explicitly clear below.
+    // Isolate the test behind a private SQLite database via
+    // `PHASEGENT_DB_PATH` so the production SQLite database (which
+    // the operator may already have populated with a mirror key)
+    // cannot leak into the resolver through the env → SQLite
+    // fallback. A throwaway database with an empty schema ensures
+    // the only way to satisfy the lookup is via the environment
+    // variable we explicitly clear below.
     let directory = std::env::temp_dir().join(format!(
         "phasegent-redmine-missing-key-{}-{}",
         std::process::id(),
@@ -2325,7 +2346,8 @@ fn mirror_plugin_missing_key_fails_bootstrap_with_actionable_error() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let _url = EnvGuard::set(
         "PHASEGENT_REDMINE_REPOSITORY_URL",
         "https://git.example.com/owner/repo.git",
@@ -3286,14 +3308,12 @@ fn relation_create_denies_delay_for_non_precedes_types() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
-    let config_directory = directory.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_directory).unwrap();
-    fs::write(
-        config_directory.join("redmine.orchestrator.key"),
-        TEST_API_KEY,
-    )
-    .unwrap();
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", TEST_API_KEY)
+        .unwrap();
     // `--delay` with `--type blocks` must fail locally before any request.
     assert_eq!(
         crate::cli::run(strings([
@@ -3329,14 +3349,12 @@ fn relation_create_and_list_hit_redmine_endpoints_end_to_end() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = HomeGuard::set(&directory);
-    let config_directory = directory.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_directory).unwrap();
-    fs::write(
-        config_directory.join("redmine.orchestrator.key"),
-        TEST_API_KEY,
-    )
-    .unwrap();
+    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", TEST_API_KEY)
+        .unwrap();
 
     let (base, requests, server) = sequence(vec![
         MockResponse::ok(

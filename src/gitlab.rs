@@ -34,6 +34,7 @@ use crate::gitlab_model::{
 use crate::policy::Capability;
 use crate::provider_config::GitlabConfig;
 use crate::redmine_model::{RedmineRelationType, RelationSummary};
+use crate::storage::Storage;
 
 /// Concrete GitLab provider. The struct is held by the
 /// `ProviderDispatcher::Gitlab` arm; the surrounding CLI talks to it
@@ -69,7 +70,8 @@ impl GitlabProvider {
         role: crate::policy::Role,
         config: GitlabConfig,
     ) -> Result<Self, ForgejoError> {
-        let token = crate::auth::gitlab_token(role).map_err(ForgejoError::auth)?;
+        let storage = Storage::open().map_err(ForgejoError::config)?;
+        let token = crate::auth::gitlab_token(role, &storage).map_err(ForgejoError::auth)?;
         Self::new(config, token)
     }
 

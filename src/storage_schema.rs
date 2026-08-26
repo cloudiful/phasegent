@@ -36,8 +36,6 @@ pub(crate) const PROVIDER_GITLAB: &str = "gitlab";
 ///   its repository URL override). `config show` returns their
 ///   presence and length; the resolver layer reads the value out of
 ///   SQLite only when the matching environment variable is unset.
-/// * `import_log` records which legacy files have been imported so the
-///   one-shot importer is idempotent on subsequent opens.
 ///
 /// All non-key columns are nullable so the layer can distinguish
 /// "missing" (no row) from "present but empty" (row with NULL).
@@ -78,13 +76,6 @@ CREATE TABLE IF NOT EXISTS role_credential (
 CREATE TABLE IF NOT EXISTS global_setting (
     name TEXT PRIMARY KEY,
     value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS import_log (
-    source TEXT NOT NULL,
-    field TEXT NOT NULL,
-    imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (source, field)
 );
 
 -- Phase 5A execution ledger.  The table is additive so databases created

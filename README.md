@@ -37,9 +37,9 @@ Provider resolution precedence, highest first:
 2. `PHASEGENT_PROVIDER` environment variable (one-process override).
 3. `PHASEGENT_DEFAULT_PROVIDER` environment variable (one-process override
    for the persistent machine-wide default).
-4. Persisted `PHASEGENT_DEFAULT_PROVIDER` row in
-   `$HOME/.config/opencode/phasegent/phasegent.sqlite3` (managed via
-   `config provider set / get / clear`).
+4. Persisted `PHASEGENT_DEFAULT_PROVIDER` row in the platform-standard
+   phasegent database (see [Local Configuration](#local-configuration);
+   managed via `config provider set / get / clear`).
 5. Role-scoped `role_config.provider` row written by `auth setup`.
 6. Forgejo fallback.
 
@@ -368,17 +368,20 @@ Hook behavior:
 ## Local Configuration
 
 `auth setup`, the per-role provider settings, the phase execution ledger, and the
-two `redmine_git_mirror` plugin settings are persisted in a single SQLite database
-rather than scattered JSON, key, and token files. The database lives next to
-the legacy files under the active `$HOME` config directory. The additive
-`execution_timer_runs` table stores exact elapsed seconds, rounded hours, and
-optional activity/Time Entry projection state. On Unix the directory is
-created with mode `0700` and the database file with mode `0600` so accidental
-disclosure is limited to the owner:
+two `redmine_git_mirror` plugin settings are persisted in a single SQLite
+database. The database lives at the OS-standard config directory reported by
+`directories::ProjectDirs` (qualified `com` / `Cloud1ful` / `phasegent`):
 
 ```text
-$HOME/.config/opencode/phasegent/phasegent.sqlite3
+Linux :   ~/.config/phasegent/phasegent.sqlite3
+macOS :   ~/Library/Application Support/com.Cloud1ful.phasegent/phasegent.sqlite3
+Windows: %APPDATA%\Cloud1ful\phasegent\config\phasegent.sqlite3
 ```
+
+The additive `execution_timer_runs` table stores exact elapsed seconds, rounded
+hours, and optional activity/Time Entry projection state. On Unix the directory
+is created with mode `0700` and the database file with mode `0600` so accidental
+disclosure is limited to the owner.
 
 `auth setup` stores Forgejo role tokens
 and Redmine API keys as plaintext rows in SQLite by design. The CLI never
@@ -389,23 +392,6 @@ API base, repository, project id, close status id, and credential; the three
 global settings (`PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`,
 `PHASEGENT_REDMINE_REPOSITORY_URL`, and the machine-wide
 `PHASEGENT_DEFAULT_PROVIDER`) live in a separate `global_setting` table.
-
-### One-shot legacy import
-
-The first time the database is opened against an operator's `HOME`, phasegent
-walks the four well-known legacy filenames for each role and copies populated
-fields into SQLite. The import is field-by-field and idempotent:
-
-- `<role>.config.json` (provider, api_base, repository)
-- `redmine.<role>.config.json` (api_base, project_id, close_status_id)
-- `redmine.<role>.key` (Redmine API key)
-- `<role>.token` (Forgejo token)
-
-A successful copy is recorded in the `import_log` table. Subsequent opens skip
-any field that already has a value, so already-populated SQLite rows are never
-overwritten with legacy values. The importer never deletes the original legacy
-files; cleanup is an explicit operator step once real `HOME` migration has been
-validated in a later phase.
 
 ### Inspecting the database with `config show`
 
@@ -539,7 +525,7 @@ is reported in `config show` through both the
 Verify the database exists without printing secrets:
 
 ```text
-test -f "$HOME/.config/opencode/phasegent/phasegent.sqlite3" \
+test -f "$HOME/.config/phasegent/phasegent.sqlite3" \
   && echo "phasegent SQLite database exists" \
   || echo "run any phasegent command to initialise it"
 ```
@@ -585,8 +571,9 @@ phasegent --role executor auth setup --stdin
 ```
 
 Forgejo tokens and Redmine API keys are both stored in the
-`~/.config/opencode/phasegent/phasegent.sqlite3` database under the
-operator's HOME on Unix with directory mode `0700` and file mode `0600`.
+`~/.config/phasegent/phasegent.sqlite3` database under the
+operator's platform-standard config directory on Unix with directory
+mode `0700` and file mode `0600`.
 The CLI never accepts them as command-line arguments, never echoes them
 back, and never includes them in any rendered JSON; `auth setup` reads
 the credential from stdin and `config show` reports the row as

@@ -1,6 +1,4 @@
 mod auth;
-#[cfg(test)]
-mod auth_legacy;
 mod branch_context;
 mod ci_cli;
 mod ci_command;
@@ -31,7 +29,6 @@ mod remote;
 mod repo_cli;
 mod repo_command;
 mod storage;
-mod storage_import;
 mod storage_schema;
 mod time_tracking_cli;
 mod workflow;

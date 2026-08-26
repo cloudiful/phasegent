@@ -1,20 +1,23 @@
 //! SQLite-backed persistence for phasegent role configuration and credentials.
 //!
-//! The storage module replaces the legacy `~/.config/opencode/phasegent/*`
-//! JSON/key/token files with a single SQLite database at
-//! `~/.config/opencode/phasegent/phasegent.sqlite3`. The schema splits
-//! role-scoped provider configuration from role/provider credentials so
-//! migration can import either side on demand and `config show` can mask
-//! secrets without leaking their content.
+//! The storage module keeps role/provider configuration, per-role
+//! credentials, and the small set of machine-wide settings in a single
+//! SQLite database. The database lives at the OS-standard config
+//! location returned by [`directories::ProjectDirs`]: `~/.config/phasegent`
+//! on Linux, `~/Library/Application Support/com.Cloud1ful.phasegent` on
+//! macOS, and `%APPDATA%\Cloud1ful\phasegent\config` on Windows. The
+//! schema splits role-scoped provider configuration from role/provider
+//! credentials so `config show` can mask secrets without leaking their
+//! content.
 //!
 //! The schema lives in [`storage_schema`] so the data model stays
-//! readable as a whole; the one-shot legacy importer lives in
-//! [`storage_import`] so this file can focus on the public CRUD
-//! surface.
+//! readable as a whole; this file stays focused on the public CRUD
+//! surface and the platform-aware path resolver.
 
 use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
 use crate::policy::Role;
 use crate::storage_schema::{GLOBAL_SETTING_NAMES, PRAGMA_STATEMENTS, SCHEMA};
+use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,15 +51,6 @@ impl GlobalSettingSummary {
             length: 0,
         }
     }
-}
-
-/// Outcome of a single legacy import run. Counts help tests and the
-/// `config show` command distinguish "nothing to import" from "import
-/// succeeded but every field was already populated".
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ImportReport {
-    pub imported: usize,
-    pub skipped: usize,
 }
 
 /// A single wall-clock phase run persisted in the local execution ledger.
@@ -109,18 +103,23 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// Open the database at the canonical HOME-relative path. Returns a
-    /// structured error when `HOME` is unset.
+    /// Open the database at the platform-standard config directory
+    /// resolved by [`directories::ProjectDirs`]. Returns a structured
+    /// error when the host has no usable home / config directory.
+    ///
+    /// When the `PHASEGENT_DB_PATH` environment variable is set to an
+    /// absolute path, that path is used verbatim instead of the
+    /// platform-standard config directory. The override exists so
+    /// integration tests that drive commands through the CLI layer
+    /// can point `Storage::open()` at a temp database without
+    /// needing a `--storage-path` flag; production code never sets
+    /// this variable.
     pub fn open() -> Result<Self, String> {
-        let home = std::env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-        Self::open_for_home(Path::new(&home))
-    }
-
-    /// Open the database located under `home`. Used by tests that need
-    /// to isolate `HOME` without touching the operator's real config.
-    pub fn open_for_home(home: &Path) -> Result<Self, String> {
-        let directory = home.join(".config/opencode/phasegent");
-        let path = directory.join(DB_FILENAME);
+        if let Some(override_path) = std::env::var_os("PHASEGENT_DB_PATH") {
+            let path = PathBuf::from(override_path);
+            return Self::open_at(&path);
+        }
+        let path = project_dirs_db_path()?;
         Self::open_at(&path)
     }
 
@@ -719,14 +718,6 @@ impl Storage {
         self.load_timer_run(run_id)?
             .ok_or_else(|| "timer sync row disappeared after commit".to_owned())
     }
-
-    /// Import legacy JSON / key / token files from `config_dir` into
-    /// SQLite. Implementation lives in the sibling [`storage_import`] module
-    /// so this file stays focused on the public CRUD surface; see that
-    /// module for the per-field semantics.
-    pub fn import_legacy(&self, config_dir: &Path) -> Result<ImportReport, String> {
-        crate::storage_import::import_legacy(self, config_dir)
-    }
 }
 
 /// Create `path` with private permissions. Used for both the SQLite
@@ -743,6 +734,19 @@ fn create_private_dir(path: &Path) -> Result<(), String> {
             .map_err(|error| format!("could not secure phasegent config directory: {error}"))?;
     }
     Ok(())
+}
+
+/// Resolve the canonical phasegent database path via
+/// [`directories::ProjectDirs`]. The qualifier / organisation / application
+/// tuple (`com` / `Cloud1ful` / `phasegent`) maps to the platform-standard
+/// config directory:
+/// - Linux: `$XDG_CONFIG_HOME/phasegent` (defaults to `~/.config/phasegent`)
+/// - macOS: `~/Library/Application Support/com.Cloud1ful.phasegent`
+/// - Windows: `%APPDATA%\Cloud1ful\phasegent\config`
+fn project_dirs_db_path() -> Result<PathBuf, String> {
+    let dirs = ProjectDirs::from("com", "Cloud1ful", "phasegent")
+        .ok_or_else(|| "could not resolve phasegent config directory".to_owned())?;
+    Ok(dirs.config_dir().join(DB_FILENAME))
 }
 
 fn timer_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TimerRun> {

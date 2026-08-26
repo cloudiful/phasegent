@@ -10,6 +10,7 @@ use crate::provider::{
     RedmineMetadataProvider, RedmineProvider,
 };
 use crate::provider_config::resolve_kind;
+use crate::storage::Storage;
 use crate::workflow;
 use serde::Serialize;
 
@@ -20,6 +21,15 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
         Ok(invocation) => execute(invocation),
         Err(message) => usage_error(&message),
     }
+}
+
+/// Open the operator's platform-standard SQLite database. CLI entry
+/// points that touch [`Storage`] use this helper so the structured
+/// error path stays uniform: callers receive the same error string
+/// whether the directory could not be resolved or the schema could
+/// not be initialised.
+fn open_storage() -> Result<Storage, String> {
+    Storage::open()
 }
 
 fn execute(invocation: Invocation) -> i32 {
@@ -67,8 +77,12 @@ fn execute(invocation: Invocation) -> i32 {
             // The CLI re-uses `invocation.role` so a user that runs
             // `phasegent --role executor config show` gets a
             // single-role view, and `phasegent config show` (no
-            // role) returns the global snapshot.
-            match crate::config::show_json(invocation.role) {
+            // role) returns the global snapshot. Open the SQLite
+            // database once so any structured failure surfaces
+            // through the same path as the config facade.
+            let result = open_storage()
+                .and_then(|storage| crate::config::show_json(invocation.role, &storage));
+            match result {
                 Ok(value) => print_json(&value),
                 Err(message) => {
                     structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
@@ -77,31 +91,43 @@ fn execute(invocation: Invocation) -> i32 {
         }
         Command::ConfigImportEnv => {
             let role = required_role(invocation.role);
-            match crate::config::import_env_json(role) {
+            let result =
+                open_storage().and_then(|storage| crate::config::import_env_json(role, &storage));
+            match result {
                 Ok(value) => print_json(&value),
                 Err(message) => {
                     structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
                 }
             }
         }
-        Command::ConfigProviderGet => match crate::config::provider_get() {
-            Ok(value) => print_json(&value),
-            Err(message) => {
-                structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+        Command::ConfigProviderGet => {
+            let result = open_storage().and_then(|storage| crate::config::provider_get(&storage));
+            match result {
+                Ok(value) => print_json(&value),
+                Err(message) => {
+                    structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+                }
             }
-        },
-        Command::ConfigProviderSet { value } => match crate::config::provider_set(value.as_str()) {
-            Ok(outcome) => print_json(&outcome),
-            Err(message) => {
-                structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+        }
+        Command::ConfigProviderSet { value } => {
+            let result = open_storage()
+                .and_then(|storage| crate::config::provider_set(value.as_str(), &storage));
+            match result {
+                Ok(outcome) => print_json(&outcome),
+                Err(message) => {
+                    structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+                }
             }
-        },
-        Command::ConfigProviderClear => match crate::config::provider_clear() {
-            Ok(value) => print_json(&value),
-            Err(message) => {
-                structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+        }
+        Command::ConfigProviderClear => {
+            let result = open_storage().and_then(|storage| crate::config::provider_clear(&storage));
+            match result {
+                Ok(value) => print_json(&value),
+                Err(message) => {
+                    structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+                }
             }
-        },
+        }
         // Local branch context commands bypass provider resolution
         // entirely: they only touch the checkout's own Git config.
         Command::Issue(

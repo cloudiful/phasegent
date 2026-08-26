@@ -7,6 +7,7 @@ pub use crate::forgejo_model::{CommentOutput, ForgejoError, IssueSummary, RepoSu
 use crate::policy::Role;
 use crate::provider::ProviderKind;
 use crate::remote;
+use crate::storage::Storage;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::ACCEPT;
 use serde::{Serialize, de::DeserializeOwned};
@@ -43,7 +44,8 @@ impl ForgejoConfig {
         api_base: Option<&str>,
         repository: Option<&str>,
     ) -> Result<Self, ForgejoError> {
-        let stored = auth::load_config(role).map_err(ForgejoError::config)?;
+        let storage = Storage::open().map_err(ForgejoError::config)?;
+        let stored = auth::load_config(role, &storage).map_err(ForgejoError::config)?;
         let explicit_base = api_base
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_API_BASE").ok());
@@ -84,7 +86,8 @@ pub struct ForgejoProvider {
 
 impl ForgejoProvider {
     pub fn for_role(role: Role, config: ForgejoConfig) -> Result<Self, ForgejoError> {
-        let token = auth::token(role).map_err(ForgejoError::auth)?;
+        let storage = Storage::open().map_err(ForgejoError::config)?;
+        let token = auth::token(role, &storage).map_err(ForgejoError::auth)?;
         Self::new(config, token)
     }
 

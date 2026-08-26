@@ -35,9 +35,9 @@ Provider 解析优先级，从高到低：
 1. 命令行显式 `--provider` 参数。
 2. `PHASEGENT_PROVIDER` 环境变量（单进程覆盖）。
 3. `PHASEGENT_DEFAULT_PROVIDER` 环境变量（持久化默认值的单进程覆盖）。
-4. `$HOME/.config/opencode/phasegent/phasegent.sqlite3` 中持久化的
-   `PHASEGENT_DEFAULT_PROVIDER` 行（通过
-   `config provider set / get / clear` 管理）。
+4. 平台标准 phasegent 数据库中持久化的
+   `PHASEGENT_DEFAULT_PROVIDER` 行（参见
+   [本地配置](#本地配置)；通过 `config provider set / get / clear` 管理）。
 5. 由 `auth setup` 写入的角色级 `role_config.provider` 行。
 6. Forgejo 兜底。
 
@@ -332,16 +332,19 @@ Hook 行为：
 ## 本地配置
 
 `auth setup`、按 role 划分的 provider 配置、phase execution ledger 以及两个
-`redmine_git_mirror` plugin 配置都集中保存在同一个 SQLite 数据库中，而不是
-分散的 JSON、key 与 token 文件。数据库与历史 legacy 文件位于同一个
-`$HOME` 配置目录下；增量创建的 `execution_timer_runs` 表保存精确的整秒
-elapsed time、rounded hours，以及可选的 activity/Time Entry 投影状态。Unix
-上目录以模式 `0700` 创建、数据库文件以模式 `0600` 创建，避免非属主用户
-读取：
+`redmine_git_mirror` plugin 配置都集中保存在同一个 SQLite 数据库中。数据库
+位于 `directories::ProjectDirs` 给出的 OS 标准配置目录（限定符
+`com` / `Cloud1ful` / `phasegent`）：
 
 ```text
-$HOME/.config/opencode/phasegent/phasegent.sqlite3
+Linux :   ~/.config/phasegent/phasegent.sqlite3
+macOS :   ~/Library/Application Support/com.Cloud1ful.phasegent/phasegent.sqlite3
+Windows: %APPDATA%\Cloud1ful\phasegent\config\phasegent.sqlite3
 ```
+
+增量创建的 `execution_timer_runs` 表保存精确的整秒 elapsed time、rounded
+hours，以及可选的 activity/Time Entry 投影状态。Unix 上目录以模式 `0700`
+创建、数据库文件以模式 `0600` 创建，避免非属主用户读取。
 
 `auth setup` 出于设计会把 Forgejo role
 token 与 Redmine API key 以明文形式写入 SQLite。CLI 永不输出 credential：
@@ -351,20 +354,6 @@ redmine)` provider、API base、repository、project id、close status id 与
 credential；三个全局配置（`PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`、
 `PHASEGENT_REDMINE_REPOSITORY_URL` 以及机器级
 `PHASEGENT_DEFAULT_PROVIDER`）保存在独立的 `global_setting` 表。
-
-### 一次性 legacy 导入
-
-首次以操作员 `HOME` 打开数据库时，phasegent 会按 role 扫描四个 legacy
-文件名，并把已有字段复制到 SQLite。导入按字段逐项进行，且具备幂等性：
-
-- `<role>.config.json`（provider、api_base、repository）
-- `redmine.<role>.config.json`（api_base、project_id、close_status_id）
-- `redmine.<role>.key`（Redmine API key）
-- `<role>.token`（Forgejo token）
-
-每次成功复制都会写入 `import_log` 表。后续启动会跳过已经有值的字段，
-已经填充的 SQLite 行不会被 legacy 值覆盖。导入器不会删除原始 legacy 文件：
-清理工作需要等待真实 `HOME` 迁移在后续阶段校验通过后再显式执行。
 
 ### 使用 `config show` 查看数据库
 
@@ -485,7 +474,7 @@ phasegent config provider clear      # 删除已持久化行
 在不打印任何 secret 的前提下检查数据库是否存在：
 
 ```text
-test -f "$HOME/.config/opencode/phasegent/phasegent.sqlite3" \
+test -f "$HOME/.config/phasegent/phasegent.sqlite3" \
   && echo "phasegent SQLite database exists" \
   || echo "run any phasegent command to initialise it"
 ```
@@ -531,7 +520,7 @@ phasegent --role executor auth setup --stdin
 ```
 
 Forgejo token 与 Redmine API key 都保存在
-`~/.config/opencode/phasegent/phasegent.sqlite3` 中，目录 Unix 权限
+`~/.config/phasegent/phasegent.sqlite3` 中，目录 Unix 权限
 `0700`、文件权限 `0600`。CLI 永不接受命令行 token/key、永不回显、永不
 进入任何渲染过的 JSON；`auth setup` 只读取 stdin，`config show` 只
 把相应行报告为 `present` 与 `length`。绝不要传递、记录或提交任一

@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::auth_legacy;
 use crate::policy::Role;
 use crate::storage::{
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_FORGEJO,
@@ -7,7 +5,6 @@ use crate::storage::{
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
 
 // The canonical configuration structs live here so existing
 // `auth::StoredConfig` / `auth::RedmineStoredConfig` call sites keep
@@ -116,7 +113,6 @@ pub fn setup_provider(
     }
 
     let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
     storage.save_credential(role, provider, &credential)?;
 
     match provider {
@@ -126,7 +122,7 @@ pub fn setup_provider(
         }
         PROVIDER_GITLAB => {
             if let Some(project_id) = project_id.as_deref().and_then(parse_gitlab_project_id) {
-                persist_gitlab_bootstrap(role, api_base, project_id)?;
+                persist_gitlab_bootstrap(role, api_base, project_id, &storage)?;
             } else {
                 save_gitlab_config(&storage, role, api_base, project_id)?;
             }
@@ -146,16 +142,6 @@ pub fn setup_provider(
             "provider": provider
         }))
     }
-}
-
-#[cfg(test)]
-pub(crate) fn write_credential(
-    directory: &Path,
-    role: Role,
-    provider: &str,
-    credential: &str,
-) -> Result<(), String> {
-    auth_legacy::write_credential(directory, role, provider, credential)
 }
 
 fn validate_provider_options(
@@ -207,9 +193,7 @@ fn read_credential(provider: &str, label: &str, read_stdin: bool) -> Result<Stri
     }
 }
 
-pub fn token(role: Role) -> Result<String, String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
+pub fn token(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_FORGEJO)?
         .ok_or_else(|| format!("could not read {} token: missing", role.as_str()))?;
@@ -219,21 +203,21 @@ pub fn token(role: Role) -> Result<String, String> {
     Ok(value)
 }
 
-pub fn load_config(role: Role) -> Result<Option<StoredConfig>, String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
+pub fn load_config(role: Role, storage: &Storage) -> Result<Option<StoredConfig>, String> {
     storage.load_role_config(role)
 }
 
-pub fn load_redmine_config(role: Role) -> Result<Option<RedmineStoredConfig>, String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
+pub fn load_redmine_config(
+    role: Role,
+    storage: &Storage,
+) -> Result<Option<RedmineStoredConfig>, String> {
     storage.load_redmine_config(role)
 }
 
-pub fn load_gitlab_config(role: Role) -> Result<Option<GitlabStoredConfig>, String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
+pub fn load_gitlab_config(
+    role: Role,
+    storage: &Storage,
+) -> Result<Option<GitlabStoredConfig>, String> {
     storage.load_gitlab_config(role)
 }
 
@@ -242,9 +226,8 @@ pub fn persist_redmine_bootstrap(
     api_base: Option<String>,
     project_id: u64,
     close_status_id: u64,
+    storage: &Storage,
 ) -> Result<(), String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
     storage.persist_redmine_bootstrap(role, api_base, project_id, close_status_id)
 }
 
@@ -255,32 +238,12 @@ pub fn persist_gitlab_bootstrap(
     role: Role,
     api_base: Option<String>,
     project_id: u64,
+    storage: &Storage,
 ) -> Result<(), String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
     storage.persist_gitlab_bootstrap(role, api_base, project_id)
 }
 
-#[cfg(test)]
-pub(crate) fn persist_redmine_bootstrap_for(
-    directory: &Path,
-    role: Role,
-    api_base: Option<String>,
-    project_id: u64,
-    close_status_id: u64,
-) -> Result<(), String> {
-    auth_legacy::persist_redmine_bootstrap_for(
-        directory,
-        role,
-        api_base,
-        project_id,
-        close_status_id,
-    )
-}
-
-pub fn redmine_api_key(role: Role) -> Result<String, String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
+pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_REDMINE)?
         .ok_or_else(|| "could not read Redmine API key: missing".to_owned())?;
@@ -297,9 +260,7 @@ pub fn redmine_api_key(role: Role) -> Result<String, String> {
 /// `auth setup` run never silently returns an empty bearer key. The
 /// token value is never surfaced in error messages; callers receive
 /// only the typed error.
-pub fn gitlab_token(role: Role) -> Result<String, String> {
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
+pub fn gitlab_token(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_GITLAB)?
         .ok_or_else(|| "could not read GitLab PRIVATE-TOKEN: missing".to_owned())?;
@@ -323,13 +284,13 @@ pub fn gitlab_token(role: Role) -> Result<String, String> {
 /// string so callers can decide whether registration is optional or
 /// required. Returning `Ok(Some)` only when the value is a non-empty
 /// trimmed string keeps the value out of error messages, JSON output,
-/// and test fixtures.
-pub fn redmine_git_mirror_api_key() -> Result<Option<String>, String> {
+/// and test fixtures. The caller supplies the [`Storage`] handle so
+/// production code can call [`Storage::open`] while tests can drive
+/// the resolver against an isolated temp database.
+pub fn redmine_git_mirror_api_key(storage: &Storage) -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")? {
         return Ok(Some(value));
     }
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
     storage
         .load_global_setting(GLOBAL_REDMINE_GIT_MIRROR_API_KEY)
         .map_err(|error| {
@@ -348,12 +309,13 @@ pub fn redmine_git_mirror_api_key() -> Result<Option<String>, String> {
 /// deployment does not have to ship the URL in every shell that runs
 /// `workflow bootstrap`. The environment variable still wins so ad-hoc
 /// runs can override the persisted URL without rewriting the database.
-pub fn redmine_repository_url_override() -> Result<Option<String>, String> {
+/// The caller supplies the [`Storage`] handle so production code can
+/// call [`Storage::open`] while tests can drive the resolver against
+/// an isolated temp database.
+pub fn redmine_repository_url_override(storage: &Storage) -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_REPOSITORY_URL")? {
         return Ok(Some(value));
     }
-    let storage = Storage::open()?;
-    ensure_legacy_import(&storage)?;
     storage
         .load_global_setting(GLOBAL_REDMINE_REPOSITORY_URL)
         .map_err(|error| {
@@ -373,26 +335,6 @@ fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
     };
     let trimmed = value.trim().to_owned();
     Ok((!trimmed.is_empty()).then_some(trimmed))
-}
-
-pub fn config_dir() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-    Ok(Path::new(&home).join(".config/opencode/phasegent"))
-}
-
-#[cfg(test)]
-pub(crate) fn config_path_for(directory: &Path, role: Role) -> PathBuf {
-    auth_legacy::config_path_for(directory, role)
-}
-
-#[cfg(test)]
-pub(crate) fn redmine_config_path_for(directory: &Path, role: Role) -> PathBuf {
-    auth_legacy::redmine_config_path_for(directory, role)
-}
-
-#[cfg(test)]
-pub(crate) fn redmine_key_path_for(directory: &Path, role: Role) -> PathBuf {
-    auth_legacy::redmine_key_path_for(directory, role)
 }
 
 fn save_forgejo_config(
@@ -493,18 +435,4 @@ fn save_gitlab_config(
         storage.save_gitlab_config(role, &config)?;
     }
     storage.update_provider(role, PROVIDER_GITLAB)
-}
-
-/// Run the one-shot legacy import on every read/write entry point.
-///
-/// `Storage::open()` already initialises the schema; the import runs
-/// separately because it scans the filesystem and only needs to land
-/// once per process. Re-running it on every call is cheap (the import
-/// is a no-op once legacy files have been recorded in `import_log`)
-/// and keeps production code from depending on a single shared
-/// "first call" sentinel.
-pub(crate) fn ensure_legacy_import(storage: &Storage) -> Result<(), String> {
-    let directory = config_dir()?;
-    let _ = storage.import_legacy(&directory)?;
-    Ok(())
 }

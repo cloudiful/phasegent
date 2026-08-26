@@ -97,7 +97,8 @@ pub fn resolve_kind(
             .parse()
             .map_err(|error: String| ForgejoError::config(error));
     }
-    let stored = auth::load_config(role).map_err(ForgejoError::config)?;
+    let storage = Storage::open().map_err(ForgejoError::config)?;
+    let stored = auth::load_config(role, &storage).map_err(ForgejoError::config)?;
     stored
         .and_then(|config| config.provider)
         .map_or(Ok(ProviderKind::Forgejo), |provider| {
@@ -138,7 +139,8 @@ impl RedmineConfig {
         project_id: Option<&str>,
         close_status_id: Option<&str>,
     ) -> Result<Self, ForgejoError> {
-        let stored = auth::load_redmine_config(role).map_err(ForgejoError::config)?;
+        let storage = Storage::open().map_err(ForgejoError::config)?;
+        let stored = auth::load_redmine_config(role, &storage).map_err(ForgejoError::config)?;
         let explicit_base = api_base
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_REDMINE_API_BASE").ok())
@@ -221,7 +223,8 @@ pub struct RedmineProvider {
 
 impl RedmineProvider {
     pub fn for_role(role: Role, config: RedmineConfig) -> Result<Self, ForgejoError> {
-        let api_key = auth::redmine_api_key(role).map_err(ForgejoError::auth)?;
+        let storage = Storage::open().map_err(ForgejoError::config)?;
+        let api_key = auth::redmine_api_key(role, &storage).map_err(ForgejoError::auth)?;
         Self::new(config, api_key)
     }
 
@@ -316,7 +319,8 @@ impl GitlabConfig {
         api_base: Option<&str>,
         project_id: Option<&str>,
     ) -> Result<Self, ForgejoError> {
-        let stored = auth::load_gitlab_config(role).map_err(ForgejoError::config)?;
+        let storage = Storage::open().map_err(ForgejoError::config)?;
+        let stored = auth::load_gitlab_config(role, &storage).map_err(ForgejoError::config)?;
         let explicit_base = api_base
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_GITLAB_API_BASE").ok())

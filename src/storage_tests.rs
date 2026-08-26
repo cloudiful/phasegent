@@ -1,16 +1,18 @@
 //! Focused tests for the SQLite storage layer.
 //!
 //! These tests are scoped to the storage module: schema initialisation,
-//! field-by-field legacy import with idempotence, role/provider
-//! credential separation, and the explicit non-persistence of
-//! `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`. End-to-end behaviour that
+//! role/provider credential separation, and the explicit non-persistence
+//! of `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`. End-to-end behaviour that
 //! goes through the public auth API lives in the existing
 //! `redmine_contract_tests` suite and is intentionally untouched here.
+//!
+//! Tests use [`Storage::open_at`] with an explicit temp path so they
+//! never touch the operator's real platform-standard database.
 
 use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
 use crate::policy::Role;
 use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::storage::{PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage};
+use crate::storage::{DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage};
 use std::fs;
 use std::path::PathBuf;
 
@@ -29,35 +31,15 @@ fn system_time_nanos() -> u128 {
         .unwrap_or(0)
 }
 
-fn write_legacy_role_config(directory: &std::path::Path, role: Role, value: &serde_json::Value) {
-    fs::write(
-        directory.join(format!("{}.config.json", role.as_str())),
-        serde_json::to_vec(value).unwrap(),
-    )
-    .unwrap();
-}
-
-fn write_legacy_redmine_config(directory: &std::path::Path, role: Role, value: &serde_json::Value) {
-    fs::write(
-        directory.join(format!("redmine.{}.config.json", role.as_str())),
-        serde_json::to_vec(value).unwrap(),
-    )
-    .unwrap();
-}
-
-fn write_legacy_credential(directory: &std::path::Path, role: Role, provider: &str, value: &str) {
-    let filename = match provider {
-        PROVIDER_FORGEJO => format!("{}.token", role.as_str()),
-        PROVIDER_REDMINE => format!("redmine.{}.key", role.as_str()),
-        other => panic!("unsupported legacy provider '{other}' in test helper"),
-    };
-    fs::write(directory.join(filename), value).unwrap();
+fn open_at_temp(label: &str) -> (PathBuf, Storage) {
+    let temp_dir = unique_temp_dir(label);
+    let storage = Storage::open_at(&temp_dir.join(DB_FILENAME)).unwrap();
+    (temp_dir, storage)
 }
 
 #[test]
 fn open_creates_database_with_private_permissions() {
-    let home = unique_temp_dir("open");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("open");
     let db_path = storage.db_path();
     assert!(db_path.exists(), "database file must exist after open");
     #[cfg(unix)]
@@ -72,25 +54,23 @@ fn open_creates_database_with_private_permissions() {
         let file_mode = fs::metadata(db_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(file_mode, 0o600, "database file must be 0600");
     }
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn schema_initialisation_is_idempotent() {
-    let home = unique_temp_dir("schema");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("schema");
     drop(storage);
     // Second open must reuse the existing database without error and
     // continue to expose a usable Storage handle.
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&temp_dir.join(DB_FILENAME)).unwrap();
     assert!(storage.load_role_config(Role::Admin).unwrap().is_none());
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn timer_ledger_is_additive_exact_and_finish_idempotent() {
-    let home = unique_temp_dir("timer-ledger");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("timer-ledger");
     let columns = storage
         .connection
         .prepare("PRAGMA table_info(execution_timer_runs)")
@@ -159,7 +139,7 @@ fn timer_ledger_is_additive_exact_and_finish_idempotent() {
     assert_eq!(finished_again.time_entry_id, finished.time_entry_id);
     assert_eq!(finished_again.elapsed_seconds, Some(37));
 
-    let reopened = Storage::open_for_home(&home).unwrap();
+    let reopened = Storage::open_at(&temp_dir.join(DB_FILENAME)).unwrap();
     let persisted = reopened.load_timer_run("timer-run-1").unwrap().unwrap();
     assert_eq!(persisted.status, "DONE");
     assert_eq!(persisted.elapsed_seconds, Some(37));
@@ -179,13 +159,12 @@ fn timer_ledger_is_additive_exact_and_finish_idempotent() {
         .unwrap();
     assert_eq!(same_second.elapsed_seconds, Some(0));
     assert_eq!(same_second.rounded_hours, Some(0.01));
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn timer_ledger_rejects_conflicting_identity_and_invalid_timestamps() {
-    let home = unique_temp_dir("timer-validation");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("timer-validation");
     storage
         .start_timer_run("timer-run-2", 28, "implementation", "reviewer", 1, 100)
         .unwrap();
@@ -196,7 +175,7 @@ fn timer_ledger_rejects_conflicting_identity_and_invalid_timestamps() {
     );
     assert!(storage.finish_timer_run("timer-run-2", "DONE", 99).is_err());
     assert!(storage.finish_timer_run("missing", "FAILED", 200).is_err());
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -205,8 +184,7 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
     // path advances sync_status to `synced` while leaving
     // `redmine_time_entry_id` null. The Redmine path keeps its id-based
     // behaviour so `load_timer_run` always reports the actual state.
-    let home = unique_temp_dir("timer-gitlab-sync");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("timer-gitlab-sync");
     let _ = storage
         .start_timer_run(
             "timer-gitlab",
@@ -265,15 +243,14 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
         .unwrap();
     assert_eq!(redmine_synced.sync_status, "synced");
     assert_eq!(redmine_synced.time_entry_id, Some(99));
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn timer_ledger_marks_failure_with_bounded_error_message() {
     // Phase 4: the failed-state recovery path records the bounded
     // error so a retry can see why the last projection failed.
-    let home = unique_temp_dir("timer-failed");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("timer-failed");
     let _ = storage
         .start_timer_run(
             "timer-fail",
@@ -309,13 +286,12 @@ fn timer_ledger_marks_failure_with_bounded_error_message() {
             )
             .is_err()
     );
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn save_role_config_distinguishes_missing_from_empty() {
-    let home = unique_temp_dir("save-empty");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("save-empty");
     let config = StoredConfig {
         provider: Some(PROVIDER_FORGEJO.to_owned()),
         ..Default::default()
@@ -340,160 +316,12 @@ fn save_role_config_distinguishes_missing_from_empty() {
         empty.is_some(),
         "row must exist after save, even when all fields are null"
     );
-    let _ = fs::remove_dir_all(home);
-}
-
-#[test]
-fn import_legacy_copies_fields_field_by_field_and_skips_existing_values() {
-    let home = unique_temp_dir("import-field-by-field");
-    let config_dir = home.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_dir).unwrap();
-    write_legacy_role_config(
-        &config_dir,
-        Role::Orchestrator,
-        &serde_json::json!({"provider": "redmine", "api_base": null, "repository": null}),
-    );
-    write_legacy_redmine_config(
-        &config_dir,
-        Role::Orchestrator,
-        &serde_json::json!({
-            "api_base": "https://redmine.example",
-            "project_id": "44",
-            "close_status_id": 5,
-        }),
-    );
-    write_legacy_credential(
-        &config_dir,
-        Role::Orchestrator,
-        PROVIDER_REDMINE,
-        "legacy-redmine-key",
-    );
-    write_legacy_credential(
-        &config_dir,
-        Role::Orchestrator,
-        PROVIDER_FORGEJO,
-        "legacy-forgejo-token",
-    );
-
-    let storage = Storage::open_for_home(&home).unwrap();
-    let report = storage.import_legacy(&config_dir).unwrap();
-    assert_eq!(
-        report.imported, 6,
-        "first import must copy every populated legacy field (provider, three redmine fields, two credentials)"
-    );
-    assert_eq!(report.skipped, 0);
-
-    let role_config = storage
-        .load_role_config(Role::Orchestrator)
-        .unwrap()
-        .expect("role config row must exist after import");
-    assert_eq!(role_config.provider.as_deref(), Some(PROVIDER_REDMINE));
-    assert_eq!(role_config.api_base, None);
-    assert_eq!(role_config.repository, None);
-
-    let redmine_config = storage
-        .load_redmine_config(Role::Orchestrator)
-        .unwrap()
-        .expect("redmine config row must exist after import");
-    assert_eq!(
-        redmine_config.api_base.as_deref(),
-        Some("https://redmine.example")
-    );
-    assert_eq!(redmine_config.project_id.as_deref(), Some("44"));
-    assert_eq!(redmine_config.close_status_id, Some(5));
-
-    let redmine_credential = storage
-        .load_credential(Role::Orchestrator, PROVIDER_REDMINE)
-        .unwrap()
-        .expect("redmine credential must exist after import");
-    assert_eq!(redmine_credential, "legacy-redmine-key");
-
-    let forgejo_credential = storage
-        .load_credential(Role::Orchestrator, PROVIDER_FORGEJO)
-        .unwrap()
-        .expect("forgejo credential must exist after import");
-    assert_eq!(forgejo_credential, "legacy-forgejo-token");
-    let _ = fs::remove_dir_all(home);
-}
-
-#[test]
-fn import_legacy_does_not_overwrite_existing_sqlite_values() {
-    let home = unique_temp_dir("import-no-overwrite");
-    let config_dir = home.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_dir).unwrap();
-    write_legacy_role_config(
-        &config_dir,
-        Role::Admin,
-        &serde_json::json!({"provider": "redmine", "api_base": "https://legacy.example", "repository": null}),
-    );
-
-    let storage = Storage::open_for_home(&home).unwrap();
-    // Pre-populate SQLite with values that differ from the legacy file
-    // so the import must respect them.
-    let config = StoredConfig {
-        provider: Some(PROVIDER_FORGEJO.to_owned()),
-        api_base: Some("https://sqlite.example".to_owned()),
-        ..Default::default()
-    };
-    storage.save_role_config(Role::Admin, &config).unwrap();
-
-    let report = storage.import_legacy(&config_dir).unwrap();
-    assert_eq!(
-        report.skipped, 2,
-        "import must skip already-populated SQLite fields"
-    );
-
-    let loaded = storage.load_role_config(Role::Admin).unwrap().unwrap();
-    assert_eq!(loaded.provider.as_deref(), Some(PROVIDER_FORGEJO));
-    assert_eq!(loaded.api_base.as_deref(), Some("https://sqlite.example"));
-    let _ = fs::remove_dir_all(home);
-}
-
-#[test]
-fn import_legacy_is_idempotent_across_multiple_opens() {
-    let home = unique_temp_dir("import-idempotent");
-    let config_dir = home.join(".config/opencode/phasegent");
-    fs::create_dir_all(&config_dir).unwrap();
-    write_legacy_role_config(
-        &config_dir,
-        Role::Reviewer,
-        &serde_json::json!({"provider": "forgejo"}),
-    );
-    write_legacy_credential(
-        &config_dir,
-        Role::Reviewer,
-        PROVIDER_FORGEJO,
-        "reviewer-token",
-    );
-
-    // First open imports the legacy data.
-    let first = Storage::open_for_home(&home).unwrap();
-    let first_report = first.import_legacy(&config_dir).unwrap();
-    assert_eq!(first_report.imported, 2);
-    drop(first);
-
-    // Second open must re-import nothing because SQLite already has
-    // every legacy field populated; the importer records each one as
-    // a skip so callers can observe the no-op.
-    let second = Storage::open_for_home(&home).unwrap();
-    let second_report = second.import_legacy(&config_dir).unwrap();
-    assert_eq!(second_report.imported, 0, "second import must be a no-op");
-    assert_eq!(
-        second_report.skipped, 2,
-        "second import must skip the two already-populated legacy fields"
-    );
-    let credential = second
-        .load_credential(Role::Reviewer, PROVIDER_FORGEJO)
-        .unwrap()
-        .unwrap();
-    assert_eq!(credential, "reviewer-token");
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn credentials_for_different_providers_are_stored_separately() {
-    let home = unique_temp_dir("credential-separation");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("credential-separation");
     storage
         .save_credential(Role::Executor, PROVIDER_FORGEJO, "forgejo-token")
         .unwrap();
@@ -526,7 +354,7 @@ fn credentials_for_different_providers_are_stored_separately() {
         .unwrap();
     assert_eq!(forgejo_v2, "forgejo-token-v2");
     assert_eq!(redmine_after, "redmine-key");
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -551,13 +379,7 @@ fn mirror_environment_variables_are_never_persisted() {
         "https://mirror.example/owner/repo.git",
     );
 
-    let home = unique_temp_dir("mirror-env");
-    let storage = Storage::open_for_home(&home).unwrap();
-    let config_dir = home.join(".config/opencode/phasegent");
-    // Run a fake import that touches every credential slot. If the
-    // mirror env were ever stored, the import would either persist
-    // it (and we would observe the row) or fail with an error.
-    let _ = storage.import_legacy(&config_dir).unwrap();
+    let (temp_dir, storage) = open_at_temp("mirror-env");
     for role in [
         Role::Admin,
         Role::Orchestrator,
@@ -590,13 +412,12 @@ fn mirror_environment_variables_are_never_persisted() {
             )
             .unwrap();
     }
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn persist_redmine_bootstrap_validates_zero_ids() {
-    let home = unique_temp_dir("bootstrap-validation");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("bootstrap-validation");
     let zero = storage
         .persist_redmine_bootstrap(Role::Admin, None, 0, 5)
         .unwrap_err();
@@ -605,7 +426,7 @@ fn persist_redmine_bootstrap_validates_zero_ids() {
         .persist_redmine_bootstrap(Role::Admin, None, 7, 0)
         .unwrap_err();
     assert!(zero.contains("greater than zero"));
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -617,8 +438,7 @@ fn role_gitlab_config_round_trip_and_numeric_project_id() {
     // the round-trip and the missing-row semantics in one focused
     // test so a future contributor cannot accidentally regress the
     // column type.
-    let home = unique_temp_dir("gitlab-round-trip");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("gitlab-round-trip");
     assert!(
         storage.load_gitlab_config(Role::Admin).unwrap().is_none(),
         "fresh database must report no GitLab row as missing"
@@ -663,7 +483,7 @@ fn role_gitlab_config_round_trip_and_numeric_project_id() {
         Some("https://gitlab-relocated.example")
     );
     assert_eq!(reloaded.project_id, Some(42));
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -673,8 +493,7 @@ fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
     // `auth setup` flows don't have to know about the underlying
     // column. Confirm the zero-id guard and the provider flip in one
     // test so the foundation never silently accepts an id of zero.
-    let home = unique_temp_dir("gitlab-bootstrap");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("gitlab-bootstrap");
     let zero = storage
         .persist_gitlab_bootstrap(Role::Executor, None, 0)
         .unwrap_err();
@@ -699,7 +518,7 @@ fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
         .expect("role_config row must exist after bootstrap")
         .provider;
     assert_eq!(provider.as_deref(), Some(PROVIDER_GITLAB));
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -710,8 +529,7 @@ fn credentials_for_all_three_providers_are_isolated_per_role() {
     // gitlab row coexists with forgejo and redmine values without
     // any cross-write or leak, and that overwriting one credential
     // never touches another.
-    let home = unique_temp_dir("credential-coexistence");
-    let storage = Storage::open_for_home(&home).unwrap();
+    let (temp_dir, storage) = open_at_temp("credential-coexistence");
     storage
         .save_credential(Role::Orchestrator, PROVIDER_FORGEJO, "forgejo-secret")
         .unwrap();
@@ -766,5 +584,5 @@ fn credentials_for_all_three_providers_are_isolated_per_role() {
             .is_none(),
         "executor must not observe orchestrator's GitLab credential"
     );
-    let _ = fs::remove_dir_all(home);
+    let _ = fs::remove_dir_all(temp_dir);
 }

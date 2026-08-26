@@ -179,11 +179,13 @@ fn bootstrap_resolved(
         && executor.status != "warning"
         && reviewer.status != "warning"
     {
+        let storage = crate::storage::Storage::open().map_err(ForgejoError::config)?;
         auth::persist_redmine_bootstrap(
             roles.persist,
             Some(config.api_base.clone()),
             bootstrap.project.id,
             bootstrap.close_status.id,
+            &storage,
         )
         .map_err(ForgejoError::config)?;
     }
@@ -300,7 +302,8 @@ fn resolve_mirror_url(
     bootstrap_repository: &str,
     explicit_repository: bool,
 ) -> Result<String, String> {
-    let env_url = auth::redmine_repository_url_override()?;
+    let storage = crate::storage::Storage::open()?;
+    let env_url = auth::redmine_repository_url_override(&storage)?;
     if let Some(env_url) = env_url {
         return Ok(env_url);
     }

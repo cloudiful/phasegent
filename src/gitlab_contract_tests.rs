@@ -3172,7 +3172,7 @@ fn open_temp_storage() -> crate::storage::Storage {
             .map(|d| d.as_nanos())
             .unwrap_or(0),
     ));
-    crate::storage::Storage::open_for_home(&home).unwrap()
+    crate::storage::Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap()
 }
 
 // =============================================================================

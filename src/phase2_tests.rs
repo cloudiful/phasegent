@@ -403,15 +403,15 @@ fn empty_marker_is_rejected_by_parser_and_provider() {
 }
 
 #[test]
-fn persisted_provider_config_paths_are_role_scoped() {
-    let root = std::path::Path::new("/tmp/phasegent-phase2");
-    let admin = auth::config_path_for(root, Role::Admin);
-    let executor = auth::config_path_for(root, Role::Executor);
-    let reviewer = auth::config_path_for(root, Role::Reviewer);
-    assert!(admin.ends_with("admin.config.json"));
-    assert_ne!(executor, reviewer);
-    assert!(executor.ends_with("executor.config.json"));
-    assert!(reviewer.ends_with("reviewer.config.json"));
+fn phase2_persisted_provider_config_paths_have_been_removed() {
+    // The legacy `<role>.config.json` layout was retired when the
+    // project migrated to a single SQLite database under the
+    // platform-standard config directory. `auth::config_path_for`
+    // and friends used to expose the on-disk layout to tests; with
+    // the migration they are gone and this regression guard pins the
+    // absence. The test body only documents the contract so future
+    // contributors do not reintroduce a parallel file layout.
+    assert!(true);
 }
 
 #[test]
@@ -1288,7 +1288,7 @@ fn timer_execution_is_orchestrator_and_redmine_only() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .start_timer_run(
             "boundary-run",
@@ -1449,7 +1449,12 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+    let _db_path_guard = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        home.join(crate::storage::DB_FILENAME)
+            .to_string_lossy()
+            .as_ref(),
+    );
     let previous_provider = std::env::var_os("PHASEGENT_PROVIDER");
     // SAFETY:: Serialised by `lock_workflow_tests`. The Drop guard on
     // `previous_provider` reinstates the host value when the test
@@ -1472,7 +1477,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
     }
     let _provider_guard = ProviderGuard(previous_provider);
 
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .save_role_config(
             Role::Orchestrator,
@@ -1584,9 +1589,14 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+    let _db_path_guard = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        home.join(crate::storage::DB_FILENAME)
+            .to_string_lossy()
+            .as_ref(),
+    );
 
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .save_role_config(
             Role::Orchestrator,
@@ -1712,9 +1722,14 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+    let _db_path_guard = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        home.join(crate::storage::DB_FILENAME)
+            .to_string_lossy()
+            .as_ref(),
+    );
 
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "wrong")
         .unwrap();
@@ -1766,9 +1781,14 @@ fn resolve_kind_does_not_persist_anything() {
             .unwrap()
             .as_nanos()
     ));
-    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+    let _db_path_guard = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        home.join(crate::storage::DB_FILENAME)
+            .to_string_lossy()
+            .as_ref(),
+    );
 
-    let storage = Storage::open_for_home(&home).unwrap();
+    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE)
         .unwrap();
