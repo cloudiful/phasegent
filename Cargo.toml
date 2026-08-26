@@ -1,0 +1,20 @@
+[package]
+name = "phasegent"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Role-aware CLI for phase-oriented provider-backed workflows."
+readme = "README.md"
+
+[[bin]]
+name = "phasegent"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rpassword = "7.5.4"
+rusqlite = { version = "0.32.1", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+url = "2.5.8"

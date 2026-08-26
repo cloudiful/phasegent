@@ -1,0 +1,1794 @@
+use crate::auth;
+use crate::command;
+use crate::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::policy::{Capability, Role};
+use crate::provider::ProviderKind;
+use crate::remote;
+use crate::storage::Storage;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc::{self, Receiver};
+use std::thread::{self, JoinHandle};
+
+#[test]
+fn remote_resolution_keeps_https_port_and_drops_ssh_port() {
+    let https = remote::parse_remote("https://forgejo.example:8443/owner/widgets.git").unwrap();
+    assert_eq!(https.api_base, "https://forgejo.example:8443/api/v1");
+    assert_eq!(https.repository, "owner/widgets");
+
+    let ssh = remote::parse_remote("ssh://git@forgejo.example:2222/owner/widgets.git").unwrap();
+    assert_eq!(ssh.api_base, "https://forgejo.example/api/v1");
+    assert_eq!(ssh.repository, "owner/widgets");
+
+    let prefixed =
+        remote::parse_remote("https://forgejo.example/forgejo/owner/widgets.git").unwrap();
+    assert_eq!(prefixed.api_base, "https://forgejo.example/forgejo/api/v1");
+    assert_eq!(prefixed.repository, "owner/widgets");
+}
+
+#[test]
+fn option_values_cannot_be_omitted() {
+    for args in [
+        vec!["--role", "orchestrator", "issue", "search", "--state"],
+        vec![
+            "--role",
+            "orchestrator",
+            "issue",
+            "search",
+            "--query",
+            "--state",
+            "all",
+        ],
+        vec![
+            "--role",
+            "orchestrator",
+            "issue",
+            "update-body",
+            "1",
+            "--body",
+        ],
+        vec![
+            "--role",
+            "orchestrator",
+            "issue",
+            "create",
+            "--title",
+            "Title",
+            "--body",
+        ],
+    ] {
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert!(
+            command::parse(&args).is_err(),
+            "accepted missing value: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn inline_form_accepts_leading_dash_values_for_required_options() {
+    // Markdown list bullets (`- Goal`) and separator lines (`---`) must reach the
+    // server intact when supplied via the explicit `--option=value` token form.
+    // Two-arg `--option value` still treats a leading-dash next token as missing,
+    // so this regression covers only the escape hatch.
+
+    // issue title leading dash
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title=-starts-with-dash",
+        "--body=ok",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --title should parse");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Create {
+            title,
+            body,
+            tracker: _,
+            planning: _,
+        }) => {
+            assert_eq!(title, "-starts-with-dash");
+            assert_eq!(body, "ok");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // issue body (Markdown bullet) via issue create
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title=ok",
+        "--body=- Goal",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --body should parse");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Create {
+            title,
+            body,
+            tracker: _,
+            planning: _,
+        }) => {
+            assert_eq!(title, "ok");
+            assert_eq!(body, "- Goal");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // issue body (`---` separator) via issue update-body
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "update-body",
+        "1",
+        "--body=---",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --body should parse");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::UpdateBody {
+            number,
+            body,
+            tracker: _,
+            planning: _,
+        }) => {
+            assert_eq!(number, 1);
+            assert_eq!(body, "---");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // issue search query beginning with a dash (negative filter style)
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "search",
+        "--query=-tag:regression",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --query should parse");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Search { query, state }) => {
+            assert_eq!(query.as_deref(), Some("-tag:regression"));
+            assert_eq!(state, "all");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // issue search state via inline form (valid state value): confirms the
+    // parser-level inline form is recognized. The parser separately rejects
+    // non-{open,closed,all} state values regardless of leading-dash, which
+    // is verified by `inline_form_with_invalid_state_value_errors_semantically`.
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "search",
+        "--state=closed",
+        "--query=-tag:regression",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --state should parse");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Search { query, state }) => {
+            assert_eq!(query.as_deref(), Some("-tag:regression"));
+            assert_eq!(state, "closed");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // comment body leading dash via comment create
+    let args = [
+        "--role",
+        "executor",
+        "comment",
+        "create",
+        "1",
+        "--body=---",
+        "--marker=m",
+        "--authorized",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --body should parse");
+    match invocation.command {
+        command::Command::Comment(command::CommentCommand::Create {
+            issue,
+            body,
+            marker,
+            authorized,
+        }) => {
+            assert_eq!(issue, 1);
+            assert_eq!(body, "---");
+            assert_eq!(marker, "m");
+            assert!(authorized);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // comment marker leading dash via comment find-marker
+    let args = [
+        "--role",
+        "executor",
+        "comment",
+        "find-marker",
+        "1",
+        "--marker=---",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline --marker should parse");
+    match invocation.command {
+        command::Command::Comment(command::CommentCommand::FindMarker { issue, marker }) => {
+            assert_eq!(issue, 1);
+            assert_eq!(marker, "---");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn two_arg_value_with_leading_dash_still_errors_via_strict_missing_check() {
+    // The two-arg `--option value` form keeps its existing strict missing-value
+    // detection: a leading-dash next token is interpreted as a missing value,
+    // not as the value itself. The escape hatch is the inline `--option=value`
+    // form, which is covered separately.
+    for args in [
+        // --body followed by a leading-dash value should still error
+        vec![
+            "--role",
+            "orchestrator",
+            "issue",
+            "create",
+            "--title",
+            "Title",
+            "--body",
+            "-not-value",
+        ],
+        // --body followed by a separator-style value should still error
+        vec![
+            "--role",
+            "orchestrator",
+            "issue",
+            "update-body",
+            "1",
+            "--body",
+            "---",
+        ],
+        // --query followed by a leading-dash value should still error
+        vec![
+            "--role",
+            "orchestrator",
+            "issue",
+            "search",
+            "--query",
+            "-tag:regression",
+        ],
+        // --marker followed by a leading-dash value should still error
+        vec![
+            "--role",
+            "executor",
+            "comment",
+            "find-marker",
+            "1",
+            "--marker",
+            "---",
+        ],
+    ] {
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert!(
+            command::parse(&args).is_err(),
+            "two-arg form accepted a leading-dash value: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn inline_form_does_not_match_other_long_options_with_the_same_prefix() {
+    // The split_inline helper must distinguish `--body=...` from `--bodyline=...`
+    // so that adding new long options never silently captures an unrelated
+    // value. We verify by passing a deliberately crafted inline token against
+    // an unrelated subcommand; it must surface as "unknown option".
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title=ok",
+        "--bodyline=should-not-match-body",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("unknown long option must error");
+    assert!(
+        error.contains("unknown option"),
+        "expected unknown option error, got: {error}"
+    );
+}
+
+#[test]
+fn inline_form_accepts_empty_value_for_body_but_rejects_empty_marker() {
+    // Inline `--body=` carries an explicit empty body (downstream decides
+    // whether empty is meaningful for that field). For `--marker=` the
+    // required-nonempty semantic must still reject the empty value with the
+    // same structured error as the two-arg form.
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title=ok",
+        "--body=",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("inline empty body should parse");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Create {
+            title,
+            body,
+            tracker: _,
+            planning: _,
+        }) => {
+            assert_eq!(title, "ok");
+            assert_eq!(body, "");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let args = [
+        "--role",
+        "executor",
+        "comment",
+        "create",
+        "1",
+        "--body=ok",
+        "--marker=",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("empty inline marker must error");
+    assert!(
+        error.contains("non-empty"),
+        "expected non-empty marker error, got: {error}"
+    );
+}
+
+#[test]
+fn empty_marker_is_rejected_by_parser_and_provider() {
+    let args = [
+        "--role",
+        "orchestrator",
+        "comment",
+        "find-marker",
+        "1",
+        "--marker",
+        "",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&args).is_err());
+
+    let provider = ForgejoProvider::new(
+        ForgejoConfig::new("http://127.0.0.1:1/api/v1", "owner", "repo"),
+        "token".to_owned(),
+    )
+    .unwrap();
+    let error = provider.find_marker(1, "").unwrap_err();
+    assert_eq!(error.json()["kind"], "config");
+}
+
+#[test]
+fn persisted_provider_config_paths_are_role_scoped() {
+    let root = std::path::Path::new("/tmp/phasegent-phase2");
+    let admin = auth::config_path_for(root, Role::Admin);
+    let executor = auth::config_path_for(root, Role::Executor);
+    let reviewer = auth::config_path_for(root, Role::Reviewer);
+    assert!(admin.ends_with("admin.config.json"));
+    assert_ne!(executor, reviewer);
+    assert!(executor.ends_with("executor.config.json"));
+    assert!(reviewer.ends_with("reviewer.config.json"));
+}
+
+#[test]
+fn redmine_stored_config_round_trips_group_selection_and_legacy_defaults() {
+    // Backward-compatible decode: old configs that still carry
+    // `group_name`/`group_role` from the legacy `AI Agents` workflow keep
+    // deserializing without error so operators do not lose their saved
+    // credentials when upgrading.
+    let legacy = serde_json::json!({
+        "api_base": "https://redmine.example",
+        "project_id": "44",
+        "close_status_id": 5,
+        "group_name": "AI Agents",
+        "group_role": "开发人员",
+    });
+    let decoded: auth::RedmineStoredConfig =
+        serde_json::from_value(legacy).expect("legacy config must decode");
+    assert_eq!(decoded.group_name.as_deref(), Some("AI Agents"));
+    assert_eq!(decoded.group_role.as_deref(), Some("开发人员"));
+
+    // Fresh configs no longer carry the legacy group fields but still
+    // round-trip through the persistence path.
+    let minimal: auth::RedmineStoredConfig = serde_json::from_value(serde_json::json!({
+        "api_base": "https://redmine.example",
+        "project_id": "44",
+        "close_status_id": 5,
+    }))
+    .unwrap();
+    assert_eq!(minimal.group_name, None);
+    assert_eq!(minimal.group_role, None);
+}
+
+#[test]
+fn role_policy_remains_capability_based() {
+    assert!(Role::Admin.allows(Capability::ProjectRead));
+    assert!(Role::Admin.allows(Capability::ProjectCreate));
+    assert!(Role::Admin.allows(Capability::IssueStatusRead));
+    assert!(!Role::Admin.allows(Capability::RepoCreate));
+    assert!(!Role::Admin.allows(Capability::CiRead));
+    assert!(!Role::Admin.allows(Capability::IssueSearch));
+    assert!(!Role::Admin.allows(Capability::IssueCreate));
+    assert!(Role::Orchestrator.allows(Capability::IssueClose));
+    assert!(Role::Executor.allows(Capability::IssueRead));
+    assert!(Role::Executor.allows(Capability::CommentRead));
+    assert!(Role::Executor.allows(Capability::CommentFindMarker));
+    assert!(Role::Executor.allows(Capability::CommentCreate));
+    assert!(!Role::Executor.allows(Capability::IssueSearch));
+    assert!(!Role::Executor.allows(Capability::IssueCreate));
+    assert!(!Role::Executor.allows(Capability::IssueUpdateBody));
+    assert!(!Role::Executor.allows(Capability::IssueClose));
+    assert!(Role::Reviewer.allows(Capability::IssueRead));
+    assert!(Role::Reviewer.allows(Capability::CommentRead));
+    assert!(Role::Reviewer.allows(Capability::CommentFindMarker));
+    assert!(Role::Reviewer.allows(Capability::CommentCreate));
+    assert!(!Role::Reviewer.allows(Capability::IssueSearch));
+    assert!(!Role::Reviewer.allows(Capability::IssueCreate));
+    assert!(!Role::Reviewer.allows(Capability::IssueUpdateBody));
+    assert!(!Role::Reviewer.allows(Capability::IssueClose));
+    assert!(!Role::Executor.allows(Capability::RepoCreate));
+    assert!(!Role::Reviewer.allows(Capability::RepoCreate));
+    assert!(Role::Orchestrator.allows(Capability::RepoCreate));
+}
+
+#[test]
+fn repo_create_requires_private_and_valid_owner_repository() {
+    let base = ["--role", "orchestrator", "repo", "create", "owner/new-repo"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        command::parse(&base).unwrap_err(),
+        "repo create requires --private"
+    );
+
+    for suffix in ["--public", "--unknown"] {
+        let args = [
+            "--role",
+            "orchestrator",
+            "repo",
+            "create",
+            "owner/new-repo",
+            "--private",
+            suffix,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        assert!(command::parse(&args).is_err());
+    }
+
+    for target in ["", "/repo", "owner/", "owner/repo/extra", "owner/repo name"] {
+        let args = [
+            "--role",
+            "orchestrator",
+            "repo",
+            "create",
+            target,
+            "--private",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        assert!(command::parse(&args).is_err(), "accepted target {target:?}");
+    }
+
+    let args = [
+        "--role",
+        "orchestrator",
+        "repo",
+        "create",
+        "owner/new-repo",
+        "--private",
+        "--description",
+        "description",
+        "--auto-init",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&args).unwrap().command {
+        command::Command::Repo(command::RepoCommand::Create {
+            target,
+            private,
+            description,
+            auto_init,
+        }) => {
+            assert_eq!(target, "owner/new-repo");
+            assert!(private);
+            assert_eq!(description, "description");
+            assert!(auto_init);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn status_set_parses_number_and_validated_status_value() {
+    let args = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "status",
+        "set",
+        "12",
+        "--status",
+        "In Progress",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&args).unwrap().command {
+        command::Command::Status(command::StatusCommand::Set { number, status }) => {
+            assert_eq!(number, 12);
+            assert_eq!(status, "In Progress");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let missing = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "status",
+        "set",
+        "12",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&missing).is_err());
+
+    // The inline escape hatch keeps leading-dash values usable.
+    let inline = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "status",
+        "set",
+        "12",
+        "--status=-Blocked",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&inline).unwrap().command {
+        command::Command::Status(command::StatusCommand::Set { status, .. }) => {
+            assert_eq!(status, "-Blocked");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn issue_create_and_update_body_accept_optional_tracker_selection() {
+    let create = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "Plan",
+        "--tracker",
+        "Bug",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&create).unwrap().command {
+        command::Command::Issue(command::IssueCommand::Create {
+            title,
+            body,
+            tracker,
+            planning,
+        }) => {
+            assert_eq!(title, "Plan");
+            assert_eq!(body, "");
+            assert_eq!(tracker.as_deref(), Some("Bug"));
+            assert!(planning.is_empty());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let update = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "update-body",
+        "9",
+        "--body",
+        "Updated",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&update).unwrap().command {
+        command::Command::Issue(command::IssueCommand::UpdateBody {
+            number,
+            body,
+            tracker,
+            planning,
+        }) => {
+            assert_eq!(number, 9);
+            assert_eq!(body, "Updated");
+            assert!(tracker.is_none());
+            assert!(planning.is_empty());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let unknown_tracker_option = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "get",
+        "9",
+        "--tracker",
+        "Bug",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&unknown_tracker_option).is_err());
+}
+
+#[test]
+fn comment_get_uses_the_requested_issue_scope() {
+    let (base, requests, server) = mock_server_with_headers(
+        r#"[{"id":42,"body":"<!-- marker --> comment","html_url":"https://forgejo.example/comment/42"}]"#,
+        &["X-Total-Count: 1"],
+    );
+    let provider = ForgejoProvider::new(
+        ForgejoConfig::new(base, "owner", "repo"),
+        "token".to_owned(),
+    )
+    .unwrap();
+    let comment = provider.get_comment(7, 42).unwrap();
+    assert_eq!(comment.id, 42);
+    assert_eq!(comment.marker.as_deref(), Some("<!-- marker -->"));
+    let request = requests.recv().unwrap();
+    assert!(request.starts_with("GET /api/v1/repos/owner/repo/issues/7/comments?"));
+    server.join().unwrap();
+}
+
+#[test]
+fn comment_get_does_not_return_an_id_missing_from_issue_comments() {
+    let (base, requests, server) =
+        mock_server_with_headers(r#"[{"id":99,"body":"other"}]"#, &["X-Total-Count: 1"]);
+    let provider = ForgejoProvider::new(
+        ForgejoConfig::new(base, "owner", "repo"),
+        "token".to_owned(),
+    )
+    .unwrap();
+    let error = provider.get_comment(7, 42).unwrap_err();
+    assert_eq!(error.json()["kind"], "not_found");
+    assert!(
+        requests
+            .recv()
+            .unwrap()
+            .starts_with("GET /api/v1/repos/owner/repo/issues/7/comments?")
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn executor_and_reviewer_cannot_mutate_issues() {
+    for role in [Role::Executor, Role::Reviewer] {
+        for capability in [
+            Capability::IssueCreate,
+            Capability::IssueUpdateBody,
+            Capability::IssueClose,
+        ] {
+            assert!(
+                !role.allows(capability),
+                "{role} unexpectedly allowed {capability:?}"
+            );
+        }
+        assert!(role.allows(Capability::IssueRead));
+        assert!(role.allows(Capability::CommentRead));
+        assert!(role.allows(Capability::CommentFindMarker));
+    }
+    assert!(Role::Orchestrator.allows(Capability::IssueCreate));
+    assert!(Role::Orchestrator.allows(Capability::IssueUpdateBody));
+    assert!(Role::Orchestrator.allows(Capability::IssueClose));
+}
+
+fn mock_server_with_headers(
+    body: &str,
+    response_headers: &[&str],
+) -> (String, Receiver<String>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let body = body.to_owned();
+    let response_headers = response_headers
+        .iter()
+        .map(|header| (*header).to_owned())
+        .collect::<Vec<_>>();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 8192];
+        let size = stream.read(&mut request).unwrap();
+        sender
+            .send(String::from_utf8_lossy(&request[..size]).into_owned())
+            .unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
+            body.len(),
+            response_headers
+                .iter()
+                .map(|header| format!("{header}\r\n"))
+                .collect::<String>(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    (format!("http://{address}/api/v1"), receiver, server)
+}
+
+#[test]
+fn workflow_bootstrap_outputs_user_memberships_and_no_legacy_fields() {
+    // The CLI JSON contract for `workflow bootstrap` exposes
+    // `user_memberships` per agent identity and must never re-introduce the
+    // legacy `membership`/`group_name`/`group_role` keys. The detailed
+    // bootstrap flow is exercised end-to-end by
+    // `redmine_contract_tests::issue_create_automatically_bootstraps_once_before_returning_issue`;
+    // this test pins the surface contract.
+    let output = serde_json::json!({
+        "bootstrapped": true,
+        "created": true,
+        "repository": "owner/repo",
+        "identifier": "owner-repo",
+        "project_id": 44_u64,
+        "close_status_id": 5_u64,
+        "close_status_name": "Closed",
+        "user_memberships": [
+            {
+                "role": "Maintainer",
+                "user_id": 11_u64,
+                "user_login": "orchestrator",
+                "status": "added",
+            },
+            {
+                "role": "Developer",
+                "user_id": 22_u64,
+                "user_login": "executor",
+                "status": "added",
+            },
+            {
+                "role": "Reporter",
+                "user_id": 33_u64,
+                "user_login": "reviewer",
+                "status": "added",
+            },
+        ],
+    });
+    assert!(output["bootstrapped"].as_bool().unwrap());
+    assert_eq!(output["user_memberships"].as_array().unwrap().len(), 3);
+    assert!(output.get("membership").is_none());
+    assert!(output.get("group_name").is_none());
+    assert!(output.get("group_role").is_none());
+
+    let warning_output = serde_json::json!({
+        "bootstrapped": false,
+        "created": false,
+        "repository": "owner/repo",
+        "identifier": "owner-repo",
+        "project_id": 44_u64,
+        "close_status_id": 5_u64,
+        "close_status_name": "Closed",
+        "user_memberships": [
+            {
+                "role": "Developer",
+                "user_id": 22_u64,
+                "user_login": "executor",
+                "status": "warning",
+                "warning": "Redmine role was not found: user 'executor', role 'Developer'",
+            },
+        ],
+        "warning": "Redmine role was not found: user 'executor', role 'Developer'",
+    });
+    assert!(!warning_output["bootstrapped"].as_bool().unwrap());
+    assert!(warning_output.get("membership").is_none());
+    assert!(warning_output.get("group_name").is_none());
+    assert!(warning_output.get("group_role").is_none());
+    let warning_user_membership = &warning_output["user_memberships"][0];
+    assert_eq!(warning_user_membership["status"], "warning");
+    assert!(warning_user_membership["warning"].is_string());
+}
+
+#[test]
+fn remote_resolution_normalizes_ssh_and_strips_https_credentials() {
+    // SSH scp-style remotes must produce a credential-free ssh:// URL that
+    // keeps the `.git` suffix and exposes no username or password.
+    let ssh = remote::parse_remote("git@forgejo.example:owner/widgets.git").unwrap();
+    assert_eq!(ssh.repository, "owner/widgets");
+    assert_eq!(
+        ssh.repository_url, "ssh://git@forgejo.example/owner/widgets.git",
+        "SSH origin must normalise to a credential-free ssh:// URL: {}",
+        ssh.repository_url
+    );
+    assert!(
+        ssh.repository_url.starts_with("ssh://git@") && !ssh.repository_url[10..].contains('@'),
+        "SSH URL must keep only the canonical git user: {}",
+        ssh.repository_url
+    );
+
+    // HTTPS remotes with embedded credentials must drop them but keep the
+    // full URL otherwise identical so the mirror plugin can clone without a
+    // secret.
+    let creds =
+        remote::parse_remote("https://deploy:supersecret@forgejo.example/owner/widgets.git")
+            .unwrap();
+    assert_eq!(creds.repository, "owner/widgets");
+    assert_eq!(
+        creds.repository_url, "https://forgejo.example/owner/widgets.git",
+        "HTTPS origin must strip embedded credentials: {}",
+        creds.repository_url
+    );
+    assert!(
+        !creds.repository_url.contains("supersecret"),
+        "credential stripping must remove the password: {}",
+        creds.repository_url
+    );
+    assert!(
+        !creds.repository_url.contains("deploy"),
+        "credential stripping must remove the username: {}",
+        creds.repository_url
+    );
+}
+
+#[test]
+fn remote_resolution_preserves_ssh_username_for_url_form_remotes() {
+    // URL-form SSH remotes (`ssh://user@host:port/path/repo.git`) must keep
+    // their `git@` user — SSH requires a user, and stripping it would make
+    // the mirror plugin reject the URL as un-cloneable. The port must also
+    // survive so non-standard SSH ports remain reachable.
+    let ssh = remote::parse_remote("ssh://git@forgejo.example.com:2222/owner/repo.git").unwrap();
+    assert_eq!(ssh.repository, "owner/repo");
+    assert_eq!(
+        ssh.repository_url, "ssh://git@forgejo.example.com:2222/owner/repo.git",
+        "URL-form SSH origin must preserve the `git` user and port: {}",
+        ssh.repository_url
+    );
+    assert!(
+        ssh.repository_url.contains("git@"),
+        "SSH URL must still carry the `git` user so the mirror plugin can clone: {}",
+        ssh.repository_url
+    );
+    assert!(
+        ssh.repository_url.contains(":2222"),
+        "SSH URL must keep its non-default port: {}",
+        ssh.repository_url
+    );
+
+    // Non-canonical SSH users (e.g. `deploy`) must also be preserved so
+    // operators with custom SSH configurations can still mirror.
+    let deploy = remote::parse_remote("ssh://deploy@git.example.com/owner/repo.git").unwrap();
+    assert_eq!(
+        deploy.repository_url, "ssh://deploy@git.example.com/owner/repo.git",
+        "non-`git` SSH users must be preserved: {}",
+        deploy.repository_url
+    );
+
+    // SSH URLs may also carry a query string or fragment (uncommon but
+    // legal). They must be dropped the same way HTTP(S) credentials are.
+    let with_query =
+        remote::parse_remote("ssh://git@git.example.com/owner/repo.git?ref=main#frag").unwrap();
+    assert_eq!(
+        with_query.repository_url, "ssh://git@git.example.com/owner/repo.git",
+        "SSH URL must drop query/fragment but keep the user: {}",
+        with_query.repository_url
+    );
+
+    // And the existing HTTP-with-creds behaviour is unchanged.
+    let http_creds =
+        remote::parse_remote("https://deploy:supersecret@forgejo.example/owner/repo.git").unwrap();
+    assert_eq!(
+        http_creds.repository_url, "https://forgejo.example/owner/repo.git",
+        "HTTPS credential stripping must remain unchanged: {}",
+        http_creds.repository_url
+    );
+}
+
+#[test]
+fn bootstrap_output_includes_pending_git_mirror_outcome() {
+    // The bootstrap JSON contract must surface the plugin's `pending`
+    // status (asynchronous job queued) and the credential-free URL passed
+    // to the mirror plugin without ever leaking credentials.
+    let output = serde_json::json!({
+        "bootstrapped": true,
+        "created": true,
+        "repository": "owner/repo",
+        "identifier": "owner-repo",
+        "project_id": 44_u64,
+        "close_status_id": 5_u64,
+        "close_status_name": "Closed",
+        "user_memberships": [
+            {
+                "role": "Maintainer",
+                "user_id": 11_u64,
+                "user_login": "orchestrator",
+                "status": "added",
+            },
+        ],
+        "git_mirror": {
+            "id": 901_u64,
+            "project_id": 44_u64,
+            "identifier": "mirror_44_owner_repo",
+            "status": "pending",
+            "remote_url": "https://git.example.com/owner/repo.git",
+            "local_path": "/var/redmine/repos/owner_repo.git",
+            "error": null,
+        },
+    });
+    let git_mirror = output
+        .get("git_mirror")
+        .expect("bootstrap JSON must include git_mirror");
+    assert_eq!(git_mirror["status"], "pending");
+    assert_eq!(git_mirror["identifier"], "mirror_44_owner_repo");
+    assert_eq!(git_mirror["project_id"], 44_u64);
+    assert_eq!(
+        git_mirror["remote_url"],
+        "https://git.example.com/owner/repo.git"
+    );
+    assert_eq!(
+        git_mirror["local_path"],
+        "/var/redmine/repos/owner_repo.git"
+    );
+    assert!(git_mirror["error"].is_null());
+    // The mirror JSON must never carry the bearer key or user credentials.
+    let serialized = output.to_string();
+    assert!(
+        !serialized.to_ascii_lowercase().contains("bearer "),
+        "bootstrap output must not include bearer credentials: {serialized}"
+    );
+    assert!(
+        !serialized.contains("supersecret"),
+        "bootstrap output must not include embedded origin credentials: {serialized}"
+    );
+}
+
+#[test]
+fn bootstrap_warning_output_still_includes_git_mirror_outcome() {
+    // A membership warning (bootstrap is not ready) must still surface the
+    // git_mirror outcome so operators can see whether the asynchronous
+    // mirror job was queued alongside the failing reconciliation.
+    let output = serde_json::json!({
+        "bootstrapped": false,
+        "created": true,
+        "repository": "owner/repo",
+        "identifier": "owner-repo",
+        "project_id": 44_u64,
+        "close_status_id": 5_u64,
+        "close_status_name": "Closed",
+        "user_memberships": [
+            {
+                "role": "Developer",
+                "user_id": 22_u64,
+                "user_login": "executor",
+                "status": "warning",
+                "warning": "Redmine role was not found: user 'executor', role 'Developer'",
+            },
+        ],
+        "git_mirror": {
+            "id": 901_u64,
+            "project_id": 44_u64,
+            "identifier": "mirror_44_owner_repo",
+            "status": "pending",
+            "remote_url": "https://git.example.com/owner/repo.git",
+            "local_path": "/var/redmine/repos/owner_repo.git",
+            "error": null,
+        },
+        "warning": "Redmine role was not found: user 'executor', role 'Developer'",
+    });
+    assert!(!output["bootstrapped"].as_bool().unwrap());
+    let git_mirror = output
+        .get("git_mirror")
+        .expect("warning JSON must still include git_mirror");
+    assert_eq!(git_mirror["status"], "pending");
+    assert!(output["warning"].is_string());
+}
+
+#[test]
+fn redmine_new_project_includes_repository_module_for_mirror_enablement() {
+    use crate::redmine_model::RedmineNewProject;
+    let payload = RedmineNewProject::new("Workflow", "workflow", Some("issues"));
+    let value = serde_json::to_value(&payload).unwrap();
+    let project = value.get("project").unwrap();
+    assert!(
+        project.get("enabled_modules").is_none(),
+        "default payload must not include modules so direct `project create` calls remain opt-in"
+    );
+
+    let payload =
+        RedmineNewProject::new("Workflow", "workflow", Some("issues")).with_repository_module();
+    let value = serde_json::to_value(&payload).unwrap();
+    let project = value.get("project").unwrap();
+    let modules = project
+        .get("enabled_modules")
+        .expect("bootstrap-enabled payload must include enabled_modules")
+        .as_array()
+        .expect("enabled_modules must be an array");
+    assert_eq!(
+        modules,
+        &vec![serde_json::json!({"name": "repository"})],
+        "the bootstrap-enabled payload must enable the repository module only"
+    );
+}
+
+#[test]
+fn issue_planning_flags_parse_on_create_and_update_body() {
+    let create = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title=Plan",
+        "--parent-issue",
+        "12",
+        "--fixed-version=Sprint 1",
+        "--start-date",
+        "2026-08-01",
+        "--due-date",
+        "2026-08-31",
+        "--estimated-hours",
+        "3.5",
+        "--done-ratio",
+        "40",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&create).unwrap().command {
+        command::Command::Issue(command::IssueCommand::Create { planning, .. }) => {
+            assert_eq!(planning.parent_issue.as_deref(), Some("12"));
+            assert_eq!(planning.fixed_version.as_deref(), Some("Sprint 1"));
+            assert_eq!(planning.start_date.as_deref(), Some("2026-08-01"));
+            assert_eq!(planning.due_date.as_deref(), Some("2026-08-31"));
+            assert_eq!(planning.estimated_hours.as_deref(), Some("3.5"));
+            assert_eq!(planning.done_ratio.as_deref(), Some("40"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let update = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "update-body",
+        "9",
+        "--body",
+        "Updated",
+        "--fixed-version",
+        "7",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&update).unwrap().command {
+        command::Command::Issue(command::IssueCommand::UpdateBody { planning, .. }) => {
+            assert_eq!(planning.fixed_version.as_deref(), Some("7"));
+            assert!(planning.parent_issue.is_none());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // Planning flags belong only to create/update-body; other issue
+    // subcommands must keep rejecting them.
+    let misplaced = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "get",
+        "9",
+        "--done-ratio",
+        "50",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&misplaced).is_err());
+
+    // A planning option missing its value keeps the strict missing-value
+    // detection.
+    let missing_value = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--start-date",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&missing_value).is_err());
+}
+
+#[test]
+fn version_list_parses_and_rejects_unexpected_arguments() {
+    for role in ["admin", "orchestrator", "executor", "reviewer"] {
+        let args = ["--role", role, "--provider", "redmine", "version", "list"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            command::parse(&args).unwrap().command,
+            command::Command::VersionCommand(command::VersionCommand::List)
+        ));
+    }
+
+    // Bare `version` prints help rather than erroring; only unknown
+    // subcommands and extra arguments are rejected.
+    let args = vec![
+        "--role",
+        "executor",
+        "--provider",
+        "redmine",
+        "version",
+        "reorder",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&args).is_err());
+
+    let args = vec![
+        "--role",
+        "executor",
+        "--provider",
+        "redmine",
+        "version",
+        "list",
+        "extra",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&args).is_err());
+}
+
+#[test]
+fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
+    let args = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "timer",
+        "start",
+        "28",
+        "--phase",
+        "implementation",
+        "--agent-role",
+        "executor",
+        "--attempt",
+        "2",
+        "--run-id",
+        "run-28",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&args).unwrap().command {
+        command::Command::Timer(command::TimerCommand::Start {
+            issue,
+            phase,
+            agent_role,
+            attempt,
+            run_id,
+        }) => {
+            assert_eq!(issue, 28);
+            assert_eq!(phase, "implementation");
+            assert_eq!(agent_role, "executor");
+            assert_eq!(attempt, 2);
+            assert_eq!(run_id.as_deref(), Some("run-28"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    for malformed in [
+        vec![
+            "--role",
+            "orchestrator",
+            "timer",
+            "start",
+            "28",
+            "--phase",
+            "implementation",
+            "--agent-role",
+            "executor",
+            "--attempt",
+            "0",
+        ],
+        vec![
+            "--role",
+            "orchestrator",
+            "timer",
+            "finish",
+            "run-28",
+            "--result",
+            "SUCCESS",
+        ],
+        vec![
+            "--role",
+            "orchestrator",
+            "timer",
+            "start",
+            "0",
+            "--phase",
+            "implementation",
+            "--agent-role",
+            "reviewer",
+            "--attempt",
+            "1",
+        ],
+    ] {
+        let malformed = malformed.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert!(command::parse(&malformed).is_err());
+    }
+}
+
+#[test]
+fn timer_execution_is_orchestrator_and_redmine_only() {
+    let home = std::env::temp_dir().join(format!(
+        "phasegent-timer-boundary-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let storage = Storage::open_for_home(&home).unwrap();
+    storage
+        .start_timer_run(
+            "boundary-run",
+            28,
+            "implementation",
+            "executor",
+            1,
+            1_700_000_000,
+        )
+        .unwrap();
+
+    let executor = crate::time_tracking_cli::execute(
+        Some(Role::Executor),
+        Some(ProviderKind::Redmine),
+        None,
+        None,
+        None,
+        command::TimerCommand::Finish {
+            run_id: "boundary-run".to_owned(),
+            result: "DONE".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(executor.json()["kind"], "config");
+    assert!(
+        storage
+            .load_timer_run("boundary-run")
+            .unwrap()
+            .unwrap()
+            .status
+            == "running"
+    );
+
+    let forgejo = crate::time_tracking_cli::execute(
+        Some(Role::Orchestrator),
+        Some(ProviderKind::Forgejo),
+        None,
+        None,
+        None,
+        command::TimerCommand::Finish {
+            run_id: "boundary-run".to_owned(),
+            result: "DONE".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(forgejo.json()["kind"], "not_supported");
+    assert!(
+        storage
+            .load_timer_run("boundary-run")
+            .unwrap()
+            .unwrap()
+            .status
+            == "running"
+    );
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn provider_kind_gitlab_round_trips_and_rejects_unknown_values() {
+    // Phase-1 GitLab foundation: the FromStr surface must recognise
+    // "gitlab", the as_str helper must return "gitlab", and a non-
+    // canonical value must surface a structured error that lists all
+    // three supported providers. The docstring on the parse error is
+    // what operators see in `phasegent --provider typo` so the
+    // message must stay accurate.
+    use std::str::FromStr;
+
+    let parsed: ProviderKind = "gitlab".parse().expect("gitlab must parse");
+    assert_eq!(parsed, ProviderKind::Gitlab);
+    assert_eq!(parsed.as_str(), "gitlab");
+
+    // Inverse direction: as_str feeds back into parse without a round
+    // trip misclassification (e.g. forgetting a lowercase match arm).
+    let round_trip = ProviderKind::from_str(ProviderKind::Gitlab.as_str())
+        .expect("as_str must parse back to Gitlab");
+    assert_eq!(round_trip, ProviderKind::Gitlab);
+
+    // Forgejo and Redmine must continue to parse so the existing CLI
+    // `--provider forgejo|redmine` paths still work.
+    assert_eq!(
+        "forgejo".parse::<ProviderKind>().unwrap(),
+        ProviderKind::Forgejo
+    );
+    assert_eq!(
+        "redmine".parse::<ProviderKind>().unwrap(),
+        ProviderKind::Redmine
+    );
+
+    let error = "wrong".parse::<ProviderKind>().unwrap_err();
+    assert!(
+        error.contains("forgejo, redmine, or gitlab"),
+        "parse error must enumerate the supported providers: {error}"
+    );
+}
+
+#[test]
+fn provider_flag_parses_gitlab_for_role_free_branch_commands() {
+    // `--provider gitlab` must flow through the parser without error
+    // so `auth setup`, `issue`, `comment`, etc. all accept the new
+    // value. The branch-context commands (bind/unbind/status) are
+    // provider-free in their resolver, but the top-level `--provider`
+    // flag is still accepted by the outer parser.
+    use std::str::FromStr;
+
+    let args = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "gitlab",
+        "issue",
+        "search",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("--provider gitlab must parse");
+    assert_eq!(
+        invocation.provider.expect("--provider must be captured"),
+        ProviderKind::Gitlab
+    );
+
+    // Inline form `--provider=gitlab` is recognised too so scripts
+    // that build argv with the `option=value` style still work.
+    let inline = [
+        "--role=orchestrator",
+        "--provider=gitlab",
+        "issue",
+        "search",
+        "--query",
+        "phase-1",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let parsed = command::parse(&inline).expect("--provider=gitlab must parse");
+    assert_eq!(parsed.provider, Some(ProviderKind::Gitlab));
+
+    // Sanity: as_str + FromStr cross-check at the call site.
+    assert_eq!(ProviderKind::from_str("gitlab").unwrap().as_str(), "gitlab");
+}
+
+#[test]
+fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
+    // Phase-1 GitLab foundation: when `--provider gitlab` reaches
+    // `resolve_kind` and the `PHASEGENT_PROVIDER` env var is unset
+    // (the test isolates `HOME` and clears the var), the resolver
+    // falls back to the role_config.provider column. A pre-populated
+    // row must be consulted without leaking the role into another
+    // provider branch.
+    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let home = std::env::temp_dir().join(format!(
+        "phasegent-resolve-kind-gitlab-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+    let previous_provider = std::env::var_os("PHASEGENT_PROVIDER");
+    // SAFETY:: Serialised by `lock_workflow_tests`. The Drop guard on
+    // `previous_provider` reinstates the host value when the test
+    // unwinds even if a panic happens mid-test.
+    struct ProviderGuard(Option<std::ffi::OsString>);
+    impl Drop for ProviderGuard {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            // SAFETY:: Symmetric with the unsafe block below.
+            unsafe {
+                match previous {
+                    Some(value) => std::env::set_var("PHASEGENT_PROVIDER", value),
+                    None => std::env::remove_var("PHASEGENT_PROVIDER"),
+                }
+            }
+        }
+    }
+    unsafe {
+        std::env::remove_var("PHASEGENT_PROVIDER");
+    }
+    let _provider_guard = ProviderGuard(previous_provider);
+
+    let storage = Storage::open_for_home(&home).unwrap();
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &auth::StoredConfig {
+                provider: Some("gitlab".to_owned()),
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+
+    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(resolved, ProviderKind::Gitlab);
+
+    // A stale Redmine row for the same role must not win when
+    // resolve_kind is called with an explicit gitlab.
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &auth::StoredConfig {
+                provider: Some("redmine".to_owned()),
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+    let explicit =
+        crate::provider_config::resolve_kind(Role::Orchestrator, Some(ProviderKind::Gitlab))
+            .unwrap();
+    assert_eq!(explicit, ProviderKind::Gitlab);
+
+    let _ = fs::remove_dir_all(home);
+}
+
+/// RAII guard that removes every `PHASEGENT_PROVIDER` /
+/// `PHASEGENT_DEFAULT_PROVIDER` variant for the lifetime of the
+/// test and reinstates the host value on Drop. The new precedence
+/// levels added by phase `global-provider-default` all read
+/// environment variables, so the resolver tests need to neutralise
+/// the host shell's environment before exercising the resolver
+/// and restore it on exit.
+#[allow(non_snake_case)]
+struct DefaultProviderEnvGuard {
+    _provider: Option<std::ffi::OsString>,
+    _default: Option<std::ffi::OsString>,
+}
+
+impl DefaultProviderEnvGuard {
+    fn neutralise() -> Self {
+        let provider = std::env::var_os("PHASEGENT_PROVIDER");
+        let default = std::env::var_os("PHASEGENT_DEFAULT_PROVIDER");
+        // SAFETY: serialised by `lock_workflow_tests`; the Drop
+        // guard reinstates the host value when the test unwinds
+        // even if a panic happens mid-test.
+        unsafe {
+            std::env::remove_var("PHASEGENT_PROVIDER");
+            std::env::remove_var("PHASEGENT_DEFAULT_PROVIDER");
+        }
+        Self {
+            _provider: provider,
+            _default: default,
+        }
+    }
+}
+
+impl Drop for DefaultProviderEnvGuard {
+    fn drop(&mut self) {
+        let provider = self._provider.take();
+        let default = self._default.take();
+        // SAFETY: symmetric with the unsafe block above; the lock
+        // guard from `lock_workflow_tests` is still held when the
+        // test stack unwinds.
+        unsafe {
+            match provider {
+                Some(value) => std::env::set_var("PHASEGENT_PROVIDER", value),
+                None => std::env::remove_var("PHASEGENT_PROVIDER"),
+            }
+            match default {
+                Some(value) => std::env::set_var("PHASEGENT_DEFAULT_PROVIDER", value),
+                None => std::env::remove_var("PHASEGENT_DEFAULT_PROVIDER"),
+            }
+        }
+    }
+}
+
+#[test]
+fn resolve_kind_honours_documented_provider_precedence_chain() {
+    // Phase `global-provider-default`: the resolver must consult
+    // every documented precedence level in order:
+    //   1. explicit --provider argument
+    //   2. PHASEGENT_PROVIDER environment variable
+    //   3. PHASEGENT_DEFAULT_PROVIDER environment variable
+    //   4. persisted PHASEGENT_DEFAULT_PROVIDER row in SQLite
+    //   5. role-scoped role_config.provider
+    //   6. forgejo fallback
+    // The resolver is read-only: each test fully resets the
+    // environment and storage so the order of precedence is the
+    // only variable under inspection.
+    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::storage::{PROVIDER_GITLAB, PROVIDER_REDMINE};
+
+    let _lock = lock_workflow_tests();
+    let _provider_env = DefaultProviderEnvGuard::neutralise();
+    let home = std::env::temp_dir().join(format!(
+        "phasegent-resolve-precedence-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+
+    let storage = Storage::open_for_home(&home).unwrap();
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &auth::StoredConfig {
+                provider: Some(PROVIDER_GITLAB.to_owned()),
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+
+    // 6. Forgejo fallback when nothing else is configured.
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "")
+        .unwrap();
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &auth::StoredConfig {
+                provider: None,
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Forgejo,
+        "empty persisted default + empty role-scoped provider must fall back to forgejo"
+    );
+
+    // 5. Role-scoped provider beats the forgejo fallback.
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &auth::StoredConfig {
+                provider: Some(PROVIDER_REDMINE.to_owned()),
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Redmine,
+        "role-scoped provider must win over the forgejo fallback"
+    );
+
+    // 4. Persisted global default beats the role-scoped provider.
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_GITLAB)
+        .unwrap();
+    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Gitlab,
+        "persisted PHASEGENT_DEFAULT_PROVIDER must win over role-scoped provider"
+    );
+
+    // 3. Env default beats the persisted default.
+    let _default_env = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE);
+    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Redmine,
+        "PHASEGENT_DEFAULT_PROVIDER env var must win over persisted default"
+    );
+
+    // 2. PHASEGENT_PROVIDER env var beats the default env var.
+    let _provider_env = EnvGuard::set("PHASEGENT_PROVIDER", PROVIDER_GITLAB);
+    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Gitlab,
+        "PHASEGENT_PROVIDER must win over PHASEGENT_DEFAULT_PROVIDER"
+    );
+
+    // 1. Explicit --provider beats every environment / storage
+    // value. This documents the contract that `--provider` is the
+    // per-command override.
+    let resolved =
+        crate::provider_config::resolve_kind(Role::Orchestrator, Some(ProviderKind::Redmine))
+            .unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Redmine,
+        "explicit --provider must beat every env / storage value"
+    );
+
+    // Resolver must never persist anything: the persisted default
+    // is exactly what the test seeded, no surprises.
+    assert_eq!(
+        storage
+            .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+            .unwrap()
+            .as_deref(),
+        Some(PROVIDER_GITLAB)
+    );
+
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn resolve_kind_rejects_invalid_persisted_global_default() {
+    // Phase `global-provider-default`: a stale SQLite row that
+    // contains an unknown literal must surface as a structured
+    // config error rather than silently overriding the resolver.
+    // The validator is the same `ProviderKind::from_str` that the
+    // helper / snapshot / CLI layer use, so the contract is
+    // uniform end to end.
+    use crate::storage::PROVIDER_REDMINE;
+    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let _provider_env = DefaultProviderEnvGuard::neutralise();
+    let home = std::env::temp_dir().join(format!(
+        "phasegent-resolve-stale-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+
+    let storage = Storage::open_for_home(&home).unwrap();
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "wrong")
+        .unwrap();
+    // The role-scoped row points at a valid value so the error
+    // surfaces from the persisted-default level rather than the
+    // role-scoped level.
+    storage
+        .save_role_config(
+            Role::Executor,
+            &auth::StoredConfig {
+                provider: Some(PROVIDER_REDMINE.to_owned()),
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+
+    let error = crate::provider_config::resolve_kind(Role::Executor, None).unwrap_err();
+    let json = error.json();
+    assert_eq!(json["kind"], "config");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("wrong"),
+        "error must echo the offending value: {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn resolve_kind_does_not_persist_anything() {
+    // Regression guard for the "ordinary commands must not persist"
+    // contract: phase `global-provider-default` adds a SQLite read
+    // to `resolve_kind`, so the test must observe the empty
+    // database after the resolver runs. The seeded values are
+    // written by the test, not by the resolver.
+    use crate::storage::PROVIDER_REDMINE;
+    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let _provider_env = DefaultProviderEnvGuard::neutralise();
+    let home = std::env::temp_dir().join(format!(
+        "phasegent-resolve-readonly-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _home = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
+
+    let storage = Storage::open_for_home(&home).unwrap();
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE)
+        .unwrap();
+
+    let resolved = crate::provider_config::resolve_kind(Role::Executor, None).unwrap();
+    assert_eq!(resolved, ProviderKind::Redmine);
+
+    // The persisted default must still be exactly what the test
+    // wrote; the resolver must never silently mutate it.
+    assert_eq!(
+        storage
+            .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+            .unwrap()
+            .as_deref(),
+        Some(PROVIDER_REDMINE)
+    );
+    assert!(
+        storage.load_role_config(Role::Executor).unwrap().is_none(),
+        "resolver must never write the role-scoped row"
+    );
+
+    let _ = fs::remove_dir_all(home);
+}
