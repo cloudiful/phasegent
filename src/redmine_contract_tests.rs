@@ -807,6 +807,10 @@ fn timer_rounding_and_marker_helpers_have_exact_summary_semantics() {
         time_entry_id: None,
         sync_status: "pending".to_owned(),
         sync_error: None,
+        owner_session_id: None,
+        owner_call_id: None,
+        projection_token: None,
+        projection_claimed_at: None,
     };
     assert_eq!(
         crate::time_tracking_cli::time_entry_comments(&run),
@@ -859,10 +863,12 @@ fn timer_projection_retry_is_local_only_after_a_synced_201_create() {
     )
     .unwrap();
 
-    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider).unwrap();
+    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider, "tok-test")
+        .unwrap();
     assert_eq!(run.time_entry_id, Some(77));
     assert_eq!(run.sync_status, "synced");
-    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider).unwrap();
+    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider, "tok-test")
+        .unwrap();
 
     let observed = requests.recv().unwrap();
     assert_eq!(
@@ -921,10 +927,12 @@ fn timer_projection_reconciles_a_204_before_creating_another_entry() {
     )
     .unwrap();
 
-    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider).unwrap();
+    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider, "tok-test")
+        .unwrap();
     assert_eq!(run.sync_status, "unconfirmed");
     assert_eq!(run.time_entry_id, None);
-    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider).unwrap();
+    crate::time_tracking_cli::project_run_with_provider(&storage, &mut run, &provider, "tok-test")
+        .unwrap();
     assert_eq!(run.sync_status, "synced");
     assert_eq!(run.time_entry_id, Some(77));
 

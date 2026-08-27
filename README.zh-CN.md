@@ -227,6 +227,103 @@ ledger 保留精确的整秒 elapsed time，Redmine hours 则向上取整到 0.0
 响应可以安全重试而不会创建重复 Time Entry；201 响应会解码并关联
 `redmine_time_entry_id`。
 
+**计时边界：** SQLite ledger 是 wall-clock 时长的权威来源；rounded hours 只是
+派生投影。provider 仅收到舍入后的摘要（Redmine）或通过 `add_spent_time` 传入
+的精确秒数（GitLab）。本地 `elapsed_seconds` 除该有界投影外不会离开 SQLite。
+
+**恢复与巡检（纯本地、有界）：**
+
+```text
+phasegent --role orchestrator --provider redmine timer list --status running --limit 20
+phasegent --role orchestrator --provider redmine timer get <RUN_ID>
+phasegent --role orchestrator --provider redmine timer recover <RUN_ID>
+```
+
+`list` 与 `get` 永远不会触及 provider 或网络。`list` 按
+`running|finished|all` 过滤（默认 `all`），并以 `--limit` 限制条数（默认
+100，最大 1000）。两者都不输出 secret 或完整 provider 响应，只返回 ledger 行
+字段。`recover` 是显式孤儿路径：把已知 `running` 行标记为 `FAILED` 并复用与
+`finish` 相同的 same-run provider 归一逻辑。它永不推断成功、永不重开已终止
+行（并发 recover 安全），投影失败通过 `sync_status=failed`/`sync_error` 暴露，
+而不会覆盖 FAILED 判定。
+
+**永不猜测警告：** crash 后缺失的子进程 transcript 一律视为 `FAILED`。系统
+永远不会从缺失状态猜测 `DONE/PARTIAL/BLOCKED`；只有操作员显式 `recover`
+才会关闭孤儿。
+
+**crash 与优雅 dispose：** hard-crash 残留会以 `running` 留在 SQLite，直到
+你在重启后执行 `timer recover` —— 因此可通过 `timer list --status running`
+巡检。插件的优雅 `dispose`（正常关闭）会通过有界重试把内存中活跃 run 以
+`FAILED` 结束；若重试耗尽，dispose 会以 `warn` 记录确切的
+`timer recover <RUN_ID>` 修复命令。
+
+**Owner 元数据：** `timer start --owner-session-id/--owner-call-id` 记录拥有该
+run 的 OpenCode 子代理 session/call（限 128 字符、去空、禁止控制字符）。旧库
+中该列为 `NULL`，通过幂等的 `ALTER TABLE` 迁移添加；旧调用方保持兼容。Owner
+字段仅本地、永不投影。
+
+**投影租约：** `timer finish`/`recover` 以调用方绑定的租约 token
+（`projection_token` + `projection_claimed_at`）认领 provider 投影，并在认领后
+持有 `IMMEDIATE` SQLite 事务直至 token 绑定的终结写入。事务持有期间，并发
+`BEGIN IMMEDIATE` 会因 `busy`/`locked` 直接返回“已在投影中”且永不 POST，因此
+活跃投影不会因 provider 耗时超过固定墙钟常量而被窃取；只有持有者可将
+`projecting` 终结为 `synced`/`failed`/`unconfirmed`。已加载的 `projecting` 若
+token 不匹配绝不会视为本调用方持有。持有事务内的 hard-crash 会将 `projecting`
+回滚为 `pending`/`failed`/`unconfirmed`（不留陈旧行）；遗留的 `projecting`
+（旧版自动提交窗口或旧库）可通过 `timer recover` 显式将陈旧 `projecting`
+（`NULL` 旧库或超过 `PROJECTION_LEASE_SECS`）强制重置为 `failed`，并**继续走
+同一 token 绑定的投影重试路径**而非立即以 failed 返回，下一次重试按 marker
+重新列表以保持幂等。
+
+**不变量：** `projecting` 的进入与所有终态（`synced`/`failed`/`unconfirmed`）
+均为原子且 owner 绑定（`projection_token` 校验）；未获所有权的调用方不会修改
+该行。活动初始化（`list_time_entry_activities` + 落库）同样被序列化：先认领
+再查询，且 `activity_id` 的持久化是 `WHERE projection_token = ? AND
+sync_status='projecting'` 的 token 绑定更新，因此 `activity_id == NULL` 的两个
+并发调用不会同时列表并 POST。`timer finish`/`timer recover` 的投影失败路径
+已移除 round-3 的无 token 兜底写入：`sync_status` 仅由租约持有者独占地
+修改。持有者已释放（回滚 / 未曾认领）时，行终态 `failed` 由 `finish_timer_run`
+在 provider 之前本地持久化；投影失败通过 `record_failed_sync_error` 暴露，
+该辅助函数仅修改非 `projecting` 行，永远不会冲掉并发活跃持有者。
+
+**陈旧重置的活性保护：** `reset_stale_projection_to_failed` 自身先获取
+`BEGIN IMMEDIATE`，因此当活跃投影仍持有自己的 `IMMEDIATE` 时，重置会被
+`busy`/`locked` 阻塞。墙钟租约窗口仅作为崩溃恢复检查保留，用于持有者
+未持有事务即崩溃（遗留 autocommit 或旧库）的 `projecting` 行。现代硬崩溃
+在事务内则回滚认领，行不再处于 `projecting`；重置只在遗留或事务前孤儿上
+真正生效。
+
+**迁移与旧库：** `Storage::open` 在 `BEGIN IMMEDIATE` 事务内执行幂等 `ALTER
+TABLE` 迁移，`busy`/`locked` 时有界重试；`COMMIT` 失败会回滚并向上抛错，初始化
+永不在锁或提交失败时谎报成功。旧库 `NULL` 投影状态保持兼容；`NULL`
+`claimed_at` 的 `projecting` 行被视为立即可恢复，需经显式的 `timer recover`
+重试路径。
+
+**hard-crash 语义：** provider POST 成功但 token 绑定的 `synced` 写入前的 crash
+若在事务内则回滚认领（Redmine 下一次重试按 marker 归一避免重复；GitLab 因
+无回读 marker 可能重复——已文档化，`unconfirmed` 用于缺 totals 场景）。缺失
+transcript 绝不推断成功；孤儿保持 `running` 直至 `timer recover` 在任何 provider
+查找前先持久化本地 `FAILED`。
+
+**后台任务：** `task(background:true)` 的 executor/reviewer 委托会被跳过且不
+创建 timer，同时通过 `client.app.log` 输出一条简洁 `warn`，标明 issue/role
+并建议 `rerun foreground or use 'phasegent --role orchestrator --provider
+redmine timer recover <RUN_ID>' if a previous run is orphaned`。其它跳过场景
+（非 Redmine prompt、缺少上下文、explore/general）保持静默。
+
+**same-run 重试与幂等：** `finish` 与 `recover` 共享基于 marker 的归一：同一
+`run_id`/`result` 的第二次调用幂等，已终止行上以不同 result 重试会被拒绝。
+有界重试（3 次、指数退避）安全，因为重试会在 POST 前按 run marker 重新列表；
+Redmine 仍可防止重复，GitLab 已知的 crash 窗口（POST 成功但 SQLite 写入丢失）
+仍被文档化——重试可能在 GitLab 上重复 spent time。
+
+**二进制解析：** 插件按 `PHASEGENT_BIN`（若已设置且为可执行文件则优先）→
+工作区 `target/debug/phasegent` 与 `~/.cargo/bin/phasegent`（仅当为常规可执行
+文件）→ `PATH` 查询的顺序解析 `phasegent`。每次调用使用同一回退策略：自动
+候选按序尝试，遇到 spawn 或兼容性失败（`unknown option`/`unrecognized`/
+`incompatible`）时尝试下一个；无可用 binary 时返回有界结构化错误。测试中请设置
+`PHASEGENT_BIN` 以获得确定性的 fake binary。
+
 底层 project metadata 命令仍然需要显式确认：
 
 ```text

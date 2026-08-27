@@ -271,17 +271,18 @@ export function setupPhasegentTimerHarness(): TimerTestHarness {
     };
   }
 
-  /// FNV-1a 32-bit of `${issue}|${phase}|${attempt}|${role}|${identity}`
-  /// mirrors the plugin's `deriveRunId` exactly so tests can predict the
-  /// run id and queue a `start` response that validates.
+  /// FNV-1a 64-bit mirrors the plugin's `deriveRunId` exactly so tests
+  /// can predict the run id and queue a `start` response that validates.
   function predictRunId(callID: string, role: string): string {
-    let h = 0x811c9dc5;
+    let h = 14695981039346656037n;
+    const prime = 1099511628211n;
     const s = `51|implementation|1|${role}|${SESSION_ID}|${callID}`;
     for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
+      h ^= BigInt(s.charCodeAt(i));
+      h = (h * prime) & 0xffffffffffffffffn;
     }
-    const id = `pl-51-1-${(h >>> 0).toString(16).padStart(8, "0")}`;
+    const hex = h.toString(16).padStart(16, "0");
+    const id = `pl-51-1-${hex}`;
     return id.length > 128 ? id.slice(0, 128) : id;
   }
 

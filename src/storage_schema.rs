@@ -82,6 +82,12 @@ CREATE TABLE IF NOT EXISTS global_setting (
 -- by earlier phasegent versions remain readable and never need a destructive
 -- migration.  Rounded hours are retained for the Redmine projection, while
 -- elapsed_seconds remains the authoritative exact-duration value.
+--
+-- Phase 3 adds nullable `owner_session_id` / `owner_call_id` columns so the
+-- OpenCode plugin can record which subagent invocation owns a run without
+-- growing the primary key. Existing rows keep their NULL owner; the
+-- additive MIGRATIONS block below adds the columns on databases that were
+-- initialised before the field existed.
 CREATE TABLE IF NOT EXISTS execution_timer_runs (
     run_id TEXT PRIMARY KEY,
     issue_id INTEGER NOT NULL CHECK (issue_id > 0),
@@ -96,12 +102,31 @@ CREATE TABLE IF NOT EXISTS execution_timer_runs (
     activity_id INTEGER,
     redmine_time_entry_id INTEGER,
     sync_status TEXT NOT NULL DEFAULT 'pending',
-    sync_error TEXT
+    sync_error TEXT,
+    owner_session_id TEXT,
+    owner_call_id TEXT,
+    projection_token TEXT,
+    projection_claimed_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS execution_timer_runs_issue_phase_idx
     ON execution_timer_runs (issue_id, phase, role, attempt);
+
+CREATE INDEX IF NOT EXISTS execution_timer_runs_status_idx
+    ON execution_timer_runs (status, started_at DESC);
 ";
+
+/// Additive migrations applied on every `Storage::open`. Each entry is a
+/// `(table, column)` pair the migration runner inspects via
+/// `PRAGMA table_info(<table>)` so the step is idempotent across opens;
+/// `ALTER TABLE ADD COLUMN` would otherwise error on a database that was
+/// initialised with the new schema already present.
+pub(crate) const MIGRATIONS: &[(&str, &str, &str)] = &[
+    ("execution_timer_runs", "owner_session_id", "TEXT"),
+    ("execution_timer_runs", "owner_call_id", "TEXT"),
+    ("execution_timer_runs", "projection_token", "TEXT"),
+    ("execution_timer_runs", "projection_claimed_at", "INTEGER"),
+];
 
 /// Names of the deployment-level settings stored in `global_setting`.
 /// The strings double as the canonical environment variable names so

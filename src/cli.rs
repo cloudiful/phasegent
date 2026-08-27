@@ -207,15 +207,30 @@ fn execute(invocation: Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::Timer(command) => crate::time_tracking_cli::execute(
-            invocation.role,
-            invocation.provider,
-            invocation.api_base.as_deref(),
-            invocation.project_id.as_deref(),
-            invocation.close_status_id.as_deref(),
-            command,
-        )
-        .map_or_else(crate::cli::provider_error, |output| print_json(&output)),
+        Command::Timer(command) => match &command {
+            command::TimerCommand::Start { .. } | command::TimerCommand::Finish { .. } => {
+                crate::time_tracking_cli::execute(
+                    invocation.role,
+                    invocation.provider,
+                    invocation.api_base.as_deref(),
+                    invocation.project_id.as_deref(),
+                    invocation.close_status_id.as_deref(),
+                    command,
+                )
+                .map_or_else(crate::cli::provider_error, |output| print_json(&output))
+            }
+            command::TimerCommand::List { .. }
+            | command::TimerCommand::Get { .. }
+            | command::TimerCommand::Recover { .. } => crate::time_tracking_cli::execute_recovery(
+                invocation.role,
+                invocation.provider,
+                invocation.api_base.as_deref(),
+                invocation.project_id.as_deref(),
+                invocation.close_status_id.as_deref(),
+                command,
+            )
+            .map_or_else(crate::cli::provider_error, |output| print_json(&output)),
+        },
         Command::Ci(command) => execute_ci_or_gitlab(
             invocation.role,
             invocation.provider,
@@ -1386,7 +1401,7 @@ fn print_relation_command_help(role: Option<Role>, command: &str) {
 fn print_timer_help(role: Option<Role>) {
     if role.is_none_or(|role| role == Role::Orchestrator) {
         println!(
-            "Timer commands for orchestrators:\n\n  start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID]    Persist a local phase run\n  finish <RUN_ID> --result DONE|PARTIAL|BLOCKED|FAILED    Finish the run and project its rounded time to Redmine or GitLab\n\nTimer start is local-only and must write the ledger before any projection. Finish is Redmine- or GitLab-only (Forgejo rejects both) and orchestrator-only. Redmine receives the rounded 0.01-hour summary; GitLab receives the exact elapsed seconds in human-format duration (e.g. 1h30m). Exact elapsed seconds remain in SQLite."
+            "Timer commands for orchestrators:\n\n  start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]    Persist a local phase run\n  finish <RUN_ID> --result DONE|PARTIAL|BLOCKED|FAILED    Finish the run and project its rounded time to Redmine or GitLab\n  list [--status running|finished|all] [--limit N]        Inspect local phase runs (read-only, local-only)\n  get <RUN_ID>                                            Show one local phase run (read-only, local-only)\n  recover <RUN_ID>                                         Mark a known orphan FAILED and project via the configured provider\n\nTimer start is local-only and must write the ledger before any projection. Finish and recover are Redmine- or GitLab-only (Forgejo rejects both) and orchestrator-only. List and get never make provider or network requests; they expose the SQLite ledger minus secrets and full responses. Recover is the explicit orphan path: it never infers success, never reopens a finished row, and reuses the same-run provider reconciliation as finish."
         );
     } else {
         println!(
@@ -1401,7 +1416,7 @@ fn print_timer_command_help(role: Option<Role>, command: &str) {
         "start" => {
             if role.is_none_or(|role| role == Role::Orchestrator) {
                 println!(
-                    "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID]\n\nThe orchestrator writes a local ledger row before any remote operation. --agent-role is executor or reviewer; --attempt is a positive integer."
+                    "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nThe orchestrator writes a local ledger row before any remote operation. --agent-role is executor or reviewer; --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). Redmine-only when --agent-role is set; Forgejo rejects timer start."
                 );
             } else {
                 println!(
@@ -1414,6 +1429,42 @@ fn print_timer_command_help(role: Option<Role>, command: &str) {
             if role.is_none_or(|role| role == Role::Orchestrator) {
                 println!(
                     "Usage: timer finish <RUN_ID> --result DONE|PARTIAL|BLOCKED|FAILED\n\nThe orchestrator records exact elapsed seconds, then projects them to the configured provider (Redmine or GitLab). Retries on the same run id are safe; the marker-based reconciliation short-circuits before any duplicate Time Entry or spent-time POST. Redmine receives the rounded 0.01-hour summary with a stable run-marker comment; GitLab receives the exact elapsed seconds in human-format duration with the marker embedded in the spent-time summary."
+                );
+            } else {
+                println!(
+                    "No command available for {}.",
+                    role.map_or("this role", Role::as_str)
+                );
+            }
+        }
+        "list" => {
+            if role.is_none_or(|role| role == Role::Orchestrator) {
+                println!(
+                    "Usage: timer list [--status running|finished|all] [--limit N]\n\nRead-only listing of the local execution ledger. --status defaults to all; --limit caps the rows returned (default 100, max 1000). Never reaches the provider; never echoes secrets or full responses. Useful for spotting orphans before explicit recovery."
+                );
+            } else {
+                println!(
+                    "No command available for {}.",
+                    role.map_or("this role", Role::as_str)
+                );
+            }
+        }
+        "get" => {
+            if role.is_none_or(|role| role == Role::Orchestrator) {
+                println!(
+                    "Usage: timer get <RUN_ID>\n\nRead a single execution-ledger row. Returns a structured config error when the run id is unknown; never mutates state and never reaches the provider. Use this before recover to confirm the orphan still belongs to the local run id you have."
+                );
+            } else {
+                println!(
+                    "No command available for {}.",
+                    role.map_or("this role", Role::as_str)
+                );
+            }
+        }
+        "recover" => {
+            if role.is_none_or(|role| role == Role::Orchestrator) {
+                println!(
+                    "Usage: timer recover <RUN_ID>\n\nMark a known orphan FAILED and project it through the configured provider with the same-run marker reconciliation used by finish. Never infers a successful outcome from a missing child transcript. If the row is already terminal, the command returns the unchanged run without reopening it. Concurrent recovers on the same run id are safe; the SQLite primary key and finish_time idempotency make them no-ops. Missing owner metadata does not change recover's behaviour."
                 );
             } else {
                 println!(

@@ -90,7 +90,9 @@ CREATE TABLE IF NOT EXISTS execution_timer_runs (
     activity_id INTEGER,
     redmine_time_entry_id INTEGER,
     sync_status TEXT NOT NULL DEFAULT 'pending',
-    sync_error TEXT
+    sync_error TEXT,
+    owner_session_id TEXT,
+    owner_call_id TEXT
 );
 CREATE INDEX IF NOT EXISTS execution_timer_runs_issue_phase_idx
     ON execution_timer_runs (issue_id, phase, role, attempt);

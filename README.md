@@ -251,6 +251,127 @@ and orchestrator-only. The stable run marker is re-list-checked before posting,
 so a 204/empty create response can be retried without creating a duplicate Time
 Entry. A 201 response is decoded and linked to `redmine_time_entry_id`.
 
+**Timing boundary:** the SQLite ledger is the source of truth for wall-clock
+duration; the rounded hours are a derived projection. The provider receives only
+the rounded summary (Redmine) or exact seconds via `add_spent_time` (GitLab).
+The local `elapsed_seconds` never leaves SQLite except as that bounded projection.
+
+**Recovery and inspection (local-only, bounded):**
+
+```text
+phasegent --role orchestrator --provider redmine timer list --status running --limit 20
+phasegent --role orchestrator --provider redmine timer get <RUN_ID>
+phasegent --role orchestrator --provider redmine timer recover <RUN_ID>
+```
+
+`list` and `get` never touch the provider or network. `list` filters by
+`running|finished|all` (default `all`) and caps at `--limit` (default 100, max
+1000). Both hide secrets and full provider responses and return only the ledger
+row fields. `recover` is the explicit orphan path: it marks a known `running`
+row as `FAILED` and reuses the same-run provider reconciliation as `finish`. It
+never infers success, never reopens a terminal row (concurrent recovers are
+safe), and surfaces projection failures through `sync_status=failed`/`sync_error`
+without overwriting the FAILED decision.
+
+**No-guessing warning:** a missing child transcript after a crash is always
+treated as `FAILED`. The system never guesses `DONE/PARTIAL/BLOCKED` from absent
+state; only an explicit operator `recover` closes the orphan.
+
+**Crash vs graceful dispose:** hard-crash leftovers stay `running` in SQLite
+until you run `timer recover` after restart — this makes orphans diagnosable via
+`timer list --status running`. Graceful plugin `dispose` (normal shutdown)
+finishes in-memory active runs as `FAILED` via the bounded retry path; if that
+retry exhausts, dispose logs a warning naming the exact `timer recover <RUN_ID>`
+to run.
+
+**Owner metadata:** `timer start --owner-session-id/--owner-call-id` records the
+OpenCode subagent session/call that owns the run (bounded to 128 chars,
+control-character-free, trimmed). The columns are `NULL` on old databases and
+added idempotently via `ALTER TABLE` migration; legacy callers remain compatible.
+Owner fields are local-only and never projected.
+
+**Projection lease:** `timer finish`/`recover` claim the provider projection with a
+caller-bound lease token (`projection_token` + `projection_claimed_at`) and
+hold an `IMMEDIATE` SQLite transaction from claim until token-bound
+finalization. While the transaction is held, a concurrent `BEGIN IMMEDIATE`
+blocks on `busy`/`locked` and surfaces "projection already in progress"
+without ever POSTing, so a live projector is never stealable merely because
+provider reconciliation took longer than a wall-clock constant. Only the holder
+may finalize `projecting` to `synced`/`failed`/`unconfirmed`; a loaded
+`projecting` row without the matching token is never treated as this caller's
+claim. A hard crash inside the transaction rolls the `projecting` claim back to
+`pending`/`failed`/`unconfirmed` (no stale row); a crash that leaves a
+`projecting` row (legacy autocommit window or pre-transaction database) is
+explicitly recoverable via `timer recover` which force-resets a stale
+`projecting` (`NULL` legacy or older than `PROJECTION_LEASE_SECS`) to `failed`
+and then continues through the same token-bound projection retry path — it never
+returns immediately with failed state. The next `recover` retry therefore
+re-uses the marker-based reconciliation before any POST, preserving idempotency.
+
+**Invariant:** every `projecting` transition and every finalization (`synced`/
+`failed`/`unconfirmed`) is atomic and owner-bound (`projection_token` check);
+callers that did not acquire ownership never mutate the row. Activity
+initialization (`list_time_entry_activities` + persist) is covered by the same
+serialization: the claim precedes the activity lookup, and the activity_id
+persist is `UPDATE ... WHERE projection_token = ? AND sync_status='projecting'`,
+so two concurrent `activity_id == NULL` callers cannot both list and POST.
+Projection failure in `timer finish` / `timer recover` removes the round-3
+unconditional fallback: the row's `sync_status` is owned exclusively by the
+lease holder. When the holder is gone (rolled back / never claimed) the row's
+terminal `failed` state is recorded locally before any provider attempt; the
+projection error is then surfaced via `record_failed_sync_error`, which only
+mutates a non-`projecting` row so a concurrent live holder is never clobbered.
+
+**Liveness-protected stale reset:** `reset_stale_projection_to_failed` itself
+acquires `BEGIN IMMEDIATE` so the reset blocks against any live holder that
+is currently inside its own `IMMEDIATE`. The wall-clock lease window is
+retained only as a documented crash-recovery check on a `projecting` row
+whose holder has died without holding a live transaction (legacy autocommit
+window or pre-projection-token databases). A modern crash inside a held
+`IMMEDIATE` rolls the claim back on process exit, so no stale row remains
+for the reset to discover; only legacy or pre-transaction orphans are
+recoverable.
+
+**Migration and legacy:** `Storage::open` runs additive `ALTER TABLE` migrations
+under `BEGIN IMMEDIATE` with bounded retry on `busy`/`locked`; `COMMIT`
+failures are propagated with rollback so initialization never reports success
+when the lock or commit failed. Legacy `NULL` projection state remains
+compatible; a `projecting` row with `NULL` `claimed_at` is treated as
+immediately stale and is recoverable via the explicit `timer recover` retry
+path.
+
+**Hard-crash semantics:** a crash between the provider POST success and the
+token-bound `synced` write inside the held transaction rolls back the claim
+(Redmine: the next retry re-lists by marker and reconciles without duplicate;
+GitLab: retry may duplicate spent time because the API has no read-back marker
+— this is documented and `unconfirmed` is used when totals are missing). No
+success is inferred from a missing transcript; orphans stay `running` until
+`timer recover` durably marks `FAILED` locally before any provider lookup.
+
+**Background tasks:** `task(background:true)` executor/reviewer delegations are
+skipped with no timer and a concise `warn` via `client.app.log` that names the
+issue/role and suggests `rerun foreground or use 'phasegent --role orchestrator
+--provider redmine timer recover <RUN_ID>' if a previous run is orphaned`. Other
+skipped cases (non-Redmine prompt, missing context, explore/general) remain
+silent.
+
+**Same-run retry and idempotency:** `finish` and `recover` share the marker-based
+reconciliation: a second call with the same `run_id`/`result` is idempotent, and
+a different result on a terminal row is rejected. Bounded retry (3 attempts,
+exponential backoff) is safe because retries re-list by the run marker before
+POST; Redmine duplicates remain prevented, GitLab's known crash-window (POST
+succeeded but SQLite write lost) remains documented — retry may duplicate GitLab
+spent time.
+
+**Binary resolution:** the plugin resolves `phasegent` via `PHASEGENT_BIN` if set
+and executable (honored when valid), otherwise the worktree
+`target/debug/phasegent` and `~/.cargo/bin/phasegent` when they are regular
+executable files, otherwise `PATH` lookup. Every invocation uses the same
+fallback: automatic candidates are tried sequentially and the next is attempted
+after a spawn or compatibility failure (`unknown option`, `unrecognized`,
+`incompatible`); a bounded structured error is returned when no candidate is
+available. Set `PHASEGENT_BIN` in tests for deterministic fake binaries.
+
 The lower-level project metadata command remains confirmation-gated:
 
 ```text

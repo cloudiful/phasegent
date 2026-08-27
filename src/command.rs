@@ -269,10 +269,31 @@ pub enum TimerCommand {
         agent_role: String,
         attempt: u64,
         run_id: Option<String>,
+        owner_session_id: Option<String>,
+        owner_call_id: Option<String>,
     },
     Finish {
         run_id: String,
         result: String,
+    },
+    /// Read-only listing of execution-ledger rows. `status_filter` selects
+    /// the row subset (running, finished, or all); defaults to `all`.
+    List {
+        status: String,
+        limit: u32,
+    },
+    /// Read-only inspection of a single row. Returns a structured error
+    /// when the run id is unknown; never mutates state.
+    Get {
+        run_id: String,
+    },
+    /// Explicit `FAILED` recovery for a known orphan. Equivalent to a
+    /// user-authorized `timer finish --result FAILED` and then a same-run
+    /// provider projection (with `sync_status` reconciliation). If the
+    /// row is already terminal, the operation is rejected so a recovered
+    /// run cannot overwrite a previous outcome.
+    Recover {
+        run_id: String,
     },
 }
 
@@ -486,7 +507,14 @@ fn parse_timer(args: &[String]) -> Result<Command, String> {
             validate_options(
                 args,
                 1,
-                &["--phase", "--agent-role", "--attempt", "--run-id"],
+                &[
+                    "--phase",
+                    "--agent-role",
+                    "--attempt",
+                    "--run-id",
+                    "--owner-session-id",
+                    "--owner-call-id",
+                ],
                 &[],
                 "timer start",
             )?;
@@ -514,12 +542,28 @@ fn parse_timer(args: &[String]) -> Result<Command, String> {
             {
                 return Err("timer start --run-id cannot be empty".to_owned());
             }
+            let owner_session_id = optional_option(args, "--owner-session-id");
+            if owner_session_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err("timer start --owner-session-id cannot be empty".to_owned());
+            }
+            let owner_call_id = optional_option(args, "--owner-call-id");
+            if owner_call_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err("timer start --owner-call-id cannot be empty".to_owned());
+            }
             Ok(Command::Timer(TimerCommand::Start {
                 issue,
                 phase,
                 agent_role: agent_role.as_str().to_owned(),
                 attempt,
                 run_id,
+                owner_session_id,
+                owner_call_id,
             }))
         }
         "finish" => {
@@ -536,6 +580,41 @@ fn parse_timer(args: &[String]) -> Result<Command, String> {
                 );
             }
             Ok(Command::Timer(TimerCommand::Finish { run_id, result }))
+        }
+        "list" => {
+            validate_options(args, 0, &["--status", "--limit"], &[], "timer list")?;
+            let status = optional_option(args, "--status").unwrap_or_else(|| "all".to_owned());
+            if !matches!(status.as_str(), "running" | "finished" | "all") {
+                return Err("timer list --status must be running, finished, or all".to_owned());
+            }
+            let limit = match optional_option(args, "--limit") {
+                Some(value) => value
+                    .parse::<u32>()
+                    .map_err(|_| "timer list --limit requires a non-negative integer".to_owned())?,
+                None => 100,
+            };
+            if limit == 0 {
+                return Err("timer list --limit must be greater than zero".to_owned());
+            }
+            Ok(Command::Timer(TimerCommand::List { status, limit }))
+        }
+        "get" => {
+            validate_options(args, 1, &[], &[], "timer get")?;
+            let run_id = args
+                .get(1)
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .ok_or_else(|| "timer get requires a run id".to_owned())?;
+            Ok(Command::Timer(TimerCommand::Get { run_id }))
+        }
+        "recover" => {
+            validate_options(args, 1, &[], &[], "timer recover")?;
+            let run_id = args
+                .get(1)
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .ok_or_else(|| "timer recover requires a run id".to_owned())?;
+            Ok(Command::Timer(TimerCommand::Recover { run_id }))
         }
         value => Err(format!("unknown timer command '{value}'")),
     }
@@ -1237,7 +1316,7 @@ fn help_topic(
         },
         "timer" => match subcommand {
             None => Ok(HelpTopic::Timer),
-            Some(value) if ["start", "finish"].contains(&value) => {
+            Some(value) if ["start", "finish", "list", "get", "recover"].contains(&value) => {
                 Ok(HelpTopic::TimerCommand(value.to_owned()))
             }
             Some(value) => Err(format!("unknown timer help topic '{value}'")),

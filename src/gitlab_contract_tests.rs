@@ -2804,8 +2804,10 @@ fn gitlab_timer_finish_first_call_posts_spent_time_with_marker() {
         .finish_timer_run("timer-abc", "DONE", 1_700_003_600)
         .unwrap();
     let mut run = finished;
-    crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-        .unwrap();
+    crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap();
     assert_eq!(run.sync_status, "synced");
     assert!(
         run.time_entry_id.is_none(),
@@ -2864,8 +2866,10 @@ fn gitlab_timer_finish_retry_uses_local_ledger_marker_not_note_body() {
         None,
     );
     let mut run = storage.load_timer_run("timer-retry").unwrap().unwrap();
-    crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-        .unwrap();
+    crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap();
     assert_eq!(run.sync_status, "synced");
     assert!(
         run.time_entry_id.is_none(),
@@ -2900,9 +2904,10 @@ fn gitlab_timer_finish_failure_marks_ledger_failed() {
         .finish_timer_run("timer-fail", "DONE", 1_700_000_060)
         .unwrap();
     let mut run = finished;
-    let error =
-        crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-            .unwrap_err();
+    let error = crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap_err();
     assert_eq!(error.json()["kind"], "http");
     assert_eq!(error.json()["status"], 422);
     // The failed-state recovery path inside execute_finish records the
@@ -2952,8 +2957,10 @@ fn gitlab_timer_finish_skips_when_already_synced() {
     let mut run = storage.load_timer_run("timer-sync").unwrap().unwrap();
     // The projection path must observe the synced status and skip
     // every network call.
-    crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-        .unwrap();
+    crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap();
     assert_eq!(run.sync_status, "synced");
     let _ = std::fs::remove_dir_all(storage.db_path().parent().unwrap());
 }
@@ -3001,8 +3008,10 @@ fn gitlab_timer_finish_marks_synced_when_response_uses_live_time_stats() {
         .finish_timer_run("timer-live-shape", "DONE", 1_700_000_002)
         .unwrap();
     let mut run = finished;
-    crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-        .unwrap();
+    crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap();
     assert_eq!(
         run.sync_status, "synced",
         "nested time_stats must confirm the spent-time write: run={run:?}",
@@ -3068,8 +3077,10 @@ fn gitlab_timer_finish_unconfirmed_when_response_omits_totals_entirely() {
         .finish_timer_run("timer-empty-shape", "DONE", 1_700_000_002)
         .unwrap();
     let mut run = finished;
-    crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-        .unwrap();
+    crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap();
     assert_eq!(
         run.sync_status, "unconfirmed",
         "totals-free response must keep unconfirmed semantics: run={run:?}",
@@ -3123,8 +3134,10 @@ fn gitlab_timer_finish_marks_synced_when_response_uses_top_level_time_stats() {
         .finish_timer_run("timer-top-level-shape", "DONE", 1_700_000_006)
         .unwrap();
     let mut run = finished;
-    crate::time_tracking_cli::project_run_with_gitlab_provider(&storage, &mut run, &provider)
-        .unwrap();
+    crate::time_tracking_cli::project_run_with_gitlab_provider(
+        &storage, &mut run, &provider, "tok-test",
+    )
+    .unwrap();
     assert_eq!(
         run.sync_status, "synced",
         "top-level time_stats must confirm the spent-time write: run={run:?}",
