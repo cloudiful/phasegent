@@ -3,7 +3,6 @@ use crate::ci_model::{
     bound_log, pretty_ref,
 };
 use crate::forgejo::ForgejoProvider;
-use crate::forgejo_http::{decode, decode_text};
 use crate::forgejo_model::ForgejoError;
 use reqwest::blocking::RequestBuilder;
 use reqwest::header::ACCEPT;
@@ -175,21 +174,24 @@ impl ForgejoProvider {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<T, ForgejoError> {
+        // CI JSON reads are safe GETs; retry on transient 429/502/503/504 and
+        // transport timeouts with bounded backoff.
         let request = self.client.get(path).query(query);
-        let response = self
-            .authorized(request)
-            .send()
-            .map_err(|error| ForgejoError::request(operation, error.to_string()))?;
-        decode(response, operation)
+        let (status, _headers, text) =
+            crate::http_client::fetch_with_retry(self.authorized(request), operation, |message| {
+                message.to_owned()
+            })?;
+        crate::forgejo_http::decode_from_parts(status, &text, operation)
     }
 
     fn ci_text(&self, path: &str, operation: &str) -> Result<String, ForgejoError> {
+        // CI text reads (job logs) are safe GETs; retry with the same policy.
         let request = self.client.get(path).query(&[] as &[(&str, String)]);
-        let response = self
-            .authorized(request)
-            .send()
-            .map_err(|error| ForgejoError::request(operation, error.to_string()))?;
-        decode_text(response, operation)
+        let (status, _headers, text) =
+            crate::http_client::fetch_with_retry(self.authorized(request), operation, |message| {
+                message.to_owned()
+            })?;
+        crate::forgejo_http::decode_text_from_parts(status, text, operation)
     }
 
     fn authorized(&self, request: RequestBuilder) -> RequestBuilder {

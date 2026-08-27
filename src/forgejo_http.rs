@@ -31,6 +31,7 @@ pub(crate) fn decode<T: DeserializeOwned>(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn decode_page<T: DeserializeOwned>(
     response: Response,
     operation: &str,
@@ -63,8 +64,67 @@ pub(crate) fn decode_page<T: DeserializeOwned>(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn decode_text(response: Response, operation: &str) -> Result<String, ForgejoError> {
     let (status, _, text) = response_parts(response, operation)?;
+    if !status.is_success() {
+        return Err(http_error(status, &text, operation));
+    }
+    Ok(text)
+}
+
+pub(crate) fn decode_from_parts<T: DeserializeOwned>(
+    status: StatusCode,
+    text: &str,
+    operation: &str,
+) -> Result<T, ForgejoError> {
+    if !status.is_success() {
+        return Err(http_error(status, text, operation));
+    }
+    serde_json::from_str(text).map_err(|error| ForgejoError::Decode {
+        operation: operation.to_owned(),
+        message: error.to_string(),
+    })
+}
+
+pub(crate) fn decode_page_from_parts<T: DeserializeOwned>(
+    status: StatusCode,
+    headers: &HeaderMap,
+    text: String,
+    operation: &str,
+) -> Result<Page<T>, ForgejoError> {
+    if !status.is_success() {
+        return Err(http_error(status, &text, operation));
+    }
+    let items = serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        operation: operation.to_owned(),
+        message: error.to_string(),
+    })?;
+    let total = headers
+        .get("x-total-count")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok());
+    let next = headers
+        .get(LINK)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .any(|link| link.contains("rel=\"next\"") || link.contains("rel=next"))
+        });
+    Ok(Page {
+        items,
+        total,
+        next,
+        signature: text,
+    })
+}
+
+pub(crate) fn decode_text_from_parts(
+    status: StatusCode,
+    text: String,
+    operation: &str,
+) -> Result<String, ForgejoError> {
     if !status.is_success() {
         return Err(http_error(status, &text, operation));
     }
@@ -83,7 +143,7 @@ fn response_parts(
     Ok((status, headers, text))
 }
 
-fn http_error(status: StatusCode, text: &str, operation: &str) -> ForgejoError {
+pub(crate) fn http_error(status: StatusCode, text: &str, operation: &str) -> ForgejoError {
     let message = serde_json::from_str::<ApiError>(text)
         .ok()
         .and_then(|error| error.message)

@@ -28,10 +28,8 @@ impl RedmineHttp {
         HeaderValue::from_str(&api_key).map_err(|_| {
             ForgejoError::auth("Redmine API key contains invalid header characters")
         })?;
-        let client = Client::builder()
-            .user_agent(format!("phasegent/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| ForgejoError::request("client build", error.to_string()))?;
+        let client = crate::http_client::build_client()
+            .map_err(|error| ForgejoError::request("client build", error))?;
         Ok(Self {
             client,
             api_base,
@@ -45,10 +43,18 @@ impl RedmineHttp {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<T, ForgejoError> {
-        self.send(
+        // Safe GET: retry on 429/502/503/504 and transport timeouts.
+        let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
             operation,
-        )
+        )?;
+        if !status.is_success() {
+            return Err(self.http_error(status, &text, operation));
+        }
+        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+            operation: operation.to_owned(),
+            message: self.redact(&error.to_string()),
+        })
     }
 
     pub(crate) fn get_optional<T: DeserializeOwned>(
@@ -57,7 +63,8 @@ impl RedmineHttp {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<Option<T>, ForgejoError> {
-        let (status, text) = self.response(
+        // Safe GET with optional 404: retry policy applies, 404 is terminal.
+        let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
             operation,
         )?;
@@ -381,6 +388,7 @@ impl RedmineHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
+        // Mutation path: no retry.
         let response = request
             .header(ACCEPT, "application/json")
             .header("X-Redmine-API-Key", self.api_key.as_str())
@@ -390,6 +398,23 @@ impl RedmineHttp {
         let text = response
             .text()
             .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+        Ok((status, text))
+    }
+
+    fn response_with_retry(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+    ) -> Result<(StatusCode, String), ForgejoError> {
+        // Safe GET path: retry on transient transport failures and
+        // 429/502/503/504 with bounded backoff.
+        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+            request
+                .header(ACCEPT, "application/json")
+                .header("X-Redmine-API-Key", self.api_key.as_str()),
+            operation,
+            |message| self.redact(message),
+        )?;
         Ok((status, text))
     }
 
@@ -489,10 +514,8 @@ impl RedmineGitMirrorHttp {
         parsed.set_query(None);
         parsed.set_fragment(None);
         let base_url = parsed.to_string().trim_end_matches('/').to_owned();
-        let client = Client::builder()
-            .user_agent(format!("phasegent/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| ForgejoError::request("mirror client build", error.to_string()))?;
+        let client = crate::http_client::build_client()
+            .map_err(|error| ForgejoError::request("mirror client build", error))?;
         Ok(Self {
             client,
             base_url,
@@ -510,11 +533,12 @@ impl RedmineGitMirrorHttp {
         path: &str,
         operation: &str,
     ) -> Result<RedmineGitMirrorLookup<T>, ForgejoError> {
+        // Safe GET: retry on transient failures.
         let request = self
             .client
             .get(self.endpoint(path)?)
             .header(AUTHORIZATION, format!("Bearer {}", self.bearer_key));
-        let (status, text) = self.response(request, operation)?;
+        let (status, text) = self.response_with_retry(request, operation)?;
         if status == StatusCode::NOT_FOUND {
             return Ok(RedmineGitMirrorLookup::Missing);
         }
@@ -575,6 +599,7 @@ impl RedmineGitMirrorHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
+        // Mutation POST: no retry.
         let response = request
             .header(ACCEPT, "application/json")
             .send()
@@ -583,6 +608,20 @@ impl RedmineGitMirrorHttp {
         let text = response
             .text()
             .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+        Ok((status, text))
+    }
+
+    fn response_with_retry(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+    ) -> Result<(StatusCode, String), ForgejoError> {
+        // Safe GET: retry on transient failures.
+        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+            request.header(ACCEPT, "application/json"),
+            operation,
+            |message| self.redact(message),
+        )?;
         Ok((status, text))
     }
 

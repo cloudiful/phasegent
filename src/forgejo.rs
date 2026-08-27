@@ -1,5 +1,5 @@
 use crate::auth;
-use crate::forgejo_http::{Page, decode, decode_page};
+use crate::forgejo_http::{Page, decode};
 use crate::forgejo_model::{
     ApiComment, ApiIssue, ApiRepository, NewComment, NewIssue, NewRepository, UpdateIssue,
 };
@@ -92,10 +92,8 @@ impl ForgejoProvider {
     }
 
     pub fn new(config: ForgejoConfig, token: String) -> Result<Self, ForgejoError> {
-        let client = Client::builder()
-            .user_agent(format!("phasegent/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| ForgejoError::request("client build", error.to_string()))?;
+        let client = crate::http_client::build_client()
+            .map_err(|error| ForgejoError::request("client build", error))?;
         Ok(Self {
             config,
             client,
@@ -332,7 +330,18 @@ impl ForgejoProvider {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<T, ForgejoError> {
-        self.send(self.client.get(path).query(query), operation)
+        // Safe GET read: bounded retry on transient transport failures and
+        // 429/502/503/504 with capped backoff/Retry-After.
+        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+            self.client
+                .get(path)
+                .query(query)
+                .header(ACCEPT, "application/json")
+                .bearer_auth(&self.token),
+            operation,
+            |message| message.to_owned(),
+        )?;
+        crate::forgejo_http::decode_from_parts(status, &text, operation)
     }
 
     fn get_page<T: DeserializeOwned>(
@@ -367,6 +376,10 @@ impl ForgejoProvider {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<T, ForgejoError> {
+        // `send` is used for both safe GET reads and mutations. Only GET
+        // paths are wired through `get`/`get_page` (which are the retry
+        // paths). POST/PATCH reuse this helper without retry by design:
+        // mutations must never be replayed.
         let response = request
             .header(ACCEPT, "application/json")
             .bearer_auth(&self.token)
@@ -380,12 +393,17 @@ impl ForgejoProvider {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<Page<T>, ForgejoError> {
-        let response = request
-            .header(ACCEPT, "application/json")
-            .bearer_auth(&self.token)
-            .send()
-            .map_err(|error| ForgejoError::request(operation, error.to_string()))?;
-        decode_page(response, operation)
+        // Pagination reads are safe GETs; route through the shared retry
+        // helper that handles 429/502/503/504 and transport timeouts.
+        // `send` stays non-retrying for mutations.
+        let (status, headers, text) = crate::http_client::fetch_with_retry(
+            request
+                .header(ACCEPT, "application/json")
+                .bearer_auth(&self.token),
+            operation,
+            |message| message.to_owned(),
+        )?;
+        crate::forgejo_http::decode_page_from_parts(status, &headers, text, operation)
     }
 }
 

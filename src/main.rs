@@ -16,6 +16,7 @@ mod gitlab;
 mod gitlab_http;
 mod gitlab_model;
 mod hooks;
+mod http_client;
 mod lifecycle;
 mod policy;
 mod provider;
@@ -62,6 +63,9 @@ mod storage_tests;
 
 #[cfg(test)]
 mod config_tests;
+
+#[cfg(test)]
+mod http_client_tests;
 
 fn main() {
     std::process::exit(cli::run(std::env::args().skip(1)));

@@ -75,10 +75,8 @@ impl GitlabHttp {
             // (or test) renders the error.
             ForgejoError::auth("GitLab PRIVATE-TOKEN contains invalid header characters")
         })?;
-        let client = Client::builder()
-            .user_agent(format!("phasegent/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| ForgejoError::request("client build", error.to_string()))?;
+        let client = crate::http_client::build_client()
+            .map_err(|error| ForgejoError::request("client build", error))?;
         Ok(Self {
             client,
             api_base,
@@ -93,7 +91,9 @@ impl GitlabHttp {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<T, ForgejoError> {
-        let (status, text) = self.response(
+        // Safe GET: retry on transient transport failures and
+        // 429/502/503/504.
+        let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
             operation,
         )?;
@@ -116,7 +116,8 @@ impl GitlabHttp {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<Option<T>, ForgejoError> {
-        let (status, text) = self.response(
+        // Safe GET with optional 404: retry policy applies, 404 is terminal.
+        let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
             operation,
         )?;
@@ -319,6 +320,7 @@ impl GitlabHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
+        // Mutation path: no retry.
         let response = request
             .header(ACCEPT, "application/json")
             .header("PRIVATE-TOKEN", self.token.as_str())
@@ -328,6 +330,22 @@ impl GitlabHttp {
         let text = response
             .text()
             .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+        Ok((status, text))
+    }
+
+    fn response_with_retry(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+    ) -> Result<(StatusCode, String), ForgejoError> {
+        // Safe GET path: retry on transient failures.
+        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+            request
+                .header(ACCEPT, "application/json")
+                .header("PRIVATE-TOKEN", self.token.as_str()),
+            operation,
+            |message| self.redact(message),
+        )?;
         Ok((status, text))
     }
 
@@ -366,19 +384,18 @@ impl GitlabHttp {
         extra_query: &[(&str, String)],
         operation: &str,
     ) -> Result<(Vec<T>, HeaderMap, String), ForgejoError> {
+        // Safe GET with pagination: retry on transient failures.
         let mut params: Vec<(&str, String)> = extra_query.to_vec();
         params.push(("per_page", PAGE_SIZE.to_string()));
-        let response = self.client.get(self.endpoint(path)?).query(&params);
-        let response = response
-            .header(ACCEPT, "application/json")
-            .header("PRIVATE-TOKEN", self.token.as_str())
-            .send()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
-        let status = response.status();
-        let headers = response.headers().clone();
-        let text = response
-            .text()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+        let (status, headers, text) = crate::http_client::fetch_with_retry(
+            self.client
+                .get(self.endpoint(path)?)
+                .query(&params)
+                .header(ACCEPT, "application/json")
+                .header("PRIVATE-TOKEN", self.token.as_str()),
+            operation,
+            |message| self.redact(message),
+        )?;
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
@@ -412,7 +429,8 @@ impl GitlabHttp {
         query: &[(&str, String)],
         operation: &str,
     ) -> Result<String, ForgejoError> {
-        let (status, text) = self.response(
+        // Safe GET for text payloads: retry on transient failures.
+        let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
             operation,
         )?;
