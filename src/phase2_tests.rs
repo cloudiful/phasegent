@@ -633,7 +633,7 @@ fn canonical_transition_policy_matches_the_documented_phase_graph() {
             &["In Progress", "Blocked", "Cancelled"],
         ),
         ("Blocked", &["In Progress", "Cancelled"]),
-        ("Resolved", &["Closed"]),
+        ("Resolved", &["In Progress", "Closed"]),
         ("Closed", &[]),
         ("Cancelled", &[]),
     ];
@@ -654,13 +654,49 @@ fn canonical_transition_policy_matches_the_documented_phase_graph() {
 
     // Illegal edges are rejected with the allowed set attached so the
     // caller can surface concrete guidance.
-    match evaluate_transition("Resolved", "In Progress") {
-        TransitionVerdict::Forbidden { allowed_next } => assert_eq!(allowed_next, &["Closed"]),
+    match evaluate_transition("Resolved", "In Review") {
+        TransitionVerdict::Forbidden { allowed_next } => {
+            assert_eq!(allowed_next, &["In Progress", "Closed"])
+        }
         other => panic!("expected Forbidden, got {other:?}"),
     }
     match evaluate_transition("Closed", "In Progress") {
         TransitionVerdict::Forbidden { allowed_next } => assert!(allowed_next.is_empty()),
         other => panic!("expected Forbidden, got {other:?}"),
+    }
+}
+
+/// `Resolved` is a per-phase checkpoint, so the policy must expose both
+/// the phase-continuation edge back to `In Progress` and the task-final
+/// edge to `Closed`. Losing the continuation edge would strand every
+/// multi-phase task after its first reviewed phase.
+#[test]
+fn resolved_status_allows_phase_continuation_and_final_close() {
+    assert_eq!(
+        canonical_allowed_next("Resolved").expect("canonical status"),
+        &["In Progress", "Closed"],
+        "Resolved must offer continuation before final close"
+    );
+    assert_eq!(
+        evaluate_transition("Resolved", "In Progress"),
+        TransitionVerdict::Allowed,
+        "a remaining phase must be able to resume implementation"
+    );
+    assert_eq!(
+        evaluate_transition("Resolved", "Closed"),
+        TransitionVerdict::Allowed,
+        "the task-final close edge must be retained"
+    );
+    // The continuation edge must not turn Resolved into a general
+    // re-entry point: every other phase state stays unreachable.
+    for target in ["In Review", "Changes Requested", "Blocked", "Cancelled"] {
+        assert!(
+            matches!(
+                evaluate_transition("Resolved", target),
+                TransitionVerdict::Forbidden { .. }
+            ),
+            "Resolved -> {target} must stay forbidden"
+        );
     }
 }
 

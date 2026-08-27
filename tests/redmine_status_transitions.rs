@@ -122,6 +122,97 @@ fn status_advance_same_status_is_idempotent_no_op() {
     );
 }
 
+/// The phase-continuation edge is a legal policy transition: a reviewed
+/// phase in `Resolved` must be able to return to `In Progress` for the
+/// next remaining phase, so the PUT is attempted instead of being
+/// rejected by policy.
+#[test]
+fn status_advance_performs_resolved_to_in_progress_phase_continuation() {
+    let server = start_mock_server(vec![
+        MockResponse::ok(statuses_response()),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            true,
+        )),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_IN_PROGRESS,
+            "In Progress",
+            false,
+        )),
+    ]);
+    let db = make_test_db(&server.base_url);
+
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        &status_args(Some("In Progress")),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "phase continuation must be policy-legal: {}",
+        stderr_text(&output)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(stdout_text(&output).trim()).expect("advance emits JSON");
+    assert_eq!(json["changed"], true);
+    assert_eq!(json["from"]["name"], "Resolved");
+    assert_eq!(json["to"]["name"], "In Progress");
+    assert_eq!(json["to"]["id"], STATUS_IN_PROGRESS);
+    assert_eq!(
+        json["advisory"], false,
+        "both sides are canonical, so the verdict is not advisory"
+    );
+    assert_eq!(put_requests(&server.requests()), 1);
+}
+
+/// Policy legality is not a claim about the installation: if the Redmine
+/// workflow refuses the continuation edge, the server failure survives
+/// with bounded transition context instead of being masked.
+#[test]
+fn status_advance_preserves_server_rejection_of_phase_continuation() {
+    let server = start_mock_server(vec![
+        MockResponse::ok(statuses_response()),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            true,
+        )),
+        MockResponse {
+            status: 422,
+            body: serde_json::json!({"errors": ["Status is invalid"]}).to_string(),
+        },
+    ]);
+    let db = make_test_db(&server.base_url);
+
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        &status_args(Some("In Progress")),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_text(&output);
+    let json: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("server rejection emits structured JSON");
+    assert_eq!(json["error"]["status"], 422);
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("structured error carries a message")
+        .to_owned();
+    assert!(
+        message.contains("Status is invalid") && message.contains("authoritative"),
+        "the Redmine workflow must stay authoritative: {message}"
+    );
+    assert!(
+        message.contains("'Resolved'") && message.contains("status next 4242"),
+        "server rejection must gain bounded transition context: {message}"
+    );
+}
+
 /// A policy-illegal transition fails before the PUT with structured
 /// guidance naming current, target, allowed_next, the policy source, and
 /// the recovery command.
@@ -138,11 +229,7 @@ fn status_advance_rejects_illegal_transition_before_any_write() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(
-        &db.path,
-        &server.base_url,
-        &status_args(Some("In Progress")),
-    );
+    let output = run_cli(&db.path, &server.base_url, &status_args(Some("In Review")));
     assert_eq!(output.status.code(), Some(1));
     let stderr = stderr_text(&output);
     let json: serde_json::Value =
@@ -153,8 +240,8 @@ fn status_advance_rejects_illegal_transition_before_any_write() {
         .to_owned();
     for expected in [
         "'Resolved'",
-        "'In Progress'",
-        "allowed_next=[Closed]",
+        "'In Review'",
+        "allowed_next=[In Progress, Closed]",
         POLICY_SOURCE,
         "status next 4242",
     ] {

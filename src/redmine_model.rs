@@ -139,6 +139,14 @@ pub const STATUS_POLICY_CAVEAT: &str = "Policy guidance only: the Redmine server
 /// Canonical phase transition graph. This table is the single source of
 /// truth for the workflow; the OpenCode plugin and the orchestrator
 /// prompt must query phasegent instead of restating it.
+///
+/// `Resolved` is a per-phase state, not a task-final one: it marks one
+/// reviewed phase. It therefore carries two distinct outgoing edges —
+/// `In Progress` is the phase-continuation edge taken after that phase's
+/// checkpoint/push when the plan still has remaining phases, and
+/// `Closed` is the task-final edge taken only after the last
+/// checkpoint/push. Omitting the continuation edge would make a
+/// multi-phase task impossible to advance.
 const STATUS_TRANSITIONS: &[(&str, &[&str])] = &[
     ("New", &["In Progress", "Cancelled"]),
     ("In Progress", &["In Review", "Blocked", "Cancelled"]),
@@ -151,7 +159,7 @@ const STATUS_TRANSITIONS: &[(&str, &[&str])] = &[
         &["In Progress", "Blocked", "Cancelled"],
     ),
     ("Blocked", &["In Progress", "Cancelled"]),
-    ("Resolved", &["Closed"]),
+    ("Resolved", &["In Progress", "Closed"]),
     ("Closed", &[]),
     ("Cancelled", &[]),
 ];
