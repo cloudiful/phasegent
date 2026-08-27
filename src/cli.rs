@@ -737,7 +737,11 @@ fn execute_status(
     // and the admin bootstrap identity may not move an issue's status.
     // The check runs before any provider or network access so a denied
     // role fails fast with a structured permission error.
-    if matches!(command, StatusCommand::Set { .. }) && role != Role::Orchestrator {
+    if matches!(
+        command,
+        StatusCommand::Set { .. } | StatusCommand::Advance { .. }
+    ) && role != Role::Orchestrator
+    {
         return structured_error(
             serde_json::json!({
                 "kind":"permission",
@@ -789,6 +793,25 @@ fn execute_status(
                 provider_error(ForgejoError::not_supported("gitlab", "issue status list"))
             }
             _ => print_result(provider.list_issue_statuses()),
+        },
+        // `next` and `advance` are Redmine-only capabilities: the
+        // canonical policy is expressed with Redmine status names and
+        // resolved against this installation's status ids.
+        StatusCommand::Next { number } => match provider {
+            ProviderDispatcher::Redmine(redmine) => print_result(redmine.status_next(number)),
+            other => provider_error(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue status next",
+            )),
+        },
+        StatusCommand::Advance { number, status } => match provider {
+            ProviderDispatcher::Redmine(redmine) => {
+                print_result(redmine.advance_issue_status(number, &status))
+            }
+            other => provider_error(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue status advance",
+            )),
         },
         StatusCommand::Set { number, status } => match provider {
             ProviderDispatcher::Gitlab(gitlab) => {
@@ -1252,9 +1275,15 @@ fn print_status_help(role: Option<Role>) {
             "  list             {}",
             Capability::IssueStatusRead.description()
         );
+        println!(
+            "  next             Show an issue's current status and the policy-allowed next statuses"
+        );
     }
     if role.is_none_or(|role| role == Role::Orchestrator) {
         println!("  set              Update a Redmine issue status by validated name or id");
+        println!(
+            "  advance          Update a Redmine issue status with a policy preflight and structured guidance"
+        );
     }
     println!("\nUse 'phasegent --help status <command>' for options.");
 }
@@ -1568,16 +1597,22 @@ fn print_project_command_help(role: Option<Role>, command: &str) {
 }
 
 fn print_status_command_help(role: Option<Role>, command: &str) {
-    if command != "list" && command != "set" {
+    if !matches!(command, "list" | "next" | "set" | "advance") {
         print_status_help(role);
         return;
     }
     let capability = Capability::IssueStatusRead;
-    if command == "set" {
+    if command == "set" || command == "advance" {
         if role.is_none_or(|role| role == Role::Orchestrator) {
-            println!(
-                "Usage: status set <NUMBER> --status NAME_OR_ID\n\nUpdates a Redmine issue status by validated numeric id or exact name and prints the updated issue. Orchestrator-only; Redmine-only.\n\nValues beginning with `-` must use the inline form: --status=VALUE."
-            );
+            if command == "set" {
+                println!(
+                    "Usage: status set <NUMBER> --status NAME_OR_ID\n\nUpdates a Redmine issue status by validated numeric id or exact name and prints the updated issue. Orchestrator-only; Redmine-only.\n\nValues beginning with `-` must use the inline form: --status=VALUE."
+                );
+            } else {
+                println!(
+                    "Usage: status advance <NUMBER> --status NAME_OR_ID\n\nUpdates a Redmine issue status after a centralized policy preflight. The same status is an idempotent no-op, a policy-illegal transition fails before any write with current/target/allowed_next/recovery guidance, and unknown or custom statuses are forwarded to the server as advisory. Orchestrator-only; Redmine-only."
+                );
+            }
         } else {
             println!(
                 "No command available for {}.",
@@ -1587,7 +1622,13 @@ fn print_status_command_help(role: Option<Role>, command: &str) {
         return;
     }
     if role.is_none_or(|role| role.allows(capability)) {
-        println!("Usage: status list\n\n{}", capability.description());
+        if command == "next" {
+            println!(
+                "Usage: status next <NUMBER>\n\nPrints the issue's current status, the policy-allowed next statuses resolved to this installation's status ids, the policy source, and the recovery command. Read-only; Redmine-only. Server workflow permissions remain authoritative."
+            );
+        } else {
+            println!("Usage: status list\n\n{}", capability.description());
+        }
     } else {
         println!(
             "No command available for {}.",

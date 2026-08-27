@@ -187,9 +187,21 @@ pub enum ProjectCommand {
 #[derive(Debug)]
 pub enum StatusCommand {
     List,
+    /// Redmine-only read of the current status plus the policy-allowed
+    /// next statuses. Available to every role that can read statuses.
+    Next {
+        number: u64,
+    },
     /// Redmine-only status transition by validated status name or id.
     /// Orchestrator-only at execution time.
     Set {
+        number: u64,
+        status: String,
+    },
+    /// Redmine-only policy-preflighted transition: idempotent for the
+    /// same status, rejected before any write for a canonical illegal
+    /// edge, advisory for custom statuses. Orchestrator-only.
+    Advance {
         number: u64,
         status: String,
     },
@@ -983,11 +995,24 @@ fn parse_status(args: &[String]) -> Result<Command, String> {
             require_exact_positionals(args, 1, "status list")?;
             Ok(Command::Status(StatusCommand::List))
         }
+        "next" => {
+            require_exact_positionals(args, 2, "status next")?;
+            Ok(Command::Status(StatusCommand::Next {
+                number: positional_number(args, 1, "status next")?,
+            }))
+        }
         "set" => {
             validate_options(args, 1, &["--status"], &[], "status set")?;
             Ok(Command::Status(StatusCommand::Set {
                 number: positional_number(args, 1, "status set")?,
                 status: required_nonempty_option(args, "--status", "status set")?,
+            }))
+        }
+        "advance" => {
+            validate_options(args, 1, &["--status"], &[], "status advance")?;
+            Ok(Command::Status(StatusCommand::Advance {
+                number: positional_number(args, 1, "status advance")?,
+                status: required_nonempty_option(args, "--status", "status advance")?,
             }))
         }
         value => Err(format!("unknown status command '{value}'")),
@@ -1193,7 +1218,7 @@ fn help_topic(
         },
         "status" => match subcommand {
             None => Ok(HelpTopic::Status),
-            Some("list") | Some("set") => {
+            Some("list") | Some("next") | Some("set") | Some("advance") => {
                 Ok(HelpTopic::StatusCommand(subcommand.unwrap().to_owned()))
             }
             Some(value) => Err(format!("unknown status help topic '{value}'")),

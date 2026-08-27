@@ -3,6 +3,9 @@ use crate::command;
 use crate::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::policy::{Capability, Role};
 use crate::provider::ProviderKind;
+use crate::redmine_model::{
+    TransitionVerdict, canonical_allowed_next, canonical_status_name, evaluate_transition,
+};
 use crate::remote;
 use crate::storage::Storage;
 use std::fs;
@@ -544,6 +547,154 @@ fn repo_create_requires_private_and_valid_owner_repository() {
             assert!(auto_init);
         }
         other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn status_next_and_advance_parse_positional_and_status_option() {
+    let next = [
+        "--role",
+        "executor",
+        "--provider",
+        "redmine",
+        "status",
+        "next",
+        "51",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&next).unwrap().command {
+        command::Command::Status(command::StatusCommand::Next { number }) => {
+            assert_eq!(number, 51);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // `next` takes exactly one positional and no options.
+    for extra in [vec!["51", "52"], vec!["51", "--status", "Blocked"]] {
+        let mut args = vec!["--role", "orchestrator", "status", "next"];
+        args.extend(extra);
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert!(command::parse(&args).is_err());
+    }
+
+    let advance = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "status",
+        "advance",
+        "51",
+        "--status",
+        "In Review",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&advance).unwrap().command {
+        command::Command::Status(command::StatusCommand::Advance { number, status }) => {
+            assert_eq!(number, 51);
+            assert_eq!(status, "In Review");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let missing_status = [
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "status",
+        "advance",
+        "51",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(command::parse(&missing_status).is_err());
+}
+
+/// The canonical transition graph is the single source of truth for the
+/// phase workflow, so every documented edge and every terminal status is
+/// asserted directly against the policy helpers.
+#[test]
+fn canonical_transition_policy_matches_the_documented_phase_graph() {
+    let expected: &[(&str, &[&str])] = &[
+        ("New", &["In Progress", "Cancelled"]),
+        ("In Progress", &["In Review", "Blocked", "Cancelled"]),
+        (
+            "In Review",
+            &["Resolved", "Changes Requested", "Blocked", "Cancelled"],
+        ),
+        (
+            "Changes Requested",
+            &["In Progress", "Blocked", "Cancelled"],
+        ),
+        ("Blocked", &["In Progress", "Cancelled"]),
+        ("Resolved", &["Closed"]),
+        ("Closed", &[]),
+        ("Cancelled", &[]),
+    ];
+    for (current, allowed) in expected {
+        assert_eq!(
+            canonical_allowed_next(current).expect("canonical status"),
+            *allowed,
+            "allowed_next mismatch for {current}"
+        );
+        for target in *allowed {
+            assert_eq!(
+                evaluate_transition(current, target),
+                TransitionVerdict::Allowed,
+                "{current} -> {target} must be allowed"
+            );
+        }
+    }
+
+    // Illegal edges are rejected with the allowed set attached so the
+    // caller can surface concrete guidance.
+    match evaluate_transition("Resolved", "In Progress") {
+        TransitionVerdict::Forbidden { allowed_next } => assert_eq!(allowed_next, &["Closed"]),
+        other => panic!("expected Forbidden, got {other:?}"),
+    }
+    match evaluate_transition("Closed", "In Progress") {
+        TransitionVerdict::Forbidden { allowed_next } => assert!(allowed_next.is_empty()),
+        other => panic!("expected Forbidden, got {other:?}"),
+    }
+}
+
+/// Same-status transitions are no-ops, installation casing is tolerated,
+/// and any unknown status makes the verdict advisory instead of claiming
+/// permission the server may not grant.
+#[test]
+fn transition_policy_handles_no_op_casing_and_custom_statuses() {
+    assert_eq!(
+        evaluate_transition("In Progress", "In Progress"),
+        TransitionVerdict::NoOp
+    );
+    assert_eq!(
+        evaluate_transition("Triaged", "triaged"),
+        TransitionVerdict::NoOp,
+        "a custom status re-applied to itself is still a no-op"
+    );
+    assert_eq!(canonical_status_name("in progress"), Some("In Progress"));
+    assert_eq!(canonical_status_name("  BLOCKED "), Some("Blocked"));
+    assert_eq!(canonical_status_name("Triaged"), None);
+    assert!(canonical_allowed_next("Triaged").is_none());
+
+    match evaluate_transition("Triaged", "In Progress") {
+        TransitionVerdict::Advisory { reason } => {
+            assert!(reason.contains("current status 'Triaged'"), "{reason}");
+            assert!(reason.contains("server decides"), "{reason}");
+        }
+        other => panic!("expected Advisory, got {other:?}"),
+    }
+    match evaluate_transition("In Progress", "Escalated") {
+        TransitionVerdict::Advisory { reason } => {
+            assert!(reason.contains("target status 'Escalated'"), "{reason}");
+        }
+        other => panic!("expected Advisory, got {other:?}"),
     }
 }
 

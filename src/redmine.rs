@@ -11,6 +11,8 @@ use crate::redmine_model::{
     RedmineTimeEntryActivity, RedmineTimeEntryActivityCollection, RedmineTimeEntryCollection,
     RedmineTimeEntryResponse, RedmineTracker, RedmineTrackerCollection, RedmineUpdateIssue,
     RedmineUserMembershipOutcome, RedmineVersion, RedmineVersionCollection, RelationSummary,
+    STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, StatusNextReport, StatusRef,
+    StatusTransitionOutcome, TransitionVerdict, canonical_allowed_next, evaluate_transition,
 };
 
 const PAGE_SIZE: usize = 100;
@@ -606,6 +608,103 @@ impl RedmineProvider {
         }
     }
 
+    /// Read the issue's current status without the surrounding summary
+    /// so status policy checks can run before any write.
+    fn current_status(&self, number: u64, operation: &str) -> Result<RedmineStatus, ForgejoError> {
+        let issue = self.issue_with_journals(number, operation)?;
+        issue.status.ok_or_else(|| {
+            ForgejoError::request(
+                operation,
+                format!("Redmine issue {number} response carried no status"),
+            )
+        })
+    }
+
+    /// Answer "where can this issue go next" from the centralized
+    /// canonical policy, resolving policy names to this installation's
+    /// status ids. Read-only: no transition is attempted.
+    pub fn status_next(&self, number: u64) -> Result<StatusNextReport, ForgejoError> {
+        let operation = "issue status next";
+        let statuses = self.list_issue_statuses()?;
+        let current = self.current_status(number, operation)?;
+        let policy_names = canonical_allowed_next(&current.name);
+        let mut allowed_next = Vec::new();
+        let mut missing = Vec::new();
+        for name in policy_names.unwrap_or(&[]) {
+            match statuses
+                .iter()
+                .find(|status| status.name.eq_ignore_ascii_case(name))
+            {
+                Some(status) => allowed_next.push(StatusRef::from_installation(status)),
+                None => missing.push((*name).to_owned()),
+            }
+        }
+        Ok(StatusNextReport {
+            issue: number,
+            current: StatusRef::from_issue_status(&current),
+            allowed_next,
+            allowed_next_missing_on_server: missing,
+            policy_source: STATUS_POLICY_SOURCE,
+            advisory: policy_names.is_none(),
+            caveat: STATUS_POLICY_CAVEAT,
+            recovery: recovery_hint(number),
+        })
+    }
+
+    /// Move an issue to `target_value` after a policy preflight.
+    /// Same-status requests are an idempotent no-op, canonical illegal
+    /// edges fail before the PUT with structured guidance, and unknown
+    /// or custom statuses are forwarded to the server as advisory so a
+    /// custom workflow keeps working.
+    pub fn advance_issue_status(
+        &self,
+        number: u64,
+        target_value: &str,
+    ) -> Result<StatusTransitionOutcome, ForgejoError> {
+        let operation = "issue status advance";
+        let statuses = self.list_issue_statuses()?;
+        let target = RedmineProvider::select_status_by_value(&statuses, target_value)?;
+        let current = self.current_status(number, operation)?;
+        let from = StatusRef::from_issue_status(&current);
+        let to = StatusRef::from_installation(target);
+        let verdict = evaluate_transition(&current.name, &target.name);
+        let advisory = matches!(verdict, TransitionVerdict::Advisory { .. });
+        match &verdict {
+            TransitionVerdict::NoOp => {
+                return Ok(StatusTransitionOutcome {
+                    issue: number,
+                    changed: false,
+                    from,
+                    to,
+                    policy_source: STATUS_POLICY_SOURCE,
+                    advisory: false,
+                    caveat: None,
+                    issue_summary: None,
+                });
+            }
+            TransitionVerdict::Forbidden { allowed_next } => {
+                return Err(ForgejoError::request(
+                    operation,
+                    forbidden_message(number, &current.name, &target.name, allowed_next),
+                ));
+            }
+            TransitionVerdict::Allowed | TransitionVerdict::Advisory { .. } => {}
+        }
+        let summary = self.set_issue_status(number, target.id).map_err(|error| {
+            annotate_transition_error(error, &current.name, &target.name, number)
+        })?;
+        Ok(StatusTransitionOutcome {
+            issue: number,
+            changed: true,
+            from,
+            to,
+            policy_source: STATUS_POLICY_SOURCE,
+            advisory,
+            caveat: advisory.then_some(STATUS_POLICY_CAVEAT),
+            issue_summary: Some(summary),
+        })
+    }
+
     /// Close an issue using the configured close status id. The PUT
     /// response (or a follow-up `GET`) must confirm the issue is now in
     /// a closed state — either by matching the configured close status
@@ -939,5 +1038,76 @@ fn normalise_status(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "pending" | "cloning" | "ready" | "failed" => raw.trim().to_ascii_lowercase(),
         other => other.to_owned(),
+    }
+}
+
+/// Concrete recovery command an AI can run to see the current status and
+/// the policy-allowed next statuses for one issue.
+fn recovery_hint(number: u64) -> String {
+    format!("phasegent --role orchestrator --provider redmine status next {number}")
+}
+
+/// Structured, self-describing message for a policy-rejected
+/// transition. It names the current status, the target status, the
+/// allowed next statuses, the policy identifier, and the recovery
+/// command so the caller never has to guess the workflow.
+fn forbidden_message(
+    number: u64,
+    current: &str,
+    target: &str,
+    allowed_next: &[&'static str],
+) -> String {
+    let allowed = if allowed_next.is_empty() {
+        "<none: terminal status>".to_owned()
+    } else {
+        allowed_next.join(", ")
+    };
+    format!(
+        "transition rejected before any write: current status '{current}' -> target status '{target}' is not allowed by policy {STATUS_POLICY_SOURCE}; allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}",
+        recovery_hint(number)
+    )
+}
+
+/// Preserve a server-side rejection while appending bounded
+/// current/target/recovery context. The original provider error keeps
+/// its kind and operation; only the message gains guidance, and the
+/// appended text is length-bounded so no full remote response or
+/// credential can be echoed.
+fn annotate_transition_error(
+    error: ForgejoError,
+    current: &str,
+    target: &str,
+    number: u64,
+) -> ForgejoError {
+    let context = bounded(&format!(
+        "current status '{current}' -> target status '{target}'; server rejected a policy-allowed or custom transition, so the Redmine workflow is authoritative; recovery: {}",
+        recovery_hint(number)
+    ));
+    match error {
+        ForgejoError::Http {
+            operation,
+            status,
+            message,
+        } => ForgejoError::Http {
+            operation,
+            status,
+            message: format!("{}; {context}", bounded(&message)),
+        },
+        ForgejoError::Request { operation, message } => {
+            ForgejoError::request(&operation, format!("{}; {context}", bounded(&message)))
+        }
+        other => other,
+    }
+}
+
+const CONTEXT_BOUND: usize = 400;
+
+fn bounded(message: &str) -> String {
+    let collapsed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > CONTEXT_BOUND {
+        let truncated = collapsed.chars().take(CONTEXT_BOUND).collect::<String>();
+        format!("{truncated}...")
+    } else {
+        collapsed
     }
 }
