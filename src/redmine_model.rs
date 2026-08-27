@@ -493,9 +493,25 @@ pub(crate) struct RedmineIssue {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RedmineStatus {
+    /// Server-assigned status id. Missing or zero values indicate a
+    /// legacy response shape (older Redmine releases, mock fixtures)
+    /// where the caller cannot verify a status transition by id and must
+    /// rely on the `is_closed` flag or a follow-up `GET` instead.
+    #[serde(default)]
+    pub(crate) id: u64,
     #[serde(default)]
     pub(crate) name: String,
     pub(crate) is_closed: Option<bool>,
+}
+
+impl RedmineStatus {
+    /// `Some(id)` when the response carries a usable status id, `None`
+    /// otherwise. The provider-level status verification treats the
+    /// `None` case as "cannot verify by id" and falls back to either
+    /// `is_closed` (for close) or a follow-up `GET`.
+    pub(crate) fn known_id(&self) -> Option<u64> {
+        if self.id > 0 { Some(self.id) } else { None }
+    }
 }
 
 #[derive(Debug, Deserialize)]

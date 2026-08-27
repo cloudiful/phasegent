@@ -7,14 +7,31 @@ use crate::redmine_model::{
     RedmineIssueResponse, RedmineIssueStatus, RedmineIssueStatusCollection, RedmineNewIssue,
     RedmineNewProject, RedmineNewRelation, RedmineNewTimeEntry, RedmineNotes, RedmineProject,
     RedmineProjectCollection, RedmineProjectResponse, RedmineRelationCollection,
-    RedmineRelationResponse, RedmineRelationType, RedmineTimeEntry, RedmineTimeEntryActivity,
-    RedmineTimeEntryActivityCollection, RedmineTimeEntryCollection, RedmineTimeEntryResponse,
-    RedmineTracker, RedmineTrackerCollection, RedmineUpdateIssue, RedmineUserMembershipOutcome,
-    RedmineVersion, RedmineVersionCollection, RelationSummary,
+    RedmineRelationResponse, RedmineRelationType, RedmineStatus, RedmineTimeEntry,
+    RedmineTimeEntryActivity, RedmineTimeEntryActivityCollection, RedmineTimeEntryCollection,
+    RedmineTimeEntryResponse, RedmineTracker, RedmineTrackerCollection, RedmineUpdateIssue,
+    RedmineUserMembershipOutcome, RedmineVersion, RedmineVersionCollection, RelationSummary,
 };
 
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 10_000;
+
+/// Outcome of a close-status verification step. The provider turns an
+/// observed status into one of these variants so the two `close_issue`
+/// verification paths (PUT response and follow-up `GET`) share the same
+/// decision logic.
+enum CloseVerification {
+    /// The observed status confirms the close (matches the configured
+    /// close status id or carries `is_closed=true`).
+    Confirmed,
+    /// The observed status contradicts the close (different id, not
+    /// closed). The caller surfaces a structured request error.
+    Mismatch,
+    /// The observed status carries no usable signal (legacy response
+    /// shape with no id and no closed flag). The caller falls back to a
+    /// follow-up `GET` for the final verdict.
+    Indeterminate,
+}
 
 impl RedmineProvider {
     pub fn bootstrap_project(
@@ -527,6 +544,17 @@ impl RedmineProvider {
     /// Move an issue to any status resolved by validated name or id via
     /// [`RedmineProvider::select_status_by_value`]. Unlike `close_issue`
     /// this is not restricted to closed statuses.
+    ///
+    /// The PUT response (or a follow-up `GET` when the response body is
+    /// empty) must confirm `status_id` actually landed on the issue. A
+    /// server that returns `200 OK` while the remote state remains
+    /// unchanged produces a structured request error so callers never
+    /// see a false success. When the response carries no usable status
+    /// id (older Redmine versions, legacy mock fixtures), the PUT
+    /// response is accepted as authoritative because no verification
+    /// signal is available; the follow-up `GET` still runs whenever the
+    /// PUT returns no body so empty / `204 No Content` responses do not
+    /// mask a silently-failed status change.
     pub fn set_issue_status(
         &self,
         number: u64,
@@ -536,20 +564,127 @@ impl RedmineProvider {
         let response: Option<RedmineIssueResponse> =
             self.http
                 .put(&self.issue_path(number), &payload, "issue status update")?;
-        response
-            .map(|response| self.issue_summary(response.issue))
-            .map_or_else(|| self.get_issue(number), Ok)
+        match response {
+            Some(response) => {
+                if let Some(status) = response.issue.status.as_ref()
+                    && let Some(observed) = status.known_id()
+                {
+                    if observed == status_id {
+                        return Ok(self.issue_summary(response.issue));
+                    }
+                    return Err(ForgejoError::request(
+                        "issue status update",
+                        format!(
+                            "Redmine did not confirm status_id={status_id}; observed status_id={observed} ('{}')",
+                            status.name,
+                        ),
+                    ));
+                }
+                // The PUT response is present but does not carry a usable
+                // status id (older Redmine, legacy fixtures). Trust it and
+                // skip the follow-up GET so those environments keep working.
+                Ok(self.issue_summary(response.issue))
+            }
+            None => {
+                // The PUT response is empty; re-read the issue so a server that
+                // silently ignored the status change cannot return success.
+                let issue = self.issue_with_journals(number, "issue status update")?;
+                if let Some(status) = issue.status.as_ref()
+                    && let Some(observed) = status.known_id()
+                    && observed != status_id
+                {
+                    return Err(ForgejoError::request(
+                        "issue status update",
+                        format!(
+                            "Redmine did not confirm status_id={status_id}; observed status_id={observed} ('{}')",
+                            status.name,
+                        ),
+                    ));
+                }
+                Ok(self.issue_summary(issue))
+            }
+        }
     }
 
+    /// Close an issue using the configured close status id. The PUT
+    /// response (or a follow-up `GET`) must confirm the issue is now in
+    /// a closed state — either by matching the configured close status
+    /// id or by reporting `is_closed=true` so an operator who renames
+    /// the close status id still sees a correct close verification.
     pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
         let status_id = self.config.require_close_status_id()?;
         let payload = RedmineUpdateIssue::status(status_id);
         let response: Option<RedmineIssueResponse> =
             self.http
                 .put(&self.issue_path(number), &payload, "issue close")?;
-        response
-            .map(|response| self.issue_summary(response.issue))
-            .map_or_else(|| self.get_issue(number), Ok)
+        if let Some(response) = response {
+            match Self::evaluate_close_response(&response.issue, status_id) {
+                CloseVerification::Confirmed => return Ok(self.issue_summary(response.issue)),
+                CloseVerification::Mismatch => {
+                    let status = response
+                        .issue
+                        .status
+                        .as_ref()
+                        .expect("mismatch evaluation observed a present status");
+                    return Err(Self::close_mismatch_error(status, status_id));
+                }
+                CloseVerification::Indeterminate => {
+                    // Legacy response shape (no status id, no closed
+                    // flag, or no status at all). Trust the PUT response
+                    // and return so environments without an explicit id
+                    // in the PUT body keep working.
+                    return Ok(self.issue_summary(response.issue));
+                }
+            }
+        }
+        let issue = self.issue_with_journals(number, "issue close")?;
+        if let Some(status) = issue.status.as_ref() {
+            match Self::verify_close_status(status, status_id) {
+                CloseVerification::Confirmed => return Ok(self.issue_summary(issue)),
+                CloseVerification::Mismatch => {
+                    return Err(Self::close_mismatch_error(status, status_id));
+                }
+                CloseVerification::Indeterminate => {}
+            }
+        }
+        Ok(self.issue_summary(issue))
+    }
+
+    /// Evaluate a single PUT response against the configured close
+    /// status. Returns `Indeterminate` whenever the response carries no
+    /// usable status signal at all so the caller can fall back to a
+    /// follow-up `GET`.
+    fn evaluate_close_response(issue: &RedmineIssue, expected_status_id: u64) -> CloseVerification {
+        match issue.status.as_ref() {
+            Some(status) => Self::verify_close_status(status, expected_status_id),
+            None => CloseVerification::Indeterminate,
+        }
+    }
+
+    fn verify_close_status(status: &RedmineStatus, expected_status_id: u64) -> CloseVerification {
+        if let Some(observed) = status.known_id() {
+            if observed == expected_status_id {
+                CloseVerification::Confirmed
+            } else {
+                CloseVerification::Mismatch
+            }
+        } else if status.is_closed.unwrap_or(false) {
+            CloseVerification::Confirmed
+        } else {
+            CloseVerification::Indeterminate
+        }
+    }
+
+    fn close_mismatch_error(status: &RedmineStatus, expected_status_id: u64) -> ForgejoError {
+        ForgejoError::request(
+            "issue close",
+            format!(
+                "Redmine did not confirm close (status_id={expected_status_id}); observed status_id={:?} ('{}', is_closed={:?})",
+                status.known_id(),
+                status.name,
+                status.is_closed,
+            ),
+        )
     }
 
     pub fn create_comment(
