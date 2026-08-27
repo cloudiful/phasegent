@@ -715,6 +715,9 @@ phasegent --help
 phasegent --role executor --help
 phasegent --help issue
 phasegent --help issue create
+phasegent --help config provider
+phasegent --help auth
+phasegent --help workflow bootstrap
 ```
 
 ## Release

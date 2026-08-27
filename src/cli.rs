@@ -1170,7 +1170,7 @@ fn print_help(role: Option<Role>, provider: Option<ProviderKind>, topic: HelpTop
 fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\nRole selects a capability policy; it is not an identity boundary.\n\nUsage:\n  phasegent --role <ROLE> [--provider forgejo|redmine|gitlab] <COMMAND> [OPTIONS]\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, or reviewer\n  --provider <NAME>      forgejo, redmine, or gitlab (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  --close-status-name NAME Select a Redmine closed status during bootstrap\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  issue                  Issue operations\n  comment                Comment operations\n  auth                   Authentication setup\n  config                 Local configuration show, import-env, and provider default\n  hooks                  Managed Git hook installation\n\nProvider resolution precedence (highest first):\n  1. explicit --provider\n  2. PHASEGENT_PROVIDER environment variable\n  3. PHASEGENT_DEFAULT_PROVIDER environment variable\n  4. persisted PHASEGENT_DEFAULT_PROVIDER in SQLite (config provider set/get/clear)\n  5. role-scoped role_config.provider\n  6. forgejo fallback\nThe resolver is read-only; --provider is the per-command override and the persisted default is machine-wide."
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\nUsage:\n  phasegent --role <ROLE> [--provider forgejo|redmine|gitlab] <COMMAND> [OPTIONS]\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, or reviewer\n  --provider <NAME>      forgejo, redmine, or gitlab (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  issue                  Issue operations\n  comment                Comment operations\n  auth                   Authentication setup\n  config                 Local configuration show, import-env, and provider default\n  hooks                  Managed Git hook installation"
     );
     if provider != Some(ProviderKind::Redmine)
         && role.is_none_or(|role| role.allows(Capability::RepoCreate))
@@ -1217,7 +1217,11 @@ fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     if provider == Some(ProviderKind::Redmine) && role.is_none_or(|role| role == Role::Admin) {
         println!("  workflow               Redmine workflow bootstrap");
     }
-    println!("\nUse 'phasegent --help <command>' for the next level.");
+    println!(
+        "\nUse 'phasegent --help <command>' for the next level.\n\
+         Provider resolution chain and machine-wide default: 'phasegent --help config provider'.\n\
+         Role and credential guidance: 'phasegent --help auth'."
+    );
 }
 
 fn print_issue_help(role: Option<Role>) {
