@@ -211,7 +211,7 @@ fn execute(invocation: Invocation) -> i32 {
         ),
         Command::Timer(command) => match &command {
             command::TimerCommand::Start { .. } | command::TimerCommand::Finish { .. } => {
-                crate::time_tracking_cli::execute(
+                crate::time_tracking::execute(
                     invocation.role,
                     invocation.provider,
                     invocation.api_base.as_deref(),
@@ -223,7 +223,7 @@ fn execute(invocation: Invocation) -> i32 {
             }
             command::TimerCommand::List { .. }
             | command::TimerCommand::Get { .. }
-            | command::TimerCommand::Recover { .. } => crate::time_tracking_cli::execute_recovery(
+            | command::TimerCommand::Recover { .. } => crate::time_tracking::execute_recovery(
                 invocation.role,
                 invocation.provider,
                 invocation.api_base.as_deref(),

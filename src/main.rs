@@ -14,6 +14,7 @@ mod policy;
 mod remote;
 mod repo_cli;
 mod repo_command;
+mod time_tracking;
 mod time_tracking_cli;
 mod workflow;
 
