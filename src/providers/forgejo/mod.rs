@@ -1,13 +1,23 @@
+pub mod ci;
+pub mod http;
+pub mod model;
+
+#[cfg(test)]
+mod ci_tests;
+
+#[cfg(test)]
+mod contract_tests;
+
 use crate::auth;
-use crate::forgejo_http::{Page, decode};
-use crate::forgejo_model::{
+use crate::infra::storage::Storage;
+use crate::policy::Role;
+use crate::providers::ProviderKind;
+pub use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+use crate::providers::forgejo::http::{Page, decode};
+use crate::providers::forgejo::model::{
     ApiComment, ApiIssue, ApiRepository, NewComment, NewIssue, NewRepository, UpdateIssue,
 };
-pub use crate::forgejo_model::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
-use crate::policy::Role;
-use crate::provider::ProviderKind;
 use crate::remote;
-use crate::storage::Storage;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::ACCEPT;
 use serde::{Serialize, de::DeserializeOwned};
@@ -92,7 +102,7 @@ impl ForgejoProvider {
     }
 
     pub fn new(config: ForgejoConfig, token: String) -> Result<Self, ForgejoError> {
-        let client = crate::http_client::build_client()
+        let client = crate::infra::http_client::build_client()
             .map_err(|error| ForgejoError::request("client build", error))?;
         Ok(Self {
             config,
@@ -332,7 +342,7 @@ impl ForgejoProvider {
     ) -> Result<T, ForgejoError> {
         // Safe GET read: bounded retry on transient transport failures and
         // 429/502/503/504 with capped backoff/Retry-After.
-        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+        let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             self.client
                 .get(path)
                 .query(query)
@@ -341,7 +351,7 @@ impl ForgejoProvider {
             operation,
             |message| message.to_owned(),
         )?;
-        crate::forgejo_http::decode_from_parts(status, &text, operation)
+        crate::providers::forgejo::http::decode_from_parts(status, &text, operation)
     }
 
     fn get_page<T: DeserializeOwned>(
@@ -396,14 +406,14 @@ impl ForgejoProvider {
         // Pagination reads are safe GETs; route through the shared retry
         // helper that handles 429/502/503/504 and transport timeouts.
         // `send` stays non-retrying for mutations.
-        let (status, headers, text) = crate::http_client::fetch_with_retry(
+        let (status, headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
                 .bearer_auth(&self.token),
             operation,
             |message| message.to_owned(),
         )?;
-        crate::forgejo_http::decode_page_from_parts(status, &headers, text, operation)
+        crate::providers::forgejo::http::decode_page_from_parts(status, &headers, text, operation)
     }
 }
 

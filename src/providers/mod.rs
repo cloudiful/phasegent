@@ -1,14 +1,20 @@
+pub mod api;
+pub mod config;
+pub mod dispatch;
+pub mod forgejo;
+pub mod gitlab;
+pub mod redmine;
+
 use crate::ci_model::{
     CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
     CiRunsOutput,
 };
-use crate::forgejo_model::{CommentOutput, IssueSummary, RepoSummary};
 use crate::policy::Capability;
 
-pub use crate::provider_config::{
-    GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider,
-};
-pub use crate::redmine_model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
+pub use api::{CommentOutput, IssueSummary, RepoSummary};
+pub use config::{GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider};
+pub use dispatch::ProviderDispatcher;
+pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
@@ -78,8 +84,3 @@ pub trait CiProvider {
     fn ci_job_logs(&self, job_id: u64, tail: usize) -> Result<CiJobLogsOutput, Self::Error>;
     fn ci_inspect(&self, request: &CiInspectRequest) -> Result<CiInspectOutput, Self::Error>;
 }
-
-#[path = "provider_dispatch.rs"]
-mod provider_dispatch;
-
-pub use provider_dispatch::ProviderDispatcher;

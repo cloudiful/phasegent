@@ -1,13 +1,13 @@
 use crate::auth;
 use crate::command;
-use crate::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::infra::storage::Storage;
 use crate::policy::{Capability, Role};
-use crate::provider::ProviderKind;
-use crate::redmine_model::{
+use crate::providers::ProviderKind;
+use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::redmine::model::{
     TransitionVerdict, canonical_allowed_next, canonical_status_name, evaluate_transition,
 };
 use crate::remote;
-use crate::storage::Storage;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -1226,7 +1226,7 @@ fn bootstrap_warning_output_still_includes_git_mirror_outcome() {
 
 #[test]
 fn redmine_new_project_includes_repository_module_for_mirror_enablement() {
-    use crate::redmine_model::RedmineNewProject;
+    use crate::providers::redmine::model::RedmineNewProject;
     let payload = RedmineNewProject::new("Workflow", "workflow", Some("issues"));
     let value = serde_json::to_value(&payload).unwrap();
     let project = value.get("project").unwrap();
@@ -1479,7 +1479,7 @@ fn timer_execution_is_orchestrator_and_redmine_only() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .start_timer_run(
             "boundary-run",
@@ -1629,7 +1629,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
     // falls back to the role_config.provider column. A pre-populated
     // row must be consulted without leaking the role into another
     // provider branch.
-    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
     let home = std::env::temp_dir().join(format!(
@@ -1642,7 +1642,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
     ));
     let _db_path_guard = EnvGuard::set(
         "PHASEGENT_DB_PATH",
-        home.join(crate::storage::DB_FILENAME)
+        home.join(crate::infra::storage::DB_FILENAME)
             .to_string_lossy()
             .as_ref(),
     );
@@ -1668,7 +1668,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
     }
     let _provider_guard = ProviderGuard(previous_provider);
 
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .save_role_config(
             Role::Orchestrator,
@@ -1680,7 +1680,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
         )
         .unwrap();
 
-    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
     assert_eq!(resolved, ProviderKind::Gitlab);
 
     // A stale Redmine row for the same role must not win when
@@ -1696,7 +1696,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
         )
         .unwrap();
     let explicit =
-        crate::provider_config::resolve_kind(Role::Orchestrator, Some(ProviderKind::Gitlab))
+        crate::providers::config::resolve_kind(Role::Orchestrator, Some(ProviderKind::Gitlab))
             .unwrap();
     assert_eq!(explicit, ProviderKind::Gitlab);
 
@@ -1767,8 +1767,8 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
     // The resolver is read-only: each test fully resets the
     // environment and storage so the order of precedence is the
     // only variable under inspection.
-    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
-    use crate::storage::{PROVIDER_GITLAB, PROVIDER_REDMINE};
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::infra::storage::{PROVIDER_GITLAB, PROVIDER_REDMINE};
 
     let _lock = lock_workflow_tests();
     let _provider_env = DefaultProviderEnvGuard::neutralise();
@@ -1782,12 +1782,12 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
     ));
     let _db_path_guard = EnvGuard::set(
         "PHASEGENT_DB_PATH",
-        home.join(crate::storage::DB_FILENAME)
+        home.join(crate::infra::storage::DB_FILENAME)
             .to_string_lossy()
             .as_ref(),
     );
 
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .save_role_config(
             Role::Orchestrator,
@@ -1813,7 +1813,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
             },
         )
         .unwrap();
-    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
     assert_eq!(
         resolved,
         ProviderKind::Forgejo,
@@ -1831,7 +1831,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
             },
         )
         .unwrap();
-    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
     assert_eq!(
         resolved,
         ProviderKind::Redmine,
@@ -1842,7 +1842,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_GITLAB)
         .unwrap();
-    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
     assert_eq!(
         resolved,
         ProviderKind::Gitlab,
@@ -1851,7 +1851,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
 
     // 3. Env default beats the persisted default.
     let _default_env = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE);
-    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
     assert_eq!(
         resolved,
         ProviderKind::Redmine,
@@ -1860,7 +1860,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
 
     // 2. PHASEGENT_PROVIDER env var beats the default env var.
     let _provider_env = EnvGuard::set("PHASEGENT_PROVIDER", PROVIDER_GITLAB);
-    let resolved = crate::provider_config::resolve_kind(Role::Orchestrator, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
     assert_eq!(
         resolved,
         ProviderKind::Gitlab,
@@ -1871,7 +1871,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
     // value. This documents the contract that `--provider` is the
     // per-command override.
     let resolved =
-        crate::provider_config::resolve_kind(Role::Orchestrator, Some(ProviderKind::Redmine))
+        crate::providers::config::resolve_kind(Role::Orchestrator, Some(ProviderKind::Redmine))
             .unwrap();
     assert_eq!(
         resolved,
@@ -1900,8 +1900,8 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
     // The validator is the same `ProviderKind::from_str` that the
     // helper / snapshot / CLI layer use, so the contract is
     // uniform end to end.
-    use crate::storage::PROVIDER_REDMINE;
-    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::infra::storage::PROVIDER_REDMINE;
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
     let _provider_env = DefaultProviderEnvGuard::neutralise();
@@ -1915,12 +1915,12 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
     ));
     let _db_path_guard = EnvGuard::set(
         "PHASEGENT_DB_PATH",
-        home.join(crate::storage::DB_FILENAME)
+        home.join(crate::infra::storage::DB_FILENAME)
             .to_string_lossy()
             .as_ref(),
     );
 
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "wrong")
         .unwrap();
@@ -1938,7 +1938,7 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
         )
         .unwrap();
 
-    let error = crate::provider_config::resolve_kind(Role::Executor, None).unwrap_err();
+    let error = crate::providers::config::resolve_kind(Role::Executor, None).unwrap_err();
     let json = error.json();
     assert_eq!(json["kind"], "config");
     assert!(
@@ -1959,8 +1959,8 @@ fn resolve_kind_does_not_persist_anything() {
     // to `resolve_kind`, so the test must observe the empty
     // database after the resolver runs. The seeded values are
     // written by the test, not by the resolver.
-    use crate::storage::PROVIDER_REDMINE;
-    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::infra::storage::PROVIDER_REDMINE;
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
     let _provider_env = DefaultProviderEnvGuard::neutralise();
@@ -1974,17 +1974,17 @@ fn resolve_kind_does_not_persist_anything() {
     ));
     let _db_path_guard = EnvGuard::set(
         "PHASEGENT_DB_PATH",
-        home.join(crate::storage::DB_FILENAME)
+        home.join(crate::infra::storage::DB_FILENAME)
             .to_string_lossy()
             .as_ref(),
     );
 
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE)
         .unwrap();
 
-    let resolved = crate::provider_config::resolve_kind(Role::Executor, None).unwrap();
+    let resolved = crate::providers::config::resolve_kind(Role::Executor, None).unwrap();
     assert_eq!(resolved, ProviderKind::Redmine);
 
     // The persisted default must still be exactly what the test
@@ -2204,8 +2204,8 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
 
 #[test]
 fn timer_recovery_marks_orphan_failed_and_is_idempotent_for_terminal_rows() {
-    use crate::storage::test_support::lock_workflow_tests;
-    use crate::storage::{Storage, TIMER_SYNC_FAILED};
+    use crate::infra::storage::test_support::lock_workflow_tests;
+    use crate::infra::storage::{Storage, TIMER_SYNC_FAILED};
     let _lock = lock_workflow_tests();
     let home = std::env::temp_dir().join(format!(
         "phasegent-timer-recover-{}-{}",
@@ -2215,8 +2215,8 @@ fn timer_recovery_marks_orphan_failed_and_is_idempotent_for_terminal_rows() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = home.join(crate::storage::DB_FILENAME);
-    let _env = crate::storage::test_support::EnvGuard::set(
+    let db_path = home.join(crate::infra::storage::DB_FILENAME);
+    let _env = crate::infra::storage::test_support::EnvGuard::set(
         "PHASEGENT_DB_PATH",
         db_path.as_os_str().to_string_lossy().as_ref(),
     );
@@ -2316,8 +2316,8 @@ fn timer_recovery_marks_orphan_failed_and_is_idempotent_for_terminal_rows() {
 
 #[test]
 fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() {
-    use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
-    use crate::storage::{Storage, TIMER_SYNC_FAILED};
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::infra::storage::{Storage, TIMER_SYNC_FAILED};
     let _lock = lock_workflow_tests();
     let home = std::env::temp_dir().join(format!(
         "phasegent-timer-recover-forgejo-{}-{}",
@@ -2327,7 +2327,7 @@ fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() 
             .unwrap()
             .as_nanos()
     ));
-    let db_path = home.join(crate::storage::DB_FILENAME);
+    let db_path = home.join(crate::infra::storage::DB_FILENAME);
     let _env = EnvGuard::set(
         "PHASEGENT_DB_PATH",
         db_path.as_os_str().to_string_lossy().as_ref(),
@@ -2367,8 +2367,8 @@ fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() 
 
 #[test]
 fn timer_list_and_get_return_local_only_payloads_without_network() {
-    use crate::storage::Storage;
-    use crate::storage::test_support::lock_workflow_tests;
+    use crate::infra::storage::Storage;
+    use crate::infra::storage::test_support::lock_workflow_tests;
     let _lock = lock_workflow_tests();
     let home = std::env::temp_dir().join(format!(
         "phasegent-timer-listget-{}-{}",
@@ -2378,8 +2378,8 @@ fn timer_list_and_get_return_local_only_payloads_without_network() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = home.join(crate::storage::DB_FILENAME);
-    let _env = crate::storage::test_support::EnvGuard::set(
+    let db_path = home.join(crate::infra::storage::DB_FILENAME);
+    let _env = crate::infra::storage::test_support::EnvGuard::set(
         "PHASEGENT_DB_PATH",
         db_path.as_os_str().to_string_lossy().as_ref(),
     );

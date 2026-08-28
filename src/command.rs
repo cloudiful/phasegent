@@ -1,7 +1,7 @@
-use crate::forgejo_model::ForgejoError;
 use crate::policy::Role;
-use crate::provider::ProviderKind;
-use crate::redmine_model::RedmineRelationType;
+use crate::providers::ProviderKind;
+use crate::providers::api::ForgejoError;
+use crate::providers::redmine::model::RedmineRelationType;
 
 pub use crate::ci_command::CiCommand;
 pub use crate::hooks::HooksCommand;

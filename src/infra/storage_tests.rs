@@ -10,12 +10,12 @@
 //! never touch the operator's real platform-standard database.
 
 use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
-use crate::policy::Role;
-use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::storage::{
+use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+use crate::infra::storage::{
     DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage, TimerRunOwner,
     TimerStatusFilter,
 };
+use crate::policy::Role;
 use std::fs;
 use std::path::PathBuf;
 
@@ -209,7 +209,7 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
             "timer-gitlab",
             None,
             None,
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
@@ -240,7 +240,7 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
             "timer-redmine",
             Some(11),
             Some(99),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
@@ -272,7 +272,7 @@ fn timer_ledger_marks_failure_with_bounded_error_message() {
             "timer-fail",
             None,
             None,
-            crate::storage::TIMER_SYNC_FAILED,
+            crate::infra::storage::TIMER_SYNC_FAILED,
             Some("GitLab add_spent_time returned HTTP 422"),
         )
         .unwrap();
@@ -284,7 +284,7 @@ fn timer_ledger_marks_failure_with_bounded_error_message() {
                 "timer-fail",
                 None,
                 None,
-                crate::storage::TIMER_SYNC_FAILED,
+                crate::infra::storage::TIMER_SYNC_FAILED,
                 None
             )
             .is_err()
@@ -890,7 +890,10 @@ fn concurrent_projection_claim_is_serialized() {
         .load_timer_run("claim-run")
         .unwrap()
         .unwrap();
-    assert_eq!(final_row.sync_status, crate::storage::TIMER_SYNC_PROJECTING);
+    assert_eq!(
+        final_row.sync_status,
+        crate::infra::storage::TIMER_SYNC_PROJECTING
+    );
     assert!(final_row.projection_token.is_some());
     assert!(final_row.projection_claimed_at.is_some());
     let _ = fs::remove_dir_all(temp_dir);
@@ -925,7 +928,10 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
     );
     let claimed = storage.load_timer_run("owner-run").unwrap().unwrap();
     assert_eq!(claimed.projection_token.as_deref(), Some(token_a));
-    assert_eq!(claimed.sync_status, crate::storage::TIMER_SYNC_PROJECTING);
+    assert_eq!(
+        claimed.sync_status,
+        crate::infra::storage::TIMER_SYNC_PROJECTING
+    );
     // Second caller with token B attempts to claim the same run: must fail.
     let token_b = "tok-owner-B";
     assert!(
@@ -940,7 +946,7 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
             token_b,
             None,
             Some(999),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
@@ -955,13 +961,16 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
             token_a,
             None,
             Some(1001),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
     assert!(marked_a, "holder must be able to finalize");
     let final_row = storage.load_timer_run("owner-run").unwrap().unwrap();
-    assert_eq!(final_row.sync_status, crate::storage::TIMER_SYNC_SYNCED);
+    assert_eq!(
+        final_row.sync_status,
+        crate::infra::storage::TIMER_SYNC_SYNCED
+    );
     assert_eq!(final_row.time_entry_id, Some(1001));
     assert!(final_row.projection_token.is_none());
     // A stale reset must not clear a live lease. Simulate a concurrent
@@ -1001,7 +1010,7 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
             live_token,
             None,
             Some(2002),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
@@ -1029,7 +1038,7 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
         .unwrap();
     assert!(stale_ok, "expired lease must be recoverable");
     let after = storage.load_timer_run(stale_id).unwrap().unwrap();
-    assert_eq!(after.sync_status, crate::storage::TIMER_SYNC_FAILED);
+    assert_eq!(after.sync_status, crate::infra::storage::TIMER_SYNC_FAILED);
     assert!(after.projection_token.is_none());
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -1144,7 +1153,10 @@ fn concurrent_activity_initialization_is_token_bound() {
         .unwrap();
     assert_eq!(row.activity_id, Some(9), "activity_id must reflect holder");
     assert_eq!(row.projection_token.as_deref(), Some(token_a));
-    assert_eq!(row.sync_status, crate::storage::TIMER_SYNC_PROJECTING);
+    assert_eq!(
+        row.sync_status,
+        crate::infra::storage::TIMER_SYNC_PROJECTING
+    );
     let _ = fs::remove_dir_all(temp_dir);
 }
 
@@ -1190,7 +1202,7 @@ fn stale_reset_is_liveness_protected_by_immediate_lock() {
         "stale reset must succeed when no live holder is in IMMEDIATE"
     );
     let row = storage.load_timer_run("liveness-run").unwrap().unwrap();
-    assert_eq!(row.sync_status, crate::storage::TIMER_SYNC_FAILED);
+    assert_eq!(row.sync_status, crate::infra::storage::TIMER_SYNC_FAILED);
     assert!(row.projection_token.is_none());
     assert!(row.sync_error.is_some());
     let _ = fs::remove_dir_all(temp_dir);
@@ -1296,15 +1308,18 @@ fn stale_reset_blocks_against_live_immediate_holder() {
     // blocked; the actual reset decision is allowed to be true after
     // the holder released.
     if reset_value {
-        assert_eq!(final_row.sync_status, crate::storage::TIMER_SYNC_FAILED);
+        assert_eq!(
+            final_row.sync_status,
+            crate::infra::storage::TIMER_SYNC_FAILED
+        );
         assert!(final_row.projection_token.is_none());
     } else {
         // The reset chose not to mutate. Possible if the row state
         // changed between read and UPDATE (live holder released with
         // no in-flight claim write).
         assert!(
-            final_row.sync_status == crate::storage::TIMER_SYNC_PROJECTING
-                || final_row.sync_status == crate::storage::TIMER_SYNC_FAILED
+            final_row.sync_status == crate::infra::storage::TIMER_SYNC_PROJECTING
+                || final_row.sync_status == crate::infra::storage::TIMER_SYNC_FAILED
         );
     }
     let _ = fs::remove_dir_all(temp_dir);
@@ -1334,7 +1349,10 @@ fn hard_crash_failed_recovery_keeps_row_terminal_and_unmutated() {
     // Row is durably FAILED locally before any provider attempt.
     let initial = storage.load_timer_run("crash-failed").unwrap().unwrap();
     assert_eq!(initial.status, "FAILED");
-    assert_eq!(initial.sync_status, crate::storage::TIMER_SYNC_FAILED);
+    assert_eq!(
+        initial.sync_status,
+        crate::infra::storage::TIMER_SYNC_FAILED
+    );
     assert!(initial.projection_token.is_none());
     // A failed finalize attempt with a non-matching token returns false
     // and does NOT mutate the row: the holder check is atomic.
@@ -1344,13 +1362,16 @@ fn hard_crash_failed_recovery_keeps_row_terminal_and_unmutated() {
             "tok-stranger",
             None,
             Some(1),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
     assert!(!stray, "non-holder must not finalize");
     let after_stray = storage.load_timer_run("crash-failed").unwrap().unwrap();
-    assert_eq!(after_stray.sync_status, crate::storage::TIMER_SYNC_FAILED);
+    assert_eq!(
+        after_stray.sync_status,
+        crate::infra::storage::TIMER_SYNC_FAILED
+    );
     assert_eq!(after_stray.time_entry_id, None);
     assert_eq!(after_stray.projection_token, None);
     // The safe `record_failed_sync_error` helper records the projection
@@ -1361,7 +1382,10 @@ fn hard_crash_failed_recovery_keeps_row_terminal_and_unmutated() {
         .unwrap();
     assert!(recorded);
     let with_error = storage.load_timer_run("crash-failed").unwrap().unwrap();
-    assert_eq!(with_error.sync_status, crate::storage::TIMER_SYNC_FAILED);
+    assert_eq!(
+        with_error.sync_status,
+        crate::infra::storage::TIMER_SYNC_FAILED
+    );
     assert!(with_error.sync_error.is_some());
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -1399,7 +1423,7 @@ fn finalize_without_lease_does_not_mutate_projection_state() {
             "tok-finalize-B",
             None,
             Some(42),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
@@ -1410,7 +1434,7 @@ fn finalize_without_lease_does_not_mutate_projection_state() {
     let row = storage.load_timer_run("no-lease").unwrap().unwrap();
     assert_eq!(
         row.sync_status,
-        crate::storage::TIMER_SYNC_PROJECTING,
+        crate::infra::storage::TIMER_SYNC_PROJECTING,
         "stray finalize must not flip sync_status"
     );
     assert_eq!(
@@ -1426,13 +1450,16 @@ fn finalize_without_lease_does_not_mutate_projection_state() {
             token_a,
             None,
             Some(99),
-            crate::storage::TIMER_SYNC_SYNCED,
+            crate::infra::storage::TIMER_SYNC_SYNCED,
             None,
         )
         .unwrap();
     assert!(ok, "holder finalize must succeed");
     let final_row = storage.load_timer_run("no-lease").unwrap().unwrap();
-    assert_eq!(final_row.sync_status, crate::storage::TIMER_SYNC_SYNCED);
+    assert_eq!(
+        final_row.sync_status,
+        crate::infra::storage::TIMER_SYNC_SYNCED
+    );
     assert_eq!(final_row.time_entry_id, Some(99));
     assert!(
         final_row.projection_token.is_none(),

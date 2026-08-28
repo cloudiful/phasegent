@@ -1,8 +1,8 @@
-use crate::policy::Role;
-use crate::storage::{
+use crate::infra::storage::{
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_FORGEJO,
     PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
 };
+use crate::policy::Role;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 

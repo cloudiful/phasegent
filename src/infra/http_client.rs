@@ -10,7 +10,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 
-use crate::forgejo_model::ForgejoError;
+use crate::providers::api::ForgejoError;
 
 /// Default connect timeout: fail fast when the peer is unreachable.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);

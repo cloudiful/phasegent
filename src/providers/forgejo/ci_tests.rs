@@ -1,9 +1,9 @@
 use crate::ci_command;
 use crate::ci_model::{CiInspectRequest, CiRunsFilter, MAX_LOG_BYTES};
 use crate::command;
-use crate::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::policy::{Capability, Role};
-use crate::provider::{CiProvider, ProviderDispatcher};
+use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::{CiProvider, ProviderDispatcher};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver};

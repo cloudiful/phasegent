@@ -1,5 +1,5 @@
-use crate::forgejo_model::ForgejoError;
-use crate::redmine_model::{
+use crate::providers::api::ForgejoError;
+use crate::providers::redmine::model::{
     RedmineCurrentUserResponse, RedmineErrorResponse, RedmineMembershipCollection,
     RedmineNewUserMembership, RedmineNewUserMembershipFields, RedmineRoleCollection,
     RedmineUpdateMembership, RedmineUpdateMembershipFields, RedmineUserMembershipOutcome,
@@ -28,7 +28,7 @@ impl RedmineHttp {
         HeaderValue::from_str(&api_key).map_err(|_| {
             ForgejoError::auth("Redmine API key contains invalid header characters")
         })?;
-        let client = crate::http_client::build_client()
+        let client = crate::infra::http_client::build_client()
             .map_err(|error| ForgejoError::request("client build", error))?;
         Ok(Self {
             client,
@@ -144,7 +144,7 @@ impl RedmineHttp {
     /// concrete Redmine user without logging in.
     pub(crate) fn current_user(
         &self,
-    ) -> Result<crate::redmine_model::RedmineCurrentUser, ForgejoError> {
+    ) -> Result<crate::providers::redmine::model::RedmineCurrentUser, ForgejoError> {
         let response: RedmineCurrentUserResponse =
             self.get("users/current.json", &[], "user current")?;
         Ok(response.user)
@@ -160,7 +160,7 @@ impl RedmineHttp {
     pub(crate) fn ensure_user_membership(
         &self,
         project_id: u64,
-        user: &crate::redmine_model::RedmineCurrentUser,
+        user: &crate::providers::redmine::model::RedmineCurrentUser,
         role_name: &str,
     ) -> Result<RedmineUserMembershipOutcome, ForgejoError> {
         let roles = self.list_roles()?;
@@ -243,7 +243,9 @@ impl RedmineHttp {
         })
     }
 
-    fn list_roles(&self) -> Result<Vec<crate::redmine_model::RedmineRole>, ForgejoError> {
+    fn list_roles(
+        &self,
+    ) -> Result<Vec<crate::providers::redmine::model::RedmineRole>, ForgejoError> {
         self.paginate("role list", |http, offset| {
             let params = [
                 ("limit", PAGE_SIZE.to_string()),
@@ -263,7 +265,7 @@ impl RedmineHttp {
     fn list_memberships(
         &self,
         project_id: u64,
-    ) -> Result<Vec<crate::redmine_model::RedmineMembership>, ForgejoError> {
+    ) -> Result<Vec<crate::providers::redmine::model::RedmineMembership>, ForgejoError> {
         self.paginate("membership list", |http, offset| {
             let params = [
                 ("limit", PAGE_SIZE.to_string()),
@@ -408,7 +410,7 @@ impl RedmineHttp {
     ) -> Result<(StatusCode, String), ForgejoError> {
         // Safe GET path: retry on transient transport failures and
         // 429/502/503/504 with bounded backoff.
-        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+        let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
                 .header("X-Redmine-API-Key", self.api_key.as_str()),
@@ -514,7 +516,7 @@ impl RedmineGitMirrorHttp {
         parsed.set_query(None);
         parsed.set_fragment(None);
         let base_url = parsed.to_string().trim_end_matches('/').to_owned();
-        let client = crate::http_client::build_client()
+        let client = crate::infra::http_client::build_client()
             .map_err(|error| ForgejoError::request("mirror client build", error))?;
         Ok(Self {
             client,
@@ -617,7 +619,7 @@ impl RedmineGitMirrorHttp {
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
         // Safe GET: retry on transient failures.
-        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+        let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request.header(ACCEPT, "application/json"),
             operation,
             |message| self.redact(message),
@@ -664,7 +666,7 @@ impl RedmineGitMirrorHttp {
 }
 
 fn user_warning(
-    user: &crate::redmine_model::RedmineCurrentUser,
+    user: &crate::providers::redmine::model::RedmineCurrentUser,
     role_name: &str,
     role_id: u64,
     detail: &str,

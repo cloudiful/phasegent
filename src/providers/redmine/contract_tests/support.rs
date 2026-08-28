@@ -1,5 +1,5 @@
-use crate::provider::{RedmineConfig, RedmineProvider};
-use crate::redmine_model::{RedmineCurrentUser, RedmineCurrentUserResponse};
+use crate::providers::redmine::model::{RedmineCurrentUser, RedmineCurrentUserResponse};
+use crate::providers::{RedmineConfig, RedmineProvider};
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

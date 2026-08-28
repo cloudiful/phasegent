@@ -8,9 +8,9 @@
 //! access.
 
 use crate::command::RelationCommand;
-use crate::forgejo_model::ForgejoError;
-use crate::provider::{ProviderDispatcher, RedmineProvider};
-use crate::redmine_model::{RedmineRelationType, RelationSummary};
+use crate::providers::api::ForgejoError;
+use crate::providers::redmine::model::{RedmineRelationType, RelationSummary};
+use crate::providers::{ProviderDispatcher, RedmineProvider};
 
 /// Distinct result shapes so `cli.rs` can emit the right JSON for each
 /// relation subcommand without re-matching the command variant.
@@ -94,7 +94,7 @@ fn execute_redmine(
 }
 
 fn execute_gitlab(
-    gitlab: &crate::gitlab::GitlabProvider,
+    gitlab: &crate::providers::gitlab::GitlabProvider,
     command: &RelationCommand,
 ) -> Result<RelationResult, ForgejoError> {
     match command {

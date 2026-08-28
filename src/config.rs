@@ -34,9 +34,9 @@
 
 use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
 use crate::config_snapshot;
+use crate::infra::storage::Storage;
 use crate::policy::Role;
-use crate::provider_config::ProviderKind;
-use crate::storage::Storage;
+use crate::providers::config::ProviderKind;
 use serde::Serialize;
 use serde_json::Value;
 use std::str::FromStr;

@@ -1,6 +1,6 @@
 use super::{ForgejoConfig, ForgejoProvider, GitlabHttp, MockResponse, sequence};
-use crate::http_client;
-use crate::redmine_http::RedmineHttp;
+use crate::infra::http_client;
+use crate::providers::redmine::http::RedmineHttp;
 use std::time::{Duration, Instant};
 
 pub(super) fn safe_get_retries_on_503_then_succeeds() {

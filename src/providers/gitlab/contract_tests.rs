@@ -7,9 +7,9 @@
 //! CLI speaks, and they intentionally run with synthetic tokens so
 //! no real credential ever enters the test process.
 
-use crate::gitlab::GitlabProvider;
-use crate::provider::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
-use crate::provider_config::GitlabConfig;
+use crate::providers::config::GitlabConfig;
+use crate::providers::gitlab::GitlabProvider;
+use crate::providers::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver};
@@ -835,7 +835,7 @@ fn tracker_label_rejects_unknown_tracker_name() {
 
 #[test]
 fn workflow_label_resolves_every_canonical_status_via_helper() {
-    use crate::gitlab_model::workflow_label_from_status;
+    use crate::providers::gitlab::model::workflow_label_from_status;
     let cases = [
         ("New", "workflow::new"),
         ("InProgress", "workflow::in-progress"),
@@ -853,7 +853,7 @@ fn workflow_label_resolves_every_canonical_status_via_helper() {
 
 #[test]
 fn workflow_label_rejects_unknown_status() {
-    use crate::gitlab_model::workflow_label_from_status;
+    use crate::providers::gitlab::model::workflow_label_from_status;
     let error = workflow_label_from_status("Reviewing").unwrap_err();
     assert_eq!(error.json()["kind"], "config");
 }
@@ -918,7 +918,7 @@ fn gitlab_provider_rejects_planning_field_shapes_via_planning_cli() {
     // Redmine-only planning field) is rejected with a config error
     // that names the specific flag.
     use crate::command::PlanningOptions;
-    use crate::provider::ProviderDispatcher;
+    use crate::providers::ProviderDispatcher;
     let dispatcher = ProviderDispatcher::Gitlab(
         GitlabProvider::new(
             GitlabConfig::new("https://gitlab.example/api/v4", 42),
@@ -930,7 +930,8 @@ fn gitlab_provider_rejects_planning_field_shapes_via_planning_cli() {
         parent_issue: Some("1".to_owned()),
         ..PlanningOptions::default()
     };
-    let error = crate::redmine_planning_cli::resolve_planning(&dispatcher, &planning).unwrap_err();
+    let error =
+        crate::providers::redmine::planning::resolve_planning(&dispatcher, &planning).unwrap_err();
     assert_eq!(error.json()["kind"], "config");
     let message = error.json()["message"]
         .as_str()
@@ -948,7 +949,7 @@ fn gitlab_tracker_only_create_succeeds_against_planning_cli() {
     // planning field; the planning CLI should fall through to the
     // provider's create path with a `type::bug` label.
     use crate::command::PlanningOptions;
-    use crate::provider::ProviderDispatcher;
+    use crate::providers::ProviderDispatcher;
     let dispatcher = ProviderDispatcher::Gitlab(
         GitlabProvider::new(
             GitlabConfig::new("https://gitlab.example/api/v4", 42),
@@ -957,7 +958,8 @@ fn gitlab_tracker_only_create_succeeds_against_planning_cli() {
         .unwrap(),
     );
     let planning = PlanningOptions::default();
-    let resolved = crate::redmine_planning_cli::resolve_planning(&dispatcher, &planning).unwrap();
+    let resolved =
+        crate::providers::redmine::planning::resolve_planning(&dispatcher, &planning).unwrap();
     // Empty planning fields round-trip cleanly.
     assert!(resolved.is_empty());
 }
@@ -1852,7 +1854,7 @@ fn gitlab_pipeline_request_includes_private_token_header() {
 
 #[test]
 fn format_gitlab_duration_handles_zero_and_sub_second_values() {
-    use crate::gitlab_model::format_gitlab_duration;
+    use crate::providers::gitlab::model::format_gitlab_duration;
     // Phase 4 contract: a zero-second projection still produces a
     // positive GitLab duration so the request never carries the
     // literal `0s` value (which GitLab rejects). The exact second
@@ -1868,7 +1870,7 @@ fn format_gitlab_duration_handles_zero_and_sub_second_values() {
 
 #[test]
 fn format_gitlab_duration_round_trip_is_identity_for_every_known_unit() {
-    use crate::gitlab_model::format_gitlab_duration;
+    use crate::providers::gitlab::model::format_gitlab_duration;
     // The `add_spent_time` / `set_time_estimate` paths consume
     // second counts and emit durations through `format_gitlab_duration`,
     // so the production code never has to validate a string. This
@@ -2324,7 +2326,7 @@ fn create_issue_link_posts_query_parameters_with_target_project_id() {
             r#"{"issue_link_id":8,"link_type":"relates_to","issue":{"id":13,"iid":13,"project_id":42}}"#,
         ),
         |provider| {
-            use crate::redmine_model::RedmineRelationType;
+            use crate::providers::redmine::model::RedmineRelationType;
             provider.create_issue_link(7, 13, RedmineRelationType::Relates)
         },
     );
@@ -2386,7 +2388,7 @@ fn create_issue_link_decodes_live_post_response_with_source_and_target_issues() 
             r#"{"id":42,"link_type":"relates_to","source_issue":{"id":7,"iid":7,"project_id":42},"target_issue":{"id":13,"iid":13,"project_id":42}}"#,
         ),
         |provider| {
-            use crate::redmine_model::RedmineRelationType;
+            use crate::providers::redmine::model::RedmineRelationType;
             provider.create_issue_link(7, 13, RedmineRelationType::Relates)
         },
     );
@@ -2411,7 +2413,7 @@ fn create_issue_link_rejects_blocks_with_structured_not_supported_before_request
     // `not_supported` error BEFORE any network traffic. The test
     // uses `zero_request` so no HTTP listener is started.
     let result = zero_request(|provider| {
-        use crate::redmine_model::RedmineRelationType;
+        use crate::providers::redmine::model::RedmineRelationType;
         provider.create_issue_link(7, 12, RedmineRelationType::Blocks)
     });
     let error = result.unwrap_err();
@@ -2440,7 +2442,7 @@ fn create_issue_link_rejects_precedes_before_request() {
     // asserted separately by
     // `relation_cli_gitlab_create_rejects_precedes_as_config_error`.
     let result = zero_request(|provider| {
-        use crate::redmine_model::RedmineRelationType;
+        use crate::providers::redmine::model::RedmineRelationType;
         provider.create_issue_link(7, 8, RedmineRelationType::Precedes)
     });
     let error = result.unwrap_err();
@@ -2458,12 +2460,12 @@ fn create_issue_link_rejects_precedes_before_request() {
 #[test]
 fn create_issue_link_rejects_zero_or_self_target_before_request() {
     let result = zero_request(|provider| {
-        use crate::redmine_model::RedmineRelationType;
+        use crate::providers::redmine::model::RedmineRelationType;
         provider.create_issue_link(7, 0, RedmineRelationType::Relates)
     });
     assert_eq!(result.unwrap_err().json()["kind"], "config");
     let result = zero_request(|provider| {
-        use crate::redmine_model::RedmineRelationType;
+        use crate::providers::redmine::model::RedmineRelationType;
         provider.create_issue_link(7, 7, RedmineRelationType::Relates)
     });
     assert_eq!(result.unwrap_err().json()["kind"], "config");
@@ -2533,8 +2535,8 @@ fn delete_issue_link_rejects_zero_source_or_zero_link_id_before_request() {
 #[test]
 fn relation_cli_routes_gitlab_list_create_and_delete_fails_without_source() {
     use crate::command::RelationCommand;
-    use crate::provider::ProviderDispatcher;
-    use crate::redmine_model::RedmineRelationType;
+    use crate::providers::ProviderDispatcher;
+    use crate::providers::redmine::model::RedmineRelationType;
 
     let (base, requests, server) = sequence(vec![
         // list
@@ -2549,11 +2551,13 @@ fn relation_cli_routes_gitlab_list_create_and_delete_fails_without_source() {
         ),
     ]);
     let dispatcher = ProviderDispatcher::Gitlab(provider(base));
-    let listed =
-        crate::redmine_relations_cli::execute(&dispatcher, &RelationCommand::List { issue: 7 })
-            .unwrap();
+    let listed = crate::providers::redmine::relations::execute(
+        &dispatcher,
+        &RelationCommand::List { issue: 7 },
+    )
+    .unwrap();
     match listed {
-        crate::redmine_relations_cli::RelationResult::List(relations) => {
+        crate::providers::redmine::relations::RelationResult::List(relations) => {
             assert_eq!(relations.len(), 1);
             assert_eq!(relations[0].relation_type, "relates");
         }
@@ -2562,7 +2566,7 @@ fn relation_cli_routes_gitlab_list_create_and_delete_fails_without_source() {
     // Phase 5: the live instance only accepts `relates` for create;
     // `blocks` is gated with a structured not-supported error. Use
     // `Relates` here so the create path succeeds against the mock.
-    let created = crate::redmine_relations_cli::execute(
+    let created = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Create {
             issue: 7,
@@ -2573,7 +2577,7 @@ fn relation_cli_routes_gitlab_list_create_and_delete_fails_without_source() {
     )
     .unwrap();
     match created {
-        crate::redmine_relations_cli::RelationResult::Created(summary) => {
+        crate::providers::redmine::relations::RelationResult::Created(summary) => {
             assert_eq!(summary.id, 2);
             assert_eq!(summary.relation_type, "relates");
         }
@@ -2583,7 +2587,7 @@ fn relation_cli_routes_gitlab_list_create_and_delete_fails_without_source() {
     // error: GitLab requires the source issue iid in the DELETE URL
     // and the orchestrator CLI surfaces the missing field explicitly
     // rather than silently guessing.
-    let error = crate::redmine_relations_cli::execute(
+    let error = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Delete {
             relation_id: 2,
@@ -2616,10 +2620,10 @@ fn relation_cli_routes_gitlab_delete_with_source_issue_iid() {
     // is no longer allowed to silently fail for default GitLab
     // delete calls once the caller passes the flag.
     use crate::command::RelationCommand;
-    use crate::provider::ProviderDispatcher;
+    use crate::providers::ProviderDispatcher;
     let (base, requests, server) = sequence(vec![MockResponse::status(204, "")]);
     let dispatcher = ProviderDispatcher::Gitlab(provider(base));
-    let deleted = crate::redmine_relations_cli::execute(
+    let deleted = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Delete {
             relation_id: 11,
@@ -2628,7 +2632,7 @@ fn relation_cli_routes_gitlab_delete_with_source_issue_iid() {
     )
     .unwrap();
     match deleted {
-        crate::redmine_relations_cli::RelationResult::Deleted(relation_id) => {
+        crate::providers::redmine::relations::RelationResult::Deleted(relation_id) => {
             assert_eq!(relation_id, 11);
         }
         other => panic!("expected deleted result, got {other:?}"),
@@ -2654,10 +2658,10 @@ fn relation_cli_routes_redmine_delete_with_ignored_source_issue() {
     // shared enum carries the field only to make the GitLab dispatch
     // explicit, not to alter Redmine behaviour.
     use crate::command::RelationCommand;
-    use crate::provider::ProviderDispatcher;
+    use crate::providers::ProviderDispatcher;
     let dispatcher = ProviderDispatcher::Redmine(
-        crate::provider_config::RedmineProvider::new(
-            crate::provider_config::RedmineConfig::new(
+        crate::providers::config::RedmineProvider::new(
+            crate::providers::config::RedmineConfig::new(
                 "https://redmine.example".to_owned(),
                 "42".to_owned(),
                 5,
@@ -2666,7 +2670,7 @@ fn relation_cli_routes_redmine_delete_with_ignored_source_issue() {
         )
         .unwrap(),
     );
-    let error = crate::redmine_relations_cli::execute(
+    let error = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Delete {
             relation_id: 99,
@@ -2686,11 +2690,11 @@ fn relation_cli_routes_redmine_delete_with_ignored_source_issue() {
 #[test]
 fn relation_cli_gitlab_create_rejects_precedes_as_config_error() {
     use crate::command::RelationCommand;
-    use crate::provider::ProviderDispatcher;
-    use crate::redmine_model::RedmineRelationType;
+    use crate::providers::ProviderDispatcher;
+    use crate::providers::redmine::model::RedmineRelationType;
     let provider = provider("http://127.0.0.1:1".to_owned());
     let dispatcher = ProviderDispatcher::Gitlab(provider);
-    let error = crate::redmine_relations_cli::execute(
+    let error = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Create {
             issue: 7,
@@ -2713,11 +2717,11 @@ fn relation_cli_gitlab_create_rejects_precedes_as_config_error() {
 #[test]
 fn relation_cli_gitlab_create_rejects_delay_as_config_error() {
     use crate::command::RelationCommand;
-    use crate::provider::ProviderDispatcher;
-    use crate::redmine_model::RedmineRelationType;
+    use crate::providers::ProviderDispatcher;
+    use crate::providers::redmine::model::RedmineRelationType;
     let provider = provider("http://127.0.0.1:1".to_owned());
     let dispatcher = ProviderDispatcher::Gitlab(provider);
-    let error = crate::redmine_relations_cli::execute(
+    let error = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Create {
             issue: 7,
@@ -2747,11 +2751,11 @@ fn relation_cli_gitlab_create_rejects_blocks_as_not_supported_before_request() {
     // unreachable address; a real network call would surface as a
     // `request` kind rather than a `not_supported` kind.
     use crate::command::RelationCommand;
-    use crate::provider::ProviderDispatcher;
-    use crate::redmine_model::RedmineRelationType;
+    use crate::providers::ProviderDispatcher;
+    use crate::providers::redmine::model::RedmineRelationType;
     let provider = provider("http://127.0.0.1:1".to_owned());
     let dispatcher = ProviderDispatcher::Gitlab(provider);
-    let error = crate::redmine_relations_cli::execute(
+    let error = crate::providers::redmine::relations::execute(
         &dispatcher,
         &RelationCommand::Create {
             issue: 7,
@@ -2862,7 +2866,7 @@ fn gitlab_timer_finish_retry_uses_local_ledger_marker_not_note_body() {
         "timer-retry",
         None,
         None,
-        crate::storage::TIMER_SYNC_SYNCED,
+        crate::infra::storage::TIMER_SYNC_SYNCED,
         None,
     );
     let mut run = storage.load_timer_run("timer-retry").unwrap().unwrap();
@@ -2917,7 +2921,7 @@ fn gitlab_timer_finish_failure_marks_ledger_failed() {
         "timer-fail",
         run.activity_id,
         run.time_entry_id,
-        crate::storage::TIMER_SYNC_FAILED,
+        crate::infra::storage::TIMER_SYNC_FAILED,
         Some(&error.to_string()),
     );
     let row = storage.load_timer_run("timer-fail").unwrap().unwrap();
@@ -2951,7 +2955,7 @@ fn gitlab_timer_finish_skips_when_already_synced() {
         "timer-sync",
         None,
         None,
-        crate::storage::TIMER_SYNC_SYNCED,
+        crate::infra::storage::TIMER_SYNC_SYNCED,
         None,
     );
     let mut run = storage.load_timer_run("timer-sync").unwrap().unwrap();
@@ -3176,7 +3180,7 @@ fn gitlab_timer_finish_marks_synced_when_response_uses_top_level_time_stats() {
     let _ = std::fs::remove_dir_all(storage.db_path().parent().unwrap());
 }
 
-fn open_temp_storage() -> crate::storage::Storage {
+fn open_temp_storage() -> crate::infra::storage::Storage {
     let home = std::env::temp_dir().join(format!(
         "phasegent-timer-{}-{}",
         std::process::id(),
@@ -3185,7 +3189,7 @@ fn open_temp_storage() -> crate::storage::Storage {
             .map(|d| d.as_nanos())
             .unwrap_or(0),
     ));
-    crate::storage::Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap()
+    crate::infra::storage::Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap()
 }
 
 // =============================================================================

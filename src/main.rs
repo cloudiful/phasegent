@@ -8,31 +8,17 @@ mod cli;
 mod command;
 mod config;
 mod config_snapshot;
-mod forgejo;
-mod forgejo_ci;
-mod forgejo_http;
-mod forgejo_model;
-mod gitlab;
-mod gitlab_http;
-mod gitlab_model;
 mod hooks;
-mod http_client;
 mod lifecycle;
 mod policy;
-mod provider;
-mod provider_config;
-mod redmine;
-mod redmine_http;
-mod redmine_model;
-mod redmine_planning_cli;
-mod redmine_relations_cli;
 mod remote;
 mod repo_cli;
 mod repo_command;
-mod storage;
-mod storage_schema;
 mod time_tracking_cli;
 mod workflow;
+
+mod infra;
+mod providers;
 
 #[cfg(test)]
 mod phase2_tests;
@@ -47,25 +33,7 @@ mod branch_context_tests;
 mod hooks_tests;
 
 #[cfg(test)]
-mod phase2_contract_tests;
-
-#[cfg(test)]
-mod phase1_ci_tests;
-
-#[cfg(test)]
-pub(crate) mod redmine_contract_tests;
-
-#[cfg(test)]
-mod gitlab_contract_tests;
-
-#[cfg(test)]
-mod storage_tests;
-
-#[cfg(test)]
 mod config_tests;
-
-#[cfg(test)]
-mod http_client_tests;
 
 fn main() {
     std::process::exit(cli::run(std::env::args().skip(1)));

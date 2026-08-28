@@ -2,8 +2,8 @@ use crate::ci_model::{
     CiInspectOutput, CiInspectRequest, CiJobSummary, CiLogExcerpt, CiRunSummary, CiRunsFilter,
     DEFAULT_LOG_TAIL, checked_at, pretty_ref,
 };
-use crate::forgejo::ForgejoProvider;
-use crate::forgejo_model::ForgejoError;
+use crate::providers::api::ForgejoError;
+use crate::providers::forgejo::ForgejoProvider;
 use std::time::{Duration, Instant};
 
 impl ForgejoProvider {

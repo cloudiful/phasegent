@@ -9,7 +9,7 @@
 //! payload field as an authoritative state value is not, so the
 //! decoders stay minimal.
 
-use crate::forgejo_model::ForgejoError;
+use crate::providers::api::ForgejoError;
 use serde::{Deserialize, Serialize};
 
 /// Workflow labels that map orchestrator workflow statuses to GitLab
@@ -521,14 +521,14 @@ pub(crate) struct ApiIssueLinkIssue {
 /// even when the request is sent with the documented query
 /// parameters. The decision is made locally (no network probe) so
 /// the unsupported directions fail with a structured
-/// [`crate::forgejo_model::ForgejoError::NotSupported`] error
+/// [`crate::providers::api::ForgejoError::NotSupported`] error
 /// before any HTTP traffic. The read path still maps every
 /// server-returned link type (`blocks`, `is_blocked_by`) so the
 /// list output reflects whatever the server already recorded.
 pub(crate) fn gitlab_create_supports_relation_type(
-    relation_type: crate::redmine_model::RedmineRelationType,
+    relation_type: crate::providers::redmine::model::RedmineRelationType,
 ) -> bool {
-    use crate::redmine_model::RedmineRelationType;
+    use crate::providers::redmine::model::RedmineRelationType;
     matches!(relation_type, RedmineRelationType::Relates)
 }
 
@@ -688,9 +688,9 @@ impl ApiSpentTimeSummary {
 /// direction. Direct CLI input never uses `Blocked`/`Follows`; the
 /// mapping only matters when normalising server responses.
 pub(crate) fn gitlab_link_type_from_relation_type(
-    relation_type: crate::redmine_model::RedmineRelationType,
+    relation_type: crate::providers::redmine::model::RedmineRelationType,
 ) -> Result<&'static str, ForgejoError> {
-    use crate::redmine_model::RedmineRelationType;
+    use crate::providers::redmine::model::RedmineRelationType;
     match relation_type {
         RedmineRelationType::Relates => Ok("relates_to"),
         RedmineRelationType::Blocks => Ok("blocks"),
@@ -710,8 +710,8 @@ pub(crate) fn gitlab_link_type_from_relation_type(
 /// CLI output matches Redmine's vocabulary.
 pub(crate) fn gitlab_link_type_to_relation_type(
     link_type: &str,
-) -> crate::redmine_model::RedmineRelationType {
-    use crate::redmine_model::RedmineRelationType;
+) -> crate::providers::redmine::model::RedmineRelationType {
+    use crate::providers::redmine::model::RedmineRelationType;
     match link_type {
         "relates_to" => RedmineRelationType::Relates,
         "blocks" => RedmineRelationType::Blocks,
@@ -770,7 +770,7 @@ mod tests {
         gitlab_link_type_to_relation_type, state_from_gitlab, state_query_filter,
         tracker_label_from_name, tracker_name_from_label, workflow_label_from_status,
     };
-    use crate::forgejo_model::ForgejoError;
+    use crate::providers::api::ForgejoError;
 
     #[test]
     fn tracker_label_round_trip_for_bug_and_feature() {
@@ -892,7 +892,7 @@ mod tests {
 
     #[test]
     fn gitlab_link_type_maps_canonical_names_and_inverse() {
-        use crate::redmine_model::RedmineRelationType;
+        use crate::providers::redmine::model::RedmineRelationType;
         assert_eq!(
             gitlab_link_type_from_relation_type(RedmineRelationType::Relates).unwrap(),
             "relates_to",
@@ -912,7 +912,7 @@ mod tests {
 
     #[test]
     fn gitlab_link_type_decode_uses_canonical_inverse_mapping() {
-        use crate::redmine_model::RedmineRelationType;
+        use crate::providers::redmine::model::RedmineRelationType;
         assert_eq!(
             gitlab_link_type_to_relation_type("relates_to"),
             RedmineRelationType::Relates,

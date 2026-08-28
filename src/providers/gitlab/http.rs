@@ -17,8 +17,8 @@
 //! formatted via `Debug`, and never appears in the returned
 //! `ForgejoError::Http` payload.
 
-use crate::forgejo_model::ForgejoError;
-use crate::gitlab_model::ApiError;
+use crate::providers::api::ForgejoError;
+use crate::providers::gitlab::model::ApiError;
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap};
@@ -75,7 +75,7 @@ impl GitlabHttp {
             // (or test) renders the error.
             ForgejoError::auth("GitLab PRIVATE-TOKEN contains invalid header characters")
         })?;
-        let client = crate::http_client::build_client()
+        let client = crate::infra::http_client::build_client()
             .map_err(|error| ForgejoError::request("client build", error))?;
         Ok(Self {
             client,
@@ -339,7 +339,7 @@ impl GitlabHttp {
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
         // Safe GET path: retry on transient failures.
-        let (status, _headers, text) = crate::http_client::fetch_with_retry(
+        let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
                 .header("PRIVATE-TOKEN", self.token.as_str()),
@@ -387,7 +387,7 @@ impl GitlabHttp {
         // Safe GET with pagination: retry on transient failures.
         let mut params: Vec<(&str, String)> = extra_query.to_vec();
         params.push(("per_page", PAGE_SIZE.to_string()));
-        let (status, headers, text) = crate::http_client::fetch_with_retry(
+        let (status, headers, text) = crate::infra::http_client::fetch_with_retry(
             self.client
                 .get(self.endpoint(path)?)
                 .query(&params)

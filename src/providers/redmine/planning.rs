@@ -9,9 +9,9 @@
 //! path so legacy payloads stay byte-identical.
 
 use crate::command::PlanningOptions;
-use crate::forgejo_model::{ForgejoError, IssueSummary};
-use crate::provider::{IssueProvider, ProviderDispatcher, RedmineProvider};
-use crate::redmine_model::IssuePlanning;
+use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::redmine::model::IssuePlanning;
+use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
 
 /// Validate raw planning values and resolve `--fixed-version` by exact
 /// version name or numeric id within the configured project. Numeric

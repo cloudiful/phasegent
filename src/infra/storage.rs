@@ -15,20 +15,20 @@
 //! surface and the platform-aware path resolver.
 
 use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
+use crate::infra::storage_schema::{GLOBAL_SETTING_NAMES, MIGRATIONS, PRAGMA_STATEMENTS, SCHEMA};
 use crate::policy::Role;
-use crate::storage_schema::{GLOBAL_SETTING_NAMES, MIGRATIONS, PRAGMA_STATEMENTS, SCHEMA};
 use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) use crate::storage_schema::{
+pub(crate) use crate::infra::storage_schema::{
     DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE,
 };
 
 /// Re-export the canonical global setting names so callers do not
 // need to depend on `storage_schema` directly.
-pub(crate) use crate::storage_schema::{
+pub(crate) use crate::infra::storage_schema::{
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL,
 };
 

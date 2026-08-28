@@ -1,7 +1,7 @@
 use crate::cli;
 use crate::command::RepoCommand;
 use crate::policy::{Capability, Role};
-use crate::provider::{ProviderKind, RepoProvider};
+use crate::providers::{ProviderKind, RepoProvider};
 
 pub fn execute(
     role_value: Option<Role>,

@@ -4,10 +4,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::forgejo::{ForgejoConfig, ForgejoProvider};
-use crate::gitlab_http::GitlabHttp;
-use crate::http_client;
-use crate::redmine_http::{RedmineGitMirrorHttp, RedmineHttp};
+use crate::infra::http_client;
+use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::gitlab::http::GitlabHttp;
+use crate::providers::redmine::http::{RedmineGitMirrorHttp, RedmineHttp};
 
 // Small static gzip fixtures generated via `python -m gzip` for
 // `{"id":1,"title":"gzipped"}` and `plain text log line 1\nline 2\n`.

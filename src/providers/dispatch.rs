@@ -8,9 +8,9 @@ use crate::ci_model::{
     CiRunsOutput,
 };
 use crate::command::{CiCommand, RepoCommand};
-use crate::forgejo::{ForgejoConfig, ForgejoProvider};
-use crate::forgejo_model::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
 use crate::policy::Capability;
+use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 
 pub enum ProviderDispatcher {
     Forgejo(ForgejoProvider),
@@ -32,14 +32,14 @@ impl ProviderDispatcher {
 
     pub fn redmine(
         role: crate::policy::Role,
-        config: crate::provider_config::RedmineConfig,
+        config: crate::providers::config::RedmineConfig,
     ) -> Result<Self, ForgejoError> {
         Ok(Self::Redmine(RedmineProvider::for_role(role, config)?))
     }
 
     pub fn gitlab(
         role: crate::policy::Role,
-        config: crate::provider_config::GitlabConfig,
+        config: crate::providers::config::GitlabConfig,
     ) -> Result<Self, ForgejoError> {
         Ok(Self::Gitlab(GitlabProvider::for_role(role, config)?))
     }
@@ -325,7 +325,7 @@ impl RedmineMetadataProvider for RedmineProvider {
 // Phase-2 GitLab issue / note / label foundation. The dispatch wiring
 // forwards every IssueProvider / RedmineMetadataProvider / RepoProvider /
 // CiProvider trait call straight to the real
-// [`crate::gitlab::GitlabProvider`] implementation. Capability flags
+// [`crate::providers::gitlab::GitlabProvider`] implementation. Capability flags
 // for not-supported operations stay false so the shared CLI surfaces a
 // structured not-supported error before any HTTP traffic.
 // ============================================================================

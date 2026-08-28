@@ -1,15 +1,15 @@
 use crate::auth;
 use crate::branch_context;
-use crate::forgejo_model::ForgejoError;
 use crate::lifecycle;
 use crate::policy::Role;
-use crate::provider::{RedmineConfig, RedmineProvider};
-use crate::redmine;
-use crate::redmine_model::{
+use crate::providers::api::ForgejoError;
+use crate::providers::redmine;
+use crate::providers::redmine::model::{
     DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR,
     DEFAULT_REDMINE_ROLE_REVIEWER, RedmineBootstrap, RedmineGitMirrorOutcome,
     RedmineUserMembershipOutcome,
 };
+use crate::providers::{RedmineConfig, RedmineProvider};
 use crate::remote;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -179,7 +179,7 @@ fn bootstrap_resolved(
         && executor.status != "warning"
         && reviewer.status != "warning"
     {
-        let storage = crate::storage::Storage::open().map_err(ForgejoError::config)?;
+        let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
         auth::persist_redmine_bootstrap(
             roles.persist,
             Some(config.api_base.clone()),
@@ -243,7 +243,7 @@ fn attach_local_hooks(mut result: BootstrapResult) -> BootstrapResult {
 fn identify_agent_user(
     config: &RedmineConfig,
     role: Role,
-) -> Result<crate::redmine_model::RedmineCurrentUser, ForgejoError> {
+) -> Result<crate::providers::redmine::model::RedmineCurrentUser, ForgejoError> {
     let provider = RedmineProvider::for_role(role, config.clone())?;
     provider.current_user().map_err(|error| {
         ForgejoError::config(format!(
@@ -302,7 +302,7 @@ fn resolve_mirror_url(
     bootstrap_repository: &str,
     explicit_repository: bool,
 ) -> Result<String, String> {
-    let storage = crate::storage::Storage::open()?;
+    let storage = crate::infra::storage::Storage::open()?;
     let env_url = auth::redmine_repository_url_override(&storage)?;
     if let Some(env_url) = env_url {
         return Ok(env_url);
@@ -338,7 +338,7 @@ fn describe(error: &ForgejoError) -> String {
         .unwrap_or_else(|| error.to_string())
 }
 
-fn describe_user(user: &crate::redmine_model::RedmineCurrentUser) -> String {
+fn describe_user(user: &crate::providers::redmine::model::RedmineCurrentUser) -> String {
     if !user.login.is_empty() {
         user.login.clone()
     } else {

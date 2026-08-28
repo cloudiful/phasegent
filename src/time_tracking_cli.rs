@@ -1,13 +1,13 @@
 use crate::command::TimerCommand;
-use crate::forgejo_model::ForgejoError;
-use crate::gitlab::GitlabProvider;
-use crate::policy::Role;
-use crate::provider::{ProviderKind, RedmineConfig, RedmineProvider};
-use crate::provider_config::resolve_kind;
-use crate::storage::{
+use crate::infra::storage::{
     Storage, TIMER_STATUS_RUNNING, TIMER_SYNC_FAILED, TIMER_SYNC_PROJECTING, TIMER_SYNC_SYNCED,
     TIMER_SYNC_UNCONFIRMED, TimerRun, TimerRunOwner, TimerStatusFilter,
 };
+use crate::policy::Role;
+use crate::providers::api::ForgejoError;
+use crate::providers::config::resolve_kind;
+use crate::providers::gitlab::GitlabProvider;
+use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -146,7 +146,7 @@ pub(crate) fn execute_recovery(
                 // legacy compatibility; modern rows hold an IMMEDIATE
                 // transaction, so time alone never makes a live holder
                 // stealable.
-                if existing.sync_status == crate::storage::TIMER_SYNC_PROJECTING {
+                if existing.sync_status == crate::infra::storage::TIMER_SYNC_PROJECTING {
                     drop(storage);
                     let storage = Storage::open().map_err(timer_storage_error("timer recover"))?;
                     let reset = storage
@@ -215,7 +215,7 @@ pub(crate) fn execute_recovery(
                         "projection already in progress for this run".to_owned(),
                     ));
                 }
-                if existing.sync_status == crate::storage::TIMER_SYNC_FAILED {
+                if existing.sync_status == crate::infra::storage::TIMER_SYNC_FAILED {
                     let message = existing
                         .sync_error
                         .clone()
@@ -242,13 +242,13 @@ pub(crate) fn execute_recovery(
                         .ok_or_else(|| {
                             ForgejoError::config(format!("timer run '{run_id}' was not found"))
                         })?;
-                    if row.sync_status == crate::storage::TIMER_SYNC_FAILED {
+                    if row.sync_status == crate::infra::storage::TIMER_SYNC_FAILED {
                         let msg = row.sync_error.clone().unwrap_or_else(|| {
                             "timer recover: previous projection failed".to_owned()
                         });
                         return Err(ForgejoError::request("timer recover", msg));
                     }
-                    if row.sync_status == crate::storage::TIMER_SYNC_PROJECTING {
+                    if row.sync_status == crate::infra::storage::TIMER_SYNC_PROJECTING {
                         return Err(ForgejoError::request(
                             "timer recover",
                             "concurrent recovery already claimed this run".to_owned(),
@@ -770,7 +770,7 @@ fn gitlab_provider_for_finish(
     // role.
     require_gitlab_provider(provider_kind, "timer finish")?;
     let config =
-        crate::provider_config::GitlabConfig::resolve(Role::Orchestrator, api_base, project_id)?;
+        crate::providers::config::GitlabConfig::resolve(Role::Orchestrator, api_base, project_id)?;
     GitlabProvider::for_role(Role::Orchestrator, config)
 }
 
@@ -909,7 +909,7 @@ pub(crate) fn project_run_with_gitlab_provider(
                     *run = current;
                     return Ok(());
                 }
-                if current.sync_status == crate::storage::TIMER_SYNC_PROJECTING {
+                if current.sync_status == crate::infra::storage::TIMER_SYNC_PROJECTING {
                     return Err(ForgejoError::request(
                         "timer finish",
                         "projection already in progress for this run".to_owned(),

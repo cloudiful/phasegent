@@ -2,7 +2,7 @@ use crate::ci_command::CiCommand;
 use crate::ci_model::{CiInspectRequest, CiRunsFilter};
 use crate::cli;
 use crate::policy::{Capability, Role};
-use crate::provider::CiProvider;
+use crate::providers::CiProvider;
 
 pub fn execute(
     role_value: Option<Role>,

@@ -5,14 +5,14 @@ use crate::ci_model::CiRunsFilter;
 use crate::command::{
     self, Command, IssueCommand, ProjectCommand, RelationCommand, StatusCommand, WorkflowCommand,
 };
+use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+use crate::infra::storage::{Storage, TimerRun};
 use crate::policy::{Capability, Role};
-use crate::provider::{
+use crate::providers::redmine::model::{RedmineRelationType, RedmineTimeEntryActivity};
+use crate::providers::{
     ProviderDispatcher, ProviderKind, RedmineConfig, RedmineIssueStatus, RedmineMetadataProvider,
     RedmineProvider,
 };
-use crate::redmine_model::{RedmineRelationType, RedmineTimeEntryActivity};
-use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::storage::{Storage, TimerRun};
 use std::str::FromStr;
 use std::{fs, time};
 use support::{
@@ -312,12 +312,12 @@ fn bootstrap_missing_project_creation_is_private() {
 #[test]
 fn bootstrap_does_not_guess_multiple_closed_statuses() {
     let statuses = [
-        crate::redmine_model::RedmineIssueStatus {
+        crate::providers::redmine::model::RedmineIssueStatus {
             id: 5,
             name: "Closed".to_owned(),
             is_closed: true,
         },
-        crate::redmine_model::RedmineIssueStatus {
+        crate::providers::redmine::model::RedmineIssueStatus {
             id: 6,
             name: "Resolved".to_owned(),
             is_closed: true,
@@ -341,7 +341,7 @@ fn bootstrap_does_not_guess_multiple_closed_statuses() {
     let not_found_id =
         RedmineProvider::select_close_status(&statuses, Some("99"), None).unwrap_err();
     assert!(not_found_id.to_string().contains("id 99 was not found"));
-    let not_closed_id = [crate::redmine_model::RedmineIssueStatus {
+    let not_closed_id = [crate::providers::redmine::model::RedmineIssueStatus {
         id: 8,
         name: "Resolved".to_owned(),
         is_closed: false,
@@ -353,7 +353,7 @@ fn bootstrap_does_not_guess_multiple_closed_statuses() {
             .to_string()
             .contains("id 8 was found but is not closed")
     );
-    let not_closed_name = [crate::redmine_model::RedmineIssueStatus {
+    let not_closed_name = [crate::providers::redmine::model::RedmineIssueStatus {
         id: 8,
         name: "Resolved".to_owned(),
         is_closed: false,
@@ -535,7 +535,7 @@ fn bootstrap_persists_role_scoped_ids_with_private_permissions() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_at(&temp_dir.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&temp_dir.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .persist_redmine_bootstrap(
             Role::Orchestrator,
@@ -828,7 +828,7 @@ fn timer_projection_retry_is_local_only_after_a_synced_201_create() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .start_timer_run(
             "retry-run",
@@ -857,8 +857,8 @@ fn timer_projection_retry_is_local_only_after_a_synced_201_create() {
             ),
         ),
     ]);
-    let provider = crate::provider::RedmineProvider::new(
-        crate::provider::RedmineConfig::new(base, "42", 37),
+    let provider = crate::providers::RedmineProvider::new(
+        crate::providers::RedmineConfig::new(base, "42", 37),
         TEST_API_KEY.to_owned(),
     )
     .unwrap();
@@ -893,7 +893,7 @@ fn timer_projection_reconciles_a_204_before_creating_another_entry() {
             .unwrap()
             .as_nanos()
     ));
-    let storage = Storage::open_at(&home.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .start_timer_run(
             "unconfirmed-run",
@@ -921,8 +921,8 @@ fn timer_projection_reconciles_a_204_before_creating_another_entry() {
             "2023-11-14",
         )])),
     ]);
-    let provider = crate::provider::RedmineProvider::new(
-        crate::provider::RedmineConfig::new(base, "42", 37),
+    let provider = crate::providers::RedmineProvider::new(
+        crate::providers::RedmineConfig::new(base, "42", 37),
         TEST_API_KEY.to_owned(),
     )
     .unwrap();
@@ -1028,11 +1028,11 @@ fn status_and_tracker_selection_validate_name_id_and_ambiguity() {
     );
 
     let trackers = vec![
-        crate::redmine_model::RedmineTracker {
+        crate::providers::redmine::model::RedmineTracker {
             id: 1,
             name: "Bug".to_owned(),
         },
-        crate::redmine_model::RedmineTracker {
+        crate::providers::redmine::model::RedmineTracker {
             id: 2,
             name: "Feature".to_owned(),
         },
@@ -1200,7 +1200,7 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
     storage
@@ -1585,7 +1585,7 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
     storage
@@ -1765,11 +1765,13 @@ fn parser_auth_config_and_provider_selection_regressions() {
         ProviderKind::Redmine
     );
     assert_eq!(
-        crate::provider_config::resolve_kind(Role::Reviewer, Some(ProviderKind::Redmine)).unwrap(),
+        crate::providers::config::resolve_kind(Role::Reviewer, Some(ProviderKind::Redmine))
+            .unwrap(),
         ProviderKind::Redmine
     );
 
-    let key_path = std::path::Path::new("/tmp/phasegent-test").join(crate::storage::DB_FILENAME);
+    let key_path =
+        std::path::Path::new("/tmp/phasegent-test").join(crate::infra::storage::DB_FILENAME);
     assert!(key_path.ends_with("phasegent.sqlite3"));
     assert_eq!(
         auth::setup_provider(
@@ -1806,7 +1808,7 @@ fn admin_auth_setup_writes_the_normal_role_scoped_private_key() {
             .as_nanos()
     ));
     let secret = "admin-secret";
-    let storage = Storage::open_at(&temp_dir.join(crate::storage::DB_FILENAME)).unwrap();
+    let storage = Storage::open_at(&temp_dir.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
         .save_credential(Role::Admin, "redmine", secret)
         .unwrap();
@@ -1849,7 +1851,7 @@ fn admin_provider_requires_admin_key_without_falling_back() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
     storage
@@ -2022,8 +2024,8 @@ fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
         assert!(role.allows(Capability::IssueStatusRead));
     }
 
-    let forgejo = crate::forgejo::ForgejoProvider::new(
-        crate::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
+    let forgejo = crate::providers::forgejo::ForgejoProvider::new(
+        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
         "token".to_owned(),
     )
     .unwrap();
@@ -2143,7 +2145,7 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
     storage
@@ -2216,7 +2218,7 @@ fn mirror_plugin_uses_bearer_header_and_uses_redmine_base_url() {
             None,
         ),
     )]);
-    let outcome = crate::redmine::register_git_mirror(
+    let outcome = crate::providers::redmine::register_git_mirror(
         &base,
         44,
         "owner",
@@ -2270,7 +2272,8 @@ fn mirror_plugin_get_existing_skips_post_and_returns_existing_status() {
         None,
     ))]);
     let outcome =
-        crate::redmine::register_git_mirror(&base, 44, "Owner", "Repo", "ignored").unwrap();
+        crate::providers::redmine::register_git_mirror(&base, 44, "Owner", "Repo", "ignored")
+            .unwrap();
     assert_eq!(outcome.status, "ready");
     assert_eq!(outcome.id, 901);
     let request = requests.recv().unwrap().remove(0);
@@ -2308,7 +2311,7 @@ fn mirror_plugin_404_triggers_post_and_carries_credential_free_url() {
             ),
         ),
     ]);
-    let outcome = crate::redmine::register_git_mirror(
+    let outcome = crate::providers::redmine::register_git_mirror(
         &base,
         44,
         "owner",
@@ -2354,7 +2357,7 @@ fn mirror_plugin_missing_key_fails_bootstrap_with_actionable_error() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let _url = EnvGuard::set(
         "PHASEGENT_REDMINE_REPOSITORY_URL",
@@ -2364,7 +2367,7 @@ fn mirror_plugin_missing_key_fails_bootstrap_with_actionable_error() {
     unsafe {
         std::env::remove_var("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY");
     }
-    let error = crate::redmine::register_git_mirror(
+    let error = crate::providers::redmine::register_git_mirror(
         "https://redmine.example",
         44,
         "owner",
@@ -2395,7 +2398,7 @@ fn mirror_plugin_http_errors_redact_bearer_key() {
         500,
         r#"{"errors":["server error: mirror-bearer-key"]}"#.to_owned(),
     )]);
-    let error = crate::redmine::register_git_mirror(&base, 44, "owner", "repo", "url")
+    let error = crate::providers::redmine::register_git_mirror(&base, 44, "owner", "repo", "url")
         .expect_err("5xx must surface as an actionable error");
     let json = error.json();
     assert_eq!(json["kind"], "http");
@@ -2439,7 +2442,7 @@ fn mirror_plugin_get_failed_triggers_single_requeue_post() {
             ),
         ),
     ]);
-    let outcome = crate::redmine::register_git_mirror(
+    let outcome = crate::providers::redmine::register_git_mirror(
         &base,
         44,
         "owner",
@@ -2494,7 +2497,7 @@ fn mirror_plugin_failed_status_fails_bootstrap_clearly() {
             Some("still failing after requeue"),
         )),
     ]);
-    let error = crate::redmine::register_git_mirror(&base, 44, "owner", "repo", "url")
+    let error = crate::providers::redmine::register_git_mirror(&base, 44, "owner", "repo", "url")
         .expect_err("a `failed` plugin status must surface as a bootstrap error");
     let json = error.json();
     assert_eq!(json["kind"], "config");
@@ -2519,11 +2522,11 @@ fn mirror_plugin_failed_status_fails_bootstrap_clearly() {
 #[test]
 fn mirror_identifier_lowercases_owner_and_repo() {
     assert_eq!(
-        crate::redmine::mirror_identifier(44, "Owner", "Repo"),
+        crate::providers::redmine::mirror_identifier(44, "Owner", "Repo"),
         "mirror_44_owner_repo"
     );
     assert_eq!(
-        crate::redmine::mirror_identifier(44, "Mixed.Case", "Repo+One"),
+        crate::providers::redmine::mirror_identifier(44, "Mixed.Case", "Repo+One"),
         "mirror_44_mixed.case_repo+one"
     );
 }
@@ -2534,7 +2537,7 @@ fn mirror_identifier_lowercases_owner_and_repo() {
 
 #[test]
 fn create_issue_with_planning_serializes_native_fields_and_omits_unset_ones() {
-    let planning = crate::redmine_model::IssuePlanning {
+    let planning = crate::providers::redmine::model::IssuePlanning {
         parent_issue_id: Some(7),
         fixed_version_id: Some(3),
         start_date: Some("2026-08-01".to_owned()),
@@ -2578,7 +2581,7 @@ fn create_issue_with_planning_serializes_native_fields_and_omits_unset_ones() {
 
 #[test]
 fn update_body_with_planning_keeps_single_put_shape() {
-    let planning = crate::redmine_model::IssuePlanning {
+    let planning = crate::providers::redmine::model::IssuePlanning {
         fixed_version_id: Some(9),
         due_date: Some("2026-09-15".to_owned()),
         done_ratio: Some(60),
@@ -2625,13 +2628,13 @@ fn version_list_decodes_redmine_wrapper_within_project_scope() {
 #[test]
 fn version_selection_resolves_name_id_and_rejects_bad_values() {
     let versions = vec![
-        crate::redmine_model::RedmineVersion {
+        crate::providers::redmine::model::RedmineVersion {
             id: 12,
             name: "Sprint 1".to_owned(),
             status: "open".to_owned(),
             due_date: None,
         },
-        crate::redmine_model::RedmineVersion {
+        crate::providers::redmine::model::RedmineVersion {
             id: 14,
             name: "Sprint 1".to_owned(),
             status: "closed".to_owned(),
@@ -2674,7 +2677,7 @@ fn version_selection_resolves_name_id_and_rejects_bad_values() {
 #[test]
 fn planning_validation_rejects_malformed_values_before_any_write() {
     use crate::command::PlanningOptions;
-    use crate::redmine_planning_cli::resolve_planning;
+    use crate::providers::redmine::planning::resolve_planning;
     // A closed-port base keeps the provider offline: any network access in
     // these validation paths would surface as an http error instead of the
     // expected config error.
@@ -2725,10 +2728,10 @@ fn planning_validation_rejects_malformed_values_before_any_write() {
 #[test]
 fn planning_flags_are_forgejo_not_supported_and_empty_planning_stays_plain() {
     use crate::command::PlanningOptions;
-    use crate::redmine_planning_cli::resolve_planning;
+    use crate::providers::redmine::planning::resolve_planning;
     let forgejo = ProviderDispatcher::Forgejo(
-        crate::forgejo::ForgejoProvider::new(
-            crate::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
+        crate::providers::forgejo::ForgejoProvider::new(
+            crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
             "token".to_owned(),
         )
         .unwrap(),
@@ -2794,7 +2797,7 @@ fn version_list_paginates_and_selects_versions_on_later_pages() {
 #[test]
 fn done_ratio_accepts_zero_and_serializes_the_boundary_value() {
     use crate::command::PlanningOptions;
-    use crate::redmine_planning_cli::resolve_planning;
+    use crate::providers::redmine::planning::resolve_planning;
     // 0% is a valid default state; only values above 100 are rejected.
     let dispatcher = ProviderDispatcher::Redmine(provider("http://127.0.0.1:1".to_owned()));
     let options = PlanningOptions {
@@ -2821,7 +2824,7 @@ fn done_ratio_accepts_zero_and_serializes_the_boundary_value() {
     );
 
     // The accepted boundary value must survive serialization as a numeric 0.
-    let planning = crate::redmine_model::IssuePlanning {
+    let planning = crate::providers::redmine::model::IssuePlanning {
         done_ratio: Some(0),
         ..Default::default()
     };
@@ -2839,7 +2842,7 @@ fn done_ratio_accepts_zero_and_serializes_the_boundary_value() {
 #[test]
 fn date_validation_is_strict_yyyy_mm_dd_including_leap_years() {
     use crate::command::PlanningOptions;
-    use crate::redmine_planning_cli::resolve_planning;
+    use crate::providers::redmine::planning::resolve_planning;
     let dispatcher = ProviderDispatcher::Redmine(provider("http://127.0.0.1:1".to_owned()));
     let rejected = |date: &str| {
         let options = PlanningOptions {
@@ -3316,7 +3319,7 @@ fn relation_create_denies_delay_for_non_precedes_types() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
     storage
@@ -3357,7 +3360,7 @@ fn relation_create_and_list_hit_redmine_endpoints_end_to_end() {
             .unwrap()
             .as_nanos()
     ));
-    let db_path = directory.join(crate::storage::DB_FILENAME);
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
     let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
     storage

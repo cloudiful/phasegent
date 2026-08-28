@@ -3,14 +3,14 @@ use crate::command::{
     self, Command, CommentCommand, HelpTopic, HooksCommand, Invocation, IssueCommand,
     ProjectCommand, RelationCommand, StatusCommand, VersionCommand, WorkflowCommand,
 };
-use crate::forgejo::{ForgejoConfig, ForgejoError};
+use crate::infra::storage::Storage;
 use crate::policy::{Capability, Role};
-use crate::provider::{
+use crate::providers::config::resolve_kind;
+use crate::providers::forgejo::{ForgejoConfig, ForgejoError};
+use crate::providers::{
     GitlabConfig, IssueProvider, ProviderDispatcher, ProviderKind, RedmineConfig,
     RedmineMetadataProvider, RedmineProvider,
 };
-use crate::provider_config::resolve_kind;
-use crate::storage::Storage;
 use crate::workflow;
 use serde::Serialize;
 
@@ -404,7 +404,9 @@ fn print_bootstrap_warning(result: &workflow::BootstrapResult) -> i32 {
     if printed == 0 { 1 } else { printed }
 }
 
-fn git_mirror_json(outcome: &crate::redmine_model::RedmineGitMirrorOutcome) -> serde_json::Value {
+fn git_mirror_json(
+    outcome: &crate::providers::redmine::model::RedmineGitMirrorOutcome,
+) -> serde_json::Value {
     serde_json::json!({
         "id": outcome.id,
         "project_id": outcome.project_id,
@@ -494,7 +496,7 @@ fn execute_issue(
             tracker,
             planning,
         } => {
-            match crate::redmine_planning_cli::create_issue(
+            match crate::providers::redmine::planning::create_issue(
                 &provider,
                 &title,
                 &body,
@@ -526,7 +528,7 @@ fn execute_issue(
             body,
             tracker,
             planning,
-        } => print_result(crate::redmine_planning_cli::update_body(
+        } => print_result(crate::providers::redmine::planning::update_body(
             &provider,
             number,
             &body,
@@ -908,10 +910,14 @@ fn execute_relation(
             capability.operation(),
         ));
     }
-    match crate::redmine_relations_cli::execute(&provider, &command) {
-        Ok(crate::redmine_relations_cli::RelationResult::List(relations)) => print_json(&relations),
-        Ok(crate::redmine_relations_cli::RelationResult::Created(summary)) => print_json(&summary),
-        Ok(crate::redmine_relations_cli::RelationResult::Deleted(relation_id)) => {
+    match crate::providers::redmine::relations::execute(&provider, &command) {
+        Ok(crate::providers::redmine::relations::RelationResult::List(relations)) => {
+            print_json(&relations)
+        }
+        Ok(crate::providers::redmine::relations::RelationResult::Created(summary)) => {
+            print_json(&summary)
+        }
+        Ok(crate::providers::redmine::relations::RelationResult::Deleted(relation_id)) => {
             print_json(&serde_json::json!({"deleted": relation_id, "relation_id": relation_id}))
         }
         Err(error) => provider_error(error),

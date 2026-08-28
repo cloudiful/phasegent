@@ -8,8 +8,8 @@
 //! repository URL override is sanitised before being returned to the
 //! caller.
 
+use crate::infra::storage::{GlobalSettingSummary, Storage};
 use crate::policy::Role;
-use crate::storage::{GlobalSettingSummary, Storage};
 use serde::Serialize;
 
 /// Per-role snapshot consumed by `config show`. The structure is
@@ -128,7 +128,7 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
     // mean "unset" instead of "set to an empty string".
     let global_default_provider = match storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")? {
         Some(raw) => Some(
-            raw.parse::<crate::provider_config::ProviderKind>()
+            raw.parse::<crate::providers::config::ProviderKind>()
                 .map_err(|error| {
                     format!("persisted PHASEGENT_DEFAULT_PROVIDER is invalid: {error}")
                 })?
@@ -149,11 +149,11 @@ fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> 
     let redmine_config = storage.load_redmine_config(role)?;
     let gitlab_config = storage.load_gitlab_config(role)?;
     let (forgejo_present, forgejo_length) =
-        storage.credential_summary(role, crate::storage::PROVIDER_FORGEJO)?;
+        storage.credential_summary(role, crate::infra::storage::PROVIDER_FORGEJO)?;
     let (redmine_present, redmine_length) =
-        storage.credential_summary(role, crate::storage::PROVIDER_REDMINE)?;
+        storage.credential_summary(role, crate::infra::storage::PROVIDER_REDMINE)?;
     let (gitlab_present, gitlab_length) =
-        storage.credential_summary(role, crate::storage::PROVIDER_GITLAB)?;
+        storage.credential_summary(role, crate::infra::storage::PROVIDER_GITLAB)?;
     Ok(RoleSnapshot {
         role: role.as_str(),
         provider: role_config
@@ -224,7 +224,7 @@ fn global_setting_to_json(
     let value = if summary.name == "PHASEGENT_DEFAULT_PROVIDER" {
         match storage.load_global_setting(summary.name)? {
             Some(raw) => Some(
-                raw.parse::<crate::provider_config::ProviderKind>()
+                raw.parse::<crate::providers::config::ProviderKind>()
                     .map_err(|error| {
                         format!("persisted PHASEGENT_DEFAULT_PROVIDER is invalid: {error}")
                     })?

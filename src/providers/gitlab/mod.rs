@@ -17,13 +17,22 @@
 //!     caller that asks for one against GitLab gets a structured
 //!     not-supported error before any network access.
 
+pub mod http;
+pub mod model;
+
+#[cfg(test)]
+mod contract_tests;
+
 use crate::ci_model::{
     CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
     CiRunsOutput, bound_log, pretty_ref as shared_pretty_ref,
 };
-use crate::forgejo_model::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
-use crate::gitlab_http::GitlabHttp;
-use crate::gitlab_model::{
+use crate::infra::storage::Storage;
+use crate::policy::Capability;
+use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+use crate::providers::config::GitlabConfig;
+use crate::providers::gitlab::http::GitlabHttp;
+use crate::providers::gitlab::model::{
     ApiIssue, ApiIssueLink, ApiJob, ApiLabel, ApiNamespace, ApiNote, ApiPipeline, ApiProject,
     ApiSpentTimeSummary, NewIssue, NewLabel, NewNote, NewProject, NewSpentTime, NewTimeEstimate,
     TRACKER_LABEL_BUG, TRACKER_LABEL_FEATURE, UpdateIssue, WORKFLOW_LABELS, format_gitlab_duration,
@@ -31,10 +40,7 @@ use crate::gitlab_model::{
     pipeline_status_from_gitlab, state_from_gitlab, state_query_filter, tracker_label_from_name,
     tracker_name_from_label, workflow_label_from_status,
 };
-use crate::policy::Capability;
-use crate::provider_config::GitlabConfig;
-use crate::redmine_model::{RedmineRelationType, RelationSummary};
-use crate::storage::Storage;
+use crate::providers::redmine::model::{RedmineRelationType, RelationSummary};
 
 /// Concrete GitLab provider. The struct is held by the
 /// `ProviderDispatcher::Gitlab` arm; the surrounding CLI talks to it
@@ -42,7 +48,7 @@ use crate::storage::Storage;
 /// specific helpers (`set_workflow_status`, `tracker_label`, etc.).
 ///
 /// Public so `provider_config.rs` can re-export it under the same name
-/// for the `crate::provider::ProviderDispatcher` enum. The struct is
+/// for the `crate::providers::ProviderDispatcher` enum. The struct is
 /// an opaque transport; callers should drive it via the trait, not
 /// reach into its fields, so widening visibility here does not
 /// expose anything new beyond what the dispatcher already surfaces.
@@ -601,7 +607,7 @@ impl GitlabProvider {
                 "GitLab issue link cannot target the same issue",
             ));
         }
-        if !crate::gitlab_model::gitlab_create_supports_relation_type(relation_type) {
+        if !crate::providers::gitlab::model::gitlab_create_supports_relation_type(relation_type) {
             // The live instance rejects every direction other than
             // `relates_to` with a structured validation error. Fail
             // before any HTTP traffic so the client sees a
@@ -668,7 +674,7 @@ impl GitlabProvider {
 
     pub(crate) fn list_projects(
         &self,
-    ) -> Result<Vec<crate::redmine_model::RedmineProject>, ForgejoError> {
+    ) -> Result<Vec<crate::providers::redmine::model::RedmineProject>, ForgejoError> {
         // GitLab project enumeration is part of Phase 3; surface the
         // structured not-supported error so callers do not silently
         // see a Redmine-shaped result.
@@ -949,7 +955,7 @@ impl GitlabProvider {
         })
     }
 
-    /// GitLab equivalent of [`crate::forgejo_ci::ForgejoProvider::ci_inspect`].
+    /// GitLab equivalent of [`crate::providers::forgejo::ci::ForgejoProvider::ci_inspect`].
     /// The shared `CiInspectOutput` contract is preserved; only the
     /// GitLab-specific status / conclusion mapping differs from the
     /// Forgejo implementation.
@@ -1366,7 +1372,7 @@ impl ApiIssueLink {
             // default.
             "unknown".to_owned()
         } else {
-            crate::gitlab_model::gitlab_link_type_to_relation_type(&self.link_type)
+            crate::providers::gitlab::model::gitlab_link_type_to_relation_type(&self.link_type)
                 .as_str()
                 .to_owned()
         };
@@ -1420,8 +1426,8 @@ impl GitlabProvider {
     /// comment / workflow surface. Phase 4 lifts the relation surface
     /// from not-supported to native so the shared CLI can dispatch
     /// `relation list/create/delete` to the GitLab provider.
-    pub(crate) fn capabilities(&self) -> crate::provider::ProviderCapabilities {
-        crate::provider::ProviderCapabilities {
+    pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+        crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
             comments: true,
             repository_creation: true,

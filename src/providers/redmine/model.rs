@@ -1,5 +1,5 @@
-use crate::forgejo_model::{CommentOutput, ForgejoError, IssueSummary};
-use crate::provider_config::RedmineProvider;
+use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary};
+use crate::providers::config::RedmineProvider;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

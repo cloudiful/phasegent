@@ -1,7 +1,15 @@
-use crate::forgejo_model::{CommentOutput, ForgejoError, IssueSummary};
+pub mod http;
+pub mod model;
+pub mod planning;
+pub mod relations;
+
+#[cfg(test)]
+mod contract_tests;
+
 use crate::policy::Capability;
-use crate::provider_config::RedmineProvider;
-use crate::redmine_model::{
+use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary};
+use crate::providers::config::RedmineProvider;
+use crate::providers::redmine::model::{
     IssuePlanning, RedmineBootstrap, RedmineCurrentUser, RedmineGitMirrorOutcome,
     RedmineGitMirrorRequest, RedmineGitMirrorResponse, RedmineIssue, RedmineIssueCollection,
     RedmineIssueResponse, RedmineIssueStatus, RedmineIssueStatusCollection, RedmineNewIssue,
@@ -219,7 +227,7 @@ impl RedmineProvider {
             ));
         }
         let payload = RedmineNewTimeEntry {
-            time_entry: crate::redmine_model::RedmineNewTimeEntryFields {
+            time_entry: crate::providers::redmine::model::RedmineNewTimeEntryFields {
                 issue_id,
                 hours,
                 spent_on,
@@ -796,7 +804,7 @@ impl RedmineProvider {
             return Err(ForgejoError::config("marker cannot be empty"));
         }
         let payload = RedmineNotes {
-            issue: crate::redmine_model::RedmineNotesFields { notes: body },
+            issue: crate::providers::redmine::model::RedmineNotesFields { notes: body },
         };
         let response: Option<RedmineIssueResponse> =
             self.http
@@ -907,8 +915,8 @@ impl RedmineProvider {
 }
 
 impl RedmineProvider {
-    pub(crate) fn capabilities(&self) -> crate::provider::ProviderCapabilities {
-        crate::provider::ProviderCapabilities {
+    pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+        crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
             comments: true,
             repository_creation: false,
@@ -969,7 +977,7 @@ pub fn register_git_mirror(
             "git mirror remote URL must not be empty",
         ));
     }
-    let storage = crate::storage::Storage::open().map_err(ForgejoError::config)?;
+    let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
     let bearer_key =
         crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
     let Some(bearer_key) = bearer_key else {
@@ -978,13 +986,15 @@ pub fn register_git_mirror(
              set the Redmine git mirror plugin key in the environment to queue mirrors",
         ));
     };
-    let http =
-        crate::redmine_http::RedmineGitMirrorHttp::new(redmine_base_url.to_owned(), bearer_key)?;
+    let http = crate::providers::redmine::http::RedmineGitMirrorHttp::new(
+        redmine_base_url.to_owned(),
+        bearer_key,
+    )?;
     let identifier = mirror_identifier(project_id, owner, repo);
     let get_path = format!("/sys/redmine_git_mirror/projects/{project_id}/repository/{identifier}");
     let post_path = format!("/sys/redmine_git_mirror/projects/{project_id}/repository");
     let response = match http.get::<RedmineGitMirrorResponse>(&get_path, "mirror get")? {
-        crate::redmine_http::RedmineGitMirrorLookup::Found(response) => {
+        crate::providers::redmine::http::RedmineGitMirrorLookup::Found(response) => {
             // Only a `failed` existing mirror is requeued; `pending`,
             // `cloning`, and `ready` stay idempotent with a single GET.
             if response.status.trim().eq_ignore_ascii_case("failed") {
@@ -994,7 +1004,7 @@ pub fn register_git_mirror(
                 response
             }
         }
-        crate::redmine_http::RedmineGitMirrorLookup::Missing => {
+        crate::providers::redmine::http::RedmineGitMirrorLookup::Missing => {
             let body = RedmineGitMirrorRequest::new(remote_url);
             http.post::<RedmineGitMirrorResponse, _>(&post_path, &body, "mirror post")?
         }

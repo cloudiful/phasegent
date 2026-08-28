@@ -1,4 +1,5 @@
-use crate::forgejo_model::{ApiError, ForgejoError};
+use crate::providers::api::ForgejoError;
+use crate::providers::forgejo::model::ApiError;
 use reqwest::StatusCode;
 use reqwest::blocking::Response;
 use reqwest::header::{HeaderMap, LINK};

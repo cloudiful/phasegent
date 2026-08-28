@@ -26,9 +26,11 @@
 use crate::auth;
 use crate::command::{self, Command};
 use crate::config;
+use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+use crate::infra::storage::{
+    DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
+};
 use crate::policy::Role;
-use crate::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::storage::{DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -458,7 +460,7 @@ fn ordinary_provider_commands_do_not_persist_env_values() {
         // Run a typical chain: resolve_kind (cli.rs path) followed by
         // loading the role config from storage. The pre-set SQLite
         // state must be unchanged.
-        let resolved = crate::provider_config::resolve_kind(Role::Executor, None).unwrap();
+        let resolved = crate::providers::config::resolve_kind(Role::Executor, None).unwrap();
         assert_eq!(resolved.as_str(), "redmine");
 
         let role_config = storage.load_role_config(Role::Executor).unwrap();
@@ -626,9 +628,9 @@ fn config_provider_get_parses_with_role() {
 #[test]
 fn config_provider_set_parses_valid_values() {
     for (raw, expected) in [
-        ("forgejo", crate::provider::ProviderKind::Forgejo),
-        ("redmine", crate::provider::ProviderKind::Redmine),
-        ("gitlab", crate::provider::ProviderKind::Gitlab),
+        ("forgejo", crate::providers::ProviderKind::Forgejo),
+        ("redmine", crate::providers::ProviderKind::Redmine),
+        ("gitlab", crate::providers::ProviderKind::Gitlab),
     ] {
         let args = ["config", "provider", "set", raw]
             .into_iter()

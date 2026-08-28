@@ -1,5 +1,5 @@
-use crate::forgejo::{ForgejoConfig, ForgejoProvider};
-use crate::provider::{IssueProvider, ProviderDispatcher, RepoProvider};
+use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver};

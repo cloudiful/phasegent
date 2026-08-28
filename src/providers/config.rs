@@ -3,11 +3,11 @@ use crate::ci_model::{
     CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
     CiRunsOutput,
 };
-use crate::forgejo_model::{ForgejoError, RepoSummary};
+use crate::infra::storage::Storage;
 use crate::policy::Role;
-use crate::redmine_http::RedmineHttp;
+use crate::providers::api::{ForgejoError, RepoSummary};
+use crate::providers::redmine::http::RedmineHttp;
 use crate::remote;
-use crate::storage::Storage;
 use std::str::FromStr;
 use url::Url;
 
@@ -416,11 +416,11 @@ pub fn normalize_gitlab_api_base(value: &str) -> Result<String, String> {
 
 /// Re-export the real GitLab provider implementation. The stub used
 /// to live in this module in Phase 1; Phase 2 moved the
-/// implementation to [`crate::gitlab`] so the HTTP plumbing and the
+/// implementation to [`crate::providers::gitlab`] so the HTTP plumbing and the
 /// provider logic share a single file. Keeping the old name here
-/// means every existing `crate::provider_config::GitlabProvider`
+/// means every existing `crate::providers::config::GitlabProvider`
 /// reference continues to compile without churn.
-pub use crate::gitlab::GitlabProvider;
+pub use crate::providers::gitlab::GitlabProvider;
 
 #[cfg(test)]
 mod tests {
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn provider_rejects_empty_token() {
-        let provider = crate::gitlab::GitlabProvider::new(
+        let provider = crate::providers::gitlab::GitlabProvider::new(
             GitlabConfig::new("https://gitlab.example/api/v4", 7),
             "  ".to_owned(),
         );
