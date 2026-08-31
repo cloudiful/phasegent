@@ -62,22 +62,22 @@ phasegent --role admin auth setup --stdin --provider redmine \
 repository 注册到 companion 的 `redmine_git_mirror` Redmine plugin，由
 plugin 异步 clone 并创建 Redmine 原生的 Git repository。plugin 使用单独的
 bearer token，从 `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` 读取；当该环境变量
-未设置时，resolver 会回退到 `config import-env` 持久化的 SQLite `global_setting`
-行。该 token 也不会出现在任何 JSON 输出或日志中，建议导出一次后通过
-`import-env` 落地：
+未设置时，resolver 会回退到 `config set` 持久化的 SQLite `global_setting`
+行。该 token 也不会出现在任何 JSON 输出或日志中；命令默认使用安全提示，
+也可以从 stdin 读取：
 
 ```text
-export PHASEGENT_REDMINE_GIT_MIRROR_API_KEY=<plugin-bearer-key>
-phasegent --role admin config import-env
+phasegent config set redmine-git-mirror-api-key
+phasegent config set redmine-git-mirror-api-key --stdin < /secure/path/plugin-bearer-key
 ```
 
 plugin key 缺失或非法时 bootstrap 会以可操作的 config 错误失败。发送给
 plugin 的 repository URL 默认是去掉凭据的 origin URL；通过设置
 `PHASEGENT_REDMINE_REPOSITORY_URL` 可以指向自托管 mirror，而无需改动
-本地 `origin` remote：
+本地 `origin` remote。该配置可以用 CLI 持久化：
 
 ```text
-export PHASEGENT_REDMINE_REPOSITORY_URL=https://git.example.com/owner/repo.git
+phasegent config set redmine-repository-url https://git.example.com/owner/repo.git
 ```
 
 当 `--repository OWNER/REPOSITORY` 与本地 `origin` 不一致时必须设置
@@ -118,6 +118,26 @@ phasegent --role executor auth setup --stdin --provider redmine \
 phasegent --role reviewer auth setup --stdin --provider redmine \
   --api-base https://redmine.example.com
 ```
+
+### 查找已有 Redmine project
+
+另一台机器不需要预先知道已 bootstrap 的 Redmine project ID。先为任一 role
+配置 API key 和 API base，然后列出该 Redmine 用户可见的 project：
+
+```text
+phasegent --role orchestrator --provider redmine project list
+```
+
+`project list` 不需要 `--project-id`；返回的 JSON 会包含每个 project 的数字
+`id`、`name` 和 `identifier`。选择正确的 ID 后，为这台机器上实际运行命令的
+role 持久化配置：
+
+```text
+phasegent --role orchestrator config set redmine-project-id 42
+```
+
+project ID 按 role 保存。其他 role 也需要访问 issue 时，对每个 role 重复执行
+`config set`，使用同一个 project ID。
 
 四个 key 都配置好后，必须先为当前 repository 执行 bootstrap，然后才能执行
 Redmine issue 的 create、search、update 或 close。命令从 `OWNER/REPOSITORY`
@@ -481,30 +501,33 @@ phasegent --role executor config show
 本工具不支持该工作流；secret 始终保留在 SQLite 内部并仅由 credential
 读取路径使用。
 
-### 使用 `config import-env` 持久化环境变量
+### 使用 `config set` 持久化配置
 
-普通 provider 命令只会从进程环境中读取 `PHASEGENT_*` 值，绝不会写回
-SQLite。`config import-env` 是显式地把当前已设置的受支持环境变量写入
-数据库的命令；由于大多数写入的字段都按 role 隔离，必须带上 `--role
-ROLE`：
-
-```text
-phasegent --role orchestrator config import-env
-```
-
-命令输出 JSON 报告，逐项列出 role-scoped 变量与全局设置，对 secret
-字段标记而不输出明文，并附带 `imported` 与 `skipped` 计数。命令不会修改
-进程环境变量；空值会被跳过，`import-env` 不会用 `export PHASEGENT_*=""`
-之类的空字符串覆盖已有字段。
-
-两个全局 plugin 设置可以在同一次调用中一并持久化，避免每次运行 `workflow
-bootstrap` 的 shell 都要带上同一份 plugin key：
+普通 provider 命令只会从进程环境中读取 `PHASEGENT_*` 值作为运行时覆盖，
+绝不会写回 SQLite。需要持久化时，用 `config set` 设置单个配置，用
+`config clear` 删除配置：
 
 ```text
-export PHASEGENT_REDMINE_GIT_MIRROR_API_KEY=<plugin-bearer-key>
-export PHASEGENT_REDMINE_REPOSITORY_URL=https://git.example.com/owner/repo.git
-phasegent --role admin config import-env
+phasegent --role orchestrator config set redmine-project-id 42
+phasegent config set redmine-repository-url https://git.example.com/owner/repo.git
+phasegent config clear redmine-repository-url
 ```
+
+配置名可以使用完整的 `PHASEGENT_*` 名称或 kebab-case 别名。全局配置
+（`redmine-git-mirror-api-key`、`redmine-repository-url`、
+`default-provider`）不需要 `--role`；role-scoped 配置需要 `--role`。
+`config show` 继续提供 SQLite 的脱敏只读快照。
+
+mirror plugin bearer token 属于 secret，绝不接受命令行值。默认使用安全
+提示输入，也可以从 stdin 读取：
+
+```text
+phasegent config set redmine-git-mirror-api-key
+phasegent config set redmine-git-mirror-api-key --stdin < /secure/path/plugin-bearer-key
+```
+
+非 secret 配置也支持 `--stdin`。值写入前会去除首尾空白，成功输出只包含
+规范配置名和 role。
 
 ### 优先级与受支持的环境变量
 
@@ -522,9 +545,9 @@ SQLite。provider 选择遵循同一模式，但在 `PHASEGENT_PROVIDER` 运行�
 5. 角色级 `role_config.provider`（由 `auth setup` 写入）
 6. forgejo 兜底
 
-`config import-env` 持久化的 role-scoped 变量：
+`config set` 支持的 role-scoped 配置：
 
-- `PHASEGENT_PROVIDER` — 选择 `forgejo`（默认）或 `redmine`。
+- `PHASEGENT_PROVIDER` — 选择 `forgejo`、`redmine` 或 `gitlab`。
 - `PHASEGENT_API_BASE` — 通用 API base；Forgejo 直接使用，Redmine 在
   provider-specific 变量未设置时作为兜底。
 - `PHASEGENT_REPOSITORY` — Forgejo 使用的 `OWNER/REPOSITORY`。
@@ -535,7 +558,7 @@ SQLite。provider 选择遵循同一模式，但在 `PHASEGENT_PROVIDER` 运行�
 - `PHASEGENT_PROJECT_ID` — Redmine project id 的通用别名。
 - `PHASEGENT_CLOSE_STATUS_ID` — Redmine close status id 的通用别名。
 
-`config import-env` 持久化的全局设置：
+`config set` 支持的全局配置：
 
 - `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` — companion
   `redmine_git_mirror` Redmine plugin 的 bearer token。
@@ -543,7 +566,7 @@ SQLite。provider 选择遵循同一模式，但在 `PHASEGENT_PROVIDER` 运行�
   repository URL 覆盖。
 - `PHASEGENT_DEFAULT_PROVIDER` — 机器级默认 provider（`forgejo`、
   `redmine` 或 `gitlab`）。通过 `ProviderKind` 校验，避免拼写错误写入
-  SQLite；可通过 `config import-env` 或
+  SQLite；可通过 `config set default-provider` 或
   `config provider set / get / clear` 子命令管理。
 
 ### 管理全局默认 provider
@@ -583,11 +606,11 @@ phasegent config show
 phasegent --role executor config show
 ```
 
-把指定 role 的 role-scoped 与全局环境变量持久化到数据库：
+持久化 role-scoped project ID 或全局 mirror 配置：
 
 ```text
-phasegent --role orchestrator config import-env
-phasegent --role admin config import-env
+phasegent --role orchestrator config set redmine-project-id 42
+phasegent config set redmine-git-mirror-api-key
 ```
 
 仅以环境变量作为运行时覆盖，不写入数据库：
@@ -598,8 +621,9 @@ export PHASEGENT_REPOSITORY=owner/repo
 phasegent --role executor issue get 3
 ```
 
-以上示例都不接受或打印任何 credential；secret 只能通过 `auth setup`
-提供，绝不要在 shell 历史中以明文形式出现。
+以上示例都不接受或打印任何 credential；provider credential 只能通过
+`auth setup` 提供，mirror key 使用 `config set` 的安全提示或 stdin 路径，
+绝不要在 shell 历史中以明文形式出现。
 
 ## 安装
 
@@ -625,9 +649,9 @@ credential。
 
 `workflow bootstrap` 通过 `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` 解析
 companion 的 `redmine_git_mirror` plugin bearer token，环境变量未设置时
-会回退到 `config import-env` 写入的 SQLite `global_setting` 行。该 token
-属于部署级密钥，建议导出一次后落地到 SQLite，而不是每次 bootstrap 都重新
-导出。
+会回退到 `config set` 写入的 SQLite `global_setting` 行。该 token 属于部署级
+密钥，建议通过安全提示或 stdin 持久化一次，而不是每次 bootstrap 都重新
+提供。
 
 然后查看可用界面：
 

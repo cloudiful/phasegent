@@ -130,7 +130,7 @@ pub(crate) const MIGRATIONS: &[(&str, &str, &str)] = &[
 
 /// Names of the deployment-level settings stored in `global_setting`.
 /// The strings double as the canonical environment variable names so
-/// `config import-env` can persist them without a translation table.
+/// `config set` can persist them without a translation table.
 pub(crate) const GLOBAL_REDMINE_GIT_MIRROR_API_KEY: &str = "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY";
 pub(crate) const GLOBAL_REDMINE_REPOSITORY_URL: &str = "PHASEGENT_REDMINE_REPOSITORY_URL";
 /// Persistent machine-wide default provider. Acts as the fallback
@@ -138,7 +138,7 @@ pub(crate) const GLOBAL_REDMINE_REPOSITORY_URL: &str = "PHASEGENT_REDMINE_REPOSI
 /// role-scoped `role_config.provider` so operators can switch between
 /// an external Redmine deployment and an internal GitLab one without
 /// touching every role-scoped config row. The string doubles as the
-/// environment variable name so `config import-env` persists it
+/// environment variable name so `config set` persists it
 /// without a translation table.
 pub(crate) const GLOBAL_DEFAULT_PROVIDER: &str = "PHASEGENT_DEFAULT_PROVIDER";
 

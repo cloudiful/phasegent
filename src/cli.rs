@@ -95,12 +95,32 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                 }
             }
         }
-        Command::ConfigImportEnv => {
-            let role = required_role(invocation.role);
-            let result =
-                open_storage().and_then(|storage| crate::config::import_env_json(role, &storage));
+        Command::ConfigSet {
+            setting,
+            value,
+            stdin,
+        } => {
+            let result = open_storage().and_then(|storage| {
+                crate::config::set_json(
+                    invocation.role,
+                    &setting,
+                    value.as_deref(),
+                    stdin,
+                    &storage,
+                )
+            });
             match result {
-                Ok(value) => print_json(&value),
+                Ok(outcome) => print_json(&outcome),
+                Err(message) => {
+                    structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
+                }
+            }
+        }
+        Command::ConfigClear { setting } => {
+            let result = open_storage()
+                .and_then(|storage| crate::config::clear_json(invocation.role, &setting, &storage));
+            match result {
+                Ok(outcome) => print_json(&outcome),
                 Err(message) => {
                     structured_error(serde_json::json!({"kind":"config", "message":message}), 1)
                 }

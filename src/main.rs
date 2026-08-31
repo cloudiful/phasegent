@@ -8,6 +8,7 @@ mod cli;
 mod command;
 mod config;
 mod config_snapshot;
+mod config_write;
 mod hooks;
 mod lifecycle;
 mod policy;

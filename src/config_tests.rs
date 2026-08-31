@@ -1,31 +1,21 @@
-//! Focused tests for the `config show` and `config import-env` flows.
+//! Focused tests for the `config show`, `config set`/`clear`, and
+//! `config provider` flows.
 //!
-//! These tests cover the phase 2 acceptance criteria that require
-//! focused coverage:
-//!
-//! * `config show` redacts credentials (never echoes secret content
-//!   or URL userinfo / query / fragment).
-//! * `config import-env` persists role-scoped and global settings,
-//!   reports counts and per-name flags, and never prints the values
-//!   it persisted.
-//! * The mirror fallback prefers the environment variable and only
-//!   reads SQLite when the env var is unset.
-//! * Ordinary provider commands must not implicitly persist
-//!   environment values; the explicit `import-env` invocation is the
-//!   only path that writes.
-//! * Phase `global-provider-default`: `config provider get / set /
-//!   clear` manage the machine-wide default provider; the resolver
-//!   honours the documented precedence; the snapshot surfaces the
-//!   default without leaking secrets.
+//! These tests cover:
+//! * `config show` redacts credentials
+//! * `config set`/`clear` parser acceptance/rejection, alias handling,
+//!   secret handling via `--stdin` / interactive path, and persistence
+//! * `config import-env` removal
+//! * `project list` does not require a project id
+//! * provider get/set/clear and snapshot reporting
 //!
 //! Tests build a fresh `Storage` via [`Storage::open_at`] against a
-//! private temp database so they cannot mutate the operator's real
-//! platform-standard database under
-//! `directories::ProjectDirs::from("com", "Cloud1ful", "phasegent")`.
+//! private temp database.
 
 use crate::auth;
-use crate::command::{self, Command};
+use crate::command::{self, Command, ProjectCommand};
 use crate::config;
+use crate::config_write;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::infra::storage::{
     DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
@@ -54,9 +44,6 @@ fn unique_temp_db_path(label: &str) -> PathBuf {
     unique_temp_dir(label).join(DB_FILENAME)
 }
 
-/// Open a brand-new temp storage and hand the caller the database path
-/// plus the open handle. Each test cleans up its directory on the way
-/// out so a panic cannot leak fixtures into the host temp area.
 fn with_isolated_storage<T>(label: &str, f: impl FnOnce(&Path, &Storage) -> T) -> T {
     let _lock = lock_workflow_tests();
     let db_path = unique_temp_db_path(label);
@@ -91,7 +78,6 @@ fn config_show_redacts_credentials_and_sanitises_url() {
         let snapshot = config::show(Some(Role::Executor), storage).unwrap();
         let text = serde_json::to_string(&snapshot).unwrap();
 
-        // The redacted snapshot must never echo secret content.
         for forbidden in [
             "forgejo-secret-token",
             "redmine-secret-key",
@@ -104,15 +90,11 @@ fn config_show_redacts_credentials_and_sanitises_url() {
             );
         }
 
-        // The URL userinfo, query, and fragment are stripped before the
-        // snapshot is rendered, but the sanitised host and path remain.
         assert!(text.contains("hush.example.com"));
         assert!(!text.contains("?token="));
         assert!(!text.contains("#fragment"));
         assert!(!text.contains("user:"));
 
-        // The credential summary reports presence and length, not the
-        // value. The mirror key summary follows the same rule.
         let roles = snapshot["roles"].as_array().expect("roles array");
         assert_eq!(roles.len(), 1);
         let executor = &roles[0];
@@ -152,12 +134,6 @@ fn config_show_redacts_credentials_and_sanitises_url() {
 
 #[test]
 fn config_show_replaces_unparseable_mirror_url_with_safe_placeholder() {
-    // Regression test for review P1: unparseable URLs that still
-    // embed credential-looking substrings must be rendered as the
-    // safe placeholder rather than echoing the raw input. The
-    // persisted value is still stored verbatim (the user can decide
-    // to remove it) but the snapshot never returns a string that
-    // could leak credentials.
     with_isolated_storage("show-bad-url-redact", |_db_path, storage| {
         let malicious_inputs = [
             "git@user:password@host.example.com:owner/repo.git",
@@ -171,9 +147,6 @@ fn config_show_replaces_unparseable_mirror_url_with_safe_placeholder() {
         let snapshot = config::show(None, storage).unwrap();
         let text = serde_json::to_string(&snapshot).unwrap();
 
-        // The persisted value is reported by length and the
-        // sanitised slot uses the placeholder; none of the
-        // credential-looking substrings may appear in the output.
         let url_entry = snapshot["global_settings"]
             .as_array()
             .unwrap()
@@ -252,217 +225,11 @@ fn config_show_without_role_reports_every_role() {
 }
 
 #[test]
-fn import_env_persists_role_scoped_and_global_settings_and_reports_counts() {
-    with_isolated_storage("import-env", |_db_path, storage| {
-        // Seed the environment with a deliberate mix: every variable
-        // the import flow understands is set to a non-empty value so
-        // the persistence path runs end-to-end. Empty values are
-        // covered by `import_env_skips_unset_environment_variables`.
-        let _provider = EnvGuard::set("PHASEGENT_PROVIDER", "redmine");
-        let _api_base = EnvGuard::set("PHASEGENT_API_BASE", "https://forgejo.example");
-        let _repository = EnvGuard::set("PHASEGENT_REPOSITORY", "owner/repo");
-        let _redmine_api = EnvGuard::set("PHASEGENT_REDMINE_API_BASE", "https://redmine.example");
-        let _redmine_project = EnvGuard::set("PHASEGENT_REDMINE_PROJECT_ID", "42");
-        let _redmine_status = EnvGuard::set("PHASEGENT_REDMINE_CLOSE_STATUS_ID", "7");
-        let _mirror_key = EnvGuard::set(
-            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-            "mirror-bearer-secret",
-        );
-        let _mirror_url = EnvGuard::set(
-            "PHASEGENT_REDMINE_REPOSITORY_URL",
-            "https://mirror.example/owner/repo.git",
-        );
-        // Generic aliases are intentionally set to verify they land
-        // on the Redmine row too. The Redmine-specific
-        // project_id will be overwritten by PHASEGENT_PROJECT_ID in
-        // the persistence loop, so we choose a different value to
-        // make the test deterministic.
-        let _generic_project = EnvGuard::set("PHASEGENT_PROJECT_ID", "84");
-        let _generic_status = EnvGuard::set("PHASEGENT_CLOSE_STATUS_ID", "9");
-
-        let outcome = config::import_env(Role::Executor, storage).unwrap();
-        let text = serde_json::to_string(&outcome).unwrap();
-        // The JSON must never echo a secret value.
-        assert!(!text.contains("mirror-bearer-secret"));
-
-        let imported_names: Vec<&str> = outcome
-            .role_scoped
-            .iter()
-            .chain(outcome.global_settings.iter())
-            .filter(|entry| entry.imported)
-            .map(|entry| entry.name)
-            .collect();
-        for expected in [
-            "PHASEGENT_PROVIDER",
-            "PHASEGENT_API_BASE",
-            "PHASEGENT_REPOSITORY",
-            "PHASEGENT_REDMINE_API_BASE",
-            "PHASEGENT_PROJECT_ID",
-            "PHASEGENT_CLOSE_STATUS_ID",
-            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-            "PHASEGENT_REDMINE_REPOSITORY_URL",
-        ] {
-            assert!(
-                imported_names.contains(&expected),
-                "import-env must report '{expected}' as imported: {imported_names:?}"
-            );
-        }
-        assert!(
-            outcome.imported >= 9,
-            "expected at least nine fields to land in SQLite, got {}",
-            outcome.imported
-        );
-
-        // The mirror bearer entry must be flagged as a secret so the
-        // CLI layer can render its presence/length without exposing it.
-        let mirror_entry = outcome
-            .global_settings
-            .iter()
-            .find(|entry| entry.name == "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
-            .expect("mirror key entry");
-        assert!(
-            mirror_entry.secret,
-            "mirror bearer entry must be flagged as a secret"
-        );
-        assert!(mirror_entry.imported);
-
-        // Storage must reflect the persisted state.
-        let stored_key = storage
-            .load_global_setting("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
-            .unwrap()
-            .expect("mirror key persisted");
-        assert_eq!(stored_key, "mirror-bearer-secret");
-        let stored_url = storage
-            .load_global_setting("PHASEGENT_REDMINE_REPOSITORY_URL")
-            .unwrap()
-            .expect("mirror url persisted");
-        assert_eq!(stored_url, "https://mirror.example/owner/repo.git");
-
-        let role = storage.load_role_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(role.provider.as_deref(), Some("redmine"));
-        assert_eq!(role.api_base.as_deref(), Some("https://forgejo.example"));
-        assert_eq!(role.repository.as_deref(), Some("owner/repo"));
-
-        let redmine = storage
-            .load_redmine_config(Role::Executor)
-            .unwrap()
-            .unwrap();
-        // `PHASEGENT_REDMINE_API_BASE` is processed after the generic
-        // `PHASEGENT_API_BASE` in `import_env`, so the Redmine row
-        // observes the provider-specific value rather than the
-        // generic one. The Forgejo row still carries the generic base
-        // so a Forgejo fallback can use it.
-        assert_eq!(redmine.api_base.as_deref(), Some("https://redmine.example"));
-        // When both `PHASEGENT_REDMINE_PROJECT_ID` and the generic
-        // alias `PHASEGENT_PROJECT_ID` are set, `import-env` writes
-        // both into the same column and the later write wins. The
-        // resolver still prefers the provider-specific env var at
-        // runtime, so the persisted value is only consulted when the
-        // shell no longer carries the variable.
-        assert_eq!(redmine.project_id.as_deref(), Some("84"));
-        assert_eq!(redmine.close_status_id, Some(9));
-    });
-}
-
-#[test]
-fn import_env_persists_generic_api_base_to_both_role_rows() {
-    // Regression test for review P1: `PHASEGENT_API_BASE` must land
-    // on both `role_config.api_base` (Forgejo) and
-    // `role_redmine_config.api_base` (Redmine) so a Redmine
-    // `RedmineConfig::resolve()` whose env vars are unset can still
-    // fall back to the SQLite value.
-    with_isolated_storage("import-env-generic-api-base", |_db_path, storage| {
-        let _api_base = EnvGuard::set("PHASEGENT_API_BASE", "https://shared.example");
-
-        config::import_env(Role::Executor, storage).unwrap();
-
-        let forgejo_row = storage.load_role_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(
-            forgejo_row.api_base.as_deref(),
-            Some("https://shared.example"),
-            "generic PHASEGENT_API_BASE must land on the Forgejo row"
-        );
-        let redmine_row = storage
-            .load_redmine_config(Role::Executor)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            redmine_row.api_base.as_deref(),
-            Some("https://shared.example"),
-            "generic PHASEGENT_API_BASE must also land on the Redmine row so RedmineConfig::resolve can fall back"
-        );
-    });
-}
-
-#[test]
-fn import_env_redmine_specific_api_base_overrides_generic() {
-    // When both the generic and the Redmine-specific API base are
-    // set, the Redmine row must observe the provider-specific value
-    // so the resolver's documented precedence is preserved end to
-    // end. The Forgejo row keeps the generic value because the
-    // Redmine-specific override only affects role_redmine_config.
-    with_isolated_storage("import-env-redmine-specific-wins", |_db_path, storage| {
-        let _generic = EnvGuard::set("PHASEGENT_API_BASE", "https://shared.example");
-        let _specific = EnvGuard::set("PHASEGENT_REDMINE_API_BASE", "https://redmine.example");
-
-        config::import_env(Role::Executor, storage).unwrap();
-
-        let forgejo_row = storage.load_role_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(
-            forgejo_row.api_base.as_deref(),
-            Some("https://shared.example"),
-            "Forgejo row keeps the generic API base"
-        );
-        let redmine_row = storage
-            .load_redmine_config(Role::Executor)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            redmine_row.api_base.as_deref(),
-            Some("https://redmine.example"),
-            "Redmine-specific API base must override the generic value on the Redmine row"
-        );
-    });
-}
-
-#[test]
-fn import_env_skips_unset_environment_variables() {
-    with_isolated_storage("import-env-skipped", |_db_path, storage| {
-        // Only one role-scoped variable is set so the other entries
-        // are reported as skipped.
-        let _api_base = EnvGuard::set("PHASEGENT_API_BASE", "https://forgejo.example");
-
-        let outcome = config::import_env(Role::Admin, storage).unwrap();
-        assert!(outcome.imported >= 1);
-        assert!(outcome.skipped >= 1);
-        let skipped_names: Vec<&str> = outcome
-            .role_scoped
-            .iter()
-            .filter(|entry| !entry.imported)
-            .map(|entry| entry.name)
-            .collect();
-        assert!(
-            skipped_names.contains(&"PHASEGENT_REPOSITORY"),
-            "unset environment variables must appear in the skipped list: {skipped_names:?}"
-        );
-    });
-}
-
-#[test]
 fn ordinary_provider_commands_do_not_persist_env_values() {
-    // `resolve_kind` reads `PHASEGENT_PROVIDER` from the environment
-    // to select a provider; the storage layer must not record the
-    // value as a side effect. We assert this by checking that
-    // `role_config.provider` remains unset after the resolver runs.
     with_isolated_storage("no-implicit-persist", |_db_path, storage| {
         let _provider = EnvGuard::set("PHASEGENT_PROVIDER", "redmine");
-
-        // Run a typical chain: resolve_kind (cli.rs path) followed by
-        // loading the role config from storage. The pre-set SQLite
-        // state must be unchanged.
         let resolved = crate::providers::config::resolve_kind(Role::Executor, None).unwrap();
         assert_eq!(resolved.as_str(), "redmine");
-
         let role_config = storage.load_role_config(Role::Executor).unwrap();
         assert!(
             role_config.is_none(),
@@ -491,8 +258,6 @@ fn mirror_fallback_prefers_environment_then_sqlite() {
             )
             .unwrap();
 
-        // When the environment is empty, the resolver must return the
-        // SQLite value.
         let _unset_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "");
         let _unset_url = EnvGuard::set("PHASEGENT_REDMINE_REPOSITORY_URL", "");
         assert_eq!(
@@ -504,8 +269,6 @@ fn mirror_fallback_prefers_environment_then_sqlite() {
             Some("https://sqlite.example/owner/repo.git".to_owned())
         );
 
-        // When the environment variable is set, it must win over
-        // SQLite.
         let _env_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "env-bearer-key");
         let _env_url = EnvGuard::set(
             "PHASEGENT_REDMINE_REPOSITORY_URL",
@@ -562,29 +325,6 @@ fn config_show_command_parses_with_role() {
 }
 
 #[test]
-fn config_import_env_requires_role() {
-    let args = ["config", "import-env"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let error = command::parse(&args).expect_err("config import-env must require --role");
-    assert!(error.contains("--role is required"), "got: {error}");
-}
-
-#[test]
-fn config_import_env_parses_with_role() {
-    let args = ["--role", "admin", "config", "import-env"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("config import-env with --role must parse");
-    match invocation.command {
-        Command::ConfigImportEnv => {}
-        other => panic!("expected ConfigImportEnv, got {other:?}"),
-    }
-}
-
-#[test]
 fn config_unknown_subcommand_is_rejected() {
     let args = ["config", "purge"]
         .into_iter()
@@ -595,10 +335,433 @@ fn config_unknown_subcommand_is_rejected() {
 }
 
 #[test]
+fn config_import_env_is_rejected() {
+    // `config import-env` was removed; any attempt must be rejected as unknown command.
+    for with_role in [true, false] {
+        let mut args = Vec::new();
+        if with_role {
+            args.push("--role".to_owned());
+            args.push("admin".to_owned());
+        }
+        args.push("config".to_owned());
+        args.push("import-env".to_owned());
+        let error = command::parse(&args).expect_err("import-env must be rejected");
+        assert!(
+            error.contains("unknown config command") && error.contains("import-env"),
+            "got: {error}"
+        );
+    }
+}
+
+#[test]
+fn config_set_parses_canonical_and_kebab_alias() {
+    // Canonical and kebab-case alias must both be accepted and resolve to same canonical.
+    let cases = [
+        ("PHASEGENT_API_BASE", "api-base"),
+        (
+            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
+            "redmine-git-mirror-api-key",
+        ),
+        ("PHASEGENT_DEFAULT_PROVIDER", "default-provider"),
+        ("PHASEGENT_REDMINE_PROJECT_ID", "redmine-project-id"),
+        ("PHASEGENT_GITLAB_API_BASE", "gitlab-api-base"),
+    ];
+    for (canonical, alias) in cases {
+        for name in [canonical, alias] {
+            let is_secret = config_write::is_secret_setting(canonical);
+            let args = if is_secret {
+                vec![
+                    "--role".to_owned(),
+                    "executor".to_owned(),
+                    "config".to_owned(),
+                    "set".to_owned(),
+                    name.to_owned(),
+                    "--stdin".to_owned(),
+                ]
+            } else {
+                // Non-secret global may not need role, but role-scoped does.
+                // Use role for all to keep parser simple in this loop.
+                let mut a = vec![
+                    "--role".to_owned(),
+                    "executor".to_owned(),
+                    "config".to_owned(),
+                    "set".to_owned(),
+                    name.to_owned(),
+                ];
+                // For global default-provider without role, we test separately.
+                if config_write::is_global_setting(canonical) {
+                    // global case later
+                }
+                a.push("test-value".to_owned());
+                a
+            };
+            // For global secret alias without role, test without role too.
+            let invocation =
+                command::parse(&args).unwrap_or_else(|e| panic!("set {name} must parse: {e}"));
+            match invocation.command {
+                Command::ConfigSet { setting, .. } => assert_eq!(setting, canonical),
+                other => panic!("expected ConfigSet for {name}, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn config_set_global_without_role_parses() {
+    // Global settings must be usable without --role.
+    let args = ["config", "set", "redmine-git-mirror-api-key", "--stdin"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("global set without --role must parse");
+    match invocation.command {
+        Command::ConfigSet { setting, stdin, .. } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY");
+            assert!(stdin);
+        }
+        other => panic!("expected ConfigSet global without role, got {other:?}"),
+    }
+    let args = [
+        "config",
+        "set",
+        "redmine-repository-url",
+        "https://example.com",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("global set url without --role must parse");
+    match invocation.command {
+        Command::ConfigSet { setting, .. } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_REPOSITORY_URL")
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_role_scoped_requires_role() {
+    let args = ["config", "set", "api-base", "https://example.com"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("role-scoped set without --role must error");
+    assert!(error.contains("--role is required"), "got: {error}");
+}
+
+#[test]
+fn config_set_rejects_secret_direct_value() {
+    let args = [
+        "--role",
+        "executor",
+        "config",
+        "set",
+        "redmine-git-mirror-api-key",
+        "direct-secret-value",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("secret direct value must be rejected");
+    assert!(
+        error.contains("does not accept a direct value"),
+        "got: {error}"
+    );
+    assert!(
+        !error.contains("direct-secret-value"),
+        "error must not echo secret: {error}"
+    );
+}
+
+#[test]
+fn config_set_rejects_unknown_setting() {
+    let args = [
+        "--role",
+        "executor",
+        "config",
+        "set",
+        "unknown-setting",
+        "value",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("unknown setting must error");
+    assert!(error.contains("unknown config setting"), "got: {error}");
+    assert!(error.contains("unknown-setting"), "got: {error}");
+}
+
+#[test]
+fn config_set_rejects_missing_value_for_non_secret() {
+    let args = ["--role", "executor", "config", "set", "api-base"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("missing value must error");
+    assert!(error.contains("requires a value"), "got: {error}");
+}
+
+#[test]
+fn config_set_rejects_empty_value() {
+    with_isolated_storage("set-empty", |_db_path, storage| {
+        let err = config_write::set_setting_value(
+            Some(Role::Executor),
+            "PHASEGENT_API_BASE",
+            "   ",
+            storage,
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be empty"), "got: {err}");
+        // Secret empty via stdin helper
+        let err = config_write::set_setting_stdin_content(
+            None,
+            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
+            "   ",
+            storage,
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be empty"), "got: {err}");
+        // Ensure no secret leaked (empty is not secret, but check)
+        assert!(!err.contains("shhh"), "secret leaked");
+    });
+}
+
+#[test]
+fn config_set_secret_via_stdin_persists_and_show_redacted() {
+    with_isolated_storage("set-secret-stdin", |_db_path, storage| {
+        let secret = "super-secret-bearer-123";
+        let outcome = config_write::set_setting_stdin_content(
+            None,
+            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
+            &format!("  {secret}  \n"),
+            storage,
+        )
+        .unwrap();
+        let text = serde_json::to_string(&outcome).unwrap();
+        assert!(text.contains("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY"));
+        assert!(
+            !text.contains(secret),
+            "set outcome must not echo secret: {text}"
+        );
+        // Persisted value should be trimmed
+        let stored = storage
+            .load_global_setting("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
+            .unwrap()
+            .expect("stored");
+        assert_eq!(stored, secret);
+        // config show must redact
+        let snapshot = config::show(None, storage).unwrap();
+        let snap_text = serde_json::to_string(&snapshot).unwrap();
+        assert!(
+            !snap_text.contains(secret),
+            "snapshot leaked secret: {snap_text}"
+        );
+        let settings = snapshot["global_settings"].as_array().unwrap();
+        let entry = settings
+            .iter()
+            .find(|e| e["name"] == "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
+            .unwrap();
+        assert_eq!(entry["present"], Value::Bool(true));
+        assert_eq!(entry["length"], Value::from(secret.len()));
+    });
+}
+
+#[test]
+fn config_set_role_scoped_persists_and_output_canonical() {
+    with_isolated_storage("set-role-scoped", |_db_path, storage| {
+        let outcome = config_write::set_setting_value(
+            Some(Role::Executor),
+            "PHASEGENT_API_BASE",
+            "https://forgejo.example",
+            storage,
+        )
+        .unwrap();
+        let text = serde_json::to_string(&outcome).unwrap();
+        // Output must use canonical name
+        assert!(text.contains("PHASEGENT_API_BASE"));
+        assert!(
+            !text.contains("https://forgejo.example"),
+            "value must not be echoed: {text}"
+        );
+        // Verify storage: generic api-base writes to three rows
+        let forgejo = storage.load_role_config(Role::Executor).unwrap().unwrap();
+        assert_eq!(forgejo.api_base.as_deref(), Some("https://forgejo.example"));
+        let redmine = storage
+            .load_redmine_config(Role::Executor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(redmine.api_base.as_deref(), Some("https://forgejo.example"));
+        let gitlab = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
+        assert_eq!(gitlab.api_base.as_deref(), Some("https://forgejo.example"));
+
+        // Test kebab alias for redmine project id via config_write canonical mapping
+        let canonical = config_write::canonical_setting_name("redmine-project-id").unwrap();
+        assert_eq!(canonical, "PHASEGENT_REDMINE_PROJECT_ID");
+        let outcome =
+            config_write::set_setting_value(Some(Role::Executor), canonical, "my-project", storage)
+                .unwrap();
+        let t2 = serde_json::to_string(&outcome).unwrap();
+        assert!(t2.contains("PHASEGENT_REDMINE_PROJECT_ID"));
+        let redmine2 = storage
+            .load_redmine_config(Role::Executor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(redmine2.project_id.as_deref(), Some("my-project"));
+    });
+}
+
+#[test]
+fn config_set_default_provider_reuses_validation() {
+    with_isolated_storage("set-default-provider", |_db_path, storage| {
+        for literal in [PROVIDER_FORGEJO, PROVIDER_REDMINE, PROVIDER_GITLAB] {
+            let outcome = config_write::set_setting_value(
+                None,
+                "PHASEGENT_DEFAULT_PROVIDER",
+                literal,
+                storage,
+            )
+            .unwrap();
+            let text = serde_json::to_string(&outcome).unwrap();
+            assert!(text.contains("PHASEGENT_DEFAULT_PROVIDER"));
+            // Value not echoed? The outcome only contains setting, so can't leak.
+            assert!(!text.contains(literal));
+            let stored = storage
+                .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored, literal);
+        }
+        // Invalid value
+        let err =
+            config_write::set_setting_value(None, "PHASEGENT_DEFAULT_PROVIDER", "wrong", storage)
+                .unwrap_err();
+        assert!(err.contains("invalid provider"), "got: {err}");
+        assert!(err.contains("wrong"), "got: {err}");
+    });
+}
+
+#[test]
+fn config_clear_global_without_role_and_role_scoped() {
+    with_isolated_storage("clear", |_db_path, storage| {
+        // Global without role
+        storage
+            .save_global_setting("PHASEGENT_REDMINE_REPOSITORY_URL", "https://example.com")
+            .unwrap();
+        let outcome =
+            config_write::clear_setting(None, "PHASEGENT_REDMINE_REPOSITORY_URL", storage).unwrap();
+        let text = serde_json::to_string(&outcome).unwrap();
+        assert!(text.contains("PHASEGENT_REDMINE_REPOSITORY_URL"));
+        assert!(text.contains("\"cleared\":true"));
+        assert!(
+            storage
+                .load_global_setting("PHASEGENT_REDMINE_REPOSITORY_URL")
+                .unwrap()
+                .is_none()
+        );
+        // Second clear should be false
+        let outcome2 =
+            config_write::clear_setting(None, "PHASEGENT_REDMINE_REPOSITORY_URL", storage).unwrap();
+        assert!(
+            serde_json::to_string(&outcome2)
+                .unwrap()
+                .contains("\"cleared\":false")
+        );
+
+        // Role-scoped clear requires role
+        let err = config_write::clear_setting(None, "PHASEGENT_API_BASE", storage).unwrap_err();
+        assert!(err.contains("--role is required"), "got: {err}");
+
+        // Role-scoped clear via --role
+        config_write::set_setting_value(
+            Some(Role::Executor),
+            "PHASEGENT_API_BASE",
+            "https://a.example",
+            storage,
+        )
+        .unwrap();
+        let clear =
+            config_write::clear_setting(Some(Role::Executor), "PHASEGENT_API_BASE", storage)
+                .unwrap();
+        assert!(
+            serde_json::to_string(&clear)
+                .unwrap()
+                .contains("\"cleared\":true")
+        );
+        // Verify cleared
+        assert!(
+            storage
+                .load_role_config(Role::Executor)
+                .unwrap()
+                .unwrap()
+                .api_base
+                .is_none()
+        );
+        assert!(
+            storage
+                .load_redmine_config(Role::Executor)
+                .unwrap()
+                .unwrap()
+                .api_base
+                .is_none()
+        );
+        assert!(
+            storage
+                .load_gitlab_config(Role::Executor)
+                .unwrap()
+                .unwrap()
+                .api_base
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn config_clear_command_parsing() {
+    let args = ["config", "clear", "redmine-git-mirror-api-key"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let inv = command::parse(&args).expect("clear global without role must parse");
+    match inv.command {
+        Command::ConfigClear { setting } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
+        }
+        other => panic!("got {other:?}"),
+    }
+    let args = ["config", "clear", "api-base"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let err = command::parse(&args).expect_err("clear role-scoped without role must error");
+    assert!(err.contains("--role is required"), "got: {err}");
+
+    let args = ["--role", "executor", "config", "clear", "api-base"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let inv = command::parse(&args).expect("clear with role must parse");
+    match inv.command {
+        Command::ConfigClear { setting } => assert_eq!(setting, "PHASEGENT_API_BASE"),
+        other => panic!("got {other:?}"),
+    }
+
+    let args = ["--role", "executor", "config", "clear"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let err = command::parse(&args).expect_err("clear without setting must error");
+    assert!(err.contains("requires a setting"), "got: {err}");
+
+    let args = ["--role", "executor", "config", "clear", "unknown"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let err = command::parse(&args).expect_err("unknown clear setting must error");
+    assert!(err.contains("unknown config setting"), "got: {err}");
+}
+
+#[test]
 fn config_provider_get_parses_without_role() {
-    // `config provider get` is machine-wide so the parser must not
-    // require --role; the global default lives in
-    // `global_setting`, not in a per-role row.
     let args = ["config", "provider", "get"]
         .into_iter()
         .map(str::to_owned)
@@ -612,8 +775,6 @@ fn config_provider_get_parses_without_role() {
 
 #[test]
 fn config_provider_get_parses_with_role() {
-    // --role is harmless on these subcommands because the global
-    // default is machine-wide; supplying --role must not error.
     let args = ["--role", "executor", "config", "provider", "get"]
         .into_iter()
         .map(str::to_owned)
@@ -721,11 +882,6 @@ fn config_provider_unknown_subcommand_is_rejected() {
 
 #[test]
 fn config_show_includes_gitlab_fields_without_leaking_token() {
-    // Phase-1 GitLab foundation: the per-role snapshot must report
-    // the new gitlab_api_base, gitlab_project_id, and
-    // gitlab_credential fields. The PRIVATE-TOKEN value must never
-    // appear in the rendered JSON; only presence/length survives,
-    // matching the redmine/forgejo convention.
     with_isolated_storage("show-gitlab", |_db_path, storage| {
         storage
             .save_credential(Role::Executor, PROVIDER_GITLAB, "gitlab-private-token-shhh")
@@ -749,7 +905,6 @@ fn config_show_includes_gitlab_fields_without_leaking_token() {
         let snapshot = config::show(Some(Role::Executor), storage).unwrap();
         let text = serde_json::to_string(&snapshot).unwrap();
 
-        // No secret value survives the snapshot.
         for forbidden in [
             "gitlab-private-token-shhh",
             "forgejo-secret-token",
@@ -770,121 +925,18 @@ fn config_show_includes_gitlab_fields_without_leaking_token() {
             Some("https://gitlab.example")
         );
         assert_eq!(executor["gitlab_project_id"].as_u64(), Some(42));
-        // Credential summary reports presence and length only.
         assert_eq!(executor["gitlab_credential"]["present"], Value::Bool(true));
         assert_eq!(
             executor["gitlab_credential"]["length"],
             Value::from("gitlab-private-token-shhh".len())
         );
-        // Forgejo and redmine fields continue to be reported as
-        // before so the snapshot stays a single object per role.
         assert_eq!(executor["forgejo_credential"]["present"], Value::Bool(true));
         assert_eq!(executor["redmine_credential"]["present"], Value::Bool(true));
     });
 }
 
 #[test]
-fn import_env_persists_gitlab_env_values_to_role_gitlab_config() {
-    // Phase-1 GitLab foundation: `config import-env` must persist the
-    // provider-specific GitLab env vars to the role_gitlab_config
-    // row and never echo the underlying values into its JSON report.
-    // The generic `PHASEGENT_PROJECT_ID` alias is also parsed
-    // numerically and lands on the Gitlab row so the documented
-    // resolver fallback path keeps working after a restart.
-    with_isolated_storage("import-env-gitlab", |_db_path, storage| {
-        let _provider = EnvGuard::set("PHASEGENT_PROVIDER", "gitlab");
-        let _gitlab_api = EnvGuard::set("PHASEGENT_GITLAB_API_BASE", "https://gitlab.example");
-        let _gitlab_project = EnvGuard::set("PHASEGENT_GITLAB_PROJECT_ID", "42");
-        let _generic_project = EnvGuard::set("PHASEGENT_PROJECT_ID", "84");
-
-        let outcome = config::import_env(Role::Executor, storage).unwrap();
-        let text = serde_json::to_string(&outcome).unwrap();
-        // The JSON report never carries an environment variable
-        // value, only the import flag — keep that invariant.
-        assert!(!text.contains("https://gitlab.example"));
-
-        let imported_names: Vec<&str> = outcome
-            .role_scoped
-            .iter()
-            .chain(outcome.global_settings.iter())
-            .filter(|entry| entry.imported)
-            .map(|entry| entry.name)
-            .collect();
-        for expected in [
-            "PHASEGENT_PROVIDER",
-            "PHASEGENT_GITLAB_API_BASE",
-            "PHASEGENT_GITLAB_PROJECT_ID",
-            "PHASEGENT_PROJECT_ID",
-        ] {
-            assert!(
-                imported_names.contains(&expected),
-                "import-env must report '{expected}' as imported: {imported_names:?}"
-            );
-        }
-
-        let provider = storage
-            .load_role_config(Role::Executor)
-            .unwrap()
-            .expect("role_config row must exist after import")
-            .provider;
-        assert_eq!(provider.as_deref(), Some(PROVIDER_GITLAB));
-
-        let gitlab = storage
-            .load_gitlab_config(Role::Executor)
-            .unwrap()
-            .expect("role_gitlab_config row must exist after import");
-        assert_eq!(gitlab.api_base.as_deref(), Some("https://gitlab.example"));
-        // PHASEGENT_PROJECT_ID (the generic alias) is processed
-        // last and wins over PHASEGENT_GITLAB_PROJECT_ID. Both are
-        // parsed numerically and the alias lands on the Gitlab row
-        // so the resolver's env-over-SQLite fallback continues to
-        // work after a restart.
-        assert_eq!(gitlab.project_id, Some(84));
-    });
-}
-
-#[test]
-fn import_env_rejects_non_numeric_gitlab_project_id() {
-    // PHASEGENT_GITLAB_PROJECT_ID requires a numeric value because
-    // GitLab identifiers are always positive integers. The
-    // parser-level rejection keeps the error actionable instead of
-    // surfacing as a generic runtime failure at provider build time.
-    with_isolated_storage("import-env-gitlab-bad-id", |_db_path, storage| {
-        let _bad_id = EnvGuard::set("PHASEGENT_GITLAB_PROJECT_ID", "not-a-number");
-        let error = config::import_env(Role::Executor, storage).unwrap_err();
-        assert!(
-            error.contains("PHASEGENT_GITLAB_PROJECT_ID"),
-            "error must name the offending env var: {error}"
-        );
-        assert!(
-            error.contains("not-a-number"),
-            "error must echo the offending value for the operator: {error}"
-        );
-    });
-}
-
-#[test]
-fn import_env_rejects_zero_gitlab_project_id() {
-    // GitLab identifiers must be greater than zero; the same guard
-    // matches the storage-layer bootstrap check so a hostile env
-    // export cannot silently land a zero id.
-    with_isolated_storage("import-env-gitlab-zero", |_db_path, storage| {
-        let _zero = EnvGuard::set("PHASEGENT_GITLAB_PROJECT_ID", "0");
-        let error = config::import_env(Role::Executor, storage).unwrap_err();
-        assert!(
-            error.contains("greater than zero"),
-            "zero gitlab project id must be rejected: {error}"
-        );
-    });
-}
-
-#[test]
 fn gitlab_config_snapshot_omits_unset_fields() {
-    // Operators frequently run `config show` before `auth setup`
-    // has populated the GitLab row; the snapshot must keep rendering
-    // cleanly (no false positives, no leaked fields) when the
-    // gitlab_api_base / gitlab_project_id / gitlab_credential
-    // columns are all empty.
     with_isolated_storage("show-gitlab-empty", |_db_path, storage| {
         let snapshot = config::show(Some(Role::Executor), storage).unwrap();
         let text = serde_json::to_string(&snapshot).unwrap();
@@ -894,17 +946,10 @@ fn gitlab_config_snapshot_omits_unset_fields() {
         assert!(executor["gitlab_api_base"].is_null());
         assert!(executor["gitlab_project_id"].is_null());
         assert_eq!(executor["gitlab_credential"]["present"], Value::Bool(false));
-        // The CredentialSummary serde skips length when it is zero
-        // (matching the existing forgejo/redmine convention), so an
-        // absent length field is the expected outcome; downstream
-        // tooling already treats `present: false` as "no credential"
-        // without needing the length slot.
         assert!(
             executor["gitlab_credential"]["length"].is_null(),
             "zero-length credential summary must omit the length slot: {executor:?}"
         );
-        // Make sure the new fields are at least named in the rendered
-        // JSON so downstream tooling can switch on them safely.
         assert!(
             text.contains("gitlab_api_base"),
             "snapshot must name gitlab_api_base: {text}"
@@ -922,15 +967,7 @@ fn gitlab_config_snapshot_omits_unset_fields() {
 
 #[test]
 fn storage_global_default_provider_save_load_and_delete_round_trip() {
-    // Phase `global-provider-default`: the storage layer exposes
-    // save / load / delete on the `PHASEGENT_DEFAULT_PROVIDER`
-    // global setting row. The delete helper must report whether a
-    // row was actually removed so the `config provider clear`
-    // command can distinguish "cleared an existing default" from
-    // "no-op because the default was already absent".
     with_isolated_storage("global-default-crud", |_db_path, storage| {
-        // No row exists yet — load returns None and delete returns
-        // false to signal the absent default.
         assert!(
             storage
                 .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
@@ -974,22 +1011,13 @@ fn storage_global_default_provider_save_load_and_delete_round_trip() {
 
 #[test]
 fn config_provider_set_get_and_clear_round_trip_through_helpers() {
-    // Phase `global-provider-default`: the `config` facade owns the
-    // `provider_get`, `provider_set`, and `provider_clear` helpers.
-    // They must validate through ProviderKind and surface the
-    // canonical `as_str` literal so the resolver and the snapshot
-    // observe identical strings.
     with_isolated_storage("global-default-helpers", |_db_path, storage| {
-        // Initially absent: `provider_get` reports `null` so callers
-        // can distinguish "unset" from "explicitly forgejo".
         let initial = config::provider_get(storage).unwrap();
         assert!(
             initial.provider.is_none(),
             "fresh storage must report null default: {initial:?}"
         );
 
-        // Set + get: every supported value must round-trip through
-        // the helpers.
         for literal in [PROVIDER_FORGEJO, PROVIDER_REDMINE, PROVIDER_GITLAB] {
             let outcome = config::provider_set(literal, storage).unwrap();
             assert_eq!(outcome.provider, Some(literal));
@@ -997,9 +1025,6 @@ fn config_provider_set_get_and_clear_round_trip_through_helpers() {
             assert_eq!(stored.provider, Some(literal));
         }
 
-        // Clear: the first call returns `cleared: true` because a
-        // row existed; the second call returns `cleared: false`
-        // because the row is already absent.
         let cleared = config::provider_clear(storage).unwrap();
         assert!(cleared.cleared, "first clear must remove the row");
         let cleared_again = config::provider_clear(storage).unwrap();
@@ -1013,12 +1038,6 @@ fn config_provider_set_get_and_clear_round_trip_through_helpers() {
 
 #[test]
 fn config_provider_set_helper_rejects_unknown_value() {
-    // Phase `global-provider-default`: invalid input must surface a
-    // structured config error before any SQLite write happens. The
-    // facade exposes `provider_set` directly so the test can probe
-    // the helper without going through the CLI dispatcher (the CLI
-    // path is covered separately by
-    // `config_provider_set_rejects_unknown_value`).
     with_isolated_storage("global-default-invalid", |_db_path, storage| {
         let error = config::provider_set("wrong", storage).unwrap_err();
         assert!(
@@ -1042,12 +1061,6 @@ fn config_provider_set_helper_rejects_unknown_value() {
 
 #[test]
 fn config_provider_get_rejects_stale_invalid_row() {
-    // A previously-persisted row that contains an unknown literal
-    // (for example from a future build that has been downgraded)
-    // must surface as a structured config error rather than being
-    // echoed verbatim. The helper validates through `ProviderKind`
-    // so the snapshot and the CLI both observe the same canonical
-    // literal.
     with_isolated_storage("global-default-stale", |_db_path, storage| {
         storage
             .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "wrong")
@@ -1067,18 +1080,9 @@ fn config_provider_get_rejects_stale_invalid_row() {
 
 #[test]
 fn config_show_reports_global_default_provider_without_secrets() {
-    // Phase `global-provider-default`: the snapshot must surface
-    // the machine-wide default through both the dedicated
-    // `global_default_provider` field and the `global_settings`
-    // entry. The literal must be one of the canonical
-    // forgejo/redmine/gitlab strings; no secret values may leak
-    // through the snapshot.
     with_isolated_storage("show-global-default", |_db_path, storage| {
         let _unset_default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "");
 
-        // Persisted default via the helper exercises the same path
-        // `config provider set` uses, so the snapshot must observe
-        // the canonical literal.
         config::provider_set(PROVIDER_GITLAB, storage).unwrap();
 
         let snapshot = config::show(None, storage).unwrap();
@@ -1089,9 +1093,6 @@ fn config_show_reports_global_default_provider_without_secrets() {
             "snapshot must surface the machine-wide default"
         );
 
-        // The non-secret literal is also rendered inside
-        // `global_settings` so callers iterating the canonical
-        // list still observe the value.
         let settings = snapshot["global_settings"].as_array().expect("settings");
         let entry = settings
             .iter()
@@ -1103,15 +1104,11 @@ fn config_show_reports_global_default_provider_without_secrets() {
             Some(PROVIDER_GITLAB),
             "non-secret slot must carry the literal: {entry:?}"
         );
-        // Mirror secrets stay redacted regardless of the global
-        // default value.
         assert!(
             !text.contains("mirror-bearer-secret"),
             "snapshot must never leak secret values: {text}"
         );
 
-        // The unset case omits the top-level slot entirely so
-        // absence means "not configured".
         config::provider_clear(storage).unwrap();
         let unset = config::show(None, storage).unwrap();
         let unset_text = serde_json::to_string(&unset).unwrap();
@@ -1126,89 +1123,60 @@ fn config_show_reports_global_default_provider_without_secrets() {
             .expect("global default entry");
         assert_eq!(entry["present"], Value::Bool(false));
         assert!(entry["value"].is_null());
-        // Ensure the new field name is at least named in the
-        // rendered JSON so downstream tooling can switch on it.
         assert!(unset_text.contains("global_default_provider"));
     });
 }
 
 #[test]
-fn import_env_persists_global_default_provider_and_validates_value() {
-    // Phase `global-provider-default`: `config import-env` must
-    // treat `PHASEGENT_DEFAULT_PROVIDER` as a global setting,
-    // validate the value through `ProviderKind`, and report the
-    // imported/skipped counts without echoing the literal.
-    with_isolated_storage("import-env-global-default", |_db_path, storage| {
-        let _unset_provider = EnvGuard::set("PHASEGENT_PROVIDER", "");
-        let _default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE);
+fn project_list_parses_without_project_id() {
+    // Redmine project list must work without --project-id; it is the
+    // discovery path for another checkout.
+    let args = [
+        "--role",
+        "executor",
+        "--provider",
+        "redmine",
+        "project",
+        "list",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("project list without --project-id must parse");
+    match invocation.command {
+        Command::Project(ProjectCommand::List) => {}
+        other => panic!("expected Project List, got {other:?}"),
+    }
+    // Also without role? No, project list requires role via top-level parser, but not project-id.
+    // With explicit project-id should also parse.
+    let args = [
+        "--role",
+        "executor",
+        "--provider",
+        "redmine",
+        "--project-id",
+        "42",
+        "project",
+        "list",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("project list with --project-id must parse");
+    assert!(matches!(
+        invocation.command,
+        Command::Project(ProjectCommand::List)
+    ));
+    assert_eq!(invocation.project_id.as_deref(), Some("42"));
 
-        let outcome = config::import_env(Role::Executor, storage).unwrap();
-        let text = serde_json::to_string(&outcome).unwrap();
-        assert!(
-            !text.contains(PROVIDER_REDMINE),
-            "import-env JSON must never echo the literal: {text}"
-        );
-
-        let global_names: Vec<&str> = outcome
-            .global_settings
-            .iter()
-            .map(|entry| entry.name)
-            .collect();
-        assert!(
-            global_names.contains(&"PHASEGENT_DEFAULT_PROVIDER"),
-            "import-env must list the global default: {global_names:?}"
-        );
-        let default_entry = outcome
-            .global_settings
-            .iter()
-            .find(|entry| entry.name == "PHASEGENT_DEFAULT_PROVIDER")
-            .expect("global default entry");
-        assert!(
-            default_entry.imported,
-            "valid value must be reported as imported"
-        );
-        assert!(
-            !default_entry.secret,
-            "global default is not a secret: {default_entry:?}"
-        );
-
-        assert_eq!(
-            storage
-                .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
-                .unwrap()
-                .as_deref(),
-            Some(PROVIDER_REDMINE)
-        );
-    });
-}
-
-#[test]
-fn import_env_rejects_invalid_global_default_provider_value() {
-    // Phase `global-provider-default`: a hostile or typo'd
-    // `PHASEGENT_DEFAULT_PROVIDER` export must surface as a
-    // structured config error before any SQLite write. The
-    // validation runs through `ProviderKind::from_str` so the
-    // resolver and the snapshot both observe the same canonical
-    // strings.
-    with_isolated_storage("import-env-global-default-bad", |_db_path, storage| {
-        let _default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "wrong");
-
-        let error = config::import_env(Role::Executor, storage).unwrap_err();
-        assert!(
-            error.contains("PHASEGENT_DEFAULT_PROVIDER"),
-            "error must name the offending env var: {error}"
-        );
-        assert!(
-            error.contains("wrong"),
-            "error must echo the offending value: {error}"
-        );
-
-        assert!(
-            storage
-                .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
-                .unwrap()
-                .is_none(),
-            "rejected value must not land in SQLite"
-        );
-    });
+    // Ensure help mentions no project-id needed
+    let help_args = ["--role", "executor", "--help", "project", "list"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let inv = command::parse(&help_args).expect("help must parse");
+    match inv.command {
+        Command::Help(crate::command::HelpTopic::ProjectCommand(cmd)) => assert_eq!(cmd, "list"),
+        other => panic!("expected help topic for project list, got {other:?}"),
+    }
 }

@@ -274,11 +274,11 @@ pub fn gitlab_token(role: Role, storage: &Storage) -> Result<String, String> {
 ///
 /// Precedence is `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` (environment)
 /// → SQLite `global_setting` row → absent. Operators persist the value
-/// to SQLite via `phasegent --role <ROLE> config import-env` so a
-/// long-lived deployment does not have to ship the key in every shell
-/// that runs `workflow bootstrap`. The environment variable still wins
-/// for one-off rotations because the resolver only falls back when the
-/// env var is unset or empty.
+/// to SQLite via `phasegent config set redmine-git-mirror-api-key --stdin`
+/// (or the secure interactive prompt) so a long-lived deployment does
+/// not have to ship the key in every shell that runs `workflow bootstrap`.
+/// The environment variable still wins for one-off rotations because the
+/// resolver only falls back when the env var is unset or empty.
 ///
 /// Returns `Ok(None)` when neither source yields a non-empty trimmed
 /// string so callers can decide whether registration is optional or
@@ -305,13 +305,13 @@ pub fn redmine_git_mirror_api_key(storage: &Storage) -> Result<Option<String>, S
 ///
 /// Precedence is `PHASEGENT_REDMINE_REPOSITORY_URL` (environment) →
 /// SQLite `global_setting` row → absent. Persisting the URL is done
-/// with `phasegent --role <ROLE> config import-env` so a long-lived
-/// deployment does not have to ship the URL in every shell that runs
-/// `workflow bootstrap`. The environment variable still wins so ad-hoc
-/// runs can override the persisted URL without rewriting the database.
-/// The caller supplies the [`Storage`] handle so production code can
-/// call [`Storage::open`] while tests can drive the resolver against
-/// an isolated temp database.
+/// with `phasegent config set redmine-repository-url <URL>` (or
+/// `PHASEGENT_REDMINE_REPOSITORY_URL`) so a long-lived deployment does
+/// not have to ship the URL in every shell that runs `workflow bootstrap`.
+/// The environment variable still wins so ad-hoc runs can override the
+/// persisted URL without rewriting the database. The caller supplies the
+/// [`Storage`] handle so production code can call [`Storage::open`]
+/// while tests can drive the resolver against an isolated temp database.
 pub fn redmine_repository_url_override(storage: &Storage) -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_REPOSITORY_URL")? {
         return Ok(Some(value));

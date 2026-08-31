@@ -68,24 +68,23 @@ In addition to the per-role Redmine API key, `workflow bootstrap` registers the
 current repository with the companion `redmine_git_mirror` Redmine plugin so
 the asynchronous mirror job creates the project repository. The plugin uses
 its own bearer token read from `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`; the
-token is persisted alongside other role-scoped settings through
-`config import-env` and is never echoed in any JSON output or logs. Supply it
-once through the environment and let `import-env` land it in SQLite:
+token can be persisted with `config set` and is never echoed in any JSON output
+or logs. The command uses a secure prompt by default; `--stdin` is available
+for a secret source that does not expose the key in shell history:
 
 ```text
-export PHASEGENT_REDMINE_GIT_MIRROR_API_KEY=<plugin-bearer-key>
-phasegent --role admin config import-env
+phasegent config set redmine-git-mirror-api-key
+phasegent config set redmine-git-mirror-api-key --stdin < /secure/path/plugin-bearer-key
 ```
 
 A missing or invalid plugin key fails bootstrap with an actionable config
 error. The repository URL the plugin receives is the credential-free origin
 URL by default; set `PHASEGENT_REDMINE_REPOSITORY_URL` to override it (for
 example to point at a self-hosted mirror) without touching the local `origin`
-remote. The override is also persisted via `config import-env`:
+remote. The override is also persisted via `config set`:
 
 ```text
-export PHASEGENT_REDMINE_REPOSITORY_URL=https://git.example.com/owner/repo.git
-phasegent --role admin config import-env
+phasegent config set redmine-repository-url https://git.example.com/owner/repo.git
 ```
 
 When `--repository OWNER/REPOSITORY` does not match the local `origin`,
@@ -129,6 +128,27 @@ phasegent --role executor auth setup --stdin --provider redmine \
 phasegent --role reviewer auth setup --stdin --provider redmine \
   --api-base https://redmine.example.com
 ```
+
+### Discovering an existing project
+
+On another machine, a bootstrapped repository's Redmine project can be found
+without knowing its project ID. After configuring the API key and API base for
+one role, list the projects visible to that Redmine user:
+
+```text
+phasegent --role orchestrator --provider redmine project list
+```
+
+`project list` does not require `--project-id`; its JSON output includes each
+project's numeric `id`, `name`, and `identifier`. Persist the selected ID for
+the role that will run commands on this machine:
+
+```text
+phasegent --role orchestrator config set redmine-project-id 42
+```
+
+The project ID is role-scoped. Repeat the `config set` command for each local
+role that needs to access the project's issues, using the same ID.
 
 After configuring all four keys, bootstrap the current repository before any
 Redmine issue create, search, update, or close operation. The command derives
@@ -546,33 +566,35 @@ The output contains:
 a supported operator workflow; secrets stay inside SQLite and stay inside the
 credential read path.
 
-### Persisting environment values with `config import-env`
+### Setting values with `config set`
 
 Ordinary provider commands read `PHASEGENT_*` values from the process
-environment but never write them back to SQLite. The explicit
-`config import-env` command persists the currently set supported values for a
-role. `--role ROLE` is required because most persisted settings are
-role-scoped:
+environment as runtime overrides but never write them to SQLite. Persist one
+setting explicitly with `config set`, or remove it with `config clear`:
 
 ```text
-phasegent --role orchestrator config import-env
+phasegent --role orchestrator config set redmine-project-id 42
+phasegent config set redmine-repository-url https://git.example.com/owner/repo.git
+phasegent config clear redmine-repository-url
 ```
 
-The command returns a JSON report listing each role-scoped variable and each
-global setting, flagging secret entries without echoing values, plus
-`imported` and `skipped` counts. Environment variables are not modified by
-the command; empty values are skipped so `import-env` never erases a
-previously-stored field.
+Canonical `PHASEGENT_*` names and kebab-case aliases are accepted. Global
+settings (`redmine-git-mirror-api-key`, `redmine-repository-url`, and
+`default-provider`) do not require `--role`; role-scoped settings do.
+`config show` remains the read-only, redacted view of the resulting SQLite
+state.
 
-The two global plugin settings can be persisted in the same call when their
-environment variables are set, so a long-lived deployment does not have to
-ship the bearer key in every shell that runs `workflow bootstrap`:
+The mirror plugin bearer key is a secret and is never accepted as a command
+line value. Use the secure prompt, or read it from stdin:
 
 ```text
-export PHASEGENT_REDMINE_GIT_MIRROR_API_KEY=<plugin-bearer-key>
-export PHASEGENT_REDMINE_REPOSITORY_URL=https://git.example.com/owner/repo.git
-phasegent --role admin config import-env
+phasegent config set redmine-git-mirror-api-key
+phasegent config set redmine-git-mirror-api-key --stdin < /secure/path/plugin-bearer-key
 ```
+
+`--stdin` also works for non-secret settings. Values are trimmed before they
+are persisted, and successful output reports only the canonical setting name
+and role.
 
 ### Precedence and supported environment variables
 
@@ -592,9 +614,9 @@ override and the role-scoped `role_config.provider` row:
 5. role-scoped `role_config.provider` (written by `auth setup`)
 6. forgejo fallback
 
-Role-scoped variables persisted by `config import-env`:
+Role-scoped settings accepted by `config set`:
 
-- `PHASEGENT_PROVIDER` — selects `forgejo` (default) or `redmine`.
+- `PHASEGENT_PROVIDER` — selects `forgejo`, `redmine`, or `gitlab`.
 - `PHASEGENT_API_BASE` — generic API base; used by Forgejo and as the Redmine
   fallback when the provider-specific variable is unset.
 - `PHASEGENT_REPOSITORY` — `OWNER/REPOSITORY` for Forgejo.
@@ -606,7 +628,7 @@ Role-scoped variables persisted by `config import-env`:
 - `PHASEGENT_CLOSE_STATUS_ID` — generic alias for the Redmine close status
   id.
 
-Global settings persisted by `config import-env`:
+Global settings accepted by `config set`:
 
 - `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` — bearer token for the companion
   `redmine_git_mirror` Redmine plugin.
@@ -614,8 +636,8 @@ Global settings persisted by `config import-env`:
   mirror plugin.
 - `PHASEGENT_DEFAULT_PROVIDER` — machine-wide default provider
   (`forgejo`, `redmine`, or `gitlab`). Validated through `ProviderKind` so a
-  typo never lands in SQLite; managed either through `config import-env` or
-  the `config provider set / get / clear` subcommands.
+  typo never lands in SQLite; managed through `config set default-provider`
+  or the `config provider set / get / clear` subcommands.
 
 ### Managing the global default provider
 
@@ -658,11 +680,11 @@ phasegent config show
 phasegent --role executor config show
 ```
 
-Persist role-scoped and global environment values for a role:
+Persist a role-scoped project ID or a global mirror setting:
 
 ```text
-phasegent --role orchestrator config import-env
-phasegent --role admin config import-env
+phasegent --role orchestrator config set redmine-project-id 42
+phasegent config set redmine-git-mirror-api-key
 ```
 
 Use environment variables as runtime overrides without persisting them:
@@ -673,8 +695,9 @@ export PHASEGENT_REPOSITORY=owner/repo
 phasegent --role executor issue get 3
 ```
 
-None of the example commands accept or print credentials; supply secrets only
-through `auth setup` and never inline in shell history.
+None of the example commands accept or print credentials; supply provider
+credentials through `auth setup` and the mirror key through the secure
+`config set` prompt or stdin path. Never inline secrets in shell history.
 
 ## Install
 
@@ -704,9 +727,9 @@ credential.
 `workflow bootstrap` resolves the companion `redmine_git_mirror` plugin
 bearer token through the `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`
 environment variable, falling back to the SQLite `global_setting` row
-written by `config import-env` when the variable is unset. The token is
-treated as a deployment secret; export it once and let `import-env`
-persist it rather than re-supplying it on every bootstrap.
+written by `config set` when the variable is unset. The token is treated as a
+deployment secret; persist it once through the secure prompt or stdin path
+rather than re-supplying it on every bootstrap.
 
 Inspect the available surface with:
 

@@ -59,15 +59,24 @@ pub enum Command {
     /// without `--role` so an operator can inspect the global view
     /// of configuration state.
     ConfigShow,
-    /// `--role <ROLE> config import-env` — persist every
-    /// role-scoped and global `PHASEGENT_*` environment variable
-    /// that is currently set. Always requires a role because the
-    /// role-scoped fields need a target row in `role_config` /
-    /// `role_redmine_config`. Secret values are never echoed;
-    /// callers receive counts plus per-name flags. The `Role`
-    /// flows in from `Invocation::role` so the parser does not
-    /// duplicate the missing-role check.
-    ConfigImportEnv,
+    /// `config set <SETTING> [VALUE|--stdin]` — persist a single
+    /// setting. Global settings (mirror key, repository URL,
+    /// default provider) are machine-wide and usable without
+    /// `--role`; role-scoped settings require `--role`. The mirror
+    /// bearer key is never accepted as a direct value; it must be
+    /// supplied via `--stdin` or the secure interactive prompt.
+    /// Output uses canonical names and never echoes values.
+    ConfigSet {
+        setting: String,
+        value: Option<String>,
+        stdin: bool,
+    },
+    /// `config clear <SETTING>` — remove a persisted setting.
+    /// Global settings are machine-wide; role-scoped settings
+    /// require `--role`.
+    ConfigClear {
+        setting: String,
+    },
     /// `config provider get` — print the persisted
     /// `PHASEGENT_DEFAULT_PROVIDER` (machine-wide default) as
     /// JSON; `null` when unset. Usable without `--role` because
@@ -478,21 +487,23 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     };
     // Local branch context and hooks never touch provider credentials. The
     // internal `hooks run` forms are also invoked by generated Git scripts
-    // without a role.
-    if role.is_none()
-        && !matches!(
-            &command,
-            Command::Help(_)
-                | Command::ConfigShow
-                | Command::ConfigProviderGet
-                | Command::ConfigProviderSet { .. }
-                | Command::ConfigProviderClear
-                | Command::Hooks(_)
-                | Command::Issue(
-                    IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch
-                )
-        )
-    {
+    // without a role. `config set/clear` is allowed without --role when
+    // the target is a global setting; role-scoped settings still require it.
+    let no_role_allowed = match &command {
+        Command::Help(_)
+        | Command::ConfigShow
+        | Command::ConfigProviderGet
+        | Command::ConfigProviderSet { .. }
+        | Command::ConfigProviderClear
+        | Command::Hooks(_)
+        | Command::Issue(
+            IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch,
+        ) => true,
+        Command::ConfigSet { setting, .. } => crate::config_write::is_global_setting(setting),
+        Command::ConfigClear { setting } => crate::config_write::is_global_setting(setting),
+        _ => false,
+    };
+    if role.is_none() && !no_role_allowed {
         return Err("--role is required for operations".to_owned());
     }
     if close_status_name.is_some() && !matches!(&command, Command::Workflow(_)) {

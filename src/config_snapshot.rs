@@ -2,7 +2,8 @@
 //!
 //! The render-side code lives in its own module so the `config`
 //! facade can stay focused on parsing, dispatching, and the
-//! `import-env` write path. The snapshot keeps every secret-bearing
+//! `set`/`clear` write path via `config_write`. The snapshot keeps
+//! every secret-bearing
 //! value redacted: credential rows expose presence and length only,
 //! the git mirror bearer key reports presence/length, and the
 //! repository URL override is sanitised before being returned to the

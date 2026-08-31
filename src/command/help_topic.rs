@@ -78,7 +78,7 @@ pub(crate) fn help_topic(
         "auth" => Ok(HelpTopic::Auth),
         "config" => match subcommand {
             None => Ok(HelpTopic::Config),
-            Some("show") | Some("import-env") => {
+            Some("show") | Some("set") | Some("clear") => {
                 Ok(HelpTopic::ConfigCommand(subcommand.unwrap().to_owned()))
             }
             Some("provider") => match nested_subcommand {

@@ -49,25 +49,97 @@ pub(crate) fn parse_config(args: &[String]) -> Result<Command, String> {
             }
             Ok(Command::ConfigShow)
         }
-        Some("import-env") => {
-            if args.len() != 1 {
-                return Err(
-                    "config import-env takes no arguments (--role selects the target row)"
-                        .to_owned(),
-                );
-            }
-            // Role is supplied via the outer `--role` flag; the CLI
-            // layer turns `invocation.role` into the concrete
-            // `Role` before dispatching. The outer parser already
-            // rejects a missing `--role` because this command is not
-            // one of the no-role-allowed commands (`Help`,
-            // `ConfigShow`).
-            Ok(Command::ConfigImportEnv)
-        }
+        Some("set") => parse_config_set(&args[1..]),
+        Some("clear") => parse_config_clear(&args[1..]),
         Some("provider") => parse_config_provider(&args[1..]),
         Some(other) => Err(format!("unknown config command '{other}'")),
-        None => Err("config requires a subcommand (show, import-env, or provider)".to_owned()),
+        None => Err("config requires a subcommand (show, set, clear, or provider)".to_owned()),
     }
+}
+
+fn parse_config_set(args: &[String]) -> Result<Command, String> {
+    if args.is_empty() {
+        return Err("config set requires a setting name".to_owned());
+    }
+    // Help already handled at top level for `config set --help` via parent check.
+    // Still handle direct `config set --help` style where setting name is help flag.
+    if args[0] == "--help" || args[0] == "-h" {
+        return Ok(Command::Help(HelpTopic::ConfigCommand("set".to_owned())));
+    }
+    let setting_raw = &args[0];
+    let canonical = crate::config_write::canonical_setting_name(setting_raw)
+        .ok_or_else(|| format!("unknown config setting '{setting_raw}'"))?
+        .to_owned();
+
+    // Remaining tokens after setting: optional value and optional --stdin.
+    let mut value: Option<String> = None;
+    let mut stdin = false;
+    for token in &args[1..] {
+        if token == "--stdin" {
+            if stdin {
+                return Err("duplicate --stdin for config set".to_owned());
+            }
+            stdin = true;
+        } else if token.starts_with('-') {
+            return Err(format!("unknown option '{token}' for config set"));
+        } else {
+            if value.is_some() {
+                return Err("config set takes at most one value".to_owned());
+            }
+            value = Some(token.clone());
+        }
+    }
+
+    // Secret settings must never accept a direct value.
+    if crate::config_write::is_secret_setting(&canonical) && value.is_some() {
+        return Err(format!(
+            "secret setting '{canonical}' does not accept a direct value; use --stdin or interactive prompt"
+        ));
+    }
+    if stdin && value.is_some() {
+        return Err("cannot provide both a value and --stdin".to_owned());
+    }
+    // For non-secret, require either value or --stdin.
+    if !crate::config_write::is_secret_setting(&canonical) && value.is_none() && !stdin {
+        return Err(format!(
+            "config set {canonical} requires a value or --stdin"
+        ));
+    }
+
+    Ok(Command::ConfigSet {
+        setting: canonical,
+        value,
+        stdin,
+    })
+}
+
+fn parse_config_clear(args: &[String]) -> Result<Command, String> {
+    if args.is_empty() {
+        return Err("config clear requires a setting name".to_owned());
+    }
+    if args[0] == "--help" || args[0] == "-h" {
+        return Ok(Command::Help(HelpTopic::ConfigCommand("clear".to_owned())));
+    }
+    if args[0].starts_with('-') {
+        return Err(format!("unknown option '{}' for config clear", args[0]));
+    }
+    if args.len() != 1 {
+        // Check for flags
+        if args.iter().skip(1).any(|v| v.starts_with('-')) {
+            for token in &args[1..] {
+                if token.starts_with('-') {
+                    return Err(format!("unknown option '{token}' for config clear"));
+                }
+            }
+        }
+        return Err("config clear takes exactly one setting".to_owned());
+    }
+    let setting_raw = &args[0];
+    let canonical = crate::config_write::canonical_setting_name(setting_raw)
+        .ok_or_else(|| format!("unknown config setting '{setting_raw}'"))?
+        .to_owned();
+    // Reject --stdin for clear? Not supported.
+    Ok(Command::ConfigClear { setting: canonical })
 }
 
 /// Parse the `config provider` surface, which exposes the persisted

@@ -7,7 +7,7 @@ pub(crate) fn print_project_help(role: Option<Role>) {
     );
     if role.is_none_or(|role| role.allows(Capability::ProjectRead)) {
         println!(
-            "  list             {}",
+            "  list             {} (does not require --project-id)",
             Capability::ProjectRead.description()
         );
     }
@@ -22,7 +22,10 @@ pub(crate) fn print_project_help(role: Option<Role>) {
 
 pub(crate) fn print_project_command_help(role: Option<Role>, command: &str) {
     let (capability, text) = match command {
-        "list" => (Capability::ProjectRead, "Usage: project list"),
+        "list" => (
+            Capability::ProjectRead,
+            "Usage: project list\n\nLists Redmine projects visible to the API key. Does not require --project-id.\nUse the returned project identifier with `phasegent --role <ROLE> config set redmine-project-id <ID>` to configure another checkout.",
+        ),
         "create" => (
             Capability::ProjectCreate,
             "Usage: project create --name NAME --identifier IDENTIFIER --confirm [--description TEXT]",
