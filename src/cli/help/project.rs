@@ -24,7 +24,7 @@ pub(crate) fn print_project_command_help(role: Option<Role>, command: &str) {
     let (capability, text) = match command {
         "list" => (
             Capability::ProjectRead,
-            "Usage: project list\n\nLists Redmine projects visible to the API key. Does not require --project-id.\nUse the returned project identifier with `phasegent --role <ROLE> config set redmine-project-id <ID>` to configure another checkout.",
+            "Usage: project list\n\nLists Redmine projects visible to the API key. Does not require --project-id.\nUse the returned project identifier with `phasegent --role <ROLE> --project-id <ID> <command>` per invocation; project IDs are never persisted.",
         ),
         "create" => (
             Capability::ProjectCreate,

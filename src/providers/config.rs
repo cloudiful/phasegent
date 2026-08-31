@@ -145,10 +145,7 @@ impl RedmineConfig {
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_REDMINE_API_BASE").ok())
             .or_else(|| std::env::var("PHASEGENT_API_BASE").ok());
-        let explicit_project = project_id
-            .map(str::to_owned)
-            .or_else(|| std::env::var("PHASEGENT_REDMINE_PROJECT_ID").ok())
-            .or_else(|| std::env::var("PHASEGENT_PROJECT_ID").ok());
+        let explicit_project = project_id.map(str::to_owned);
         let explicit_close = close_status_id
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_REDMINE_CLOSE_STATUS_ID").ok())
@@ -161,9 +158,7 @@ impl RedmineConfig {
                     "Redmine API base is not configured; use --api-base or auth setup",
                 )
             })?;
-        let project_id = explicit_project
-            .or_else(|| stored.as_ref().and_then(|config| config.project_id.clone()))
-            .filter(|value| !value.trim().is_empty());
+        let project_id = explicit_project.filter(|value| !value.trim().is_empty());
         let close_status_id = explicit_close
             .or_else(|| {
                 stored
@@ -196,9 +191,7 @@ impl RedmineConfig {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| {
-                ForgejoError::config(
-                    "Redmine project id is not configured; use --project-id or auth setup",
-                )
+                ForgejoError::config("Redmine project id is not configured; use --project-id")
             })
     }
 
@@ -299,19 +292,16 @@ impl GitlabConfig {
 
     /// Resolve the GitLab configuration for `role`.
     ///
-    /// Resolution precedence mirrors the Redmine resolver:
+    /// Resolution precedence:
     ///   1. Explicit `--api-base` / `--project-id` flags supplied by the
     ///      caller.
-    ///   2. `PHASEGENT_GITLAB_API_BASE` / `PHASEGENT_GITLAB_PROJECT_ID`
-    ///      environment variables (these never reach the Redmine /
-    ///      Forgejo resolvers).
-    ///   3. Generic `PHASEGENT_API_BASE` / `PHASEGENT_PROJECT_ID` so a
-    ///      shell that exports the generic aliases still resolves a
-    ///      GitLab provider.
-    ///   4. Persisted values in `role_gitlab_config`.
+    ///   2. `PHASEGENT_GITLAB_API_BASE` / `PHASEGENT_API_BASE` environment
+    ///      variables for the base (project-id env and persisted values
+    ///      were removed in Phase 1).
+    ///   3. Persisted `api_base` in `role_gitlab_config`.
     ///
-    /// The project id is required in every source because GitLab
-    /// workflow commands always need a single, unambiguous target; an
+    /// The project id is required as an explicit `--project-id` because
+    /// GitLab workflow commands need a single, unambiguous target; an
     /// unset project id returns a structured error rather than silently
     /// selecting the wrong project.
     pub fn resolve(
@@ -325,10 +315,7 @@ impl GitlabConfig {
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_GITLAB_API_BASE").ok())
             .or_else(|| std::env::var("PHASEGENT_API_BASE").ok());
-        let explicit_project = project_id
-            .map(str::to_owned)
-            .or_else(|| std::env::var("PHASEGENT_GITLAB_PROJECT_ID").ok())
-            .or_else(|| std::env::var("PHASEGENT_PROJECT_ID").ok());
+        let explicit_project = project_id.map(str::to_owned);
 
         let base = explicit_base
             .or_else(|| stored.as_ref().and_then(|config| config.api_base.clone()))
@@ -337,13 +324,9 @@ impl GitlabConfig {
                     "GitLab API base is not configured; use --api-base or auth setup",
                 )
             })?;
-        // Project id sources, in order:
-        //   1. Explicit `--project-id` flag.
-        //   2. `PHASEGENT_GITLAB_PROJECT_ID` environment variable.
-        //   3. Generic `PHASEGENT_PROJECT_ID` alias.
-        //   4. The numeric value persisted in `role_gitlab_config`.
-        // The stored value is already validated as `u64` by the storage
-        // layer so we can read it through without re-parsing.
+        // Project id source: only explicit `--project-id`. Env and
+        // persisted values were removed in Phase 1 (remove-project-id)
+        // and are intentionally ignored to ensure legacy rows are inert.
         let parsed_project: u64 = match explicit_project
             .as_deref()
             .map(str::trim)
@@ -356,14 +339,11 @@ impl GitlabConfig {
             .transpose()?
         {
             Some(value) => value,
-            None => stored
-                .as_ref()
-                .and_then(|config| config.project_id)
-                .ok_or_else(|| {
-                    ForgejoError::config(
-                        "GitLab project id is not configured; use --project-id or auth setup",
-                    )
-                })?,
+            None => {
+                return Err(ForgejoError::config(
+                    "GitLab project id is not configured; use --project-id",
+                ));
+            }
         };
         if parsed_project == 0 {
             return Err(ForgejoError::config(

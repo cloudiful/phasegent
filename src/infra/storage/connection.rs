@@ -124,6 +124,30 @@ impl Storage {
                     }
                 }
             }
+            // Phase 1 (remove-project-id): clear legacy project_id values
+            // from both Redmine and GitLab tables. The columns remain for
+            // non-destructive, compatibility-safe migration, but values
+            // must be inert. The updates are idempotent and run inside
+            // the same IMMEDIATE transaction that protects the column
+            // migrations.
+            for (table, column) in [
+                ("role_redmine_config", "project_id"),
+                ("role_gitlab_config", "project_id"),
+            ] {
+                if column_exists(connection, table, column)? {
+                    let statement =
+                        format!("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL");
+                    // UPDATE never fails on empty table; ignore duplicate-column
+                    // noise and propagate any real error.
+                    if let Err(error) = connection.execute(&statement, []) {
+                        let message = error.to_string();
+                        if message.contains("no such column") || message.contains("no such table") {
+                            continue;
+                        }
+                        return Err(format!("could not clear legacy {table}.{column}: {error}"));
+                    }
+                }
+            }
             Ok(())
         })();
         match result {

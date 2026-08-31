@@ -167,12 +167,6 @@ fn persist_set_value(
                 c.api_base = Some(trimmed.to_owned());
             })?;
         }
-        "PHASEGENT_REDMINE_PROJECT_ID" => {
-            let role = role.expect("role required");
-            update_redmine_config_field(storage, role, |c| {
-                c.project_id = Some(trimmed.to_owned());
-            })?;
-        }
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");
             let parsed = trimmed
@@ -190,31 +184,6 @@ fn persist_set_value(
             update_gitlab_config_field(storage, role, |c| {
                 c.api_base = Some(trimmed.to_owned());
             })?;
-        }
-        "PHASEGENT_GITLAB_PROJECT_ID" => {
-            let role = role.expect("role required");
-            let parsed = trimmed
-                .parse::<u64>()
-                .map_err(|_| format!("could not parse {canonical} '{trimmed}': must be numeric"))?;
-            if parsed == 0 {
-                return Err(format!("{canonical} must be greater than zero"));
-            }
-            update_gitlab_config_field(storage, role, |c| {
-                c.project_id = Some(parsed);
-            })?;
-        }
-        "PHASEGENT_PROJECT_ID" => {
-            let role = role.expect("role required");
-            update_redmine_config_field(storage, role, |c| {
-                c.project_id = Some(trimmed.to_owned());
-            })?;
-            if let Ok(parsed) = trimmed.parse::<u64>() {
-                if parsed > 0 {
-                    update_gitlab_config_field(storage, role, |c| {
-                        c.project_id = Some(parsed);
-                    })?;
-                }
-            }
         }
         "PHASEGENT_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");

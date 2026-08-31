@@ -27,7 +27,11 @@ pub(crate) const PROVIDER_GITLAB: &str = "gitlab";
 ///   Forgejo `api_base` and `repository` fields.
 /// * `role_redmine_config` stores the Redmine-only fields so loading a
 ///   Redmine config never has to guess whether a missing `project_id`
-///   belongs to the legacy Forgejo row or to Redmine.
+///   belongs to the legacy Forgejo row or to Redmine. The `project_id`
+///   column is legacy in Phase 1 (remove-project-id); new code never
+///   reads or writes it and the `Storage::open` migration clears any
+///   legacy values, but the column remains for non-destructive
+///   compatibility with old databases.
 /// * `role_credential` stores per-(role, provider) credentials; the
 ///   composite primary key lets the same role keep both a Forgejo token
 ///   and a Redmine API key without collision.
@@ -36,6 +40,8 @@ pub(crate) const PROVIDER_GITLAB: &str = "gitlab";
 ///   its repository URL override). `config show` returns their
 ///   presence and length; the resolver layer reads the value out of
 ///   SQLite only when the matching environment variable is unset.
+/// * `role_gitlab_config` mirrors the Redmine split; its `project_id`
+///   column is also legacy in Phase 1 for the same reasons.
 ///
 /// All non-key columns are nullable so the layer can distinguish
 /// "missing" (no row) from "present but empty" (row with NULL).
@@ -60,6 +66,10 @@ CREATE TABLE IF NOT EXISTS role_redmine_config (
 -- from a missing row without inspecting either legacy table. The
 -- `project_id` column is INTEGER because GitLab identifiers are numeric
 -- project ids, unlike Redmine's free-text identifier slug.
+-- Phase 1 (remove-project-id) makes `project_id` legacy in both
+-- role_redmine_config and role_gitlab_config: new code never reads or
+-- writes the column and Storage::open clears legacy values, but the
+-- column remains for non-destructive compatibility.
 CREATE TABLE IF NOT EXISTS role_gitlab_config (
     role TEXT PRIMARY KEY,
     api_base TEXT,

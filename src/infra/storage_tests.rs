@@ -434,13 +434,11 @@ fn persist_redmine_bootstrap_validates_zero_ids() {
 
 #[test]
 fn role_gitlab_config_round_trip_and_numeric_project_id() {
-    // The GitlabStoredConfig struct stores the project id as `u64`
-    // because GitLab identifiers are numeric, and the SQLite column is
-    // INTEGER so the storage layer must never write a placeholder
-    // string that callers might confuse with a Redmine slug. Confirm
-    // the round-trip and the missing-row semantics in one focused
-    // test so a future contributor cannot accidentally regress the
-    // column type.
+    // Phase 1 (remove-project-id): GitLab `project_id` is no longer
+    // persisted; the column remains for non-destructive migration but
+    // `load` always returns `None` and `save` ignores the field. The
+    // test verifies api_base round-trip and that legacy values are
+    // inert rather than asserting the old persistence.
     let (temp_dir, storage) = open_at_temp("gitlab-round-trip");
     assert!(
         storage.load_gitlab_config(Role::Admin).unwrap().is_none(),
@@ -461,13 +459,14 @@ fn role_gitlab_config_round_trip_and_numeric_project_id() {
         .unwrap()
         .expect("Gitlab row must exist after save");
     assert_eq!(loaded.api_base.as_deref(), Some("https://gitlab.example"));
-    assert_eq!(loaded.project_id, Some(42));
+    assert_eq!(
+        loaded.project_id, None,
+        "gitlab project_id must be inert after Phase 1"
+    );
 
-    // Saving a row with api_base only must preserve the existing
-    // project_id (the load_or_default pattern keeps the previous
-    // value because we never call load_gitlab_config from
-    // save_gitlab_config). Round-trip a second save that touches only
-    // api_base to assert the column type is unaffected.
+    // Saving a row with api_base only must keep the row alive and still
+    // report project_id as None. Second save with relocated api_base
+    // confirms api_base still round-trips.
     storage
         .save_gitlab_config(
             Role::Executor,
@@ -485,7 +484,10 @@ fn role_gitlab_config_round_trip_and_numeric_project_id() {
         reloaded.api_base.as_deref(),
         Some("https://gitlab-relocated.example")
     );
-    assert_eq!(reloaded.project_id, Some(42));
+    assert_eq!(
+        reloaded.project_id, None,
+        "gitlab project_id must remain inert after second save"
+    );
     let _ = fs::remove_dir_all(temp_dir);
 }
 
@@ -496,6 +498,7 @@ fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
     // `auth setup` flows don't have to know about the underlying
     // column. Confirm the zero-id guard and the provider flip in one
     // test so the foundation never silently accepts an id of zero.
+    // Phase 1: project_id is ignored on persist, only api_base is kept.
     let (temp_dir, storage) = open_at_temp("gitlab-bootstrap");
     let zero = storage
         .persist_gitlab_bootstrap(Role::Executor, None, 0)
@@ -514,7 +517,10 @@ fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
         .unwrap()
         .expect("gitlab row must exist after bootstrap");
     assert_eq!(row.api_base.as_deref(), Some("https://gitlab.example"));
-    assert_eq!(row.project_id, Some(42));
+    assert_eq!(
+        row.project_id, None,
+        "gitlab project_id must be inert after Phase 1 bootstrap"
+    );
     let provider = storage
         .load_role_config(Role::Executor)
         .unwrap()

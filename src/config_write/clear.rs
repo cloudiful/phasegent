@@ -110,22 +110,6 @@ fn persist_clear_value(
                 Ok(true)
             }
         }
-        "PHASEGENT_REDMINE_PROJECT_ID" => {
-            let role = role.expect("role required");
-            let current = storage.load_redmine_config(role)?;
-            if current
-                .as_ref()
-                .and_then(|c| c.project_id.as_deref())
-                .is_none()
-            {
-                Ok(false)
-            } else {
-                let mut cfg = current.unwrap_or_default();
-                cfg.project_id = None;
-                storage.save_redmine_config(role, &cfg)?;
-                Ok(true)
-            }
-        }
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");
             let current = storage.load_redmine_config(role)?;
@@ -153,37 +137,6 @@ fn persist_clear_value(
                 storage.save_gitlab_config(role, &cfg)?;
                 Ok(true)
             }
-        }
-        "PHASEGENT_GITLAB_PROJECT_ID" => {
-            let role = role.expect("role required");
-            let current = storage.load_gitlab_config(role)?;
-            if current.as_ref().and_then(|c| c.project_id).is_none() {
-                Ok(false)
-            } else {
-                let mut cfg = current.unwrap_or_default();
-                cfg.project_id = None;
-                storage.save_gitlab_config(role, &cfg)?;
-                Ok(true)
-            }
-        }
-        "PHASEGENT_PROJECT_ID" => {
-            let role = role.expect("role required");
-            let mut cleared = false;
-            if let Some(mut cfg) = storage.load_redmine_config(role)? {
-                if cfg.project_id.is_some() {
-                    cfg.project_id = None;
-                    storage.save_redmine_config(role, &cfg)?;
-                    cleared = true;
-                }
-            }
-            if let Some(mut cfg) = storage.load_gitlab_config(role)? {
-                if cfg.project_id.is_some() {
-                    cfg.project_id = None;
-                    storage.save_gitlab_config(role, &cfg)?;
-                    cleared = true;
-                }
-            }
-            Ok(cleared)
         }
         "PHASEGENT_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");

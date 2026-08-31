@@ -383,7 +383,10 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     let stored = auth::load_redmine_config(Role::Orchestrator, &storage)
         .unwrap()
         .unwrap();
-    assert_eq!(stored.project_id.as_deref(), Some("44"));
+    assert_eq!(
+        stored.project_id, None,
+        "automatic bootstrap must not persist project_id after Phase 1"
+    );
     assert_eq!(stored.close_status_id, Some(5));
     // Active bootstrap no longer persists the legacy group fields.
     assert_eq!(stored.group_name, None);

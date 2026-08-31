@@ -53,7 +53,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             provider: auth_provider,
             api_base: auth_base,
             repository: auth_repository,
-            project_id: auth_project_id,
             close_status_id: auth_close_status_id,
         } => {
             let role = required_role(invocation.role);
@@ -69,7 +68,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                     read_stdin,
                     api_base: auth_base.or(invocation.api_base),
                     repository: auth_repository.or(invocation.repository),
-                    project_id: auth_project_id.or(invocation.project_id),
                     close_status_id: auth_close_status_id.or(invocation.close_status_id),
                 },
             ) {

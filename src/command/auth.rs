@@ -31,7 +31,6 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
     let mut provider = None;
     let mut api_base = None;
     let mut repository = None;
-    let mut project_id = None;
     let mut close_status_id = None;
     let mut index = 1;
     while index < args.len() {
@@ -50,10 +49,6 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
                 repository = Some(required_value(args, index, "--repository")?);
                 index += 1;
             }
-            "--project-id" => {
-                project_id = Some(required_value(args, index, "--project-id")?);
-                index += 1;
-            }
             "--close-status-id" => {
                 close_status_id = Some(required_value(args, index, "--close-status-id")?);
                 index += 1;
@@ -65,8 +60,6 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
                     api_base = Some(parsed);
                 } else if let Some(parsed) = split_inline(value, "--repository") {
                     repository = Some(parsed);
-                } else if let Some(parsed) = split_inline(value, "--project-id") {
-                    project_id = Some(parsed);
                 } else if let Some(parsed) = split_inline(value, "--close-status-id") {
                     close_status_id = Some(parsed);
                 } else {
@@ -82,7 +75,6 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
         provider,
         api_base,
         repository,
-        project_id,
         close_status_id,
     })
 }

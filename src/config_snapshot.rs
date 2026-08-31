@@ -15,6 +15,9 @@ use serde::Serialize;
 
 /// Per-role snapshot consumed by `config show`. The structure is
 /// flat so the JSON output stays compact and operator-friendly.
+/// Project-id fields were removed in Phase 1 (remove-project-id);
+/// snapshots no longer expose `redmine_project_id` or
+/// `gitlab_project_id` and legacy stored values are ignored.
 #[derive(Debug, Serialize)]
 pub struct RoleSnapshot {
     pub role: &'static str,
@@ -22,15 +25,8 @@ pub struct RoleSnapshot {
     pub forgejo_api_base: Option<String>,
     pub forgejo_repository: Option<String>,
     pub redmine_api_base: Option<String>,
-    pub redmine_project_id: Option<String>,
     pub redmine_close_status_id: Option<u64>,
-    /// Phase-1 GitLab foundation: API base + numeric project id are
-    /// mirrored alongside the existing redmine fields so the snapshot
-    /// covers every per-role config row in one consistent shape. The
-    /// field name `gitlab_api_base` keeps the JSON keys stable for
-    /// downstream tooling that already switches on `*_api_base`.
     pub gitlab_api_base: Option<String>,
-    pub gitlab_project_id: Option<u64>,
     pub forgejo_credential: CredentialSummary,
     pub redmine_credential: CredentialSummary,
     /// Phase-1 GitLab credential summary. Reports presence/length only,
@@ -169,14 +165,10 @@ fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> 
         redmine_api_base: redmine_config
             .as_ref()
             .and_then(|config| config.api_base.clone()),
-        redmine_project_id: redmine_config
-            .as_ref()
-            .and_then(|config| config.project_id.clone()),
         redmine_close_status_id: redmine_config.and_then(|config| config.close_status_id),
         gitlab_api_base: gitlab_config
             .as_ref()
             .and_then(|config| config.api_base.clone()),
-        gitlab_project_id: gitlab_config.and_then(|config| config.project_id),
         forgejo_credential: CredentialSummary {
             present: forgejo_present,
             length: forgejo_length,

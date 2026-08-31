@@ -120,7 +120,10 @@ fn bootstrap_persists_role_scoped_ids_with_private_permissions() {
         .load_redmine_config(Role::Orchestrator)
         .unwrap()
         .expect("bootstrap row must exist");
-    assert_eq!(loaded.project_id.as_deref(), Some("44"));
+    assert_eq!(
+        loaded.project_id, None,
+        "bootstrap must not persist project_id after Phase 1"
+    );
     assert_eq!(loaded.close_status_id, Some(5));
     assert_eq!(loaded.api_base.as_deref(), Some("https://redmine.example"));
     // Active bootstrap no longer persists the legacy group fields;

@@ -80,11 +80,15 @@ impl Storage {
 
     /// Load the Redmine-specific configuration for `role`. Mirrors the
     /// semantics of [`load_role_config`].
+    /// Project-id was removed in Phase 1; stored values are ignored
+    /// (always returned as `None`) and the column is lazily cleared
+    /// via the connection migration. `group_name`/`group_role` remain
+    /// legacy-decodable but are never read.
     pub fn load_redmine_config(&self, role: Role) -> Result<Option<RedmineStoredConfig>, String> {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT api_base, project_id, close_status_id \
+                "SELECT api_base, close_status_id \
                  FROM role_redmine_config WHERE role = ?1",
             )
             .map_err(|error| format!("could not prepare redmine config load: {error}"))?;
@@ -92,18 +96,26 @@ impl Storage {
             .query_row(params![role.as_str()], |row| {
                 Ok(RedmineStoredConfig {
                     api_base: row.get(0)?,
-                    project_id: row.get(1)?,
-                    close_status_id: row.get(2)?,
+                    project_id: None,
+                    close_status_id: row.get(1)?,
                     group_name: None,
                     group_role: None,
                 })
             })
             .optional()
             .map_err(|error| format!("could not read redmine config: {error}"))?;
+        // Backwards-compat: old databases may still contain a
+        // `project_id` column with legacy values. The migration in
+        // `connection.rs` clears them, but we also tolerate the column
+        // being present by ignoring its content above. If the table
+        // somehow still has non-NULL project_id, the resolver never
+        // sees it because we return `None`.
         Ok(value)
     }
 
     /// Upsert the Redmine-specific configuration.
+    /// Project-id is no longer persisted; the column is left untouched
+    /// for non-destructive migration and `load` always returns `None`.
     pub fn save_redmine_config(
         &self,
         role: Role,
@@ -115,18 +127,12 @@ impl Storage {
             .map_err(|error| format!("could not begin redmine config write: {error}"))?;
         transaction
             .execute(
-                "INSERT INTO role_redmine_config (role, api_base, project_id, close_status_id) \
-                 VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO role_redmine_config (role, api_base, close_status_id) \
+                 VALUES (?1, ?2, ?3) \
                  ON CONFLICT(role) DO UPDATE SET \
                     api_base = excluded.api_base, \
-                    project_id = excluded.project_id, \
                     close_status_id = excluded.close_status_id",
-                params![
-                    role.as_str(),
-                    config.api_base,
-                    config.project_id,
-                    config.close_status_id,
-                ],
+                params![role.as_str(), config.api_base, config.close_status_id,],
             )
             .map_err(|error| format!("could not write redmine config: {error}"))?;
         transaction
@@ -135,10 +141,12 @@ impl Storage {
         Ok(())
     }
 
-    /// Set only the bootstrap identity (api_base, project_id,
-    /// close_status_id) without disturbing an existing provider
-    /// preference on `role_config`. Mirrors the pre-SQLite behaviour
-    /// of `auth::persist_redmine_bootstrap`.
+    /// Set only the bootstrap identity (api_base, close_status_id)
+    /// without disturbing an existing provider preference on
+    /// `role_config`. The `project_id` argument is retained for
+    /// backward-compatible call sites but is ignored: Phase 1 no longer
+    /// persists the project id. The provider preference is still
+    /// updated to `redmine` so later phases can rely on it.
     pub fn persist_redmine_bootstrap(
         &self,
         role: Role,
@@ -155,7 +163,9 @@ impl Storage {
         if api_base.is_some() {
             config.api_base = api_base;
         }
-        config.project_id = Some(project_id.to_string());
+        // project_id deliberately ignored — stored value is always None
+        // and legacy rows are cleared by the migration.
+        let _ = project_id;
         config.close_status_id = Some(close_status_id);
         self.save_redmine_config(role, &config)?;
         self.update_provider(role, PROVIDER_REDMINE)
@@ -163,17 +173,19 @@ impl Storage {
 
     /// Load the GitLab-specific configuration for `role`. Mirrors the
     /// Redmine helper except the persisted `project_id` is a numeric
-    /// GitLab identifier, not a free-text slug.
+    /// GitLab identifier, not a free-text slug. Phase 1 makes the
+    /// project id inert: stored values are ignored and always returned
+    /// as `None`.
     pub fn load_gitlab_config(&self, role: Role) -> Result<Option<GitlabStoredConfig>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT api_base, project_id FROM role_gitlab_config WHERE role = ?1")
+            .prepare("SELECT api_base FROM role_gitlab_config WHERE role = ?1")
             .map_err(|error| format!("could not prepare gitlab config load: {error}"))?;
         let value = statement
             .query_row(params![role.as_str()], |row| {
                 Ok(GitlabStoredConfig {
                     api_base: row.get(0)?,
-                    project_id: row.get::<_, Option<i64>>(1)?.map(|value| value as u64),
+                    project_id: None,
                 })
             })
             .optional()
@@ -184,6 +196,8 @@ impl Storage {
     /// Upsert the GitLab-specific configuration. The numeric project id
     /// is stored as `INTEGER` so the column never holds a placeholder
     /// string that callers might confuse with a Redmine slug.
+    /// Phase 1 no longer persists `project_id`; the column is left
+    /// untouched and `load` always returns `None`.
     pub fn save_gitlab_config(
         &self,
         role: Role,
@@ -195,16 +209,11 @@ impl Storage {
             .map_err(|error| format!("could not begin gitlab config write: {error}"))?;
         transaction
             .execute(
-                "INSERT INTO role_gitlab_config (role, api_base, project_id) \
-                 VALUES (?1, ?2, ?3) \
+                "INSERT INTO role_gitlab_config (role, api_base) \
+                 VALUES (?1, ?2) \
                  ON CONFLICT(role) DO UPDATE SET \
-                    api_base = excluded.api_base, \
-                    project_id = excluded.project_id",
-                params![
-                    role.as_str(),
-                    config.api_base,
-                    config.project_id.map(|value| value as i64),
-                ],
+                    api_base = excluded.api_base",
+                params![role.as_str(), config.api_base,],
             )
             .map_err(|error| format!("could not write gitlab config: {error}"))?;
         transaction
@@ -213,11 +222,11 @@ impl Storage {
         Ok(())
     }
 
-    /// Persist the bootstrap identity (`api_base` + numeric project id)
-    /// without disturbing an existing provider preference on
-    /// `role_config`. The project id is required to be greater than
-    /// zero because GitLab identifiers are positive integers, and the
-    /// bootstrap always flips `role_config.provider` to "gitlab" so the
+    /// Persist the bootstrap identity (`api_base`) without disturbing an
+    /// existing provider preference on `role_config`. The `project_id`
+    /// argument is retained for backward-compatible call sites but is
+    /// ignored: Phase 1 no longer persists the numeric project id.
+    /// The provider preference is still flipped to "gitlab" so the
     /// resolver doesn't drift back to the default Forgejo path.
     pub fn persist_gitlab_bootstrap(
         &self,
@@ -232,7 +241,7 @@ impl Storage {
         if api_base.is_some() {
             config.api_base = api_base;
         }
-        config.project_id = Some(project_id);
+        let _ = project_id;
         self.save_gitlab_config(role, &config)?;
         self.update_provider(role, PROVIDER_GITLAB)
     }

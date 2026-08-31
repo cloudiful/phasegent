@@ -140,21 +140,22 @@ phasegent --role orchestrator --provider redmine project list
 ```
 
 `project list` does not require `--project-id`; its JSON output includes each
-project's numeric `id`, `name`, and `identifier`. Persist the selected ID for
-the role that will run commands on this machine:
+project's numeric `id`, `name`, and `identifier`. Use the selected ID as an
+explicit per-invocation `--project-id` (project IDs are no longer persisted):
 
 ```text
-phasegent --role orchestrator config set redmine-project-id 42
+phasegent --role orchestrator --provider redmine --project-id 42 issue get 3
 ```
 
-The project ID is role-scoped. Repeat the `config set` command for each local
-role that needs to access the project's issues, using the same ID.
+Project IDs are invocation-only and never read from SQLite or environment;
+future repository-aware resolution will derive the project from the Git origin
+and existing `redmine_git_mirror` records when `--project-id` is omitted.
 
 After configuring all four keys, bootstrap the current repository before any
 Redmine issue create, search, update, or close operation. The command derives
 the identifier from `OWNER/REPOSITORY` or the current `origin` remote, reuses
-only an exact project match, and stores the selected project and close-status
-IDs for the role:
+only an exact project match, and stores the Redmine close-status ID for the
+role (the project ID is not persisted):
 
 ```text
 phasegent --role admin --provider redmine workflow bootstrap \
@@ -529,8 +530,9 @@ and Redmine API keys as plaintext rows in SQLite by design. The CLI never
 echoes credentials: the stdin-only path is preserved, structured errors name
 only the missing variable, and `config show` never prints secret values. Role
 separation is preserved. Each role keeps its own `(forgejo, redmine)` provider,
-API base, repository, project id, close status id, and credential; the three
-global settings (`PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`,
+API base, repository, close status id, and credential (project IDs are
+invocation-only via `--project-id` and never persisted); the three global
+settings (`PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`,
 `PHASEGENT_REDMINE_REPOSITORY_URL`, and the machine-wide
 `PHASEGENT_DEFAULT_PROVIDER`) live in a separate `global_setting` table.
 
@@ -548,9 +550,10 @@ phasegent --role executor config show
 The output contains:
 
 - `database_path` — absolute path to the SQLite file.
-- `roles[]` — one entry per role with provider, Forgejo/Redmine URLs, project
-  id, close status id, and credential summaries. Each credential reports
-  `present` and `length` only; the value itself is never echoed.
+- `roles[]` — one entry per role with provider, Forgejo/Redmine URLs, close
+  status id, and credential summaries (project IDs are not persisted and do
+  not appear). Each credential reports `present` and `length` only; the value
+  itself is never echoed.
 - `global_settings[]` — `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` (presence and
   length only), `PHASEGENT_REDMINE_REPOSITORY_URL` (sanitised: embedded
   userinfo, password, query string, and fragment are stripped before the
@@ -573,10 +576,14 @@ environment as runtime overrides but never write them to SQLite. Persist one
 setting explicitly with `config set`, or remove it with `config clear`:
 
 ```text
-phasegent --role orchestrator config set redmine-project-id 42
 phasegent config set redmine-repository-url https://git.example.com/owner/repo.git
 phasegent config clear redmine-repository-url
 ```
+
+Project IDs are not persisted; use explicit `--project-id` per invocation
+(e.g. `phasegent --role orchestrator --provider redmine --project-id 42 issue
+get 3`). Legacy `redmine-project-id`, `gitlab-project-id`, and `project-id`
+aliases are rejected as unknown settings.
 
 Canonical `PHASEGENT_*` names and kebab-case aliases are accepted. Global
 settings (`redmine-git-mirror-api-key`, `redmine-repository-url`, and
@@ -622,11 +629,13 @@ Role-scoped settings accepted by `config set`:
 - `PHASEGENT_REPOSITORY` — `OWNER/REPOSITORY` for Forgejo.
 - `PHASEGENT_REDMINE_API_BASE` — Redmine API base, takes precedence over the
   generic `PHASEGENT_API_BASE`.
-- `PHASEGENT_REDMINE_PROJECT_ID` — Redmine project id.
 - `PHASEGENT_REDMINE_CLOSE_STATUS_ID` — Redmine close status id.
-- `PHASEGENT_PROJECT_ID` — generic alias for the Redmine project id.
 - `PHASEGENT_CLOSE_STATUS_ID` — generic alias for the Redmine close status
   id.
+
+Project-id persistence (`PHASEGENT_REDMINE_PROJECT_ID`,
+`PHASEGENT_GITLAB_PROJECT_ID`, `PHASEGENT_PROJECT_ID`) was removed in Phase 1;
+use explicit `--project-id` per invocation instead.
 
 Global settings accepted by `config set`:
 
@@ -680,10 +689,9 @@ phasegent config show
 phasegent --role executor config show
 ```
 
-Persist a role-scoped project ID or a global mirror setting:
+Persist a global mirror setting:
 
 ```text
-phasegent --role orchestrator config set redmine-project-id 42
 phasegent config set redmine-git-mirror-api-key
 ```
 

@@ -356,6 +356,8 @@ fn config_import_env_is_rejected() {
 #[test]
 fn config_set_parses_canonical_and_kebab_alias() {
     // Canonical and kebab-case alias must both be accepted and resolve to same canonical.
+    // Project-id aliases were removed in Phase 1; they are asserted as
+    // rejected in the dedicated regression test below.
     let cases = [
         ("PHASEGENT_API_BASE", "api-base"),
         (
@@ -363,7 +365,6 @@ fn config_set_parses_canonical_and_kebab_alias() {
             "redmine-git-mirror-api-key",
         ),
         ("PHASEGENT_DEFAULT_PROVIDER", "default-provider"),
-        ("PHASEGENT_REDMINE_PROJECT_ID", "redmine-project-id"),
         ("PHASEGENT_GITLAB_API_BASE", "gitlab-api-base"),
     ];
     for (canonical, alias) in cases {
@@ -404,6 +405,59 @@ fn config_set_parses_canonical_and_kebab_alias() {
             }
         }
     }
+}
+
+#[test]
+fn config_set_rejects_legacy_project_id_aliases() {
+    // Phase 1: project-id persistence removed. The canonical names and
+    // the ambiguous alias must be rejected as unknown settings at parse
+    // time and via the config_write dispatch.
+    for alias in [
+        "PHASEGENT_REDMINE_PROJECT_ID",
+        "redmine-project-id",
+        "PHASEGENT_GITLAB_PROJECT_ID",
+        "gitlab-project-id",
+        "PHASEGENT_PROJECT_ID",
+        "project-id",
+        "project_id",
+    ] {
+        assert!(
+            config_write::canonical_setting_name(alias).is_none(),
+            "alias '{alias}' must be unknown after Phase 1"
+        );
+        let args = ["--role", "executor", "config", "set", alias, "42"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let error = command::parse(&args).expect_err("project-id alias must be rejected");
+        assert!(error.contains("unknown config setting"), "got: {error}");
+        let clear_args = ["--role", "executor", "config", "clear", alias]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let clear_error =
+            command::parse(&clear_args).expect_err("clear project-id must be rejected");
+        assert!(
+            clear_error.contains("unknown config setting"),
+            "got: {clear_error}"
+        );
+    }
+    // Direct dispatch must also reject unknown canonicals.
+    with_isolated_storage("project-id-rejected-dispatch", |_db_path, storage| {
+        for canonical in [
+            "PHASEGENT_REDMINE_PROJECT_ID",
+            "PHASEGENT_GITLAB_PROJECT_ID",
+            "PHASEGENT_PROJECT_ID",
+        ] {
+            let err =
+                config_write::set_setting_value(Some(Role::Executor), canonical, "42", storage)
+                    .unwrap_err();
+            assert!(err.contains("unknown setting"), "got: {err}");
+            let clear_err =
+                config_write::clear_setting(Some(Role::Executor), canonical, storage).unwrap_err();
+            assert!(clear_err.contains("unknown setting"), "got: {clear_err}");
+        }
+    });
 }
 
 #[test]
@@ -594,19 +648,10 @@ fn config_set_role_scoped_persists_and_output_canonical() {
         let gitlab = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
         assert_eq!(gitlab.api_base.as_deref(), Some("https://forgejo.example"));
 
-        // Test kebab alias for redmine project id via config_write canonical mapping
-        let canonical = config_write::canonical_setting_name("redmine-project-id").unwrap();
-        assert_eq!(canonical, "PHASEGENT_REDMINE_PROJECT_ID");
-        let outcome =
-            config_write::set_setting_value(Some(Role::Executor), canonical, "my-project", storage)
-                .unwrap();
-        let t2 = serde_json::to_string(&outcome).unwrap();
-        assert!(t2.contains("PHASEGENT_REDMINE_PROJECT_ID"));
-        let redmine2 = storage
-            .load_redmine_config(Role::Executor)
-            .unwrap()
-            .unwrap();
-        assert_eq!(redmine2.project_id.as_deref(), Some("my-project"));
+        // Project-id aliases are now rejected; verify they do not persist.
+        assert!(config_write::canonical_setting_name("redmine-project-id").is_none());
+        assert!(config_write::canonical_setting_name("gitlab-project-id").is_none());
+        assert!(config_write::canonical_setting_name("project-id").is_none());
     });
 }
 
@@ -924,7 +969,16 @@ fn config_show_includes_gitlab_fields_without_leaking_token() {
             executor["gitlab_api_base"].as_str(),
             Some("https://gitlab.example")
         );
-        assert_eq!(executor["gitlab_project_id"].as_u64(), Some(42));
+        // Project-id fields were removed in Phase 1; stored values are
+        // ignored and must not appear in the snapshot.
+        assert!(
+            executor.get("gitlab_project_id").is_none(),
+            "snapshot must not expose gitlab_project_id after Phase 1: {executor:?}"
+        );
+        assert!(
+            executor.get("redmine_project_id").is_none(),
+            "snapshot must not expose redmine_project_id after Phase 1: {executor:?}"
+        );
         assert_eq!(executor["gitlab_credential"]["present"], Value::Bool(true));
         assert_eq!(
             executor["gitlab_credential"]["length"],
@@ -932,6 +986,12 @@ fn config_show_includes_gitlab_fields_without_leaking_token() {
         );
         assert_eq!(executor["forgejo_credential"]["present"], Value::Bool(true));
         assert_eq!(executor["redmine_credential"]["present"], Value::Bool(true));
+        // Verify legacy stored project_id was ignored, not leaked.
+        let stored = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
+        assert_eq!(
+            stored.project_id, None,
+            "legacy gitlab project_id must be inert (load returns None)"
+        );
     });
 }
 
@@ -944,7 +1004,14 @@ fn gitlab_config_snapshot_omits_unset_fields() {
         assert_eq!(roles.len(), 1);
         let executor = &roles[0];
         assert!(executor["gitlab_api_base"].is_null());
-        assert!(executor["gitlab_project_id"].is_null());
+        assert!(
+            executor.get("gitlab_project_id").is_none(),
+            "gitlab_project_id must be absent after Phase 1: {executor:?}"
+        );
+        assert!(
+            executor.get("redmine_project_id").is_none(),
+            "redmine_project_id must be absent after Phase 1: {executor:?}"
+        );
         assert_eq!(executor["gitlab_credential"]["present"], Value::Bool(false));
         assert!(
             executor["gitlab_credential"]["length"].is_null(),
@@ -955,13 +1022,133 @@ fn gitlab_config_snapshot_omits_unset_fields() {
             "snapshot must name gitlab_api_base: {text}"
         );
         assert!(
-            text.contains("gitlab_project_id"),
-            "snapshot must name gitlab_project_id: {text}"
+            !text.contains("gitlab_project_id"),
+            "snapshot must not contain gitlab_project_id after Phase 1: {text}"
+        );
+        assert!(
+            !text.contains("redmine_project_id"),
+            "snapshot must not contain redmine_project_id after Phase 1: {text}"
         );
         assert!(
             text.contains("gitlab_credential"),
             "snapshot must name gitlab_credential: {text}"
         );
+    });
+}
+
+#[test]
+fn legacy_project_id_values_are_inert_and_not_resolved() {
+    with_isolated_storage("legacy-project-id-inert", |db_path, storage| {
+        // Simulate a legacy database where project ids were persisted
+        // before Phase 1 by writing directly via SQL before the
+        // migration runs.
+        storage
+            .connection
+            .execute(
+                "INSERT INTO role_redmine_config (role, api_base, project_id, close_status_id) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(role) DO UPDATE SET api_base=excluded.api_base, project_id=excluded.project_id, close_status_id=excluded.close_status_id",
+                rusqlite::params!["executor", "https://redmine.example", "legacy-redmine-id", 5_i64],
+            )
+            .unwrap();
+        storage
+            .connection
+            .execute(
+                "INSERT INTO role_gitlab_config (role, api_base, project_id) VALUES (?1, ?2, ?3) ON CONFLICT(role) DO UPDATE SET api_base=excluded.api_base, project_id=excluded.project_id",
+                rusqlite::params!["executor", "https://gitlab.example", 99_i64],
+            )
+            .unwrap();
+        // Re-open to trigger the migration that clears legacy values.
+        let reopened = Storage::open_at(db_path).unwrap();
+        let redmine = reopened
+            .load_redmine_config(Role::Executor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            redmine.project_id, None,
+            "redmine legacy project_id must be inert"
+        );
+        assert_eq!(redmine.api_base.as_deref(), Some("https://redmine.example"));
+        assert_eq!(redmine.close_status_id, Some(5));
+        let gitlab = reopened
+            .load_gitlab_config(Role::Executor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gitlab.project_id, None,
+            "gitlab legacy project_id must be inert"
+        );
+        assert_eq!(gitlab.api_base.as_deref(), Some("https://gitlab.example"));
+        // Verify raw column is NULL after migration.
+        let redmine_raw: Option<String> = reopened
+            .connection
+            .query_row(
+                "SELECT project_id FROM role_redmine_config WHERE role='executor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            redmine_raw.is_none(),
+            "raw redmine project_id column must be NULL: {redmine_raw:?}"
+        );
+        let gitlab_raw: Option<i64> = reopened
+            .connection
+            .query_row(
+                "SELECT project_id FROM role_gitlab_config WHERE role='executor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            gitlab_raw.is_none(),
+            "raw gitlab project_id column must be NULL: {gitlab_raw:?}"
+        );
+
+        // Provider resolution must not use legacy values: Redmine without
+        // explicit --project-id must have None, GitLab without explicit
+        // must error even though legacy row existed.
+        let _env_redmine = EnvGuard::set("PHASEGENT_REDMINE_PROJECT_ID", "env-id");
+        let _env_gitlab = EnvGuard::set("PHASEGENT_GITLAB_PROJECT_ID", "123");
+        let _env_generic = EnvGuard::set("PHASEGENT_PROJECT_ID", "generic-id");
+        let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+        // Redmine: explicit None, env present, but Phase 1 ignores env.
+        let redmine_config = crate::providers::config::RedmineConfig::resolve(
+            Role::Executor,
+            Some("https://redmine.example"),
+            None,
+            Some("5"),
+        )
+        .unwrap();
+        assert_eq!(
+            redmine_config.project_id, None,
+            "redmine env must be ignored after Phase 1"
+        );
+        // GitLab: explicit None, env present, must still error.
+        let gitlab_err = crate::providers::config::GitlabConfig::resolve(
+            Role::Executor,
+            Some("https://gitlab.example"),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            gitlab_err.to_string().contains("not configured"),
+            "gitlab must require explicit project-id: {gitlab_err}"
+        );
+        // Explicit project-id still wins.
+        let redmine_explicit = crate::providers::config::RedmineConfig::resolve(
+            Role::Executor,
+            Some("https://redmine.example"),
+            Some("explicit-42"),
+            Some("5"),
+        )
+        .unwrap();
+        assert_eq!(redmine_explicit.project_id.as_deref(), Some("explicit-42"));
+        let gitlab_explicit = crate::providers::config::GitlabConfig::resolve(
+            Role::Executor,
+            Some("https://gitlab.example"),
+            Some("77"),
+        )
+        .unwrap();
+        assert_eq!(gitlab_explicit.project_id, 77);
     });
 }
 

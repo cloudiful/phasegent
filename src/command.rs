@@ -50,7 +50,6 @@ pub enum Command {
         provider: Option<ProviderKind>,
         api_base: Option<String>,
         repository: Option<String>,
-        project_id: Option<String>,
         close_status_id: Option<String>,
     },
     /// `config show` — redacted snapshot of the local SQLite

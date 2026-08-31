@@ -22,6 +22,11 @@ pub struct StoredConfig {
 pub struct RedmineStoredConfig {
     #[serde(default)]
     pub api_base: Option<String>,
+    /// Legacy Redmine project identifier. Preserved for backward-compatible
+    /// JSON and SQLite decoding; Phase 1 (remove-project-id) no longer
+    /// persists or reads this field—resolution uses only explicit
+    /// `--project-id`. The SQLite column remains for non-destructive
+    /// migration but values are ignored and cleared on open.
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -47,9 +52,10 @@ pub struct RedmineStoredConfig {
 pub struct GitlabStoredConfig {
     #[serde(default)]
     pub api_base: Option<String>,
-    /// GitLab uses numeric project ids; the field holds `Option<u64>` so
-    /// the "row absent" and "row present but missing the column"
-    /// semantics remain distinguishable.
+    /// Legacy GitLab project identifier. Preserved for backward-compatible
+    /// JSON and SQLite decoding; Phase 1 no longer persists or reads this
+    /// field—resolution uses only explicit `--project-id`. The SQLite
+    /// column remains but values are ignored and cleared on open.
     #[serde(default)]
     pub project_id: Option<u64>,
 }
@@ -58,7 +64,6 @@ pub struct SetupOptions {
     pub read_stdin: bool,
     pub api_base: Option<String>,
     pub repository: Option<String>,
-    pub project_id: Option<String>,
     pub close_status_id: Option<String>,
 }
 
@@ -76,7 +81,6 @@ pub fn setup(
             read_stdin,
             api_base,
             repository,
-            project_id: None,
             close_status_id: None,
         },
     )
@@ -91,10 +95,9 @@ pub fn setup_provider(
         read_stdin,
         api_base,
         repository,
-        project_id,
         close_status_id,
     } = options;
-    validate_provider_options(provider, &repository, &project_id, &close_status_id)?;
+    validate_provider_options(provider, &repository, &close_status_id)?;
     let credential_label = match provider {
         PROVIDER_FORGEJO => "Forgejo token",
         PROVIDER_REDMINE => "Redmine API key",
@@ -117,15 +120,9 @@ pub fn setup_provider(
 
     match provider {
         PROVIDER_FORGEJO => save_forgejo_config(&storage, role, api_base, repository)?,
-        PROVIDER_REDMINE => {
-            save_redmine_config(&storage, role, api_base, project_id, close_status_id)?
-        }
+        PROVIDER_REDMINE => save_redmine_config(&storage, role, api_base, close_status_id)?,
         PROVIDER_GITLAB => {
-            if let Some(project_id) = project_id.as_deref().and_then(parse_gitlab_project_id) {
-                persist_gitlab_bootstrap(role, api_base, project_id, &storage)?;
-            } else {
-                save_gitlab_config(&storage, role, api_base, project_id)?;
-            }
+            save_gitlab_config(&storage, role, api_base)?;
         }
         _ => unreachable!("provider was validated above"),
     }
@@ -147,19 +144,14 @@ pub fn setup_provider(
 fn validate_provider_options(
     provider: &str,
     repository: &Option<String>,
-    project_id: &Option<String>,
     close_status_id: &Option<String>,
 ) -> Result<(), String> {
-    if provider == "forgejo" && (project_id.is_some() || close_status_id.is_some()) {
-        return Err("--project-id and --close-status-id require the redmine provider".to_owned());
+    if provider == "forgejo" && close_status_id.is_some() {
+        return Err("--close-status-id requires the redmine provider".to_owned());
     }
     if provider == "redmine" && repository.is_some() {
         return Err("--repository requires the forgejo provider".to_owned());
     }
-    // GitLab reuses the Redmine flag namespace for the project id (a
-    // numeric GitLab identifier instead of a Redmine slug) so the CLI
-    // layer can keep a single `--project-id` flag; the forgejo
-    // `repository` and redmine `close_status_id` flags do not apply.
     if provider == "gitlab" && repository.is_some() {
         return Err("--repository requires the forgejo provider".to_owned());
     }
@@ -365,16 +357,12 @@ fn save_redmine_config(
     storage: &Storage,
     role: Role,
     api_base: Option<String>,
-    project_id: Option<String>,
     close_status_id: Option<String>,
 ) -> Result<(), String> {
-    if api_base.is_some() || project_id.is_some() || close_status_id.is_some() {
+    if api_base.is_some() || close_status_id.is_some() {
         let mut config = storage.load_redmine_config(role)?.unwrap_or_default();
         if api_base.is_some() {
             config.api_base = api_base;
-        }
-        if project_id.is_some() {
-            config.project_id = project_id;
         }
         if let Some(value) = close_status_id {
             config.close_status_id = Some(
@@ -388,14 +376,7 @@ fn save_redmine_config(
     storage.update_provider(role, PROVIDER_REDMINE)
 }
 
-/// Save the GitLab configuration side-effects for `auth setup`. The
-/// numeric `project_id` is required because GitLab workflow commands
-/// need an unambiguous target; refusing an empty value here means the
-/// CLI surface can call `GitlabConfig::require_project_id` without a
-/// separate "configured but missing" branch.
-///
-/// The check runs before storage is touched so a misuse surfaces as a
-/// usage error rather than a half-written SQLite row.
+#[allow(dead_code)]
 fn parse_gitlab_project_id(value: &str) -> Option<u64> {
     value
         .trim()
@@ -408,27 +389,7 @@ fn save_gitlab_config(
     storage: &Storage,
     role: Role,
     api_base: Option<String>,
-    project_id: Option<String>,
 ) -> Result<(), String> {
-    let parsed_project_id = match project_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(value) => Some(
-            value
-                .parse::<u64>()
-                .map_err(|_| "GitLab project id must be numeric".to_owned())?,
-        ),
-        None => None,
-    };
-    if parsed_project_id == Some(0) {
-        return Err("GitLab project id must be greater than zero".to_owned());
-    }
-    if let Some(value) = parsed_project_id {
-        storage.persist_gitlab_bootstrap(role, api_base, value)?;
-        return Ok(());
-    }
     if api_base.is_some() {
         let mut config = storage.load_gitlab_config(role)?.unwrap_or_default();
         config.api_base = api_base;

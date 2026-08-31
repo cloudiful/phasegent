@@ -68,8 +68,6 @@ fn parser_auth_config_and_provider_selection_regressions() {
         "--stdin",
         "--api-base",
         "https://redmine.example",
-        "--project-id",
-        "42",
         "--close-status-id",
         "37",
     ]);
@@ -79,13 +77,31 @@ fn parser_auth_config_and_provider_selection_regressions() {
             read_stdin: true,
             provider: None,
             ref api_base,
-            ref project_id,
             ref close_status_id,
             repository: None,
         } if api_base.as_deref() == Some("https://redmine.example")
-            && project_id.as_deref() == Some("42")
             && close_status_id.as_deref() == Some("37")
     ));
+    // Project-id is no longer a persisted auth option; it must be
+    // rejected as unknown.
+    let rejected = strings([
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "auth",
+        "setup",
+        "--stdin",
+        "--api-base",
+        "https://redmine.example",
+        "--project-id",
+        "42",
+    ]);
+    let error = command::parse(&rejected).unwrap_err();
+    assert!(
+        error.contains("unknown auth setup option"),
+        "project-id must be rejected on auth setup: {error}"
+    );
 
     let config = RedmineConfig::new("https://redmine.example/", "42", 37);
     assert_eq!(config.provider(), ProviderKind::Redmine);
@@ -112,7 +128,6 @@ fn parser_auth_config_and_provider_selection_regressions() {
                 read_stdin: false,
                 api_base: None,
                 repository: Some("owner/repo".to_owned()),
-                project_id: None,
                 close_status_id: None,
             },
         )

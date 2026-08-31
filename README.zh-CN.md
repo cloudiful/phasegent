@@ -129,20 +129,21 @@ phasegent --role orchestrator --provider redmine project list
 ```
 
 `project list` 不需要 `--project-id`；返回的 JSON 会包含每个 project 的数字
-`id`、`name` 和 `identifier`。选择正确的 ID 后，为这台机器上实际运行命令的
-role 持久化配置：
+`id`、`name` 和 `identifier`。选择正确的 ID 后，在每次调用时显式使用
+`--project-id`（project ID 不再持久化）：
 
 ```text
-phasegent --role orchestrator config set redmine-project-id 42
+phasegent --role orchestrator --provider redmine --project-id 42 issue get 3
 ```
 
-project ID 按 role 保存。其他 role 也需要访问 issue 时，对每个 role 重复执行
-`config set`，使用同一个 project ID。
+Project ID 仅作为单次调用参数，永远不会从 SQLite 或环境变量读取；未来
+repository-aware 解析将在未提供 `--project-id` 时根据 Git origin 和已有
+`redmine_git_mirror` 记录自动推导。
 
 四个 key 都配置好后，必须先为当前 repository 执行 bootstrap，然后才能执行
 Redmine issue 的 create、search、update 或 close。命令从 `OWNER/REPOSITORY`
 或当前 `origin` remote 派生 identifier，只复用完全匹配的 project，并按 role
-保存 project 和关闭 status 的 ID：
+保存关闭 status 的 ID（project ID 不再持久化）：
 
 ```text
 phasegent --role admin --provider redmine workflow bootstrap \
@@ -467,10 +468,10 @@ hours，以及可选的 activity/Time Entry 投影状态。Unix 上目录以模�
 token 与 Redmine API key 以明文形式写入 SQLite。CLI 永不输出 credential：
 仍然只接受 stdin 输入、结构化错误只提示缺失的变量名、`config show` 永不输出
 明文 secret。role 隔离保持不变：每个 role 各自保留自己的 `(forgejo,
-redmine)` provider、API base、repository、project id、close status id 与
-credential；三个全局配置（`PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`、
-`PHASEGENT_REDMINE_REPOSITORY_URL` 以及机器级
-`PHASEGENT_DEFAULT_PROVIDER`）保存在独立的 `global_setting` 表。
+redmine)` provider、API base、repository、close status id 与 credential（project
+ID 仅通过 `--project-id` 单次调用，不再持久化）；三个全局配置
+（`PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`、`PHASEGENT_REDMINE_REPOSITORY_URL`
+以及机器级 `PHASEGENT_DEFAULT_PROVIDER`）保存在独立的 `global_setting` 表。
 
 ### 使用 `config show` 查看数据库
 
@@ -486,8 +487,8 @@ phasegent --role executor config show
 
 - `database_path` — SQLite 数据库的绝对路径。
 - `roles[]` — 每个 role 一条记录，包括 provider、Forgejo/Redmine URL、
-  project id、close status id 与 credential 摘要。每条 credential 只输出
-  `present` 与 `length`，绝不输出明文。
+  close status id 与 credential 摘要（project ID 不再持久化，不会出现）。
+  每条 credential 只输出 `present` 与 `length`，绝不输出明文。
 - `global_settings[]` — `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`（只显示存在
   与否与长度）、`PHASEGENT_REDMINE_REPOSITORY_URL`（输出脱敏后的 URL：
   去掉内嵌的 userinfo、密码、query 与 fragment；SSH 风格的 `user@host` 视为
@@ -508,10 +509,14 @@ phasegent --role executor config show
 `config clear` 删除配置：
 
 ```text
-phasegent --role orchestrator config set redmine-project-id 42
 phasegent config set redmine-repository-url https://git.example.com/owner/repo.git
 phasegent config clear redmine-repository-url
 ```
+
+Project ID 不再持久化；每次调用显式使用 `--project-id`（例如
+`phasegent --role orchestrator --provider redmine --project-id 42 issue get 3`）。
+旧的 `redmine-project-id`、`gitlab-project-id`、`project-id` 别名会被视为未知
+配置并拒绝。
 
 配置名可以使用完整的 `PHASEGENT_*` 名称或 kebab-case 别名。全局配置
 （`redmine-git-mirror-api-key`、`redmine-repository-url`、
@@ -553,10 +558,12 @@ SQLite。provider 选择遵循同一模式，但在 `PHASEGENT_PROVIDER` 运行�
 - `PHASEGENT_REPOSITORY` — Forgejo 使用的 `OWNER/REPOSITORY`。
 - `PHASEGENT_REDMINE_API_BASE` — Redmine API base；优先于通用
   `PHASEGENT_API_BASE`。
-- `PHASEGENT_REDMINE_PROJECT_ID` — Redmine project id。
 - `PHASEGENT_REDMINE_CLOSE_STATUS_ID` — Redmine close status id。
-- `PHASEGENT_PROJECT_ID` — Redmine project id 的通用别名。
 - `PHASEGENT_CLOSE_STATUS_ID` — Redmine close status id 的通用别名。
+
+Project-id 持久化（`PHASEGENT_REDMINE_PROJECT_ID`、
+`PHASEGENT_GITLAB_PROJECT_ID`、`PHASEGENT_PROJECT_ID`）已在 Phase 1 移除；
+请在每次调用时显式使用 `--project-id`。
 
 `config set` 支持的全局配置：
 
@@ -606,10 +613,9 @@ phasegent config show
 phasegent --role executor config show
 ```
 
-持久化 role-scoped project ID 或全局 mirror 配置：
+持久化全局 mirror 配置：
 
 ```text
-phasegent --role orchestrator config set redmine-project-id 42
 phasegent config set redmine-git-mirror-api-key
 ```
 
