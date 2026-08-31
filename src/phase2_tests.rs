@@ -2458,3 +2458,65 @@ fn timer_list_and_get_return_local_only_payloads_without_network() {
     }
     let _ = fs::remove_dir_all(home);
 }
+
+#[test]
+fn canonical_git_url_strips_credentials_query_fragment_and_git_suffix() {
+    // Credentials, query, fragment, and trailing .git must not affect
+    // the canonical identity so the same repository behind different
+    // transports still matches.
+    let a = crate::remote::canonical_git_url(
+        "https://user:secret@git.example.com/owner/repo.git?ref=main#frag",
+    )
+    .unwrap();
+    let b = crate::remote::canonical_git_url("https://git.example.com/owner/repo").unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a, "git.example.com/owner/repo");
+    assert!(crate::remote::git_urls_match(
+        "https://user:secret@git.example.com/owner/repo.git?ref=main#frag",
+        "https://git.example.com/owner/repo"
+    ));
+}
+
+#[test]
+fn canonical_git_url_supports_ssh_https_equivalence_and_preserves_port_and_case() {
+    // SSH and HTTPS forms for the same host/path must be equivalent
+    // (scheme ignored), but non-default ports and case-sensitive paths
+    // are preserved and distinguish repositories.
+    assert!(crate::remote::git_urls_match(
+        "ssh://git@git.example.com/owner/repo.git",
+        "https://git.example.com/owner/repo.git"
+    ));
+    assert!(crate::remote::git_urls_match(
+        "git@git.example.com:owner/repo.git",
+        "https://git.example.com/owner/repo"
+    ));
+    // Non-default port must be preserved: different ports are not equal.
+    let with_port =
+        crate::remote::canonical_git_url("https://git.example.com:8443/owner/repo.git").unwrap();
+    let without_port =
+        crate::remote::canonical_git_url("https://git.example.com/owner/repo.git").unwrap();
+    assert_ne!(with_port, without_port);
+    assert!(with_port.contains(":8443"));
+    // Same non-default port on different schemes still matches.
+    assert!(crate::remote::git_urls_match(
+        "https://git.example.com:8443/owner/repo.git",
+        "ssh://git@git.example.com:8443/owner/repo.git"
+    ));
+    // Host is case-insensitive, path is case-sensitive.
+    assert!(crate::remote::git_urls_match(
+        "https://GIT.EXAMPLE.COM/owner/repo.git",
+        "https://git.example.com/owner/repo.git"
+    ));
+    assert!(!crate::remote::git_urls_match(
+        "https://git.example.com/Owner/Repo.git",
+        "https://git.example.com/owner/repo.git"
+    ));
+    // Deployment prefix in the path is part of the identity.
+    let prefixed =
+        crate::remote::canonical_git_url("https://git.example.com/prefix/owner/repo.git").unwrap();
+    assert_eq!(prefixed, "git.example.com/prefix/owner/repo");
+    assert!(!crate::remote::git_urls_match(
+        "https://git.example.com/prefix/owner/repo.git",
+        "https://git.example.com/owner/repo.git"
+    ));
+}

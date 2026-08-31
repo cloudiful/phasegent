@@ -11,3 +11,4 @@ pub mod r#impl;
 
 pub(crate) use r#impl::mirror::mirror_identifier;
 pub use r#impl::mirror::register_git_mirror;
+pub use model::mirror::{RedmineDiscoveredProject, RedmineDiscovery};

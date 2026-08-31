@@ -266,3 +266,86 @@ pub fn normalize_redmine_api_base(value: &str) -> Result<String, String> {
     url.set_path(&path);
     Ok(url.to_string().trim_end_matches('/').to_owned())
 }
+
+/// Canonical Git URL identity for cross-transport comparison.
+///
+/// Returns a normalized `host[:port]/path` string where host is lower-cased,
+/// port is preserved only when non-default, and credentials, query,
+/// fragment, and trailing `.git` are removed. Scheme is ignored so
+/// `ssh://git@host/owner/repo.git` and `https://host/owner/repo.git` match
+/// while meaningful non-default ports and case-sensitive repository paths are
+/// preserved. Used by Redmine project discovery to match the local origin
+/// against the plugin's `remote_url` without leaking secrets. The original
+/// credential-free URL is kept separately for later mirror registration.
+pub fn canonical_git_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("git remote URL cannot be empty".to_owned());
+    }
+    if let Some(rest) = trimmed.strip_prefix("git@") {
+        let (host, path) = rest
+            .split_once(':')
+            .ok_or_else(|| "invalid scp-style git remote".to_owned())?;
+        if host.trim().is_empty() || path.trim().is_empty() {
+            return Err("invalid scp-style git remote".to_owned());
+        }
+        let host = host.trim().to_ascii_lowercase();
+        let normalized = normalize_git_path(path)?;
+        return Ok(format!("{host}/{normalized}"));
+    }
+    let parsed = Url::parse(trimmed).map_err(|error| format!("invalid git remote: {error}"))?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| "git remote has no host".to_owned())?;
+    let host_str = match host {
+        Host::Domain(domain) => domain.to_ascii_lowercase(),
+        Host::Ipv4(addr) => addr.to_string(),
+        Host::Ipv6(addr) => format!("[{addr}]").to_ascii_lowercase(),
+    };
+    let mut port = parsed.port();
+    if matches!(parsed.scheme(), "ssh" | "git+ssh" | "ssh+git") && port == Some(22) {
+        port = None;
+    }
+    let normalized = normalize_git_path(parsed.path())?;
+    if let Some(port) = port {
+        Ok(format!("{host_str}:{port}/{normalized}"))
+    } else {
+        Ok(format!("{host_str}/{normalized}"))
+    }
+}
+
+/// Returns `true` when two Git remote URLs refer to the same repository
+/// identity under [`canonical_git_url`] rules. Returns `false` when either
+/// URL cannot be parsed rather than propagating an error so discovery can
+/// treat a malformed plugin `remote_url` as a non-match.
+pub fn git_urls_match(a: &str, b: &str) -> bool {
+    match (canonical_git_url(a), canonical_git_url(b)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn normalize_git_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim_matches('/');
+    if trimmed.is_empty() {
+        return Err("git remote path is empty".to_owned());
+    }
+    let without_git =
+        if trimmed.len() >= 4 && trimmed[trimmed.len() - 4..].eq_ignore_ascii_case(".git") {
+            &trimmed[..trimmed.len() - 4]
+        } else {
+            trimmed
+        };
+    let without_git = without_git.trim_matches('/');
+    if without_git.is_empty() {
+        return Err("git remote path is empty after stripping .git".to_owned());
+    }
+    let parts: Vec<&str> = without_git
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err("git remote path is empty".to_owned());
+    }
+    Ok(parts.join("/"))
+}

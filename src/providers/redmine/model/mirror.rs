@@ -47,3 +47,26 @@ pub struct RedmineGitMirrorOutcome {
     pub local_path: String,
     pub error: Option<String>,
 }
+
+/// Minimal project identity preserved for discovery outcome reporting.
+/// Contains only non-sensitive fields needed by Phase 3 to report unique
+/// or ambiguous matches without leaking the mirror bearer key or remote
+/// credentials.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RedmineDiscoveredProject {
+    pub id: u64,
+    pub name: String,
+    pub identifier: String,
+}
+
+/// Read-only discovery result for the current Git origin. `NoMatch` means
+/// no visible project had a matching mirror `remote_url`; `Single` is the
+/// exactly-one case Phase 3 can use directly; `Multiple` carries all
+/// candidates so Phase 3 can fail with an actionable ambiguity error
+/// without guessing. Never leaks credentials.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum RedmineDiscovery {
+    NoMatch,
+    Single(RedmineDiscoveredProject),
+    Multiple(Vec<RedmineDiscoveredProject>),
+}
