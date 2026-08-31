@@ -14,6 +14,7 @@ mod help;
 mod hooks;
 mod issue;
 mod project;
+mod project_resolution;
 mod relation;
 mod repo;
 mod status;

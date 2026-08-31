@@ -147,9 +147,15 @@ explicit per-invocation `--project-id` (project IDs are no longer persisted):
 phasegent --role orchestrator --provider redmine --project-id 42 issue get 3
 ```
 
-Project IDs are invocation-only and never read from SQLite or environment;
-future repository-aware resolution will derive the project from the Git origin
-and existing `redmine_git_mirror` records when `--project-id` is omitted.
+Project IDs are invocation-only and never read from SQLite or environment.
+When `--project-id` is omitted and the provider is Redmine, the current Git
+origin is matched against existing `redmine_git_mirror` records (credential-free
+canonical identity): exactly one match uses that project for the invocation,
+multiple matches fail with a bounded listing of candidate ids/names and require
+`--project-id`, and discovery HTTP/auth/decode errors are propagated. An
+explicit `--project-id` always wins and skips discovery; an explicit
+`--repository` that does not equal the current origin is never silently
+matched to the origin.
 
 After configuring all four keys, bootstrap the current repository before any
 Redmine issue create, search, update, or close operation. The command derives
@@ -187,8 +193,22 @@ call short-circuits a duplicate `POST` when the mirror already exists.
 Bootstrap fails with a structured error before any partial identity mapping
 is persisted whenever an agent identity cannot be resolved, its default role
 name does not match an existing Redmine role, or the mirror plugin returns
-an HTTP error or a `failed` status. After successful bootstrap, issue and
-journal operations use the stored Redmine settings:
+an HTTP error or a `failed` status.
+
+Issue `search`/`create` and `version list` can derive the project automatically
+when `--project-id` is omitted (Redmine-only, current Git origin is matched
+against `redmine_git_mirror` records). For `issue search`/`create`, a unique
+match bypasses bootstrap entirely and uses the discovered project; no match
+keeps the existing automatic bootstrap; multiple matches or any discovery
+HTTP/auth/decode error fail before writes with a bounded actionable message
+listing candidate ids/names (never URLs/credentials) and require
+`--project-id`. For `version list`, a unique match lists that project's
+versions, no match returns an actionable error telling the operator to pass
+`--project-id` or run `workflow bootstrap`, and the command never
+auto-bootstraps. Explicit `--project-id` always wins. Discovery is read-only
+and never persists the project id.
+
+After successful bootstrap, issue and journal operations use the stored Redmine settings:
 
 ```text
 phasegent --role orchestrator --provider redmine issue create --title 'Plan' --body 'Details' --tracker Bug
@@ -199,6 +219,8 @@ phasegent --role orchestrator --provider redmine issue close 3
 phasegent --role executor --provider redmine comment create 3 \
   --body '<!-- marker --> DONE' --marker '<!-- marker -->' --authorized
 phasegent --role executor --provider redmine comment find-marker 3 --marker '<!-- marker -->'
+phasegent --role orchestrator --provider redmine issue search --query 'phase'
+phasegent --role executor --provider redmine version list
 ```
 
 Issue creation and body updates accept an explicit Redmine tracker with

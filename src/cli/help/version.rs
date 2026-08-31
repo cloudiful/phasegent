@@ -21,7 +21,10 @@ pub(crate) fn print_version_command_help(role: Option<Role>, command: &str) {
     }
     let capability = Capability::VersionRead;
     if role.is_none_or(|role| role.allows(capability)) {
-        println!("Usage: version list\n\n{}", capability.description());
+        println!(
+            "Usage: version list\n\n{}\n\nRedmine: when --project-id is omitted the current Git origin is matched against existing redmine_git_mirror records. Exactly one match lists that project's versions; multiple matches fail with candidate ids/names and require --project-id; no match returns an actionable error telling the operator to pass --project-id or run 'workflow bootstrap'. The command never auto-bootstraps. An explicit --repository that does not equal the origin is not silently matched.",
+            capability.description()
+        );
     } else {
         println!(
             "No command available for {}.",

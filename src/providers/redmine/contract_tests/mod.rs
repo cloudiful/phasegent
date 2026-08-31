@@ -9,6 +9,8 @@ mod issues;
 mod membership;
 mod mirror;
 mod planning;
+mod project_resolution;
+mod project_resolution_bootstrap;
 mod projects;
 mod relations;
 mod relations_cli;

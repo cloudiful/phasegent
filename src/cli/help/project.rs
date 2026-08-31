@@ -24,7 +24,7 @@ pub(crate) fn print_project_command_help(role: Option<Role>, command: &str) {
     let (capability, text) = match command {
         "list" => (
             Capability::ProjectRead,
-            "Usage: project list\n\nLists Redmine projects visible to the API key. Does not require --project-id.\nUse the returned project identifier with `phasegent --role <ROLE> --project-id <ID> <command>` per invocation; project IDs are never persisted.",
+            "Usage: project list\n\nLists Redmine projects visible to the API key. Does not require --project-id.\nUse the returned project identifier with `phasegent --role <ROLE> --project-id <ID> <command>` per invocation; project IDs are never persisted.\n\nIssue search/create and version list can also derive the project automatically from the current Git origin's redmine_git_mirror records: exactly one match uses that project, multiple matches require --project-id, and no match for search/create auto-bootstraps while version list returns an actionable error.",
         ),
         "create" => (
             Capability::ProjectCreate,

@@ -136,9 +136,12 @@ phasegent --role orchestrator --provider redmine project list
 phasegent --role orchestrator --provider redmine --project-id 42 issue get 3
 ```
 
-Project ID 仅作为单次调用参数，永远不会从 SQLite 或环境变量读取；未来
-repository-aware 解析将在未提供 `--project-id` 时根据 Git origin 和已有
-`redmine_git_mirror` 记录自动推导。
+Project ID 仅作为单次调用参数，永远不会从 SQLite 或环境变量读取。
+未提供 `--project-id` 且 provider 为 Redmine 时，会把当前 Git origin 与已有的
+`redmine_git_mirror` 记录进行凭据无关的规范化匹配：唯一匹配时使用该 project，
+多匹配时以有界的候选 id/name 列表失败并要求 `--project-id`，
+发现过程中的 HTTP/鉴权/解析错误会直接传播。显式 `--project-id` 始终优先并跳过发现；
+显式的 `--repository` 若与当前 origin 不一致，不会把 origin 静默匹配到该显式值。
 
 四个 key 都配置好后，必须先为当前 repository 执行 bootstrap，然后才能执行
 Redmine issue 的 create、search、update 或 close。命令从 `OWNER/REPOSITORY`
@@ -166,13 +169,25 @@ bootstrap 只能由 admin 使用，且只支持 Redmine。只有唯一关闭 sta
 `Authorization: Bearer <key>` 排队异步 mirror 任务，输出 JSON 中会包含
 plugin 返回的 mirror 状态（`pending`、`cloning`、`ready`、`failed`，
 若 bootstrap 只观察到一个已排队的 mirror 则为 `existing`）。`pending`
-意味着异步 clone/fetch 任务已经入队，因此 bootstrap 视为成功；
+ 意味着异步 clone/fetch 任务已经入队，因此 bootstrap 视为成功；
 bootstrap 会先调用
 `GET /sys/redmine_git_mirror/projects/<id>/repository/mirror_<id>_<owner>_<repo>`，
 若 mirror 已经存在则不再重复 POST。任何 agent 身份无法解析，其默认
 role 名称在 Redmine 中找不到，或 mirror plugin 返回 HTTP 错误或
 `failed` 状态时，bootstrap 都会在持久化任何身份映射之前以结构化错误
-失败。bootstrap 成功后，issue 和 journal 操作会使用已保存的 Redmine 配置：
+失败。
+
+`issue search`/`create` 与 `version list` 在未提供 `--project-id` 时
+（仅 Redmine，匹配当前 Git origin 的 `redmine_git_mirror` 记录）可自动推导
+project。对于 `issue search`/`create`，唯一匹配时直接使用并完全绕过
+bootstrap；无匹配时保持现有的自动 bootstrap；多匹配或任何发现阶段的
+HTTP/鉴权/解析错误会在写入前以有界的可操作错误失败（列出候选 id/name，永不
+暴露 URL/凭据）并要求 `--project-id`。对于 `version list`，唯一匹配时
+列出该项目的版本，无匹配时返回可操作的错误提示使用 `--project-id` 或执行
+`workflow bootstrap`，且该命令永远不会自动 bootstrap。显式 `--project-id`
+始终优先；发现过程为只读且不会持久化 project id。
+
+bootstrap 成功后，issue 和 journal 操作会使用已保存的 Redmine 配置：
 
 ```text
 phasegent --role orchestrator --provider redmine issue create --title 'Plan' --body 'Details' --tracker Bug
@@ -183,6 +198,8 @@ phasegent --role orchestrator --provider redmine issue close 3
 phasegent --role executor --provider redmine comment create 3 \
   --body '<!-- marker --> DONE' --marker '<!-- marker -->' --authorized
 phasegent --role executor --provider redmine comment find-marker 3 --marker '<!-- marker -->'
+phasegent --role orchestrator --provider redmine issue search --query 'phase'
+phasegent --role executor --provider redmine version list
 ```
 
 创建和更新 issue 时可以用 `--tracker` 显式选择 Redmine tracker：参数接受经过

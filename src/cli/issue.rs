@@ -42,19 +42,41 @@ pub(crate) fn execute_issue(
             IssueCommand::Search { .. } | IssueCommand::Create { .. }
         );
     let (project_id, close_status_id) = if automatic_workflow {
-        let state = match crate::workflow::ensure_issue_workflow(
+        // Phase 3: try repository-aware discovery first. An explicit
+        // project id already won and is not inside this branch. When
+        // discovery finds exactly one match we use it directly and
+        // bypass bootstrap (no project creation, membership writes, or
+        // mirror POST). Multiple matches fail before any issue write
+        // with a bounded listing. Any other discovery HTTP/auth/decode
+        // error is propagated, not treated as NoMatch. Only NoMatch
+        // keeps the existing automatic bootstrap fallback.
+        let discovered = match super::project_resolution::resolve_redmine_project(
             role,
             api_base,
             repository,
+            project_id,
             close_status_id,
         ) {
-            Ok(state) => state,
+            Ok(value) => value,
             Err(error) => return super::provider_error(error),
         };
-        (
-            Some(state.project_id),
-            Some(state.close_status_id.to_string()),
-        )
+        if let Some(discovered_id) = discovered {
+            (Some(discovered_id), close_status_id.map(str::to_owned))
+        } else {
+            let state = match crate::workflow::ensure_issue_workflow(
+                role,
+                api_base,
+                repository,
+                close_status_id,
+            ) {
+                Ok(state) => state,
+                Err(error) => return super::provider_error(error),
+            };
+            (
+                Some(state.project_id),
+                Some(state.close_status_id.to_string()),
+            )
+        }
     } else {
         (
             project_id.map(str::to_owned),
