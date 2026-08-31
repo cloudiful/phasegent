@@ -64,7 +64,7 @@ User-owned/baseline paths to protect: none recorded; preserve all unrelated chan
 1. Implement command model/parser/dispatch and explicit config persistence, remove import-env, and add focused tests. `DONE` after the bounded root-help repair; Rust tests remain environment-blocked.
 2. Split explicit config write responsibilities into cohesive modules, then update bilingual public documentation for project discovery and CLI configuration. `DONE`.
 3. Run format, focused tests, and full tests; repair only in-scope regressions. `DONE` for the implementation: `cargo fmt -- --check`, `git diff --check`, and `/home/dev/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test` pass (403 tests); the rustup proxy cargo preflight remains an environment-specific failure.
-4. Independently review the complete change, then create an exact-path checkpoint commit and push the current branch if all gates pass. `READY_FOR_CHECKPOINT` after review round 2 PASS; checkpoint and push are next.
+4. Independently review the complete change, create an exact-path checkpoint commit, push the current branch, and publish the release tag if all gates pass. `DONE`: review round 2 PASS, checkpoint `6c251e295609f712dbfba1d76cc5b15bb64c3597` pushed to `origin/main`, and `v0.4.0` published.
 
 ## Validation commands
 
@@ -91,6 +91,8 @@ User-owned/baseline paths to protect: none recorded; preserve all unrelated chan
 - ChezMoi source: `~/.config/sccache/config` is generated from `dot_config/sccache/config.tmpl` and `.chezmoitemplates/shared/sccache/config`; both source and target match the anonymous `us-east-1` configuration. The shared template carries a user working-tree modification and was preserved.
 - Implementation validation: the direct stable Cargo binary ran all 403 tests successfully; sccache stats showed 116 Rust cache misses/compilations, zero cache read/write errors, and one compilation failure from the earlier diagnostic run. The rustup proxy's preflight failure is retained as residual environment risk and is not a project failure.
 - Final review round 2: `PASS`. The independent reviewer reported `overall_correctness: patch is correct`, zero P0-P2 findings, and no remaining P3 findings after the targeted repairs. The reviewer independently confirmed command removal, config alias/role validation, secret handling and redaction, project-list dispatch, bilingual documentation, and the full validation results.
+- Release publication: `v0.4.0` was selected from the highest valid prior tag `v0.3.2` as a backward-compatible feature release. The tag was created at checkpoint `6c251e295609f712dbfba1d76cc5b15bb64c3597` and pushed successfully with `git push origin v0.4.0`.
+- Plan archival: `Review: SKIPPED` because this final edit only moves the completed local plan and records already completed checkpoint and release outcomes; no source, configuration, or behavior changed.
 
 ## Blocked questions
 
@@ -98,4 +100,4 @@ User-owned/baseline paths to protect: none recorded; preserve all unrelated chan
 
 ## Final status
 
-`READY_FOR_CHECKPOINT`
+`COMPLETE`
