@@ -1,6 +1,8 @@
 use super::Storage;
 use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
-use crate::infra::storage_schema::{PROVIDER_GITLAB, PROVIDER_REDMINE};
+#[cfg(test)]
+use crate::infra::storage_schema::PROVIDER_GITLAB;
+use crate::infra::storage_schema::PROVIDER_REDMINE;
 use crate::policy::Role;
 use rusqlite::{OptionalExtension, params};
 
@@ -228,6 +230,7 @@ impl Storage {
     /// ignored: Phase 1 no longer persists the numeric project id.
     /// The provider preference is still flipped to "gitlab" so the
     /// resolver doesn't drift back to the default Forgejo path.
+    #[cfg(test)]
     pub fn persist_gitlab_bootstrap(
         &self,
         role: Role,

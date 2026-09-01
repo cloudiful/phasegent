@@ -223,18 +223,6 @@ pub fn persist_redmine_bootstrap(
     storage.persist_redmine_bootstrap(role, api_base, project_id, close_status_id)
 }
 
-/// Persist GitLab bootstrap identity (api_base + numeric project id)
-/// for `role`. The provider preference flips to "gitlab" so subsequent
-/// provider resolution picks the GitLab branch.
-pub fn persist_gitlab_bootstrap(
-    role: Role,
-    api_base: Option<String>,
-    project_id: u64,
-    storage: &Storage,
-) -> Result<(), String> {
-    storage.persist_gitlab_bootstrap(role, api_base, project_id)
-}
-
 pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_REDMINE)?

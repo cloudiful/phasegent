@@ -8,6 +8,9 @@
 //! `--close-status-name`). Routing must remain intact so that every
 //! documented pointer resolves to a non-error page.
 
+// This shared fixture module serves several integration tests; this test
+// intentionally uses only its binary and stdout helpers.
+#[allow(dead_code)]
 #[path = "support/mod.rs"]
 mod support;
 

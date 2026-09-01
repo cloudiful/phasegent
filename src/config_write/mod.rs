@@ -20,7 +20,9 @@ mod common;
 mod set;
 
 pub use clear::clear_setting;
-pub use set::{dispatch_set, set_setting_stdin_content, set_setting_value};
+pub use set::dispatch_set;
+#[cfg(test)]
+pub use set::{set_setting_stdin_content, set_setting_value};
 
 use serde::Serialize;
 

@@ -318,6 +318,7 @@ pub fn canonical_git_url(url: &str) -> Result<String, String> {
 /// identity under [`canonical_git_url`] rules. Returns `false` when either
 /// URL cannot be parsed rather than propagating an error so discovery can
 /// treat a malformed plugin `remote_url` as a non-match.
+#[cfg(test)]
 pub fn git_urls_match(a: &str, b: &str) -> bool {
     match (canonical_git_url(a), canonical_git_url(b)) {
         (Ok(left), Ok(right)) => left == right,

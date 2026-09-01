@@ -216,6 +216,7 @@ impl crate::providers::config::RedmineProvider {
     /// discovery helper's `GET` semantics: `404` is `None`, empty/missing
     /// `remote_url` is `None`, and any other HTTP/auth/decode error is
     /// propagated. Does not `POST` and does not persist anything.
+    #[cfg(test)]
     pub(crate) fn lookup_mirror_for_project(
         &self,
         project_id: u64,
