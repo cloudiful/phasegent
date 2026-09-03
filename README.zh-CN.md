@@ -11,7 +11,7 @@ phasegent --role executor ...
 phasegent --role reviewer ...
 ```
 
-Forgejo provider 支持 issue 生命周期、comment 查询、仓库创建和 CI 检查。
+Forgejo provider 支持 issue 生命周期、comment 查询和仓库创建。
 Redmine provider 支持 issue 生命周期（包括 tracker 选择和按校验名称或数字 ID
 更新 status）、带 `#note-<id>` 锚点的 journal comment、project 查询与创建以及
 issue status 查询。orchestrator-only 的 `timer` foundation 会记录每个
@@ -28,7 +28,7 @@ phasegent --role executor comment create 3 --body '<!-- marker --> DONE' --marke
 ## Provider 选择
 
 Redmine issue 和 comment 命令使用 `--provider redmine`。省略该参数时仍使用
-默认的 Forgejo。仓库和 CI 命令仍然只支持 Forgejo。
+默认的 Forgejo。仓库命令支持 Forgejo 与 GitLab（Redmine 不支持仓库创建）。phasegent 不提供 CI/Actions 命令，通用 Forgejo CI 请使用 `fj`。
 
 Provider 解析优先级，从高到低：
 

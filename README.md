@@ -11,8 +11,8 @@ phasegent --role executor ...
 phasegent --role reviewer ...
 ```
 
-Forgejo supports issue lifecycle operations, comment lookup, repository creation,
-and CI inspection. Redmine supports issue lifecycle operations including
+Forgejo supports issue lifecycle operations, comment lookup, and repository creation.
+Redmine supports issue lifecycle operations including
 tracker selection and status updates by validated name or id, journal-backed
 comments with `#note-<id>` anchors, project discovery/creation, and
 issue-status discovery. The orchestrator-only `timer` foundation records one
@@ -29,7 +29,7 @@ phasegent --role executor comment create 3 --body '<!-- marker --> DONE' --marke
 ## Provider Selection
 
 Use `--provider redmine` for Redmine issue and comment commands. Without it,
-Forgejo remains the default. Repository and CI commands remain Forgejo-only.
+Forgejo remains the default. Repository commands are available for Forgejo and GitLab (Redmine does not support repository creation). phasegent does not expose CI/Actions commands — use `fj` for generic Forgejo CI.
 
 Provider resolution precedence, highest first:
 

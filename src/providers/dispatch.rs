@@ -1,4 +1,3 @@
-mod ci;
 mod dispatcher;
 mod issue;
 mod metadata;

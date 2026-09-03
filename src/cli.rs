@@ -8,7 +8,6 @@ use crate::providers::{GitlabConfig, ProviderDispatcher, ProviderKind, RedmineCo
 use serde::Serialize;
 
 mod branch;
-mod ci;
 mod comment;
 mod help;
 mod hooks;
@@ -256,15 +255,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             )
             .map_or_else(crate::cli::provider_error, |output| print_json(&output)),
         },
-        Command::Ci(command) => ci::execute_ci_or_gitlab(
-            invocation.role,
-            invocation.provider,
-            invocation.api_base.as_deref(),
-            invocation.repository.as_deref(),
-            invocation.project_id.as_deref(),
-            invocation.close_status_id.as_deref(),
-            command,
-        ),
         Command::Hooks(command) => hooks::execute_hooks(command),
     }
 }

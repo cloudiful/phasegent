@@ -35,7 +35,6 @@ impl Role {
                     | Capability::CommentRead
                     | Capability::CommentFindMarker
                     | Capability::CommentCreate
-                    | Capability::CiRead
                     | Capability::ProjectRead
                     | Capability::IssueStatusRead
                     | Capability::VersionRead
@@ -47,7 +46,6 @@ impl Role {
                     | Capability::CommentRead
                     | Capability::CommentFindMarker
                     | Capability::CommentCreate
-                    | Capability::CiRead
                     | Capability::ProjectRead
                     | Capability::IssueStatusRead
                     | Capability::VersionRead
@@ -90,7 +88,6 @@ pub enum Capability {
     CommentCreate,
     CommentRead,
     CommentFindMarker,
-    CiRead,
     ProjectRead,
     ProjectCreate,
     IssueStatusRead,
@@ -112,7 +109,6 @@ impl Capability {
             Self::CommentCreate => "Create one authorized comment",
             Self::CommentRead => "Read issue comments",
             Self::CommentFindMarker => "Find a comment by marker",
-            Self::CiRead => "Read Forgejo Actions runs, jobs, and bounded logs",
             Self::ProjectRead => "List Redmine projects",
             Self::ProjectCreate => "Create a Redmine project",
             Self::IssueStatusRead => "List Redmine issue statuses",
@@ -134,7 +130,6 @@ impl Capability {
             Self::CommentCreate => "comment create",
             Self::CommentRead => "comment get",
             Self::CommentFindMarker => "comment find-marker",
-            Self::CiRead => "ci read",
             Self::ProjectRead => "project list",
             Self::ProjectCreate => "project create",
             Self::IssueStatusRead => "issue status list",

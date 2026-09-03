@@ -4,7 +4,6 @@ use crate::providers::ProviderKind;
 use crate::providers::api::ForgejoError;
 use crate::providers::redmine::model::RedmineRelationType;
 
-pub use crate::ci_command::CiCommand;
 pub use crate::hooks::HooksCommand;
 pub use crate::repo_command::RepoCommand;
 
@@ -101,7 +100,6 @@ pub enum Command {
     VersionCommand(VersionCommand),
     Workflow(WorkflowCommand),
     Repo(RepoCommand),
-    Ci(CiCommand),
     Hooks(HooksCommand),
     /// Redmine issue relations. List, create, and delete by id; the create
     /// direction is `issue` -> `to` with a canonical `--type`.
@@ -133,8 +131,6 @@ pub enum HelpTopic {
     Workflow,
     WorkflowCommand(String),
     RepoCommand(String),
-    Ci,
-    CiCommand(String),
     Hooks,
     HooksCommand(String),
     Relation,
@@ -480,7 +476,6 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "timer" => timer::parse_timer(rest)?,
         "workflow" => workflow::parse_workflow(rest)?,
         "repo" => crate::repo_command::parse(rest)?,
-        "ci" => crate::ci_command::parse(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
         value => return Err(format!("unknown command '{value}'")),
     };

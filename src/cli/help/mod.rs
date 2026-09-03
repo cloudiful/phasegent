@@ -71,20 +71,6 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
                 crate::repo_cli::print_command_help(role, &command, provider)
             }
         }
-        HelpTopic::Ci => {
-            if provider == Some(ProviderKind::Redmine) {
-                print_not_supported_help("ci")
-            } else {
-                crate::ci_cli::print_help(role)
-            }
-        }
-        HelpTopic::CiCommand(command) => {
-            if provider == Some(ProviderKind::Redmine) {
-                print_not_supported_help(&format!("ci {command}"))
-            } else {
-                crate::ci_cli::print_command_help(role, &command)
-            }
-        }
         HelpTopic::Hooks => print_hooks_help(),
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
     }

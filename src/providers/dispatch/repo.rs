@@ -1,10 +1,5 @@
 #[allow(unused_imports)]
-use crate::ci_model::{
-    CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
-    CiRunsOutput,
-};
-#[allow(unused_imports)]
-use crate::command::{CiCommand, RepoCommand};
+use crate::command::RepoCommand;
 #[allow(unused_imports)]
 use crate::policy::Capability;
 #[allow(unused_imports)]
@@ -17,9 +12,8 @@ use crate::providers::forgejo::ForgejoConfig;
 use crate::providers::forgejo::ForgejoProvider;
 #[allow(unused_imports)]
 use crate::providers::{
-    CiProvider, GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind,
-    RedmineIssueStatus, RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion,
-    RepoProvider,
+    GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
+    RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
 
 impl RepoProvider for GitlabProvider {

@@ -8,7 +8,6 @@ use super::support::{
     user_from_response, version_collection, version_collection_page,
 };
 use crate::auth;
-use crate::ci_model::CiRunsFilter;
 use crate::command::{
     self, Command, IssueCommand, ProjectCommand, RelationCommand, StatusCommand, WorkflowCommand,
 };
@@ -139,10 +138,9 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
 }
 
 #[test]
-fn redmine_keeps_repo_and_ci_commands_unsupported() {
+fn redmine_keeps_repo_command_unsupported() {
     let redmine = provider("http://redmine.test".to_owned());
     assert!(!redmine.supports(Capability::RepoCreate));
-    assert!(!redmine.supports(Capability::CiRead));
     assert_eq!(
         redmine
             .create_repo("owner/repo", true, "", false)
@@ -150,17 +148,6 @@ fn redmine_keeps_repo_and_ci_commands_unsupported() {
             .json()["kind"],
         "not_supported"
     );
-    let error = redmine
-        .ci_runs(&CiRunsFilter {
-            sha: None,
-            ref_name: None,
-            status: None,
-            workflow: None,
-            page: 1,
-            limit: 50,
-        })
-        .unwrap_err();
-    assert_eq!(error.json()["kind"], "not_supported");
     let dispatcher = ProviderDispatcher::Redmine(provider("http://redmine.test".to_owned()));
     assert_eq!(dispatcher.kind(), ProviderKind::Redmine);
 }

@@ -2,7 +2,7 @@
 use super::support::*;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::GitlabProvider;
-use crate::providers::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
+use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 
 #[test]
 fn create_note_posts_to_notes_and_returns_stable_url() {

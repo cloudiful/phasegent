@@ -2,7 +2,7 @@
 use super::support::*;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::GitlabProvider;
-use crate::providers::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
+use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 #[test]
 fn gitlab_timer_finish_first_call_posts_spent_time_with_marker() {
     // Drive `project_run_with_gitlab_provider` end-to-end. The

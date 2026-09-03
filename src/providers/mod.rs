@@ -5,10 +5,6 @@ pub mod forgejo;
 pub mod gitlab;
 pub mod redmine;
 
-use crate::ci_model::{
-    CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
-    CiRunsOutput,
-};
 use crate::policy::Capability;
 
 pub use api::{CommentOutput, IssueSummary, RepoSummary};
@@ -73,14 +69,4 @@ pub trait RepoProvider {
         description: &str,
         auto_init: bool,
     ) -> Result<RepoSummary, Self::Error>;
-}
-
-pub trait CiProvider {
-    type Error;
-
-    fn ci_runs(&self, filter: &CiRunsFilter) -> Result<CiRunsOutput, Self::Error>;
-    fn ci_run_get(&self, run_id: u64) -> Result<CiRunSummary, Self::Error>;
-    fn ci_run_jobs(&self, run_id: u64) -> Result<CiJobsOutput, Self::Error>;
-    fn ci_job_logs(&self, job_id: u64, tail: usize) -> Result<CiJobLogsOutput, Self::Error>;
-    fn ci_inspect(&self, request: &CiInspectRequest) -> Result<CiInspectOutput, Self::Error>;
 }

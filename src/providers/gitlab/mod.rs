@@ -9,8 +9,6 @@
 //!
 //! Phase 2 deliberately leaves a handful of capabilities as
 //! structured not-supported stubs:
-//!   - repository creation (Phase 3)
-//!   - CI runs / jobs / logs (Phase 3)
 //!   - project enumeration and creation (Phase 3)
 //!   - planning fields (parent issue, fixed version, dates, estimates,
 //!     done ratio) - mapped to a Redmine-only planning CLI today, so a

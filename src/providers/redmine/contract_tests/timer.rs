@@ -8,7 +8,6 @@ use super::support::{
     user_from_response, version_collection, version_collection_page,
 };
 use crate::auth;
-use crate::ci_model::CiRunsFilter;
 use crate::command::{
     self, Command, IssueCommand, ProjectCommand, RelationCommand, StatusCommand, WorkflowCommand,
 };

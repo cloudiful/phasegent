@@ -453,7 +453,6 @@ fn role_policy_remains_capability_based() {
     assert!(Role::Admin.allows(Capability::ProjectCreate));
     assert!(Role::Admin.allows(Capability::IssueStatusRead));
     assert!(!Role::Admin.allows(Capability::RepoCreate));
-    assert!(!Role::Admin.allows(Capability::CiRead));
     assert!(!Role::Admin.allows(Capability::IssueSearch));
     assert!(!Role::Admin.allows(Capability::IssueCreate));
     assert!(Role::Orchestrator.allows(Capability::IssueClose));

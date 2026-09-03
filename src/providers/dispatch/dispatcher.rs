@@ -1,10 +1,5 @@
 #[allow(unused_imports)]
-use crate::ci_model::{
-    CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
-    CiRunsOutput,
-};
-#[allow(unused_imports)]
-use crate::command::{CiCommand, RepoCommand};
+use crate::command::RepoCommand;
 #[allow(unused_imports)]
 use crate::policy::Capability;
 #[allow(unused_imports)]
@@ -12,9 +7,8 @@ use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSumma
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 #[allow(unused_imports)]
 use crate::providers::{
-    CiProvider, GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind,
-    RedmineIssueStatus, RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion,
-    RepoProvider,
+    GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
+    RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
 
 pub enum ProviderDispatcher {
@@ -68,71 +62,6 @@ impl ProviderDispatcher {
             auto_init,
         } = command;
         RepoProvider::create_repo(self, target, *private, description, *auto_init)
-    }
-
-    /// Drive a `CiCommand` through whichever provider arm resolved.
-    /// Phase 3 adds GitLab support; Redmine still surfaces a
-    /// structured not-supported error.
-    pub fn ci_for_command(&self, command: &CiCommand) -> Result<serde_json::Value, ForgejoError> {
-        match command {
-            CiCommand::Runs {
-                sha,
-                ref_name,
-                status,
-                workflow,
-                page,
-                limit,
-            } => {
-                let output = CiProvider::ci_runs(
-                    self,
-                    &CiRunsFilter {
-                        sha: sha.clone(),
-                        ref_name: ref_name.clone(),
-                        status: status.clone(),
-                        workflow: workflow.clone(),
-                        page: *page,
-                        limit: *limit,
-                    },
-                )?;
-                serde_json::to_value(output)
-                    .map_err(|error| ForgejoError::request("ci runs", error.to_string()))
-            }
-            CiCommand::RunGet { run_id } => {
-                let output = CiProvider::ci_run_get(self, *run_id)?;
-                serde_json::to_value(output)
-                    .map_err(|error| ForgejoError::request("ci run get", error.to_string()))
-            }
-            CiCommand::RunJobs { run_id } => {
-                let output = CiProvider::ci_run_jobs(self, *run_id)?;
-                serde_json::to_value(output)
-                    .map_err(|error| ForgejoError::request("ci run jobs", error.to_string()))
-            }
-            CiCommand::JobLogs { job_id, tail } => {
-                let output = CiProvider::ci_job_logs(self, *job_id, *tail)?;
-                serde_json::to_value(output)
-                    .map_err(|error| ForgejoError::request("ci job logs", error.to_string()))
-            }
-            CiCommand::Inspect {
-                sha,
-                ref_name,
-                wait,
-                timeout,
-                poll,
-            } => {
-                let output = CiProvider::ci_inspect(
-                    self,
-                    &CiInspectRequest {
-                        sha: sha.clone(),
-                        ref_name: ref_name.clone(),
-                        wait: *wait,
-                        timeout: *timeout,
-                        poll: *poll,
-                    },
-                )?;
-                serde_json::to_value(output)
-                    .map_err(|error| ForgejoError::request("ci inspect", error.to_string()))
-            }
-        }
     }
 
     pub const fn kind(&self) -> ProviderKind {

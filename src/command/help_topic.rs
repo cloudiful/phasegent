@@ -95,20 +95,6 @@ pub(crate) fn help_topic(
             Some("create") => Ok(HelpTopic::RepoCommand("create".to_owned())),
             Some(value) => Err(format!("unknown repo help topic '{value}'")),
         },
-        "ci" => match (subcommand, nested_subcommand) {
-            (None, _) => Ok(HelpTopic::Ci),
-            (Some("runs"), None) | (Some("inspect"), None) => {
-                Ok(HelpTopic::CiCommand(subcommand.unwrap().to_owned()))
-            }
-            (Some("run"), None) | (Some("job"), None) => {
-                Ok(HelpTopic::CiCommand(subcommand.unwrap().to_owned()))
-            }
-            (Some("run"), Some(value)) if ["get", "jobs"].contains(&value) => {
-                Ok(HelpTopic::CiCommand(format!("run {value}")))
-            }
-            (Some("job"), Some("logs")) => Ok(HelpTopic::CiCommand("job logs".to_owned())),
-            (Some(value), _) => Err(format!("unknown ci help topic '{value}'")),
-        },
         "hooks" => match subcommand {
             None => Ok(HelpTopic::Hooks),
             Some("install") => Ok(HelpTopic::HooksCommand("install".to_owned())),

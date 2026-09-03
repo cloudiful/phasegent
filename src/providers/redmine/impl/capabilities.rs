@@ -27,7 +27,7 @@ impl RedmineProvider {
             Capability::RelationRead | Capability::RelationCreate | Capability::RelationDelete => {
                 true
             }
-            Capability::RepoCreate | Capability::CiRead => false,
+            Capability::RepoCreate => false,
         }
     }
 }

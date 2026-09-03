@@ -2,7 +2,7 @@
 use super::support::*;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::GitlabProvider;
-use crate::providers::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
+use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 
 #[test]
 fn list_projects_returns_not_supported_error() {
@@ -279,4 +279,29 @@ fn repo_create_handles_403_forbidden_as_structured_error() {
     assert_eq!(rendered["kind"], "http");
     assert_eq!(rendered["status"], 403);
     assert_eq!(rendered["operation"], "repo create");
+}
+
+#[test]
+fn dispatcher_repo_provider_arm_routes_gitlab_create_repo_to_real_method() {
+    // Phase 3 wires the dispatcher straight through to the GitLab
+    // provider implementation. Direct callers that bypass the CLI
+    // guards must reach the real method without recursing.
+    let (base, requests, server) = sequence(vec![
+        // 1. /user to resolve the personal namespace id.
+        MockResponse::ok(user_payload(7)),
+        // 2. /namespaces?search=acme to resolve the OWNER namespace id.
+        MockResponse::ok(
+            r#"[{"id":42,"path":"acme","full_path":"acme","kind":"group","name":"Acme"}]"#,
+        )
+        .with_header("x-next-page", ""),
+        // 3. POST /projects with the resolved namespace_id.
+        MockResponse::ok(project_payload(99, "widgets", "acme", "private")),
+    ]);
+    let dispatcher = ProviderDispatcher::Gitlab(provider(base));
+    let summary = dispatcher
+        .create_repo("acme/widgets", true, "phase3", true)
+        .unwrap();
+    assert_eq!(summary.full_name, "acme/widgets");
+    assert_eq!(requests.recv().unwrap().len(), 3);
+    server.join().unwrap();
 }

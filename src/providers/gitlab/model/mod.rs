@@ -7,17 +7,11 @@
 
 #![allow(unused_imports)]
 
-pub mod ci;
 pub mod dto;
 pub mod duration;
 pub mod labels;
 pub mod relations;
 pub mod time;
-
-pub(crate) use ci::{
-    ApiJob, ApiJobPipelineRef, ApiPipeline, pipeline_conclusion_from_gitlab,
-    pipeline_status_from_gitlab,
-};
 pub(crate) use dto::{
     ApiError, ApiIssue, ApiLabel, ApiNamespace, ApiNote, ApiProject, ApiProjectNamespace, NewIssue,
     NewLabel, NewNote, NewProject, UpdateIssue,

@@ -1,7 +1,5 @@
 //! GitLab contract tests aggregator.
 
-mod ci;
-mod ci_inspect;
 mod issues;
 mod issues_update;
 mod labels;

@@ -1,9 +1,5 @@
-pub mod ci;
 pub mod http;
 pub mod model;
-
-#[cfg(test)]
-mod ci_tests;
 
 #[cfg(test)]
 mod contract_tests;

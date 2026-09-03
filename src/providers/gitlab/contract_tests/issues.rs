@@ -2,7 +2,7 @@
 use super::support::*;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::GitlabProvider;
-use crate::providers::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
+use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 
 #[test]
 fn get_issue_hits_project_issues_iid_with_private_token() {

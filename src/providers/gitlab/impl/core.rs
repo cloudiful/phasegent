@@ -103,25 +103,6 @@ impl GitlabProvider {
         "projects".to_owned()
     }
 
-    pub(crate) fn pipelines_path(&self) -> String {
-        format!("projects/{}/pipelines", self.project_id())
-    }
-
-    pub(crate) fn pipeline_path(&self, pipeline_id: u64) -> String {
-        format!("projects/{}/pipelines/{pipeline_id}", self.project_id())
-    }
-
-    pub(crate) fn pipeline_jobs_path(&self, pipeline_id: u64) -> String {
-        format!(
-            "projects/{}/pipelines/{pipeline_id}/jobs",
-            self.project_id()
-        )
-    }
-
-    pub(crate) fn job_trace_path(&self, job_id: u64) -> String {
-        format!("projects/{}/jobs/{job_id}/trace", self.project_id())
-    }
-
     // -- Not-supported helpers for later phases ------------------------------
 
     #[allow(dead_code)]
@@ -134,10 +115,10 @@ impl GitlabProvider {
 
 impl GitlabProvider {
     /// Capability table for GitLab. Phase 3 lights up repository
-    /// creation and CI read paths alongside the Phase 2 issue /
-    /// comment / workflow surface. Phase 4 lifts the relation surface
-    /// from not-supported to native so the shared CLI can dispatch
-    /// `relation list/create/delete` to the GitLab provider.
+    /// creation alongside the Phase 2 issue / comment / workflow
+    /// surface. Phase 4 lifts the relation surface from not-supported
+    /// to native so the shared CLI can dispatch `relation
+    /// list/create/delete` to the GitLab provider.
     pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
         crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
@@ -157,7 +138,6 @@ impl GitlabProvider {
                 true
             }
             Capability::RepoCreate => true,
-            Capability::CiRead => true,
             Capability::RelationRead | Capability::RelationCreate | Capability::RelationDelete => {
                 true
             }
@@ -189,7 +169,6 @@ mod tests {
         assert!(provider.supports(Capability::IssueRead));
         assert!(provider.supports(Capability::CommentCreate));
         assert!(provider.supports(Capability::RepoCreate));
-        assert!(provider.supports(Capability::CiRead));
         // Phase 4: relations are native on GitLab.
         assert!(provider.supports(Capability::RelationRead));
         assert!(provider.supports(Capability::RelationCreate));

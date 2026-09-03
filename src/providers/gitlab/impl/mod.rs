@@ -1,6 +1,5 @@
 //! GitLab provider implementation modules.
 
-pub mod ci;
 pub mod core;
 pub mod issues;
 pub mod labels;

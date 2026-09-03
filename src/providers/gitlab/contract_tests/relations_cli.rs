@@ -2,7 +2,7 @@
 use super::support::*;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::GitlabProvider;
-use crate::providers::{CiProvider, IssueProvider, ProviderDispatcher, RepoProvider};
+use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 
 #[test]
 fn relation_cli_routes_gitlab_list_create_and_delete_fails_without_source() {

@@ -1,11 +1,4 @@
 #[allow(unused_imports)]
-use crate::ci_model::{
-    CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
-    CiRunsOutput,
-};
-#[allow(unused_imports)]
-use crate::command::{CiCommand, RepoCommand};
-#[allow(unused_imports)]
 use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::ProviderDispatcher;
@@ -17,9 +10,8 @@ use crate::providers::forgejo::ForgejoConfig;
 use crate::providers::forgejo::ForgejoProvider;
 #[allow(unused_imports)]
 use crate::providers::{
-    CiProvider, GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind,
-    RedmineIssueStatus, RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion,
-    RepoProvider,
+    GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
+    RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
 
 impl RedmineMetadataProvider for ForgejoProvider {
@@ -74,8 +66,8 @@ impl RedmineMetadataProvider for RedmineProvider {
 
 // ============================================================================
 // Phase-2 GitLab issue / note / label foundation. The dispatch wiring
-// forwards every IssueProvider / RedmineMetadataProvider / RepoProvider /
-// CiProvider trait call straight to the real
+// forwards every IssueProvider / RedmineMetadataProvider / RepoProvider
+// trait call straight to the real
 // [`crate::providers::gitlab::GitlabProvider`] implementation. Capability flags
 // for not-supported operations stay false so the shared CLI surfaces a
 // structured not-supported error before any HTTP traffic.

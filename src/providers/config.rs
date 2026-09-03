@@ -1,8 +1,4 @@
 use crate::auth;
-use crate::ci_model::{
-    CiInspectOutput, CiInspectRequest, CiJobLogsOutput, CiJobsOutput, CiRunSummary, CiRunsFilter,
-    CiRunsOutput,
-};
 use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::api::{ForgejoError, RepoSummary};
@@ -242,26 +238,6 @@ impl RedmineProvider {
         _auto_init: bool,
     ) -> Result<RepoSummary, ForgejoError> {
         self.unsupported("repo create")
-    }
-
-    pub fn ci_runs(&self, _filter: &CiRunsFilter) -> Result<CiRunsOutput, ForgejoError> {
-        self.unsupported("ci runs")
-    }
-
-    pub fn ci_run_get(&self, _run_id: u64) -> Result<CiRunSummary, ForgejoError> {
-        self.unsupported("ci run get")
-    }
-
-    pub fn ci_run_jobs(&self, _run_id: u64) -> Result<CiJobsOutput, ForgejoError> {
-        self.unsupported("ci run jobs")
-    }
-
-    pub fn ci_job_logs(&self, _job_id: u64, _tail: usize) -> Result<CiJobLogsOutput, ForgejoError> {
-        self.unsupported("ci job logs")
-    }
-
-    pub fn ci_inspect(&self, _request: &CiInspectRequest) -> Result<CiInspectOutput, ForgejoError> {
-        self.unsupported("ci inspect")
     }
 }
 

@@ -13,19 +13,6 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
     {
         println!("  repo                   Repository operations");
     }
-    if provider != Some(ProviderKind::Redmine)
-        && role.is_none_or(|role| role.allows(Capability::CiRead))
-    {
-        // The same `ci` command is routed to GitLab when the
-        // provider is gitlab; Phase 3 only adjusts the description
-        // here so the help output does not falsely advertise a
-        // Forgejo-only surface.
-        let label = match provider {
-            Some(ProviderKind::Gitlab) => "GitLab pipeline read operations",
-            _ => "Forgejo Actions read operations",
-        };
-        println!("  ci                     {label}");
-    }
     if provider == Some(ProviderKind::Redmine)
         && role.is_none_or(|role| role.allows(Capability::ProjectRead))
     {

@@ -200,52 +200,6 @@ pub(super) fn user_payload(id: u64) -> String {
     serde_json::json!({"id": id, "username": "owner"}).to_string()
 }
 
-pub(super) fn pipeline_payload(
-    id: u64,
-    iid: u64,
-    status: &str,
-    ref_name: &str,
-    sha: &str,
-) -> String {
-    serde_json::json!({
-        "id": id,
-        "iid": iid,
-        "project_id": 42,
-        "status": status,
-        "source": "push",
-        "ref": ref_name,
-        "sha": sha,
-        "before_sha": "0000000000000000000000000000000000000000",
-        "tag": false,
-        "yaml_errors": null,
-        "created_at": "2024-05-01T00:00:00.000Z",
-        "started_at": "2024-05-01T00:00:01.000Z",
-        "finished_at": "2024-05-01T00:00:30.000Z",
-        "duration": 29.0,
-        "queued_duration": 0.5,
-        "web_url": format!("https://gitlab.example/group/project/-/pipelines/{id}"),
-    })
-    .to_string()
-}
-
-pub(super) fn job_payload(id: u64, name: &str, status: &str, conclusion: Option<&str>) -> String {
-    serde_json::json!({
-        "id": id,
-        "name": name,
-        "stage": "test",
-        "status": status,
-        "conclusion": conclusion,
-        "pipeline": {"id": 1, "iid": 1},
-        "duration": 5.0,
-        "queued_duration": 1.0,
-        "created_at": "2024-05-01T00:00:00.000Z",
-        "started_at": "2024-05-01T00:00:01.000Z",
-        "finished_at": "2024-05-01T00:00:06.000Z",
-        "web_url": format!("https://gitlab.example/group/project/-/jobs/{id}"),
-    })
-    .to_string()
-}
-
 pub(super) fn open_temp_storage() -> crate::infra::storage::Storage {
     let home = std::env::temp_dir().join(format!(
         "phasegent-timer-{}-{}",

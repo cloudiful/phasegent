@@ -1,9 +1,5 @@
 mod auth;
 mod branch_context;
-mod ci_cli;
-mod ci_command;
-mod ci_inspect;
-mod ci_model;
 mod cli;
 mod command;
 mod config;
