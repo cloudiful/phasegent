@@ -133,8 +133,8 @@ pub(crate) fn validate_timer_identity(
     if phase.chars().any(char::is_control) {
         return Err("timer phase must not contain control characters".to_owned());
     }
-    if !matches!(role, "executor" | "reviewer") {
-        return Err("timer agent role must be executor or reviewer".to_owned());
+    if !matches!(role, "executor" | "reviewer" | "tester") {
+        return Err("timer agent role must be executor, reviewer, or tester".to_owned());
     }
     if attempt == 0 || attempt > i64::MAX as u64 {
         return Err("timer attempt must be between 1 and i64::MAX".to_owned());
@@ -205,4 +205,42 @@ pub(crate) fn now_epoch_seconds() -> i64 {
             .as_secs(),
     )
     .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_owner_field, validate_timer_identity};
+
+    #[test]
+    fn tester_identity_is_valid_for_ledger() {
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "tester", 1).is_ok());
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "executor", 1).is_ok());
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "reviewer", 1).is_ok());
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "admin", 1).is_err());
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "orchestrator", 1).is_err());
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "", 1).is_err());
+    }
+
+    #[test]
+    fn tester_identity_persists_and_round_trips() {
+        // The ledger stores the role as a plain string; tester must survive
+        // the same validation as executor/reviewer and not be confused with a
+        // global Role.
+        let role = "tester";
+        validate_timer_identity("r", 1, "p", role, 1).unwrap();
+        assert_eq!(role, "tester");
+        // Global Role parsing must still reject tester.
+        assert!("tester".parse::<crate::policy::Role>().is_err());
+    }
+
+    #[test]
+    fn owner_field_validation_still_bounded() {
+        assert!(validate_owner_field(Some("a"), "owner_session_id").is_ok());
+        assert!(
+            validate_owner_field(Some(""), "owner_session_id")
+                .unwrap()
+                .is_none()
+        );
+        assert!(validate_owner_field(Some("bad\x01"), "owner_session_id").is_err());
+    }
 }

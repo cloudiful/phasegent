@@ -134,6 +134,7 @@ impl GitlabProvider {
             | Capability::IssueCreate
             | Capability::IssueUpdateBody
             | Capability::IssueClose => true,
+            Capability::IssueAttachmentUpload => false,
             Capability::CommentCreate | Capability::CommentRead | Capability::CommentFindMarker => {
                 true
             }

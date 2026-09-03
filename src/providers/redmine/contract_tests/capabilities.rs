@@ -328,3 +328,46 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         1
     );
 }
+
+#[test]
+fn issue_attachment_upload_is_redmine_orchestrator_only() {
+    assert!(Role::Orchestrator.allows(Capability::IssueAttachmentUpload));
+    assert!(!Role::Admin.allows(Capability::IssueAttachmentUpload));
+    assert!(!Role::Executor.allows(Capability::IssueAttachmentUpload));
+    assert!(!Role::Reviewer.allows(Capability::IssueAttachmentUpload));
+    let redmine = provider("http://redmine.test".to_owned());
+    assert!(redmine.supports(Capability::IssueAttachmentUpload));
+    let forgejo = crate::providers::forgejo::ForgejoProvider::new(
+        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
+        "token".to_owned(),
+    )
+    .unwrap();
+    assert!(
+        !<crate::providers::forgejo::ForgejoProvider as crate::providers::IssueProvider>::supports(
+            &forgejo,
+            Capability::IssueAttachmentUpload
+        )
+    );
+    let gitlab = crate::providers::gitlab::GitlabProvider::new(
+        crate::providers::config::GitlabConfig::new("https://gitlab.example/api/v4", 42),
+        "token".to_owned(),
+    )
+    .unwrap();
+    assert!(!gitlab.supports(Capability::IssueAttachmentUpload));
+    for role in ["admin", "executor", "reviewer"] {
+        assert_eq!(
+            crate::cli::run(strings([
+                "--role",
+                role,
+                "--provider",
+                "redmine",
+                "issue",
+                "upload-attachment",
+                "5",
+                "--path",
+                "/tmp/any.txt"
+            ])),
+            3
+        );
+    }
+}

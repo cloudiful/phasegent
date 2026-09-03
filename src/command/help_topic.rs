@@ -25,7 +25,17 @@ pub(crate) fn help_topic(
     match value {
         "issue" => match subcommand {
             None => Ok(HelpTopic::Issue),
-            Some(value) if ["get", "search", "create", "update-body", "close"].contains(&value) => {
+            Some(value)
+                if [
+                    "get",
+                    "search",
+                    "create",
+                    "update-body",
+                    "close",
+                    "upload-attachment",
+                ]
+                .contains(&value) =>
+            {
                 Ok(HelpTopic::IssueCommand(value.to_owned()))
             }
             Some(value) => Err(format!("unknown issue help topic '{value}'")),

@@ -11,6 +11,7 @@ pub(crate) fn print_issue_help(role: Option<Role>) {
         ("create", Capability::IssueCreate),
         ("update-body", Capability::IssueUpdateBody),
         ("close", Capability::IssueClose),
+        ("upload-attachment", Capability::IssueAttachmentUpload),
     ] {
         if role.is_none_or(|role| role.allows(capability)) {
             println!("  {name:<14} {}", capability.description());
@@ -39,6 +40,10 @@ pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
             "Usage: issue update-body <NUMBER> --body TEXT [--tracker NAME_OR_ID] [--parent-issue ID] [--fixed-version NAME_OR_ID] [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD] [--estimated-hours HOURS] [--done-ratio 0-100]\n\n--tracker re-targets the issue's tracker in the same update (Redmine native; GitLab maps to a type::* label). Planning flags update native Redmine fields in the same PUT; --fixed-version resolves by exact version name or numeric id within the configured project. --estimated-hours is also accepted for GitLab (time_estimate); every other planning flag is Redmine-only. Forgejo rejects every planning flag.\n\nValues beginning with `-` (Markdown bullets, separator lines) must use the inline form: --body=TEXT.",
         ),
         "close" => (Capability::IssueClose, "Usage: issue close <NUMBER>"),
+        "upload-attachment" => (
+            Capability::IssueAttachmentUpload,
+            "Usage: issue upload-attachment <NUMBER> --path PATH [--description TEXT]\n\nRedmine-only, orchestrator-only. Validates the local file (must exist, be a regular non-empty file, valid filename, and not exceed 25 MiB) and uploads it via raw POST /uploads.json?filename=<basename> with Content-Type: application/octet-stream, then attaches it with PUT /issues/<id>.json {\"issue\":{\"uploads\":[{\"token\":...,\"filename\":...}],\"notes\":...}}. The transient upload token is never printed. Outputs compact JSON with issue, filename, bytes, and success. Forgejo and GitLab return not-supported without touching the filesystem or network. Values beginning with `-` must use the inline form: --path=PATH or --description=TEXT.",
+        ),
         "bind" => (
             Capability::IssueRead,
             "Usage: issue bind <ID> [--replace]\n\nStores `branch.<name>.redmine-issue-id = <ID>` in the local Git config for the current named branch. Detached HEAD is rejected. A different existing binding is rejected unless --replace is given; re-binding the same issue is a no-op.",

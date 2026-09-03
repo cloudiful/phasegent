@@ -239,12 +239,15 @@ fn workflow_bootstrap_help_documents_close_status_name() {
 fn documented_next_help_pointers_all_resolve() {
     let pointers: &[&[&str]] = &[
         &["--help", "issue"],
+        &["--help", "issue", "upload-attachment"],
         &["--help", "comment"],
         &["--help", "auth"],
         &["--help", "config"],
         &["--help", "config", "provider"],
         &["--help", "config", "provider", "set"],
         &["--help", "hooks"],
+        &["--help", "timer"],
+        &["--help", "timer", "start"],
         &["--help", "workflow", "bootstrap"],
     ];
     for pointer in pointers {

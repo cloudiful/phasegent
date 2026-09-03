@@ -14,10 +14,13 @@ phasegent --role reviewer ...
 Forgejo supports issue lifecycle operations, comment lookup, and repository creation.
 Redmine supports issue lifecycle operations including
 tracker selection and status updates by validated name or id, journal-backed
-comments with `#note-<id>` anchors, project discovery/creation, and
-issue-status discovery. The orchestrator-only `timer` foundation records one
-wall-clock run for each executor/reviewer phase and projects the rounded summary
-to a Redmine Time Entry. All successful operations emit compact JSON; failures emit structured
+comments with `#note-<id>` anchors, project discovery/creation,
+issue-status discovery, and orchestrator-only raw attachment uploads
+(`issue upload-attachment` via `POST /uploads.json` + `PUT /issues/<id>.json`).
+The orchestrator-only `timer` foundation records one
+wall-clock run for each executor/reviewer/tester phase and projects the rounded summary
+to a Redmine Time Entry. `tester` is a timer-only child identity for the
+optional Bun/Playwright checker. All successful operations emit compact JSON; failures emit structured
 JSON on stderr and return a non-zero status.
 
 ```text
@@ -270,10 +273,18 @@ phasegent --role orchestrator --provider redmine relation create 3 --to 5 --type
 phasegent --role orchestrator --provider redmine relation delete 9
 ```
 
+Redmine attachments are uploaded with `issue upload-attachment <ISSUE> --path PATH [--description TEXT]`. The local file must exist, be a regular non-empty file, have a valid filename, and not exceed 25 MiB; the CLI validates this before any network call and performs a raw `POST /uploads.json?filename=<basename>` (`Content-Type: application/octet-stream`) followed by `PUT /issues/<id>.json` with `{"issue":{"uploads":[{"token":..., "filename":...}],"notes":...}}`. Orchestrator-only and Redmine-only; Forgejo and GitLab return `not_supported` without touching the filesystem. Success prints compact JSON with `issue`, `filename`, `bytes`, and `success`; the transient upload token is never exposed.
+
+```text
+phasegent --role orchestrator --provider redmine issue upload-attachment 3 --path /tmp/screenshot.png --description "failure evidence"
+```
+
 ### Phase timer ledger
 
 The orchestrator starts and finishes the local execution ledger around the
-executor/reviewer child invocation. `timer start` is local-only: it persists
+executor/reviewer/tester child invocation. `tester` is a timer-only child
+identity for the optional Bun/Playwright checker; it is not a global `Role`,
+auth, or bootstrap member. `timer start` is local-only: it persists
 `run_id`, issue, phase, agent role, attempt, and the wall-clock start timestamp
 in SQLite before any provider or network operation. The generated or supplied
 `run_id` is the stable marker used for retries.

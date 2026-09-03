@@ -13,10 +13,12 @@ phasegent --role reviewer ...
 
 Forgejo provider 支持 issue 生命周期、comment 查询和仓库创建。
 Redmine provider 支持 issue 生命周期（包括 tracker 选择和按校验名称或数字 ID
-更新 status）、带 `#note-<id>` 锚点的 journal comment、project 查询与创建以及
-issue status 查询。orchestrator-only 的 `timer` foundation 会记录每个
-executor/reviewer phase 的一次 wall-clock run，并把舍入后的摘要投影到 Redmine
-Time Entry。成功操作只输出紧凑 JSON；失败操作向 stderr 输出结构化 JSON
+更新 status）、带 `#note-<id>` 锚点的 journal comment、project 查询与创建、
+issue status 查询以及仅 orchestrator 可用的原生附件上传
+（`issue upload-attachment`，通过 `POST /uploads.json` + `PUT /issues/<id>.json`）。
+orchestrator-only 的 `timer` foundation 会记录每个
+executor/reviewer/tester phase 的一次 wall-clock run，并把舍入后的摘要投影到 Redmine
+Time Entry；`tester` 仅作为 timer 子身份用于可选的 Bun/Playwright 检查器，不是全局 `Role`、auth 或 bootstrap 成员。成功操作只输出紧凑 JSON；失败操作向 stderr 输出结构化 JSON
 并返回非零状态。
 
 ```text
@@ -243,9 +245,16 @@ phasegent --role orchestrator --provider redmine relation create 3 --to 5 --type
 phasegent --role orchestrator --provider redmine relation delete 9
 ```
 
+Redmine 附件通过 `issue upload-attachment <ISSUE> --path PATH [--description TEXT]` 上传。本地文件必须存在、为常规非空文件、文件名合法且不超过 25 MiB；CLI 在任何网络调用前完成校验，先以 `POST /uploads.json?filename=<basename>`（`Content-Type: application/octet-stream`）获取 token，再以 `PUT /issues/<id>.json` 携带 `{"issue":{"uploads":[{"token":..., "filename":...}],"notes":...}}` 完成关联。仅 orchestrator、仅 Redmine；Forgejo 与 GitLab 直接返回 `not_supported` 且不触及文件系统。成功时输出包含 `issue`、`filename`、`bytes` 与 `success` 的紧凑 JSON，临时 upload token 不会暴露。
+
+```text
+phasegent --role orchestrator --provider redmine issue upload-attachment 3 --path /tmp/screenshot.png --description "failure evidence"
+```
+
 ### Phase timer ledger
 
-orchestrator 在 executor/reviewer 子调用前后启动和结束本地 execution ledger。
+orchestrator 在 executor/reviewer/tester 子调用前后启动和结束本地 execution ledger。
+`tester` 仅作为 timer 子身份用于可选的 Bun/Playwright 检查器，不是全局 `Role`、auth 或 bootstrap 成员。
 `timer start` 是纯本地操作：它会先把 `run_id`、issue、phase、agent role、
 attempt 和 wall-clock 开始时间写入 SQLite，然后才进行任何 provider 或网络
 操作。自动生成或显式传入的 `run_id` 同时也是重试时的稳定 marker。

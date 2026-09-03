@@ -16,7 +16,8 @@ impl RedmineProvider {
             | Capability::IssueSearch
             | Capability::IssueCreate
             | Capability::IssueUpdateBody
-            | Capability::IssueClose => true,
+            | Capability::IssueClose
+            | Capability::IssueAttachmentUpload => true,
             Capability::CommentCreate | Capability::CommentRead | Capability::CommentFindMarker => {
                 true
             }

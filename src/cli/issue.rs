@@ -22,6 +22,10 @@ pub(crate) fn execute_issue(
             Capability::IssueUpdateBody,
         ),
         IssueCommand::Close { .. } => (super::required_role(role_value), Capability::IssueClose),
+        IssueCommand::UploadAttachment { .. } => (
+            super::required_role(role_value),
+            Capability::IssueAttachmentUpload,
+        ),
         // Local branch context commands are dispatched before provider
         // resolution and never reach this function.
         IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch => {
@@ -35,6 +39,17 @@ pub(crate) fn execute_issue(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
+    // Redmine-only upload-attachment fast path: reject non-Redmine before
+    // any file, network, or credential access so Forgejo/GitLab return the
+    // structured not-supported result without trying to upload.
+    if let IssueCommand::UploadAttachment { .. } = &command {
+        if provider_kind != ProviderKind::Redmine {
+            return super::provider_error(ForgejoError::not_supported(
+                provider_kind.as_str(),
+                capability.operation(),
+            ));
+        }
+    }
     let automatic_workflow = provider_kind == ProviderKind::Redmine
         && project_id.is_none()
         && matches!(
@@ -101,6 +116,22 @@ pub(crate) fn execute_issue(
         ));
     }
     match command {
+        IssueCommand::UploadAttachment {
+            number,
+            path,
+            description,
+        } => match &provider {
+            crate::providers::ProviderDispatcher::Redmine(redmine) => {
+                match redmine.upload_attachment(number, &path, description.as_deref()) {
+                    Ok(output) => super::print_json(&output),
+                    Err(error) => super::provider_error(error),
+                }
+            }
+            _ => super::provider_error(ForgejoError::not_supported(
+                provider.kind().as_str(),
+                capability.operation(),
+            )),
+        },
         IssueCommand::Get { number } => super::print_result(provider.get_issue(number)),
         IssueCommand::Search { query, state } => {
             super::print_result(provider.search_issues(query.as_deref(), &state))

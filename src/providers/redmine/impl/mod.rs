@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod capabilities;
 pub mod comments;
 pub mod issues;

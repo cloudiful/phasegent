@@ -169,6 +169,15 @@ pub enum IssueCommand {
     Close {
         number: u64,
     },
+    /// Redmine-only orchestrator attachment upload. Validates the local
+    /// file (exists, regular, non-empty, bounded 25 MiB, valid filename)
+    /// then performs the raw `POST /uploads.json?filename=...` plus
+    /// `PUT /issues/<id>.json` with `uploads` protocol.
+    UploadAttachment {
+        number: u64,
+        path: String,
+        description: Option<String>,
+    },
     /// Local branch context operations (no provider access). `bind`
     /// stores the issue id under `branch.<name>.redmine-issue-id` in the
     /// local Git config and rejects a different existing binding unless

@@ -75,7 +75,30 @@ pub(crate) fn sequence(
     (format!("http://{address}"), receiver, server)
 }
 
+pub(crate) fn sequence_raw(
+    responses: Vec<MockResponse>,
+) -> (String, Receiver<Vec<Vec<u8>>>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request_raw(&mut stream);
+            requests.push(request);
+            write_response(&mut stream, response);
+        }
+        sender.send(requests).unwrap();
+    });
+    (format!("http://{address}"), receiver, server)
+}
+
 fn read_request(stream: &mut TcpStream) -> String {
+    String::from_utf8_lossy(&read_request_raw(stream)).into_owned()
+}
+
+fn read_request_raw(stream: &mut TcpStream) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 4096];
     loop {
@@ -88,7 +111,7 @@ fn read_request(stream: &mut TcpStream) -> String {
             break;
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    bytes
 }
 
 fn request_complete(bytes: &[u8]) -> bool {
@@ -108,10 +131,12 @@ fn request_complete(bytes: &[u8]) -> bool {
 }
 
 fn write_response(stream: &mut TcpStream, response: MockResponse) {
-    let status_text = if response.status == 200 {
-        "OK"
-    } else {
-        "Unprocessable Entity"
+    let status_text = match response.status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        422 => "Unprocessable Entity",
+        _ => "OK",
     };
     let headers = format!(
         "HTTP/1.1 {} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

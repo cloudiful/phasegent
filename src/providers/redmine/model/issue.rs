@@ -350,3 +350,35 @@ fn marker_from_notes(notes: &str) -> Option<String> {
     let end = notes[start..].find("-->")? + start + 3;
     Some(notes[start..end].to_owned())
 }
+
+/// Redmine issue attachment upload protocol: the raw bytes are posted to
+/// `/uploads.json?filename=<basename>` with `application/octet-stream`,
+/// producing a transient token that is then referenced in a
+/// `PUT /issues/<id>.json` with `{"issue":{"uploads":[...]}}`.
+#[derive(Debug, Serialize)]
+pub(crate) struct RedmineIssueUploadUpdate<'a> {
+    pub(crate) issue: RedmineIssueUploadFields<'a>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RedmineIssueUploadFields<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) notes: Option<&'a str>,
+    pub(crate) uploads: Vec<RedmineUploadEntry<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RedmineUploadEntry<'a> {
+    pub(crate) token: &'a str,
+    pub(crate) filename: &'a str,
+}
+
+/// Compact JSON returned by the CLI after a successful attachment upload.
+/// The transient upload token is never exposed.
+#[derive(Debug, Serialize)]
+pub struct AttachmentUploadOutput {
+    pub issue: u64,
+    pub filename: String,
+    pub bytes: usize,
+    pub success: bool,
+}

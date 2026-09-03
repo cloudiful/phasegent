@@ -1,3 +1,4 @@
+mod attachments;
 mod auth;
 mod bootstrap_auto;
 mod bootstrap_distinct;

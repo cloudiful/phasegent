@@ -94,6 +94,28 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 number: positional_number(args, 1, "issue close")?,
             }))
         }
+        "upload-attachment" => {
+            validate_options(
+                args,
+                1,
+                &["--path", "--description"],
+                &[],
+                "issue upload-attachment",
+            )?;
+            let number = positional_number(args, 1, "issue upload-attachment")?;
+            if number == 0 {
+                return Err("issue upload-attachment requires a positive issue id".to_owned());
+            }
+            let path = required_nonempty_option(args, "--path", "issue upload-attachment")?;
+            let description = optional_option(args, "--description")
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty());
+            Ok(Command::Issue(IssueCommand::UploadAttachment {
+                number,
+                path,
+                description,
+            }))
+        }
         "bind" => {
             validate_options(args, 1, &[], &["--replace"], "issue bind")?;
             let issue_id = positional_number(args, 1, "issue bind")?;

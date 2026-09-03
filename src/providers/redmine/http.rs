@@ -127,6 +127,52 @@ impl RedmineHttp {
         )
     }
 
+    /// Raw Redmine attachment upload: `POST /uploads.json?filename=<basename>`
+    /// with `Content-Type: application/octet-stream` and the file bytes as
+    /// the body. Returns the transient upload token on success. The token
+    /// never appears in error messages or logs; only the redacted API key
+    /// flow is used.
+    pub(crate) fn post_upload(
+        &self,
+        filename: &str,
+        bytes: &[u8],
+        operation: &str,
+    ) -> Result<String, ForgejoError> {
+        let endpoint = self.endpoint("uploads.json")?;
+        let (status, text) = self.response(
+            self.client
+                .post(endpoint)
+                .query(&[("filename", filename)])
+                .header(CONTENT_TYPE, "application/octet-stream")
+                .body(bytes.to_vec()),
+            operation,
+        )?;
+        if !status.is_success() {
+            return Err(self.http_error(status, &text, operation));
+        }
+        #[derive(serde::Deserialize)]
+        struct UploadResponse {
+            upload: UploadInner,
+        }
+        #[derive(serde::Deserialize)]
+        struct UploadInner {
+            token: String,
+        }
+        let decoded: UploadResponse =
+            serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+                operation: operation.to_owned(),
+                message: self.redact(&error.to_string()),
+            })?;
+        let token = decoded.upload.token.trim().to_owned();
+        if token.is_empty() || token.chars().any(char::is_control) {
+            return Err(ForgejoError::Decode {
+                operation: operation.to_owned(),
+                message: self.redact("Redmine upload response missing token"),
+            });
+        }
+        Ok(token)
+    }
+
     pub(crate) fn delete<T: DeserializeOwned>(
         &self,
         path: &str,

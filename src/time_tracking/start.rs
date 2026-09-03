@@ -36,12 +36,22 @@ pub(crate) fn execute_start(
     if provider_kind == Some(ProviderKind::Forgejo) {
         return Err(ForgejoError::not_supported("forgejo", "timer start"));
     }
-    let agent_role = agent_role.parse::<Role>().map_err(ForgejoError::config)?;
-    if agent_role == Role::Orchestrator || agent_role == Role::Admin {
-        return Err(ForgejoError::config(
-            "timer start --agent-role must be executor or reviewer",
-        ));
-    }
+    let effective_role = if agent_role == "tester" {
+        "tester".to_owned()
+    } else {
+        let parsed = agent_role.parse::<Role>().map_err(ForgejoError::config)?;
+        if parsed == Role::Orchestrator || parsed == Role::Admin {
+            return Err(ForgejoError::config(
+                "timer start --agent-role must be executor, reviewer, or tester",
+            ));
+        }
+        if !matches!(parsed, Role::Executor | Role::Reviewer) {
+            return Err(ForgejoError::config(
+                "timer start --agent-role must be executor, reviewer, or tester",
+            ));
+        }
+        parsed.as_str().to_owned()
+    };
     let run_id = run_id.map(str::to_owned).unwrap_or_else(generate_run_id);
     let storage = Storage::open().map_err(timer_storage_error("timer start"))?;
     let started_at = now_epoch_seconds();
@@ -50,7 +60,7 @@ pub(crate) fn execute_start(
             &run_id,
             issue,
             phase,
-            agent_role.as_str(),
+            &effective_role,
             attempt,
             started_at,
             owner,

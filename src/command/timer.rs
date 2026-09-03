@@ -52,12 +52,20 @@ pub(crate) fn parse_timer(args: &[String]) -> Result<Command, String> {
                 return Err("timer start requires a positive issue id".to_owned());
             }
             let phase = required_nonempty_option(args, "--phase", "timer start")?;
-            let agent_role = required_nonempty_option(args, "--agent-role", "timer start")?
-                .parse::<Role>()
-                .map_err(|error| format!("timer start --agent-role: {error}"))?;
-            if !matches!(agent_role, Role::Executor | Role::Reviewer) {
-                return Err("timer start --agent-role must be executor or reviewer".to_owned());
-            }
+            let raw_agent_role = required_nonempty_option(args, "--agent-role", "timer start")?;
+            let agent_role = if raw_agent_role == "tester" {
+                "tester".to_owned()
+            } else {
+                let parsed = raw_agent_role
+                    .parse::<Role>()
+                    .map_err(|error| format!("timer start --agent-role: {error}"))?;
+                if !matches!(parsed, Role::Executor | Role::Reviewer) {
+                    return Err(
+                        "timer start --agent-role must be executor, reviewer, or tester".to_owned(),
+                    );
+                }
+                parsed.as_str().to_owned()
+            };
             let attempt = required_option(args, "--attempt", "timer start")?
                 .parse::<u64>()
                 .map_err(|_| "timer start --attempt requires a non-negative integer".to_owned())?;
@@ -88,7 +96,7 @@ pub(crate) fn parse_timer(args: &[String]) -> Result<Command, String> {
             Ok(Command::Timer(TimerCommand::Start {
                 issue,
                 phase,
-                agent_role: agent_role.as_str().to_owned(),
+                agent_role,
                 attempt,
                 run_id,
                 owner_session_id,
@@ -146,5 +154,94 @@ pub(crate) fn parse_timer(args: &[String]) -> Result<Command, String> {
             Ok(Command::Timer(TimerCommand::Recover { run_id }))
         }
         value => Err(format!("unknown timer command '{value}'")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Command, TimerCommand};
+    use crate::command;
+
+    fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
+        values.into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn tester_parses_as_child_identity() {
+        let invocation = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "timer",
+            "start",
+            "42",
+            "--phase",
+            "impl",
+            "--agent-role",
+            "tester",
+            "--attempt",
+            "1",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Timer(TimerCommand::Start { agent_role, .. }) => {
+                assert_eq!(agent_role, "tester")
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tester_identity_is_not_global_role() {
+        assert!("tester".parse::<crate::policy::Role>().is_err());
+        // orchestrator remains the only CLI role for uploads/workflow
+        assert!("orchestrator".parse::<crate::policy::Role>().is_ok());
+    }
+
+    #[test]
+    fn timer_start_rejects_invalid_agent_role() {
+        let err = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "timer",
+            "start",
+            "42",
+            "--phase",
+            "impl",
+            "--agent-role",
+            "admin",
+            "--attempt",
+            "1",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("executor, reviewer, or tester") || err.contains("executor or reviewer"),
+            "error should mention allowed roles: {err}"
+        );
+    }
+
+    #[test]
+    fn executor_and_reviewer_still_parse() {
+        for role in ["executor", "reviewer"] {
+            let invocation = command::parse(&strings([
+                "--role",
+                "orchestrator",
+                "timer",
+                "start",
+                "7",
+                "--phase",
+                "p",
+                "--agent-role",
+                role,
+                "--attempt",
+                "2",
+            ]))
+            .unwrap();
+            match invocation.command {
+                Command::Timer(TimerCommand::Start { agent_role, .. }) => {
+                    assert_eq!(agent_role, role)
+                }
+                other => panic!("unexpected {other:?} for {role}"),
+            }
+        }
     }
 }

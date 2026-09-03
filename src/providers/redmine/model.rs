@@ -12,7 +12,7 @@ pub use status::{RedmineIssueStatus, RedmineTracker, RedmineVersion, StatusNextR
 pub use mirror::RedmineGitMirrorOutcome;
 pub use time::RedmineTimeEntryActivity;
 #[rustfmt::skip]
-pub(crate) use issue::{IssuePlanning, RedmineErrorResponse, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse, RedmineJournal, RedmineNewIssue, RedmineNewIssueFields, RedmineNotes, RedmineNotesFields, RedmineStatus, RedmineUpdateIssue, RedmineUpdateIssueFields};
+pub(crate) use issue::{AttachmentUploadOutput, IssuePlanning, RedmineErrorResponse, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse, RedmineIssueUploadFields, RedmineIssueUploadUpdate, RedmineJournal, RedmineNewIssue, RedmineNewIssueFields, RedmineNotes, RedmineNotesFields, RedmineStatus, RedmineUpdateIssue, RedmineUpdateIssueFields, RedmineUploadEntry};
 #[rustfmt::skip]
 pub(crate) use mirror::{RedmineGitMirrorRequest, RedmineGitMirrorResponse};
 #[rustfmt::skip]
