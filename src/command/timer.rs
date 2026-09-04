@@ -192,7 +192,13 @@ mod tests {
 
     #[test]
     fn tester_identity_is_not_global_role() {
-        assert!("tester".parse::<crate::policy::Role>().is_err());
+        // Tester is now a first-class global role with its own credential.
+        assert!("tester".parse::<crate::policy::Role>().is_ok());
+        assert_eq!(
+            "tester".parse::<crate::policy::Role>().unwrap(),
+            crate::policy::Role::Tester
+        );
+        assert_eq!(crate::policy::Role::Tester.as_str(), "tester");
         // orchestrator remains the only CLI role for uploads/workflow
         assert!("orchestrator".parse::<crate::policy::Role>().is_ok());
     }

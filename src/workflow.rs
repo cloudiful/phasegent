@@ -6,8 +6,8 @@ use crate::providers::api::ForgejoError;
 use crate::providers::redmine;
 use crate::providers::redmine::model::{
     DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR,
-    DEFAULT_REDMINE_ROLE_REVIEWER, RedmineBootstrap, RedmineGitMirrorOutcome,
-    RedmineUserMembershipOutcome,
+    DEFAULT_REDMINE_ROLE_REVIEWER, DEFAULT_REDMINE_ROLE_TESTER, RedmineBootstrap,
+    RedmineGitMirrorOutcome, RedmineUserMembershipOutcome,
 };
 use crate::providers::{RedmineConfig, RedmineProvider};
 use crate::remote;
@@ -148,10 +148,12 @@ fn bootstrap_resolved(
     let orchestrator_role = DEFAULT_REDMINE_ROLE_ORCHESTRATOR;
     let executor_role = DEFAULT_REDMINE_ROLE_EXECUTOR;
     let reviewer_role = DEFAULT_REDMINE_ROLE_REVIEWER;
+    let tester_role = DEFAULT_REDMINE_ROLE_TESTER;
 
     let orchestrator_user = identify_agent_user(&config, Role::Orchestrator)?;
     let executor_user = identify_agent_user(&config, Role::Executor)?;
     let reviewer_user = identify_agent_user(&config, Role::Reviewer)?;
+    let tester_user = tester_user_if_configured(&config)?;
 
     if orchestrator_user.id == executor_user.id
         || orchestrator_user.id == reviewer_user.id
@@ -164,6 +166,20 @@ fn bootstrap_resolved(
             describe_user(&reviewer_user)
         )));
     }
+    if let Some(ref tester) = tester_user {
+        if tester.id == orchestrator_user.id
+            || tester.id == executor_user.id
+            || tester.id == reviewer_user.id
+        {
+            return Err(ForgejoError::config(format!(
+                "Redmine role-scoped API keys must identify distinct users; got orchestrator={}, executor={}, reviewer={}, tester={}",
+                describe_user(&orchestrator_user),
+                describe_user(&executor_user),
+                describe_user(&reviewer_user),
+                describe_user(tester)
+            )));
+        }
+    }
 
     let orchestrator = admin.ensure_user_membership(
         bootstrap.project.id,
@@ -174,11 +190,20 @@ fn bootstrap_resolved(
         admin.ensure_user_membership(bootstrap.project.id, &executor_user, executor_role)?;
     let reviewer =
         admin.ensure_user_membership(bootstrap.project.id, &reviewer_user, reviewer_role)?;
+    let tester_membership = match tester_user {
+        Some(ref tester) => {
+            Some(admin.ensure_user_membership(bootstrap.project.id, tester, tester_role)?)
+        }
+        None => None,
+    };
 
-    if orchestrator.status != "warning"
+    let all_memberships_ok = orchestrator.status != "warning"
         && executor.status != "warning"
         && reviewer.status != "warning"
-    {
+        && tester_membership
+            .as_ref()
+            .is_none_or(|outcome| outcome.status != "warning");
+    if all_memberships_ok {
         let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
         auth::persist_redmine_bootstrap(
             roles.persist,
@@ -206,11 +231,15 @@ fn bootstrap_resolved(
         &mirror_url,
     )?;
 
+    let mut user_memberships = vec![orchestrator, executor, reviewer];
+    if let Some(tester) = tester_membership {
+        user_memberships.push(tester);
+    }
     Ok(BootstrapResult {
         repository,
         identifier,
         bootstrap,
-        user_memberships: vec![orchestrator, executor, reviewer],
+        user_memberships,
         git_mirror: Some(git_mirror),
         // Set by the explicit bootstrap entry point; implicit workflow
         // bootstrapping (issue search/create) never touches local hooks.
@@ -253,6 +282,21 @@ fn identify_agent_user(
             describe(&error)
         ))
     })
+}
+
+fn tester_user_if_configured(
+    config: &RedmineConfig,
+) -> Result<Option<crate::providers::redmine::model::RedmineCurrentUser>, ForgejoError> {
+    let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
+    let has_tester = storage
+        .load_credential(Role::Tester, crate::infra::storage::PROVIDER_REDMINE)
+        .map_err(ForgejoError::config)?
+        .is_some();
+    if !has_tester {
+        return Ok(None);
+    }
+    let user = identify_agent_user(config, Role::Tester)?;
+    Ok(Some(user))
 }
 
 fn resolve_repository(repository: Option<&str>) -> Result<String, ForgejoError> {

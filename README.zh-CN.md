@@ -9,16 +9,19 @@ phasegent --role admin ...
 phasegent --role orchestrator ...
 phasegent --role executor ...
 phasegent --role reviewer ...
+phasegent --role tester ...
 ```
 
 Forgejo provider 支持 issue 生命周期、comment 查询和仓库创建。
 Redmine provider 支持 issue 生命周期（包括 tracker 选择和按校验名称或数字 ID
 更新 status）、带 `#note-<id>` 锚点的 journal comment、project 查询与创建、
-issue status 查询以及仅 orchestrator 可用的原生附件上传
+issue status 查询以及 orchestrator 或 tester 可用的原生附件上传
 （`issue upload-attachment`，通过 `POST /uploads.json` + `PUT /issues/<id>.json`）。
-orchestrator-only 的 `timer` foundation 会记录每个
+orchestrator 拥有的 `timer` foundation 会记录每个
 executor/reviewer/tester phase 的一次 wall-clock run，并把舍入后的摘要投影到 Redmine
-Time Entry；`tester` 仅作为 timer 子身份用于可选的 Bun/Playwright 检查器，不是全局 `Role`、auth 或 bootstrap 成员。成功操作只输出紧凑 JSON；失败操作向 stderr 输出结构化 JSON
+Time Entry；`tester` 是拥有独立 Redmine credential 的一等角色
+（IssueRead、CommentRead/FindMarker/Create 需 `--authorized`、IssueAttachmentUpload），
+timer 仍由 orchestrator 拥有，`--agent-role tester` 作为子 run 身份持久化并可选参与 bootstrap 成员。成功操作只输出紧凑 JSON；失败操作向 stderr 输出结构化 JSON
 并返回非零状态。
 
 ```text
@@ -86,23 +89,24 @@ phasegent config set redmine-repository-url https://git.example.com/owner/repo.g
 `PHASEGENT_REDMINE_REPOSITORY_URL`：如果静默把错误的 repository 发给
 plugin，会注册一个 plugin 无法 clone 的 mirror。
 
-每个 Forgejo repository 使用一个 Redmine project。Redmine 端必须已经存在三个
-对应 agent role 的现有用户，每个用户各持有一个 API key：
+每个 Forgejo repository 使用一个 Redmine project。Redmine 端必须已经存在已配置
+agent role 对应的现有用户，每个用户各持有一个 API key：
 
 - `admin` key 必须属于一个可以列出 role/user、并能创建或更新 project membership
   的 Redmine 用户；bootstrap 用它查询或创建 project，并写入所有 membership。
 - `orchestrator`、`executor`、`reviewer` 三个 key 必须分别属于三个互不相同的
-  Redmine 用户。bootstrap 通过 `/users/current.json` 配合对应的 role-scoped key
-  解析每个 agent 身份，并按以下默认映射直接授予 project membership：
+  Redmine 用户，`tester` 可选：当已通过 `auth setup --role tester` 配置 tester credential 时，
+  bootstrap 会通过 `/users/current.json` 配合 tester key 解析其身份，要求其与 orchestrator/executor/reviewer 互不相同，并按以下默认映射直接授予 project membership：
 
   | Role           | Redmine role |
   | -------------- | ------------ |
   | orchestrator   | Maintainer   |
   | executor       | Developer    |
   | reviewer       | Reporter     |
+  | tester         | Reporter     |
 
   以上是默认 role 名称；如果 Redmine 安装使用了本地化或自定义名称，需要在
-  bootstrap 前安装好，只要名称完全匹配即可作为权威名称使用。
+  bootstrap 前安装好，只要名称完全匹配即可作为权威名称使用。未配置 tester credential 时保持现有的三用户 bootstrap 输出与成功行为；已配置但身份/membership 失败时返回可操作的 bootstrap 失败而非静默使用其他 role 的 key。
 
 bootstrap 前先用 `auth setup --stdin` 保存按 role 划分的 API key。每次
 setup 都需要带上 `--api-base https://redmine.example.com`，把
@@ -118,6 +122,8 @@ phasegent --role orchestrator auth setup --stdin --provider redmine \
 phasegent --role executor auth setup --stdin --provider redmine \
   --api-base https://redmine.example.com
 phasegent --role reviewer auth setup --stdin --provider redmine \
+  --api-base https://redmine.example.com
+phasegent --role tester auth setup --stdin --provider redmine \
   --api-base https://redmine.example.com
 ```
 
@@ -145,7 +151,7 @@ Project ID 仅作为单次调用参数，永远不会从 SQLite 或环境变量�
 发现过程中的 HTTP/鉴权/解析错误会直接传播。显式 `--project-id` 始终优先并跳过发现；
 显式的 `--repository` 若与当前 origin 不一致，不会把 origin 静默匹配到该显式值。
 
-四个 key 都配置好后，必须先为当前 repository 执行 bootstrap，然后才能执行
+admin/orchestrator/executor/reviewer key（可选 tester）都配置好后，必须先为当前 repository 执行 bootstrap，然后才能执行
 Redmine issue 的 create、search、update 或 close。命令从 `OWNER/REPOSITORY`
 或当前 `origin` remote 派生 identifier，只复用完全匹配的 project，并按 role
 保存关闭 status 的 ID（project ID 不再持久化）：
@@ -157,7 +163,7 @@ phasegent --role admin --provider redmine workflow bootstrap \
 
 如果不存在完全匹配的 project，bootstrap 会自动创建私有 project，然后为已有
 的 orchestrator（Maintainer）、executor（Developer）、reviewer（Reporter）
-用户调和直接 membership。Redmine 有多个关闭 status 时必须显式选择：
+用户，以及已配置 tester credential 时的 tester（Reporter）调和直接 membership。Redmine 有多个关闭 status 时必须显式选择：
 
 ```text
 phasegent --role admin --provider redmine workflow bootstrap \
@@ -245,16 +251,17 @@ phasegent --role orchestrator --provider redmine relation create 3 --to 5 --type
 phasegent --role orchestrator --provider redmine relation delete 9
 ```
 
-Redmine 附件通过 `issue upload-attachment <ISSUE> --path PATH [--description TEXT]` 上传。本地文件必须存在、为常规非空文件、文件名合法且不超过 25 MiB；CLI 在任何网络调用前完成校验，先以 `POST /uploads.json?filename=<basename>`（`Content-Type: application/octet-stream`）获取 token，再以 `PUT /issues/<id>.json` 携带 `{"issue":{"uploads":[{"token":..., "filename":...}],"notes":...}}` 完成关联。仅 orchestrator、仅 Redmine；Forgejo 与 GitLab 直接返回 `not_supported` 且不触及文件系统。成功时输出包含 `issue`、`filename`、`bytes` 与 `success` 的紧凑 JSON，临时 upload token 不会暴露。
+Redmine 附件通过 `issue upload-attachment <ISSUE> --path PATH [--description TEXT]` 上传。本地文件必须存在、为常规非空文件、文件名合法且不超过 25 MiB；CLI 在任何网络调用前完成校验，先以 `POST /uploads.json?filename=<basename>`（`Content-Type: application/octet-stream`）获取 token，再以 `PUT /issues/<id>.json` 携带 `{"issue":{"uploads":[{"token":..., "filename":...}],"notes":...}}` 完成关联。仅 Redmine 且仅 orchestrator 或 tester；Forgejo 与 GitLab 直接返回 `not_supported` 且不触及文件系统。成功时输出包含 `issue`、`filename`、`bytes` 与 `success` 的紧凑 JSON，临时 upload token 不会暴露；该命令不会授予除可选 `notes` 描述外的 issue-body 修改。
 
 ```text
 phasegent --role orchestrator --provider redmine issue upload-attachment 3 --path /tmp/screenshot.png --description "failure evidence"
+phasegent --role tester --provider redmine issue upload-attachment 3 --path /tmp/screenshot.png --description "failure evidence"
 ```
 
 ### Phase timer ledger
 
 orchestrator 在 executor/reviewer/tester 子调用前后启动和结束本地 execution ledger。
-`tester` 仅作为 timer 子身份用于可选的 Bun/Playwright 检查器，不是全局 `Role`、auth 或 bootstrap 成员。
+`tester` 是拥有独立 Redmine credential 的一等角色（IssueRead、CommentRead/FindMarker/Create 需 `--authorized`、IssueAttachmentUpload），timer 仍由 orchestrator 拥有，`--agent-role tester` 作为子 run 身份持久化并可选参与 bootstrap 成员。
 `timer start` 是纯本地操作：它会先把 `run_id`、issue、phase、agent role、
 attempt 和 wall-clock 开始时间写入 SQLite，然后才进行任何 provider 或网络
 操作。自动生成或显式传入的 `run_id` 同时也是重试时的稳定 marker。

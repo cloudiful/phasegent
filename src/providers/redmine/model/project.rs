@@ -99,6 +99,11 @@ pub const DEFAULT_REDMINE_ROLE_EXECUTOR: &str = "Developer";
 /// Default Redmine role for the reviewer user identified by the `reviewer`
 /// API key.
 pub const DEFAULT_REDMINE_ROLE_REVIEWER: &str = "Reporter";
+/// Default Redmine role for the tester user identified by the `tester`
+/// API key. Tester shares the least-privilege `Reporter` role with
+/// reviewer; bootstrap reconciles tester only when its credential is
+/// configured.
+pub const DEFAULT_REDMINE_ROLE_TESTER: &str = "Reporter";
 
 #[derive(Debug)]
 pub struct RedmineBootstrap {

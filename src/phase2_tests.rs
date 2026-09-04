@@ -475,6 +475,20 @@ fn role_policy_remains_capability_based() {
     assert!(!Role::Executor.allows(Capability::RepoCreate));
     assert!(!Role::Reviewer.allows(Capability::RepoCreate));
     assert!(Role::Orchestrator.allows(Capability::RepoCreate));
+    assert!(Role::Tester.allows(Capability::IssueRead));
+    assert!(Role::Tester.allows(Capability::CommentRead));
+    assert!(Role::Tester.allows(Capability::CommentFindMarker));
+    assert!(Role::Tester.allows(Capability::CommentCreate));
+    assert!(Role::Tester.allows(Capability::IssueAttachmentUpload));
+    assert!(!Role::Tester.allows(Capability::IssueSearch));
+    assert!(!Role::Tester.allows(Capability::IssueCreate));
+    assert!(!Role::Tester.allows(Capability::IssueUpdateBody));
+    assert!(!Role::Tester.allows(Capability::IssueClose));
+    assert!(!Role::Tester.allows(Capability::RepoCreate));
+    assert!(!Role::Tester.allows(Capability::ProjectCreate));
+    assert!(!Role::Tester.allows(Capability::IssueStatusRead));
+    assert!(!Role::Tester.allows(Capability::VersionRead));
+    assert!(!Role::Tester.allows(Capability::RelationRead));
 }
 
 #[test]

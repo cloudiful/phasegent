@@ -7,6 +7,7 @@ pub enum Role {
     Orchestrator,
     Executor,
     Reviewer,
+    Tester,
 }
 
 impl Role {
@@ -16,6 +17,7 @@ impl Role {
             Self::Orchestrator => "orchestrator",
             Self::Executor => "executor",
             Self::Reviewer => "reviewer",
+            Self::Tester => "tester",
         }
     }
 
@@ -51,6 +53,14 @@ impl Role {
                     | Capability::VersionRead
                     | Capability::RelationRead
             ),
+            Self::Tester => matches!(
+                capability,
+                Capability::IssueRead
+                    | Capability::CommentRead
+                    | Capability::CommentFindMarker
+                    | Capability::CommentCreate
+                    | Capability::IssueAttachmentUpload
+            ),
         }
     }
 }
@@ -70,8 +80,9 @@ impl FromStr for Role {
             "orchestrator" => Ok(Self::Orchestrator),
             "executor" => Ok(Self::Executor),
             "reviewer" => Ok(Self::Reviewer),
+            "tester" => Ok(Self::Tester),
             _ => Err(format!(
-                "invalid role '{value}'; expected admin, orchestrator, executor, or reviewer"
+                "invalid role '{value}'; expected admin, orchestrator, executor, reviewer, or tester"
             )),
         }
     }

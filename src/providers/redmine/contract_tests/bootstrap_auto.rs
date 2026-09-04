@@ -394,3 +394,289 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     server.join().unwrap();
     let _ = fs::remove_dir_all(directory);
 }
+
+#[test]
+fn bootstrap_with_tester_reconciles_fourth_membership_when_configured() {
+    let _environment_lock = lock_workflow_tests();
+    let directory = std::env::temp_dir().join(format!(
+        "phasegent-redmine-tester-auto-{}-{}",
+        std::process::id(),
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", TEST_API_KEY)
+        .unwrap();
+    storage
+        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Tester, "redmine", "tester-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
+        .unwrap();
+    let _mirror_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
+    let _mirror_url = EnvGuard::set(
+        "PHASEGENT_REDMINE_REPOSITORY_URL",
+        "https://git.example.com/owner/repo.git",
+    );
+
+    let (base, requests, server) = sequence(vec![
+        MockResponse::error(404, r#"{"errors":["not found"]}"#),
+        MockResponse::ok(
+            serde_json::json!({
+                "issue_statuses": [{"id": 5, "name": "Closed", "is_closed": true}]
+            })
+            .to_string(),
+        ),
+        MockResponse::ok(support::project_response(
+            44,
+            "owner/repo",
+            "owner-repo",
+            "Workflow issues for owner/repo",
+        )),
+        MockResponse::ok(support::current_user_response(11, "orchestrator")),
+        MockResponse::ok(support::current_user_response(22, "executor")),
+        MockResponse::ok(support::current_user_response(33, "reviewer")),
+        MockResponse::ok(support::current_user_response(44, "tester")),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::error(404, r#"{"errors":["mirror not found"]}"#),
+        MockResponse::status(
+            202,
+            support::git_mirror_response(
+                901,
+                44,
+                "mirror_44_owner_repo",
+                "pending",
+                Some("https://git.example.com/owner/repo.git"),
+                Some("/var/redmine/repos/owner_repo.git"),
+                None,
+            ),
+        ),
+        MockResponse::ok(support::issue_response(80, "Created", "Body", false, &[])),
+    ]);
+    storage
+        .save_redmine_config(
+            Role::Orchestrator,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: Some("999".to_owned()),
+                close_status_id: Some(5),
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
+    storage
+        .save_redmine_config(
+            Role::Admin,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: None,
+                close_status_id: None,
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
+    let code = crate::cli::run(strings([
+        "--role",
+        "orchestrator",
+        "--provider",
+        "redmine",
+        "--api-base",
+        &base,
+        "--repository",
+        "owner/repo",
+        "issue",
+        "create",
+        "--title",
+        "Created",
+        "--body",
+        "Body",
+    ]));
+    assert_eq!(code, 0);
+    let reqs = requests.recv().unwrap();
+    // 4 current_user lookups when tester configured
+    assert!(reqs[3].contains("/users/current.json"));
+    assert!(reqs[4].contains("/users/current.json"));
+    assert!(reqs[5].contains("/users/current.json"));
+    assert!(reqs[6].contains("/users/current.json"));
+    // Tester membership uses Reporter (id 5) for user 44
+    support::assert_request_with_key(
+        &reqs[6],
+        "GET",
+        "/users/current.json",
+        None,
+        "tester-redmine-key",
+    );
+    // Tester membership POST is at index 18 (4th membership)
+    assert!(
+        reqs[18].contains(r#""user_id":44,"role_ids":[5]"#),
+        "tester membership must use Reporter: {}",
+        reqs[18]
+    );
+    assert_eq!(reqs.len(), 22, "expected 22 requests with tester: {reqs:?}");
+    server.join().unwrap();
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn bootstrap_without_tester_preserves_three_user_output() {
+    let _environment_lock = lock_workflow_tests();
+    let directory = std::env::temp_dir().join(format!(
+        "phasegent-redmine-no-tester-{}-{}",
+        std::process::id(),
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
+    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", TEST_API_KEY)
+        .unwrap();
+    storage
+        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
+        .unwrap();
+    storage
+        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
+        .unwrap();
+    // No tester credential
+    let _mirror_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
+    let _mirror_url = EnvGuard::set(
+        "PHASEGENT_REDMINE_REPOSITORY_URL",
+        "https://git.example.com/owner/repo.git",
+    );
+    let (base, requests, server) = sequence(vec![
+        MockResponse::error(404, r#"{"errors":["not found"]}"#),
+        MockResponse::ok(
+            serde_json::json!({"issue_statuses": [{"id": 5, "name": "Closed", "is_closed": true}]})
+                .to_string(),
+        ),
+        MockResponse::ok(support::project_response(
+            44,
+            "owner/repo",
+            "owner-repo",
+            "Workflow",
+        )),
+        MockResponse::ok(support::current_user_response(11, "orchestrator")),
+        MockResponse::ok(support::current_user_response(22, "executor")),
+        MockResponse::ok(support::current_user_response(33, "reviewer")),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::ok(support::role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(support::membership_collection(None)),
+        MockResponse::ok("{}"),
+        MockResponse::error(404, r#"{"errors":["mirror not found"]}"#),
+        MockResponse::status(
+            202,
+            support::git_mirror_response(
+                901,
+                44,
+                "mirror_44_owner_repo",
+                "pending",
+                Some("https://git.example.com/owner/repo.git"),
+                Some("/var/redmine/repos/owner_repo.git"),
+                None,
+            ),
+        ),
+    ]);
+    storage
+        .save_redmine_config(
+            Role::Admin,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: None,
+                close_status_id: None,
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
+    let result =
+        crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
+    assert_eq!(
+        result.user_memberships.len(),
+        3,
+        "without tester credential bootstrap must have 3 memberships"
+    );
+    assert!(
+        result
+            .user_memberships
+            .iter()
+            .all(|m| m.role_name == "Maintainer"
+                || m.role_name == "Developer"
+                || m.role_name == "Reporter")
+    );
+    server.join().unwrap();
+    let _ = fs::remove_dir_all(directory);
+    // ensure requests len 16 (3 current_user + 9 membership + 2 project/status + mirror 2 =16?)
+    let reqs = requests.recv().unwrap();
+    // Only 3 current_user calls when tester absent
+    let current_user_calls = reqs
+        .iter()
+        .filter(|r| r.contains("/users/current.json"))
+        .count();
+    assert_eq!(
+        current_user_calls, 3,
+        "must be 3 current_user lookups without tester"
+    );
+}

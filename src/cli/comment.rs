@@ -29,7 +29,7 @@ pub(crate) fn execute_comment(
             serde_json::json!({
                 "kind":"authorization",
                 "operation":"comment create",
-                "message":"executor and reviewer comment creation requires --authorized"
+                "message":"executor, reviewer, and tester comment creation requires --authorized"
             }),
             2,
         );

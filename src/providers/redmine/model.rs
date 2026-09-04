@@ -6,7 +6,7 @@ pub mod relation;
 pub mod status;
 pub mod time;
 #[rustfmt::skip]
-pub use project::{RedmineBootstrap, RedmineProject, RedmineUserMembershipOutcome, DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR, DEFAULT_REDMINE_ROLE_REVIEWER};
+pub use project::{RedmineBootstrap, RedmineProject, RedmineUserMembershipOutcome, DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR, DEFAULT_REDMINE_ROLE_REVIEWER, DEFAULT_REDMINE_ROLE_TESTER};
 #[rustfmt::skip]
 pub use status::{RedmineIssueStatus, RedmineTracker, RedmineVersion, StatusNextReport, StatusRef, StatusTransitionOutcome, TransitionVerdict, STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, canonical_allowed_next, canonical_status_name, evaluate_transition};
 pub use mirror::RedmineGitMirrorOutcome;

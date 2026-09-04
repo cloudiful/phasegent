@@ -108,6 +108,7 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
                 Role::Orchestrator,
                 Role::Executor,
                 Role::Reviewer,
+                Role::Tester,
             ]
             .into_iter(),
         ),

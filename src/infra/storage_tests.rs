@@ -388,6 +388,7 @@ fn mirror_environment_variables_are_never_persisted() {
         Role::Orchestrator,
         Role::Executor,
         Role::Reviewer,
+        Role::Tester,
     ] {
         for provider in [PROVIDER_FORGEJO, PROVIDER_REDMINE] {
             assert!(storage.load_credential(role, provider).unwrap().is_none());

@@ -9,18 +9,20 @@ phasegent --role admin ...
 phasegent --role orchestrator ...
 phasegent --role executor ...
 phasegent --role reviewer ...
+phasegent --role tester ...
 ```
 
 Forgejo supports issue lifecycle operations, comment lookup, and repository creation.
 Redmine supports issue lifecycle operations including
 tracker selection and status updates by validated name or id, journal-backed
 comments with `#note-<id>` anchors, project discovery/creation,
-issue-status discovery, and orchestrator-only raw attachment uploads
-(`issue upload-attachment` via `POST /uploads.json` + `PUT /issues/<id>.json`).
-The orchestrator-only `timer` foundation records one
+issue-status discovery, and raw attachment uploads
+(`issue upload-attachment` via `POST /uploads.json` + `PUT /issues/<id>.json`) for orchestrator or tester.
+The orchestrator-owned `timer` foundation records one
 wall-clock run for each executor/reviewer/tester phase and projects the rounded summary
-to a Redmine Time Entry. `tester` is a timer-only child identity for the
-optional Bun/Playwright checker. All successful operations emit compact JSON; failures emit structured
+to a Redmine Time Entry. `tester` is a first-class role with its own Redmine credential
+(IssueRead, CommentRead/FindMarker/Create with `--authorized`, IssueAttachmentUpload);
+timers remain orchestrator-owned and `--agent-role tester` is persisted as a child run identity with optional bootstrap membership. All successful operations emit compact JSON; failures emit structured
 JSON on stderr and return a non-zero status.
 
 ```text
@@ -95,7 +97,7 @@ When `--repository OWNER/REPOSITORY` does not match the local `origin`,
 repository to the plugin would attach a mirror the plugin cannot clone.
 
 Use one Redmine project per Forgejo repository. The project must be reachable
-through three existing Redmine users, one per agent role, each with its own
+through existing Redmine users, one per configured agent role, each with its own
 API key:
 
 - The `admin` API key must belong to a Redmine user that can list roles/users
@@ -111,9 +113,15 @@ API key:
   | orchestrator   | Maintainer   |
   | executor       | Developer    |
   | reviewer       | Reporter     |
+  | tester         | Reporter     |
 
   The role names are defaults; install localized or custom names in Redmine
   before bootstrap and they remain authoritative as long as they match exactly.
+  Tester membership is optional: when the tester Redmine credential is configured,
+  bootstrap resolves its `/users/current.json` identity via the tester key,
+  requires it to be distinct from orchestrator/executor/reviewer, and reconciles
+  a direct `Reporter` membership (`DEFAULT_REDMINE_ROLE_TESTER`); when no tester
+  credential exists the existing three-user bootstrap output and success behavior are preserved.
 
 Store the per-role API keys with `auth setup` (stdin) before bootstrap.
 Pass `--api-base https://redmine.example.com` on every setup so each
@@ -129,6 +137,8 @@ phasegent --role orchestrator auth setup --stdin --provider redmine \
 phasegent --role executor auth setup --stdin --provider redmine \
   --api-base https://redmine.example.com
 phasegent --role reviewer auth setup --stdin --provider redmine \
+  --api-base https://redmine.example.com
+phasegent --role tester auth setup --stdin --provider redmine \
   --api-base https://redmine.example.com
 ```
 
@@ -160,7 +170,7 @@ explicit `--project-id` always wins and skips discovery; an explicit
 `--repository` that does not equal the current origin is never silently
 matched to the origin.
 
-After configuring all four keys, bootstrap the current repository before any
+After configuring admin/orchestrator/executor/reviewer keys (and optionally tester), bootstrap the current repository before any
 Redmine issue create, search, update, or close operation. The command derives
 the identifier from `OWNER/REPOSITORY` or the current `origin` remote, reuses
 only an exact project match, and stores the Redmine close-status ID for the
@@ -173,7 +183,7 @@ phasegent --role admin --provider redmine workflow bootstrap \
 
 If no exact project exists, bootstrap creates a private project automatically
 and then reconciles direct memberships for the existing orchestrator
-(Maintainer), executor (Developer), and reviewer (Reporter) users on it.
+(Maintainer), executor (Developer), reviewer (Reporter) users, and optionally tester (Reporter) when the tester credential is configured, on it.
 Select a close status explicitly when Redmine has more than one closed status:
 
 ```text
@@ -273,18 +283,17 @@ phasegent --role orchestrator --provider redmine relation create 3 --to 5 --type
 phasegent --role orchestrator --provider redmine relation delete 9
 ```
 
-Redmine attachments are uploaded with `issue upload-attachment <ISSUE> --path PATH [--description TEXT]`. The local file must exist, be a regular non-empty file, have a valid filename, and not exceed 25 MiB; the CLI validates this before any network call and performs a raw `POST /uploads.json?filename=<basename>` (`Content-Type: application/octet-stream`) followed by `PUT /issues/<id>.json` with `{"issue":{"uploads":[{"token":..., "filename":...}],"notes":...}}`. Orchestrator-only and Redmine-only; Forgejo and GitLab return `not_supported` without touching the filesystem. Success prints compact JSON with `issue`, `filename`, `bytes`, and `success`; the transient upload token is never exposed.
+Redmine attachments are uploaded with `issue upload-attachment <ISSUE> --path PATH [--description TEXT]`. The local file must exist, be a regular non-empty file, have a valid filename, and not exceed 25 MiB; the CLI validates this before any network call and performs a raw `POST /uploads.json?filename=<basename>` (`Content-Type: application/octet-stream`) followed by `PUT /issues/<id>.json` with `{"issue":{"uploads":[{"token":..., "filename":...}],"notes":...}}`. Redmine-only and orchestrator or tester; Forgejo and GitLab return `not_supported` without touching the filesystem. Success prints compact JSON with `issue`, `filename`, `bytes`, and `success`; the transient upload token is never exposed. The command does not grant issue-body mutation beyond the optional `notes` description.
 
 ```text
 phasegent --role orchestrator --provider redmine issue upload-attachment 3 --path /tmp/screenshot.png --description "failure evidence"
+phasegent --role tester --provider redmine issue upload-attachment 3 --path /tmp/screenshot.png --description "failure evidence"
 ```
 
 ### Phase timer ledger
 
 The orchestrator starts and finishes the local execution ledger around the
-executor/reviewer/tester child invocation. `tester` is a timer-only child
-identity for the optional Bun/Playwright checker; it is not a global `Role`,
-auth, or bootstrap member. `timer start` is local-only: it persists
+executor/reviewer/tester child invocation. `tester` is a first-class role with its own Redmine credential (IssueRead, CommentRead/FindMarker/Create with `--authorized`, IssueAttachmentUpload); timers remain orchestrator-owned and `--agent-role tester` is persisted as a child run identity with optional bootstrap membership. `timer start` is local-only: it persists
 `run_id`, issue, phase, agent role, attempt, and the wall-clock start timestamp
 in SQLite before any provider or network operation. The generated or supplied
 `run_id` is the stable marker used for retries.

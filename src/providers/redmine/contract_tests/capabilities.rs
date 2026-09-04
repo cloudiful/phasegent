@@ -332,6 +332,7 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
 #[test]
 fn issue_attachment_upload_is_redmine_orchestrator_only() {
     assert!(Role::Orchestrator.allows(Capability::IssueAttachmentUpload));
+    assert!(Role::Tester.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Admin.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Executor.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Reviewer.allows(Capability::IssueAttachmentUpload));
@@ -370,4 +371,155 @@ fn issue_attachment_upload_is_redmine_orchestrator_only() {
             3
         );
     }
+    // Tester is allowed (Redmine-only) so permission must not be denied.
+    let tester_exit = crate::cli::run(strings([
+        "--role",
+        "tester",
+        "--provider",
+        "redmine",
+        "issue",
+        "upload-attachment",
+        "5",
+        "--path",
+        "/tmp/any.txt",
+    ]));
+    assert_ne!(
+        tester_exit, 3,
+        "tester must be allowed to attempt upload (Redmine-only), got permission denied"
+    );
+    // Non-Redmine remains not-supported even for tester.
+    assert_eq!(
+        crate::cli::run(strings([
+            "--role",
+            "tester",
+            "--provider",
+            "forgejo",
+            "issue",
+            "upload-attachment",
+            "5",
+            "--path",
+            "/tmp/any.txt"
+        ])),
+        1
+    );
+}
+
+#[test]
+fn tester_least_privilege_matrix() {
+    assert!(Role::Tester.allows(Capability::IssueRead));
+    assert!(Role::Tester.allows(Capability::CommentRead));
+    assert!(Role::Tester.allows(Capability::CommentFindMarker));
+    assert!(Role::Tester.allows(Capability::CommentCreate));
+    assert!(Role::Tester.allows(Capability::IssueAttachmentUpload));
+    assert!(!Role::Tester.allows(Capability::IssueSearch));
+    assert!(!Role::Tester.allows(Capability::IssueCreate));
+    assert!(!Role::Tester.allows(Capability::IssueUpdateBody));
+    assert!(!Role::Tester.allows(Capability::IssueClose));
+    assert!(!Role::Tester.allows(Capability::RepoCreate));
+    assert!(!Role::Tester.allows(Capability::ProjectRead));
+    assert!(!Role::Tester.allows(Capability::ProjectCreate));
+    assert!(!Role::Tester.allows(Capability::IssueStatusRead));
+    assert!(!Role::Tester.allows(Capability::VersionRead));
+    assert!(!Role::Tester.allows(Capability::RelationRead));
+    assert!(!Role::Tester.allows(Capability::RelationCreate));
+    assert!(!Role::Tester.allows(Capability::RelationDelete));
+    // CLI enforcement: tester cannot search/create/update/close or bootstrap or repo create
+    for (args, expected) in [
+        (
+            strings([
+                "--role",
+                "tester",
+                "--provider",
+                "redmine",
+                "issue",
+                "search",
+            ]),
+            3,
+        ),
+        (
+            strings([
+                "--role",
+                "tester",
+                "--provider",
+                "redmine",
+                "issue",
+                "create",
+                "--title",
+                "t",
+                "--body",
+                "b",
+            ]),
+            3,
+        ),
+        (
+            strings([
+                "--role",
+                "tester",
+                "--provider",
+                "redmine",
+                "issue",
+                "update-body",
+                "1",
+                "--body",
+                "x",
+            ]),
+            3,
+        ),
+        (
+            strings([
+                "--role",
+                "tester",
+                "--provider",
+                "redmine",
+                "issue",
+                "close",
+                "1",
+            ]),
+            3,
+        ),
+        (
+            strings([
+                "--role",
+                "tester",
+                "--provider",
+                "redmine",
+                "workflow",
+                "bootstrap",
+                "--repository",
+                "owner/repo",
+            ]),
+            3,
+        ),
+        (
+            strings([
+                "--role",
+                "tester",
+                "repo",
+                "create",
+                "owner/repo",
+                "--private",
+            ]),
+            3,
+        ),
+    ] {
+        assert_eq!(crate::cli::run(args), expected);
+    }
+    // Tester can read issues/comments
+    assert_eq!(
+        crate::cli::run(strings([
+            "--role",
+            "tester",
+            "--provider",
+            "redmine",
+            "comment",
+            "create",
+            "1",
+            "--body",
+            "<!-- m --> hi",
+            "--marker",
+            "<!-- m -->"
+        ])),
+        2,
+        "tester comment without --authorized must be authorization error, not permission"
+    );
 }

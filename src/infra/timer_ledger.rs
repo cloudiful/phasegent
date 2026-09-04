@@ -224,13 +224,16 @@ mod tests {
     #[test]
     fn tester_identity_persists_and_round_trips() {
         // The ledger stores the role as a plain string; tester must survive
-        // the same validation as executor/reviewer and not be confused with a
-        // global Role.
+        // the same validation as executor/reviewer and is now a first-class Role.
         let role = "tester";
         validate_timer_identity("r", 1, "p", role, 1).unwrap();
         assert_eq!(role, "tester");
-        // Global Role parsing must still reject tester.
-        assert!("tester".parse::<crate::policy::Role>().is_err());
+        // Global Role parsing now accepts tester as a first-class role.
+        assert!("tester".parse::<crate::policy::Role>().is_ok());
+        assert_eq!(
+            "tester".parse::<crate::policy::Role>().unwrap(),
+            crate::policy::Role::Tester
+        );
     }
 
     #[test]
