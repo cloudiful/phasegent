@@ -162,6 +162,45 @@ impl ForgejoProvider {
         })
     }
 
+    pub fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, ForgejoError> {
+        options.validate()?;
+        let query = options.effective_query();
+        let mut query_params = vec![
+            ("state", options.state.clone()),
+            ("type", "issues".to_owned()),
+            ("limit", options.limit.to_string()),
+            ("page", options.page.to_string()),
+        ];
+        if let Some(query) = query {
+            query_params.push(("q", query.to_owned()));
+        }
+        let response: Page<ApiIssue> =
+            self.get_page(&self.issues_path(), &query_params, "issue search")?;
+        let total_count = response.total;
+        let count = response.items.len();
+        let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
+        let has_more = if let Some(total) = total_count {
+            offset + count < total
+        } else {
+            response.next == Some(true) || (count == options.limit && response.next.is_none())
+        };
+        let items: Vec<IssueSummary> = response
+            .items
+            .into_iter()
+            .map(|issue| -> IssueSummary { issue.into() })
+            .collect();
+        Ok(crate::providers::api::IssueSummaryPage {
+            items,
+            page: options.page,
+            limit: options.limit,
+            total_count,
+            has_more: has_more && count > 0,
+        })
+    }
+
     pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {
         let issue: ApiIssue = self.post(
             &self.issues_path(),

@@ -788,10 +788,51 @@ The index stores normalized issue documents with stable
 UTF-8-safe chunks (`4000` bytes per chunk, at most `64` chunks;
 overlarge documents are rejected rather than silently truncated). Chunk
 records carry ordinal, byte offsets, and hashes so later backends can
-reuse the same contract. The current implementation is SQLite-only; a
-later phase may offer a PostgreSQL index backend behind the same
-provider-neutral `IssueIndexStore` trait without moving credentials to
-the shared database.
+reuse the same contract. An FTS5 virtual table (`issue_fts`) mirrors
+`title`/`body` and is kept atomically in sync on upsert/tombstone;
+deleted documents are never returned by lexical search.
+
+Provider-neutral ingestion uses each provider's native pagination
+(Redmine `limit`/`offset`, Forgejo `page`/`limit`, GitLab
+`page`/`per_page`) and stores full bodies without the 8192-byte CLI
+search cap.
+
+```text
+phasegent --role orchestrator --provider redmine --project-id 42 issue index sync --all
+phasegent --role orchestrator --provider forgejo issue index sync --query bug --state open
+phasegent --role orchestrator issue index search --query "hello world" --limit 20
+phasegent --role orchestrator issue index search --query "phase" --include-body
+```
+
+`issue index sync` defaults to `page 1` and `limit 50` (bounded, single
+native page). Without `--all`, only that page is synced and no
+tombstones are written. With `--all`, pages are walked up to a hard
+safety cap of 100 pages, upserting every returned issue. For a full
+queryless scope sync (`--all` without `--query`, `state all`) the sync
+tracks seen active keys and tombstones previously indexed active
+documents in the same `source`/`project` scope that are absent from the
+complete remote result, deterministically ordered. Partial single-page
+syncs never tombstone. Redmine sync requires an explicit
+`--project-id` and never silently indexes all projects; Forgejo scope is
+`owner/repo`, GitLab scope is the numeric project id.
+
+`issue index search` is local-only (no provider credential/config/network
+lookup) and uses SQLite FTS5. It rejects empty/whitespace queries,
+escapes/normalizes input so ordinary terms and Unicode work without
+malformed FTS syntax crashes, and returns a bounded envelope
+`{ items: [{source, project, external_id, issue_number, title, state,
+html_url, body?, body_truncated?}], offset, limit, total_count,
+has_more }` that omits bodies by default and caps explicitly returned
+bodies to 8192 bytes with truncation metadata. Stable deterministic
+ordering by rank then `source`/`project`/`external_id` is used for ties.
+Deleted/tombstoned documents are excluded.
+
+The current implementation is SQLite-only; sync and search are bounded
+and local. PostgreSQL and Qdrant backends are not yet implemented and
+are not claimed here — the SQLite index is the only available backend,
+and the `IssueIndexStore` trait will be reused when a later phase adds
+an optional PostgreSQL backend without moving credentials to the shared
+database.
 
 ## Install
 

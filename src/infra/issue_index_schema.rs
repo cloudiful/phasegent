@@ -21,7 +21,7 @@ PRAGMA busy_timeout = 5000;
 
 /// Schema for the local issue index.
 ///
-/// Two tables provide the whole surface so far:
+/// Three tables provide the whole surface:
 ///
 /// * `issue_documents` is the indexed copy of an external issue,
 ///   keyed by the stable `(source, project, external_id)` triple that
@@ -31,6 +31,10 @@ PRAGMA busy_timeout = 5000;
 ///   The foreign key is `ON DELETE CASCADE` so a tombstone that
 ///   deletes the document also removes its chunks, while an upsert
 ///   replaces the chunk set atomically inside the same transaction.
+/// * `issue_fts` is an FTS5 virtual table mirroring `title`/`body` for
+///   local lexical search. It is kept in sync atomically inside the
+///   same transaction as `issue_documents`; deleted documents are never
+///   indexed.
 ///
 /// No other tables exist yet; a later Postgres backend will reuse the
 /// same column set and the provider-neutral trait.
@@ -69,4 +73,6 @@ CREATE TABLE IF NOT EXISTS issue_chunks (
 
 CREATE INDEX IF NOT EXISTS issue_chunks_doc_idx
     ON issue_chunks (source, project, external_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS issue_fts USING fts5(title, body, tokenize='unicode61');
 ";

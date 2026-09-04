@@ -12,11 +12,16 @@ pub(crate) fn print_issue_help(role: Option<Role>) {
         ("update-body", Capability::IssueUpdateBody),
         ("close", Capability::IssueClose),
         ("upload-attachment", Capability::IssueAttachmentUpload),
+        ("index sync", Capability::IssueSearch),
+        ("index search", Capability::IssueSearch),
     ] {
         if role.is_none_or(|role| role.allows(capability)) {
             println!("  {name:<14} {}", capability.description());
         }
     }
+    println!("\nIndex commands (local SQLite with provider ingestion):");
+    println!("  index sync       Sync provider issues into the local SQLite index (bounded page, --all walks pages)");
+    println!("  index search     Search the local SQLite index via FTS5 (no network)");
     println!("\nLocal branch context (no provider or network access):");
     println!("  bind             Bind the current branch to a Redmine issue in local Git config");
     println!("  unbind           Remove the current branch's Redmine issue binding");
@@ -30,6 +35,18 @@ pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
         "search" => (
             Capability::IssueSearch,
             "Usage: issue search (--query TEXT | --all) [--state open|closed|all] [--page N] [--limit N] [--include-body]\n\nBounded single-page search (default page 1, limit 50, max 100). Uses native pagination: Redmine limit/offset, Forgejo page/limit, GitLab page/per_page. Never fetches all pages for one invocation.\n\n--query filters by subject/search text; empty or whitespace-only queries are rejected unless --all is given for a bounded listing of all visible issues.\n--state selects open (default all shows both), closed, or all.\n--page and --limit control the single page returned (page >=1, 1 <= limit <= 100).\nDefault output is compact metadata without bodies (id, number, title, state, html_url). Pass --include-body to include bounded bodies (byte cap 8192, truncated bodies report body_truncated: true).\nOutput envelope: { items: [...], page, limit, total_count?, has_more } where total_count is present when the provider returns it and has_more is derived from provider pagination metadata or item count.\n\nRedmine: when --project-id is omitted the current Git origin is matched against existing redmine_git_mirror records. Exactly one match uses that project; multiple matches fail with a listing of candidate ids/names and require --project-id; no match automatically bootstraps the project (admin credentials) as before. Explicit --project-id always wins and skips discovery. An explicit --repository that does not equal the origin is not silently matched; it keeps the existing bootstrap behavior.\n\nValues beginning with `-` must use the inline form: --query=TEXT or --state=STATE.",
+        ),
+        "index" => (
+            Capability::IssueSearch,
+            "Usage: issue index <sync|search> ...\n\nProvider-neutral local issue index (SQLite FTS5).\n\n  issue index sync   (--query TEXT | --all) [--state open|closed|all] [--page N] [--limit N] [--all]\n    Sync issues from the provider into the local SQLite index. Defaults to page 1, limit 50. Without --all, syncs only the requested native page (bounded, no tombstones). With --all, walks pages up to 100 pages (safety cap) and upserts every returned issue. For a full queryless scope sync (--all without --query, state all), previously indexed active documents in the same provider/project scope absent from the complete remote result are tombstoned deterministically. Redmine requires explicit --project-id for index sync and never silently indexes all projects.\n\n  issue index search --query TEXT [--limit N] [--offset N] [--include-body]\n    Local-only lexical search via SQLite FTS5. No provider config or network is used. Rejects empty/whitespace queries. Bounded envelope { items: [{source, project, external_id, issue_number, title, state, html_url, body?}], offset, limit, total_count, has_more } omits bodies by default; with --include-body bodies are capped to 8192 bytes with body_truncated. Query input is escaped/normalized so ordinary terms and Unicode work without malformed FTS syntax.",
+        ),
+        "index sync" => (
+            Capability::IssueSearch,
+            "Usage: issue index sync (--query TEXT | --all) [--state open|closed|all] [--page N] [--limit N] [--all]\n\nSync provider issues into the local SQLite index.\n\nDefaults to page 1, limit 50 (max 100) using native pagination: Redmine limit/offset, Forgejo page/limit, GitLab page/per_page. Without --all, syncs only the requested native page and never tombstones. With --all, walks pages up to 100 pages (hard safety cap) and upserts every returned issue with full bodies (no 8192-byte cap on stored bodies). For a full queryless scope sync (state all, no --query, --all), previously indexed active documents in the same provider/project scope absent from the remote result are tombstoned deterministically; partial single-page syncs never tombstone. Returns bounded JSON { source, project, pages_synced, indexed, tombstoned, has_more, completed, limit, state, query? }.\n\nRedmine requires explicit --project-id for index sync; omit it fails with a config error and never silently indexes all projects. Forgejo scope is owner/repo, GitLab scope is numeric project id.",
+        ),
+        "index search" => (
+            Capability::IssueSearch,
+            "Usage: issue index search --query TEXT [--limit N] [--offset N] [--include-body]\n\nLocal-only lexical search via SQLite FTS5 (no provider credential/config/network lookup).\n\n--query is required and rejects empty/whitespace. Terms are escaped/normalized so ordinary terms and Unicode work without allowing malformed FTS syntax to crash the command (invalid query returns a structured config error). Stable deterministic ordering by FTS rank then source/project/external_id.\n\nBounded envelope { items: [{source, project, external_id, issue_number, title, state, html_url, body?, body_truncated?}], offset, limit, total_count, has_more } omits bodies by default; with --include-body bodies are capped to 8192 bytes with body_truncated metadata. Limit default 20, max 100; offset default 0. Deleted/tombstoned documents are never returned.",
         ),
         "create" => (
             Capability::IssueCreate,

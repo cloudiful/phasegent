@@ -60,6 +60,13 @@ impl IssueProvider for ForgejoProvider {
         ForgejoProvider::search_issues(self, options)
     }
 
+    fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
+        ForgejoProvider::search_issue_page(self, options)
+    }
+
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
         ForgejoProvider::create_issue(self, title, body)
     }
@@ -116,6 +123,13 @@ impl IssueProvider for RedmineProvider {
         RedmineProvider::search_issues(self, options)
     }
 
+    fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
+        RedmineProvider::search_issue_page(self, options)
+    }
+
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
         RedmineProvider::create_issue(self, title, body)
     }
@@ -166,6 +180,13 @@ impl IssueProvider for GitlabProvider {
         options: &IssueSearchOptions,
     ) -> Result<IssueSearchResult, Self::Error> {
         GitlabProvider::search_issues(self, options)
+    }
+
+    fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
+        GitlabProvider::search_issue_page(self, options)
     }
 
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
@@ -242,6 +263,17 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.search_issues(options),
             Self::Redmine(provider) => provider.search_issues(options),
             Self::Gitlab(provider) => provider.search_issues(options),
+        }
+    }
+
+    fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
+        match self {
+            Self::Forgejo(provider) => provider.search_issue_page(options),
+            Self::Redmine(provider) => provider.search_issue_page(options),
+            Self::Gitlab(provider) => provider.search_issue_page(options),
         }
     }
 

@@ -12,6 +12,7 @@ mod comment;
 mod help;
 mod hooks;
 mod issue;
+mod issue_index;
 mod project;
 mod project_resolution;
 mod relation;

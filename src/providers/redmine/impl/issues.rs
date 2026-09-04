@@ -72,6 +72,62 @@ impl RedmineProvider {
         })
     }
 
+    pub fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, ForgejoError> {
+        options.validate()?;
+        let project_id = self
+            .config
+            .project_id
+            .as_deref()
+            .filter(|project_id| !project_id.trim().is_empty())
+            .map(str::to_owned);
+        let status_id = match options.state.as_str() {
+            "open" => "open",
+            "closed" => "closed",
+            "all" => "*",
+            _ => {
+                return Err(ForgejoError::config(
+                    "issue state must be open, closed, or all",
+                ));
+            }
+        };
+        let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
+        let mut params = vec![
+            ("status_id", status_id.to_owned()),
+            ("limit", options.limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+        if let Some(project_id) = &project_id {
+            params.push(("project_id", project_id.clone()));
+        }
+        if let Some(query) = options.effective_query() {
+            params.push(("subject", format!("~{query}")));
+        }
+        let page: RedmineIssueCollection = self.http.get("issues.json", &params, "issue search")?;
+        let total_count = page.total_count;
+        let count = page.issues.len();
+        let has_more = if let Some(total) = total_count {
+            offset + count < total
+        } else {
+            count == options.limit
+        };
+        let items: Vec<IssueSummary> = page
+            .issues
+            .into_iter()
+            .filter(|issue| issue.matches_state(&options.state))
+            .map(|issue| self.issue_summary(issue))
+            .collect();
+        Ok(crate::providers::api::IssueSummaryPage {
+            items,
+            page: options.page,
+            limit: options.limit,
+            total_count,
+            has_more,
+        })
+    }
+
     pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {
         self.create_issue_with_planning(title, body, None, &IssuePlanning::default())
     }

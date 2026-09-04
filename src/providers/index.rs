@@ -18,6 +18,10 @@ pub const ISSUE_INDEX_MAX_DOCUMENT_BYTES: usize =
     ISSUE_INDEX_MAX_CHUNK_BYTES * ISSUE_INDEX_MAX_CHUNKS;
 pub const ISSUE_INDEX_MAX_LIST_LIMIT: usize = 100;
 pub const ISSUE_INDEX_DEFAULT_LIST_LIMIT: usize = 50;
+pub const ISSUE_INDEX_SYNC_MAX_PAGES: usize = 100;
+pub const ISSUE_INDEX_SEARCH_DEFAULT_LIMIT: usize = 20;
+pub const ISSUE_INDEX_SEARCH_DEFAULT_OFFSET: usize = 0;
+pub const ISSUE_INDEX_SEARCH_MAX_LIMIT: usize = 100;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct IssueIndexKey {
@@ -365,4 +369,16 @@ pub trait IssueIndexStore {
     fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String>;
     fn list(&self, options: &IssueIndexListOptions) -> Result<Vec<IssueIndexDocument>, String>;
     fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String>;
+    fn lexical_search(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        include_body: bool,
+    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String>;
+    fn list_active_keys_for_scope(
+        &self,
+        source: &str,
+        project: &str,
+    ) -> Result<Vec<IssueIndexKey>, String>;
 }

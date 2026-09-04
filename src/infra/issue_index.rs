@@ -6,12 +6,20 @@
 
 #![allow(dead_code)]
 
-use crate::infra::issue_index_schema::{DB_FILENAME_INDEX, PRAGMA_STATEMENTS_INDEX, SCHEMA_INDEX};
-use crate::providers::index::{
-    ISSUE_INDEX_MAX_LIST_LIMIT, IssueIndexDocument, IssueIndexKey, IssueIndexListOptions,
-    IssueIndexStore,
+#[path = "issue_index_search.rs"]
+mod issue_index_search;
+#[path = "issue_index_store.rs"]
+mod issue_index_store;
+
+use crate::infra::issue_index_schema::{PRAGMA_STATEMENTS_INDEX, SCHEMA_INDEX};
+use self::issue_index_search::{lexical_search_inner, normalize_query};
+use self::issue_index_store::{
+    doc_from_row, ensure_fts_populated, list_active_keys_for_scope, load_chunks,
 };
-use directories::ProjectDirs;
+use crate::providers::index::{
+    ISSUE_INDEX_MAX_LIST_LIMIT, ISSUE_INDEX_SEARCH_MAX_LIMIT, IssueIndexDocument, IssueIndexKey,
+    IssueIndexListOptions, IssueIndexStore,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,38 +68,14 @@ impl SqliteIssueIndex {
             .map_err(|e| format!("could not configure issue index database: {e}"))?;
         conn.execute_batch(SCHEMA_INDEX)
             .map_err(|e| format!("could not initialise issue index schema: {e}"))?;
+        ensure_fts_populated(conn)?;
         Ok(())
     }
     pub fn db_path(&self) -> &Path {
         &self.path
     }
-    fn load_chunks(
-        &self,
-        key: &IssueIndexKey,
-    ) -> Result<Vec<crate::providers::index::IssueIndexChunk>, String> {
-        let mut stmt = self
-            .connection
-            .prepare(
-                "SELECT ordinal, text, byte_start, byte_end, hash FROM issue_chunks \
-                 WHERE source=?1 AND project=?2 AND external_id=?3 ORDER BY ordinal ASC",
-            )
-            .map_err(|e| format!("could not prepare chunk load: {e}"))?;
-        let rows = stmt
-            .query_map(params![key.source, key.project, key.external_id], |row| {
-                Ok(crate::providers::index::IssueIndexChunk {
-                    ordinal: row.get::<_, i64>(0)? as usize,
-                    text: row.get(1)?,
-                    byte_start: row.get::<_, i64>(2)? as usize,
-                    byte_end: row.get::<_, i64>(3)? as usize,
-                    hash: row.get(4)?,
-                })
-            })
-            .map_err(|e| format!("could not read chunks: {e}"))?;
-        let mut chunks = Vec::new();
-        for r in rows {
-            chunks.push(r.map_err(|e| format!("could not decode chunk row: {e}"))?);
-        }
-        Ok(chunks)
+    fn load_chunks(&self, key: &IssueIndexKey) -> Result<Vec<crate::providers::index::IssueIndexChunk>, String> {
+        load_chunks(&self.connection, key)
     }
     fn doc_from_row(
         &self,
@@ -109,13 +93,12 @@ impl SqliteIssueIndex {
         deleted: i64,
         deleted_at: Option<i64>,
     ) -> Result<IssueIndexDocument, String> {
-        let key = IssueIndexKey::new(source, project, external_id)
-            .map_err(|e| format!("stored key is invalid: {e}"))?;
-        let chunks = self.load_chunks(&key)?;
-        let deleted_flag = deleted != 0;
-        Ok(IssueIndexDocument {
-            key,
-            issue_number: issue_number as u64,
+        doc_from_row(
+            &self.connection,
+            source,
+            project,
+            external_id,
+            issue_number,
             title,
             body,
             state,
@@ -123,10 +106,9 @@ impl SqliteIssueIndex {
             provider_updated_at,
             indexed_at,
             content_hash,
-            deleted: deleted_flag,
+            deleted,
             deleted_at,
-            chunks: if deleted_flag { Vec::new() } else { chunks },
-        })
+        )
     }
 }
 
@@ -182,6 +164,17 @@ impl IssueIndexStore for SqliteIssueIndex {
             )
             .map_err(|e| format!("could not insert chunk {}: {e}", c.ordinal))?;
         }
+        // Keep FTS synchronized atomically within the same transaction.
+        tx.execute(
+            "DELETE FROM issue_fts WHERE rowid = (SELECT rowid FROM issue_documents WHERE source=?1 AND project=?2 AND external_id=?3)",
+            params![doc.key.source, doc.key.project, doc.key.external_id],
+        )
+        .map_err(|e| format!("could not clear old FTS: {e}"))?;
+        tx.execute(
+            "INSERT INTO issue_fts(rowid, title, body) VALUES ((SELECT rowid FROM issue_documents WHERE source=?1 AND project=?2 AND external_id=?3), ?4, ?5)",
+            params![doc.key.source, doc.key.project, doc.key.external_id, doc.title, doc.body],
+        )
+        .map_err(|e| format!("could not insert FTS: {e}"))?;
         tx.commit()
             .map_err(|e| format!("could not commit index upsert: {e}"))?;
         Ok(())
@@ -358,27 +351,48 @@ impl IssueIndexStore for SqliteIssueIndex {
             params![key.source, key.project, key.external_id],
         )
         .map_err(|e| format!("could not delete tombstoned chunks: {e}"))?;
+        tx.execute(
+            "DELETE FROM issue_fts WHERE rowid = (SELECT rowid FROM issue_documents WHERE source=?1 AND project=?2 AND external_id=?3)",
+            params![key.source, key.project, key.external_id],
+        )
+        .map_err(|e| format!("could not delete tombstoned FTS: {e}"))?;
         tx.commit()
             .map_err(|e| format!("could not commit tombstone: {e}"))?;
         Ok(())
     }
+
+    fn lexical_search(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        include_body: bool,
+    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String> {
+        if limit == 0 || limit > ISSUE_INDEX_SEARCH_MAX_LIMIT {
+            return Err(format!(
+                "search limit must be between 1 and {}",
+                ISSUE_INDEX_SEARCH_MAX_LIMIT
+            ));
+        }
+        let escaped = normalize_query(query)?;
+        // FTS errors (e.g., malformed after escaping) are surfaced as config
+        // errors so the CLI can return a structured failure without crashing.
+        lexical_search_inner(&self.connection, &escaped, limit, offset, include_body)
+            .map_err(|e| e)
+    }
+
+    fn list_active_keys_for_scope(
+        &self,
+        source: &str,
+        project: &str,
+    ) -> Result<Vec<IssueIndexKey>, String> {
+        list_active_keys_for_scope(&self.connection, source, project)
+    }
 }
 
 fn create_private_dir(path: &Path) -> Result<(), String> {
-    let existed = path.exists();
-    fs::create_dir_all(path).map_err(|e| format!("could not create issue index directory: {e}"))?;
-    #[cfg(unix)]
-    {
-        if !existed {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("could not secure issue index directory: {e}"))?;
-        }
-    }
-    Ok(())
+    self::issue_index_store::create_private_dir(path)
 }
 fn project_dirs_index_path() -> Result<PathBuf, String> {
-    let dirs = ProjectDirs::from("com", "Cloud1ful", "phasegent")
-        .ok_or_else(|| "could not resolve phasegent config directory".to_owned())?;
-    Ok(dirs.config_dir().join(DB_FILENAME_INDEX))
+    self::issue_index_store::project_dirs_index_path()
 }

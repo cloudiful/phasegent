@@ -699,9 +699,43 @@ test -f "$HOME/.config/phasegent/phasegent-index.sqlite3" \
 `updated_at`/`indexed_at` 时间戳、tombstone 状态，以及有界的
 UTF-8 安全切片（单片至多 `4000` 字节，最多 `64` 片；超限文档直接
 拒绝而非静默截断）。切片记录包含 ordinal、字节偏移和哈希，便于
-后续后端复用同一契约。当前实现仅为 SQLite；后续阶段可能在相同
-`IssueIndexStore` trait 背后提供可选的 PostgreSQL 索引后端，且不会
-迁移本地凭据到共享数据库。
+后续后端复用同一契约。FTS5 虚拟表（`issue_fts`）会镜像
+`title`/`body` 并在 upsert/tombstone 时原子同步；已删除的文档永远不会
+被词法搜索返回。
+
+Provider 无关的拉取使用各 provider 的原生分页（Redmine
+`limit`/`offset`、Forgejo `page`/`limit`、GitLab `page`/`per_page`），
+并以完整正文入库，不受 CLI 搜索的 8192 字节截断影响。
+
+```text
+phasegent --role orchestrator --provider redmine --project-id 42 issue index sync --all
+phasegent --role orchestrator --provider forgejo issue index sync --query bug --state open
+phasegent --role orchestrator issue index search --query "hello world" --limit 20
+phasegent --role orchestrator issue index search --query "phase" --include-body
+```
+
+`issue index sync` 默认 `page 1`、`limit 50`（有界单页）。未带
+`--all` 时仅同步该原生分页且不产生 tombstone；携带 `--all` 时会
+按硬性安全上限 100 页遍历并 upsert 所有返回的 issue。仅在完整
+无查询范围同步（`--all` 且无 `--query`、且 `state all`）时，会对同
+`source`/`project` 范围内已索引但本次完整远端结果中缺失的活跃文档
+进行确定性 tombstone；单页同步永不 tombstone。Redmine 同步必须显式
+提供 `--project-id`，绝不会静默同步全部 project；Forgejo 范围为
+`owner/repo`，GitLab 范围为数字 project id。
+
+`issue index search` 为纯本地操作（不读取 provider 凭据/配置、也不
+联网），使用 SQLite FTS5。它拒绝空/纯空白查询，对输入进行转义/归一化
+以支持普通词与 Unicode 而不会因非法 FTS 语法崩溃，并返回有界信封
+`{ items: [{source, project, external_id, issue_number, title, state,
+html_url, body?, body_truncated?}], offset, limit, total_count,
+has_more }`，默认不含正文，携带 `--include-body` 时正文按 8192 字节
+截断并标记 `body_truncated`。排序通过 rank 再按
+`source`/`project`/`external_id` 的确定性顺序保证平局可复现；
+已删除/tombstoned 的文档永不返回。
+
+当前实现仅为 SQLite；同步与搜索均为有界本地操作。PostgreSQL 与
+Qdrant 后端尚未实现，此处不作声称——SQLite 是唯一可用后端，`IssueIndexStore`
+trait 会在后续阶段为可选的 PostgreSQL 后端复用而不会迁移凭据。
 
 ## 安装
 

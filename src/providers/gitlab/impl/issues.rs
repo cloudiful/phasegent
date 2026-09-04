@@ -104,6 +104,60 @@ impl GitlabProvider {
         })
     }
 
+    pub(crate) fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, ForgejoError> {
+        options.validate()?;
+        let state_filter = state_query_filter(&options.state)?;
+        let path = self.issues_path();
+        let query = options.effective_query();
+        let mut params = vec![
+            ("page", options.page.to_string()),
+            ("per_page", options.limit.to_string()),
+        ];
+        if let Some(filter) = state_filter {
+            params.push(("state", filter.to_owned()));
+        }
+        if let Some(query) = query {
+            params.push(("search", query.to_owned()));
+        }
+        let (items, headers, _raw) = self.http.get_page::<ApiIssue>(&path, &params, "issue search")?;
+        let count = items.len();
+        let total_count = headers
+            .get("x-total")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<usize>().ok());
+        let next_page_header = headers
+            .get("x-next-page")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().to_owned());
+        let total_pages_header = headers
+            .get("x-total-pages")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<usize>().ok());
+        let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
+        let has_more = match (next_page_header.as_deref(), total_pages_header, total_count) {
+            (Some(""), _, _) => false,
+            (Some(_), Some(total_pages), _) => options.page < total_pages,
+            (_, _, Some(total)) => offset + count < total,
+            (None, Some(total_pages), None) => options.page < total_pages,
+            (None, None, None) => count == options.limit,
+            (Some(_), None, None) => true,
+        };
+        let items: Vec<IssueSummary> = items
+            .into_iter()
+            .map(|issue| issue.into_summary(self))
+            .collect();
+        Ok(crate::providers::api::IssueSummaryPage {
+            items,
+            page: options.page,
+            limit: options.limit,
+            total_count,
+            has_more: has_more && count > 0,
+        })
+    }
+
     /// `POST /projects/:id/issues` with an optional `labels` field
     /// for tracker mapping.
     pub(crate) fn create_issue_with_labels(

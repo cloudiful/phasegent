@@ -71,7 +71,7 @@ pub struct IssueSearchItem {
     pub body_truncated: Option<bool>,
 }
 
-fn truncate_to_byte_limit(value: &str, max_bytes: usize) -> &str {
+pub(crate) fn truncate_to_byte_limit(value: &str, max_bytes: usize) -> &str {
     if value.len() <= max_bytes {
         value
     } else {
@@ -118,6 +118,16 @@ impl IssueSearchItem {
 #[derive(Debug, Serialize)]
 pub struct IssueSearchResult {
     pub items: Vec<IssueSearchItem>,
+    pub page: usize,
+    pub limit: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_count: Option<usize>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IssueSummaryPage {
+    pub items: Vec<IssueSummary>,
     pub page: usize,
     pub limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
