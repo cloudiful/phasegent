@@ -73,7 +73,7 @@ jobs:
           $env:PATH = "$tools;$env:PATH"
           wix extension add --global WixToolset.UI.wixext/6.0.2
           wix --version
-          wix extension list
+          wix extension list --global
 
       - name: Build MSI and portable archive (Windows)
         if: runner.os == 'Windows'
