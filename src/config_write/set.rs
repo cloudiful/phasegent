@@ -215,6 +215,21 @@ fn persist_set_value(
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
             storage.save_global_setting(canonical, kind.as_str())?;
         }
+        "PHASEGENT_INDEX_BACKEND" => {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower != "sqlite" && lower != "postgres" {
+                return Err(format!(
+                    "invalid PHASEGENT_INDEX_BACKEND '{trimmed}'; expected sqlite or postgres"
+                ));
+            }
+            storage.save_global_setting(canonical, &lower)?;
+        }
+        "PHASEGENT_INDEX_PG_URL" => {
+            if trimmed.is_empty() {
+                return Err(format!("value for '{canonical}' cannot be empty"));
+            }
+            storage.save_global_setting(canonical, trimmed)?;
+        }
         _ => return Err(format!("unknown setting '{canonical}'")),
     }
     Ok(())

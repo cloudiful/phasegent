@@ -1,12 +1,12 @@
-use crate::infra::issue_index::SqliteIssueIndex;
+use crate::infra::issue_index_backend::{IssueIndexBackend, block_on};
 use crate::policy::{Capability, Role};
 use crate::providers::api::IssueSearchOptions;
 use crate::providers::config::resolve_kind;
+use crate::providers::forgejo::ForgejoError;
 use crate::providers::index::{
     ISSUE_INDEX_SYNC_MAX_PAGES, IssueIndexDocument, IssueIndexKey, IssueIndexStore,
 };
 use crate::providers::index_store::{IssueIndexSyncSummary, provider_scope};
-use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 fn now_unix_secs() -> i64 {
@@ -17,6 +17,34 @@ fn now_unix_secs() -> i64 {
 }
 
 pub(crate) fn execute_index_sync(
+    role: Role,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    query: Option<String>,
+    state: String,
+    page: usize,
+    limit: usize,
+    all: bool,
+) -> i32 {
+    block_on(execute_index_sync_async(
+        role,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        query,
+        state,
+        page,
+        limit,
+        all,
+    ))
+}
+
+async fn execute_index_sync_async(
     role: Role,
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
@@ -77,7 +105,7 @@ pub(crate) fn execute_index_sync(
         Ok(s) => s,
         Err(e) => return crate::cli::provider_error(e),
     };
-    let store = match SqliteIssueIndex::open() {
+    let store = match IssueIndexBackend::open().await {
         Ok(s) => s,
         Err(e) => return crate::cli::provider_error(ForgejoError::config(e)),
     };
@@ -89,9 +117,7 @@ pub(crate) fn execute_index_sync(
     let mut completed = true;
 
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let should_track_seen = all
-        && options.effective_query().is_none()
-        && state == "all";
+    let should_track_seen = all && options.effective_query().is_none() && state == "all";
 
     if !all {
         // Single bounded page
@@ -126,7 +152,7 @@ pub(crate) fn execute_index_sync(
                 Ok(d) => d,
                 Err(e) => return crate::cli::provider_error(ForgejoError::config(e)),
             };
-            if let Err(e) = store.upsert(&doc) {
+            if let Err(e) = store.upsert(&doc).await {
                 return crate::cli::provider_error(ForgejoError::config(e));
             }
             indexed += 1;
@@ -197,7 +223,7 @@ pub(crate) fn execute_index_sync(
                 Ok(d) => d,
                 Err(e) => return crate::cli::provider_error(ForgejoError::config(e)),
             };
-            if let Err(e) = store.upsert(&doc) {
+            if let Err(e) = store.upsert(&doc).await {
                 return crate::cli::provider_error(ForgejoError::config(e));
             }
             total_indexed += 1;
@@ -212,13 +238,16 @@ pub(crate) fn execute_index_sync(
 
     // Deterministic tombstone for full queryless sync only.
     if should_track_seen && completed && !has_more_final {
-        let active_keys = match store.list_active_keys_for_scope(&scope.source, &scope.project) {
+        let active_keys = match store
+            .list_active_keys_for_scope(&scope.source, &scope.project)
+            .await
+        {
             Ok(v) => v,
             Err(e) => return crate::cli::provider_error(ForgejoError::config(e)),
         };
         for key in active_keys {
             if !seen_keys.contains(&key.to_string()) {
-                if let Err(e) = store.tombstone(&key, indexed_at + 1) {
+                if let Err(e) = store.tombstone(&key, indexed_at + 1).await {
                     return crate::cli::provider_error(ForgejoError::config(e));
                 }
                 tombstoned += 1;
@@ -249,6 +278,20 @@ pub(crate) fn execute_index_search(
     offset: usize,
     include_body: bool,
 ) -> i32 {
+    block_on(execute_index_search_async(
+        query,
+        limit,
+        offset,
+        include_body,
+    ))
+}
+
+async fn execute_index_search_async(
+    query: String,
+    limit: usize,
+    offset: usize,
+    include_body: bool,
+) -> i32 {
     // Local-only: no provider resolution, no network.
     if query.trim().is_empty() {
         return crate::cli::provider_error(ForgejoError::config(
@@ -261,11 +304,14 @@ pub(crate) fn execute_index_search(
             crate::providers::index::ISSUE_INDEX_SEARCH_MAX_LIMIT
         )));
     }
-    let store = match SqliteIssueIndex::open() {
+    let store = match IssueIndexBackend::open().await {
         Ok(s) => s,
         Err(e) => return crate::cli::provider_error(ForgejoError::config(e)),
     };
-    match store.lexical_search(&query, limit, offset, include_body) {
+    match store
+        .lexical_search(&query, limit, offset, include_body)
+        .await
+    {
         Ok(result) => crate::cli::print_json(&result),
         Err(e) => crate::cli::provider_error(ForgejoError::config(e)),
     }
@@ -275,6 +321,7 @@ pub(crate) fn execute_index_search(
 mod tests {
     use super::*;
     use crate::infra::issue_index::SqliteIssueIndex;
+    use crate::infra::issue_index_backend::block_on as ib_block;
     use crate::providers::api::IssueSearchOptions;
     use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
     use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore};
@@ -283,28 +330,61 @@ mod tests {
     use std::sync::mpsc::{self, Receiver};
     use std::thread::{self, JoinHandle};
 
-    struct MockResponse { status: u16, headers: Vec<(String,String)>, body: String }
+    struct MockResponse {
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: String,
+    }
     impl MockResponse {
-        fn ok(body: impl Into<String>) -> Self { Self { status: 200, headers: Vec::new(), body: body.into() } }
-        fn header(mut self, k: &str, v: &str) -> Self { self.headers.push((k.to_owned(), v.to_owned())); self }
+        fn ok(body: impl Into<String>) -> Self {
+            Self {
+                status: 200,
+                headers: Vec::new(),
+                body: body.into(),
+            }
+        }
+        fn header(mut self, k: &str, v: &str) -> Self {
+            self.headers.push((k.to_owned(), v.to_owned()));
+            self
+        }
     }
     fn tmp_dir(l: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("phasegent-cli-index-test-{}-{}-{}", l, std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
+        std::env::temp_dir().join(format!(
+            "phasegent-cli-index-test-{}-{}-{}",
+            l,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
     fn forgejo_issue_json(n: u64, title: &str, body: &str) -> String {
-        format!(r#"{{"id":{n},"number":{n},"title":"{title}","body":"{body}","state":"open","html_url":"https://forgejo.example/issues/{n}"}}"#)
+        format!(
+            r#"{{"id":{n},"number":{n},"title":"{title}","body":"{body}","state":"open","html_url":"https://forgejo.example/issues/{n}"}}"#
+        )
     }
-    fn sequence_forgejo(responses: Vec<MockResponse>) -> (String, Receiver<Vec<String>>, JoinHandle<()>) {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap(); let a=l.local_addr().unwrap();
-        let (tx, rx)=mpsc::channel();
-        let h=thread::spawn(move || {
-            let mut reqs=Vec::new();
+    fn sequence_forgejo(
+        responses: Vec<MockResponse>,
+    ) -> (String, Receiver<Vec<String>>, JoinHandle<()>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = l.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let h = thread::spawn(move || {
+            let mut reqs = Vec::new();
             for resp in responses {
-                let (mut s,_)=l.accept().unwrap();
-                let mut buf=[0u8;8192]; let n=s.read(&mut buf).unwrap();
+                let (mut s, _) = l.accept().unwrap();
+                let mut buf = [0u8; 8192];
+                let n = s.read(&mut buf).unwrap();
                 reqs.push(String::from_utf8_lossy(&buf[..n]).into_owned());
-                let mut hdrs=format!("HTTP/1.1 {} OK\r\nContent-Length: {}\r\n", resp.status, resp.body.len());
-                for (k,v) in resp.headers { hdrs.push_str(&format!("{k}: {v}\r\n")); }
+                let mut hdrs = format!(
+                    "HTTP/1.1 {} OK\r\nContent-Length: {}\r\n",
+                    resp.status,
+                    resp.body.len()
+                );
+                for (k, v) in resp.headers {
+                    hdrs.push_str(&format!("{k}: {v}\r\n"));
+                }
                 hdrs.push_str("\r\n");
                 s.write_all(hdrs.as_bytes()).unwrap();
                 s.write_all(resp.body.as_bytes()).unwrap();
@@ -318,17 +398,35 @@ mod tests {
     fn native_request_params_and_full_body_index_path() {
         let long_body = "b".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 20);
         let issue = forgejo_issue_json(7, "Title", &long_body);
-        let (base, rx, srv) = sequence_forgejo(vec![MockResponse::ok(format!("[{issue}]")).header("X-Total-Count","1")]);
-        let p = ForgejoProvider::new(ForgejoConfig::new(base, "owner","repo"), "token".into()).unwrap();
-        let opts = IssueSearchOptions { query: Some("q".into()), state: "all".into(), page: 1, limit: 50, include_body: false, all: false };
+        let (base, rx, srv) = sequence_forgejo(vec![
+            MockResponse::ok(format!("[{issue}]")).header("X-Total-Count", "1"),
+        ]);
+        let p = ForgejoProvider::new(ForgejoConfig::new(base, "owner", "repo"), "token".into())
+            .unwrap();
+        let opts = IssueSearchOptions {
+            query: Some("q".into()),
+            state: "all".into(),
+            page: 1,
+            limit: 50,
+            include_body: false,
+            all: false,
+        };
         let compact = p.search_issues(&opts).unwrap();
         assert!(compact.items[0].body.is_none());
         let (base2, rx2, srv2) = sequence_forgejo(vec![
-            MockResponse::ok(format!("[{issue}]")).header("X-Total-Count","1"),
-            MockResponse::ok(format!("[{issue}]")).header("X-Total-Count","1"),
+            MockResponse::ok(format!("[{issue}]")).header("X-Total-Count", "1"),
+            MockResponse::ok(format!("[{issue}]")).header("X-Total-Count", "1"),
         ]);
-        let p2 = ForgejoProvider::new(ForgejoConfig::new(base2, "owner","repo"), "token".into()).unwrap();
-        let opts2 = IssueSearchOptions { query: Some("q".into()), state: "all".into(), page: 1, limit: 50, include_body: true, all: false };
+        let p2 = ForgejoProvider::new(ForgejoConfig::new(base2, "owner", "repo"), "token".into())
+            .unwrap();
+        let opts2 = IssueSearchOptions {
+            query: Some("q".into()),
+            state: "all".into(),
+            page: 1,
+            limit: 50,
+            include_body: true,
+            all: false,
+        };
         let compact2 = p2.search_issues(&opts2).unwrap();
         assert_eq!(compact2.items[0].body_truncated, Some(true));
         let page = p2.search_issue_page(&opts2).unwrap();
@@ -339,7 +437,8 @@ mod tests {
         let reqs2 = rx2.recv().unwrap();
         assert!(reqs2[0].contains("page=1"));
         assert!(reqs2[1].contains("page=1"));
-        srv.join().unwrap(); srv2.join().unwrap();
+        srv.join().unwrap();
+        srv2.join().unwrap();
     }
 
     #[test]
@@ -347,23 +446,67 @@ mod tests {
         let (dir, path) = (tmp_dir("sync"), tmp_dir("sync").join("idx.sqlite3"));
         let _ = std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let idx = SqliteIssueIndex::open_at(&path).unwrap();
-        let src="forgejo"; let proj="owner/repo";
+        let src = "forgejo";
+        let proj = "owner/repo";
         for i in 1..=3 {
-            let k=IssueIndexKey::new(src, proj, i.to_string()).unwrap();
-            let d=IssueIndexDocument::new(k, i, format!("Title {i}"), format!("Body {i}"), "open".into(), None, None, 1_700_000_000+i as i64).unwrap();
-            idx.upsert(&d).unwrap();
+            let k = IssueIndexKey::new(src, proj, i.to_string()).unwrap();
+            let d = IssueIndexDocument::new(
+                k,
+                i,
+                format!("Title {i}"),
+                format!("Body {i}"),
+                "open".into(),
+                None,
+                None,
+                1_700_000_000 + i as i64,
+            )
+            .unwrap();
+            ib_block(idx.upsert(&d)).unwrap();
         }
-        assert_eq!(idx.list_active_keys_for_scope(src, proj).unwrap().len(), 3);
-        let seen: std::collections::HashSet<String> = ["1","2"].into_iter().map(|s| format!("{src}:{proj}:{s}")).collect();
-        let active=idx.list_active_keys_for_scope(src, proj).unwrap();
-        let mut tomb=0;
-        for k in active { if !seen.contains(&k.to_string()) { idx.tombstone(&k, 1_700_000_100).unwrap(); tomb+=1; } }
-        assert_eq!(tomb,1);
-        assert_eq!(idx.list_active_keys_for_scope(src, proj).unwrap().len(),2);
-        let k3=IssueIndexKey::new(src, proj, "3").unwrap();
-        let d3=IssueIndexDocument::new(k3, 3, "Title 3".into(), "Body 3".into(), "open".into(), None, None, 1_700_000_200).unwrap();
-        idx.upsert(&d3).unwrap();
-        assert_eq!(idx.list_active_keys_for_scope(src, proj).unwrap().len(),3);
+        assert_eq!(
+            ib_block(idx.list_active_keys_for_scope(src, proj))
+                .unwrap()
+                .len(),
+            3
+        );
+        let seen: std::collections::HashSet<String> = ["1", "2"]
+            .into_iter()
+            .map(|s| format!("{src}:{proj}:{s}"))
+            .collect();
+        let active = ib_block(idx.list_active_keys_for_scope(src, proj)).unwrap();
+        let mut tomb = 0;
+        for k in active {
+            if !seen.contains(&k.to_string()) {
+                ib_block(idx.tombstone(&k, 1_700_000_100)).unwrap();
+                tomb += 1;
+            }
+        }
+        assert_eq!(tomb, 1);
+        assert_eq!(
+            ib_block(idx.list_active_keys_for_scope(src, proj))
+                .unwrap()
+                .len(),
+            2
+        );
+        let k3 = IssueIndexKey::new(src, proj, "3").unwrap();
+        let d3 = IssueIndexDocument::new(
+            k3,
+            3,
+            "Title 3".into(),
+            "Body 3".into(),
+            "open".into(),
+            None,
+            None,
+            1_700_000_200,
+        )
+        .unwrap();
+        ib_block(idx.upsert(&d3)).unwrap();
+        assert_eq!(
+            ib_block(idx.list_active_keys_for_scope(src, proj))
+                .unwrap()
+                .len(),
+            3
+        );
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(path.parent().unwrap().to_path_buf());
     }

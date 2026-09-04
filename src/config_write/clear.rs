@@ -32,7 +32,9 @@ fn persist_clear_value(
     match canonical {
         "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY"
         | "PHASEGENT_REDMINE_REPOSITORY_URL"
-        | "PHASEGENT_DEFAULT_PROVIDER" => {
+        | "PHASEGENT_DEFAULT_PROVIDER"
+        | "PHASEGENT_INDEX_BACKEND"
+        | "PHASEGENT_INDEX_PG_URL" => {
             let cleared = storage.delete_global_setting(canonical)?;
             Ok(cleared)
         }

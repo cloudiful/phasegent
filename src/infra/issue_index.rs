@@ -11,15 +11,16 @@ mod issue_index_search;
 #[path = "issue_index_store.rs"]
 mod issue_index_store;
 
-use crate::infra::issue_index_schema::{PRAGMA_STATEMENTS_INDEX, SCHEMA_INDEX};
 use self::issue_index_search::{lexical_search_inner, normalize_query};
 use self::issue_index_store::{
     doc_from_row, ensure_fts_populated, list_active_keys_for_scope, load_chunks,
 };
+use crate::infra::issue_index_schema::{PRAGMA_STATEMENTS_INDEX, SCHEMA_INDEX};
 use crate::providers::index::{
     ISSUE_INDEX_MAX_LIST_LIMIT, ISSUE_INDEX_SEARCH_MAX_LIMIT, IssueIndexDocument, IssueIndexKey,
     IssueIndexListOptions, IssueIndexStore,
 };
+use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -74,7 +75,10 @@ impl SqliteIssueIndex {
     pub fn db_path(&self) -> &Path {
         &self.path
     }
-    fn load_chunks(&self, key: &IssueIndexKey) -> Result<Vec<crate::providers::index::IssueIndexChunk>, String> {
+    fn load_chunks(
+        &self,
+        key: &IssueIndexKey,
+    ) -> Result<Vec<crate::providers::index::IssueIndexChunk>, String> {
         load_chunks(&self.connection, key)
     }
     fn doc_from_row(
@@ -112,8 +116,9 @@ impl SqliteIssueIndex {
     }
 }
 
+#[async_trait(?Send)]
 impl IssueIndexStore for SqliteIssueIndex {
-    fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String> {
+    async fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String> {
         doc.validate()?;
         let tx = self
             .connection
@@ -179,7 +184,7 @@ impl IssueIndexStore for SqliteIssueIndex {
             .map_err(|e| format!("could not commit index upsert: {e}"))?;
         Ok(())
     }
-    fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String> {
+    async fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String> {
         key.validate()?;
         let mut stmt = self
             .connection
@@ -244,7 +249,7 @@ impl IssueIndexStore for SqliteIssueIndex {
             }
         }
     }
-    fn list(&self, opts: &IssueIndexListOptions) -> Result<Vec<IssueIndexDocument>, String> {
+    async fn list(&self, opts: &IssueIndexListOptions) -> Result<Vec<IssueIndexDocument>, String> {
         if opts.limit == 0 || opts.limit > ISSUE_INDEX_MAX_LIST_LIMIT {
             return Err(format!(
                 "list limit must be between 1 and {}",
@@ -312,7 +317,7 @@ impl IssueIndexStore for SqliteIssueIndex {
         }
         Ok(out)
     }
-    fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String> {
+    async fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String> {
         key.validate()?;
         if indexed_at <= 0 {
             return Err("indexed_at must be greater than zero".to_owned());
@@ -361,7 +366,7 @@ impl IssueIndexStore for SqliteIssueIndex {
         Ok(())
     }
 
-    fn lexical_search(
+    async fn lexical_search(
         &self,
         query: &str,
         limit: usize,
@@ -377,11 +382,10 @@ impl IssueIndexStore for SqliteIssueIndex {
         let escaped = normalize_query(query)?;
         // FTS errors (e.g., malformed after escaping) are surfaced as config
         // errors so the CLI can return a structured failure without crashing.
-        lexical_search_inner(&self.connection, &escaped, limit, offset, include_body)
-            .map_err(|e| e)
+        lexical_search_inner(&self.connection, &escaped, limit, offset, include_body).map_err(|e| e)
     }
 
-    fn list_active_keys_for_scope(
+    async fn list_active_keys_for_scope(
         &self,
         source: &str,
         project: &str,

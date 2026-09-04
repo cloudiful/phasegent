@@ -724,18 +724,67 @@ phasegent --role orchestrator issue index search --query "phase" --include-body
 `owner/repo`，GitLab 范围为数字 project id。
 
 `issue index search` 为纯本地操作（不读取 provider 凭据/配置、也不
-联网），使用 SQLite FTS5。它拒绝空/纯空白查询，对输入进行转义/归一化
-以支持普通词与 Unicode 而不会因非法 FTS 语法崩溃，并返回有界信封
+联网），默认使用 SQLite FTS5（可选 PostgreSQL 的 `tsvector`+GIN）。它拒绝空/纯空白查询，对输入进行转义/归一化
+以支持普通词与 Unicode 而不会因非法 FTS/TS 语法崩溃，并返回有界信封
 `{ items: [{source, project, external_id, issue_number, title, state,
 html_url, body?, body_truncated?}], offset, limit, total_count,
 has_more }`，默认不含正文，携带 `--include-body` 时正文按 8192 字节
-截断并标记 `body_truncated`。排序通过 rank 再按
+截断并标记 `body_truncated`。排序通过 rank（PostgreSQL 为 `ts_rank`）再按
 `source`/`project`/`external_id` 的确定性顺序保证平局可复现；
 已删除/tombstoned 的文档永不返回。
 
-当前实现仅为 SQLite；同步与搜索均为有界本地操作。PostgreSQL 与
-Qdrant 后端尚未实现，此处不作声称——SQLite 是唯一可用后端，`IssueIndexStore`
-trait 会在后续阶段为可选的 PostgreSQL 后端复用而不会迁移凭据。
+#### 选择索引后端（SQLite 默认，可选 PostgreSQL）
+
+默认索引仍保存在本地 `phasegent-index.sqlite3`。如需多机共享，请选择
+PostgreSQL 共享索引，凭据仍隔离在 `phasegent.sqlite3` 中：
+
+```text
+phasegent config set index-backend postgres
+phasegent config set index-pg-url --stdin < /secure/path/pg-url
+# 也支持环境变量覆盖（运行时优先，SQLite 兜底）：
+export PHASEGENT_INDEX_BACKEND=postgres
+export PHASEGENT_INDEX_PG_URL='postgres://user:pass@host/db'
+```
+
+校验与查看（URL 为 secret，快照仅显示 `present`/`length`）：
+
+```text
+phasegent config set index-backend postgres   # 校验：仅允许 sqlite 或 postgres
+phasegent config show                         # pg-url 已脱敏
+phasegent config set index-backend sqlite
+phasegent config clear index-backend
+phasegent config clear index-pg-url
+```
+
+PostgreSQL 后端：
+
+- 词法搜索使用 `tsvector` + GIN，保持与 SQLite FTS5 相同的有界结果、
+  正文 8192 字节 CLI 上限与确定性排序契约。
+- 检入的迁移 `migrations/pg/0001_issue_index.sql` 在后端打开时通过
+  内嵌版本跟踪迁移（`_issue_index_migrations`）自动应用；迁移或连接
+  失败以结构化 config 错误返回，永不静默回退到 SQLite。
+- 选择 `postgres` 但未配置 URL、URL 非法或数据库不可用时均以清晰
+  错误失败，URL 永不在快照、错误或帮助中出现。
+- 仅 `issue_documents` / `issue_chunks` 索引表位于 PostgreSQL；凭据、
+  provider 配置、timer 等本地状态仍在 `phasegent.sqlite3`。
+
+可选构建（默认 SQLite，无需 Postgres）：
+
+```text
+cargo build --features postgres
+cargo test --features postgres   # 编译驱动路径
+```
+
+本地 PostgreSQL 测试（不添加 CI 服务）：
+
+```text
+export PHASEGENT_TEST_PG_URL='postgres://user:pass@localhost/testdb'
+cargo test --features postgres -- --nocapture  # 仅在 URL 存在时执行
+# 或：PHASEGENT_INDEX_PG_URL='postgres://...' cargo test --features postgres
+```
+
+未启用 `--features postgres` 时，若已配置 `postgres`，会返回
+`postgres index support is not enabled` 的清晰配置错误。
 
 ## 安装
 

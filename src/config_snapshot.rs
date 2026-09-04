@@ -201,7 +201,8 @@ fn global_setting_to_json(
     // The sanitised URL is only rendered for the repository URL override
     // because it is the only non-secret global setting whose value
     // contains URL-shaped data. The bearer key summary stays at
-    // presence/length.
+    // presence/length. Index backend settings follow the same rule:
+    // backend is non-secret literal, pg url is secret.
     let sanitized_value = if summary.name == "PHASEGENT_REDMINE_REPOSITORY_URL" {
         storage
             .load_global_setting(summary.name)?
@@ -215,6 +216,8 @@ fn global_setting_to_json(
     // ProviderKind parser is the same one the resolver uses, so a
     // stale row containing an unknown literal surfaces as a
     // structured config error rather than being echoed verbatim.
+    // The index backend follows the same pattern: validated lower-case
+    // `sqlite`/`postgres` literal.
     let value = if summary.name == "PHASEGENT_DEFAULT_PROVIDER" {
         match storage.load_global_setting(summary.name)? {
             Some(raw) => Some(
@@ -224,6 +227,26 @@ fn global_setting_to_json(
                     })?
                     .as_str(),
             ),
+            None => None,
+        }
+    } else if summary.name == "PHASEGENT_INDEX_BACKEND" {
+        match storage.load_global_setting(summary.name)? {
+            Some(raw) => {
+                let lower = raw.trim().to_ascii_lowercase();
+                if lower != "sqlite" && lower != "postgres" {
+                    return Err(format!(
+                        "persisted PHASEGENT_INDEX_BACKEND is invalid: '{raw}'"
+                    ));
+                }
+                // Return static str for known valid values by leaking? Instead use owned but we need 'static lifetime.
+                // The GlobalSettingJson value field is Option<&'static str>, so we must return static literals.
+                let static_val: &'static str = if lower == "postgres" {
+                    "postgres"
+                } else {
+                    "sqlite"
+                };
+                Some(static_val)
+            }
             None => None,
         }
     } else {

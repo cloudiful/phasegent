@@ -151,6 +151,14 @@ pub(crate) const GLOBAL_REDMINE_REPOSITORY_URL: &str = "PHASEGENT_REDMINE_REPOSI
 /// environment variable name so `config set` persists it
 /// without a translation table.
 pub(crate) const GLOBAL_DEFAULT_PROVIDER: &str = "PHASEGENT_DEFAULT_PROVIDER";
+/// Issue index backend selector. When `postgres` the index lives in
+/// PostgreSQL (shared, multi-machine); default `sqlite` keeps the
+/// local `phasegent-index.sqlite3` file. The string doubles as the
+/// environment variable name.
+pub(crate) const GLOBAL_INDEX_BACKEND: &str = "PHASEGENT_INDEX_BACKEND";
+/// PostgreSQL connection URL for the shared issue index. Stored as a
+/// secret global setting and never echoed in snapshots or errors.
+pub(crate) const GLOBAL_INDEX_PG_URL: &str = "PHASEGENT_INDEX_PG_URL";
 
 /// All `global_setting` row names the resolver layer currently
 /// recognises. Listed in one place so `config show` can iterate over
@@ -160,6 +168,8 @@ pub(crate) const GLOBAL_SETTING_NAMES: &[&str] = &[
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY,
     GLOBAL_REDMINE_REPOSITORY_URL,
     GLOBAL_DEFAULT_PROVIDER,
+    GLOBAL_INDEX_BACKEND,
+    GLOBAL_INDEX_PG_URL,
 ];
 
 /// Statement used by the schema initializer. Splitting `PRAGMA`s from

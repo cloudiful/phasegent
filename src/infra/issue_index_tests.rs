@@ -2,6 +2,7 @@
 //! override so the real user database is never touched.
 
 use crate::infra::issue_index::SqliteIssueIndex;
+use crate::infra::issue_index_backend::block_on;
 use crate::infra::issue_index_schema::DB_FILENAME_INDEX;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::providers::index::{
@@ -43,19 +44,19 @@ fn schema_open_is_idempotent_and_private() {
             .unwrap()
             .permissions()
             .mode()
-            & 0o777;
+        & 0o777;
         assert_eq!(dm, 0o700);
         let fm = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(fm, 0o600);
     }
     let idx2 = SqliteIssueIndex::open_at(&path).unwrap();
     let k = IssueIndexKey::new("forgejo", "owner/repo", "1").unwrap();
-    assert!(idx2.get(&k).unwrap().is_none());
+    assert!(block_on(idx2.get(&k)).unwrap().is_none());
     drop(idx);
     drop(idx2);
     let reopened = SqliteIssueIndex::open_at(&path).unwrap();
     let k2 = IssueIndexKey::new("forgejo", "owner/repo", "1").unwrap();
-    assert!(reopened.get(&k2).unwrap().is_none());
+    assert!(block_on(reopened.get(&k2)).unwrap().is_none());
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -180,14 +181,14 @@ fn upsert_replacement_and_round_trip() {
     let key = IssueIndexKey::new("forgejo", "owner/repo", "42").unwrap();
     let doc1 = IssueIndexDocument::new(key.clone(),42,"Title v1".into(),"Body v1".into(),"open".into(),Some("https://example.com/42".into()),Some(1_700_000_000),1_700_000_100).unwrap();
     let h1 = doc1.content_hash.clone();
-    idx.upsert(&doc1).unwrap();
-    let l1 = idx.get(&key).unwrap().unwrap();
+    block_on(idx.upsert(&doc1)).unwrap();
+    let l1 = block_on(idx.get(&key)).unwrap().unwrap();
     assert_eq!(l1.title, "Title v1");
     assert_eq!(l1.content_hash, h1);
     assert_eq!(l1.chunks.len(), doc1.chunks.len());
     let doc2 = IssueIndexDocument::new(key.clone(),42,"Title v2".into(),"Body v2 longer 😀😀😀😀".into(),"closed".into(),Some("https://example.com/42".into()),Some(1_700_000_200),1_700_000_300).unwrap();
-    idx.upsert(&doc2).unwrap();
-    let l2 = idx.get(&key).unwrap().unwrap();
+    block_on(idx.upsert(&doc2)).unwrap();
+    let l2 = block_on(idx.get(&key)).unwrap().unwrap();
     assert_eq!(l2.title, "Title v2");
     assert_eq!(l2.state, "closed");
     assert_eq!(l2.chunks.len(), doc2.chunks.len());
@@ -197,7 +198,7 @@ fn upsert_replacement_and_round_trip() {
         l2.body.len()
     );
     assert!(
-        idx.get(&IssueIndexKey::new("forgejo", "owner/repo", "999").unwrap())
+        block_on(idx.get(&IssueIndexKey::new("forgejo", "owner/repo", "999").unwrap()))
             .unwrap()
             .is_none()
     );
@@ -210,36 +211,36 @@ fn tombstone_missing_existing_and_resurrection() {
     let (dir, path) = tmp_index("tombstone");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
     let missing = IssueIndexKey::new("forgejo", "owner/repo", "missing-1").unwrap();
-    idx.tombstone(&missing, 1_700_010_000).unwrap();
-    let t = idx.get(&missing).unwrap().unwrap();
+    block_on(idx.tombstone(&missing, 1_700_010_000)).unwrap();
+    let t = block_on(idx.get(&missing)).unwrap().unwrap();
     assert!(t.deleted);
     assert_eq!(t.deleted_at, Some(1_700_010_000));
     assert!(t.chunks.is_empty());
     t.validate().unwrap();
-    idx.tombstone(&missing, 1_700_010_010).unwrap();
-    assert!(idx.get(&missing).unwrap().unwrap().deleted);
+    block_on(idx.tombstone(&missing, 1_700_010_010)).unwrap();
+    assert!(block_on(idx.get(&missing)).unwrap().unwrap().deleted);
     let res = IssueIndexDocument::new(missing.clone(),99,"Resurrected".into(),"I am back".into(),"open".into(),None,None,1_700_020_000).unwrap();
-    idx.upsert(&res).unwrap();
-    let back = idx.get(&missing).unwrap().unwrap();
+    block_on(idx.upsert(&res)).unwrap();
+    let back = block_on(idx.get(&missing)).unwrap().unwrap();
     assert!(!back.deleted);
     assert_eq!(back.deleted_at, None);
     assert_eq!(back.title, "Resurrected");
     back.validate().unwrap();
     let key = IssueIndexKey::new("redmine", "owner/repo", "55").unwrap();
     let doc = IssueIndexDocument::new(key.clone(),55,"To be deleted".into(),"Body to tombstone".into(),"open".into(),None,None,1_700_030_000).unwrap();
-    idx.upsert(&doc).unwrap();
-    assert!(!idx.get(&key).unwrap().unwrap().chunks.is_empty());
-    idx.tombstone(&key, 1_700_040_000).unwrap();
-    let tomb = idx.get(&key).unwrap().unwrap();
+    block_on(idx.upsert(&doc)).unwrap();
+    assert!(!block_on(idx.get(&key)).unwrap().unwrap().chunks.is_empty());
+    block_on(idx.tombstone(&key, 1_700_040_000)).unwrap();
+    let tomb = block_on(idx.get(&key)).unwrap().unwrap();
     assert!(tomb.deleted);
     assert_eq!(tomb.deleted_at, Some(1_700_040_000));
     assert!(tomb.chunks.is_empty());
     tomb.validate().unwrap();
-    idx.tombstone(&key, 1_700_040_010).unwrap();
-    assert!(idx.get(&key).unwrap().unwrap().deleted);
+    block_on(idx.tombstone(&key, 1_700_040_010)).unwrap();
+    assert!(block_on(idx.get(&key)).unwrap().unwrap().deleted);
     let doc2 = IssueIndexDocument::new(key.clone(),55,"To be deleted".into(),"New body".into(),"open".into(),None,None,1_700_050_000).unwrap();
-    idx.upsert(&doc2).unwrap();
-    let res2 = idx.get(&key).unwrap().unwrap();
+    block_on(idx.upsert(&doc2)).unwrap();
+    let res2 = block_on(idx.get(&key)).unwrap().unwrap();
     assert!(!res2.deleted);
     assert_eq!(res2.deleted_at, None);
     assert_eq!(res2.body, "New body");
@@ -255,10 +256,10 @@ fn bounded_list_pagination() {
     for i in 0..5 {
         let k = IssueIndexKey::new("forgejo", "owner/repo", format!("{i:03}")).unwrap();
         let d = IssueIndexDocument::new(k,i as u64+1,format!("Title {i}"),format!("Body {i}"),"open".into(),None,None,1_700_000_000+i as i64).unwrap();
-        idx.upsert(&d).unwrap();
+        block_on(idx.upsert(&d)).unwrap();
     }
-    let p1 = idx
-        .list(&IssueIndexListOptions::new(2, 0).unwrap())
+    let p1 = block_on(idx
+        .list(&IssueIndexListOptions::new(2, 0).unwrap()))
         .unwrap();
     assert_eq!(p1.len(), 2);
     assert_eq!(p1[0].key.external_id, "000");
@@ -269,19 +270,19 @@ fn bounded_list_pagination() {
             d.body.len()
         );
     }
-    let p2 = idx
-        .list(&IssueIndexListOptions::new(2, 2).unwrap())
+    let p2 = block_on(idx
+        .list(&IssueIndexListOptions::new(2, 2).unwrap()))
         .unwrap();
     assert_eq!(p2[0].key.external_id, "002");
     assert_eq!(p2[1].key.external_id, "003");
     assert_eq!(
-        idx.list(&IssueIndexListOptions::new(2, 4).unwrap())
+        block_on(idx.list(&IssueIndexListOptions::new(2, 4).unwrap()))
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        idx.list(&IssueIndexListOptions::new(2, 10).unwrap())
+        block_on(idx.list(&IssueIndexListOptions::new(2, 10).unwrap()))
             .unwrap()
             .len(),
         0
@@ -289,17 +290,17 @@ fn bounded_list_pagination() {
     assert!(IssueIndexListOptions::new(0, 0).is_err());
     assert!(IssueIndexListOptions::new(ISSUE_INDEX_MAX_LIST_LIMIT + 1, 0).is_err());
     let tk = IssueIndexKey::new("forgejo", "owner/repo", "002").unwrap();
-    idx.tombstone(&tk, 1_700_010_000).unwrap();
+    block_on(idx.tombstone(&tk, 1_700_010_000)).unwrap();
     assert_eq!(
-        idx.list(&IssueIndexListOptions::new(10, 0).unwrap())
+        block_on(idx.list(&IssueIndexListOptions::new(10, 0).unwrap()))
             .unwrap()
             .len(),
         4
     );
     let res = IssueIndexDocument::new(tk.clone(),3,"Title 2".into(),"Body 2".into(),"open".into(),None,None,1_700_020_000).unwrap();
-    idx.upsert(&res).unwrap();
+    block_on(idx.upsert(&res)).unwrap();
     assert_eq!(
-        idx.list(&IssueIndexListOptions::new(10, 0).unwrap())
+        block_on(idx.list(&IssueIndexListOptions::new(10, 0).unwrap()))
             .unwrap()
             .len(),
         5
@@ -333,14 +334,14 @@ fn validation_failures() {
     let (dir, path) = tmp_index("val-tomb");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
     let valid = IssueIndexKey::new("forgejo", "owner/repo", "1").unwrap();
-    assert!(idx.tombstone(&valid, 0).is_err());
-    assert!(idx.tombstone(&valid, -5).is_err());
+    assert!(block_on(idx.tombstone(&valid, 0)).is_err());
+    assert!(block_on(idx.tombstone(&valid, -5)).is_err());
     let invalid = IssueIndexKey {
         source: "".into(),
         project: "owner/repo".into(),
         external_id: "1".into(),
     };
-    assert!(idx.get(&invalid).is_err());
+    assert!(block_on(idx.get(&invalid)).is_err());
     let _ = fs::remove_dir_all(dir);
     let (dir2, path2) = tmp_index("val-get2");
     let idx2 = SqliteIssueIndex::open_at(&path2).unwrap();
@@ -349,6 +350,121 @@ fn validation_failures() {
         project: "owner/repo".into(),
         external_id: "1".into(),
     };
-    assert!(idx2.get(&inv2).is_err());
+    assert!(block_on(idx2.get(&inv2)).is_err());
     let _ = fs::remove_dir_all(dir2);
+}
+
+#[cfg(feature = "postgres")]
+mod postgres_tests {
+    use super::*;
+    use crate::infra::issue_index_backend::block_on as pg_block;
+    use crate::infra::issue_index_postgres::PostgresIssueIndex;
+    use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore};
+
+    fn test_pg_url() -> Option<String> {
+        for name in ["PHASEGENT_TEST_PG_URL", "PHASEGENT_INDEX_PG_URL"] {
+            if let Ok(v) = std::env::var(name) {
+                let t = v.trim().to_owned();
+                if !t.is_empty() {
+                    return Some(t);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn postgres_upsert_search_and_tombstone_round_trip() {
+        let Some(url) = test_pg_url() else {
+            eprintln!("SKIP postgres_upsert_search: PHASEGENT_TEST_PG_URL not set");
+            return;
+        };
+        // Never print the URL.
+        assert!(!url.is_empty());
+        let idx = pg_block(PostgresIssueIndex::open(&url)).expect("postgres open must succeed with valid URL");
+        // Ensure clean slate for our unique keys (use unique source/project prefix).
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let source = format!("pgtest-{suffix}");
+        let project = format!("proj/{suffix}");
+        let key = IssueIndexKey::new(source.clone(), project.clone(), "1").unwrap();
+        let doc = IssueIndexDocument::new(
+            key.clone(),
+            1,
+            "hello postgres".into(),
+            "body with tsvector test".into(),
+            "open".into(),
+            None,
+            None,
+            1_700_000_000,
+        )
+        .unwrap();
+        pg_block(idx.upsert(&doc)).unwrap();
+        let res = pg_block(idx.lexical_search("hello", 10, 0, false)).unwrap();
+        // Bounded envelope must respect limit/offset and not leak URL.
+        assert!(res.total_count >= 1);
+        assert!(res.items.iter().any(|i| i.title == "hello postgres"));
+        assert!(!res.items.iter().any(|i| i.body.is_some()), "body omitted by default");
+        let res_body = pg_block(idx.lexical_search("postgres", 10, 0, true)).unwrap();
+        assert!(res_body.items.iter().any(|i| i.body.is_some()));
+        // Tombstone must remove from search.
+        pg_block(idx.tombstone(&key, 1_700_000_100)).unwrap();
+        let after = pg_block(idx.lexical_search("hello", 10, 0, false)).unwrap();
+        assert!(!after.items.iter().any(|i| i.external_id == "1" && i.source == source));
+        // Resurrect.
+        let doc2 = IssueIndexDocument::new(
+            key.clone(),
+            1,
+            "hello postgres revived".into(),
+            "new body".into(),
+            "open".into(),
+            None,
+            None,
+            1_700_000_200,
+        )
+        .unwrap();
+        pg_block(idx.upsert(&doc2)).unwrap();
+        let revived = pg_block(idx.lexical_search("revived", 10, 0, false)).unwrap();
+        assert!(revived.items.iter().any(|i| i.external_id == "1"));
+        // Body cap on search output.
+        let long_body = "a".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 50);
+        let k2 = IssueIndexKey::new(source.clone(), project.clone(), "2").unwrap();
+        let doc_long = IssueIndexDocument::new(k2.clone(), 2, "long pg".into(), long_body.clone(), "open".into(), None, None, 1_700_000_300).unwrap();
+        pg_block(idx.upsert(&doc_long)).unwrap();
+        let capped = pg_block(idx.lexical_search("long", 10, 0, true)).unwrap();
+        let item = capped.items.iter().find(|i| i.external_id == "2").unwrap();
+        assert_eq!(item.body_truncated, Some(true));
+        assert_eq!(item.body.as_ref().unwrap().len(), crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES);
+        // Clean up keys.
+        pg_block(idx.tombstone(&k2, 1_700_000_400)).unwrap();
+        let _ = pg_block(idx.tombstone(&key, 1_700_000_401));
+    }
+
+    #[test]
+    fn postgres_backend_selection_requires_url() {
+        let _lock = lock_workflow_tests();
+        let db_path = super::tmp_index("pg-select").0.join("dummy.sqlite3");
+        let storage = crate::infra::storage::Storage::open_at(&db_path).unwrap();
+        // Persist postgres without URL -> backend open must fail, not fallback.
+        storage
+            .save_global_setting("PHASEGENT_INDEX_BACKEND", "postgres")
+            .unwrap();
+        storage.delete_global_setting("PHASEGENT_INDEX_PG_URL").unwrap();
+        let err = match pg_block(
+            crate::infra::issue_index_backend::IssueIndexBackend::open_with_storage(&storage),
+        ) {
+            Ok(_) => panic!("postgres without URL must fail, not fallback to sqlite"),
+            Err(err) => err,
+        };
+        assert!(err.contains("PHASEGENT_INDEX_PG_URL"), "got: {err}");
+        // No URL leak.
+        assert!(!err.to_ascii_lowercase().contains("postgres://"), "leak: {err}");
+        let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
+    }
 }

@@ -817,22 +817,73 @@ syncs never tombstone. Redmine sync requires an explicit
 `owner/repo`, GitLab scope is the numeric project id.
 
 `issue index search` is local-only (no provider credential/config/network
-lookup) and uses SQLite FTS5. It rejects empty/whitespace queries,
+lookup) and uses SQLite FTS5 by default (optional PostgreSQL via `tsvector`+ GIN). It rejects empty/whitespace queries,
 escapes/normalizes input so ordinary terms and Unicode work without
 malformed FTS syntax crashes, and returns a bounded envelope
 `{ items: [{source, project, external_id, issue_number, title, state,
 html_url, body?, body_truncated?}], offset, limit, total_count,
 has_more }` that omits bodies by default and caps explicitly returned
 bodies to 8192 bytes with truncation metadata. Stable deterministic
-ordering by rank then `source`/`project`/`external_id` is used for ties.
-Deleted/tombstoned documents are excluded.
+ordering by rank then `source`/`project`/`external_id` is used for ties
+(`ts_rank` for PostgreSQL). Deleted/tombstoned documents are excluded.
 
-The current implementation is SQLite-only; sync and search are bounded
-and local. PostgreSQL and Qdrant backends are not yet implemented and
-are not claimed here — the SQLite index is the only available backend,
-and the `IssueIndexStore` trait will be reused when a later phase adds
-an optional PostgreSQL backend without moving credentials to the shared
-database.
+#### Choosing the index backend (SQLite default, PostgreSQL optional)
+
+By default the index stays local in `phasegent-index.sqlite3`. Select a
+shared PostgreSQL index for multi-machine use and keep credentials
+isolated in `phasegent.sqlite3`:
+
+```text
+phasegent config set index-backend postgres
+phasegent config set index-pg-url --stdin < /secure/path/pg-url
+# env var precedence also works (runtime override, SQLite fallback):
+export PHASEGENT_INDEX_BACKEND=postgres
+export PHASEGENT_INDEX_PG_URL='postgres://user:pass@host/db'
+```
+
+Validate and inspect (URL is secret, snapshots show only `present`/`length`):
+
+```text
+phasegent config set index-backend postgres   # validated: sqlite or postgres
+phasegent config show                         # redacted pg-url snapshot
+phasegent config set index-backend sqlite
+phasegent config clear index-backend
+phasegent config clear index-pg-url
+```
+
+PostgreSQL backend:
+
+- Lexical search uses `tsvector` + GIN and preserves the same bounded
+  result, body-cap (8192-byte CLI cap), and deterministic ordering
+  contract as SQLite FTS5.
+- The checked-in migration `migrations/pg/0001_issue_index.sql` is
+  auto-applied on backend open via an embedded version-tracked migration
+  (`_issue_index_migrations`); migration or connection failures surface
+  as structured config errors and never silently fall back to SQLite.
+- Selecting `postgres` without a URL, with an invalid URL, or with an
+  unavailable DB fails clearly; the URL never appears in snapshots,
+  errors, or help output.
+- Only index tables (`issue_documents`, `issue_chunks`) live in
+  PostgreSQL; credentials, provider config, timers, and local settings
+  remain in `phasegent.sqlite3`.
+
+Build with Postgres support (optional, default is SQLite):
+
+```text
+cargo build --features postgres
+cargo test --features postgres   # compiles the driver path
+```
+
+Local PostgreSQL tests (no CI service is added):
+
+```text
+export PHASEGENT_TEST_PG_URL='postgres://user:pass@localhost/testdb'
+cargo test --features postgres -- --nocapture  # runs only when the URL is set
+# or: PHASEGENT_INDEX_PG_URL='postgres://...' cargo test --features postgres
+```
+
+Without `--features postgres`, configuring `postgres` returns a clear
+`postgres index support is not enabled` config error.
 
 ## Install
 

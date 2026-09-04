@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use async_trait::async_trait;
+
 pub const ISSUE_INDEX_MAX_SOURCE_LEN: usize = 64;
 pub const ISSUE_INDEX_MAX_PROJECT_LEN: usize = 200;
 pub const ISSUE_INDEX_MAX_EXTERNAL_ID_LEN: usize = 128;
@@ -364,19 +366,23 @@ impl IssueIndexListOptions {
         Ok(Self { limit, offset })
     }
 }
+#[async_trait(?Send)]
 pub trait IssueIndexStore {
-    fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String>;
-    fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String>;
-    fn list(&self, options: &IssueIndexListOptions) -> Result<Vec<IssueIndexDocument>, String>;
-    fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String>;
-    fn lexical_search(
+    async fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String>;
+    async fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String>;
+    async fn list(
+        &self,
+        options: &IssueIndexListOptions,
+    ) -> Result<Vec<IssueIndexDocument>, String>;
+    async fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String>;
+    async fn lexical_search(
         &self,
         query: &str,
         limit: usize,
         offset: usize,
         include_body: bool,
     ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String>;
-    fn list_active_keys_for_scope(
+    async fn list_active_keys_for_scope(
         &self,
         source: &str,
         project: &str,
