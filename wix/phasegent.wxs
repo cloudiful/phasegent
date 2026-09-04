@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v6 per-user installer for phasegent.
+
+  Build (run on the matching Windows runner):
+    wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=1.2.3 -ext WixToolset.UI.wixext -o phasegent-v1.2.3-x86_64-pc-windows-msvc.msi
+    wix build wix/phasegent.wxs -arch arm64 -d SourceDir=msi-stage -d Version=1.2.3 -ext WixToolset.UI.wixext -o phasegent-v1.2.3-aarch64-pc-windows-msvc.msi
+
+  Preprocessor variables:
+    SourceDir - directory containing phasegent.exe to install.
+    Version   - strict numeric MAJOR.MINOR.PATCH derived from the release tag.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="phasegent" Language="1033" Version="$(var.Version)" Manufacturer="phasegent" UpgradeCode="51047C29-F895-4705-86DC-0A847258CA61" Scope="perUser" Compressed="yes">
+    <MajorUpgrade AllowDowngrades="no" DowngradeErrorMessage="A newer version of phasegent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="MainFeature" Title="phasegent" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+  </Package>
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="phasegent" />
+      </Directory>
+    </Directory>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="PhasegentExeComponent" Guid="3D6E603A-65F6-407B-8201-FAFDAFB8AE2A">
+        <File Id="PhasegentExeFile" Source="$(var.SourceDir)\phasegent.exe" KeyPath="yes" />
+        <Environment Id="PhasegentUserPath" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="no" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -63,6 +63,48 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
+      - name: Install WiX Toolset (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 6.0.2
+          $tools = "$env:USERPROFILE\.dotnet\tools"
+          Add-Content -Path $env:GITHUB_PATH -Value $tools
+          $env:PATH = "$tools;$env:PATH"
+          wix extension add --global WixToolset.UI.wixext/6.0.2
+          wix --version
+          wix extension list
+
+      - name: Build MSI and portable archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          $msiVersion = $tag -replace '^v', ''
+          if ($msiVersion -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "Tag '$tag' must be strict numeric MAJOR.MINOR.PATCH (for example v1.2.3)."
+            exit 1
+          }
+          $exeName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe'
+          $msiName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi'
+          $zipName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}-portable.zip'
+          New-Item -ItemType Directory -Force -Path msi-stage | Out-Null
+          Copy-Item -Path $exeName -Destination 'msi-stage\phasegent.exe' -Force
+          if ('${{ matrix.target }}' -eq 'x86_64-pc-windows-msvc') {
+            wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName
+          } else {
+            wix build wix/phasegent.wxs -arch arm64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName
+          }
+          New-Item -ItemType Directory -Force -Path portable-stage | Out-Null
+          Copy-Item -Path $exeName -Destination 'portable-stage\phasegent.exe' -Force
+          Copy-Item -Path LICENSE -Destination 'portable-stage\LICENSE' -Force
+          Copy-Item -Path README.md -Destination 'portable-stage\README.md' -Force
+          Copy-Item -Path README.zh-CN.md -Destination 'portable-stage\README.zh-CN.md' -Force
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
+          Compress-Archive -Path 'portable-stage\*' -DestinationPath $zipName -Force
+          Get-ChildItem $exeName, $msiName, $zipName
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
