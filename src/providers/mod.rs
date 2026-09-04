@@ -9,11 +9,7 @@ pub mod redmine;
 
 use crate::policy::Capability;
 
-pub use api::{
-    CommentOutput, ISSUE_SEARCH_DEFAULT_LIMIT, ISSUE_SEARCH_DEFAULT_PAGE,
-    ISSUE_SEARCH_MAX_BODY_BYTES, ISSUE_SEARCH_MAX_LIMIT, IssueSearchItem, IssueSearchOptions,
-    IssueSearchResult, IssueSummary, IssueSummaryPage, RepoSummary,
-};
+pub use api::{CommentOutput, IssueSearchOptions, IssueSearchResult, IssueSummary, RepoSummary};
 pub use config::{GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider};
 pub use dispatch::ProviderDispatcher;
 pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};

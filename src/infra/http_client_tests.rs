@@ -253,14 +253,22 @@ fn gzip_json_and_text_are_transparently_decoded() {
     );
     server.join().unwrap();
 
-    // Text via GitLab get_text with gzip.
-    let (base, _requests, server) = sequence(vec![MockResponse::gzip_text()]);
-    let gitlab = GitlabHttp::new(format!("{base}/api/v4"), "glpat-test".into()).unwrap();
-    let text = gitlab
-        .get_text("projects/42/jobs/1/trace", &[], "ci job logs")
-        .unwrap();
+    // Text via the shared retry/decompression helper with gzip.
+    let (base, requests, server) = sequence(vec![MockResponse::gzip_text()]);
+    let client = http_client::build_client().unwrap();
+    let (_status, _headers, text) = http_client::fetch_with_retry(
+        client.get(format!("{base}/trace")),
+        "ci job logs",
+        |message| message.to_owned(),
+    )
+    .unwrap();
     assert!(text.contains("plain text log line 1"));
     assert!(text.contains("line 2"));
+    let req = requests.recv().unwrap().remove(0);
+    assert!(
+        req.to_ascii_lowercase().contains("accept-encoding"),
+        "gzip feature must negotiate Accept-Encoding, got: {req}"
+    );
     server.join().unwrap();
 }
 

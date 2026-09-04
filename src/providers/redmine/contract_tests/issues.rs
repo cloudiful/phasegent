@@ -286,7 +286,7 @@ fn search_rejects_empty_query_unless_all_and_reports_truncation() {
     assert!(!request.contains("subject="));
 
     // body truncation on explicit include
-    let long_desc = "x".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 5);
+    let long_desc = "x".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 5);
     let collection = serde_json::json!({
         "total_count": 1,
         "limit": 1,
@@ -317,7 +317,7 @@ fn search_rejects_empty_query_unless_all_and_reports_truncation() {
     assert_eq!(result.items[0].body_truncated, Some(true));
     assert_eq!(
         result.items[0].body.as_ref().unwrap().len(),
-        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+        crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
     );
     server.join().unwrap();
     drop(requests);

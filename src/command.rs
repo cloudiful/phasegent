@@ -21,10 +21,7 @@ mod timer;
 mod version;
 mod workflow;
 
-pub(crate) use parse_helpers::{
-    has_flag, optional_option, require_exact_positionals, required_nonempty_option,
-    validate_options,
-};
+pub(crate) use parse_helpers::{has_flag, optional_option, validate_options};
 
 use parse_helpers::{required_value, split_inline};
 

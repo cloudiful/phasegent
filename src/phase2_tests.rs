@@ -2563,8 +2563,8 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         }) => {
             assert_eq!(query.as_deref(), Some("needle"));
             assert_eq!(state, "all");
-            assert_eq!(page, crate::providers::ISSUE_SEARCH_DEFAULT_PAGE);
-            assert_eq!(limit, crate::providers::ISSUE_SEARCH_DEFAULT_LIMIT);
+            assert_eq!(page, crate::providers::api::ISSUE_SEARCH_DEFAULT_PAGE);
+            assert_eq!(limit, crate::providers::api::ISSUE_SEARCH_DEFAULT_LIMIT);
             assert!(!all);
             assert!(!include_body);
         }
@@ -2712,7 +2712,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
     assert!(opts.validate().is_ok());
     assert_eq!(opts.effective_query(), Some("q"));
 
-    let long = "b".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 3);
+    let long = "b".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 3);
     let summary = crate::providers::IssueSummary {
         id: 1,
         number: 1,
@@ -2721,7 +2721,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item = crate::providers::IssueSearchItem::from_summary(summary, false);
+    let item = crate::providers::api::IssueSearchItem::from_summary(summary, false);
     assert!(item.body.is_none());
     assert!(item.body_truncated.is_none());
 
@@ -2733,11 +2733,11 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item2 = crate::providers::IssueSearchItem::from_summary(summary2, true);
+    let item2 = crate::providers::api::IssueSearchItem::from_summary(summary2, true);
     assert_eq!(item2.body_truncated, Some(true));
     assert_eq!(
         item2.body.as_ref().unwrap().len(),
-        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+        crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
     );
 
     let short = crate::providers::IssueSummary {
@@ -2748,7 +2748,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item3 = crate::providers::IssueSearchItem::from_summary(short, true);
+    let item3 = crate::providers::api::IssueSearchItem::from_summary(short, true);
     assert_eq!(item3.body_truncated, Some(false));
     assert_eq!(item3.body.as_deref(), Some("short"));
 }
@@ -2767,10 +2767,10 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item = crate::providers::IssueSearchItem::from_summary(summary, true);
+    let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(true));
     let body = item.body.unwrap();
-    assert!(body.len() <= crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES);
+    assert!(body.len() <= crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES);
     // Must remain valid UTF-8 and end on a char boundary; the helper must
     // have trimmed to the previous boundary rather than splitting 汉.
     assert!(body.is_char_boundary(body.len()));
@@ -2788,10 +2788,10 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item = crate::providers::IssueSearchItem::from_summary(summary, true);
+    let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(true));
     let body = item.body.unwrap();
-    assert!(body.len() <= crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES);
+    assert!(body.len() <= crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES);
     assert!(body.is_char_boundary(body.len()));
     // 8192 /4 = 2048 exactly, so emoji truncation lands exactly on 8192.
     assert_eq!(body.len(), 8192);
@@ -2807,7 +2807,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item = crate::providers::IssueSearchItem::from_summary(summary, true);
+    let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(true));
     let body = item.body.unwrap();
     // The emoji would push over 8192, so it must be dropped entirely rather
@@ -2817,7 +2817,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
     assert!(body.is_char_boundary(body.len()));
 
     // Exactly at cap must not be marked truncated
-    let exact = "b".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES);
+    let exact = "b".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES);
     let summary = crate::providers::IssueSummary {
         id: 13,
         number: 13,
@@ -2826,7 +2826,10 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         state: "open".to_owned(),
         html_url: None,
     };
-    let item = crate::providers::IssueSearchItem::from_summary(summary, true);
+    let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(false));
-    assert_eq!(item.body.unwrap().len(), crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES);
+    assert_eq!(
+        item.body.unwrap().len(),
+        crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
+    );
 }

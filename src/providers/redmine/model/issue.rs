@@ -12,7 +12,6 @@ pub(crate) struct RedmineIssueCollection {
     #[serde(default)]
     pub(crate) issues: Vec<RedmineIssue>,
     pub(crate) total_count: Option<usize>,
-    pub(crate) limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,16 +311,6 @@ impl RedmineIssue {
                 .is_closed
                 .unwrap_or_else(|| status.name.to_ascii_lowercase().contains("closed"))
         })
-    }
-}
-
-impl RedmineIssueCollection {
-    pub(crate) fn signature(&self) -> String {
-        self.issues
-            .iter()
-            .map(|issue| issue.id.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
     }
 }
 

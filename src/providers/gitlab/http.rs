@@ -420,28 +420,6 @@ impl GitlabHttp {
         }
     }
 
-    /// `GET` that returns a raw text response body. Used by the
-    /// GitLab job trace endpoint, which is intentionally not JSON
-    /// (the trace is plain text plus ANSI colour escapes). Honours
-    /// the same authentication, status, and token-redaction rules
-    /// as the JSON helpers.
-    pub(crate) fn get_text(
-        &self,
-        path: &str,
-        query: &[(&str, String)],
-        operation: &str,
-    ) -> Result<String, ForgejoError> {
-        // Safe GET for text payloads: retry on transient failures.
-        let (status, text) = self.response_with_retry(
-            self.client.get(self.endpoint(path)?).query(query),
-            operation,
-        )?;
-        if !status.is_success() {
-            return Err(self.http_error(status, &text, operation));
-        }
-        Ok(self.redact(&text))
-    }
-
     /// Issue a `DELETE` against the GitLab API. Phase 4 introduces
     /// this helper for issue link deletes (`/links/:id`) and any
     /// future endpoint that follows the same shape. The method is

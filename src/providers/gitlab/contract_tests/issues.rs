@@ -166,7 +166,7 @@ fn search_reports_truncation_and_validates_bounds() {
     let output = result.unwrap();
     assert!(output.items[0].body.is_none());
 
-    let long_body = "a".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 10);
+    let long_body = "a".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 10);
     let long_payload = serde_json::json!({
         "id": 9,
         "iid": 9,
@@ -193,7 +193,7 @@ fn search_reports_truncation_and_validates_bounds() {
     assert_eq!(output.items[0].body_truncated, Some(true));
     assert_eq!(
         output.items[0].body.as_ref().unwrap().len(),
-        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+        crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
     );
 
     // invalid bounds

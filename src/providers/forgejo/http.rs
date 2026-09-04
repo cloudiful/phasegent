@@ -121,17 +121,6 @@ pub(crate) fn decode_page_from_parts<T: DeserializeOwned>(
     })
 }
 
-pub(crate) fn decode_text_from_parts(
-    status: StatusCode,
-    text: String,
-    operation: &str,
-) -> Result<String, ForgejoError> {
-    if !status.is_success() {
-        return Err(http_error(status, &text, operation));
-    }
-    Ok(text)
-}
-
 fn response_parts(
     response: Response,
     operation: &str,

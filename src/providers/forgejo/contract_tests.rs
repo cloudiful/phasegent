@@ -351,7 +351,7 @@ fn issue_search_reports_has_more_from_link_and_compact_truncation() {
     assert!(output.items[0].body_truncated.is_none());
 
     // Explicit body inclusion is bounded and reports truncation.
-    let long_body = "a".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 10);
+    let long_body = "a".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 10);
     let issue_with_long_body = format!(
         r#"{{"id":2,"number":9,"title":"Long","body":"{long_body}","state":"open","html_url":"https://forgejo.example/issues/9"}}"#
     );
@@ -372,7 +372,7 @@ fn issue_search_reports_has_more_from_link_and_compact_truncation() {
     assert_eq!(output.items[0].body_truncated, Some(true));
     assert_eq!(
         output.items[0].body.as_ref().unwrap().len(),
-        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+        crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
     );
 }
 
