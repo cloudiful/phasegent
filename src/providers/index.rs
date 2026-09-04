@@ -366,6 +366,62 @@ impl IssueIndexListOptions {
         Ok(Self { limit, offset })
     }
 }
+
+/// Optional scope filter for transparent-fallback lexical search.
+/// `source` is the provider literal (`forgejo`/`redmine`/`gitlab`),
+/// `project` is the stable project identifier for that provider
+/// (`owner/repo`, Redmine project id, or GitLab numeric id as string),
+/// and `state` is `open`/`closed` (`all`/`None` means no state filter).
+/// All fields are optional so global fallback (no known scope) stays
+/// representable without inventing a scope.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LexicalScope {
+    pub source: Option<String>,
+    pub project: Option<String>,
+    pub state: Option<String>,
+}
+
+impl LexicalScope {
+    pub fn global() -> Self {
+        Self {
+            source: None,
+            project: None,
+            state: None,
+        }
+    }
+
+    pub fn scoped(
+        source: impl Into<String>,
+        project: impl Into<String>,
+        state: &str,
+    ) -> Result<Self, String> {
+        let source = source.into();
+        let project = project.into();
+        if source.trim().is_empty() || project.trim().is_empty() {
+            return Err("scope source and project must be non-empty".to_owned());
+        }
+        let state = match state.trim() {
+            "" | "all" => None,
+            "open" | "closed" => Some(state.trim().to_owned()),
+            other => {
+                return Err(format!(
+                    "scope state must be open, closed, or all, got '{other}'"
+                ));
+            }
+        };
+        Ok(Self {
+            source: Some(source.trim().to_owned()),
+            project: Some(project.trim().to_owned()),
+            state,
+        })
+    }
+
+    /// True when no filter is set; callers may use the cheaper global
+    /// `lexical_search` path.
+    pub fn is_global(&self) -> bool {
+        self.source.is_none() && self.project.is_none() && self.state.is_none()
+    }
+}
 #[async_trait(?Send)]
 pub trait IssueIndexStore {
     async fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String>;
@@ -381,6 +437,18 @@ pub trait IssueIndexStore {
         limit: usize,
         offset: usize,
         include_body: bool,
+    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String>;
+    /// Scoped lexical search for transparent fallback. Implementations
+    /// filter by `source`/`project` when both are present and by `state`
+    /// when it is `Some(open|closed)`; a global scope behaves exactly
+    /// like `lexical_search`.
+    async fn lexical_search_scoped(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        include_body: bool,
+        scope: &LexicalScope,
     ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String>;
     async fn list_active_keys_for_scope(
         &self,

@@ -410,6 +410,24 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
         offset: usize,
         include_body: bool,
     ) -> Result<IssueIndexSearchResult, String> {
+        self.lexical_search_scoped(
+            query,
+            limit,
+            offset,
+            include_body,
+            &crate::providers::index::LexicalScope::global(),
+        )
+        .await
+    }
+
+    async fn lexical_search_scoped(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        include_body: bool,
+        scope: &crate::providers::index::LexicalScope,
+    ) -> Result<IssueIndexSearchResult, String> {
         if limit == 0 || limit > ISSUE_INDEX_SEARCH_MAX_LIMIT {
             return Err(format!(
                 "search limit must be between 1 and {}",
@@ -422,30 +440,135 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
                 "issue index search requires --query TEXT (empty queries are rejected)".to_owned(),
             );
         }
-        // Bounded count.
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM issue_documents WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE",
-        )
-        .bind(trimmed)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| "could not count lexical results".to_owned())?;
+        let has_scope = scope.source.is_some() && scope.project.is_some();
+        let has_state = matches!(scope.state.as_deref(), Some("open") | Some("closed"));
+        // Bounded count with optional scope/state filters.
+        let total: i64 = match (has_scope, has_state) {
+            (false, false) => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM issue_documents WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE",
+            )
+            .bind(trimmed)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| "could not count lexical results".to_owned())?,
+            (false, true) => {
+                let state = scope.state.as_deref().unwrap_or_default();
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM issue_documents WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE AND state=$2",
+                )
+                .bind(trimmed)
+                .bind(state)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|_| "could not count lexical results".to_owned())?
+            }
+            (true, false) => {
+                let source = scope.source.as_deref().unwrap_or_default();
+                let project = scope.project.as_deref().unwrap_or_default();
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM issue_documents WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE AND source=$2 AND project=$3",
+                )
+                .bind(trimmed)
+                .bind(source)
+                .bind(project)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|_| "could not count lexical results".to_owned())?
+            }
+            (true, true) => {
+                let source = scope.source.as_deref().unwrap_or_default();
+                let project = scope.project.as_deref().unwrap_or_default();
+                let state = scope.state.as_deref().unwrap_or_default();
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM issue_documents WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE AND source=$2 AND project=$3 AND state=$4",
+                )
+                .bind(trimmed)
+                .bind(source)
+                .bind(project)
+                .bind(state)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|_| "could not count lexical results".to_owned())?
+            }
+        };
         let total_count = total as usize;
 
-        let rows = sqlx::query(
-            "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at, \
-             ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank \
-             FROM issue_documents \
-             WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE \
-             ORDER BY rank DESC, source ASC, project ASC, external_id ASC \
-             LIMIT $2 OFFSET $3",
-        )
-        .bind(trimmed)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|_| "could not execute lexical search".to_owned())?;
+        let rows = match (has_scope, has_state) {
+            (false, false) => sqlx::query(
+                "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at, \
+                 ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank \
+                 FROM issue_documents \
+                 WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE \
+                 ORDER BY rank DESC, source ASC, project ASC, external_id ASC \
+                 LIMIT $2 OFFSET $3",
+            )
+            .bind(trimmed)
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|_| "could not execute lexical search".to_owned())?,
+            (false, true) => {
+                let state = scope.state.as_deref().unwrap_or_default();
+                sqlx::query(
+                    "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at, \
+                     ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank \
+                     FROM issue_documents \
+                     WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE AND state=$2 \
+                     ORDER BY rank DESC, source ASC, project ASC, external_id ASC \
+                     LIMIT $3 OFFSET $4",
+                )
+                .bind(trimmed)
+                .bind(state)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| "could not execute lexical search".to_owned())?
+            }
+            (true, false) => {
+                let source = scope.source.as_deref().unwrap_or_default();
+                let project = scope.project.as_deref().unwrap_or_default();
+                sqlx::query(
+                    "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at, \
+                     ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank \
+                     FROM issue_documents \
+                     WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE AND source=$2 AND project=$3 \
+                     ORDER BY rank DESC, source ASC, project ASC, external_id ASC \
+                     LIMIT $4 OFFSET $5",
+                )
+                .bind(trimmed)
+                .bind(source)
+                .bind(project)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| "could not execute lexical search".to_owned())?
+            }
+            (true, true) => {
+                let source = scope.source.as_deref().unwrap_or_default();
+                let project = scope.project.as_deref().unwrap_or_default();
+                let state = scope.state.as_deref().unwrap_or_default();
+                sqlx::query(
+                    "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at, \
+                     ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank \
+                     FROM issue_documents \
+                     WHERE search_vector @@ plainto_tsquery('english', $1) AND deleted=FALSE AND source=$2 AND project=$3 AND state=$4 \
+                     ORDER BY rank DESC, source ASC, project ASC, external_id ASC \
+                     LIMIT $5 OFFSET $6",
+                )
+                .bind(trimmed)
+                .bind(source)
+                .bind(project)
+                .bind(state)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| "could not execute lexical search".to_owned())?
+            }
+        };
 
         let mut items = Vec::with_capacity(rows.len());
         for r in rows {
@@ -637,6 +760,16 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
         _limit: usize,
         _offset: usize,
         _include_body: bool,
+    ) -> Result<IssueIndexSearchResult, String> {
+        Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
+    }
+    async fn lexical_search_scoped(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _offset: usize,
+        _include_body: bool,
+        _scope: &crate::providers::index::LexicalScope,
     ) -> Result<IssueIndexSearchResult, String> {
         Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
     }

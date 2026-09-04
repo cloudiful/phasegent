@@ -133,6 +133,84 @@ pub fn provider_scope(
     }
 }
 
+/// Derive a stable scope from explicit CLI args without any provider
+/// credential/config/network lookup. Used only for transparent-fallback
+/// scoping when the dispatcher is unavailable (resolution/auth failed).
+/// Returns `None` when the explicit args do not determine a scope, in
+/// which case global fallback (clearly marked stale) is allowed.
+/// Never reads Storage, env provider defaults, or the network.
+pub fn explicit_scope(
+    provider_kind: Option<crate::providers::ProviderKind>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+) -> Option<IssueIndexScope> {
+    let kind = provider_kind?;
+    match kind {
+        crate::providers::ProviderKind::Forgejo => {
+            let repo = repository?.trim();
+            if repo.is_empty() || !repo.contains('/') {
+                return None;
+            }
+            // Basic `owner/repo` shape check without network or config.
+            let mut parts = repo.split('/');
+            let owner = parts.next()?.trim();
+            let name = parts.next()?.trim();
+            if owner.is_empty() || name.is_empty() || parts.next().is_some() {
+                return None;
+            }
+            IssueIndexScope::new("forgejo", format!("{owner}/{name}")).ok()
+        }
+        crate::providers::ProviderKind::Redmine => {
+            let pid = project_id?.trim();
+            if pid.is_empty() {
+                return None;
+            }
+            IssueIndexScope::new("redmine", pid).ok()
+        }
+        crate::providers::ProviderKind::Gitlab => {
+            let pid = project_id?.trim();
+            if pid.is_empty() {
+                return None;
+            }
+            // GitLab project ids are numeric; reject non-numeric so we
+            // never invent a scope for a malformed id.
+            let parsed: u64 = pid.parse().ok()?;
+            if parsed == 0 {
+                return None;
+            }
+            IssueIndexScope::new("gitlab", parsed.to_string()).ok()
+        }
+    }
+}
+
+/// Convert a local lexical scope plus requested search state into the
+/// storage-layer [`crate::providers::index::LexicalScope`]. `state`
+/// `all`/empty means no state filter.
+pub fn lexical_scope_for_state(
+    scope: Option<&IssueIndexScope>,
+    state: &str,
+) -> crate::providers::index::LexicalScope {
+    use crate::providers::index::LexicalScope;
+    let state_trimmed = state.trim();
+    let state_filter = match state_trimmed {
+        "" | "all" => None,
+        "open" | "closed" => Some(state_trimmed.to_owned()),
+        _ => None,
+    };
+    match scope {
+        None => LexicalScope {
+            source: None,
+            project: None,
+            state: state_filter,
+        },
+        Some(scope) => LexicalScope {
+            source: Some(scope.source.clone()),
+            project: Some(scope.project.clone()),
+            state: state_filter,
+        },
+    }
+}
+
 /// Summary returned by `issue index sync`.
 #[derive(Debug, Serialize)]
 pub struct IssueIndexSyncSummary {

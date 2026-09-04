@@ -6,7 +6,7 @@ pub const ISSUE_SEARCH_DEFAULT_LIMIT: usize = 50;
 pub const ISSUE_SEARCH_MAX_LIMIT: usize = 100;
 pub const ISSUE_SEARCH_MAX_BODY_BYTES: usize = 8192;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct IssueSummary {
     pub id: u64,
     pub number: u64,
@@ -69,6 +69,15 @@ pub struct IssueSearchItem {
     pub body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body_truncated: Option<bool>,
+    /// Additive local-index scope retained only on stale fallback items.
+    /// Provider-fresh results leave all three as `None` so stdout JSON
+    /// stays byte-compatible with the pre-Phase-2 shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
 }
 
 pub(crate) fn truncate_to_byte_limit(value: &str, max_bytes: usize) -> &str {
@@ -94,6 +103,9 @@ impl IssueSearchItem {
                 html_url: summary.html_url,
                 body: None,
                 body_truncated: None,
+                source: None,
+                project: None,
+                external_id: None,
             }
         } else {
             let truncated = summary.body.len() > ISSUE_SEARCH_MAX_BODY_BYTES;
@@ -110,7 +122,51 @@ impl IssueSearchItem {
                 html_url: summary.html_url,
                 body: Some(body),
                 body_truncated: Some(truncated),
+                source: None,
+                project: None,
+                external_id: None,
             }
+        }
+    }
+
+    /// Build a stale-fallback item from local index fields without
+    /// inventing numeric ids: `id`/`number` reuse the stored numeric
+    /// `issue_number`, while the opaque `external_id` string is retained
+    /// verbatim alongside `source`/`project` so consumers can tell the
+    /// row is stale and scoped.
+    pub fn from_local_parts(
+        source: String,
+        project: String,
+        external_id: String,
+        issue_number: u64,
+        title: String,
+        state: String,
+        html_url: Option<String>,
+        body_full: String,
+        include_body: bool,
+    ) -> Self {
+        let (body, body_truncated) = if !include_body {
+            (None, None)
+        } else {
+            let truncated = body_full.len() > ISSUE_SEARCH_MAX_BODY_BYTES;
+            let body = if truncated {
+                truncate_to_byte_limit(&body_full, ISSUE_SEARCH_MAX_BODY_BYTES).to_owned()
+            } else {
+                body_full
+            };
+            (Some(body), Some(truncated))
+        };
+        Self {
+            id: issue_number,
+            number: issue_number,
+            title,
+            state,
+            html_url,
+            body,
+            body_truncated,
+            source: Some(source),
+            project: Some(project),
+            external_id: Some(external_id),
         }
     }
 }
@@ -158,7 +214,7 @@ pub struct RepoSummary {
     pub html_url: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ForgejoError {
     Config(String),
     Auth(String),
@@ -197,6 +253,30 @@ impl ForgejoError {
 
     pub fn auth(message: impl Into<String>) -> Self {
         Self::Auth(message.into())
+    }
+
+    /// True for capability errors that must never trigger local fallback.
+    /// `not_supported` is permanent, not a transient provider outage.
+    pub fn is_not_supported(&self) -> bool {
+        matches!(self, Self::NotSupported { .. })
+    }
+
+    /// True for argument-shaped config errors that must not be masked by
+    /// stale local results. Provider-resolution config errors (missing
+    /// base/repository, invalid URL shape) remain fallback-eligible and
+    /// return false here; only `issue search` option validation messages
+    /// are treated as arguments.
+    pub fn is_search_argument_error(&self) -> bool {
+        match self {
+            Self::Config(message) => {
+                let message = message.as_str();
+                message.contains("issue search requires")
+                    || message.contains("issue state must be")
+                    || message.contains("issue search page must be")
+                    || message.contains("issue search limit must be")
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn request(operation: &str, message: String) -> Self {

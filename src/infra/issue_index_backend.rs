@@ -172,6 +172,28 @@ impl IssueIndexStore for IssueIndexBackend {
         }
     }
 
+    async fn lexical_search_scoped(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        include_body: bool,
+        scope: &crate::providers::index::LexicalScope,
+    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String> {
+        match self {
+            Self::Sqlite(inner) => {
+                inner
+                    .lexical_search_scoped(query, limit, offset, include_body, scope)
+                    .await
+            }
+            Self::Postgres(inner) => {
+                inner
+                    .lexical_search_scoped(query, limit, offset, include_body, scope)
+                    .await
+            }
+        }
+    }
+
     async fn list_active_keys_for_scope(
         &self,
         source: &str,

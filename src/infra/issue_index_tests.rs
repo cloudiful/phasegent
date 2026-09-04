@@ -310,6 +310,60 @@ fn bounded_list_pagination() {
 
 #[rustfmt::skip]
 #[test]
+fn scoped_lexical_search_filters_by_source_project_and_state() {
+    use crate::providers::index::LexicalScope;
+    let (dir, path) = tmp_index("scoped");
+    let idx = SqliteIssueIndex::open_at(&path).unwrap();
+    // Same term in three scopes plus a closed variant.
+    for (source, project, ext, num, title, state) in [
+        ("forgejo", "owner/repo", "1", 1u64, "alpha scoped open", "open"),
+        ("forgejo", "other/repo", "2", 2u64, "alpha other open", "open"),
+        ("redmine", "42", "3", 3u64, "alpha redmine open", "open"),
+        ("forgejo", "owner/repo", "4", 4u64, "alpha scoped closed", "closed"),
+    ] {
+        let key = IssueIndexKey::new(source, project, ext).unwrap();
+        let doc = IssueIndexDocument::new(key, num, title.into(), "alpha body".into(), state.into(), None, None, 1_700_000_000 + num as i64).unwrap();
+        block_on(idx.upsert(&doc)).unwrap();
+    }
+    // Global finds all four.
+    let global = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &LexicalScope::global())).unwrap();
+    assert_eq!(global.total_count, 4);
+    // Scoped to forgejo/owner/repo finds two (open+closed).
+    let scoped = LexicalScope::scoped("forgejo", "owner/repo", "all").unwrap();
+    let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &scoped)).unwrap();
+    assert_eq!(res.total_count, 2);
+    assert!(res.items.iter().all(|item| item.project == "owner/repo"));
+    // Scoped + state open finds one.
+    let open_only = LexicalScope::scoped("forgejo", "owner/repo", "open").unwrap();
+    let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &open_only)).unwrap();
+    assert_eq!(res.total_count, 1);
+    assert_eq!(res.items[0].external_id, "1");
+    // Scoped + state closed finds the other.
+    let closed_only = LexicalScope::scoped("forgejo", "owner/repo", "closed").unwrap();
+    let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &closed_only)).unwrap();
+    assert_eq!(res.total_count, 1);
+    assert_eq!(res.items[0].external_id, "4");
+    // Other scope is isolated.
+    let other = LexicalScope::scoped("forgejo", "other/repo", "all").unwrap();
+    let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &other)).unwrap();
+    assert_eq!(res.total_count, 1);
+    assert_eq!(res.items[0].external_id, "2");
+    // Bounded pagination stays correct for scoped queries.
+    let page = block_on(idx.lexical_search_scoped("alpha", 1, 0, false, &scoped)).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert!(page.has_more);
+    assert_eq!(page.total_count, 2);
+    let page2 = block_on(idx.lexical_search_scoped("alpha", 1, 1, false, &scoped)).unwrap();
+    assert_eq!(page2.items.len(), 1);
+    assert!(!page2.has_more);
+    // Global lexical_search stays compatible (no scope filter).
+    let compat = block_on(idx.lexical_search("alpha", 10, 0, false)).unwrap();
+    assert_eq!(compat.total_count, 4);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[rustfmt::skip]
+#[test]
 fn validation_failures() {
     assert!(IssueIndexKey::new("", "owner/repo", "1").is_err());
     assert!(IssueIndexKey::new("forgejo", "", "1").is_err());
@@ -381,7 +435,8 @@ mod postgres_tests {
         };
         // Never print the URL.
         assert!(!url.is_empty());
-        let idx = pg_block(PostgresIssueIndex::open(&url)).expect("postgres open must succeed with valid URL");
+        let idx = pg_block(PostgresIssueIndex::open(&url))
+            .expect("postgres open must succeed with valid URL");
         // Ensure clean slate for our unique keys (use unique source/project prefix).
         let suffix = format!(
             "{}-{}",
@@ -410,13 +465,21 @@ mod postgres_tests {
         // Bounded envelope must respect limit/offset and not leak URL.
         assert!(res.total_count >= 1);
         assert!(res.items.iter().any(|i| i.title == "hello postgres"));
-        assert!(!res.items.iter().any(|i| i.body.is_some()), "body omitted by default");
+        assert!(
+            !res.items.iter().any(|i| i.body.is_some()),
+            "body omitted by default"
+        );
         let res_body = pg_block(idx.lexical_search("postgres", 10, 0, true)).unwrap();
         assert!(res_body.items.iter().any(|i| i.body.is_some()));
         // Tombstone must remove from search.
         pg_block(idx.tombstone(&key, 1_700_000_100)).unwrap();
         let after = pg_block(idx.lexical_search("hello", 10, 0, false)).unwrap();
-        assert!(!after.items.iter().any(|i| i.external_id == "1" && i.source == source));
+        assert!(
+            !after
+                .items
+                .iter()
+                .any(|i| i.external_id == "1" && i.source == source)
+        );
         // Resurrect.
         let doc2 = IssueIndexDocument::new(
             key.clone(),
@@ -435,12 +498,25 @@ mod postgres_tests {
         // Body cap on search output.
         let long_body = "a".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 50);
         let k2 = IssueIndexKey::new(source.clone(), project.clone(), "2").unwrap();
-        let doc_long = IssueIndexDocument::new(k2.clone(), 2, "long pg".into(), long_body.clone(), "open".into(), None, None, 1_700_000_300).unwrap();
+        let doc_long = IssueIndexDocument::new(
+            k2.clone(),
+            2,
+            "long pg".into(),
+            long_body.clone(),
+            "open".into(),
+            None,
+            None,
+            1_700_000_300,
+        )
+        .unwrap();
         pg_block(idx.upsert(&doc_long)).unwrap();
         let capped = pg_block(idx.lexical_search("long", 10, 0, true)).unwrap();
         let item = capped.items.iter().find(|i| i.external_id == "2").unwrap();
         assert_eq!(item.body_truncated, Some(true));
-        assert_eq!(item.body.as_ref().unwrap().len(), crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES);
+        assert_eq!(
+            item.body.as_ref().unwrap().len(),
+            crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
+        );
         // Clean up keys.
         pg_block(idx.tombstone(&k2, 1_700_000_400)).unwrap();
         let _ = pg_block(idx.tombstone(&key, 1_700_000_401));
@@ -448,23 +524,37 @@ mod postgres_tests {
 
     #[test]
     fn postgres_backend_selection_requires_url() {
+        // Phase 1 URL-driven selection: absent/blank PG URL selects SQLite
+        // even when the legacy backend says postgres; only a non-empty URL
+        // selects PostgreSQL. A legacy value can never force a different
+        // backend and never fails open.
         let _lock = lock_workflow_tests();
         let db_path = super::tmp_index("pg-select").0.join("dummy.sqlite3");
         let storage = crate::infra::storage::Storage::open_at(&db_path).unwrap();
-        // Persist postgres without URL -> backend open must fail, not fallback.
         storage
             .save_global_setting("PHASEGENT_INDEX_BACKEND", "postgres")
             .unwrap();
-        storage.delete_global_setting("PHASEGENT_INDEX_PG_URL").unwrap();
-        let err = match pg_block(
-            crate::infra::issue_index_backend::IssueIndexBackend::open_with_storage(&storage),
-        ) {
-            Ok(_) => panic!("postgres without URL must fail, not fallback to sqlite"),
-            Err(err) => err,
-        };
-        assert!(err.contains("PHASEGENT_INDEX_PG_URL"), "got: {err}");
-        // No URL leak.
-        assert!(!err.to_ascii_lowercase().contains("postgres://"), "leak: {err}");
+        storage
+            .delete_global_setting("PHASEGENT_INDEX_PG_URL")
+            .unwrap();
+        let _unset_url =
+            crate::infra::storage::test_support::EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
+        let _unset_backend =
+            crate::infra::storage::test_support::EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
+        let kind = crate::infra::issue_index_backend::resolve_index_backend(&storage).unwrap();
+        assert_eq!(
+            kind,
+            crate::infra::issue_index_backend::IndexBackendKind::Sqlite,
+            "legacy postgres without URL must select SQLite"
+        );
+        let opened =
+            crate::infra::issue_index_backend::IssueIndexBackend::open_blocking_with_storage(
+                &storage,
+            );
+        assert!(
+            opened.is_ok(),
+            "legacy postgres without URL must open SQLite, not fail"
+        );
         let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
     }
 }

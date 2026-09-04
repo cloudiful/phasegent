@@ -4,6 +4,12 @@ use crate::providers::config::resolve_kind;
 use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind};
 
+#[path = "issue_search.rs"]
+mod issue_search;
+#[path = "issue_search_tests.rs"]
+#[cfg(test)]
+mod issue_search_tests;
+
 pub(crate) fn execute_issue(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -58,6 +64,38 @@ pub(crate) fn execute_issue(
     if !role.allows(capability) {
         return super::permission_error(role, capability);
     }
+    // Ordinary search validates before any provider work so argument
+    // errors never trigger stale fallback.
+    if let IssueCommand::Search {
+        query,
+        state,
+        page,
+        limit,
+        all,
+        include_body,
+    } = &command
+    {
+        let options = crate::providers::IssueSearchOptions {
+            query: query.clone(),
+            state: state.clone(),
+            page: *page,
+            limit: *limit,
+            include_body: *include_body,
+            all: *all,
+        };
+        if let Err(error) = options.validate() {
+            return super::provider_error(error);
+        }
+        return issue_search::execute_search_transparent(
+            role,
+            provider_kind,
+            api_base,
+            repository,
+            project_id,
+            close_status_id,
+            options,
+        );
+    }
     let provider_kind = match resolve_kind(role, provider_kind) {
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
@@ -75,10 +113,7 @@ pub(crate) fn execute_issue(
     }
     let automatic_workflow = provider_kind == ProviderKind::Redmine
         && project_id.is_none()
-        && matches!(
-            &command,
-            IssueCommand::Search { .. } | IssueCommand::Create { .. }
-        );
+        && matches!(&command, IssueCommand::Create { .. });
     let (project_id, close_status_id) = if automatic_workflow {
         // Phase 3: try repository-aware discovery first. An explicit
         // project id already won and is not inside this branch. When
@@ -155,27 +190,15 @@ pub(crate) fn execute_issue(
                 capability.operation(),
             )),
         },
-        IssueCommand::Get { number } => super::print_result(provider.get_issue(number)),
-        IssueCommand::Search {
-            query,
-            state,
-            page,
-            limit,
-            all,
-            include_body,
-        } => {
-            let options = crate::providers::IssueSearchOptions {
-                query,
-                state,
-                page,
-                limit,
-                include_body,
-                all,
-            };
-            if let Err(error) = options.validate() {
-                return super::provider_error(error);
+        IssueCommand::Get { number } => match provider.get_issue(number) {
+            Ok(summary) => {
+                issue_search::warm_single_summary(&provider, &summary, "issue get");
+                super::print_json(&summary)
             }
-            super::print_result(provider.search_issues(&options))
+            Err(error) => super::provider_error(error),
+        },
+        IssueCommand::Search { .. } => {
+            unreachable!("transparent search bypassed provider execution")
         }
         IssueCommand::IndexSync {
             query,
@@ -227,6 +250,7 @@ pub(crate) fn execute_issue(
                             .warning(),
                         );
                     }
+                    issue_search::warm_single_summary(&provider, &summary, "issue create");
                     super::print_json(&summary)
                 }
                 Err(error) => super::provider_error(error),
@@ -237,13 +261,19 @@ pub(crate) fn execute_issue(
             body,
             tracker,
             planning,
-        } => super::print_result(crate::providers::redmine::planning::update_body(
+        } => match crate::providers::redmine::planning::update_body(
             &provider,
             number,
             &body,
             tracker.as_deref(),
             &planning,
-        )),
+        ) {
+            Ok(summary) => {
+                issue_search::warm_single_summary(&provider, &summary, "issue update-body");
+                super::print_json(&summary)
+            }
+            Err(error) => super::provider_error(error),
+        },
         IssueCommand::Close { number } => match provider.close_issue(number) {
             Ok(summary) => {
                 // Redmine-only local side effect: unbind only when the current
@@ -260,6 +290,9 @@ pub(crate) fn execute_issue(
                         .warning(),
                     );
                 }
+                // Close is an upsert of the returned closed document, not a
+                // tombstone; remote absence tombstones stay with sync.
+                issue_search::warm_single_summary(&provider, &summary, "issue close");
                 super::print_json(&summary)
             }
             Err(error) => super::provider_error(error),

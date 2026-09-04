@@ -385,6 +385,32 @@ impl IssueIndexStore for SqliteIssueIndex {
         lexical_search_inner(&self.connection, &escaped, limit, offset, include_body).map_err(|e| e)
     }
 
+    async fn lexical_search_scoped(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        include_body: bool,
+        scope: &crate::providers::index::LexicalScope,
+    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String> {
+        if limit == 0 || limit > ISSUE_INDEX_SEARCH_MAX_LIMIT {
+            return Err(format!(
+                "search limit must be between 1 and {}",
+                ISSUE_INDEX_SEARCH_MAX_LIMIT
+            ));
+        }
+        let escaped = normalize_query(query)?;
+        self::issue_index_search::lexical_search_scoped_inner(
+            &self.connection,
+            &escaped,
+            limit,
+            offset,
+            include_body,
+            scope,
+        )
+        .map_err(|e| e)
+    }
+
     async fn list_active_keys_for_scope(
         &self,
         source: &str,

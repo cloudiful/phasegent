@@ -668,9 +668,34 @@ phasegent --role executor issue get 3
 `auth setup` 提供，mirror key 使用 `config set` 的安全提示或 stdin 路径，
 绝不要在 shell 历史中以明文形式出现。
 
-### 本地 Issue 索引
+### 本地 Issue 索引（透明）
 
-provider 无关的 issue 索引保存在独立于配置/凭据库的私有 SQLite
+`issue search` 是唯一文档化的搜索工作流。它默认保持 provider-fresh
+有界单页，并用返回的完整正文自动预热所选索引（单次 provider 请求；
+索引打开/写入失败仅为有界 stderr warning），仅在 provider 路径不可用
+时才把索引作为清晰标记的 stale 兜底。
+
+```text
+phasegent --role orchestrator --provider redmine --project-id 42 issue search --query 'phase'
+phasegent --role orchestrator --provider redmine issue search --all --state open --page 2 --limit 20
+phasegent --role orchestrator --provider redmine issue search --query 'phase' --include-body
+```
+
+Provider-fresh 输出保持现有信封
+`{ items: [{id, number, title, state, html_url, body?, body_truncated?}], page, limit, total_count?, has_more }`。
+当非空 `--query` 遇到 provider 解析/鉴权/网络/搜索失败时，搜索会在不
+读取 provider 凭据/不联网的情况下回退到本地词法索引。回退按已知
+provider/project 范围过滤（未知时为全局），并返回
+`{ items: [{id, number, title, state, html_url, body?, body_truncated?, source?, project?, external_id?}], page, limit, total_count, has_more, data_source: "local_index", stale: true }`
+同时输出简洁 stderr warning。无查询的 `--all` 没有回退；本地无匹配或
+后端不可用时保留原始 provider 错误。索引没有覆盖率/新鲜度模型，因此
+永远不会默认 local-first；不要把 stale 行当作 fresh。
+
+成功的 `issue get` 与 create/update/close 会把返回的完整 summary
+顺手 upsert 到所选索引（close 为 closed 文档而非 tombstone）；索引失败
+仅为 warning。
+
+provider 无关的 issue 索引保存在独立于配置/凭据库的私有
 数据库中。默认路径与配置库使用同一平台配置目录，文件名为
 `phasegent-index.sqlite3`：
 
@@ -707,11 +732,12 @@ Provider 无关的拉取使用各 provider 的原生分页（Redmine
 `limit`/`offset`、Forgejo `page`/`limit`、GitLab `page`/`per_page`），
 并以完整正文入库，不受 CLI 搜索的 8192 字节截断影响。
 
+隐藏的维护/兼容命令（优先使用普通 `issue search`；显式
+`--help issue index...` 仍会记录它们）：
+
 ```text
-phasegent --role orchestrator --provider redmine --project-id 42 issue index sync --all
-phasegent --role orchestrator --provider forgejo issue index sync --query bug --state open
-phasegent --role orchestrator issue index search --query "hello world" --limit 20
-phasegent --role orchestrator issue index search --query "phase" --include-body
+phasegent --help issue index sync
+phasegent --help issue index search
 ```
 
 `issue index sync` 默认 `page 1`、`limit 50`（有界单页）。未带
@@ -723,8 +749,8 @@ phasegent --role orchestrator issue index search --query "phase" --include-body
 提供 `--project-id`，绝不会静默同步全部 project；Forgejo 范围为
 `owner/repo`，GitLab 范围为数字 project id。
 
-`issue index search` 为纯本地操作（不读取 provider 凭据/配置、也不
-联网），默认使用 SQLite FTS5（可选 PostgreSQL 的 `tsvector`+GIN）。它拒绝空/纯空白查询，对输入进行转义/归一化
+`issue index search` 为隐藏维护的纯本地操作（不读取 provider 凭据/配置、也不
+联网），使用所选后端（SQLite FTS5 或 PostgreSQL `tsvector`+GIN）。它拒绝空/纯空白查询，对输入进行转义/归一化
 以支持普通词与 Unicode 而不会因非法 FTS/TS 语法崩溃，并返回有界信封
 `{ items: [{source, project, external_id, issue_number, title, state,
 html_url, body?, body_truncated?}], offset, limit, total_count,

@@ -753,9 +753,38 @@ None of the example commands accept or print credentials; supply provider
 credentials through `auth setup` and the mirror key through the secure
 `config set` prompt or stdin path. Never inline secrets in shell history.
 
-### Local Issue Index
+### Local Issue Index (transparent)
 
-The provider-neutral issue index is stored in a separate private SQLite
+`issue search` is the only documented search workflow. It stays
+provider-fresh and bounded by default, warms the selected index
+automatically with the returned full summaries (one provider request;
+index open/write failures are bounded stderr warnings only), and uses
+the index only as a clearly marked stale fallback when the provider
+path is unavailable.
+
+```text
+phasegent --role orchestrator --provider redmine --project-id 42 issue search --query 'phase'
+phasegent --role orchestrator --provider redmine issue search --all --state open --page 2 --limit 20
+phasegent --role orchestrator --provider redmine issue search --query 'phase' --include-body
+```
+
+Provider-fresh output keeps the existing envelope
+`{ items: [{id, number, title, state, html_url, body?, body_truncated?}], page, limit, total_count?, has_more }`.
+When provider resolution, auth, network, or search fails for a
+non-empty `--query`, search falls back to the local lexical index
+without provider credential/network lookup. Fallback is scoped to the
+known provider/project when available, else global, and returns
+`{ items: [{id, number, title, state, html_url, body?, body_truncated?, source?, project?, external_id?}], page, limit, total_count, has_more, data_source: "local_index", stale: true }`
+with a concise stderr warning. Queryless `--all` has no fallback;
+with no local match/backend the original provider error is preserved.
+The index has no coverage/freshness model, so local-first is never
+the default; do not treat stale rows as fresh.
+
+Successful `issue get` and create/update/close opportunistically
+upsert the returned summary into the selected index (close is the
+closed document, not a tombstone); index failures are warnings only.
+
+The provider-neutral issue index is stored in a separate private
 database from the configuration/credentials store. Its default path uses
 the same platform config directory with the file name
 `phasegent-index.sqlite3`:
@@ -797,11 +826,12 @@ Provider-neutral ingestion uses each provider's native pagination
 `page`/`per_page`) and stores full bodies without the 8192-byte CLI
 search cap.
 
+Hidden maintenance/compatibility commands (prefer ordinary
+`issue search`; explicit `--help issue index...` still documents them):
+
 ```text
-phasegent --role orchestrator --provider redmine --project-id 42 issue index sync --all
-phasegent --role orchestrator --provider forgejo issue index sync --query bug --state open
-phasegent --role orchestrator issue index search --query "hello world" --limit 20
-phasegent --role orchestrator issue index search --query "phase" --include-body
+phasegent --help issue index sync
+phasegent --help issue index search
 ```
 
 `issue index sync` defaults to `page 1` and `limit 50` (bounded, single
@@ -816,8 +846,8 @@ syncs never tombstone. Redmine sync requires an explicit
 `--project-id` and never silently indexes all projects; Forgejo scope is
 `owner/repo`, GitLab scope is the numeric project id.
 
-`issue index search` is local-only (no provider credential/config/network
-lookup) and uses SQLite FTS5 by default (optional PostgreSQL via `tsvector`+ GIN). It rejects empty/whitespace queries,
+`issue index search` is hidden maintenance local-only (no provider credential/config/network
+lookup) and uses the selected backend (SQLite FTS5 or PostgreSQL `tsvector`+ GIN). It rejects empty/whitespace queries,
 escapes/normalizes input so ordinary terms and Unicode work without
 malformed FTS syntax crashes, and returns a bounded envelope
 `{ items: [{source, project, external_id, issue_number, title, state,
