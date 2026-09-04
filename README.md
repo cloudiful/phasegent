@@ -753,6 +753,46 @@ None of the example commands accept or print credentials; supply provider
 credentials through `auth setup` and the mirror key through the secure
 `config set` prompt or stdin path. Never inline secrets in shell history.
 
+### Local Issue Index
+
+The provider-neutral issue index is stored in a separate private SQLite
+database from the configuration/credentials store. Its default path uses
+the same platform config directory with the file name
+`phasegent-index.sqlite3`:
+
+```text
+Linux :   ~/.config/phasegent/phasegent-index.sqlite3
+macOS :   ~/Library/Application Support/com.Cloud1ful.phasegent/phasegent-index.sqlite3
+Windows: %APPDATA%\Cloud1ful\phasegent\config\phasegent-index.sqlite3
+```
+
+The file is created with WAL, `foreign_keys=ON`, and `busy_timeout=5000`
+on first use; on Unix the parent directory is created with mode `0700`
+and the file with mode `0600` so only the owner can read it. The
+configuration/credentials database (`phasegent.sqlite3`) is never
+modified by index operations.
+
+Override the index location for tests or operators without touching the
+main database by setting an absolute path in `PHASEGENT_INDEX_DB_PATH`:
+
+```text
+export PHASEGENT_INDEX_DB_PATH=/tmp/phasegent-index.sqlite3
+test -f "$HOME/.config/phasegent/phasegent-index.sqlite3" \
+  && echo "index database exists" \
+  || echo "run any indexed operation to initialise it"
+```
+
+The index stores normalized issue documents with stable
+`source`/`project`/`external_id` keys, content hashes, provider
+`updated_at`/`indexed_at` timestamps, tombstone state, and bounded
+UTF-8-safe chunks (`4000` bytes per chunk, at most `64` chunks;
+overlarge documents are rejected rather than silently truncated). Chunk
+records carry ordinal, byte offsets, and hashes so later backends can
+reuse the same contract. The current implementation is SQLite-only; a
+later phase may offer a PostgreSQL index backend behind the same
+provider-neutral `IssueIndexStore` trait without moving credentials to
+the shared database.
+
 ## Install
 
 From this directory:

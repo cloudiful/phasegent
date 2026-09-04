@@ -668,6 +668,41 @@ phasegent --role executor issue get 3
 `auth setup` 提供，mirror key 使用 `config set` 的安全提示或 stdin 路径，
 绝不要在 shell 历史中以明文形式出现。
 
+### 本地 Issue 索引
+
+provider 无关的 issue 索引保存在独立于配置/凭据库的私有 SQLite
+数据库中。默认路径与配置库使用同一平台配置目录，文件名为
+`phasegent-index.sqlite3`：
+
+```text
+Linux :   ~/.config/phasegent/phasegent-index.sqlite3
+macOS :   ~/Library/Application Support/com.Cloud1ful.phasegent/phasegent-index.sqlite3
+Windows: %APPDATA%\Cloud1ful\phasegent\config\phasegent-index.sqlite3
+```
+
+数据库首次使用时以 WAL、`foreign_keys=ON`、`busy_timeout=5000`
+创建；Unix 上父目录权限 `0700`、文件权限 `0600`，仅属主可读。
+索引操作永不修改配置库 `phasegent.sqlite3`。
+
+需要为测试或运维覆盖索引位置时，将绝对路径写入
+`PHASEGENT_INDEX_DB_PATH`，无需改动主数据库：
+
+```text
+export PHASEGENT_INDEX_DB_PATH=/tmp/phasegent-index.sqlite3
+test -f "$HOME/.config/phasegent/phasegent-index.sqlite3" \
+  && echo "index database exists" \
+  || echo "run any indexed operation to initialise it"
+```
+
+索引保存归一化后的 issue 文档及其稳定的
+`source`/`project`/`external_id` 标识、内容哈希、provider
+`updated_at`/`indexed_at` 时间戳、tombstone 状态，以及有界的
+UTF-8 安全切片（单片至多 `4000` 字节，最多 `64` 片；超限文档直接
+拒绝而非静默截断）。切片记录包含 ordinal、字节偏移和哈希，便于
+后续后端复用同一契约。当前实现仅为 SQLite；后续阶段可能在相同
+`IssueIndexStore` trait 背后提供可选的 PostgreSQL 索引后端，且不会
+迁移本地凭据到共享数据库。
+
 ## 安装
 
 在本目录执行：

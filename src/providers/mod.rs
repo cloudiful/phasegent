@@ -3,14 +3,15 @@ pub mod config;
 pub mod dispatch;
 pub mod forgejo;
 pub mod gitlab;
+pub mod index;
 pub mod redmine;
 
 use crate::policy::Capability;
 
 pub use api::{
-    CommentOutput, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
-    RepoSummary, ISSUE_SEARCH_DEFAULT_LIMIT, ISSUE_SEARCH_DEFAULT_PAGE,
-    ISSUE_SEARCH_MAX_BODY_BYTES, ISSUE_SEARCH_MAX_LIMIT,
+    CommentOutput, ISSUE_SEARCH_DEFAULT_LIMIT, ISSUE_SEARCH_DEFAULT_PAGE,
+    ISSUE_SEARCH_MAX_BODY_BYTES, ISSUE_SEARCH_MAX_LIMIT, IssueSearchItem, IssueSearchOptions,
+    IssueSearchResult, IssueSummary, RepoSummary,
 };
 pub use config::{GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider};
 pub use dispatch::ProviderDispatcher;
@@ -31,10 +32,8 @@ pub trait IssueProvider {
     fn capabilities(&self) -> ProviderCapabilities;
     fn supports(&self, capability: Capability) -> bool;
     fn get_issue(&self, number: u64) -> Result<IssueSummary, Self::Error>;
-    fn search_issues(
-        &self,
-        options: &IssueSearchOptions,
-    ) -> Result<IssueSearchResult, Self::Error>;
+    fn search_issues(&self, options: &IssueSearchOptions)
+    -> Result<IssueSearchResult, Self::Error>;
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error>;
     fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, Self::Error>;
     fn close_issue(&self, number: u64) -> Result<IssueSummary, Self::Error>;
