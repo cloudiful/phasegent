@@ -94,7 +94,7 @@ impl IssueIndexBackend {
     /// currently synchronous. Creates a dedicated current-thread Tokio
     /// runtime and blocks on the async open. Must not be called from
     /// within an existing Tokio runtime; that path would deadlock with a
-    /// `!Send` future and is avoided by keeping `issue index` callers
+    /// `!Send` future and is avoided by keeping automatic search callers
     /// sync and confined to this bridge.
     #[allow(dead_code)]
     pub fn open_blocking() -> Result<Self, String> {
@@ -117,37 +117,6 @@ impl IssueIndexStore for IssueIndexBackend {
         match self {
             Self::Sqlite(inner) => inner.upsert(doc).await,
             Self::Postgres(inner) => inner.upsert(doc).await,
-        }
-    }
-
-    async fn get(
-        &self,
-        key: &crate::providers::index::IssueIndexKey,
-    ) -> Result<Option<crate::providers::index::IssueIndexDocument>, String> {
-        match self {
-            Self::Sqlite(inner) => inner.get(key).await,
-            Self::Postgres(inner) => inner.get(key).await,
-        }
-    }
-
-    async fn list(
-        &self,
-        opts: &crate::providers::index::IssueIndexListOptions,
-    ) -> Result<Vec<crate::providers::index::IssueIndexDocument>, String> {
-        match self {
-            Self::Sqlite(inner) => inner.list(opts).await,
-            Self::Postgres(inner) => inner.list(opts).await,
-        }
-    }
-
-    async fn tombstone(
-        &self,
-        key: &crate::providers::index::IssueIndexKey,
-        indexed_at: i64,
-    ) -> Result<(), String> {
-        match self {
-            Self::Sqlite(inner) => inner.tombstone(key, indexed_at).await,
-            Self::Postgres(inner) => inner.tombstone(key, indexed_at).await,
         }
     }
 
@@ -191,17 +160,6 @@ impl IssueIndexStore for IssueIndexBackend {
                     .lexical_search_scoped(query, limit, offset, include_body, scope)
                     .await
             }
-        }
-    }
-
-    async fn list_active_keys_for_scope(
-        &self,
-        source: &str,
-        project: &str,
-    ) -> Result<Vec<crate::providers::index::IssueIndexKey>, String> {
-        match self {
-            Self::Sqlite(inner) => inner.list_active_keys_for_scope(source, project).await,
-            Self::Postgres(inner) => inner.list_active_keys_for_scope(source, project).await,
         }
     }
 }

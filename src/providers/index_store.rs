@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES;
 use crate::providers::api::truncate_to_byte_limit;
 
-/// Bounded envelope returned by `issue index search`.
+/// Bounded envelope returned by scoped local lexical search.
 #[derive(Debug, Serialize, Clone)]
 pub struct IssueIndexSearchItem {
     pub source: String,
@@ -118,7 +118,7 @@ pub fn provider_scope(
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| {
                     ForgejoError::config(
-                        "Redmine project id is required for issue index sync; use --project-id",
+                        "Redmine project id is required for issue index operations; use --project-id",
                     )
                 })?;
             Ok(IssueIndexScope {
@@ -209,20 +209,4 @@ pub fn lexical_scope_for_state(
             state: state_filter,
         },
     }
-}
-
-/// Summary returned by `issue index sync`.
-#[derive(Debug, Serialize)]
-pub struct IssueIndexSyncSummary {
-    pub source: String,
-    pub project: String,
-    pub pages_synced: usize,
-    pub indexed: usize,
-    pub tombstoned: usize,
-    pub has_more: bool,
-    pub completed: bool,
-    pub limit: usize,
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query: Option<String>,
 }

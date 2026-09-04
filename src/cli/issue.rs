@@ -22,9 +22,6 @@ pub(crate) fn execute_issue(
     let (role, capability) = match &command {
         IssueCommand::Get { .. } => (super::required_role(role_value), Capability::IssueRead),
         IssueCommand::Search { .. } => (super::required_role(role_value), Capability::IssueSearch),
-        IssueCommand::IndexSync { .. } | IssueCommand::IndexSearch { .. } => {
-            (super::required_role(role_value), Capability::IssueSearch)
-        }
         IssueCommand::Create { .. } => (super::required_role(role_value), Capability::IssueCreate),
         IssueCommand::UpdateBody { .. } => (
             super::required_role(role_value),
@@ -41,26 +38,6 @@ pub(crate) fn execute_issue(
             unreachable!("local branch context commands bypass provider execution")
         }
     };
-    // Local index search is intentionally local-only: it never touches
-    // provider credentials, network, or project resolution so it works
-    // when no credentials are configured. Capability is still checked.
-    if let IssueCommand::IndexSearch {
-        query,
-        limit,
-        offset,
-        include_body,
-    } = &command
-    {
-        if !role.allows(capability) {
-            return super::permission_error(role, capability);
-        }
-        return crate::cli::issue_index::execute_index_search(
-            query.clone(),
-            *limit,
-            *offset,
-            *include_body,
-        );
-    }
     if !role.allows(capability) {
         return super::permission_error(role, capability);
     }
@@ -200,28 +177,6 @@ pub(crate) fn execute_issue(
         IssueCommand::Search { .. } => {
             unreachable!("transparent search bypassed provider execution")
         }
-        IssueCommand::IndexSync {
-            query,
-            state,
-            page,
-            limit,
-            all,
-        } => crate::cli::issue_index::execute_index_sync(
-            role,
-            Some(provider.kind()),
-            api_base,
-            repository,
-            project_id.as_deref(),
-            close_status_id.as_deref(),
-            query,
-            state,
-            page,
-            limit,
-            all,
-        ),
-        IssueCommand::IndexSearch { .. } => {
-            unreachable!("local index search bypassed provider execution")
-        }
         IssueCommand::Create {
             title,
             body,
@@ -290,8 +245,7 @@ pub(crate) fn execute_issue(
                         .warning(),
                     );
                 }
-                // Close is an upsert of the returned closed document, not a
-                // tombstone; remote absence tombstones stay with sync.
+                // Close upserts the returned closed document.
                 issue_search::warm_single_summary(&provider, &summary, "issue close");
                 super::print_json(&summary)
             }

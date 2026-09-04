@@ -692,7 +692,7 @@ provider/project 范围过滤（未知时为全局），并返回
 永远不会默认 local-first；不要把 stale 行当作 fresh。
 
 成功的 `issue get` 与 create/update/close 会把返回的完整 summary
-顺手 upsert 到所选索引（close 为 closed 文档而非 tombstone）；索引失败
+顺手 upsert 到所选索引（close 为 closed 文档）；索引失败
 仅为 warning。
 
 provider 无关的 issue 索引保存在独立于配置/凭据库的私有
@@ -721,43 +721,16 @@ test -f "$HOME/.config/phasegent/phasegent-index.sqlite3" \
 
 索引保存归一化后的 issue 文档及其稳定的
 `source`/`project`/`external_id` 标识、内容哈希、provider
-`updated_at`/`indexed_at` 时间戳、tombstone 状态，以及有界的
+`updated_at`/`indexed_at` 时间戳，以及有界的
 UTF-8 安全切片（单片至多 `4000` 字节，最多 `64` 片；超限文档直接
 拒绝而非静默截断）。切片记录包含 ordinal、字节偏移和哈希，便于
 后续后端复用同一契约。FTS5 虚拟表（`issue_fts`）会镜像
-`title`/`body` 并在 upsert/tombstone 时原子同步；已删除的文档永远不会
+`title`/`body` 并在 upsert 时原子同步；已删除的文档永远不会
 被词法搜索返回。
 
-Provider 无关的拉取使用各 provider 的原生分页（Redmine
+自动拉取使用各 provider 的原生分页（Redmine
 `limit`/`offset`、Forgejo `page`/`limit`、GitLab `page`/`per_page`），
-并以完整正文入库，不受 CLI 搜索的 8192 字节截断影响。
-
-隐藏的维护/兼容命令（优先使用普通 `issue search`；显式
-`--help issue index...` 仍会记录它们）：
-
-```text
-phasegent --help issue index sync
-phasegent --help issue index search
-```
-
-`issue index sync` 默认 `page 1`、`limit 50`（有界单页）。未带
-`--all` 时仅同步该原生分页且不产生 tombstone；携带 `--all` 时会
-按硬性安全上限 100 页遍历并 upsert 所有返回的 issue。仅在完整
-无查询范围同步（`--all` 且无 `--query`、且 `state all`）时，会对同
-`source`/`project` 范围内已索引但本次完整远端结果中缺失的活跃文档
-进行确定性 tombstone；单页同步永不 tombstone。Redmine 同步必须显式
-提供 `--project-id`，绝不会静默同步全部 project；Forgejo 范围为
-`owner/repo`，GitLab 范围为数字 project id。
-
-`issue index search` 为隐藏维护的纯本地操作（不读取 provider 凭据/配置、也不
-联网），使用所选后端（SQLite FTS5 或 PostgreSQL `tsvector`+GIN）。它拒绝空/纯空白查询，对输入进行转义/归一化
-以支持普通词与 Unicode 而不会因非法 FTS/TS 语法崩溃，并返回有界信封
-`{ items: [{source, project, external_id, issue_number, title, state,
-html_url, body?, body_truncated?}], offset, limit, total_count,
-has_more }`，默认不含正文，携带 `--include-body` 时正文按 8192 字节
-截断并标记 `body_truncated`。排序通过 rank（PostgreSQL 为 `ts_rank`）再按
-`source`/`project`/`external_id` 的确定性顺序保证平局可复现；
-已删除/tombstoned 的文档永不返回。
+针对单次请求的搜索分页并以完整正文入库，不受 CLI 搜索的 8192 字节截断影响。
 
 #### 选择索引后端（SQLite 默认，可选 PostgreSQL）
 

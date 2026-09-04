@@ -1898,35 +1898,24 @@ fn postgres_backend_without_feature_returns_not_enabled() {
 }
 
 #[test]
-fn transparent_maintenance_parsing_stays_compatible_but_hidden() {
-    // `issue index sync/search` remain parser-compatible for existing
-    // scripts. Normal-help hiding is covered in
-    // `src/cli/help/issue.rs::tests::normal_help_hides_maintenance_but_explicit_help_remains`.
-    let args = [
-        "--role", "executor", "issue", "index", "sync", "--query", "bug",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("index sync must stay parseable");
-    match invocation.command {
-        Command::Issue(crate::command::IssueCommand::IndexSync { query, .. }) => {
-            assert_eq!(query.as_deref(), Some("bug"));
-        }
-        other => panic!("expected IndexSync, got {other:?}"),
-    }
-    let args = [
-        "--role", "executor", "issue", "index", "search", "--query", "hello",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("index search must stay parseable");
-    match invocation.command {
-        Command::Issue(crate::command::IssueCommand::IndexSearch { query, .. }) => {
-            assert_eq!(query, "hello");
-        }
-        other => panic!("expected IndexSearch, got {other:?}"),
+fn removed_index_commands_are_rejected() {
+    // `issue index sync/search` were removed; ordinary `issue search` is the
+    // only documented workflow with automatic warm/fallback.
+    for args in [
+        vec![
+            "--role", "executor", "issue", "index", "sync", "--query", "bug",
+        ],
+        vec![
+            "--role", "executor", "issue", "index", "search", "--query", "hello",
+        ],
+        vec!["--role", "executor", "issue", "index"],
+    ] {
+        let parsed: Vec<String> = args.into_iter().map(str::to_owned).collect();
+        let error = command::parse(&parsed).expect_err("removed index command must be rejected");
+        assert!(
+            error.contains("unknown issue command") && error.contains("index"),
+            "got: {error}"
+        );
     }
     // Ordinary search still parses with the transparent flags.
     let args = ["--role", "executor", "issue", "search", "--query", "phase"]

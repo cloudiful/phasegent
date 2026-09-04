@@ -10,7 +10,9 @@
 
 #[cfg(feature = "postgres")]
 use crate::providers::index::ISSUE_INDEX_SEARCH_MAX_LIMIT;
-use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexListOptions};
+use crate::providers::index::IssueIndexDocument;
+#[cfg(feature = "postgres")]
+use crate::providers::index::IssueIndexKey;
 #[cfg(feature = "postgres")]
 use crate::providers::index_store::IssueIndexSearchItem;
 use crate::providers::index_store::IssueIndexSearchResult;
@@ -46,87 +48,6 @@ impl PostgresIssueIndex {
             .await
             .map_err(|_| "could not migrate PostgreSQL index database".to_owned())?;
         Ok(Self { pool })
-    }
-
-    async fn load_chunks(
-        &self,
-        key: &IssueIndexKey,
-    ) -> Result<Vec<crate::providers::index::IssueIndexChunk>, String> {
-        let rows = sqlx::query(
-            "SELECT ordinal, text, byte_start, byte_end, hash FROM issue_chunks \
-             WHERE source=$1 AND project=$2 AND external_id=$3 ORDER BY ordinal ASC",
-        )
-        .bind(&key.source)
-        .bind(&key.project)
-        .bind(&key.external_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|_| "could not read chunks".to_owned())?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let ordinal: i32 = row
-                .try_get("ordinal")
-                .map_err(|_| "could not decode chunk row".to_owned())?;
-            let text: String = row
-                .try_get("text")
-                .map_err(|_| "could not decode chunk row".to_owned())?;
-            let byte_start: i32 = row
-                .try_get("byte_start")
-                .map_err(|_| "could not decode chunk row".to_owned())?;
-            let byte_end: i32 = row
-                .try_get("byte_end")
-                .map_err(|_| "could not decode chunk row".to_owned())?;
-            let hash: String = row
-                .try_get("hash")
-                .map_err(|_| "could not decode chunk row".to_owned())?;
-            out.push(crate::providers::index::IssueIndexChunk {
-                ordinal: ordinal as usize,
-                text,
-                byte_start: byte_start as usize,
-                byte_end: byte_end as usize,
-                hash,
-            });
-        }
-        Ok(out)
-    }
-
-    async fn doc_from_row(
-        &self,
-        source: String,
-        project: String,
-        external_id: String,
-        issue_number: i64,
-        title: String,
-        body: String,
-        state: String,
-        url: Option<String>,
-        provider_updated_at: Option<i64>,
-        indexed_at: i64,
-        content_hash: String,
-        deleted: bool,
-        deleted_at: Option<i64>,
-    ) -> Result<IssueIndexDocument, String> {
-        let key = IssueIndexKey::new(source, project, external_id)
-            .map_err(|e| format!("stored key is invalid: {e}"))?;
-        let chunks = if deleted {
-            Vec::new()
-        } else {
-            self.load_chunks(&key).await?
-        };
-        Ok(IssueIndexDocument {
-            key,
-            issue_number: issue_number as u64,
-            title,
-            body,
-            state,
-            url,
-            provider_updated_at,
-            indexed_at,
-            content_hash,
-            deleted,
-            deleted_at,
-            chunks: if deleted { Vec::new() } else { chunks },
-        })
     }
 }
 
@@ -196,213 +117,6 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
         Ok(())
     }
 
-    async fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String> {
-        key.validate()?;
-        let row = sqlx::query(
-            "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at \
-             FROM issue_documents WHERE source=$1 AND project=$2 AND external_id=$3",
-        )
-        .bind(&key.source)
-        .bind(&key.project)
-        .bind(&key.external_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|_| "could not read document".to_owned())?;
-
-        match row {
-            None => Ok(None),
-            Some(r) => {
-                let source: String = r
-                    .try_get("source")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let project: String = r
-                    .try_get("project")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let external_id: String = r
-                    .try_get("external_id")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let issue_number: i64 = r
-                    .try_get("issue_number")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let title: String = r
-                    .try_get("title")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let body: String = r
-                    .try_get("body")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let state: String = r
-                    .try_get("state")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let url: Option<String> = r
-                    .try_get("url")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let provider_updated_at: Option<i64> = r
-                    .try_get("provider_updated_at")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let indexed_at: i64 = r
-                    .try_get("indexed_at")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let content_hash: String = r
-                    .try_get("content_hash")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let deleted: bool = r
-                    .try_get("deleted")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let deleted_at: Option<i64> = r
-                    .try_get("deleted_at")
-                    .map_err(|_| "could not decode row".to_owned())?;
-                let doc = self
-                    .doc_from_row(
-                        source,
-                        project,
-                        external_id,
-                        issue_number,
-                        title,
-                        body,
-                        state,
-                        url,
-                        provider_updated_at,
-                        indexed_at,
-                        content_hash,
-                        deleted,
-                        deleted_at,
-                    )
-                    .await?;
-                Ok(Some(doc))
-            }
-        }
-    }
-
-    async fn list(&self, opts: &IssueIndexListOptions) -> Result<Vec<IssueIndexDocument>, String> {
-        if opts.limit == 0 || opts.limit > crate::providers::index::ISSUE_INDEX_MAX_LIST_LIMIT {
-            return Err(format!(
-                "list limit must be between 1 and {}",
-                crate::providers::index::ISSUE_INDEX_MAX_LIST_LIMIT
-            ));
-        }
-        let rows = sqlx::query(
-            "SELECT source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at \
-             FROM issue_documents WHERE deleted=FALSE ORDER BY source ASC, project ASC, external_id ASC LIMIT $1 OFFSET $2",
-        )
-        .bind(opts.limit as i64)
-        .bind(opts.offset as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|_| "could not read document list".to_owned())?;
-
-        let mut out = Vec::with_capacity(rows.len());
-        for r in rows {
-            let source: String = r
-                .try_get("source")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let project: String = r
-                .try_get("project")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let external_id: String = r
-                .try_get("external_id")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let issue_number: i64 = r
-                .try_get("issue_number")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let title: String = r
-                .try_get("title")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let body: String = r
-                .try_get("body")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let state: String = r
-                .try_get("state")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let url: Option<String> = r
-                .try_get("url")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let provider_updated_at: Option<i64> = r
-                .try_get("provider_updated_at")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let indexed_at: i64 = r
-                .try_get("indexed_at")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let content_hash: String = r
-                .try_get("content_hash")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let deleted: bool = r
-                .try_get("deleted")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            let deleted_at: Option<i64> = r
-                .try_get("deleted_at")
-                .map_err(|_| "could not decode list row".to_owned())?;
-            out.push(
-                self.doc_from_row(
-                    source,
-                    project,
-                    external_id,
-                    issue_number,
-                    title,
-                    body,
-                    state,
-                    url,
-                    provider_updated_at,
-                    indexed_at,
-                    content_hash,
-                    deleted,
-                    deleted_at,
-                )
-                .await?,
-            );
-        }
-        Ok(out)
-    }
-
-    async fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String> {
-        key.validate()?;
-        if indexed_at <= 0 {
-            return Err("indexed_at must be greater than zero".to_owned());
-        }
-        let placeholder_title = "deleted";
-        let placeholder_body = "";
-        let placeholder_state = "deleted";
-        let placeholder_hash = crate::providers::index::content_hash(
-            placeholder_title,
-            placeholder_body,
-            placeholder_state,
-        );
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|_| "could not begin tombstone".to_owned())?;
-        sqlx::query(
-            "INSERT INTO issue_documents \
-             (source, project, external_id, issue_number, title, body, state, url, provider_updated_at, indexed_at, content_hash, deleted, deleted_at) \
-             VALUES ($1,$2,$3,0,$4,$5,$6,NULL,NULL,$7,$8,TRUE,$7) \
-             ON CONFLICT (source, project, external_id) DO UPDATE SET deleted=TRUE, deleted_at=EXCLUDED.deleted_at, indexed_at=EXCLUDED.indexed_at",
-        )
-        .bind(&key.source)
-        .bind(&key.project)
-        .bind(&key.external_id)
-        .bind(placeholder_title)
-        .bind(placeholder_body)
-        .bind(placeholder_state)
-        .bind(indexed_at)
-        .bind(&placeholder_hash)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| "could not tombstone document".to_owned())?;
-
-        sqlx::query("DELETE FROM issue_chunks WHERE source=$1 AND project=$2 AND external_id=$3")
-            .bind(&key.source)
-            .bind(&key.project)
-            .bind(&key.external_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| "could not delete tombstoned chunks".to_owned())?;
-
-        tx.commit()
-            .await
-            .map_err(|_| "could not commit tombstone".to_owned())?;
-        Ok(())
-    }
-
     async fn lexical_search(
         &self,
         query: &str,
@@ -436,9 +150,7 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
         }
         let trimmed = query.trim();
         if trimmed.is_empty() {
-            return Err(
-                "issue index search requires --query TEXT (empty queries are rejected)".to_owned(),
-            );
+            return Err("lexical search requires a non-empty query".to_owned());
         }
         let has_scope = scope.source.is_some() && scope.project.is_some();
         let has_state = matches!(scope.state.as_deref(), Some("open") | Some("closed"));
@@ -638,39 +350,6 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
             has_more,
         })
     }
-
-    async fn list_active_keys_for_scope(
-        &self,
-        source: &str,
-        project: &str,
-    ) -> Result<Vec<IssueIndexKey>, String> {
-        let rows = sqlx::query(
-            "SELECT source, project, external_id FROM issue_documents \
-             WHERE source=$1 AND project=$2 AND deleted=FALSE \
-             ORDER BY source ASC, project ASC, external_id ASC",
-        )
-        .bind(source)
-        .bind(project)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|_| "could not query scoped active keys".to_owned())?;
-        let mut out = Vec::with_capacity(rows.len());
-        for r in rows {
-            let source: String = r
-                .try_get("source")
-                .map_err(|_| "could not decode scoped key row".to_owned())?;
-            let project: String = r
-                .try_get("project")
-                .map_err(|_| "could not decode scoped key row".to_owned())?;
-            let external_id: String = r
-                .try_get("external_id")
-                .map_err(|_| "could not decode scoped key row".to_owned())?;
-            let key = IssueIndexKey::new(source, project, external_id)
-                .map_err(|e| format!("stored scoped key invalid: {e}"))?;
-            out.push(key);
-        }
-        Ok(out)
-    }
 }
 
 /// Embedded migration SQL for the PostgreSQL index backend.
@@ -745,15 +424,6 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
     async fn upsert(&self, _doc: &IssueIndexDocument) -> Result<(), String> {
         Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
     }
-    async fn get(&self, _key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String> {
-        Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
-    }
-    async fn list(&self, _opts: &IssueIndexListOptions) -> Result<Vec<IssueIndexDocument>, String> {
-        Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
-    }
-    async fn tombstone(&self, _key: &IssueIndexKey, _indexed_at: i64) -> Result<(), String> {
-        Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
-    }
     async fn lexical_search(
         &self,
         _query: &str,
@@ -771,13 +441,6 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
         _include_body: bool,
         _scope: &crate::providers::index::LexicalScope,
     ) -> Result<IssueIndexSearchResult, String> {
-        Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
-    }
-    async fn list_active_keys_for_scope(
-        &self,
-        _source: &str,
-        _project: &str,
-    ) -> Result<Vec<IssueIndexKey>, String> {
         Err("postgres index support is not enabled; rebuild with --features postgres".to_owned())
     }
 }

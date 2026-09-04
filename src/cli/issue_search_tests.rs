@@ -56,10 +56,22 @@ fn remote_page_warms_full_body_while_output_stays_compact() {
     let dispatcher = forgejo_dispatcher("owner", "repo");
     warm_single_summary(&dispatcher, &summary, "issue search");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    let key = IssueIndexKey::new("forgejo", "owner/repo", "7").unwrap();
-    let stored = block_on(idx.get(&key)).unwrap().unwrap();
-    assert_eq!(stored.body.len(), long_body.len());
-    assert_eq!(stored.body, long_body);
+    // Warming is visible via scoped lexical search; output bodies stay capped.
+    let scope = lexical_scope_for_state(
+        explicit_scope(Some(ProviderKind::Forgejo), Some("owner/repo"), None).as_ref(),
+        "all",
+    );
+    let res = block_on(idx.lexical_search("Title", 10, 0, true)).unwrap();
+    assert_eq!(res.total_count, 1);
+    assert_eq!(res.items[0].title, "Title");
+    assert_eq!(res.items[0].body_truncated, Some(true));
+    assert_eq!(
+        res.items[0].body.as_ref().unwrap().len(),
+        crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
+    );
+    // Scoped search also finds the warmed document.
+    let scoped = block_on(idx.lexical_search_scoped("Title", 10, 0, false, &scope)).unwrap();
+    assert_eq!(scoped.total_count, 1);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -96,8 +108,9 @@ fn index_failure_is_warning_only_and_never_fails_remote() {
     };
     warm_single_summary(&dispatcher, &good, "issue search");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    let key = IssueIndexKey::new("forgejo", "owner/repo", "2").unwrap();
-    assert!(block_on(idx.get(&key)).unwrap().is_some());
+    let res = block_on(idx.lexical_search("good", 10, 0, false)).unwrap();
+    assert_eq!(res.total_count, 1);
+    assert_eq!(res.items[0].external_id, "2");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -349,18 +362,14 @@ fn mutation_write_through_covers_get_create_update_close() {
         warm_single_summary(&dispatcher, &summary, "issue mutation");
     }
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    for num in [11u64, 12, 13, 14] {
-        let key = IssueIndexKey::new("forgejo", "owner/repo", num.to_string()).unwrap();
-        let stored = block_on(idx.get(&key)).unwrap().unwrap();
-        assert_eq!(stored.issue_number, num);
-    }
-    // Close is the closed document, not a tombstone.
-    let close_key = IssueIndexKey::new("forgejo", "owner/repo", "14").unwrap();
-    let closed = block_on(idx.get(&close_key)).unwrap().unwrap();
-    assert!(!closed.deleted);
-    assert_eq!(closed.state, "closed");
-    let res = block_on(idx.lexical_search("close", 10, 0, false)).unwrap();
-    assert!(res.items.iter().any(|item| item.external_id == "14"));
+    // All four warmed summaries are visible via lexical search.
+    let res = block_on(idx.lexical_search("title", 10, 0, false)).unwrap();
+    assert_eq!(res.total_count, 4);
+    // Close is the closed document.
+    let closed = block_on(idx.lexical_search("close", 10, 0, false)).unwrap();
+    assert_eq!(closed.total_count, 1);
+    assert_eq!(closed.items[0].external_id, "14");
+    assert_eq!(closed.items[0].state, "closed");
     let _ = std::fs::remove_dir_all(dir);
 }
 

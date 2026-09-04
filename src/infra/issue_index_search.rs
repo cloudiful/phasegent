@@ -13,9 +13,7 @@ use crate::providers::index_store::{IssueIndexSearchItem, IssueIndexSearchResult
 pub fn escape_fts_query(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(
-            "issue index search requires --query TEXT (empty queries are rejected)".to_owned(),
-        );
+        return Err("lexical search requires a non-empty query".to_owned());
     }
     // Split on Unicode whitespace, filter empties, escape each token.
     let mut escaped_tokens = Vec::new();
@@ -29,9 +27,7 @@ pub fn escape_fts_query(input: &str) -> Result<String, String> {
         escaped_tokens.push(format!("\"{escaped}\""));
     }
     if escaped_tokens.is_empty() {
-        return Err(
-            "issue index search requires --query TEXT (empty queries are rejected)".to_owned(),
-        );
+        return Err("lexical search requires a non-empty query".to_owned());
     }
     // Join with space => implicit AND between terms.
     Ok(escaped_tokens.join(" "))
@@ -277,14 +273,8 @@ fn lexical_search_scoped_page_inner(
     })
 }
 
-/// Helper to collect seen active keys for tombstone logic.
-/// Not used directly here; see issue_index_store.rs.
-#[allow(dead_code)]
-pub fn _unused_search_helper() {}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::infra::issue_index::SqliteIssueIndex;
     use crate::infra::issue_index_backend::block_on;
     use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore};
@@ -402,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn fts_round_trip_after_upsert_and_resurrection() {
+    fn fts_round_trip_after_upsert() {
         let (dir, path) = tmp_index("roundtrip");
         let idx = SqliteIssueIndex::open_at(&path).unwrap();
         let key = IssueIndexKey::new("redmine", "proj1", "99").unwrap();
@@ -424,26 +414,12 @@ mod tests {
                 .total_count,
             1
         );
-        // Tombstone removes from FTS
-        block_on(idx.tombstone(&key, 1_700_000_200)).unwrap();
-        assert_eq!(
-            block_on(idx.lexical_search("alpha", 10, 0, false))
-                .unwrap()
-                .total_count,
-            0
-        );
-        assert_eq!(
-            block_on(idx.lexical_search("beta", 10, 0, false))
-                .unwrap()
-                .total_count,
-            0
-        );
-        // Resurrection brings back
+        // Replacement atomically updates FTS.
         let doc2 = IssueIndexDocument::new(
             key.clone(),
             99,
             "alpha".into(),
-            "beta body revived".into(),
+            "revived body".into(),
             "open".into(),
             None,
             None,
@@ -463,11 +439,9 @@ mod tests {
                 .total_count,
             1
         );
-        // Deleted documents never returned even if they match old FTS terms
-        let missing = IssueIndexKey::new("redmine", "proj1", "missing").unwrap();
-        block_on(idx.tombstone(&missing, 1_700_000_400)).unwrap();
+        // Old-only term no longer matches after atomic replacement.
         assert_eq!(
-            block_on(idx.lexical_search("deleted", 10, 0, false))
+            block_on(idx.lexical_search("beta", 10, 0, false))
                 .unwrap()
                 .total_count,
             0

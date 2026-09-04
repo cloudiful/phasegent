@@ -22,11 +22,6 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
     if name.is_none() || name == Some("--help") || name == Some("-h") {
         return Ok(Command::Help(HelpTopic::Issue));
     }
-    // Defer help handling for `issue index` to its own parser so
-    // `issue index sync --help` can resolve to the nested topic.
-    if name == Some("index") {
-        return super::issue_index::parse_issue_index(args);
-    }
     if args
         .iter()
         .skip(1)

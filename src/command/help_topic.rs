@@ -25,25 +25,16 @@ pub(crate) fn help_topic(
     match value {
         "issue" => match (subcommand, nested_subcommand) {
             (None, _) => Ok(HelpTopic::Issue),
-            (Some("index"), None) => Ok(HelpTopic::IssueCommand("index".to_owned())),
-            (Some("index"), Some("sync")) => {
-                Ok(HelpTopic::IssueCommand("index sync".to_owned()))
-            }
-            (Some("index"), Some("search")) => {
-                Ok(HelpTopic::IssueCommand("index search".to_owned()))
-            }
-            (Some("index"), Some(other)) => {
-                Err(format!("unknown issue help topic 'index {other}'"))
-            }
-            (Some(value), _) if [
-                "get",
-                "search",
-                "create",
-                "update-body",
-                "close",
-                "upload-attachment",
-            ]
-            .contains(&value) =>
+            (Some(value), _)
+                if [
+                    "get",
+                    "search",
+                    "create",
+                    "update-body",
+                    "close",
+                    "upload-attachment",
+                ]
+                .contains(&value) =>
             {
                 Ok(HelpTopic::IssueCommand(value.to_owned()))
             }

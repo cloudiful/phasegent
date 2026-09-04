@@ -782,7 +782,7 @@ the default; do not treat stale rows as fresh.
 
 Successful `issue get` and create/update/close opportunistically
 upsert the returned summary into the selected index (close is the
-closed document, not a tombstone); index failures are warnings only.
+closed document); index failures are warnings only.
 
 The provider-neutral issue index is stored in a separate private
 database from the configuration/credentials store. Its default path uses
@@ -813,49 +813,19 @@ test -f "$HOME/.config/phasegent/phasegent-index.sqlite3" \
 
 The index stores normalized issue documents with stable
 `source`/`project`/`external_id` keys, content hashes, provider
-`updated_at`/`indexed_at` timestamps, tombstone state, and bounded
+`updated_at`/`indexed_at` timestamps, and bounded
 UTF-8-safe chunks (`4000` bytes per chunk, at most `64` chunks;
 overlarge documents are rejected rather than silently truncated). Chunk
 records carry ordinal, byte offsets, and hashes so later backends can
 reuse the same contract. An FTS5 virtual table (`issue_fts`) mirrors
-`title`/`body` and is kept atomically in sync on upsert/tombstone;
+`title`/`body` and is kept atomically in sync on upsert;
 deleted documents are never returned by lexical search.
 
-Provider-neutral ingestion uses each provider's native pagination
+Automatic ingestion uses each provider's native pagination
 (Redmine `limit`/`offset`, Forgejo `page`/`limit`, GitLab
-`page`/`per_page`) and stores full bodies without the 8192-byte CLI
+`page`/`per_page`) for the single requested search page
+and stores full bodies without the 8192-byte CLI
 search cap.
-
-Hidden maintenance/compatibility commands (prefer ordinary
-`issue search`; explicit `--help issue index...` still documents them):
-
-```text
-phasegent --help issue index sync
-phasegent --help issue index search
-```
-
-`issue index sync` defaults to `page 1` and `limit 50` (bounded, single
-native page). Without `--all`, only that page is synced and no
-tombstones are written. With `--all`, pages are walked up to a hard
-safety cap of 100 pages, upserting every returned issue. For a full
-queryless scope sync (`--all` without `--query`, `state all`) the sync
-tracks seen active keys and tombstones previously indexed active
-documents in the same `source`/`project` scope that are absent from the
-complete remote result, deterministically ordered. Partial single-page
-syncs never tombstone. Redmine sync requires an explicit
-`--project-id` and never silently indexes all projects; Forgejo scope is
-`owner/repo`, GitLab scope is the numeric project id.
-
-`issue index search` is hidden maintenance local-only (no provider credential/config/network
-lookup) and uses the selected backend (SQLite FTS5 or PostgreSQL `tsvector`+ GIN). It rejects empty/whitespace queries,
-escapes/normalizes input so ordinary terms and Unicode work without
-malformed FTS syntax crashes, and returns a bounded envelope
-`{ items: [{source, project, external_id, issue_number, title, state,
-html_url, body?, body_truncated?}], offset, limit, total_count,
-has_more }` that omits bodies by default and caps explicitly returned
-bodies to 8192 bytes with truncation metadata. Stable deterministic
-ordering by rank then `source`/`project`/`external_id` is used for ties
-(`ts_rank` for PostgreSQL). Deleted/tombstoned documents are excluded.
 
 #### Choosing the index backend (SQLite default, PostgreSQL optional)
 

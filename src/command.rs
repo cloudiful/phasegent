@@ -13,7 +13,6 @@ mod config;
 mod help_topic;
 mod hooks;
 mod issue;
-mod issue_index;
 mod parse_helpers;
 mod project;
 mod relation;
@@ -151,19 +150,6 @@ pub enum IssueCommand {
         page: usize,
         limit: usize,
         all: bool,
-        include_body: bool,
-    },
-    IndexSync {
-        query: Option<String>,
-        state: String,
-        page: usize,
-        limit: usize,
-        all: bool,
-    },
-    IndexSearch {
-        query: String,
-        limit: usize,
-        offset: usize,
         include_body: bool,
     },
     Create {

@@ -18,9 +18,6 @@ pub const ISSUE_INDEX_MAX_CHUNK_BYTES: usize = 4000;
 pub const ISSUE_INDEX_MAX_CHUNKS: usize = 64;
 pub const ISSUE_INDEX_MAX_DOCUMENT_BYTES: usize =
     ISSUE_INDEX_MAX_CHUNK_BYTES * ISSUE_INDEX_MAX_CHUNKS;
-pub const ISSUE_INDEX_MAX_LIST_LIMIT: usize = 100;
-pub const ISSUE_INDEX_DEFAULT_LIST_LIMIT: usize = 50;
-pub const ISSUE_INDEX_SYNC_MAX_PAGES: usize = 100;
 pub const ISSUE_INDEX_SEARCH_DEFAULT_LIMIT: usize = 20;
 pub const ISSUE_INDEX_SEARCH_DEFAULT_OFFSET: usize = 0;
 pub const ISSUE_INDEX_SEARCH_MAX_LIMIT: usize = 100;
@@ -350,23 +347,6 @@ pub fn build_chunks(
     Ok(chunks)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IssueIndexListOptions {
-    pub limit: usize,
-    pub offset: usize,
-}
-impl IssueIndexListOptions {
-    pub fn new(limit: usize, offset: usize) -> Result<Self, String> {
-        if limit == 0 || limit > ISSUE_INDEX_MAX_LIST_LIMIT {
-            return Err(format!(
-                "list limit must be between 1 and {}",
-                ISSUE_INDEX_MAX_LIST_LIMIT
-            ));
-        }
-        Ok(Self { limit, offset })
-    }
-}
-
 /// Optional scope filter for transparent-fallback lexical search.
 /// `source` is the provider literal (`forgejo`/`redmine`/`gitlab`),
 /// `project` is the stable project identifier for that provider
@@ -425,12 +405,6 @@ impl LexicalScope {
 #[async_trait(?Send)]
 pub trait IssueIndexStore {
     async fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String>;
-    async fn get(&self, key: &IssueIndexKey) -> Result<Option<IssueIndexDocument>, String>;
-    async fn list(
-        &self,
-        options: &IssueIndexListOptions,
-    ) -> Result<Vec<IssueIndexDocument>, String>;
-    async fn tombstone(&self, key: &IssueIndexKey, indexed_at: i64) -> Result<(), String>;
     async fn lexical_search(
         &self,
         query: &str,
@@ -450,9 +424,4 @@ pub trait IssueIndexStore {
         include_body: bool,
         scope: &LexicalScope,
     ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String>;
-    async fn list_active_keys_for_scope(
-        &self,
-        source: &str,
-        project: &str,
-    ) -> Result<Vec<IssueIndexKey>, String>;
 }
