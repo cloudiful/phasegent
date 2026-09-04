@@ -142,11 +142,51 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_issue_search(args: &[String]) -> Result<Command, String> {
-    validate_options(args, 0, &["--query", "-q", "--state"], &[], "issue search")?;
+    validate_options(
+        args,
+        0,
+        &["--query", "-q", "--state", "--page", "--limit"],
+        &["--all", "--include-body"],
+        "issue search",
+    )?;
     let query = optional_option(args, "--query").or_else(|| optional_option(args, "-q"));
     let state = optional_option(args, "--state").unwrap_or_else(|| "all".to_owned());
     if !matches!(state.as_str(), "open" | "closed" | "all") {
         return Err("--state must be open, closed, or all".to_owned());
     }
-    Ok(Command::Issue(IssueCommand::Search { query, state }))
+    let page = if let Some(value) = optional_option(args, "--page") {
+        let parsed: usize = value
+            .parse()
+            .map_err(|_| "issue search --page must be a positive integer".to_owned())?;
+        if parsed == 0 {
+            return Err("issue search --page must be >= 1".to_owned());
+        }
+        parsed
+    } else {
+        crate::providers::api::ISSUE_SEARCH_DEFAULT_PAGE
+    };
+    let limit = if let Some(value) = optional_option(args, "--limit") {
+        let parsed: usize = value
+            .parse()
+            .map_err(|_| "issue search --limit must be a positive integer".to_owned())?;
+        if parsed == 0 || parsed > crate::providers::api::ISSUE_SEARCH_MAX_LIMIT {
+            return Err(format!(
+                "issue search --limit must be between 1 and {}",
+                crate::providers::api::ISSUE_SEARCH_MAX_LIMIT
+            ));
+        }
+        parsed
+    } else {
+        crate::providers::api::ISSUE_SEARCH_DEFAULT_LIMIT
+    };
+    let all = has_flag(args, "--all");
+    let include_body = has_flag(args, "--include-body");
+    Ok(Command::Issue(IssueCommand::Search {
+        query,
+        state,
+        page,
+        limit,
+        all,
+        include_body,
+    }))
 }

@@ -172,30 +172,153 @@ fn journals_back_comment_create_get_and_marker_lookup() {
 
 #[test]
 fn search_paginates_and_filters_by_requested_state() {
+    // Bounded single-page semantics: Redmine uses limit/offset for exactly
+    // one page (default 50) and returns an envelope with total/has_more.
     let first_page =
         support::issue_collection(3, 2, &[(31, "Open one", false), (32, "Closed one", true)]);
-    let second_page = support::issue_collection(3, 2, &[(33, "Open two", false)]);
-    let (base, requests, server) = sequence(vec![
-        MockResponse::ok(first_page),
-        MockResponse::ok(second_page),
-    ]);
+    let (base, requests, server) = sequence(vec![MockResponse::ok(first_page)]);
     let redmine = provider(base);
-    let issues = redmine.search_issues(Some("needle"), "open").unwrap();
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "open".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let result = redmine.search_issues(&options).unwrap();
     assert_eq!(
-        issues.iter().map(|issue| issue.number).collect::<Vec<_>>(),
-        [31, 33]
+        result.items.iter().map(|issue| issue.number).collect::<Vec<_>>(),
+        [31]
     );
-    assert!(issues.iter().all(|issue| issue.state == "open"));
+    assert!(result.items.iter().all(|issue| issue.state == "open"));
+    assert_eq!(result.page, 1);
+    assert_eq!(result.limit, 50);
+    assert_eq!(result.total_count, Some(3));
+    assert!(result.has_more);
+    // compact output omits bodies
+    assert!(result.items.iter().all(|item| item.body.is_none()));
 
     let requests = requests.recv().unwrap();
-    assert_eq!(requests.len(), 2);
-    for (request, offset) in requests.iter().zip(["0", "2"]) {
-        support::assert_request(request, "GET", "/issues.json?", None);
-        assert!(request.contains("status_id=open"));
-        assert!(request.contains("limit=100"));
-        assert!(request.contains(&format!("offset={offset}")));
-        assert!(request.contains("project_id=42"));
-        assert!(request.contains("subject=%7Eneedle") || request.contains("subject=~needle"));
-    }
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    support::assert_request(request, "GET", "/issues.json?", None);
+    assert!(request.contains("status_id=open"));
+    assert!(request.contains("limit=50"));
+    assert!(request.contains("offset=0"));
+    assert!(request.contains("project_id=42"));
+    assert!(request.contains("subject=%7Eneedle") || request.contains("subject=~needle"));
     server.join().unwrap();
+}
+
+#[test]
+fn search_uses_limit_offset_and_validates_bounds() {
+    // page 2 with limit 10 => offset 10, bounded single request
+    let page = support::issue_collection(1, 1, &[(99, "Single", false)]);
+    let (base, requests, server) = sequence(vec![MockResponse::ok(page)]);
+    let redmine = provider(base);
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 2,
+        limit: 10,
+        include_body: true,
+        all: false,
+    };
+    let result = redmine.search_issues(&options).unwrap();
+    assert_eq!(result.page, 2);
+    assert_eq!(result.limit, 10);
+    assert_eq!(result.items.len(), 1);
+    assert!(result.items[0].body.is_some());
+    let requests = requests.recv().unwrap();
+    assert!(requests[0].contains("limit=10"));
+    assert!(requests[0].contains("offset=10"));
+    server.join().unwrap();
+
+    // invalid bounds are rejected before any request
+    let bad = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 0,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    assert!(redmine.search_issues(&bad).is_err());
+    let bad_limit = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 200,
+        include_body: false,
+        all: false,
+    };
+    assert!(redmine.search_issues(&bad_limit).is_err());
+}
+
+#[test]
+fn search_rejects_empty_query_unless_all_and_reports_truncation() {
+    let redmine = provider("http://127.0.0.1:1".to_owned());
+    let empty = crate::providers::IssueSearchOptions {
+        query: Some("   ".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    assert!(redmine.search_issues(&empty).is_err());
+
+    // explicit bounded all-issues mode allows empty query
+    let all_options = crate::providers::IssueSearchOptions {
+        query: None,
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: true,
+    };
+    let (result, request) = support::one(
+        MockResponse::ok(support::issue_collection(0, 0, &[])),
+        |redmine| redmine.search_issues(&all_options),
+    );
+    assert!(result.is_ok());
+    assert!(!request.contains("subject="));
+
+    // body truncation on explicit include
+    let long_desc = "x".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 5);
+    let collection = serde_json::json!({
+        "total_count": 1,
+        "limit": 1,
+        "issues": [{
+            "id": 77,
+            "subject": "Long",
+            "description": long_desc,
+            "status": {"name": "New", "is_closed": false}
+        }]
+    })
+    .to_string();
+    let (base, requests, server) = sequence(vec![MockResponse::ok(collection)]);
+    let redmine = crate::providers::RedmineProvider::new(
+        crate::providers::RedmineConfig::new(base, "42", 5),
+        super::support::TEST_API_KEY.to_owned(),
+    )
+    .unwrap();
+    let trunc_options = crate::providers::IssueSearchOptions {
+        query: Some("Long".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: true,
+        all: false,
+    };
+    let result = redmine.search_issues(&trunc_options).unwrap();
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].body_truncated, Some(true));
+    assert_eq!(
+        result.items[0].body.as_ref().unwrap().len(),
+        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+    );
+    server.join().unwrap();
+    drop(requests);
 }

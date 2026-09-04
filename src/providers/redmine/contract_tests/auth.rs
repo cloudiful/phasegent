@@ -55,7 +55,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
     assert_eq!(invocation.provider, Some(ProviderKind::Redmine));
     assert!(matches!(
         invocation.command,
-        Command::Issue(IssueCommand::Search { ref query, ref state })
+        Command::Issue(IssueCommand::Search { ref query, ref state, .. })
             if query.as_deref() == Some("needle") && state == "closed"
     ));
 

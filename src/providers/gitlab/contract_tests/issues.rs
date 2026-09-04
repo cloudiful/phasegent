@@ -19,21 +19,36 @@ fn get_issue_hits_project_issues_iid_with_private_token() {
 
 #[test]
 fn search_issues_open_sends_state_opened_and_paginates() {
-    let (base, requests, server) = sequence(vec![
-        MockResponse::ok(format!("[{}]", issue_payload(1, "One", "opened", &[])))
-            .with_header("x-next-page", "2"),
-        MockResponse::ok(format!("[{}]", issue_payload(2, "Two", "opened", &[])))
-            .with_header("x-next-page", ""),
-    ]);
+    // Bounded single-page semantics: one request with page/per_page.
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "open".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let (base, requests, server) = sequence(vec![MockResponse::ok(format!(
+        "[{}]",
+        issue_payload(1, "One", "opened", &[])
+    ))
+    .with_header("x-next-page", "2")
+    .with_header("x-total", "2")]);
     let dispatcher = dispatcher(base);
-    let issues = dispatcher.search_issues(Some("needle"), "open").unwrap();
-    assert_eq!(issues.len(), 2);
+    let result = dispatcher.search_issues(&options).unwrap();
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.page, 1);
+    assert_eq!(result.limit, 50);
+    assert!(result.has_more);
+    assert_eq!(result.total_count, Some(2));
+    // compact output omits bodies
+    assert!(result.items[0].body.is_none());
     let requests = requests.recv().unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert!(requests[0].contains("state=opened"));
     assert!(requests[0].contains("search=needle"));
     assert!(requests[0].contains("page=1"));
-    assert!(requests[1].contains("page=2"));
+    assert!(requests[0].contains("per_page=50"));
     for request in &requests {
         assert!(
             request.starts_with("GET /api/v4/projects/42/issues?"),
@@ -45,53 +60,186 @@ fn search_issues_open_sends_state_opened_and_paginates() {
 
 #[test]
 fn search_issues_closed_maps_to_state_closed() {
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "closed".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
     let (result, request) = one(
         MockResponse::ok(format!("[{}]", issue_payload(3, "Done", "closed", &[]))),
-        |provider| provider.search_issues(None, "closed"),
+        |provider| provider.search_issues(&options),
     );
-    let issues = result.unwrap();
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].state, "closed");
+    let result = result.unwrap();
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].state, "closed");
     assert!(request.contains("state=closed"));
     assert!(!request.contains("state=opened"));
 }
 
 #[test]
 fn search_issues_all_omits_state_filter() {
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
     let (result, request) = one(
         MockResponse::ok("[]").with_header("x-next-page", ""),
-        |provider| provider.search_issues(None, "all"),
+        |provider| provider.search_issues(&options),
     );
-    assert!(result.unwrap().is_empty());
+    assert!(result.unwrap().items.is_empty());
     assert!(
         !request.contains("state="),
         "all must not send a state filter: {request}"
     );
+
+    // bounded all-issues mode allows empty query with all=true
+    let all_empty = crate::providers::IssueSearchOptions {
+        query: None,
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: true,
+    };
+    let (result, request) = one(
+        MockResponse::ok("[]").with_header("x-next-page", ""),
+        |provider| provider.search_issues(&all_empty),
+    );
+    assert!(result.unwrap().items.is_empty());
+    assert!(!request.contains("search="));
 }
 
 #[test]
 fn search_issues_rejects_unknown_state_before_request() {
-    let result = zero_request(|provider| provider.search_issues(None, "bogus"));
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "bogus".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let result = zero_request(|provider| provider.search_issues(&options));
     let error = result.unwrap_err();
     assert_eq!(error.json()["kind"], "config");
 }
 
 #[test]
 fn repeated_non_empty_search_page_returns_pagination_error() {
-    let (base, requests, server) = sequence(vec![
-        // Both pages have x-next-page so the helper must walk past
-        // page 1; the repeated body on page 2 is what should trip
-        // the safety guard.
-        MockResponse::ok(format!("[{}]", issue_payload(1, "One", "opened", &[])))
-            .with_header("x-next-page", "2"),
-        MockResponse::ok(format!("[{}]", issue_payload(1, "One", "opened", &[])))
-            .with_header("x-next-page", "3"),
-    ]);
-    let dispatcher = dispatcher(base);
-    let error = dispatcher.search_issues(None, "all").unwrap_err();
-    assert_eq!(error.json()["kind"], "pagination");
-    assert_eq!(requests.recv().unwrap().len(), 2);
-    server.join().unwrap();
+    // With bounded single-page search, the repeated-page guard is not
+    // exercised via pagination loop; validation is now at the envelope
+    // layer. Empty query without --all is rejected before any request.
+    let empty = crate::providers::IssueSearchOptions {
+        query: None,
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let result = zero_request(|provider| provider.search_issues(&empty));
+    assert_eq!(result.unwrap_err().json()["kind"], "config");
+}
+
+#[test]
+fn search_reports_truncation_and_validates_bounds() {
+    // compact vs body inclusion
+    let compact = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let (result, _request) = one(
+        MockResponse::ok(format!("[{}]", issue_payload(1, "One", "opened", &[]))),
+        |provider| provider.search_issues(&compact),
+    );
+    let output = result.unwrap();
+    assert!(output.items[0].body.is_none());
+
+    let long_body = "a".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 10);
+    let long_payload = serde_json::json!({
+        "id": 9,
+        "iid": 9,
+        "title": "Long",
+        "description": long_body,
+        "state": "opened",
+        "web_url": "https://gitlab.example/issues/9",
+        "labels": []
+    })
+    .to_string();
+    let with_body = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: true,
+        all: false,
+    };
+    let (result, _request) = one(
+        MockResponse::ok(format!("[{long_payload}]")),
+        |provider| provider.search_issues(&with_body),
+    );
+    let output = result.unwrap();
+    assert_eq!(output.items[0].body_truncated, Some(true));
+    assert_eq!(
+        output.items[0].body.as_ref().unwrap().len(),
+        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+    );
+
+    // invalid bounds
+    let bad_page = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 0,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    assert_eq!(
+        zero_request(|provider| provider.search_issues(&bad_page))
+            .unwrap_err()
+            .json()["kind"],
+        "config"
+    );
+    let bad_limit = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 200,
+        include_body: false,
+        all: false,
+    };
+    assert_eq!(
+        zero_request(|provider| provider.search_issues(&bad_limit))
+            .unwrap_err()
+            .json()["kind"],
+        "config"
+    );
+    // whitespace-only query without all is rejected
+    let whitespace = crate::providers::IssueSearchOptions {
+        query: Some("   ".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    assert_eq!(
+        zero_request(|provider| provider.search_issues(&whitespace))
+            .unwrap_err()
+            .json()["kind"],
+        "config"
+    );
 }
 
 #[test]

@@ -1,6 +1,8 @@
 //! Issue CRUD / search and IssueSummary conversion.
 
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{
+    ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
+};
 use crate::providers::gitlab::model::{
     ApiIssue, NewIssue, UpdateIssue, state_from_gitlab, state_query_filter,
 };
@@ -40,31 +42,66 @@ impl GitlabProvider {
     }
 
     /// `GET /projects/:id/issues?state=...&search=...&per_page=50&page=N`
-    /// paginated until GitLab signals completion via a partial page
-    /// or the safety cap. The shared `open` / `closed` / `all`
-    /// selector is translated to GitLab's `opened` / `closed` /
-    /// omitted state filter.
+    /// single-page fetch. Bounded: never loops across pages; the caller
+    /// controls pagination via `page`/`per_page`. State filter is the
+    /// GitLab `opened`/`closed`/omitted translation.
     pub(crate) fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, ForgejoError> {
-        let state_filter = state_query_filter(state)?;
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, ForgejoError> {
+        options.validate()?;
+        let state_filter = state_query_filter(&options.state)?;
         let path = self.issues_path();
-        let issues = self.http.paginate("issue search", |http, page| {
-            let mut params = vec![("page", page.to_string())];
-            if let Some(filter) = state_filter {
-                params.push(("state", filter.to_owned()));
-            }
-            if let Some(query) = query.filter(|value| !value.is_empty()) {
-                params.push(("search", query.to_owned()));
-            }
-            http.get_page::<ApiIssue>(&path, &params, "issue search")
-        })?;
-        Ok(issues
+        let query = options.effective_query();
+        let mut params = vec![
+            ("page", options.page.to_string()),
+            ("per_page", options.limit.to_string()),
+        ];
+        if let Some(filter) = state_filter {
+            params.push(("state", filter.to_owned()));
+        }
+        if let Some(query) = query {
+            params.push(("search", query.to_owned()));
+        }
+        let (items, headers, _raw) = self.http.get_page::<ApiIssue>(&path, &params, "issue search")?;
+        let count = items.len();
+        // GitLab signals more pages via x-next-page (empty = last page)
+        // and x-total-pages / x-total. Preserve that metadata.
+        let total_count = headers
+            .get("x-total")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<usize>().ok());
+        let next_page_header = headers
+            .get("x-next-page")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().to_owned());
+        let total_pages_header = headers
+            .get("x-total-pages")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<usize>().ok());
+        let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
+        let has_more = match (next_page_header.as_deref(), total_pages_header, total_count) {
+            (Some(""), _, _) => false,
+            (Some(_), Some(total_pages), _) => options.page < total_pages,
+            (_, _, Some(total)) => offset + count < total,
+            (None, Some(total_pages), None) => options.page < total_pages,
+            (None, None, None) => count == options.limit,
+            (Some(_), None, None) => true,
+        };
+        let items: Vec<IssueSearchItem> = items
             .into_iter()
-            .map(|issue| issue.into_summary(self))
-            .collect())
+            .map(|issue| {
+                let summary: IssueSummary = issue.into_summary(self);
+                IssueSearchItem::from_summary(summary, options.include_body)
+            })
+            .collect();
+        Ok(IssueSearchResult {
+            items,
+            page: options.page,
+            limit: options.limit,
+            total_count,
+            has_more: has_more && count > 0,
+        })
     }
 
     /// `POST /projects/:id/issues` with an optional `labels` field

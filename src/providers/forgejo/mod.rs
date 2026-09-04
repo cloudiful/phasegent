@@ -8,7 +8,10 @@ use crate::auth;
 use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-pub use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+pub use crate::providers::api::{
+    CommentOutput, ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult,
+    IssueSummary, RepoSummary,
+};
 use crate::providers::forgejo::http::{Page, decode};
 use crate::providers::forgejo::model::{
     ApiComment, ApiIssue, ApiRepository, NewComment, NewIssue, NewRepository, UpdateIssue,
@@ -114,54 +117,49 @@ impl ForgejoProvider {
 
     pub fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, ForgejoError> {
-        let mut issues = Vec::new();
-        let mut page = 1;
-        let mut previous_signature = None;
-        let mut total_count = None;
-        loop {
-            if page > MAX_PAGES {
-                return Err(ForgejoError::pagination(
-                    "issue search",
-                    "pagination exceeded the safety limit",
-                ));
-            }
-            // `type=issues` keeps Forgejo's `/repos/{owner}/{repo}/issues` search
-            // endpoint strictly on issues. Without it, the same endpoint may also
-            // surface pull requests, which a tracking-orchestrator could mistake
-            // for the dedicated tracking issue.
-            let mut query_params = vec![
-                ("state", state.to_owned()),
-                ("type", "issues".to_owned()),
-                ("limit", PAGE_SIZE.to_string()),
-                ("page", page.to_string()),
-            ];
-            if let Some(query) = query {
-                query_params.push(("q", query.to_owned()));
-            }
-            let response: Page<ApiIssue> =
-                self.get_page(&self.issues_path(), &query_params, "issue search")?;
-            if previous_signature.as_deref() == Some(response.signature.as_str())
-                && !response.items.is_empty()
-            {
-                return Err(ForgejoError::pagination(
-                    "issue search",
-                    "Forgejo returned the same non-empty page repeatedly",
-                ));
-            }
-            let count = response.items.len();
-            total_count = response.total.or(total_count);
-            let complete = response.is_complete(issues.len() + count, total_count);
-            let signature = response.signature;
-            issues.extend(response.items.into_iter().map(Into::into));
-            if complete || count == 0 {
-                return Ok(issues);
-            }
-            previous_signature = Some(signature);
-            page += 1;
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, ForgejoError> {
+        options.validate()?;
+        let query = options.effective_query();
+        let mut query_params = vec![
+            ("state", options.state.clone()),
+            ("type", "issues".to_owned()),
+            ("limit", options.limit.to_string()),
+            ("page", options.page.to_string()),
+        ];
+        if let Some(query) = query {
+            query_params.push(("q", query.to_owned()));
         }
+        let response: Page<ApiIssue> =
+            self.get_page(&self.issues_path(), &query_params, "issue search")?;
+        let total_count = response.total;
+        let count = response.items.len();
+        // has_more is true when the provider signals more data remains. Prefer
+        // the explicit total count, then the Link-next header, then a full-page
+        // heuristic.
+        let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
+        let has_more = if let Some(total) = total_count {
+            offset + count < total
+        } else {
+            response.next == Some(true) || (count == options.limit && response.next.is_none())
+        };
+        // Never return more than one page; the caller requested a single
+        // bounded page and the provider must not loop.
+        let items: Vec<IssueSearchItem> = response
+            .items
+            .into_iter()
+            .map(|issue| {
+                let summary: IssueSummary = issue.into();
+                IssueSearchItem::from_summary(summary, options.include_body)
+            })
+            .collect();
+        Ok(IssueSearchResult {
+            items,
+            page: options.page,
+            limit: options.limit,
+            total_count,
+            has_more: has_more && count > 0,
+        })
     }
 
     pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {

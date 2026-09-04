@@ -386,7 +386,9 @@ impl GitlabHttp {
     ) -> Result<(Vec<T>, HeaderMap, String), ForgejoError> {
         // Safe GET with pagination: retry on transient failures.
         let mut params: Vec<(&str, String)> = extra_query.to_vec();
-        params.push(("per_page", PAGE_SIZE.to_string()));
+        if !params.iter().any(|(key, _)| *key == "per_page") {
+            params.push(("per_page", PAGE_SIZE.to_string()));
+        }
         let (status, headers, text) = crate::infra::http_client::fetch_with_retry(
             self.client
                 .get(self.endpoint(path)?)

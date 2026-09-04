@@ -233,8 +233,12 @@ phasegent --role executor --provider redmine comment create 3 \
   --body '<!-- marker --> DONE' --marker '<!-- marker -->' --authorized
 phasegent --role executor --provider redmine comment find-marker 3 --marker '<!-- marker -->'
 phasegent --role orchestrator --provider redmine issue search --query 'phase'
+phasegent --role orchestrator --provider redmine issue search --all --state open --page 2 --limit 20
+phasegent --role orchestrator --provider redmine issue search --query 'phase' --include-body
 phasegent --role executor --provider redmine version list
 ```
+
+`issue search` is bounded and single-page: Redmine uses `limit`/`offset`, Forgejo uses `page`/`limit`, GitLab uses `page`/`per_page`; the CLI exposes provider-neutral `--page` (default 1) and `--limit` (default 50, max 100) and never fetches all pages for one invocation. Empty or whitespace-only `--query` is rejected unless `--all` is given for a bounded listing of all visible issues. Default output is a compact envelope `{ items: [{id, number, title, state, html_url}], page, limit, total_count?, has_more }` without bodies; pass `--include-body` to include bodies bounded to 8192 bytes with `body_truncated: true` when truncated. Provider pagination metadata (`total_count`, `has_more`) is preserved where available.
 
 Issue creation and body updates accept an explicit Redmine tracker with
 `--tracker`, which accepts a validated tracker name (`Bug`, `Feature`) or a

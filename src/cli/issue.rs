@@ -133,8 +133,26 @@ pub(crate) fn execute_issue(
             )),
         },
         IssueCommand::Get { number } => super::print_result(provider.get_issue(number)),
-        IssueCommand::Search { query, state } => {
-            super::print_result(provider.search_issues(query.as_deref(), &state))
+        IssueCommand::Search {
+            query,
+            state,
+            page,
+            limit,
+            all,
+            include_body,
+        } => {
+            let options = crate::providers::IssueSearchOptions {
+                query,
+                state,
+                page,
+                limit,
+                include_body,
+                all,
+            };
+            if let Err(error) = options.validate() {
+                return super::provider_error(error);
+            }
+            super::print_result(provider.search_issues(&options))
         }
         IssueCommand::Create {
             title,

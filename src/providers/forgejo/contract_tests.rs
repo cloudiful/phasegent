@@ -41,14 +41,31 @@ fn issue_get_contract() {
 
 #[test]
 fn issue_search_contract() {
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "open".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
     let (result, request) = one(
         MockResponse::total(format!("[{}]", issue_json()), "1"),
-        |provider| provider.search_issues(Some("needle"), "open"),
+        |provider| provider.search_issues(&options),
     );
-    assert_eq!(result.unwrap().len(), 1);
+    let output = result.unwrap();
+    assert_eq!(output.items.len(), 1);
+    assert_eq!(output.page, 1);
+    assert_eq!(output.limit, 50);
+    assert_eq!(output.total_count, Some(1));
+    assert!(!output.has_more);
+    // compact output omits bodies
+    assert!(output.items[0].body.is_none());
     assert_request(&request, "GET", "/api/v1/repos/owner/repo/issues?", None);
     assert!(request.contains("state=open"));
     assert!(request.contains("q=needle"));
+    assert!(request.contains("limit=50"));
+    assert!(request.contains("page=1"));
     // The search endpoint must always declare `type=issues` so PRs cannot be
     // surfaced as candidate tracking issues.
     assert!(
@@ -59,16 +76,40 @@ fn issue_search_contract() {
 
 #[test]
 fn issue_search_contract_filters_to_issues_without_query() {
+    // Empty query without --all is rejected at the provider layer; the
+    // bounded all-issues mode requires an explicit `all=true`.
+    let empty_options = crate::providers::IssueSearchOptions {
+        query: None,
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let provider = dispatcher("http://127.0.0.1:1/api/v1".to_owned());
+    let error = provider.search_issues(&empty_options).unwrap_err();
+    assert_eq!(error.json()["kind"], "config");
+
+    let all_options = crate::providers::IssueSearchOptions {
+        query: None,
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: true,
+    };
     let (result, request) = one(
         MockResponse::total(format!("[{}]", issue_json()), "1"),
-        |provider| provider.search_issues(None, "all"),
+        |provider| provider.search_issues(&all_options),
     );
-    assert_eq!(result.unwrap().len(), 1);
+    assert_eq!(result.unwrap().items.len(), 1);
     assert!(request.contains("state=all"));
     assert!(
         request.contains("type=issues"),
         "expected type=issues even without a query string: {request}"
     );
+    // Bounded query-less search must not send an empty q param.
+    assert!(!request.contains("q="));
 }
 
 #[test]
@@ -220,17 +261,31 @@ fn non_success_response_is_structured() {
 
 #[test]
 fn clamped_issue_page_uses_total_count() {
-    let (base, requests, server) = sequence(vec![
-        MockResponse::total(format!("[{}]", issue_json()), "2"),
-        MockResponse::ok(r#"[{"id":2,"number":8,"title":"Second","body":"","state":"open"}]"#),
-    ]);
+    // Single-page bounded fetch: one request, envelope carries total_count
+    // and has_more derived from total_count.
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 1,
+        include_body: false,
+        all: false,
+    };
+    let (base, requests, server) = sequence(vec![MockResponse::total(
+        format!("[{}]", issue_json()),
+        "2",
+    )]);
     let provider = dispatcher(base);
-    let issues = provider.search_issues(None, "all").unwrap();
-    assert_eq!(issues.len(), 2);
+    let result = provider.search_issues(&options).unwrap();
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.total_count, Some(2));
+    assert!(result.has_more);
+    assert_eq!(result.page, 1);
+    assert_eq!(result.limit, 1);
     let requests = requests.recv().unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert!(requests[0].contains("page=1"));
-    assert!(requests[1].contains("page=2"));
+    assert!(requests[0].contains("limit=1"));
     server.join().unwrap();
 }
 
@@ -254,15 +309,106 @@ fn clamped_comment_page_finds_later_marker() {
 
 #[test]
 fn repeated_non_empty_page_returns_without_looping() {
-    let (base, requests, server) = sequence(vec![
-        MockResponse::ok(format!("[{}]", issue_json())),
-        MockResponse::ok(format!("[{}]", issue_json())),
-    ]);
+    // Bounded single-page semantics must not loop; a second identical page
+    // is never fetched. The previous multi-page pagination guard is now
+    // replaced by the single-page contract: one request only.
+    let options = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let (base, requests, server) = sequence(vec![MockResponse::ok(format!(
+        "[{}]",
+        issue_json()
+    ))]);
     let provider = dispatcher(base);
-    let error = provider.search_issues(None, "all").unwrap_err();
-    assert_eq!(error.json()["kind"], "pagination");
-    assert_eq!(requests.recv().unwrap().len(), 2);
+    let result = provider.search_issues(&options).unwrap();
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(requests.recv().unwrap().len(), 1);
     server.join().unwrap();
+}
+
+#[test]
+fn issue_search_reports_has_more_from_link_and_compact_truncation() {
+    // has_more via X-Total-Count and default compact output without bodies.
+    let options_compact = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "open".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    let (result, _request) = one(
+        MockResponse::ok(format!("[{}]", issue_json())),
+        |provider| provider.search_issues(&options_compact),
+    );
+    let output = result.unwrap();
+    assert!(output.items[0].body.is_none());
+    assert!(output.items[0].body_truncated.is_none());
+
+    // Explicit body inclusion is bounded and reports truncation.
+    let long_body = "a".repeat(crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES + 10);
+    let issue_with_long_body = format!(
+        r#"{{"id":2,"number":9,"title":"Long","body":"{long_body}","state":"open","html_url":"https://forgejo.example/issues/9"}}"#
+    );
+    let options_body = crate::providers::IssueSearchOptions {
+        query: Some("q".to_owned()),
+        state: "open".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: true,
+        all: false,
+    };
+    let (result, _request) = one(
+        MockResponse::ok(format!("[{issue_with_long_body}]")),
+        |provider| provider.search_issues(&options_body),
+    );
+    let output = result.unwrap();
+    assert!(output.items[0].body.is_some());
+    assert_eq!(output.items[0].body_truncated, Some(true));
+    assert_eq!(
+        output.items[0].body.as_ref().unwrap().len(),
+        crate::providers::ISSUE_SEARCH_MAX_BODY_BYTES
+    );
+}
+
+#[test]
+fn issue_search_rejects_invalid_page_limit_and_whitespace_query() {
+    let base = dispatcher("http://127.0.0.1:1/api/v1".to_owned());
+    let bad_page = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "all".to_owned(),
+        page: 0,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    assert_eq!(base.search_issues(&bad_page).unwrap_err().json()["kind"], "config");
+    let bad_limit = crate::providers::IssueSearchOptions {
+        query: Some("needle".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 101,
+        include_body: false,
+        all: false,
+    };
+    assert_eq!(base.search_issues(&bad_limit).unwrap_err().json()["kind"], "config");
+    let whitespace = crate::providers::IssueSearchOptions {
+        query: Some("   ".to_owned()),
+        state: "all".to_owned(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: false,
+    };
+    assert_eq!(
+        base.search_issues(&whitespace).unwrap_err().json()["kind"],
+        "config"
+    );
 }
 
 fn issue_json() -> &'static str {

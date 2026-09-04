@@ -147,6 +147,10 @@ pub enum IssueCommand {
     Search {
         query: Option<String>,
         state: String,
+        page: usize,
+        limit: usize,
+        all: bool,
+        include_body: bool,
     },
     Create {
         title: String,

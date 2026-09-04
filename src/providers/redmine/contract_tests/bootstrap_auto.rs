@@ -190,6 +190,7 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
             "owner/repo",
             "issue",
             "search",
+            "--all",
             "--state",
             "all",
         ])),

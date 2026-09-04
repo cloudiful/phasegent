@@ -7,7 +7,11 @@ pub mod redmine;
 
 use crate::policy::Capability;
 
-pub use api::{CommentOutput, IssueSummary, RepoSummary};
+pub use api::{
+    CommentOutput, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
+    RepoSummary, ISSUE_SEARCH_DEFAULT_LIMIT, ISSUE_SEARCH_DEFAULT_PAGE,
+    ISSUE_SEARCH_MAX_BODY_BYTES, ISSUE_SEARCH_MAX_LIMIT,
+};
 pub use config::{GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider};
 pub use dispatch::ProviderDispatcher;
 pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
@@ -29,9 +33,8 @@ pub trait IssueProvider {
     fn get_issue(&self, number: u64) -> Result<IssueSummary, Self::Error>;
     fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, Self::Error>;
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, Self::Error>;
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error>;
     fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, Self::Error>;
     fn close_issue(&self, number: u64) -> Result<IssueSummary, Self::Error>;

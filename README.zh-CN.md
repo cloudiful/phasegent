@@ -207,8 +207,12 @@ phasegent --role executor --provider redmine comment create 3 \
   --body '<!-- marker --> DONE' --marker '<!-- marker -->' --authorized
 phasegent --role executor --provider redmine comment find-marker 3 --marker '<!-- marker -->'
 phasegent --role orchestrator --provider redmine issue search --query 'phase'
+phasegent --role orchestrator --provider redmine issue search --all --state open --page 2 --limit 20
+phasegent --role orchestrator --provider redmine issue search --query 'phase' --include-body
 phasegent --role executor --provider redmine version list
 ```
+
+`issue search` 为有界单页搜索：Redmine 使用 `limit`/`offset`，Forgejo 使用 `page`/`limit`，GitLab 使用 `page`/`per_page`；CLI 暴露 provider 无关的 `--page`（默认 1）和 `--limit`（默认 50，最大 100），单次调用永不拉取所有分页。空或纯空白的 `--query` 仅在显式传入 `--all` 时才允许，用于有界地列出所有可见 issue。默认输出为紧凑 envelope `{ items: [{id, number, title, state, html_url}], page, limit, total_count?, has_more }` 且不含正文；传入 `--include-body` 时才会返回有界正文（上限 8192 字节，截断时 `body_truncated: true`）。Provider 返回的分页元数据（`total_count`、`has_more`）会按可用情况保留。
 
 创建和更新 issue 时可以用 `--tracker` 显式选择 Redmine tracker：参数接受经过
 校验的 tracker 名称（`Bug`、`Feature`）或数字 ID，会先对照 `/trackers.json`

@@ -1,4 +1,6 @@
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{
+    ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
+};
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
     IssuePlanning, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse, RedmineNewIssue,
@@ -13,16 +15,16 @@ impl RedmineProvider {
 
     pub fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, ForgejoError> {
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, ForgejoError> {
+        options.validate()?;
         let project_id = self
             .config
             .project_id
             .as_deref()
             .filter(|project_id| !project_id.trim().is_empty())
             .map(str::to_owned);
-        let status_id = match state {
+        let status_id = match options.state.as_str() {
             "open" => "open",
             "closed" => "closed",
             "all" => "*",
@@ -32,63 +34,42 @@ impl RedmineProvider {
                 ));
             }
         };
-
-        let mut issues = Vec::new();
-        let mut offset: usize = 0;
-        let mut previous_signature = None;
-        for _ in 0..super::MAX_PAGES {
-            let mut params = vec![
-                ("status_id", status_id.to_owned()),
-                ("limit", super::PAGE_SIZE.to_string()),
-                ("offset", offset.to_string()),
-            ];
-            if let Some(project_id) = &project_id {
-                params.push(("project_id", project_id.clone()));
-            }
-            if let Some(query) = query.filter(|query| !query.is_empty()) {
-                params.push(("subject", format!("~{query}")));
-            }
-            let page: RedmineIssueCollection =
-                self.http.get("issues.json", &params, "issue search")?;
-            let signature = page.signature();
-            if previous_signature.as_deref() == Some(signature.as_str()) && !page.issues.is_empty()
-            {
-                return Err(ForgejoError::pagination(
-                    "issue search",
-                    "Redmine returned the same non-empty page repeatedly",
-                ));
-            }
-
-            let count = page.issues.len();
-            let response_limit = page.limit.unwrap_or(super::PAGE_SIZE).max(1);
-            let total_count = page.total_count;
-            issues.extend(
-                page.issues
-                    .into_iter()
-                    .filter(|issue| issue.matches_state(state))
-                    .map(|issue| self.issue_summary(issue)),
-            );
-
-            let complete = count == 0
-                || total_count.is_some_and(|total| offset.saturating_add(count) >= total)
-                || (total_count.is_none() && count < response_limit);
-            if complete {
-                return Ok(issues);
-            }
-            let next_offset = offset.saturating_add(count);
-            if next_offset <= offset {
-                return Err(ForgejoError::pagination(
-                    "issue search",
-                    "Redmine pagination offset did not advance",
-                ));
-            }
-            offset = next_offset;
-            previous_signature = Some(signature);
+        let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
+        let mut params = vec![
+            ("status_id", status_id.to_owned()),
+            ("limit", options.limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+        if let Some(project_id) = &project_id {
+            params.push(("project_id", project_id.clone()));
         }
-        Err(ForgejoError::pagination(
-            "issue search",
-            "pagination exceeded the safety limit",
-        ))
+        if let Some(query) = options.effective_query() {
+            params.push(("subject", format!("~{query}")));
+        }
+        let page: RedmineIssueCollection = self.http.get("issues.json", &params, "issue search")?;
+        let total_count = page.total_count;
+        let count = page.issues.len();
+        let has_more = if let Some(total) = total_count {
+            offset + count < total
+        } else {
+            count == options.limit
+        };
+        let items: Vec<IssueSearchItem> = page
+            .issues
+            .into_iter()
+            .filter(|issue| issue.matches_state(&options.state))
+            .map(|issue| {
+                let summary = self.issue_summary(issue);
+                IssueSearchItem::from_summary(summary, options.include_body)
+            })
+            .collect();
+        Ok(IssueSearchResult {
+            items,
+            page: options.page,
+            limit: options.limit,
+            total_count,
+            has_more,
+        })
     }
 
     pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {

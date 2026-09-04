@@ -3,7 +3,9 @@ use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::ProviderDispatcher;
 #[allow(unused_imports)]
-use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+use crate::providers::api::{
+    CommentOutput, ForgejoError, IssueSearchOptions, IssueSearchResult, IssueSummary, RepoSummary,
+};
 #[allow(unused_imports)]
 use crate::providers::forgejo::ForgejoConfig;
 #[allow(unused_imports)]
@@ -53,10 +55,9 @@ impl IssueProvider for ForgejoProvider {
 
     fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, Self::Error> {
-        ForgejoProvider::search_issues(self, query, state)
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, Self::Error> {
+        ForgejoProvider::search_issues(self, options)
     }
 
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
@@ -110,10 +111,9 @@ impl IssueProvider for RedmineProvider {
 
     fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, Self::Error> {
-        RedmineProvider::search_issues(self, query, state)
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, Self::Error> {
+        RedmineProvider::search_issues(self, options)
     }
 
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
@@ -163,10 +163,9 @@ impl IssueProvider for GitlabProvider {
 
     fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, Self::Error> {
-        GitlabProvider::search_issues(self, query, state)
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, Self::Error> {
+        GitlabProvider::search_issues(self, options)
     }
 
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
@@ -237,13 +236,12 @@ impl IssueProvider for ProviderDispatcher {
 
     fn search_issues(
         &self,
-        query: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<IssueSummary>, Self::Error> {
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, Self::Error> {
         match self {
-            Self::Forgejo(provider) => provider.search_issues(query, state),
-            Self::Redmine(provider) => provider.search_issues(query, state),
-            Self::Gitlab(provider) => provider.search_issues(query, state),
+            Self::Forgejo(provider) => provider.search_issues(options),
+            Self::Redmine(provider) => provider.search_issues(options),
+            Self::Gitlab(provider) => provider.search_issues(options),
         }
     }
 
