@@ -32,7 +32,10 @@ use serde::Serialize;
 /// Project-id aliases were removed in Phase 1 (remove-project-id);
 /// `PHASEGENT_REDMINE_PROJECT_ID`, `PHASEGENT_GITLAB_PROJECT_ID`, and
 /// the ambiguous `PHASEGENT_PROJECT_ID` are intentionally absent and
-/// rejected as unknown settings.
+/// rejected as unknown settings. `PHASEGENT_INDEX_BACKEND` remains only
+/// for compatibility: backend selection is URL-driven
+/// (`PHASEGENT_INDEX_PG_URL` presence selects PostgreSQL) and the legacy
+/// backend value is ignored for selection.
 pub(crate) const ALL_CANONICAL: &[&str] = &[
     "PHASEGENT_PROVIDER",
     "PHASEGENT_API_BASE",

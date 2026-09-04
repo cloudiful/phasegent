@@ -6,7 +6,10 @@ use super::{ConfigClearOutcome, is_role_scoped_setting};
 
 /// Clear a setting. For global settings the row is deleted;
 /// for role-scoped the field is nulled. Returns whether a
-/// value was actually removed.
+/// value was actually removed. The legacy `PHASEGENT_INDEX_BACKEND`
+/// remains clearable for compatibility but clearing it never changes
+/// backend selection; only `PHASEGENT_INDEX_PG_URL` presence selects
+/// PostgreSQL.
 pub fn clear_setting(
     role: Option<Role>,
     canonical: &str,

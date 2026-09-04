@@ -3,13 +3,16 @@
 //! The index has two mutually exclusive backends: a local SQLite file
 //! (`phasegent-index.sqlite3`, default) and a shared PostgreSQL database.
 //! Credentials, provider config, and timers remain in SQLite; only the
-//! index tables live in PostgreSQL. The selector reads the persisted
-//! `PHASEGENT_INDEX_BACKEND` (`sqlite` default, `postgres` alternative)
-//! and the secret `PHASEGENT_INDEX_PG_URL` through the existing global
-//! config path (env var overrides SQLite, same precedence as other
-//! globals). Selecting `postgres` without a URL or when the driver is
-//! unavailable fails with a structured config error and never falls back
-//! to SQLite. No error, snapshot, or debug output ever prints the URL.
+//! index tables live in PostgreSQL. Selection is URL-driven: a non-empty
+//! `PHASEGENT_INDEX_PG_URL` from the environment or persisted global
+//! setting selects PostgreSQL, while an absent or blank URL selects
+//! SQLite (env overrides persisted, same precedence as other globals).
+//! The legacy `PHASEGENT_INDEX_BACKEND` setting is ignored for selection
+//! and kept only for compatibility (readable/clearable). A configured
+//! PostgreSQL URL that is malformed, unreachable, migration-incompatible,
+//! or used without the `postgres` feature fails with a structured config
+//! error and never falls back to SQLite. No error, snapshot, or debug
+//! output ever prints the URL.
 
 use crate::infra::issue_index::SqliteIssueIndex;
 use crate::infra::issue_index_postgres::PostgresIssueIndex;
@@ -17,7 +20,10 @@ use crate::infra::storage::Storage;
 use crate::providers::index::IssueIndexStore;
 use async_trait::async_trait;
 
-/// Backend kind literal as persisted or exported via `PHASEGENT_INDEX_BACKEND`.
+/// Backend kind selected from the PostgreSQL URL presence.
+/// The legacy `PHASEGENT_INDEX_BACKEND` literal (`sqlite`/`postgres`) is
+/// no longer consulted; this enum only reports which backend the URL
+/// presence resolved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexBackendKind {
     Sqlite,
@@ -178,34 +184,28 @@ impl IssueIndexStore for IssueIndexBackend {
     }
 }
 
-/// Resolve the index backend kind from environment (highest precedence)
-/// then persisted global setting, defaulting to `sqlite`.
+/// Resolve the index backend kind from the PostgreSQL URL presence.
+/// A non-empty `PHASEGENT_INDEX_PG_URL` from the environment (highest
+/// precedence) or persisted global setting selects PostgreSQL; an absent
+/// or blank URL selects SQLite. The legacy `PHASEGENT_INDEX_BACKEND`
+/// environment variable and persisted setting are intentionally ignored
+/// so they can never force a different backend or make selection
+/// ambiguous; they remain readable/clearable only for compatibility.
 pub fn resolve_index_backend(storage: &Storage) -> Result<IndexBackendKind, String> {
-    let raw = if let Some(env) = read_env_trimmed("PHASEGENT_INDEX_BACKEND")? {
-        env
-    } else if let Some(persisted) = storage.load_global_setting("PHASEGENT_INDEX_BACKEND")? {
-        persisted
-    } else {
-        "sqlite".to_owned()
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(IndexBackendKind::Sqlite);
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    match lower.as_str() {
-        "sqlite" => Ok(IndexBackendKind::Sqlite),
-        "postgres" => Ok(IndexBackendKind::Postgres),
-        _ => Err(format!(
-            "invalid PHASEGENT_INDEX_BACKEND '{}'; expected sqlite or postgres",
-            trimmed
-        )),
+    let url = resolve_pg_url(storage)?;
+    match url {
+        Some(value) if !value.trim().is_empty() => Ok(IndexBackendKind::Postgres),
+        _ => Ok(IndexBackendKind::Sqlite),
     }
 }
 
 /// Resolve the PostgreSQL URL via env override then persistent storage.
-/// Returns `None` when unset; the caller decides whether `None` is an
-/// error (postgres backend requires it) or acceptable (sqlite backend).
+/// Returns `None` when unset or blank; a blank environment value is
+/// treated as unset so resolution falls back to the persisted setting,
+/// matching the local credentials/config boundary. Persisted blanks are
+/// already normalised to `None` by `Storage::load_global_setting`.
+/// The caller decides whether `None` is an error (postgres backend
+/// requires it) or acceptable (sqlite backend).
 pub fn resolve_pg_url(storage: &Storage) -> Result<Option<String>, String> {
     if let Some(env) = read_env_trimmed("PHASEGENT_INDEX_PG_URL")? {
         if env.trim().is_empty() {

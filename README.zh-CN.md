@@ -735,26 +735,28 @@ has_more }`，默认不含正文，携带 `--include-body` 时正文按 8192 字
 
 #### 选择索引后端（SQLite 默认，可选 PostgreSQL）
 
-默认索引仍保存在本地 `phasegent-index.sqlite3`。如需多机共享，请选择
-PostgreSQL 共享索引，凭据仍隔离在 `phasegent.sqlite3` 中：
+默认索引仍保存在本地 `phasegent-index.sqlite3`（无需配置）。如需多机
+共享，只需配置 secret URL 即可选择 PostgreSQL 共享索引，凭据仍隔离
+在 `phasegent.sqlite3` 中：
 
 ```text
-phasegent config set index-backend postgres
 phasegent config set index-pg-url --stdin < /secure/path/pg-url
-# 也支持环境变量覆盖（运行时优先，SQLite 兜底）：
-export PHASEGENT_INDEX_BACKEND=postgres
+# 也支持环境变量覆盖（运行时优先）：
 export PHASEGENT_INDEX_PG_URL='postgres://user:pass@host/db'
 ```
 
 校验与查看（URL 为 secret，快照仅显示 `present`/`length`）：
 
 ```text
-phasegent config set index-backend postgres   # 校验：仅允许 sqlite 或 postgres
 phasegent config show                         # pg-url 已脱敏
-phasegent config set index-backend sqlite
-phasegent config clear index-backend
-phasegent config clear index-pg-url
+phasegent config clear index-pg-url           # 返回 SQLite
+phasegent config clear index-backend          # 仅兼容遗留项，选择时忽略
 ```
+
+后端选择完全由 URL 驱动：非空 `PHASEGENT_INDEX_PG_URL`（环境变量优先
+于持久化）选择 PostgreSQL；缺失或空白选择 SQLite。
+`PHASEGENT_INDEX_BACKEND`（`index-backend`）为遗留项，选择时忽略，仅
+为兼容保留可读/可清除；遗留值永远不能强制切换后端。
 
 PostgreSQL 后端：
 
@@ -763,8 +765,9 @@ PostgreSQL 后端：
 - 检入的迁移 `migrations/pg/0001_issue_index.sql` 在后端打开时通过
   内嵌版本跟踪迁移（`_issue_index_migrations`）自动应用；迁移或连接
   失败以结构化 config 错误返回，永不静默回退到 SQLite。
-- 选择 `postgres` 但未配置 URL、URL 非法或数据库不可用时均以清晰
-  错误失败，URL 永不在快照、错误或帮助中出现。
+- 已配置的 PG URL 非法、不可达、迁移不兼容，或在未启用
+  `--features postgres` 时使用，均在索引打开时以清晰错误失败，永不
+  静默回退到 SQLite；URL 永不在快照、错误或帮助中出现。
 - 仅 `issue_documents` / `issue_chunks` 索引表位于 PostgreSQL；凭据、
   provider 配置、timer 等本地状态仍在 `phasegent.sqlite3`。
 
@@ -783,8 +786,9 @@ cargo test --features postgres -- --nocapture  # 仅在 URL 存在时执行
 # 或：PHASEGENT_INDEX_PG_URL='postgres://...' cargo test --features postgres
 ```
 
-未启用 `--features postgres` 时，若已配置 `postgres`，会返回
-`postgres index support is not enabled` 的清晰配置错误。
+未启用 `--features postgres` 时，若已配置 PG URL，会返回
+`postgres index support is not enabled` 的清晰配置错误，且永不回退
+到 SQLite。
 
 ## 安装
 

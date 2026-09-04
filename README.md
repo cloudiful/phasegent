@@ -829,27 +829,30 @@ ordering by rank then `source`/`project`/`external_id` is used for ties
 
 #### Choosing the index backend (SQLite default, PostgreSQL optional)
 
-By default the index stays local in `phasegent-index.sqlite3`. Select a
-shared PostgreSQL index for multi-machine use and keep credentials
-isolated in `phasegent.sqlite3`:
+By default the index stays local in `phasegent-index.sqlite3` (no
+configuration needed). Select a shared PostgreSQL index for
+multi-machine use by configuring only the secret URL; credentials
+remain isolated in `phasegent.sqlite3`:
 
 ```text
-phasegent config set index-backend postgres
 phasegent config set index-pg-url --stdin < /secure/path/pg-url
-# env var precedence also works (runtime override, SQLite fallback):
-export PHASEGENT_INDEX_BACKEND=postgres
+# env var precedence also works (runtime override):
 export PHASEGENT_INDEX_PG_URL='postgres://user:pass@host/db'
 ```
 
 Validate and inspect (URL is secret, snapshots show only `present`/`length`):
 
 ```text
-phasegent config set index-backend postgres   # validated: sqlite or postgres
 phasegent config show                         # redacted pg-url snapshot
-phasegent config set index-backend sqlite
-phasegent config clear index-backend
-phasegent config clear index-pg-url
+phasegent config clear index-pg-url           # return to SQLite
+phasegent config clear index-backend          # legacy only, ignored for selection
 ```
+
+Backend selection is URL-driven: a non-empty `PHASEGENT_INDEX_PG_URL`
+(env overrides persisted) selects PostgreSQL; absent or blank selects
+SQLite. `PHASEGENT_INDEX_BACKEND` (`index-backend`) is legacy, ignored
+for selection, and kept only for compatibility (readable/clearable); a
+legacy value can never force a different backend.
 
 PostgreSQL backend:
 
@@ -860,9 +863,10 @@ PostgreSQL backend:
   auto-applied on backend open via an embedded version-tracked migration
   (`_issue_index_migrations`); migration or connection failures surface
   as structured config errors and never silently fall back to SQLite.
-- Selecting `postgres` without a URL, with an invalid URL, or with an
-  unavailable DB fails clearly; the URL never appears in snapshots,
-  errors, or help output.
+- A configured PG URL that is invalid, unreachable,
+  migration-incompatible, or used without `--features postgres` fails
+  clearly when the index is opened and never silently falls back to
+  SQLite; the URL never appears in snapshots, errors, or help output.
 - Only index tables (`issue_documents`, `issue_chunks`) live in
   PostgreSQL; credentials, provider config, timers, and local settings
   remain in `phasegent.sqlite3`.
@@ -882,8 +886,9 @@ cargo test --features postgres -- --nocapture  # runs only when the URL is set
 # or: PHASEGENT_INDEX_PG_URL='postgres://...' cargo test --features postgres
 ```
 
-Without `--features postgres`, configuring `postgres` returns a clear
-`postgres index support is not enabled` config error.
+Without `--features postgres`, configuring a PG URL returns a clear
+`postgres index support is not enabled` config error and never falls
+back to SQLite.
 
 ## Install
 

@@ -215,6 +215,9 @@ fn persist_set_value(
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
             storage.save_global_setting(canonical, kind.as_str())?;
         }
+        // Legacy compatibility only: validated and persisted so existing
+        // scripts keep working, but ignored for backend selection (URL
+        // presence alone selects PostgreSQL; absence selects SQLite).
         "PHASEGENT_INDEX_BACKEND" => {
             let lower = trimmed.to_ascii_lowercase();
             if lower != "sqlite" && lower != "postgres" {
