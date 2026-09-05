@@ -11,7 +11,7 @@
     Version   - strict numeric MAJOR.MINOR.PATCH derived from the release tag.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="phasegent" Language="1033" Version="$(var.Version)" Manufacturer="phasegent" UpgradeCode="51047C29-F895-4705-86DC-0A847258CA61" Scope="perUser" Compressed="yes">
+  <Package Id="tools.phasegent.phasegent" Name="phasegent" Language="1033" Version="$(var.Version)" Manufacturer="phasegent" UpgradeCode="51047C29-F895-4705-86DC-0A847258CA61" Scope="perUser" Compressed="yes">
     <MajorUpgrade AllowDowngrades="no" DowngradeErrorMessage="A newer version of phasegent is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Feature Id="MainFeature" Title="phasegent" Level="1">
