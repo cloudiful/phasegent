@@ -91,10 +91,25 @@ jobs:
           $zipName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}-portable.zip'
           New-Item -ItemType Directory -Force -Path msi-stage | Out-Null
           Copy-Item -Path $exeName -Destination 'msi-stage\phasegent.exe' -Force
+          $wixLog = 'wix-build-${{ matrix.target }}.log'
+          if (Test-Path $wixLog) { Remove-Item $wixLog -Force }
           if ('${{ matrix.target }}' -eq 'x86_64-pc-windows-msvc') {
-            wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName
+            wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
           } else {
-            wix build wix/phasegent.wxs -arch arm64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName
+            wix build wix/phasegent.wxs -arch arm64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
+          }
+          if ($LASTEXITCODE -ne 0) {
+            $wixExit = $LASTEXITCODE
+            $wixDetail = ''
+            if (Test-Path $wixLog) {
+              $wixLines = Get-Content -Path $wixLog | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 20
+              $wixDetail = ($wixLines -join ' ')
+              if ($wixDetail.Length -gt 2000) { $wixDetail = $wixDetail.Substring($wixDetail.Length - 2000) }
+              $wixDetail = $wixDetail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            }
+            if ([string]::IsNullOrWhiteSpace($wixDetail)) { $wixDetail = 'see wix-build log artifact' }
+            Write-Output "::error::wix build failed (exit $wixExit): $wixDetail"
+            exit $wixExit
           }
           New-Item -ItemType Directory -Force -Path portable-stage | Out-Null
           Copy-Item -Path $exeName -Destination 'portable-stage\phasegent.exe' -Force
@@ -104,6 +119,14 @@ jobs:
           if (Test-Path $zipName) { Remove-Item $zipName -Force }
           Compress-Archive -Path 'portable-stage\*' -DestinationPath $zipName -Force
           Get-ChildItem $exeName, $msiName, $zipName
+
+      - name: Upload WiX build log (Windows)
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: wix-build-log-${{ matrix.target }}
+          path: wix-build-${{ matrix.target }}.log
+          if-no-files-found: warn
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
