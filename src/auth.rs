@@ -196,21 +196,83 @@ pub fn token(role: Role, storage: &Storage) -> Result<String, String> {
 }
 
 pub fn load_config(role: Role, storage: &Storage) -> Result<Option<StoredConfig>, String> {
-    storage.load_role_config(role)
+    // Effective role config: TOML overlays legacy SQLite so direct file
+    // edits affect the same resolver paths (Forgejo/Redmine/GitLab) used
+    // by normal commands. Precedence for each field is TOML > SQLite;
+    // callers apply explicit CLI > env before this stored-effective value.
+    // Credentials never consult TOML. Overlay parse/secret errors propagate
+    // instead of falling back so malformed TOML cannot be silently ignored.
+    let base = storage.load_role_config(role)?;
+    let overlay = crate::infra::config_overlay::load_overlay()?;
+    let Some(overlay) = overlay else {
+        return Ok(base);
+    };
+    let Some(role_overlay) = overlay.role_overlay(role) else {
+        return Ok(base);
+    };
+    let mut merged = base.clone().unwrap_or_default();
+    let mut present = base.is_some();
+    if let Some(value) = &role_overlay.provider {
+        merged.provider = Some(value.clone());
+        present = true;
+    }
+    if let Some(value) = &role_overlay.forgejo_api_base {
+        merged.api_base = Some(value.clone());
+        present = true;
+    }
+    if let Some(value) = &role_overlay.forgejo_repository {
+        merged.repository = Some(value.clone());
+        present = true;
+    }
+    if present { Ok(Some(merged)) } else { Ok(None) }
 }
 
 pub fn load_redmine_config(
     role: Role,
     storage: &Storage,
 ) -> Result<Option<RedmineStoredConfig>, String> {
-    storage.load_redmine_config(role)
+    // Effective Redmine config: TOML > SQLite, same contract as above.
+    let base = storage.load_redmine_config(role)?;
+    let overlay = crate::infra::config_overlay::load_overlay()?;
+    let Some(overlay) = overlay else {
+        return Ok(base);
+    };
+    let Some(role_overlay) = overlay.role_overlay(role) else {
+        return Ok(base);
+    };
+    let mut merged = base.clone().unwrap_or_default();
+    let mut present = base.is_some();
+    if let Some(value) = &role_overlay.redmine_api_base {
+        merged.api_base = Some(value.clone());
+        present = true;
+    }
+    if let Some(value) = role_overlay.redmine_close_status_id {
+        merged.close_status_id = Some(value);
+        present = true;
+    }
+    if present { Ok(Some(merged)) } else { Ok(None) }
 }
 
 pub fn load_gitlab_config(
     role: Role,
     storage: &Storage,
 ) -> Result<Option<GitlabStoredConfig>, String> {
-    storage.load_gitlab_config(role)
+    // Effective GitLab config: TOML > SQLite, same contract as above.
+    let base = storage.load_gitlab_config(role)?;
+    let overlay = crate::infra::config_overlay::load_overlay()?;
+    let Some(overlay) = overlay else {
+        return Ok(base);
+    };
+    let Some(role_overlay) = overlay.role_overlay(role) else {
+        return Ok(base);
+    };
+    let mut merged = base.clone().unwrap_or_default();
+    let mut present = base.is_some();
+    if let Some(value) = &role_overlay.gitlab_api_base {
+        merged.api_base = Some(value.clone());
+        present = true;
+    }
+    if present { Ok(Some(merged)) } else { Ok(None) }
 }
 
 pub fn persist_redmine_bootstrap(
@@ -303,17 +365,27 @@ pub fn redmine_git_mirror_api_key(storage: &Storage) -> Result<Option<String>, S
 /// Optional override for the repository URL passed to the mirror plugin.
 ///
 /// Precedence is `PHASEGENT_REDMINE_REPOSITORY_URL` (environment) →
-/// SQLite `global_setting` row → absent. Persisting the URL is done
-/// with `phasegent config set redmine-repository-url <URL>` (or
-/// `PHASEGENT_REDMINE_REPOSITORY_URL`) so a long-lived deployment does
-/// not have to ship the URL in every shell that runs `workflow bootstrap`.
-/// The environment variable still wins so ad-hoc runs can override the
-/// persisted URL without rewriting the database. The caller supplies the
-/// [`Storage`] handle so production code can call [`Storage::open`]
-/// while tests can drive the resolver against an isolated temp database.
+/// TOML `redmine_repository_url` → SQLite `global_setting` row → absent.
+/// Persisting the URL is done with `phasegent config set
+/// redmine-repository-url <URL>` (or `PHASEGENT_REDMINE_REPOSITORY_URL`)
+/// so a long-lived deployment does not have to ship the URL in every
+/// shell that runs `workflow bootstrap`. Direct TOML edits affect this
+/// same resolver path; no new command is required. The overlay is
+/// read-only: `config set`/`clear` continue to touch SQLite only, so a
+/// TOML value shadows a SQLite value until the TOML (or env) is removed.
+/// The environment variable still wins so ad-hoc runs can override both
+/// file and persisted values without rewriting either. The caller
+/// supplies the [`Storage`] handle so production code can call
+/// [`Storage::open`] while tests can drive the resolver against an
+/// isolated temp database.
 pub fn redmine_repository_url_override(storage: &Storage) -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_REPOSITORY_URL")? {
         return Ok(Some(value));
+    }
+    if let Some(overlay) = crate::infra::config_overlay::load_overlay()?
+        && let Some(value) = overlay.redmine_repository_url_value()
+    {
+        return Ok(Some(value.to_owned()));
     }
     storage
         .load_global_setting(GLOBAL_REDMINE_REPOSITORY_URL)

@@ -391,6 +391,7 @@ pub fn run_cli(db_path: &Path, api_base: &str, args: &[&str]) -> std::process::O
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
         .env_remove("PHASEGENT_REDMINE_REPOSITORY_URL")
+        .env_remove("PHASEGENT_CONFIG_PATH")
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

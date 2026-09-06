@@ -51,18 +51,24 @@ impl FromStr for ProviderKind {
 ///      override, identical to phase 2 behaviour).
 ///   3. `PHASEGENT_DEFAULT_PROVIDER` environment variable
 ///      (one-process override for the persistent default).
-///   4. Persisted `PHASEGENT_DEFAULT_PROVIDER` in the
+///   4. TOML `default_provider` in `phasegent.toml` (human-editable
+///      overlay; `PHASEGENT_CONFIG_PATH` isolates the path in tests).
+///   5. Persisted `PHASEGENT_DEFAULT_PROVIDER` in the
 ///      `global_setting` table (machine-wide default that survives
 ///      across processes; surfaces during a single `resolve_kind`
 ///      call without touching the role-scoped config).
-///   5. Role-scoped `role_config.provider` (the existing phase 2
-///      behaviour).
-///   6. Forgejo fallback.
+///   6. Role-scoped `role_config.provider` as returned by
+///      `auth::load_config` (effective TOML-over-SQLite per role, so a
+///      `[roles.<role>] provider` TOML value shadows the SQLite row).
+///   7. Forgejo fallback.
 ///
-/// Steps 1 and 2 already existed; steps 3 through 6 are added by
-/// phase `global-provider-default`. The resolver is read-only: it
-/// never persists anything, so a stray `--provider` omission cannot
-/// silently overwrite the role-scoped or machine-wide configuration.
+/// Steps 1 and 2 already existed; steps 3 through 7 extend phase
+/// `global-provider-default` with the TOML overlay. The resolver is
+/// read-only: it never persists anything and never writes TOML, so a
+/// stray `--provider` omission cannot silently overwrite either store.
+/// `config set`/`clear` and `config provider set`/`clear` continue to
+/// touch SQLite only; a TOML value shadows SQLite until the file (or
+/// env) is removed.
 pub fn resolve_kind(
     role: Role,
     explicit: Option<ProviderKind>,
@@ -82,6 +88,16 @@ pub fn resolve_kind(
                 .parse()
                 .map_err(|error: String| ForgejoError::config(error));
         }
+    }
+    // TOML overlay sits between env and SQLite. A malformed/secret TOML
+    // fails here instead of falling back so misconfiguration is visible.
+    if let Some(overlay) =
+        crate::infra::config_overlay::load_overlay().map_err(ForgejoError::config)?
+        && let Some(value) = overlay.default_provider_value()
+    {
+        return value
+            .parse()
+            .map_err(|error: String| ForgejoError::config(error));
     }
     // Persisted global default lives in `global_setting`. Read it
     // directly so the resolver never writes — the schema-level
@@ -135,6 +151,13 @@ impl RedmineConfig {
         project_id: Option<&str>,
         close_status_id: Option<&str>,
     ) -> Result<Self, ForgejoError> {
+        // Resolution precedence per field: explicit CLI > env
+        // (`PHASEGENT_REDMINE_API_BASE` / `PHASEGENT_API_BASE` for the base,
+        // `PHASEGENT_REDMINE_CLOSE_STATUS_ID` /
+        // `PHASEGENT_CLOSE_STATUS_ID` for the status) > TOML
+        // (`[roles.<role>] redmine_api_base` /
+        // `redmine_close_status_id` via `auth::load_redmine_config`,
+        // which returns TOML-over-SQLite) > legacy SQLite row.
         let storage = Storage::open().map_err(ForgejoError::config)?;
         let stored = auth::load_redmine_config(role, &storage).map_err(ForgejoError::config)?;
         let explicit_base = api_base
@@ -274,7 +297,9 @@ impl GitlabConfig {
     ///   2. `PHASEGENT_GITLAB_API_BASE` / `PHASEGENT_API_BASE` environment
     ///      variables for the base (project-id env and persisted values
     ///      were removed in Phase 1).
-    ///   3. Persisted `api_base` in `role_gitlab_config`.
+    ///   3. TOML `[roles.<role>] gitlab_api_base` via
+    ///      `auth::load_gitlab_config` (TOML-over-SQLite) falling back to
+    ///      the persisted `api_base` in `role_gitlab_config`.
     ///
     /// The project id is required as an explicit `--project-id` because
     /// GitLab workflow commands need a single, unambiguous target; an
