@@ -4,9 +4,9 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const dist = new URL('../dist/', import.meta.url)
-const distPath = dist.pathname
+const distPath = fileURLToPath(new URL('../dist/', import.meta.url))
 
 function fail(message) {
   console.error(`validate-dist: FAIL: ${message}`)
