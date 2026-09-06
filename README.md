@@ -85,6 +85,24 @@ phasegent --help issue
 phasegent --help auth
 ```
 
+## Desktop app
+
+Normal `phasegent <command>` invocations stay in the CLI. Open the desktop
+app explicitly with:
+
+```sh
+phasegent gui
+```
+
+Running `phasegent` with no arguments in a terminal still shows help.
+Launching it from Explorer/Finder (no terminal) opens the desktop app
+instead.
+
+Role credentials stay local and write-only: enter them on the Settings page
+or via `auth setup`; stored keys are never displayed. Release downloads:
+Windows provides one x64 MSI plus the matching raw exe; macOS provides an
+unsigned Tauri app inside the `.dmg`, so Gatekeeper may warn on first open.
+
 ## Configuration
 
 `auth setup` stores provider credentials in the local configuration database.

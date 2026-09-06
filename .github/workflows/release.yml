@@ -1,5 +1,6 @@
 name: Release
 
+# Tag-triggered release only. There is intentionally no PR CI workflow.
 on:
   push:
     tags:
@@ -15,17 +16,25 @@ jobs:
     strategy:
       matrix:
         include:
+          # Linux stays a plain CLI binary (no GUI, no frontend build).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
+            gui: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            gui: false
+          # macOS ships the GUI-enabled single binary plus a Tauri-built
+          # unsigned .dmg containing the real `.app` for Finder users.
+          # No signing/notarization secrets are required; the .dmg/.app are
+          # explicitly unsigned and Gatekeeper will warn on first open.
           - target: aarch64-apple-darwin
             os: macos-14
+            gui: true
+          # Windows ships exactly one raw exe plus one matching MSI (x64).
+          # No ARM64 Windows package, no portable zip, no .wixpdb upload.
           - target: x86_64-pc-windows-msvc
             os: windows-2022
-          - target: aarch64-pc-windows-msvc
-            os: windows-2022
-            arch: amd64_arm64
+            gui: true
     runs-on: ${{ matrix.os }}
     env:
       RUSTC_WRAPPER: sccache
@@ -43,17 +52,62 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Configure Windows ARM64 toolchain
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64_arm64
-
       - name: Enable sccache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      - name: Build release binary
+      # Target-aware system dependencies: Linux stays CLI so no GTK/WebKit
+      # install is needed; Windows runners provide WebView2 and macOS
+      # runners provide system WebKit, so no apt/brew step is required.
+      # Frontend is built with pinned Bun only for GUI targets, before the
+      # Rust GUI build, using the existing package.json scripts. No
+      # bun.lock is committed under repository policy.
+      - name: Setup Bun (GUI builds only)
+        if: matrix.gui
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - name: Cache Bun installs (GUI builds only)
+        if: matrix.gui
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1-4-0-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1-4-0-
+
+      - name: Install frontend dependencies (GUI builds only)
+        if: matrix.gui
+        run: bun install
+
+      # `validate` runs `build-only` (vite build -> frontend/dist, the
+      # Tauri `frontendDist`) plus `validate-dist.mjs`, keeping the Tauri
+      # frontendDist/build hooks coherent with the actual frontend output.
+      - name: Build frontend dist (GUI builds only)
+        if: matrix.gui
+        run: bun run validate
+
+      - name: Build release binary (CLI)
+        if: matrix.gui != true
         run: cargo build --release --bin phasegent --target ${{ matrix.target }}
+
+      - name: Build release binary (GUI-enabled single binary, Windows)
+        if: matrix.gui && runner.os == 'Windows'
+        run: cargo build --release --features gui --bin phasegent --target ${{ matrix.target }}
+
+      # macOS GUI is built and bundled via the pinned Tauri v2 CLI so the
+      # .dmg contains a real `.app` for Finder users. Unsigned: no
+      # APPLE_SIGNING_IDENTITY and no notarization credentials are set or
+      # required; Gatekeeper will warn on first open. The existing
+      # frontend/dist (Tauri `frontendDist`) is already built above via
+      # `bun run validate`, so no beforeBuildCommand is needed.
+      - name: Build macOS app and dmg via Tauri (unsigned)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          bun run tauri build --target ${{ matrix.target }} --features gui --bundles app,dmg
+          echo "Tauri bundle outputs:"
+          find target/${{ matrix.target }}/release/bundle -maxdepth 4 | head -n 60
 
       - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
@@ -75,7 +129,10 @@ jobs:
           wix --version
           wix extension list --global
 
-      - name: Build MSI and portable archive (Windows)
+      # WiX MSI path is kept (no Tauri bundling on Windows). Single x64 MSI
+      # only; portable zip creation was removed. The WiX compiler emits a
+      # `.wixpdb` sidecar next to the MSI; it is deleted and never uploaded.
+      - name: Build MSI (Windows x64 only)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -88,16 +145,11 @@ jobs:
           }
           $exeName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe'
           $msiName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi'
-          $zipName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}-portable.zip'
           New-Item -ItemType Directory -Force -Path msi-stage | Out-Null
           Copy-Item -Path $exeName -Destination 'msi-stage\phasegent.exe' -Force
           $wixLog = 'wix-build-${{ matrix.target }}.log'
           if (Test-Path $wixLog) { Remove-Item $wixLog -Force }
-          if ('${{ matrix.target }}' -eq 'x86_64-pc-windows-msvc') {
-            wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
-          } else {
-            wix build wix/phasegent.wxs -arch arm64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
-          }
+          wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
           if ($LASTEXITCODE -ne 0) {
             $wixExit = $LASTEXITCODE
             $wixDetail = ''
@@ -111,14 +163,31 @@ jobs:
             Write-Output "::error::wix build failed (exit $wixExit): $wixDetail"
             exit $wixExit
           }
-          New-Item -ItemType Directory -Force -Path portable-stage | Out-Null
-          Copy-Item -Path $exeName -Destination 'portable-stage\phasegent.exe' -Force
-          Copy-Item -Path LICENSE -Destination 'portable-stage\LICENSE' -Force
-          Copy-Item -Path README.md -Destination 'portable-stage\README.md' -Force
-          Copy-Item -Path README.zh-CN.md -Destination 'portable-stage\README.zh-CN.md' -Force
-          if (Test-Path $zipName) { Remove-Item $zipName -Force }
-          Compress-Archive -Path 'portable-stage\*' -DestinationPath $zipName -Force
-          Get-ChildItem $exeName, $msiName, $zipName
+          # Never publish the WiX pdb sidecar or build logs on success.
+          Remove-Item *.wixpdb -Force -ErrorAction SilentlyContinue
+          if (Test-Path $wixLog) { Remove-Item $wixLog -Force }
+          Get-ChildItem $exeName, $msiName
+
+      # Stage the Tauri-built .dmg under the tag-based release contract name.
+      # The raw GUI binary staged above is preserved alongside the .dmg to
+      # keep the existing `phasegent-<tag>-<target>` contract. Only these
+      # two explicit files are uploaded/published; the standalone .app
+      # directory itself is distributed inside the .dmg, not as a separate
+      # release file, and no logs/sidecars are published.
+      - name: Stage macOS dmg to release name (unsigned)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          TARGET="${{ matrix.target }}"
+          SRC_DMG="$(find "target/$TARGET/release/bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
+          if [ -z "$SRC_DMG" ]; then echo "No Tauri dmg found under target/$TARGET/release/bundle/dmg"; exit 1; fi
+          DEST="phasegent-${TAG}-${TARGET}.dmg"
+          cp "$SRC_DMG" "$DEST"
+          ls -lh "$DEST"
+          echo "Standalone .app bundled inside the dmg source:"
+          find "target/$TARGET/release/bundle/macos" -maxdepth 2 -name '*.app' | head -n 5
+          test -n "$(find "target/$TARGET/release/bundle/macos" -maxdepth 2 -name '*.app' | head -n 1)" || (echo "Tauri .app missing; dmg would not contain a Finder app"; exit 1)
 
       - name: Upload WiX build log (Windows)
         if: failure() && runner.os == 'Windows'
@@ -128,11 +197,34 @@ jobs:
           path: wix-build-${{ matrix.target }}.log
           if-no-files-found: warn
 
-      - name: Upload artifact
+      # Explicit artifact paths only: no wildcards that could pick up
+      # `.wixpdb`, logs, or zip sidecars.
+      - name: Upload artifact (Linux CLI)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
           name: phasegent-${{ matrix.target }}
-          path: phasegent-${{ github.ref_name }}-${{ matrix.target }}*
+          path: phasegent-${{ github.ref_name }}-${{ matrix.target }}
+          if-no-files-found: error
+
+      - name: Upload artifact (macOS GUI)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: phasegent-${{ matrix.target }}
+          path: |
+            phasegent-${{ github.ref_name }}-${{ matrix.target }}
+            phasegent-${{ github.ref_name }}-${{ matrix.target }}.dmg
+          if-no-files-found: error
+
+      - name: Upload artifact (Windows GUI)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: phasegent-${{ matrix.target }}
+          path: |
+            phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
+            phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi
           if-no-files-found: error
 
       - name: Show sccache stats
@@ -151,15 +243,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Checksum only intentional release artifacts (no logs/sidecars).
       - name: Generate SHA256SUMS
         run: |
           cd dist
-          sha256sum * > SHA256SUMS
+          sha256sum phasegent-* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/*
+            dist/phasegent-*-x86_64-unknown-linux-gnu
+            dist/phasegent-*-aarch64-unknown-linux-gnu
+            dist/phasegent-*-aarch64-apple-darwin
+            dist/phasegent-*-aarch64-apple-darwin.dmg
+            dist/phasegent-*-x86_64-pc-windows-msvc.exe
+            dist/phasegent-*-x86_64-pc-windows-msvc.msi
+            dist/SHA256SUMS
           generate_release_notes: true

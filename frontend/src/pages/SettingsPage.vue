@@ -55,10 +55,15 @@ const credentialPresenceText = computed(() => {
   return `Configured (length ${key.length ?? 0}). Value is never displayed.`
 })
 
-function syncFromSnapshot(): void {
+function syncProviderEndpoint(): void {
   if (!snapshot.value) return
   provider.value = snapshotProviderForRole(snapshot.value, activeRole.value)
   endpoint.value = snapshotEndpointForRole(snapshot.value, activeRole.value)
+  if (!initialized.value) initialized.value = true
+}
+
+function syncCredentialPresence(): void {
+  if (!snapshot.value) return
   const entry = snapshotRoleEntry(snapshot.value, activeRole.value)
   if (entry) {
     const key = credentialProvider.value === 'forgejo' ? entry.forgejo_credential : credentialProvider.value === 'gitlab' ? entry.gitlab_credential : entry.redmine_credential
@@ -67,7 +72,17 @@ function syncFromSnapshot(): void {
   if (!initialized.value) initialized.value = true
 }
 
-watch([snapshot, activeRole, credentialProvider], () => syncFromSnapshot())
+function syncFromSnapshot(): void {
+  syncProviderEndpoint()
+  syncCredentialPresence()
+}
+
+// Provider/endpoint follow only snapshot or active-role changes so switching
+// the credential provider never overwrites unsaved provider/endpoint edits.
+// Credential presence follows snapshot, active-role, and credential-provider
+// changes separately.
+watch([snapshot, activeRole], () => syncFromSnapshot())
+watch(credentialProvider, () => syncCredentialPresence())
 
 onMounted(() => {
   void (async () => {

@@ -74,7 +74,7 @@ function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
-function invokeErrorMessage(err: unknown): string {
+export function invokeErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message
   if (typeof err === 'string') return err
   try {
@@ -89,14 +89,14 @@ function invokeErrorMessage(err: unknown): string {
 // Raw backend shapes (snake_case, mirrors src/gui.rs serde output).
 // ---------------------------------------------------------------------------
 
-interface TaskEntryRaw {
+export interface TaskEntryRaw {
   number: number
   title: string
   state: string
   url?: string | null
 }
 
-interface TasksPayloadRaw {
+export interface TasksPayloadRaw {
   branch: string | null
   bound_issue: number | null
   provider: string
@@ -109,7 +109,7 @@ interface TasksPayloadRaw {
   warning?: string | null
 }
 
-interface TimerDtoRaw {
+export interface TimerDtoRaw {
   run_id: string
   issue: number
   phase: string
@@ -120,7 +120,7 @@ interface TimerDtoRaw {
   finished_at?: number | null
 }
 
-interface StatusPayloadRaw {
+export interface StatusPayloadRaw {
   branch: string | null
   bound_issue: number | null
   bound_issue_title?: string | null
@@ -154,7 +154,7 @@ export interface StatusView {
   unsupported: string | null
 }
 
-function mapIssueStateToTaskStatus(state: string): TaskStatus {
+export function mapIssueStateToTaskStatus(state: string): TaskStatus {
   const lower = state.toLowerCase()
   if (/(closed|done|resolved|merged|success)/.test(lower)) return 'done'
   if (/(fail|error|block|cancel)/.test(lower)) return 'failed'
@@ -163,7 +163,7 @@ function mapIssueStateToTaskStatus(state: string): TaskStatus {
   return 'queued'
 }
 
-function capitalizeProvider(raw: string): string {
+export function capitalizeProvider(raw: string): string {
   const lower = raw.toLowerCase()
   if (lower === 'gitlab') return 'GitLab'
   if (lower === 'forgejo') return 'Forgejo'
@@ -171,8 +171,77 @@ function capitalizeProvider(raw: string): string {
   return raw
 }
 
-function payloadFetchedAtMs(secs: number): number {
+export function payloadFetchedAtMs(secs: number): number {
   return secs > 0 ? secs * 1000 : Date.now()
+}
+
+/** Pure mapping for the `get_tasks` payload; kept separate so Bun tests cover IPC mapping. */
+export function mapTasksPayload(payload: TasksPayloadRaw): FetchResult<TasksView> {
+  const fetchedMs = payloadFetchedAtMs(payload.fetched_at)
+  const items: TaskItem[] = payload.items.map(entry => ({
+    id: `#${entry.number}`,
+    title: entry.title,
+    phase: entry.state,
+    status: mapIssueStateToTaskStatus(entry.state),
+    progress: mapIssueStateToTaskStatus(entry.state) === 'done' ? 100 : 0,
+    updatedAt: new Date(fetchedMs).toISOString(),
+  }))
+  return {
+    data: {
+      items,
+      branch: payload.branch,
+      boundIssue: payload.bound_issue,
+      provider: payload.provider,
+      role: payload.role,
+      warning: payload.warning ?? null,
+    },
+    fetchedAt: fetchedMs,
+  }
+}
+
+/** Pure mapping for the `get_status` payload; kept separate so Bun tests cover IPC mapping. */
+export function mapStatusPayload(payload: StatusPayloadRaw): FetchResult<StatusView> {
+  const fetchedMs = payloadFetchedAtMs(payload.fetched_at)
+  const connection = payload.connection === 'degraded' ? 'degraded' : payload.connection === 'connected' ? 'connected' : 'offline'
+  const recent: StatusEvent[] = payload.recent_timers.map(timer => ({
+    id: timer.run_id,
+    at: new Date(timer.started_at * 1000).toISOString(),
+    level: timer.status === 'running' ? 'info' as const : timer.sync_status === 'failed' ? 'error' as const : 'success' as const,
+    message: `Run ${timer.run_id} issue #${timer.issue} ${timer.phase} (${timer.status}).`,
+  }))
+  if (payload.warning) {
+    recent.unshift({ id: 'warn-backend', at: new Date(fetchedMs).toISOString(), level: 'warning' as const, message: payload.warning })
+  }
+  if (payload.statuses_unsupported) {
+    recent.unshift({ id: 'unsupported-status', at: new Date(fetchedMs).toISOString(), level: 'info' as const, message: payload.statuses_unsupported })
+  }
+  if (payload.bound_issue != null) {
+    const title = payload.bound_issue_title ?? `Issue #${payload.bound_issue}`
+    const state = payload.bound_issue_state ?? 'unknown'
+    recent.unshift({ id: `bound-${payload.bound_issue}`, at: new Date(fetchedMs).toISOString(), level: 'info' as const, message: `Bound issue #${payload.bound_issue}: ${title} (${state}).` })
+  }
+  const view: StatusView = {
+    summary: {
+      connection,
+      provider: capitalizeProvider(payload.provider),
+      endpoint: payload.endpoint ?? '',
+      lastSyncAt: new Date(fetchedMs).toISOString(),
+      totals: {
+        queued: 0,
+        running: payload.running_timers,
+        paused: 0,
+        done: 0,
+        failed: 0,
+      },
+      recent,
+    },
+    branch: payload.branch,
+    boundIssue: payload.bound_issue,
+    boundIssueTitle: payload.bound_issue_title ?? null,
+    warning: payload.warning ?? null,
+    unsupported: payload.statuses_unsupported ?? null,
+  }
+  return { data: view, fetchedAt: fetchedMs }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,25 +256,7 @@ export async function fetchTasks(): Promise<FetchResult<TasksView>> {
     const payload = await invoke<TasksPayloadRaw>('get_tasks', {
       request: { limit: 20, state: 'open' },
     })
-    const items: TaskItem[] = payload.items.map(entry => ({
-      id: `#${entry.number}`,
-      title: entry.title,
-      phase: entry.state,
-      status: mapIssueStateToTaskStatus(entry.state),
-      progress: mapIssueStateToTaskStatus(entry.state) === 'done' ? 100 : 0,
-      updatedAt: new Date(payloadFetchedAtMs(payload.fetched_at)).toISOString(),
-    }))
-    return {
-      data: {
-        items,
-        branch: payload.branch,
-        boundIssue: payload.bound_issue,
-        provider: payload.provider,
-        role: payload.role,
-        warning: payload.warning ?? null,
-      },
-      fetchedAt: payloadFetchedAtMs(payload.fetched_at),
-    }
+    return mapTasksPayload(payload)
   }
   catch (err) {
     // Browser fallback only when Tauri is unavailable; otherwise surface
@@ -239,47 +290,7 @@ export async function fetchStatus(): Promise<FetchResult<StatusView>> {
   }
   try {
     const payload = await invoke<StatusPayloadRaw>('get_status', { request: {} })
-    const fetchedMs = payloadFetchedAtMs(payload.fetched_at)
-    const connection = payload.connection === 'degraded' ? 'degraded' : payload.connection === 'connected' ? 'connected' : 'offline'
-    const recent: StatusEvent[] = payload.recent_timers.map(timer => ({
-      id: timer.run_id,
-      at: new Date(timer.started_at * 1000).toISOString(),
-      level: timer.status === 'running' ? 'info' as const : timer.sync_status === 'failed' ? 'error' as const : 'success' as const,
-      message: `Run ${timer.run_id} issue #${timer.issue} ${timer.phase} (${timer.status}).`,
-    }))
-    if (payload.warning) {
-      recent.unshift({ id: 'warn-backend', at: new Date(fetchedMs).toISOString(), level: 'warning' as const, message: payload.warning })
-    }
-    if (payload.statuses_unsupported) {
-      recent.unshift({ id: 'unsupported-status', at: new Date(fetchedMs).toISOString(), level: 'info' as const, message: payload.statuses_unsupported })
-    }
-    if (payload.bound_issue != null) {
-      const title = payload.bound_issue_title ?? `Issue #${payload.bound_issue}`
-      const state = payload.bound_issue_state ?? 'unknown'
-      recent.unshift({ id: `bound-${payload.bound_issue}`, at: new Date(fetchedMs).toISOString(), level: 'info' as const, message: `Bound issue #${payload.bound_issue}: ${title} (${state}).` })
-    }
-    const view: StatusView = {
-      summary: {
-        connection,
-        provider: capitalizeProvider(payload.provider),
-        endpoint: payload.endpoint ?? '',
-        lastSyncAt: new Date(fetchedMs).toISOString(),
-        totals: {
-          queued: 0,
-          running: payload.running_timers,
-          paused: 0,
-          done: 0,
-          failed: 0,
-        },
-        recent,
-      },
-      branch: payload.branch,
-      boundIssue: payload.bound_issue,
-      boundIssueTitle: payload.bound_issue_title ?? null,
-      warning: payload.warning ?? null,
-      unsupported: payload.statuses_unsupported ?? null,
-    }
-    return { data: view, fetchedAt: fetchedMs }
+    return mapStatusPayload(payload)
   }
   catch (err) {
     if (!isTauri()) {
@@ -309,12 +320,12 @@ export async function fetchStatus(): Promise<FetchResult<StatusView>> {
 // Config snapshot + settings mutations (secrets write-only).
 // ---------------------------------------------------------------------------
 
-interface CredentialSummaryRaw {
+export interface CredentialSummaryRaw {
   present: boolean
   length?: number
 }
 
-interface RoleSnapshotRaw {
+export interface RoleSnapshotRaw {
   role: string
   provider?: string | null
   forgejo_api_base?: string | null

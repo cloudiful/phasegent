@@ -11,11 +11,12 @@
     "typecheck": "vue-tsc --noEmit -p frontend/tsconfig.json",
     "lint": "eslint --config frontend/eslint.config.mjs frontend/src frontend/tests frontend/vite.config.ts",
     "test": "bun test frontend/tests",
+    "tauri": "tauri",
     "validate": "bun run build-only && bun frontend/scripts/validate-dist.mjs"
   },
   "dependencies": {
     "@nuxt/ui": "4.11.0",
-    "@tauri-apps/api": "2.1.1",
+    "@tauri-apps/api": "2.11.0",
     "tailwindcss": "4.3.3",
     "vue": "3.5.42",
     "vue-router": "4.6.4"
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.11.0",
     "@types/node": "26.4.1",
     "@vitejs/plugin-vue": "6.0.8",
     "bun-types": "1.4.2",

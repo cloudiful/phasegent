@@ -82,6 +82,22 @@ phasegent --help issue
 phasegent --help auth
 ```
 
+## 桌面应用
+
+普通的 `phasegent <command>` 调用仍为 CLI。显式打开桌面应用：
+
+```sh
+phasegent gui
+```
+
+在终端中无参数运行 `phasegent` 仍显示帮助。从 Explorer/Finder（无终端）
+启动则会打开桌面应用。
+
+角色 credential 始终保存在本地且只写：可在 Settings 页面或通过
+`auth setup` 输入，已保存的 key 不会被显示。发布包：Windows 提供一个 x64
+MSI 及对应的 raw exe；macOS 提供 `.dmg` 中的未签名 Tauri 应用，首次打开时
+Gatekeeper 可能会提示。
+
 ## 配置
 
 `auth setup` 将 provider credential 保存在本地配置数据库中。`config show` 提供
