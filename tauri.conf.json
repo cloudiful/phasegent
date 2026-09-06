@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.cloud1ful.phasegent",
   "build": {
-    "frontendDist": "frontend"
+    "frontendDist": "frontend/dist"
   },
   "app": {
     "windows": [
