@@ -201,6 +201,7 @@ pub(crate) struct RedmineNewUserMembershipFields {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct RedmineCurrentUserResponse {
     pub(crate) user: RedmineCurrentUser,
 }

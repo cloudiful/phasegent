@@ -434,6 +434,72 @@ fn persist_redmine_bootstrap_validates_zero_ids() {
 }
 
 #[test]
+fn role_redmine_user_round_trips_per_role_and_validates() {
+    // Phase 2 admin-only provisioning persists one (user_id, login) row
+    // per agent role. The table is additive; fresh databases report
+    // missing, saves round-trip, overwrites replace, roles stay
+    // isolated, and zero/blank inputs are rejected before SQL.
+    let (temp_dir, storage) = open_at_temp("redmine-user");
+    assert!(
+        storage
+            .load_redmine_user(Role::Orchestrator)
+            .unwrap()
+            .is_none()
+    );
+    storage
+        .save_redmine_user(Role::Orchestrator, 11, "phasegent-orchestrator")
+        .unwrap();
+    storage
+        .save_redmine_user(Role::Executor, 22, "phasegent-executor")
+        .unwrap();
+    assert_eq!(
+        storage.load_redmine_user(Role::Orchestrator).unwrap(),
+        Some((11, "phasegent-orchestrator".to_owned()))
+    );
+    assert_eq!(
+        storage.load_redmine_user(Role::Executor).unwrap(),
+        Some((22, "phasegent-executor".to_owned()))
+    );
+    assert!(storage.load_redmine_user(Role::Reviewer).unwrap().is_none());
+    // Overwrite replaces.
+    storage
+        .save_redmine_user(Role::Orchestrator, 12, "phasegent-orchestrator")
+        .unwrap();
+    assert_eq!(
+        storage.load_redmine_user(Role::Orchestrator).unwrap(),
+        Some((12, "phasegent-orchestrator".to_owned()))
+    );
+    // Validation.
+    assert!(storage.save_redmine_user(Role::Reviewer, 0, "x").is_err());
+    assert!(storage.save_redmine_user(Role::Reviewer, 7, "   ").is_err());
+    assert!(
+        storage
+            .save_redmine_user(Role::Reviewer, 7, "a\nb")
+            .is_err()
+    );
+    // Whitespace is trimmed on write/read.
+    storage
+        .save_redmine_user(Role::Tester, 44, "  phasegent-tester  ")
+        .unwrap();
+    assert_eq!(
+        storage.load_redmine_user(Role::Tester).unwrap(),
+        Some((44, "phasegent-tester".to_owned()))
+    );
+    // Downstream role_credential rows remain the source for API keys.
+    storage
+        .save_credential(Role::Orchestrator, PROVIDER_REDMINE, "orchestrator-key")
+        .unwrap();
+    assert_eq!(
+        storage
+            .load_credential(Role::Orchestrator, PROVIDER_REDMINE)
+            .unwrap()
+            .as_deref(),
+        Some("orchestrator-key")
+    );
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
 fn role_gitlab_config_round_trip_and_numeric_project_id() {
     // Phase 1 (remove-project-id): GitLab `project_id` is no longer
     // persisted; the column remains for non-destructive migration but

@@ -35,6 +35,15 @@ pub(crate) const PROVIDER_GITLAB: &str = "gitlab";
 /// * `role_credential` stores per-(role, provider) credentials; the
 ///   composite primary key lets the same role keep both a Forgejo token
 ///   and a Redmine API key without collision.
+/// * `role_redmine_user` stores the admin-provisioned Redmine identity
+///   (`user_id`, `login`) for each agent role. Phase 2 (admin-only
+///   provisioning) writes this row when a deterministic service user is
+///   found or created via the admin REST API and reads it on reruns so
+///   provisioning is idempotent without re-listing users. Legacy
+///   databases gain the table via `CREATE TABLE IF NOT EXISTS` with no
+///   destructive migration; legacy `role_credential` rows without a
+///   mapping are reconciled by looking up the deterministic login
+///   before creating.
 /// * `global_setting` stores deployment-level secrets that are not
 ///   tied to a role (for example the Redmine git mirror plugin key and
 ///   its repository URL override). `config show` returns their
@@ -81,6 +90,16 @@ CREATE TABLE IF NOT EXISTS role_credential (
     provider TEXT NOT NULL,
     credential TEXT NOT NULL,
     PRIMARY KEY (role, provider)
+);
+
+-- Phase 2 admin-only provisioning. One row per agent role holding the
+-- Redmine user provisioned through the administrator REST API. Additive
+-- so databases created before Phase 2 gain the table on open via
+-- `CREATE TABLE IF NOT EXISTS` with no data migration.
+CREATE TABLE IF NOT EXISTS role_redmine_user (
+    role TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL CHECK (user_id > 0),
+    login TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS global_setting (

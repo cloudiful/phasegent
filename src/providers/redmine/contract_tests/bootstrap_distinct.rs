@@ -8,25 +8,14 @@ use super::support::{
     user_from_response, version_collection, version_collection_page,
 };
 use crate::auth;
-use crate::command::{
-    self, Command, IssueCommand, ProjectCommand, RelationCommand, StatusCommand, WorkflowCommand,
-};
+use crate::infra::storage::Storage;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::infra::storage::{Storage, TimerRun};
-use crate::policy::{Capability, Role};
-use crate::providers::redmine::model::{RedmineRelationType, RedmineTimeEntryActivity};
-use crate::providers::{
-    ProviderDispatcher, ProviderKind, RedmineConfig, RedmineIssueStatus, RedmineMetadataProvider,
-    RedmineProvider,
-};
-use std::str::FromStr;
+use crate::policy::Role;
 use std::{fs, time};
 
-#[test]
-fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user() {
-    let _environment_lock = lock_workflow_tests();
+fn temp_db(label: &str) -> (std::path::PathBuf, EnvGuard, Storage) {
     let directory = std::env::temp_dir().join(format!(
-        "phasegent-redmine-distinct-users-{}-{}",
+        "phasegent-redmine-distinct-{label}-{}-{}",
         std::process::id(),
         time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
@@ -34,23 +23,42 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
             .as_nanos()
     ));
     let db_path = directory.join(crate::infra::storage::DB_FILENAME);
-    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
     let storage = Storage::open_at(&db_path).unwrap();
-    storage
-        .save_credential(Role::Orchestrator, "redmine", "orchestrator-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
-        .unwrap();
+    (directory, guard, storage)
+}
+
+fn seed_admin(storage: &Storage, base: &str) {
     storage
         .save_credential(Role::Admin, "redmine", "admin-redmine-key")
         .unwrap();
+    storage
+        .save_redmine_config(
+            Role::Admin,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.to_owned()),
+                project_id: None,
+                close_status_id: None,
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
+}
 
+fn seed_persisted(storage: &Storage, role: Role, id: u64, login: &str, key: &str) {
+    storage.save_redmine_user(role, id, login).unwrap();
+    storage.save_credential(role, "redmine", key).unwrap();
+}
+
+#[test]
+fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user() {
+    let _environment_lock = lock_workflow_tests();
+    let (directory, _guard, storage) = temp_db("users");
+    // Phase 2: distinct guard runs on provisioned identities. Seed
+    // persisted mappings where orchestrator and executor share id 11 so
+    // provisioning reuses without HTTP and the guard fires.
     let (base, requests, server) = sequence(vec![
-        // Admin-side project bootstrap gets us to the identity lookup phase.
         MockResponse::error(404, r#"{"errors":["not found"]}"#),
         MockResponse::ok(
             serde_json::json!({
@@ -64,30 +72,34 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
             "owner-repo",
             "Workflow issues for owner/repo",
         )),
-        // orchestrator identity resolves to user id 11.
-        MockResponse::ok(support::current_user_response(11, "shared-user")),
-        // executor identity ALSO resolves to user id 11 — the collision the
-        // distinct-users check is supposed to catch.
-        MockResponse::ok(support::current_user_response(11, "shared-user")),
-        // reviewer identity still gets fetched before the check fires so all
-        // three pairwise comparisons have data.
-        MockResponse::ok(support::current_user_response(33, "reviewer")),
     ]);
-    storage
-        .save_redmine_config(
-            Role::Admin,
-            &auth::RedmineStoredConfig {
-                api_base: Some(base.clone()),
-                project_id: None,
-                close_status_id: None,
-                group_name: None,
-                group_role: None,
-            },
-        )
-        .unwrap();
+    // Seed after base is known so admin config points at the mock.
+    seed_admin(&storage, &base);
+    seed_persisted(
+        &storage,
+        Role::Orchestrator,
+        11,
+        "phasegent-orchestrator",
+        "orchestrator-key",
+    );
+    seed_persisted(
+        &storage,
+        Role::Executor,
+        11,
+        "phasegent-orchestrator",
+        "executor-key",
+    );
+    seed_persisted(
+        &storage,
+        Role::Reviewer,
+        33,
+        "phasegent-reviewer",
+        "reviewer-key",
+    );
+    seed_persisted(&storage, Role::Tester, 44, "phasegent-tester", "tester-key");
 
     let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
-        .expect_err("bootstrap must fail when two role keys resolve to the same Redmine user");
+        .expect_err("bootstrap must fail when two provisioned users share an id");
     let json = error.json();
     assert_eq!(json["kind"], "config");
     let message = json["message"]
@@ -99,18 +111,17 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
         "error message must mention distinct users, got: {message}"
     );
     assert!(
-        message.contains("shared-user") || message.contains("#11"),
+        message.contains("phasegent-orchestrator") || message.contains("#11"),
         "error message must describe the colliding identity, got: {message}"
     );
 
-    // Bootstrap must abort after the three current_user lookups and never
-    // issue a membership POST/PUT — otherwise the partial mapping would leak
-    // into the project.
+    // Bootstrap must abort after project bootstrap + persisted reuse and
+    // never issue a membership POST/PUT or a user lookup/create.
     let observed_requests = requests.recv().unwrap();
     assert_eq!(
         observed_requests.len(),
-        6,
-        "bootstrap must stop after the three current_user lookups on distinct-user failure"
+        3,
+        "bootstrap must stop after project bootstrap on distinct-user failure: {observed_requests:?}"
     );
     for (index, request) in observed_requests.iter().enumerate() {
         assert!(
@@ -121,14 +132,12 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
             !request.starts_with("PUT /memberships/"),
             "no membership PUT should fire on distinct-user failure (index {index}): {request}"
         );
+        assert!(
+            !request.contains("/users.json") && !request.contains("/users/"),
+            "no user API should fire when persisted users are reused (index {index}): {request}"
+        );
     }
 
-    // Project bootstrap config must not be persisted on the admin role: the
-    // workflow is not ready and we must not leave a partial identity mapping
-    // behind for the next operator run to discover. The seeded api_base
-    // remains in place because the bootstrap returned early before
-    // `persist_redmine_bootstrap` could run, but the project id and
-    // close status must NOT have been written.
     let stored = auth::load_redmine_config(Role::Admin, &storage)
         .expect("admin config must load")
         .expect("admin config row must still exist");
@@ -143,33 +152,7 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
 #[test]
 fn bootstrap_fails_when_tester_collides_with_existing_user() {
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
-        "phasegent-redmine-tester-distinct-{}-{}",
-        std::process::id(),
-        time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
-    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
-    let storage = Storage::open_at(&db_path).unwrap();
-    storage
-        .save_credential(Role::Orchestrator, "redmine", "orchestrator-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Tester, "redmine", "tester-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
-        .unwrap();
-
+    let (directory, _guard, storage) = temp_db("tester-distinct");
     let (base, requests, server) = sequence(vec![
         MockResponse::error(404, r#"{"errors":["not found"]}"#),
         MockResponse::ok(
@@ -184,26 +167,37 @@ fn bootstrap_fails_when_tester_collides_with_existing_user() {
             "owner-repo",
             "Workflow issues for owner/repo",
         )),
-        MockResponse::ok(support::current_user_response(11, "orchestrator")),
-        MockResponse::ok(support::current_user_response(22, "executor")),
-        MockResponse::ok(support::current_user_response(33, "reviewer")),
-        MockResponse::ok(support::current_user_response(
-            22,
-            "tester-collides-executor",
-        )),
     ]);
-    storage
-        .save_redmine_config(
-            Role::Admin,
-            &auth::RedmineStoredConfig {
-                api_base: Some(base.clone()),
-                project_id: None,
-                close_status_id: None,
-                group_name: None,
-                group_role: None,
-            },
-        )
-        .unwrap();
+    seed_admin(&storage, &base);
+    seed_persisted(
+        &storage,
+        Role::Orchestrator,
+        11,
+        "phasegent-orchestrator",
+        "orchestrator-key",
+    );
+    seed_persisted(
+        &storage,
+        Role::Executor,
+        22,
+        "phasegent-executor",
+        "executor-key",
+    );
+    seed_persisted(
+        &storage,
+        Role::Reviewer,
+        33,
+        "phasegent-reviewer",
+        "reviewer-key",
+    );
+    // Tester reuses executor's id.
+    seed_persisted(
+        &storage,
+        Role::Tester,
+        22,
+        "phasegent-executor",
+        "tester-key",
+    );
 
     let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
         .expect_err("bootstrap must fail when tester collides with executor");
@@ -216,8 +210,8 @@ fn bootstrap_fails_when_tester_collides_with_existing_user() {
     let reqs = requests.recv().unwrap();
     assert_eq!(
         reqs.len(),
-        7,
-        "must stop after 4 current_user lookups on tester collision"
+        3,
+        "must stop after project bootstrap on tester collision: {reqs:?}"
     );
     for req in reqs.iter() {
         assert!(
@@ -232,37 +226,13 @@ fn bootstrap_fails_when_tester_collides_with_existing_user() {
 #[test]
 fn bootstrap_succeeds_with_distinct_tester_when_configured() {
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
-        "phasegent-redmine-tester-ok-{}-{}",
-        std::process::id(),
-        time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
-    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
-    let storage = Storage::open_at(&db_path).unwrap();
-    storage
-        .save_credential(Role::Orchestrator, "redmine", "orchestrator-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Executor, "redmine", "executor-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Reviewer, "redmine", "reviewer-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Tester, "redmine", "tester-redmine-key")
-        .unwrap();
-    storage
-        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
-        .unwrap();
+    let (directory, _guard, storage) = temp_db("tester-ok");
     let _mirror_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
     let _mirror_url = EnvGuard::set(
         "PHASEGENT_REDMINE_REPOSITORY_URL",
         "https://git.example.com/owner/repo.git",
     );
+    // Distinct persisted users: no user HTTP, only membership + mirror.
     let (base, _requests, server) = sequence(vec![
         MockResponse::error(404, r#"{"errors":["not found"]}"#),
         MockResponse::ok(
@@ -275,10 +245,6 @@ fn bootstrap_succeeds_with_distinct_tester_when_configured() {
             "owner-repo",
             "Workflow",
         )),
-        MockResponse::ok(support::current_user_response(11, "orchestrator")),
-        MockResponse::ok(support::current_user_response(22, "executor")),
-        MockResponse::ok(support::current_user_response(33, "reviewer")),
-        MockResponse::ok(support::current_user_response(44, "tester")),
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -321,18 +287,29 @@ fn bootstrap_succeeds_with_distinct_tester_when_configured() {
             ),
         ),
     ]);
-    storage
-        .save_redmine_config(
-            Role::Admin,
-            &auth::RedmineStoredConfig {
-                api_base: Some(base.clone()),
-                project_id: None,
-                close_status_id: None,
-                group_name: None,
-                group_role: None,
-            },
-        )
-        .unwrap();
+    seed_admin(&storage, &base);
+    seed_persisted(
+        &storage,
+        Role::Orchestrator,
+        11,
+        "phasegent-orchestrator",
+        "orchestrator-key",
+    );
+    seed_persisted(
+        &storage,
+        Role::Executor,
+        22,
+        "phasegent-executor",
+        "executor-key",
+    );
+    seed_persisted(
+        &storage,
+        Role::Reviewer,
+        33,
+        "phasegent-reviewer",
+        "reviewer-key",
+    );
+    seed_persisted(&storage, Role::Tester, 44, "phasegent-tester", "tester-key");
     let result =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
     assert_eq!(

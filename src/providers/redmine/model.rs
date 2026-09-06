@@ -21,8 +21,8 @@ pub(crate) use project::{RedmineCurrentUser, RedmineCurrentUserResponse, Redmine
 #[rustfmt::skip]
 pub(crate) use relation::{RedmineNewRelation, RedmineNewRelationFields, RedmineRelation, RedmineRelationCollection, RedmineRelationResponse, RedmineRelationType, RelationSummary};
 #[rustfmt::skip]
-pub(crate) use user::{RedmineNewUser, RedmineNewUserFields, RedmineUserResponse};
-pub use user::RedmineUser;
+pub(crate) use user::{RedmineNewUser, RedmineNewUserFields, RedmineUserCollection, RedmineUserResponse};
+pub use user::{RedmineUser, RoleProvisioningMetadata, provisioned_roles, provisioning_metadata};
 #[rustfmt::skip]
 pub(crate) use status::{RedmineIssueStatusCollection, RedmineTrackerCollection, RedmineVersionCollection};
 #[rustfmt::skip]

@@ -233,3 +233,196 @@ fn user_api_key_missing_is_decode_without_payload() {
     );
     assert!(!error.to_string().contains(USER_API_SECRET));
 }
+
+fn user_list_response(users: &[(u64, &str)]) -> String {
+    serde_json::json!({
+        "users": users.iter().map(|(id, login)| serde_json::json!({
+            "id": id,
+            "login": login,
+            "firstname": "Phasegent",
+            "lastname": login,
+            "mail": format!("{login}@phasegent.local"),
+        })).collect::<Vec<_>>(),
+        "total_count": users.len(),
+        "limit": 100,
+    })
+    .to_string()
+}
+
+#[test]
+fn user_list_decodes_paginated_users() {
+    let (result, request) = one(
+        MockResponse::ok(user_list_response(&[(11, "phasegent-orchestrator")])),
+        |redmine| redmine.list_users(),
+    );
+    let users = result.unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].id, 11);
+    assert_eq!(users[0].login, "phasegent-orchestrator");
+    support::assert_request(&request, "GET", "/users.json?", None);
+    assert!(request.contains("limit=100"), "{request}");
+}
+
+#[test]
+fn user_find_by_login_returns_exact_match() {
+    let (base, requests, server) = sequence(vec![MockResponse::ok(user_list_response(&[
+        (11, "phasegent-orchestrator"),
+        (22, "phasegent-executor"),
+    ]))]);
+    let redmine = provider(base);
+    let found = redmine
+        .find_user_by_login("phasegent-executor")
+        .unwrap()
+        .expect("must find executor");
+    assert_eq!(found.id, 22);
+    assert_eq!(found.login, "phasegent-executor");
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 1);
+    support::assert_request(&requests[0], "GET", "/users.json?", None);
+    server.join().unwrap();
+}
+
+#[test]
+fn user_find_by_login_returns_none_when_absent() {
+    let (result, request) = one(MockResponse::ok(user_list_response(&[])), |redmine| {
+        redmine.find_user_by_login("phasegent-orchestrator")
+    });
+    assert!(result.unwrap().is_none());
+    support::assert_request(&request, "GET", "/users.json?", None);
+}
+
+#[test]
+fn user_find_by_login_rejects_blank_without_http() {
+    let redmine = provider("http://127.0.0.1:9".to_owned());
+    let error = redmine.find_user_by_login("   ").unwrap_err();
+    assert_eq!(error.json()["kind"], "config");
+    assert!(error.to_string().contains("login"));
+}
+
+#[test]
+fn user_find_by_login_scans_second_page() {
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(
+            serde_json::json!({
+                "users": [{"id": 11, "login": "phasegent-orchestrator", "firstname": "Phasegent", "lastname": "Orchestrator", "mail": "phasegent-orchestrator@phasegent.local"}],
+                "total_count": 2,
+                "limit": 1,
+            })
+            .to_string(),
+        ),
+        MockResponse::ok(
+            serde_json::json!({
+                "users": [{"id": 22, "login": "phasegent-executor", "firstname": "Phasegent", "lastname": "Executor", "mail": "phasegent-executor@phasegent.local"}],
+                "total_count": 2,
+                "limit": 1,
+            })
+            .to_string(),
+        ),
+    ]);
+    let redmine = provider(base);
+    let found = redmine
+        .find_user_by_login("phasegent-executor")
+        .unwrap()
+        .expect("must find on second page");
+    assert_eq!(found.id, 22);
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("offset=0"), "{}", requests[0]);
+    assert!(requests[1].contains("offset=1"), "{}", requests[1]);
+    server.join().unwrap();
+}
+
+#[test]
+fn service_user_create_uses_generate_password_without_password_field() {
+    let (result, request) = one(
+        MockResponse::status(201, user_response(11, "phasegent-orchestrator", None)),
+        |redmine| {
+            redmine.create_service_user(
+                "phasegent-orchestrator",
+                "Phasegent",
+                "Orchestrator",
+                "phasegent-orchestrator@phasegent.local",
+            )
+        },
+    );
+    let user = result.unwrap();
+    assert_eq!(user.id, 11);
+    assert_eq!(user.login, "phasegent-orchestrator");
+    support::assert_request(&request, "POST", "/users.json", None);
+    assert!(
+        request.contains(r#""login":"phasegent-orchestrator""#),
+        "{request}"
+    );
+    assert!(
+        request.contains(r#""generate_password":true"#),
+        "service create must request generated password: {request}"
+    );
+    assert!(
+        !request.contains(r#""password""#),
+        "service create must not send a password field: {request}"
+    );
+    assert!(
+        request.contains(r#""status":1"#),
+        "service create must mark active: {request}"
+    );
+    assert!(
+        request.contains(r#""admin":false"#),
+        "service create must not grant admin: {request}"
+    );
+}
+
+#[test]
+fn service_user_create_validation_rejects_empty_without_http() {
+    let redmine = provider("http://127.0.0.1:9".to_owned());
+    for (login, firstname, lastname, mail) in [
+        ("", "Phasegent", "Orchestrator", "a@phasegent.local"),
+        (
+            "phasegent-orchestrator",
+            "",
+            "Orchestrator",
+            "a@phasegent.local",
+        ),
+        (
+            "phasegent-orchestrator",
+            "Phasegent",
+            "",
+            "a@phasegent.local",
+        ),
+        ("phasegent-orchestrator", "Phasegent", "Orchestrator", ""),
+    ] {
+        let error = redmine
+            .create_service_user(login, firstname, lastname, mail)
+            .unwrap_err();
+        assert_eq!(error.json()["kind"], "config");
+    }
+}
+
+#[test]
+fn provisioning_metadata_is_deterministic_and_complete() {
+    use crate::policy::Role;
+    use crate::providers::redmine::model::{provisioned_roles, provisioning_metadata};
+    let roles = provisioned_roles();
+    assert_eq!(
+        roles,
+        [
+            Role::Orchestrator,
+            Role::Executor,
+            Role::Reviewer,
+            Role::Tester
+        ]
+    );
+    let mut logins = std::collections::HashSet::new();
+    for role in roles {
+        let meta = provisioning_metadata(role)
+            .unwrap_or_else(|| panic!("missing metadata for {}", role.as_str()));
+        assert!(!meta.login.is_empty());
+        assert!(meta.login.starts_with("phasegent-"), "{}", meta.login);
+        assert!(!meta.mail.is_empty());
+        assert!(meta.mail.contains('@'), "{}", meta.mail);
+        assert!(logins.insert(meta.login), "duplicate login {}", meta.login);
+    }
+    assert!(
+        provisioning_metadata(Role::Admin).is_none(),
+        "admin must not have provisioning metadata"
+    );
+}

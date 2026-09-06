@@ -164,3 +164,76 @@ impl<'a> std::fmt::Debug for RedmineNewUser<'a> {
             .finish()
     }
 }
+
+/// Paginated `GET /users.json` collection used for idempotent lookup.
+///
+/// Only `users`, `total_count`, and `limit` are needed for the
+/// provisioning scan; unknown fields are ignored so future Redmine
+/// versions stay compatible.
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct RedmineUserCollection {
+    #[serde(default)]
+    pub(crate) users: Vec<RedmineUser>,
+    pub(crate) total_count: Option<usize>,
+    pub(crate) limit: Option<usize>,
+}
+
+/// Deterministic provisioning metadata for one built-in agent role.
+///
+/// Logins are stable (`phasegent-<role>`) so reruns and legacy
+/// databases can look the service user up by login before creating.
+/// Adding a future code-defined role requires registering its metadata
+/// here; no manual Redmine user/key setup is needed because bootstrap
+/// provisions through the administrator REST API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoleProvisioningMetadata {
+    pub login: &'static str,
+    pub firstname: &'static str,
+    pub lastname: &'static str,
+    pub mail: &'static str,
+}
+
+/// Deterministic metadata for the current built-in agent roles.
+///
+/// Returns `None` for [`crate::policy::Role::Admin`]: the administrator
+/// is the human-provisioned provisioner, never a provisioned service
+/// user. The four agent roles share the `Phasegent` firstname and a
+/// `phasegent.local` mail domain so the pattern is obvious when a new
+/// role is registered.
+pub fn provisioning_metadata(role: crate::policy::Role) -> Option<RoleProvisioningMetadata> {
+    match role {
+        crate::policy::Role::Orchestrator => Some(RoleProvisioningMetadata {
+            login: "phasegent-orchestrator",
+            firstname: "Phasegent",
+            lastname: "Orchestrator",
+            mail: "phasegent-orchestrator@phasegent.local",
+        }),
+        crate::policy::Role::Executor => Some(RoleProvisioningMetadata {
+            login: "phasegent-executor",
+            firstname: "Phasegent",
+            lastname: "Executor",
+            mail: "phasegent-executor@phasegent.local",
+        }),
+        crate::policy::Role::Reviewer => Some(RoleProvisioningMetadata {
+            login: "phasegent-reviewer",
+            firstname: "Phasegent",
+            lastname: "Reviewer",
+            mail: "phasegent-reviewer@phasegent.local",
+        }),
+        crate::policy::Role::Tester => Some(RoleProvisioningMetadata {
+            login: "phasegent-tester",
+            firstname: "Phasegent",
+            lastname: "Tester",
+            mail: "phasegent-tester@phasegent.local",
+        }),
+        crate::policy::Role::Admin => None,
+    }
+}
+
+/// Built-in agent roles provisioned through the admin API, in bootstrap
+/// reconciliation order.
+pub fn provisioned_roles() -> [crate::policy::Role; 4] {
+    use crate::policy::Role::{Executor, Orchestrator, Reviewer, Tester};
+    [Orchestrator, Executor, Reviewer, Tester]
+}

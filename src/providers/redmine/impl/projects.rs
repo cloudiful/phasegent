@@ -38,6 +38,9 @@ impl RedmineProvider {
     /// Identify the user bound to this provider's API key via
     /// `/users/current.json`. Bootstrap uses this to map a role-scoped
     /// credential to a concrete Redmine user without a separate login flow.
+    ///
+    /// Retained for contract tests after Phase 2 admin-only provisioning.
+    #[allow(dead_code)]
     pub fn current_user(&self) -> Result<RedmineCurrentUser, ForgejoError> {
         self.http.current_user()
     }

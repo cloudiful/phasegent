@@ -167,9 +167,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline --query should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::Search {
-            query, state, ..
-        }) => {
+        command::Command::Issue(command::IssueCommand::Search { query, state, .. }) => {
             assert_eq!(query.as_deref(), Some("-tag:regression"));
             assert_eq!(state, "all");
         }
@@ -193,9 +191,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline --state should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::Search {
-            query, state, ..
-        }) => {
+        command::Command::Issue(command::IssueCommand::Search { query, state, .. }) => {
             assert_eq!(query.as_deref(), Some("-tag:regression"));
             assert_eq!(state, "closed");
         }

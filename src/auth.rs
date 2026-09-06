@@ -223,6 +223,25 @@ pub fn persist_redmine_bootstrap(
     storage.persist_redmine_bootstrap(role, api_base, project_id, close_status_id)
 }
 
+/// Load the admin-provisioned Redmine identity (`user_id`, `login`) for
+/// `role`. Phase 2 persists one row per agent role when the deterministic
+/// service user is found or created; `None` means "never provisioned".
+pub fn load_redmine_user(role: Role, storage: &Storage) -> Result<Option<(u64, String)>, String> {
+    storage.load_redmine_user(role)
+}
+
+/// Persist the admin-provisioned Redmine identity for `role`. The API key
+/// itself stays in `role_credential`; this row only carries the non-secret
+/// identity so reruns can reuse without re-listing users.
+pub fn save_redmine_user(
+    role: Role,
+    user_id: u64,
+    login: &str,
+    storage: &Storage,
+) -> Result<(), String> {
+    storage.save_redmine_user(role, user_id, login)
+}
+
 pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_REDMINE)?

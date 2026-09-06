@@ -1,9 +1,9 @@
 use crate::providers::api::ForgejoError;
 use crate::providers::redmine::model::{
     RedmineCurrentUserResponse, RedmineErrorResponse, RedmineMembershipCollection, RedmineNewUser,
-    RedmineNewUserMembership, RedmineNewUserMembershipFields, RedmineRoleCollection,
-    RedmineUpdateMembership, RedmineUpdateMembershipFields, RedmineUser,
-    RedmineUserMembershipOutcome, RedmineUserResponse,
+    RedmineNewUserFields, RedmineNewUserMembership, RedmineNewUserMembershipFields,
+    RedmineRoleCollection, RedmineUpdateMembership, RedmineUpdateMembershipFields, RedmineUser,
+    RedmineUserCollection, RedmineUserMembershipOutcome, RedmineUserResponse,
 };
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -189,6 +189,11 @@ impl RedmineHttp {
     /// Identify the user bound to this HTTP client's API key via
     /// `/users/current.json`. Used to bind a role-scoped credential to a
     /// concrete Redmine user without logging in.
+    ///
+    /// Retained for contract tests after Phase 2 admin-only provisioning
+    /// (production bootstrap no longer calls it); allowed dead in
+    /// non-test builds.
+    #[allow(dead_code)]
     pub(crate) fn current_user(
         &self,
     ) -> Result<crate::providers::redmine::model::RedmineCurrentUser, ForgejoError> {
@@ -228,6 +233,127 @@ impl RedmineHttp {
         let response: RedmineUserResponse =
             self.get(&format!("users/{id}.json"), &[], "user get")?;
         Ok(response.user)
+    }
+
+    /// Create a service user with Redmine-generated credentials
+    /// (`POST /users.json` with `generate_password`).
+    ///
+    /// Phase 2 provisioning uses this so no password material ever
+    /// exists in phasegent memory, logs, or errors: Redmine generates
+    /// the password server-side and phasegent only ever handles the
+    /// returned identity plus the admin-read API key. The account is
+    /// created active (`status=1`), non-admin, with `must_change_passwd`
+    /// disabled so the API-key flow never blocks on a password change.
+    pub(crate) fn create_service_user(
+        &self,
+        login: &str,
+        firstname: &str,
+        lastname: &str,
+        mail: &str,
+    ) -> Result<RedmineUser, ForgejoError> {
+        let payload = RedmineNewUser {
+            user: RedmineNewUserFields {
+                login,
+                firstname,
+                lastname,
+                mail,
+                password: None,
+                generate_password: Some(true),
+                must_change_passwd: Some(false),
+                admin: Some(false),
+                status: Some(1),
+            },
+        };
+        let response: RedmineUserResponse = self.post("users.json", &payload, "user create")?;
+        Ok(response.user)
+    }
+
+    /// List every visible user via the admin REST API
+    /// (`GET /users.json`), paginated across all pages with the same
+    /// repeated-page and non-advancing-offset safeguards as the other
+    /// list helpers. Used by provisioning scans; prefer
+    /// [`Self::find_user_by_login`] when only one login is needed.
+    pub(crate) fn list_users(&self) -> Result<Vec<RedmineUser>, ForgejoError> {
+        self.paginate("user list", |http, offset| {
+            let params = [
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", offset.to_string()),
+            ];
+            let page: RedmineUserCollection = http.get("users.json", &params, "user list")?;
+            let signature = page
+                .users
+                .iter()
+                .map(|user| user.id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            Ok((page.users, page.total_count, page.limit, signature))
+        })
+    }
+
+    /// Find one user by exact `login` via the admin REST API.
+    ///
+    /// Scans `GET /users.json` pages and returns the first record whose
+    /// `login` equals `login` exactly. Server-side `name` filtering is
+    /// deliberately not relied on so the lookup stays correct even when
+    /// the server does fuzzy matching; pagination stops early on a hit
+    /// and otherwise terminates with the shared completion rules. A
+    /// blank login is a caller error and never issues HTTP. The admin
+    /// key is redacted from every error path via the shared helpers.
+    pub(crate) fn find_user_by_login(
+        &self,
+        login: &str,
+    ) -> Result<Option<RedmineUser>, ForgejoError> {
+        let target = login.trim();
+        if target.is_empty() {
+            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+        }
+        let mut offset: usize = 0;
+        let mut previous_signature: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let params = [
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", offset.to_string()),
+            ];
+            let page: RedmineUserCollection = self.get("users.json", &params, "user list")?;
+            if let Some(found) = page.users.iter().find(|user| user.login == target) {
+                return Ok(Some(found.clone()));
+            }
+            let signature = page
+                .users
+                .iter()
+                .map(|user| user.id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            if previous_signature.as_deref() == Some(signature.as_str()) && !page.users.is_empty() {
+                return Err(ForgejoError::pagination(
+                    "user list",
+                    "Redmine returned the same non-empty page repeatedly",
+                ));
+            }
+            let count = page.users.len();
+            let response_limit = page.limit.unwrap_or(PAGE_SIZE).max(1);
+            let complete = count == 0
+                || page
+                    .total_count
+                    .is_some_and(|total| offset.saturating_add(count) >= total)
+                || (page.total_count.is_none() && count < response_limit);
+            if complete {
+                return Ok(None);
+            }
+            let next_offset = offset.saturating_add(count);
+            if next_offset <= offset {
+                return Err(ForgejoError::pagination(
+                    "user list",
+                    "Redmine pagination offset did not advance",
+                ));
+            }
+            offset = next_offset;
+            previous_signature = Some(signature);
+        }
+        Err(ForgejoError::pagination(
+            "user list",
+            "pagination exceeded the safety limit",
+        ))
     }
 
     /// Ensure the given user holds the role named `role_name` on the project,

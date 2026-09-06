@@ -248,4 +248,73 @@ impl Storage {
         self.save_gitlab_config(role, &config)?;
         self.update_provider(role, PROVIDER_GITLAB)
     }
+
+    /// Load the admin-provisioned Redmine identity for `role`.
+    ///
+    /// Phase 2 (admin-only provisioning) persists one row per agent role
+    /// when the deterministic service user is found or created through
+    /// the administrator REST API. Returns `None` when no row exists so
+    /// callers can distinguish "never provisioned" (lookup-or-create)
+    /// from "provisioned" (reuse without HTTP). The login is returned
+    /// trimmed; blank logins are treated as missing.
+    pub fn load_redmine_user(&self, role: Role) -> Result<Option<(u64, String)>, String> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT user_id, login FROM role_redmine_user WHERE role = ?1")
+            .map_err(|error| format!("could not prepare redmine user load: {error}"))?;
+        let value = statement
+            .query_row(params![role.as_str()], |row| {
+                let user_id: i64 = row.get(0)?;
+                let login: String = row.get(1)?;
+                Ok((user_id, login))
+            })
+            .optional()
+            .map_err(|error| format!("could not read redmine user: {error}"))?;
+        Ok(value.and_then(|(user_id, login)| {
+            let login = login.trim().to_owned();
+            if user_id > 0 && !login.is_empty() {
+                Some((user_id as u64, login))
+            } else {
+                None
+            }
+        }))
+    }
+
+    /// Upsert the admin-provisioned Redmine identity for `role`.
+    ///
+    /// Overwrites any existing row so a re-provisioned user (lookup hit
+    /// after a legacy credential, or a recreated service user) replaces
+    /// the stale mapping. The API key itself stays in `role_credential`;
+    /// this row only carries the non-secret identity. Empty logins and
+    /// zero ids are rejected before touching the database.
+    pub fn save_redmine_user(&self, role: Role, user_id: u64, login: &str) -> Result<(), String> {
+        let login = login.trim();
+        if user_id == 0 {
+            return Err("Redmine user id must be greater than zero".to_owned());
+        }
+        if login.is_empty() {
+            return Err("Redmine user login cannot be empty".to_owned());
+        }
+        if login.chars().any(char::is_control) {
+            return Err("Redmine user login contains invalid characters".to_owned());
+        }
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| format!("could not begin redmine user write: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO role_redmine_user (role, user_id, login) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(role) DO UPDATE SET \
+                    user_id = excluded.user_id, \
+                    login = excluded.login",
+                params![role.as_str(), user_id as i64, login,],
+            )
+            .map_err(|error| format!("could not write redmine user: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("could not commit redmine user write: {error}"))?;
+        Ok(())
+    }
 }

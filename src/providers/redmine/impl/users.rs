@@ -84,4 +84,62 @@ impl RedmineProvider {
                 message: "Redmine user response missing API key".to_owned(),
             })
     }
+
+    /// Create a service user with Redmine-generated credentials.
+    ///
+    /// Phase 2 provisioning uses this so no password material ever
+    /// exists in phasegent memory, logs, or errors. Identity fields are
+    /// validated locally; Redmine-side duplicate-login validation
+    /// arrives as an `Http` 422 through the shared redacted path.
+    /// Call [`Self::get_user_api_key`] after creation to retrieve the
+    /// API key for persistence in `role_credential`.
+    pub fn create_service_user(
+        &self,
+        login: &str,
+        firstname: &str,
+        lastname: &str,
+        mail: &str,
+    ) -> Result<RedmineUser, ForgejoError> {
+        if login.trim().is_empty() {
+            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+        }
+        if firstname.trim().is_empty() {
+            return Err(ForgejoError::config(
+                "Redmine user firstname cannot be empty",
+            ));
+        }
+        if lastname.trim().is_empty() {
+            return Err(ForgejoError::config(
+                "Redmine user lastname cannot be empty",
+            ));
+        }
+        if mail.trim().is_empty() {
+            return Err(ForgejoError::config("Redmine user mail cannot be empty"));
+        }
+        self.http
+            .create_service_user(login, firstname, lastname, mail)
+    }
+
+    /// Find one user by exact login via the admin REST API.
+    ///
+    /// Used by Phase 2 provisioning to look up the deterministic
+    /// service-user login before creating, so reruns and legacy
+    /// databases never create duplicates. Blank logins fail fast
+    /// without HTTP.
+    pub fn find_user_by_login(&self, login: &str) -> Result<Option<RedmineUser>, ForgejoError> {
+        if login.trim().is_empty() {
+            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+        }
+        self.http.find_user_by_login(login)
+    }
+
+    /// List every visible user via the admin REST API.
+    ///
+    /// Thin wrapper over the paginated `GET /users.json` helper; kept
+    /// for contract tests and for future provisioning scans that need
+    /// more than a single-login lookup.
+    #[allow(dead_code)]
+    pub fn list_users(&self) -> Result<Vec<RedmineUser>, ForgejoError> {
+        self.http.list_users()
+    }
 }

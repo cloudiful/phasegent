@@ -175,3 +175,201 @@ fn bootstrap_persisted_config_decodes_legacy_group_fields_without_error() {
     assert_eq!(config.group_name.as_deref(), Some("AI Agents"));
     assert_eq!(config.group_role.as_deref(), Some("开发人员"));
 }
+
+#[test]
+fn role_redmine_user_table_is_additive_and_round_trips() {
+    // Phase 2 adds `role_redmine_user` additively. A database created
+    // without the table (legacy install) must gain it on open with no
+    // data loss, and the new mapping must round-trip per role.
+    let temp_dir = std::env::temp_dir().join(format!(
+        "phasegent-redmine-user-migration-{}-{}",
+        std::process::id(),
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let db_path = temp_dir.join(crate::infra::storage::DB_FILENAME);
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS role_config (role TEXT PRIMARY KEY, provider TEXT, api_base TEXT, repository TEXT);
+             CREATE TABLE IF NOT EXISTS role_redmine_config (role TEXT PRIMARY KEY, api_base TEXT, project_id TEXT, close_status_id INTEGER);
+             CREATE TABLE IF NOT EXISTS role_credential (role TEXT NOT NULL, provider TEXT NOT NULL, credential TEXT NOT NULL, PRIMARY KEY (role, provider));
+             CREATE TABLE IF NOT EXISTS global_setting (name TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO role_credential (role, provider, credential) VALUES ('orchestrator', 'redmine', 'legacy-key')",
+            [],
+        )
+        .unwrap();
+    }
+    let storage = Storage::open_at(&db_path).unwrap();
+    // Legacy credential survives the additive migration.
+    assert_eq!(
+        storage
+            .load_credential(Role::Orchestrator, "redmine")
+            .unwrap()
+            .as_deref(),
+        Some("legacy-key")
+    );
+    // New table starts empty, then round-trips.
+    assert!(
+        storage
+            .load_redmine_user(Role::Orchestrator)
+            .unwrap()
+            .is_none()
+    );
+    storage
+        .save_redmine_user(Role::Orchestrator, 11, "phasegent-orchestrator")
+        .unwrap();
+    assert_eq!(
+        storage.load_redmine_user(Role::Orchestrator).unwrap(),
+        Some((11, "phasegent-orchestrator".to_owned()))
+    );
+    // Overwrite replaces the mapping; other roles stay isolated.
+    storage
+        .save_redmine_user(Role::Orchestrator, 12, "phasegent-orchestrator")
+        .unwrap();
+    assert_eq!(
+        storage.load_redmine_user(Role::Orchestrator).unwrap(),
+        Some((12, "phasegent-orchestrator".to_owned()))
+    );
+    assert!(storage.load_redmine_user(Role::Executor).unwrap().is_none());
+    // Validation guards.
+    assert!(storage.save_redmine_user(Role::Executor, 0, "x").is_err());
+    assert!(storage.save_redmine_user(Role::Executor, 7, "   ").is_err());
+    // Reopen stays idempotent.
+    drop(storage);
+    let reopened = Storage::open_at(&db_path).unwrap();
+    assert_eq!(
+        reopened.load_redmine_user(Role::Orchestrator).unwrap(),
+        Some((12, "phasegent-orchestrator".to_owned()))
+    );
+    assert_eq!(
+        reopened
+            .load_credential(Role::Orchestrator, "redmine")
+            .unwrap()
+            .as_deref(),
+        Some("legacy-key")
+    );
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn bootstrap_output_and_errors_redact_provisioned_keys() {
+    let _environment_lock = lock_workflow_tests();
+    let directory = std::env::temp_dir().join(format!(
+        "phasegent-redmine-redacted-{}-{}",
+        std::process::id(),
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
+    let _guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+    let storage = Storage::open_at(&db_path).unwrap();
+    // Distinct collision with secret-bearing keys: the error must redact.
+    const ORCH_SECRET: &str = "orchestrator-secret-aaa111";
+    const EXEC_SECRET: &str = "executor-secret-bbb222";
+    let (base, requests, server) = sequence(vec![
+        MockResponse::error(404, r#"{"errors":["not found"]}"#),
+        MockResponse::ok(
+            serde_json::json!({"issue_statuses": [{"id": 5, "name": "Closed", "is_closed": true}]})
+                .to_string(),
+        ),
+        MockResponse::ok(support::project_response(
+            44,
+            "owner/repo",
+            "owner-repo",
+            "Workflow",
+        )),
+    ]);
+    storage
+        .save_credential(Role::Admin, "redmine", "admin-redmine-key")
+        .unwrap();
+    storage
+        .save_redmine_config(
+            Role::Admin,
+            &auth::RedmineStoredConfig {
+                api_base: Some(base.clone()),
+                project_id: None,
+                close_status_id: None,
+                group_name: None,
+                group_role: None,
+            },
+        )
+        .unwrap();
+    storage
+        .save_redmine_user(Role::Orchestrator, 11, "phasegent-orchestrator")
+        .unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", ORCH_SECRET)
+        .unwrap();
+    storage
+        .save_redmine_user(Role::Executor, 11, "phasegent-orchestrator")
+        .unwrap();
+    storage
+        .save_credential(Role::Executor, "redmine", EXEC_SECRET)
+        .unwrap();
+    storage
+        .save_redmine_user(Role::Reviewer, 33, "phasegent-reviewer")
+        .unwrap();
+    storage
+        .save_credential(Role::Reviewer, "redmine", "reviewer-secret-ccc333")
+        .unwrap();
+    storage
+        .save_redmine_user(Role::Tester, 44, "phasegent-tester")
+        .unwrap();
+    storage
+        .save_credential(Role::Tester, "redmine", "tester-secret-ddd444")
+        .unwrap();
+
+    let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
+        .expect_err("distinct collision must fail");
+    let rendered = error.json().to_string();
+    for secret in [
+        ORCH_SECRET,
+        EXEC_SECRET,
+        "reviewer-secret-ccc333",
+        "tester-secret-ddd444",
+        "admin-redmine-key",
+    ] {
+        assert!(
+            !rendered.contains(secret),
+            "bootstrap error must redact provisioned keys: {rendered}"
+        );
+        assert!(
+            !error.to_string().contains(secret),
+            "Display must redact: {error}"
+        );
+    }
+    assert!(rendered.contains("distinct users"), "{rendered}");
+    // Successful bootstrap JSON contract never carries keys either.
+    let success = serde_json::json!({
+        "bootstrapped": true,
+        "project_id": 44_u64,
+        "user_memberships": [
+            {"role": "Maintainer", "user_id": 11_u64, "user_login": "phasegent-orchestrator", "status": "added"},
+        ],
+    });
+    let success_rendered = success.to_string();
+    for secret in [ORCH_SECRET, EXEC_SECRET, "admin-redmine-key"] {
+        assert!(!success_rendered.contains(secret));
+    }
+    // Config snapshot redacts as well.
+    let snapshot = crate::config_snapshot::render(&storage, None).unwrap();
+    let snapshot_rendered = serde_json::to_string(&snapshot).unwrap();
+    for secret in [ORCH_SECRET, EXEC_SECRET, "admin-redmine-key"] {
+        assert!(
+            !snapshot_rendered.contains(secret),
+            "snapshot must redact: {snapshot_rendered}"
+        );
+    }
+    let _ = requests.recv().unwrap();
+    server.join().unwrap();
+    let _ = fs::remove_dir_all(directory);
+}

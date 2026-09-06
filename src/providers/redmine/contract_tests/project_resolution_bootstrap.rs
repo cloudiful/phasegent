@@ -44,9 +44,26 @@ fn save_orchestrator(storage: &Storage, api_base: Option<String>) {
         .unwrap();
 }
 
+// Phase 2 admin-only provisioning helpers (scope expansion: this file is
+// outside the declared phase paths but directly depends on workflow
+// bootstrap, so its mocks must feed provisioned identities instead of
+// legacy /users/current.json lookups).
+fn user_list_empty() -> String {
+    serde_json::json!({"users": [], "total_count": 0, "limit": 100}).to_string()
+}
+
+fn user_create_response(id: u64, login: &str) -> String {
+    serde_json::json!({"user": {"id": id, "login": login, "firstname": "Phasegent", "lastname": login, "mail": format!("{login}@phasegent.local")}}).to_string()
+}
+
+fn user_get_with_key(id: u64, login: &str, api_key: &str) -> String {
+    serde_json::json!({"user": {"id": id, "login": login, "firstname": "Phasegent", "lastname": login, "mail": format!("{login}@phasegent.local"), "api_key": api_key}}).to_string()
+}
+
 #[test]
 fn no_match_keeps_bootstrap_for_issue_and_actionable_for_version() {
     let _lock = lock_workflow_tests();
+    crate::workflow::clear_completed_bootstraps_for_tests();
     let origin = real_origin();
     let bootstrap_id = crate::remote::redmine_identifier(&origin.repository).unwrap();
 
@@ -87,9 +104,29 @@ fn no_match_keeps_bootstrap_for_issue_and_actionable_for_version() {
             &bootstrap_id,
             "Workflow",
         )),
-        MockResponse::ok(current_user_response(11, "orchestrator")),
-        MockResponse::ok(current_user_response(22, "executor")),
-        MockResponse::ok(current_user_response(33, "reviewer")),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(11, "phasegent-orchestrator")),
+        MockResponse::ok(user_get_with_key(
+            11,
+            "phasegent-orchestrator",
+            "orchestrator-key",
+        )),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(22, "phasegent-executor")),
+        MockResponse::ok(user_get_with_key(22, "phasegent-executor", "executor-key")),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(33, "phasegent-reviewer")),
+        MockResponse::ok(user_get_with_key(33, "phasegent-reviewer", "reviewer-key")),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
+        MockResponse::ok(user_get_with_key(44, "phasegent-tester", "tester-key")),
+        MockResponse::ok(role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(membership_collection(None)),
+        MockResponse::ok("{}"),
         MockResponse::ok(role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -174,6 +211,7 @@ fn no_match_keeps_bootstrap_for_issue_and_actionable_for_version() {
 #[test]
 fn explicit_repository_mismatch_does_not_use_wrong_origin() {
     let _lock = lock_workflow_tests();
+    crate::workflow::clear_completed_bootstraps_for_tests();
     let origin = real_origin();
     let explicit = if origin.repository == "owner/repo" {
         "other/tools"
@@ -204,9 +242,29 @@ fn explicit_repository_mismatch_does_not_use_wrong_origin() {
                 .to_string(),
         ),
         MockResponse::ok(project_response(45, explicit, &bootstrap_id, "Workflow")),
-        MockResponse::ok(current_user_response(11, "orchestrator")),
-        MockResponse::ok(current_user_response(22, "executor")),
-        MockResponse::ok(current_user_response(33, "reviewer")),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(11, "phasegent-orchestrator")),
+        MockResponse::ok(user_get_with_key(
+            11,
+            "phasegent-orchestrator",
+            "orchestrator-key",
+        )),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(22, "phasegent-executor")),
+        MockResponse::ok(user_get_with_key(22, "phasegent-executor", "executor-key")),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(33, "phasegent-reviewer")),
+        MockResponse::ok(user_get_with_key(33, "phasegent-reviewer", "reviewer-key")),
+        MockResponse::ok(user_list_empty()),
+        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
+        MockResponse::ok(user_get_with_key(44, "phasegent-tester", "tester-key")),
+        MockResponse::ok(role_collection(&[
+            (3, "Maintainer"),
+            (4, "Developer"),
+            (5, "Reporter"),
+        ])),
+        MockResponse::ok(membership_collection(None)),
+        MockResponse::ok("{}"),
         MockResponse::ok(role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),

@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS role_credential (
     credential TEXT NOT NULL,
     PRIMARY KEY (role, provider)
 );
+CREATE TABLE IF NOT EXISTS role_redmine_user (
+    role TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL CHECK (user_id > 0),
+    login TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS global_setting (
     name TEXT PRIMARY KEY,
     value TEXT
