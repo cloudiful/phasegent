@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import { usePageData } from '@/composables/usePageData'
-import { TASK_STATUSES, TASK_STATUS_LABEL, fetchTasks, filterTasks, formatClock } from '@/mocks'
+import { TASK_STATUSES, TASK_STATUS_LABEL, fetchTasks, filterTasks, formatClock } from '@/ipc'
 import type { TaskItem, TaskStatus } from '@/types'
 
 const STATUS_COLOR: Record<TaskStatus, 'neutral' | 'info' | 'warning' | 'success' | 'error'> = {
@@ -19,7 +19,11 @@ const filterItems = ['all', ...TASK_STATUSES]
 const page = usePageData(fetchTasks)
 const { state, data, error, fetchedAt, refreshing, stale, refresh } = page
 
-const visible = computed<TaskItem[]>(() => filterTasks(data.value ?? [], filter.value))
+const items = computed<TaskItem[]>(() => data.value?.items ?? [])
+const visible = computed<TaskItem[]>(() => filterTasks(items.value, filter.value))
+const branch = computed(() => data.value?.branch ?? null)
+const boundIssue = computed(() => data.value?.boundIssue ?? null)
+const backendWarning = computed(() => data.value?.warning ?? null)
 
 const columns: TableColumn<TaskItem>[] = [
   { accessorKey: 'title', header: 'Task' },
@@ -52,6 +56,14 @@ function filterLabel(value: string): string {
           <template v-else>
             Awaiting first load
           </template>
+        </p>
+        <p
+          v-if="branch || boundIssue !== null"
+          class="mt-1 text-xs text-muted"
+        >
+          <span v-if="branch">Branch {{ branch }}</span>
+          <span v-if="branch && boundIssue !== null"> · </span>
+          <span v-if="boundIssue !== null">Issue #{{ boundIssue }}</span>
         </p>
       </div>
       <div class="ms-auto flex items-center gap-2">
@@ -137,6 +149,16 @@ function filterLabel(value: string): string {
         icon="i-lucide-triangle-alert"
         title="Refresh failed; showing last known data"
         :description="error"
+      />
+
+      <UAlert
+        v-if="backendWarning"
+        class="mb-3"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        title="Backend notice"
+        :description="backendWarning ?? ''"
       />
 
       <!-- Empty -->

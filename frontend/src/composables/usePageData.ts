@@ -1,6 +1,6 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Ref } from 'vue'
-import { isStale } from '@/mocks'
+import { isStale } from '@/ipc'
 import type { LoadState } from '@/types'
 
 export interface PageData<T> {

@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import { usePageData } from '@/composables/usePageData'
-import { fetchStatus, formatClock } from '@/mocks'
+import { fetchStatus, formatClock } from '@/ipc'
 import type { ConnectionState, StatusEvent, StatusLevel } from '@/types'
 
 const CONNECTION_META: Record<ConnectionState, { label: string, color: 'success' | 'warning' | 'error' }> = {
@@ -19,6 +20,12 @@ const LEVEL_COLOR: Record<StatusLevel, 'info' | 'success' | 'warning' | 'error'>
 
 const page = usePageData(fetchStatus)
 const { state, data, error, fetchedAt, refreshing, stale, refresh } = page
+
+const summary = computed(() => data.value?.summary ?? null)
+const branch = computed(() => data.value?.branch ?? null)
+const boundIssue = computed(() => data.value?.boundIssue ?? null)
+const backendWarning = computed(() => data.value?.warning ?? null)
+const unsupported = computed(() => data.value?.unsupported ?? null)
 
 const columns: TableColumn<StatusEvent>[] = [
   { accessorKey: 'at', header: 'Time' },
@@ -41,6 +48,14 @@ const columns: TableColumn<StatusEvent>[] = [
           <template v-else>
             Awaiting first load
           </template>
+        </p>
+        <p
+          v-if="branch || boundIssue !== null"
+          class="mt-1 text-xs text-muted"
+        >
+          <span v-if="branch">Branch {{ branch }}</span>
+          <span v-if="branch && boundIssue !== null"> · </span>
+          <span v-if="boundIssue !== null">Issue #{{ boundIssue }}</span>
         </p>
       </div>
       <div class="ms-auto flex items-center gap-2">
@@ -111,7 +126,7 @@ const columns: TableColumn<StatusEvent>[] = [
       </template>
     </UAlert>
 
-    <template v-else-if="data">
+    <template v-else-if="summary">
       <UAlert
         v-if="error"
         class="mb-3"
@@ -122,17 +137,37 @@ const columns: TableColumn<StatusEvent>[] = [
         :description="error"
       />
 
+      <UAlert
+        v-if="backendWarning"
+        class="mb-3"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        title="Backend notice"
+        :description="backendWarning ?? ''"
+      />
+
+      <UAlert
+        v-if="unsupported"
+        class="mb-3"
+        color="info"
+        variant="subtle"
+        icon="i-lucide-info"
+        title="Capability notice"
+        :description="unsupported ?? ''"
+      />
+
       <div class="grid grid-cols-2 gap-2 lg:grid-cols-4">
         <UCard>
           <p class="text-xs text-muted">
             Connection
           </p>
           <UBadge
-            :color="CONNECTION_META[data.connection].color"
+            :color="CONNECTION_META[summary.connection].color"
             variant="subtle"
             class="mt-1"
           >
-            {{ CONNECTION_META[data.connection].label }}
+            {{ CONNECTION_META[summary.connection].label }}
           </UBadge>
         </UCard>
         <UCard>
@@ -140,7 +175,7 @@ const columns: TableColumn<StatusEvent>[] = [
             Provider
           </p>
           <p class="mt-1 truncate text-sm font-medium">
-            {{ data.provider }}
+            {{ summary.provider }}
           </p>
         </UCard>
         <UCard>
@@ -148,7 +183,7 @@ const columns: TableColumn<StatusEvent>[] = [
             Last sync
           </p>
           <p class="mt-1 text-sm font-medium tabular-nums">
-            {{ formatClock(data.lastSyncAt) }}
+            {{ formatClock(summary.lastSyncAt) }}
           </p>
         </UCard>
         <UCard>
@@ -156,7 +191,7 @@ const columns: TableColumn<StatusEvent>[] = [
             Open / Failed
           </p>
           <p class="mt-1 text-sm font-medium tabular-nums">
-            {{ data.totals.queued + data.totals.running + data.totals.paused }} / {{ data.totals.failed }}
+            {{ summary.totals.queued + summary.totals.running + summary.totals.paused }} / {{ summary.totals.failed }}
           </p>
         </UCard>
       </div>
@@ -164,7 +199,7 @@ const columns: TableColumn<StatusEvent>[] = [
       <h3 class="mb-2 mt-4 text-sm font-semibold">
         Recent events
       </h3>
-      <div v-if="data.recent.length === 0">
+      <div v-if="summary.recent.length === 0">
         <UEmpty
           icon="i-lucide-activity"
           title="No recent events"
@@ -176,7 +211,7 @@ const columns: TableColumn<StatusEvent>[] = [
         :ui="{ body: 'p-0 sm:p-0' }"
       >
         <UTable
-          :data="data.recent"
+          :data="summary.recent"
           :columns="columns"
         >
           <template #at-cell="{ row }">
