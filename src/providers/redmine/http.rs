@@ -1,8 +1,9 @@
 use crate::providers::api::ForgejoError;
 use crate::providers::redmine::model::{
-    RedmineCurrentUserResponse, RedmineErrorResponse, RedmineMembershipCollection,
+    RedmineCurrentUserResponse, RedmineErrorResponse, RedmineMembershipCollection, RedmineNewUser,
     RedmineNewUserMembership, RedmineNewUserMembershipFields, RedmineRoleCollection,
-    RedmineUpdateMembership, RedmineUpdateMembershipFields, RedmineUserMembershipOutcome,
+    RedmineUpdateMembership, RedmineUpdateMembershipFields, RedmineUser,
+    RedmineUserMembershipOutcome, RedmineUserResponse,
 };
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -193,6 +194,39 @@ impl RedmineHttp {
     ) -> Result<crate::providers::redmine::model::RedmineCurrentUser, ForgejoError> {
         let response: RedmineCurrentUserResponse =
             self.get("users/current.json", &[], "user current")?;
+        Ok(response.user)
+    }
+
+    /// Create a user via the admin REST API (`POST /users.json`). The
+    /// caller must hold an administrator key; the response carries the
+    /// new user's identity (the API key itself is retrieved with
+    /// [`Self::get_user`]). Error bodies are decoded and redacted with
+    /// the same `http_error` path as every other Redmine call so the
+    /// admin key never appears in the surfaced message.
+    ///
+    /// Phase 1 introduces this helper for contract tests; phase 2 wires
+    /// it into bootstrap provisioning.
+    #[allow(dead_code)]
+    pub(crate) fn create_user(
+        &self,
+        payload: &RedmineNewUser<'_>,
+    ) -> Result<RedmineUser, ForgejoError> {
+        let response: RedmineUserResponse = self.post("users.json", payload, "user create")?;
+        Ok(response.user)
+    }
+
+    /// Read a user by id via the admin REST API
+    /// (`GET /users/:id.json`). When the caller holds an administrator
+    /// key the response includes that user's `api_key`; non-admin reads
+    /// omit it. A missing user surfaces as an `Http` 404 through the
+    /// shared `http_error` path.
+    ///
+    /// Phase 1 introduces this helper for contract tests; phase 2 wires
+    /// it into bootstrap provisioning.
+    #[allow(dead_code)]
+    pub(crate) fn get_user(&self, id: u64) -> Result<RedmineUser, ForgejoError> {
+        let response: RedmineUserResponse =
+            self.get(&format!("users/{id}.json"), &[], "user get")?;
         Ok(response.user)
     }
 

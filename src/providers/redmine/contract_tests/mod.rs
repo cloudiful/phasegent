@@ -19,4 +19,5 @@ mod statuses;
 pub(crate) mod support;
 mod time_entries;
 mod timer;
+mod users;
 mod versions;

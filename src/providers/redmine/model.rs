@@ -5,6 +5,7 @@ pub mod project;
 pub mod relation;
 pub mod status;
 pub mod time;
+pub mod user;
 #[rustfmt::skip]
 pub use project::{RedmineBootstrap, RedmineProject, RedmineUserMembershipOutcome, DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR, DEFAULT_REDMINE_ROLE_REVIEWER, DEFAULT_REDMINE_ROLE_TESTER};
 #[rustfmt::skip]
@@ -19,6 +20,9 @@ pub(crate) use mirror::{RedmineGitMirrorRequest, RedmineGitMirrorResponse};
 pub(crate) use project::{RedmineCurrentUser, RedmineCurrentUserResponse, RedmineEnabledModule, RedmineMembership, RedmineMembershipCollection, RedmineMembershipRole, RedmineMembershipUser, RedmineNewProject, RedmineNewProjectFields, RedmineNewUserMembership, RedmineNewUserMembershipFields, RedmineProjectCollection, RedmineProjectResponse, RedmineRole, RedmineRoleCollection, RedmineUpdateMembership, RedmineUpdateMembershipFields};
 #[rustfmt::skip]
 pub(crate) use relation::{RedmineNewRelation, RedmineNewRelationFields, RedmineRelation, RedmineRelationCollection, RedmineRelationResponse, RedmineRelationType, RelationSummary};
+#[rustfmt::skip]
+pub(crate) use user::{RedmineNewUser, RedmineNewUserFields, RedmineUserResponse};
+pub use user::RedmineUser;
 #[rustfmt::skip]
 pub(crate) use status::{RedmineIssueStatusCollection, RedmineTrackerCollection, RedmineVersionCollection};
 #[rustfmt::skip]

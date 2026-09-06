@@ -8,6 +8,7 @@ pub mod relations;
 pub mod selectors;
 pub mod status;
 pub mod time;
+pub mod users;
 
 pub(crate) const PAGE_SIZE: usize = 100;
 pub(crate) const MAX_PAGES: usize = 10_000;
