@@ -375,6 +375,8 @@ pub fn phasegent_bin() -> &'static str {
 
 /// Run the compiled binary with isolated `PHASEGENT_DB_PATH` plus a clean
 /// Redmine env so a developer's shell cannot leak overrides into the subprocess.
+/// `PHASEGENT_CONFIG_PATH` points at a guaranteed-missing per-test path so the
+/// ProjectDirs default TOML can never shadow integration assertions.
 pub fn run_cli(db_path: &Path, api_base: &str, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(phasegent_bin());
     command
@@ -391,12 +393,22 @@ pub fn run_cli(db_path: &Path, api_base: &str, args: &[&str]) -> std::process::O
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
         .env_remove("PHASEGENT_REDMINE_REPOSITORY_URL")
-        .env_remove("PHASEGENT_CONFIG_PATH")
+        .env(
+            "PHASEGENT_CONFIG_PATH",
+            missing_toml_path(db_path).as_os_str(),
+        )
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.output().expect("spawn phasegent binary")
+}
+
+fn missing_toml_path(db_path: &Path) -> PathBuf {
+    db_path
+        .parent()
+        .map(|dir| dir.join("phasegent-missing.toml"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/phasegent-missing.toml"))
 }
 
 pub fn stdout_text(output: &std::process::Output) -> String {

@@ -52,7 +52,7 @@ phasegent --role orchestrator --provider redmine auth setup \
   --stdin --api-base https://redmine.example.com
 ```
 
-使用 Redmine 时，可由管理员准备 project 和 role membership：
+使用 Redmine 时，管理员仅需 admin API key 即可准备 project 和 role membership：
 
 ```sh
 phasegent --role admin --provider redmine workflow bootstrap \
@@ -95,7 +95,18 @@ phasegent config provider clear
 ```
 
 可以通过单次命令的 `--provider` 或环境变量 `PHASEGENT_PROVIDER` 选择 provider。
-未指定时使用 Forgejo。
+未指定时使用 Forgejo。完整优先级见 `phasegent --help config provider`：CLI >
+环境变量 > TOML > SQLite > 默认值。
+
+Redmine `workflow bootstrap` 仅需 admin API key。它会通过 admin API 查找或创建
+内置 orchestrator、executor、reviewer、tester 用户，并将其 key 保存在本地
+SQLite；生成的 credential 始终保留在 SQLite，不应写入 TOML。
+
+稳定的非 secret 配置可直接编辑 `phasegent.toml`（默认 ProjectDirs 配置目录，
+可用绝对路径 `PHASEGENT_CONFIG_PATH` 覆盖）。有效优先级为 CLI 参数 > 环境变量 >
+TOML > SQLite > 默认值。TOML 为只读叠加层；`config set`/`clear` 与
+`config provider set`/`clear` 仍只写 SQLite，TOML 值会一直覆盖 SQLite，直到文件
+（或环境变量）被移除。
 
 Issue 搜索优先访问 provider，并自动预热本地索引。provider 请求失败时，非空查询
 可以使用按范围过滤的 stale 本地结果。默认索引后端是 SQLite。使用 PostgreSQL

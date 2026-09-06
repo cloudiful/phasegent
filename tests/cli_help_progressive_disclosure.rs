@@ -23,7 +23,9 @@ use support::{phasegent_bin, stdout_text};
 /// Per-test scratch directory holding the throwaway SQLite the help
 /// commands would otherwise touch. Help-only invocations never open
 /// the database, but the runner pins `PHASEGENT_DB_PATH` so the test
-/// environment matches production isolation rules.
+/// environment matches production isolation rules. `PHASEGENT_CONFIG_PATH`
+/// points at a guaranteed-missing file so the ProjectDirs default TOML can
+/// never shadow help assertions.
 struct ScratchDb {
     dir: PathBuf,
 }
@@ -72,6 +74,10 @@ fn run_help(args: &[&str]) -> Output {
         .env_remove("PHASEGENT_REDMINE_CLOSE_STATUS_ID")
         .env_remove("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
         .env_remove("PHASEGENT_REDMINE_REPOSITORY_URL")
+        .env(
+            "PHASEGENT_CONFIG_PATH",
+            db.dir.join("phasegent-missing.toml").as_os_str(),
+        )
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -179,7 +185,8 @@ fn root_help_remains_short_with_provider_filter() {
 
 /// The resolver chain must still be reachable, exactly once, through
 /// the canonical nested page. This is the deep help page that the
-/// root pointer now points at.
+/// root pointer now points at. The chain must name the TOML overlay,
+/// its path override, and the SQLite-only write contract.
 #[test]
 fn config_provider_help_carries_the_resolver_chain() {
     let output = run_help(&["--help", "config", "provider"]);
@@ -194,6 +201,13 @@ fn config_provider_help_carries_the_resolver_chain() {
             && stdout.contains("role_config.provider")
             && stdout.contains("forgejo fallback"),
         "config provider help must carry the resolver chain; got:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("TOML")
+            && stdout.contains("PHASEGENT_CONFIG_PATH")
+            && stdout.contains("SQLite")
+            && stdout.contains("shadows"),
+        "config provider help must name the TOML overlay, path override, and SQLite-shadow contract; got:\n{stdout}",
     );
 }
 
@@ -229,6 +243,78 @@ fn workflow_bootstrap_help_documents_close_status_name() {
     assert!(
         stdout.contains("--close-status-id"),
         "workflow bootstrap help must still document --close-status-id; got:\n{stdout}",
+    );
+}
+
+/// Config help must state the read-only TOML overlay, the CLI >
+/// environment > TOML > SQLite > defaults precedence, and the
+/// `PHASEGENT_CONFIG_PATH` override without echoing secrets.
+#[test]
+fn config_help_documents_toml_overlay_and_precedence() {
+    let output = run_help(&["--help", "config"]);
+    assert!(output.status.success(), "--help config exited non-zero");
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("CLI flags")
+            && stdout.contains("TOML")
+            && stdout.contains("PHASEGENT_CONFIG_PATH")
+            && stdout.contains("SQLite only"),
+        "config help must document TOML overlay, precedence, and path override; got:\n{stdout}",
+    );
+    let show = stdout_text(&run_help(&["--help", "config", "show"]));
+    assert!(
+        show.contains("SQLite only") || show.contains("persisted SQLite only"),
+        "config show help must state the persisted-SQLite view; got:\n{show}",
+    );
+    assert!(
+        show.contains("TOML") && show.contains("shadows"),
+        "config show help must warn that TOML shadows SQLite; got:\n{show}",
+    );
+    let set = stdout_text(&run_help(&["--help", "config", "set"]));
+    assert!(
+        set.contains("SQLite only") && set.contains("TOML") && set.contains("shadows"),
+        "config set help must state SQLite-only writes with TOML shadow; got:\n{set}",
+    );
+}
+
+/// Workflow bootstrap help must state the admin-only flow, local SQLite
+/// credential storage, and the shared precedence contract.
+#[test]
+fn workflow_bootstrap_help_documents_admin_only_and_toml() {
+    let output = run_help(&["--help", "workflow", "bootstrap"]);
+    assert!(
+        output.status.success(),
+        "--help workflow bootstrap exited non-zero"
+    );
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("Only the admin")
+            && stdout.contains("SQLite")
+            && stdout.contains("never TOML"),
+        "workflow bootstrap help must state admin-only provisioning into SQLite; got:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("CLI flags") && stdout.contains("TOML") && stdout.contains("SQLite"),
+        "workflow bootstrap help must state CLI > env > TOML > SQLite precedence; got:\n{stdout}",
+    );
+}
+
+/// Auth help must carry the shared precedence contract and the
+/// admin-only bootstrap note without duplicating the resolver chain.
+#[test]
+fn auth_help_documents_toml_and_admin_bootstrap() {
+    let output = run_help(&["--help", "auth"]);
+    assert!(output.status.success(), "--help auth exited non-zero");
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("TOML")
+            && stdout.contains("PHASEGENT_CONFIG_PATH")
+            && stdout.contains("never stored in TOML"),
+        "auth help must document the TOML overlay and credential boundary; got:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("needs only the admin"),
+        "auth help must note bootstrap needs only the admin key; got:\n{stdout}",
     );
 }
 

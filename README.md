@@ -55,7 +55,7 @@ phasegent --role orchestrator --provider redmine auth setup \
   --stdin --api-base https://redmine.example.com
 ```
 
-For Redmine, an administrator can prepare the project and role memberships:
+For Redmine, an administrator can prepare the project and role memberships with only the admin API key:
 
 ```sh
 phasegent --role admin --provider redmine workflow bootstrap \
@@ -99,7 +99,20 @@ phasegent config provider clear
 
 Provider selection can be set per command with `--provider` or for the current
 environment with `PHASEGENT_PROVIDER`. Forgejo is used when no provider is
-specified.
+specified. See `phasegent --help config provider` for the full CLI >
+environment > TOML > SQLite > defaults chain.
+
+Redmine `workflow bootstrap` needs only the admin API key. It finds or creates
+the built-in orchestrator, executor, reviewer, and tester users through the
+admin API and stores their keys locally in SQLite; generated credentials stay
+in SQLite and never belong in TOML.
+
+Stable non-secret settings can be edited directly in `phasegent.toml` (default
+ProjectDirs config directory, override with an absolute
+`PHASEGENT_CONFIG_PATH`). Effective precedence is CLI flags > environment >
+TOML > SQLite > defaults. TOML is a read-only overlay; `config set`/`clear`
+and `config provider set`/`clear` continue to write SQLite, and a TOML value
+shadows SQLite until removed.
 
 Issue search uses the provider first and automatically warms the local index.
 When a provider request fails, a non-empty query may use scoped stale local
