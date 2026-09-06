@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+gui = ["dep:tauri", "dep:tauri-build"]
 postgres = ["dep:sqlx"]
 
 [dependencies]
@@ -27,3 +28,7 @@ toml = "0.8"
 sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls"] }
 tokio = { version = "1.44", features = ["rt", "rt-multi-thread", "macros"] }
 url = "2.5.8"
+tauri = { version = "2", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }

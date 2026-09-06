@@ -256,6 +256,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             .map_or_else(crate::cli::provider_error, |output| print_json(&output)),
         },
         Command::Hooks(command) => hooks::execute_hooks(command),
+        // Explicit desktop entry only. Every other branch above stays
+        // GUI-free so normal CLI commands never initialize Tauri.
+        Command::Gui => crate::gui::run(),
     }
 }
 

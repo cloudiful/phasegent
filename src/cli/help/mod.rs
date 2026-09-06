@@ -36,6 +36,7 @@ use workflow::{print_workflow_command_help, print_workflow_help};
 pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, topic: HelpTopic) {
     match topic {
         HelpTopic::Root => print_root_help(role, provider),
+        HelpTopic::Gui => print_gui_help(),
         HelpTopic::Issue => print_issue_help(role),
         HelpTopic::Comment => print_comment_help(role),
         HelpTopic::Project => print_project_help(role),
@@ -74,4 +75,13 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::Hooks => print_hooks_help(),
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
     }
+}
+
+/// Help for the explicit desktop entry. Kept short and task-oriented
+/// so root help stays compact; documents the single-binary dispatch
+/// and the conservative no-argument desktop heuristic.
+fn print_gui_help() {
+    println!(
+        "Usage: phasegent gui\n\nOpen the desktop GUI in the same binary (Tauri shell).\n\nCLI commands never start the GUI. A bare launch with no arguments shows CLI help in a terminal; an Explorer/Finder-style launch with no console opens the GUI only when a desktop session is detectable, otherwise it also shows CLI help. GUI builds require --features gui; without the feature `phasegent gui` reports a structured gui error."
+    );
 }

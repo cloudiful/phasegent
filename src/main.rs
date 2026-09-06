@@ -5,7 +5,9 @@ mod command;
 mod config;
 mod config_snapshot;
 mod config_write;
+mod gui;
 mod hooks;
+mod launch;
 mod lifecycle;
 mod policy;
 mod remote;
@@ -34,5 +36,15 @@ mod hooks_tests;
 mod config_tests;
 
 fn main() {
-    std::process::exit(cli::run(std::env::args().skip(1)));
+    // Single-binary dispatch: the conservative no-argument desktop
+    // heuristic lives here so `cli::run` keeps its exact existing
+    // JSON/error contracts (`cli::run([])` still renders root help).
+    // Explicit `gui` is parsed by the shared `command` module and
+    // executed in `cli::run`; every other command never initializes
+    // the GUI.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() && launch::should_open_gui_on_no_args(&launch::current_no_arg_context()) {
+        std::process::exit(gui::run());
+    }
+    std::process::exit(cli::run(args));
 }

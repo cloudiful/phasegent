@@ -104,11 +104,18 @@ pub enum Command {
     /// Orchestrator-owned local phase timer and Redmine Time Entry
     /// projection. The child executor/reviewer roles do not call this CLI.
     Timer(TimerCommand),
+    /// Explicit desktop entry point for the single-binary shell.
+    /// `phasegent gui` opens the Tauri window; every other CLI command
+    /// never initializes the GUI. Usable without `--role` because the
+    /// shell is an operator-local launcher, not a role-scoped
+    /// provider operation.
+    Gui,
 }
 
 #[derive(Debug)]
 pub enum HelpTopic {
     Root,
+    Gui,
     Issue,
     Comment,
     Project,
@@ -475,6 +482,12 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let command = args.get(index).ok_or("a command is required")?;
     let rest = &args[index + 1..];
     let command = match command.as_str() {
+        "gui" => {
+            if !rest.is_empty() {
+                return Err("gui takes no arguments".to_owned());
+            }
+            Command::Gui
+        }
         "auth" => auth::parse_auth(rest)?,
         "config" => config::parse_config(rest)?,
         "issue" => issue::parse_issue(rest)?,
@@ -495,6 +508,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     // the target is a global setting; role-scoped settings still require it.
     let no_role_allowed = match &command {
         Command::Help(_)
+        | Command::Gui
         | Command::ConfigShow
         | Command::ConfigProviderGet
         | Command::ConfigProviderSet { .. }

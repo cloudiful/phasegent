@@ -23,6 +23,10 @@ pub(crate) fn help_topic(
     nested_subcommand: Option<&str>,
 ) -> Result<HelpTopic, String> {
     match value {
+        "gui" => match subcommand {
+            None => Ok(HelpTopic::Gui),
+            Some(value) => Err(format!("unknown gui help topic '{value}'")),
+        },
         "issue" => match (subcommand, nested_subcommand) {
             (None, _) => Ok(HelpTopic::Issue),
             (Some(value), _)
