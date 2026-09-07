@@ -181,7 +181,9 @@ phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
 
 纯 CLI 镜像（无 GUI 依赖），以非 root 用户运行。默认命令在回环地址上
 提供需认证的 streamable HTTP MCP，未设置 bearer token 时直接拒绝启动；
-状态数据持久化在 `/data` 下。
+状态数据持久化在 `/data` 下。镜像仅在版本标签（`v*`）时发布为
+`ghcr.io/OWNER/REPO:<tag>` 与 `ghcr.io/OWNER/REPO:latest`；请将
+`OWNER/REPO` 替换为 GitHub 仓库 slug。
 
 ```sh
 docker pull ghcr.io/OWNER/REPO:latest
@@ -202,13 +204,12 @@ docker run --rm -p 127.0.0.1:3000:3000 \
   `PHASEGENT_DB_PATH=/data/phasegent.sqlite3`，
   `PHASEGENT_CONFIG_PATH=/data/phasegent.toml`。请挂载
   `-v ./phasegent-data:/data`，或用 `-e` 同时覆盖这两个路径。
-- 本地 MCP 客户端可用 stdio 覆盖（stdout 保持协议干净，诊断信息走
-  stderr，stdio）：
+- 本地 MCP 客户端可用 stdio 覆盖（stdout 保持协议干净，诊断信息走 stderr）：
   `docker run --rm -i -v ./phasegent-data:/data ghcr.io/OWNER/REPO:latest --role executor mcp serve --transport stdio`
-- Warning 警告：默认仅绑定回环地址。使用 `--bind 0.0.0.0:3000`
+- 警告：默认仅绑定回环地址。使用 `--bind 0.0.0.0:3000`
   （配合 `-p 0.0.0.0:3000:3000`）会将已认证的 HTTP 暴露到回环之外：
   请妥善保管 bearer token，配合防火墙或反向代理，且未设置
-  `PHASEGENT_MCP_AUTH_TOKEN` 时不要对外发布。
+  `PHASEGENT_MCP_AUTH_TOKEN` 时不要对外发布（security warning）。
 
 成功命令返回紧凑 JSON；错误写入 stderr，并以非零状态退出。
 

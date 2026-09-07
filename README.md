@@ -194,6 +194,9 @@ exposed.
 CLI-only image (no GUI dependencies) running as non-root. The default
 command serves authenticated MCP over streamable HTTP on loopback and
 fails closed without a bearer token; state persists under `/data`.
+Images publish only for version tags (`v*`) as
+`ghcr.io/OWNER/REPO:<tag>` plus `ghcr.io/OWNER/REPO:latest`; substitute
+the GitHub repository slug for `OWNER/REPO`.
 
 ```sh
 docker pull ghcr.io/OWNER/REPO:latest
