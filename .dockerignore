@@ -1,0 +1,14 @@
+# Keep the build context small and deterministic. Only the CLI sources
+# are needed; everything else is excluded from `docker build`.
+target/
+.git/
+.github/
+dist/
+release/
+frontend/node_modules/
+frontend/dist/
+node_modules/
+*.log
+.phasegent/
+*.token
+*.tokens

@@ -177,6 +177,39 @@ phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
 除 server role 为 orchestrator 外，`comment_create` 需要服务端
 `--authorized`。`status_advance`、timer 和角色提升永远不会暴露。
 
+## 容器镜像
+
+纯 CLI 镜像（无 GUI 依赖），以非 root 用户运行。默认命令在回环地址上
+提供需认证的 streamable HTTP MCP，未设置 bearer token 时直接拒绝启动；
+状态数据持久化在 `/data` 下。
+
+```sh
+docker pull ghcr.io/OWNER/REPO:latest
+mkdir -p ./phasegent-data
+docker run --rm -p 127.0.0.1:3000:3000 \
+  -e PHASEGENT_MCP_AUTH_TOKEN="$(cat /secure/path/mcp-token)" \
+  -v ./phasegent-data:/data \
+  ghcr.io/OWNER/REPO:latest
+```
+
+- Token：通过 `-e`（或 secrets 管理器）传入
+  `PHASEGENT_MCP_AUTH_TOKEN`；不要作为命令行参数传递，也不会烘焙进镜像。
+  未设置时 HTTP 会在绑定前直接退出。
+- Role/provider 保留在服务端：默认是 `--role executor`，如需变更请覆盖
+  镜像 CMD，客户端永远不提供 role：
+  `docker run ... ghcr.io/OWNER/REPO:latest --role executor --provider redmine mcp serve --transport http --bind 127.0.0.1:3000`
+- 存储：`/data` 为 volume；默认
+  `PHASEGENT_DB_PATH=/data/phasegent.sqlite3`，
+  `PHASEGENT_CONFIG_PATH=/data/phasegent.toml`。请挂载
+  `-v ./phasegent-data:/data`，或用 `-e` 同时覆盖这两个路径。
+- 本地 MCP 客户端可用 stdio 覆盖（stdout 保持协议干净，诊断信息走
+  stderr，stdio）：
+  `docker run --rm -i -v ./phasegent-data:/data ghcr.io/OWNER/REPO:latest --role executor mcp serve --transport stdio`
+- Warning 警告：默认仅绑定回环地址。使用 `--bind 0.0.0.0:3000`
+  （配合 `-p 0.0.0.0:3000:3000`）会将已认证的 HTTP 暴露到回环之外：
+  请妥善保管 bearer token，配合防火墙或反向代理，且未设置
+  `PHASEGENT_MCP_AUTH_TOKEN` 时不要对外发布。
+
 成功命令返回紧凑 JSON；错误写入 stderr，并以非零状态退出。
 
 ## 许可证

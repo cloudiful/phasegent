@@ -189,6 +189,40 @@ never supply a role. Contracted tools: `capabilities`, `issue_get`,
 is orchestrator. `status_advance`, timers, and role elevation are never
 exposed.
 
+## Container image
+
+CLI-only image (no GUI dependencies) running as non-root. The default
+command serves authenticated MCP over streamable HTTP on loopback and
+fails closed without a bearer token; state persists under `/data`.
+
+```sh
+docker pull ghcr.io/OWNER/REPO:latest
+mkdir -p ./phasegent-data
+docker run --rm -p 127.0.0.1:3000:3000 \
+  -e PHASEGENT_MCP_AUTH_TOKEN="$(cat /secure/path/mcp-token)" \
+  -v ./phasegent-data:/data \
+  ghcr.io/OWNER/REPO:latest
+```
+
+- Token: pass `PHASEGENT_MCP_AUTH_TOKEN` with `-e` (or a secrets
+  manager); never as a command argument and never baked into the image.
+  HTTP without it exits before binding.
+- Role/provider stay server-side: the default is `--role executor`;
+  override the image CMD to change them. Clients never supply a role:
+  `docker run ... ghcr.io/OWNER/REPO:latest --role executor --provider redmine mcp serve --transport http --bind 127.0.0.1:3000`
+- Storage: `/data` is a volume; defaults are
+  `PHASEGENT_DB_PATH=/data/phasegent.sqlite3` and
+  `PHASEGENT_CONFIG_PATH=/data/phasegent.toml`. Mount
+  `-v ./phasegent-data:/data` or override both paths with `-e`.
+- Stdio override for local MCP clients (stdout stays protocol-clean,
+  diagnostics go to stderr):
+  `docker run --rm -i -v ./phasegent-data:/data ghcr.io/OWNER/REPO:latest --role executor mcp serve --transport stdio`
+- Warning: the default binds loopback only. Serving with
+  `--bind 0.0.0.0:3000` (plus `-p 0.0.0.0:3000:3000`) exposes
+  authenticated HTTP beyond loopback: keep the bearer token secret, use
+  a firewall or reverse proxy, and never publish without
+  `PHASEGENT_MCP_AUTH_TOKEN` set.
+
 Successful commands return compact JSON. Errors are written to stderr and use
 a non-zero exit status.
 
