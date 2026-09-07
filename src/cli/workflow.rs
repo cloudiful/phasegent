@@ -65,11 +65,6 @@ pub(crate) fn execute_workflow(
         Err(error) => return super::provider_error(error),
     };
     if !result.ready() {
-        // Publish-failure hook: bootstrap did not reach ready
-        // (membership or mirror gap). Fires before the warning JSON
-        // so the intent is durable even though the op reports
-        // bootstrapped=false. Warning-only.
-        fire_publish_failed_hook(&result);
         return print_bootstrap_warning(&result);
     }
     // A matching checkout whose hook installation failed still bootstraps
@@ -77,42 +72,7 @@ pub(crate) fn execute_workflow(
     if let Some(hooks) = &result.hooks {
         super::report_local_warnings("workflow bootstrap", hooks.warning());
     }
-    // Mirror publish errors on an otherwise-ready bootstrap also count
-    // as publish failures worth a best-effort notice.
-    if result
-        .git_mirror
-        .as_ref()
-        .and_then(|mirror| mirror.error.as_deref())
-        .is_some_and(|error| !error.trim().is_empty())
-    {
-        fire_publish_failed_hook(&result);
-    }
     super::print_json(&bootstrap_success_json(&result))
-}
-
-/// Post-success publish-failure hook for `workflow bootstrap`. Fires
-/// when the bootstrap is not ready or the git mirror reports an
-/// error. Bounded and warning-only.
-fn fire_publish_failed_hook(result: &workflow::BootstrapResult) {
-    let Ok(storage) = crate::infra::storage::Storage::open() else {
-        return;
-    };
-    let detail = result
-        .git_mirror
-        .as_ref()
-        .and_then(|mirror| mirror.error.clone())
-        .filter(|error| !error.trim().is_empty())
-        .unwrap_or_else(|| "bootstrap not ready".to_owned());
-    let intent = crate::notifications::NotificationIntent::new(
-        crate::notifications::NotificationEvent::PublishFailed,
-        format!("publish failed for {}", result.identifier),
-        detail,
-    )
-    .with_meta("identifier", result.identifier.clone());
-    let outcome = crate::notifications::fire_best_effort(&storage, &intent);
-    if let Some(warning) = outcome.warning {
-        super::report_local_warnings("notify publish_failed", Some(warning));
-    }
 }
 
 fn bootstrap_success_json(result: &workflow::BootstrapResult) -> serde_json::Value {

@@ -119,59 +119,13 @@ pub(crate) fn execute_finish(
             _ => "Redmine accepted the Time Entry without returning an id; retry reconciliation before creating another entry".to_owned(),
         }
     });
-    // Post-success timer hooks: failure when the caller finished with
-    // FAILED, interruption-suspected when the projection is
-    // unconfirmed, completion otherwise. Each intent is persisted
-    // before delivery and delivery problems stay local warnings on
-    // stderr so the timer JSON remains the success signal.
-    fire_timer_hook(&storage, &projection, result);
+    // The timer JSON remains the success signal; notifications are
+    // manual-only via `notify send`.
     Ok(TimerOutput {
         run: projection,
         created: false,
         sync_warning,
     })
-}
-
-/// Best-effort timer hook. `result` is the caller's `--result`
-/// literal; `run` carries the durable ledger row including issue,
-/// phase, and sync status.
-fn fire_timer_hook(storage: &Storage, run: &TimerRun, result: &str) {
-    let normalised = result.trim().to_ascii_lowercase();
-    let (event, title, body) = if normalised == "failed" {
-        (
-            crate::notifications::NotificationEvent::Failure,
-            format!("timer failed for issue #{} ({})", run.issue, run.phase),
-            format!("run {} finished with FAILED", run.run_id),
-        )
-    } else if run.sync_status == TIMER_SYNC_UNCONFIRMED {
-        (
-            crate::notifications::NotificationEvent::InterruptionSuspected,
-            format!("timer unconfirmed for issue #{} ({})", run.issue, run.phase),
-            "projection accepted without a durable id; retry reconciliation".to_owned(),
-        )
-    } else {
-        (
-            crate::notifications::NotificationEvent::Completion,
-            format!("timer finished for issue #{} ({})", run.issue, run.phase),
-            format!("run {} finished with {}", run.run_id, result.trim()),
-        )
-    };
-    let intent = crate::notifications::NotificationIntent::new(event, title, body)
-        .with_issue(run.issue)
-        .with_meta("phase", run.phase.clone())
-        .with_meta("run_id", run.run_id.clone());
-    let outcome = crate::notifications::fire_best_effort(storage, &intent);
-    if let Some(warning) = outcome.warning {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "warning": {
-                    "operation": "notify timer",
-                    "message": warning,
-                }
-            })
-        );
-    }
 }
 
 pub(crate) fn project_run(

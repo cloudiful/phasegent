@@ -79,11 +79,6 @@ pub(crate) fn execute_comment(
                 );
             }
             let result = provider.create_comment(issue, &body, &marker);
-            if result.is_ok() {
-                // Post-success completion hook for a published
-                // comment. Persisted before delivery, warning-only.
-                fire_comment_hook(issue);
-            }
             super::print_result(result)
         }
         CommentCommand::Get { issue, comment } => {
@@ -92,23 +87,5 @@ pub(crate) fn execute_comment(
         CommentCommand::FindMarker { issue, marker } => {
             super::print_result(provider.find_marker(issue, &marker))
         }
-    }
-}
-
-/// Post-success hook for `comment create`. The comment is already
-/// durable; the notification is a best-effort completion side effect.
-fn fire_comment_hook(issue: u64) {
-    let Ok(storage) = crate::infra::storage::Storage::open() else {
-        return;
-    };
-    let intent = crate::notifications::NotificationIntent::new(
-        crate::notifications::NotificationEvent::Completion,
-        format!("comment published on issue #{issue}"),
-        format!("comment created on issue #{issue}"),
-    )
-    .with_issue(issue);
-    let outcome = crate::notifications::fire_best_effort(&storage, &intent);
-    if let Some(warning) = outcome.warning {
-        super::report_local_warnings("notify completion", Some(warning));
     }
 }

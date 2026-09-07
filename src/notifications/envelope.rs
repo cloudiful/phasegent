@@ -1,8 +1,8 @@
 //! Bounded agent notification envelopes.
 //!
-//! Triggers construct a [`NotificationIntent`] and hand it to
-//! [`crate::notifications::fire`] which persists the intent before any
-//! network work. Titles and bodies are truncated to fixed char limits
+//! Manual `notify send` constructs a [`NotificationIntent`] and hands
+//! it to [`crate::notifications::fire`] which persists the intent
+//! before any network work. Titles and bodies are truncated to fixed char limits
 //! so storage rows and provider payloads stay small even when callers
 //! pass long planning text or error strings.
 
@@ -16,20 +16,19 @@ pub const NOTIFICATION_TITLE_LIMIT: usize = 140;
 /// is truncated with an ellipsis.
 pub const NOTIFICATION_BODY_LIMIT: usize = 2000;
 
-/// Structured notification kinds. One variant per trigger family so
+/// Structured notification kinds. One variant per manual event so
 /// persistence and delivery stay explicit about why a message exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationEvent {
-    /// Workflow step finished (issue closed, timer finished ok,
-    /// comment published, manual send).
+    /// Manual completion notice.
     Completion,
-    /// Status moved to a blocked-like state and needs attention.
+    /// Manual blocked-attention notice.
     BlockedAttention,
-    /// Explicit failure (timer finished FAILED).
+    /// Manual failure notice.
     Failure,
-    /// Projection accepted without a durable id; retry reconciliation.
+    /// Manual interruption-suspected notice.
     InterruptionSuspected,
-    /// Publish-side failure (bootstrap not ready, mirror error).
+    /// Manual publish-failure notice.
     PublishFailed,
 }
 
@@ -105,7 +104,7 @@ impl NotificationIntent {
     }
 
     /// Attach one bounded metadata pair. Silently drops extras beyond
-    /// 8 entries so triggers stay cheap.
+    /// 8 entries so manual sends stay cheap.
     pub fn with_meta(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         if self.metadata.len() >= 8 {
             return self;

@@ -1,21 +1,20 @@
-//! Best-effort delivery boundary for agent notifications.
+//! Manual-only delivery boundary for agent notifications.
 //!
-//! Triggers persist a [`NotificationIntent`] row in
-//! `notification_deliveries` before any network work, then deliver
-//! through `cloudiful-notifier` on a scoped current-thread runtime.
-//! The sync CLI entry point stays sync: a fresh async
+//! Manual `notify send` (CLI + MCP) persists a [`NotificationIntent`]
+//! row in `notification_deliveries` before any network work, then
+//! delivers through `cloudiful-notifier` on a scoped current-thread
+//! runtime. The sync CLI entry point stays sync: a fresh async
 //! `reqwest::Client` (separate from the blocking provider clients)
-//! drives `Notifier::send` inside `block_on`. Delivery failures never
-//! fail the surrounding workflow operation; callers surface the
-//! bounded warning on stderr next to their normal JSON output.
+//! drives `Notifier::send` inside `block_on`. Delivery failures are
+//! surfaced to the manual caller; disabled channels persist a skipped
+//! row without failing.
 
 use crate::infra::storage::Storage;
 use crate::notifications::config::{NotifyChannel, NotifyConfig};
 use crate::notifications::envelope::NotificationIntent;
 
 /// Persisted delivery outcome. Manual `notify send` maps this to JSON
-/// or a structured error; trigger hooks map failures to a local
-/// stderr warning only.
+/// or a structured error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FireOutcome {
     pub delivered: bool,
@@ -24,30 +23,7 @@ pub struct FireOutcome {
     pub warning: Option<String>,
 }
 
-/// Persist the intent, then deliver when configured. Returns the
-/// outcome including the storage row id. Never fails the caller for a
-/// delivery error: `delivered=false` plus a bounded `warning` carries
-/// the signal. Configuration errors (enabled but misconfigured) are
-/// also warnings, never hard errors, so a bad notify setting cannot
-/// break issue/status/comment/workflow/timer flows.
-pub fn fire_best_effort(storage: &Storage, intent: &NotificationIntent) -> FireOutcome {
-    match fire_notification_result(storage, intent) {
-        Ok(outcome) => outcome,
-        Err(warning) => {
-            // Best effort: even persistence failures must not break the
-            // workflow op. Record a synthetic row id of 0 so callers
-            // can still log the warning.
-            FireOutcome {
-                delivered: false,
-                channel: "none",
-                row_id: 0,
-                warning: Some(bound_warning(&warning)),
-            }
-        }
-    }
-}
-
-/// Strict variant for manual `notify send`: persistence problems are
+/// Strict delivery for manual `notify send`: persistence problems are
 /// still soft warnings, but misconfiguration and delivery failures
 /// are returned as `Err` so the explicit send is observable.
 pub fn fire_notification_result(
