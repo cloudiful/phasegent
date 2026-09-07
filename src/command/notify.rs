@@ -60,6 +60,14 @@ pub(crate) fn parse_notify(args: &[String]) -> Result<Command, String> {
             let phase = optional_option(args, "--phase")
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty());
+            if let Some(ref phase) = phase {
+                if crate::notifications::is_notify_secret(phase) {
+                    return Err("notify send --phase must not be a notify secret name".to_owned());
+                }
+                if crate::notifications::is_notify_setting(phase) {
+                    return Err("notify send --phase must not be a notify setting name".to_owned());
+                }
+            }
             if title.chars().count() > 2000 {
                 return Err("notify send --title is too long".to_owned());
             }

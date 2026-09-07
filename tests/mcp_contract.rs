@@ -49,6 +49,13 @@ fn run_phasegent(scratch: &ScratchDir, args: &[&str]) -> Output {
         .env("PHASEGENT_CONFIG_PATH", scratch.missing_toml().as_os_str())
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
+        .env_remove("PHASEGENT_NOTIFY_ENABLED")
+        .env_remove("PHASEGENT_NOTIFY_CHANNEL")
+        .env_remove("PHASEGENT_NOTIFY_NTFY_BASE_URL")
+        .env_remove("PHASEGENT_NOTIFY_NTFY_TOPIC")
+        .env_remove("PHASEGENT_NOTIFY_NTFY_TOKEN")
+        .env_remove("PHASEGENT_NOTIFY_WEBHOOK_URL")
+        .env_remove("PHASEGENT_NOTIFY_WEBHOOK_TOKEN")
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -281,5 +288,134 @@ fn mcp_http_starts_and_reports_bind() {
     assert!(
         reported,
         "mcp http did not bind {bind} in time; stderr={stderr}"
+    );
+}
+
+#[test]
+fn mcp_help_marks_bind_http_only() {
+    let scratch = scratch_db();
+    for args in [&["--help", "mcp"][..], &["--help", "mcp", "serve"][..]] {
+        let output = run_phasegent(&scratch, args);
+        assert!(
+            output.status.success(),
+            "args={args:?} stderr={}",
+            stderr_text(&output)
+        );
+        let stdout = stdout_text(&output);
+        assert!(
+            stdout.contains("--bind"),
+            "mcp help missing --bind; args={args:?} stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("HTTP-only"),
+            "mcp help must mark --bind as HTTP-only; args={args:?} stdout={stdout}"
+        );
+    }
+    let output = run_phasegent(&scratch, &["--help", "mcp", "serve"]);
+    assert!(output.status.success());
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("requires --transport http"),
+        "mcp serve help must state --bind requires http; stdout={stdout}"
+    );
+}
+
+#[test]
+fn notify_send_rejects_notify_setting_phase() {
+    let scratch = scratch_db();
+    for phase in ["PHASEGENT_NOTIFY_CHANNEL", "PHASEGENT_NOTIFY_WEBHOOK_TOKEN"] {
+        let output = run_phasegent(
+            &scratch,
+            &[
+                "--role",
+                "executor",
+                "notify",
+                "send",
+                "--event",
+                "completion",
+                "--title",
+                "hi",
+                "--phase",
+                phase,
+            ],
+        );
+        assert!(
+            !output.status.success(),
+            "notify send --phase {phase} must be rejected"
+        );
+        let stderr = stderr_text(&output);
+        assert!(
+            stderr.contains("--phase") && stderr.contains("must not be"),
+            "phase={phase} stderr={stderr}"
+        );
+    }
+    let ok = run_phasegent(
+        &scratch,
+        &[
+            "--role",
+            "executor",
+            "notify",
+            "send",
+            "--event",
+            "completion",
+            "--title",
+            "hi",
+            "--phase",
+            "mcp-phase",
+        ],
+    );
+    assert!(
+        ok.status.success(),
+        "ordinary phase must stay accepted; stderr={}",
+        stderr_text(&ok)
+    );
+}
+
+#[test]
+fn notify_send_title_truncate_ceiling() {
+    let scratch = scratch_db();
+    let too_long = "t".repeat(2001);
+    let output = run_phasegent(
+        &scratch,
+        &[
+            "--role",
+            "executor",
+            "notify",
+            "send",
+            "--event",
+            "completion",
+            "--title",
+            too_long.as_str(),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "title above 2000 chars must be rejected"
+    );
+    assert!(
+        stderr_text(&output).contains("too long"),
+        "stderr={}",
+        stderr_text(&output)
+    );
+    // Above the 140-char envelope truncation but below the 2000-char
+    // parser ceiling: accepted (truncated), not rejected.
+    let truncated = "t".repeat(500);
+    let ok = run_phasegent(
+        &scratch,
+        &[
+            "--role",
+            "executor",
+            "notify",
+            "send",
+            "--event",
+            "completion",
+            "--title",
+            truncated.as_str(),
+        ],
+    );
+    assert!(
+        ok.status.success(),
+        "500-char title must be accepted via truncation; stderr={}",
+        stderr_text(&ok)
     );
 }

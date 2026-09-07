@@ -129,7 +129,7 @@ struct CommentCreateParams {
 struct NotifySendParams {
     /// completion, blocked, failure, interruption_suspected, publish_failed.
     event: String,
-    /// Short summary (bounded to 140 chars).
+    /// Short summary (truncated to 140 chars; rejected above 2000 chars).
     title: String,
     /// Bounded detail (optional, truncated to 2000 chars).
     body: Option<String>,
