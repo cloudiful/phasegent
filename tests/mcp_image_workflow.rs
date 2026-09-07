@@ -72,9 +72,10 @@ fn workflow_derives_image_path_and_pushes_version_plus_latest() {
         "mcp-image image path",
     );
     assert_contains(&workflow, "github.repository", "mcp-image image path");
-    // Version tag derivation plus floating latest, actually pushed.
-    assert_contains(&workflow, "github.ref_name", "mcp-image tags");
-    assert_contains(&workflow, ":latest", "mcp-image tags");
+    // Version tag plus floating latest via docker/metadata-action, actually pushed.
+    assert_contains(&workflow, "docker/metadata-action", "mcp-image tags");
+    assert_contains(&workflow, "type=ref,event=tag", "mcp-image tags");
+    assert_contains(&workflow, "type=raw,value=latest", "mcp-image tags");
     assert_contains(&workflow, "push: true", "mcp-image push");
     // No hardcoded image literals or credential values.
     assert_not_contains(&workflow, "OWNER/REPO", "mcp-image image path");
@@ -84,24 +85,62 @@ fn workflow_derives_image_path_and_pushes_version_plus_latest() {
 }
 
 #[test]
-fn workflow_builds_multi_arch_with_buildx_and_documents_fallback() {
+fn workflow_builds_native_per_arch_with_artifact_reuse_and_manifest() {
     let workflow = workflow();
+    // Native per-arch matrix: runners, platforms, and Rust targets.
+    assert_contains(&workflow, "ubuntu-24.04", "mcp-image runners");
+    assert_contains(&workflow, "ubuntu-24.04-arm", "mcp-image runners");
     assert_contains(&workflow, "platforms:", "mcp-image platforms");
     assert_contains(&workflow, "linux/amd64", "mcp-image platforms");
     assert_contains(&workflow, "linux/arm64", "mcp-image platforms");
+    assert_contains(
+        &workflow,
+        "x86_64-unknown-linux-gnu",
+        "mcp-image targets",
+    );
+    assert_contains(
+        &workflow,
+        "aarch64-unknown-linux-gnu",
+        "mcp-image targets",
+    );
+    // Single-arch image build per matrix row.
+    assert_contains(
+        &workflow,
+        "matrix.platform",
+        "mcp-image single-arch platforms",
+    );
     assert_contains(
         &workflow.to_ascii_lowercase(),
         "buildx",
         "mcp-image builder",
     );
     assert_contains(&workflow, "setup-buildx-action", "mcp-image builder");
-    assert_contains(&workflow, "setup-qemu-action", "mcp-image builder");
-    assert_contains(
-        &workflow.to_ascii_lowercase(),
-        "fallback",
-        "mcp-image single-arch fallback",
-    );
     assert_contains(&workflow, "docker/build-push-action", "mcp-image builder");
+    // Prebuilt-artifact reuse across jobs.
+    assert_contains(
+        &workflow,
+        "phasegent-image-input",
+        "mcp-image artifacts",
+    );
+    assert_contains(&workflow, "upload-artifact", "mcp-image artifacts");
+    assert_contains(&workflow, "download-artifact", "mcp-image artifacts");
+    // Multi-arch manifest merge.
+    assert_contains(&workflow, "imagetools create", "mcp-image manifest");
+    // Pinned checkout, concurrency, and minimal permissions.
+    assert_contains(
+        &workflow,
+        "ref: ${{ github.sha }}",
+        "mcp-image checkout",
+    );
+    assert_contains(
+        &workflow,
+        "cancel-in-progress: false",
+        "mcp-image concurrency",
+    );
+    assert_contains(&workflow, "contents: read", "mcp-image permissions");
+    assert_contains(&workflow, "packages: write", "mcp-image permissions");
+    // No QEMU Rust compile path: native runners only.
+    assert_not_contains(&workflow, "setup-qemu-action", "mcp-image builder");
 }
 
 #[test]
