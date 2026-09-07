@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# phasegent MCP container: CLI-only multi-stage image.
+# phasegent MCP container: CLI-only runtime-only image.
 #
-# - Builder compiles the CLI only (`cargo build --release --bin phasegent`
-#   without the `gui` feature), so no Tauri/GUI system libraries or
-#   frontend build are required.
+# - CI builds the CLI per-arch (`cargo build --release --bin phasegent
+#   --no-default-features`, no `gui` feature) and stages the binary at
+#   `ci-image-input/phasegent`; this Dockerfile only copies that prebuilt
+#   artifact, so no Rust toolchain or `cargo build` runs inside Docker.
 # - Runtime is a minimal Debian slim image running as a non-root user.
 # - Default command serves authenticated MCP over streamable HTTP on
 #   loopback (`127.0.0.1:3000`); stdio stays available via an explicit
@@ -13,22 +14,8 @@
 # - Persistent state lives under the `/data` volume; override with
 #   PHASEGENT_DB_PATH / PHASEGENT_CONFIG_PATH. Secrets are never baked
 #   into the image: pass PHASEGENT_MCP_AUTH_TOKEN with `-e`.
-
-FROM docker.io/library/rust:1-bookworm AS builder
-WORKDIR /app
-
-# Dependency manifest first for better layer caching, then the CLI
-# sources. No frontend, no Tauri bundle, no lockfile required.
-COPY Cargo.toml ./
-COPY build.rs ./
-COPY src ./src
-COPY migrations ./migrations
-
-# CLI-only release build. Default features are empty (no `gui`); the
-# explicit `--no-default-features` pins that even if defaults change.
-# The exact `cargo build --release --bin phasegent` contract is asserted
-# by tests/container_contract.rs.
-RUN cargo build --release --bin phasegent --no-default-features
+# - Per-arch correctness is enforced by the image pipeline (each arch
+#   image copies the matching arch binary); no cross-arch reuse.
 
 FROM docker.io/library/debian:bookworm-slim
 
@@ -43,7 +30,9 @@ RUN apt-get update \
     && mkdir -p /data \
     && chown 65532:nogroup /data
 
-COPY --from=builder /app/target/release/phasegent /usr/local/bin/phasegent
+# Prebuilt CLI artifact staged by CI per-arch (see .dockerignore: this
+# path is never excluded from the build context).
+COPY --chmod=755 ci-image-input/phasegent /usr/local/bin/phasegent
 
 # Persistent SQLite/config storage. Mount a named volume or host dir at
 # /data; PHASEGENT_DB_PATH / PHASEGENT_CONFIG_PATH may point elsewhere

@@ -1,5 +1,6 @@
-# Keep the build context small and deterministic. Only the CLI sources
-# are needed; everything else is excluded from `docker build`.
+# Keep the build context small and deterministic. The runtime image
+# copies a prebuilt CLI binary staged by CI at ci-image-input/phasegent,
+# so only that path (plus Dockerfile itself) is needed at build time.
 target/
 .git/
 .github/
@@ -12,3 +13,7 @@ node_modules/
 .phasegent/
 *.token
 *.tokens
+# ci-image-input/ holds the per-arch release binary staged by CI and must
+# never be excluded from the build context.
+!ci-image-input/
+!ci-image-input/phasegent

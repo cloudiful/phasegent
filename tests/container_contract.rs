@@ -1,11 +1,15 @@
 //! Container image contract: Dockerfile/static guarantees plus an
 //! optional Docker-gated build/smoke.
 //!
-//! Static tests never require a Docker daemon or registry credentials:
-//! they assert on the committed `Dockerfile`, `.dockerignore`, and the
-//! bilingual container runtime docs. The single build/smoke test runs
-//! only when `docker info` succeeds; otherwise it records the gap with
-//! a `SKIP` line and passes so ordinary `cargo test` stays hermetic.
+//! The image is runtime-only: CI builds the release binary per-arch and
+//! stages it at `ci-image-input/phasegent`; the Dockerfile only copies
+//! that prebuilt artifact (no Rust toolchain, no `cargo build` inside
+//! Docker). Static tests never require a Docker daemon or registry
+//! credentials: they assert on the committed `Dockerfile`,
+//! `.dockerignore`, and the bilingual container runtime docs. The single
+//! build/smoke test runs only when `docker info` succeeds and the staged
+//! artifact exists; otherwise it records the gap with a `SKIP` line and
+//! passes so ordinary `cargo test` stays hermetic.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -46,34 +50,61 @@ fn assert_not_contains(haystack: &str, needle: &str, context: &str) {
 }
 
 #[test]
-fn dockerfile_builds_cli_only_without_gui() {
+fn dockerfile_is_runtime_only_copying_prebuilt_artifact() {
     let dockerfile = dockerfile();
-    // Exact CLI-only build contract.
+    // Runtime-only contract: the per-arch binary is staged by CI at
+    // ci-image-input/phasegent and copied into the image.
+    assert_contains(
+        &dockerfile,
+        "ci-image-input/phasegent",
+        "Dockerfile prebuilt artifact",
+    );
+    assert_contains(
+        &dockerfile,
+        "/usr/local/bin/phasegent",
+        "Dockerfile install path",
+    );
+    let has_copy_input = dockerfile.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("COPY") && trimmed.contains("ci-image-input/phasegent")
+    });
+    assert!(
+        has_copy_input,
+        "Dockerfile must COPY ci-image-input/phasegent into the image"
+    );
+    // The documented CI build stays CLI-only without the `gui` feature.
     assert_contains(
         &dockerfile,
         "cargo build --release --bin phasegent",
-        "Dockerfile builder",
+        "Dockerfile CI build docs",
     );
-    // Pin the no-gui default even if Cargo defaults ever change.
-    assert_contains(&dockerfile, "--no-default-features", "Dockerfile builder");
+    assert_contains(&dockerfile, "--no-default-features", "Dockerfile CI build docs");
     for forbidden in ["--features gui", "--features=gui", "features gui"] {
-        assert_not_contains(&dockerfile, forbidden, "Dockerfile builder");
+        assert_not_contains(&dockerfile, forbidden, "Dockerfile CLI-only docs");
+    }
+    // Runtime-only: no compile inside Docker, no Rust toolchain.
+    // Comments may document the CI build command; only fail when the
+    // forbidden token appears in an actual Dockerfile instruction.
+    for forbidden in ["cargo build", "cargo install", "rust:", "rustup", "AS builder"] {
+        let hit = dockerfile.lines().any(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with('#') && line.contains(forbidden)
+        });
+        assert!(!hit, "Dockerfile runtime-only must not contain {forbidden:?}");
     }
     // No desktop toolchain may leak into the image build.
     for forbidden in ["tauri build", "WebKit", "libgtk", "bun run", "npm run"] {
-        assert_not_contains(&dockerfile, forbidden, "Dockerfile builder");
+        assert_not_contains(&dockerfile, forbidden, "Dockerfile runtime-only");
     }
-    // Multi-stage: at least one builder plus one runtime stage.
+    // Single runtime stage (no builder stage).
     let from_count = dockerfile
         .lines()
         .filter(|line| line.trim_start().starts_with("FROM "))
         .count();
-    assert!(
-        from_count >= 2,
-        "Dockerfile must be multi-stage (found {from_count} FROM lines)"
+    assert_eq!(
+        from_count, 1,
+        "Dockerfile must be single-stage runtime-only (found {from_count} FROM lines)"
     );
-    assert_contains(&dockerfile, "AS builder", "Dockerfile builder stage");
-    assert_contains(&dockerfile, "rust:", "Dockerfile builder base");
 }
 
 #[test]
@@ -184,10 +215,8 @@ fn dockerfile_runtime_stays_minimal_cli_only() {
         "Dockerfile runtime must use a minimal slim/distroless base"
     );
     assert_contains(&dockerfile, "ca-certificates", "Dockerfile runtime");
-    // No GUI/frontend toolchain in the runtime stage.
+    // No GUI/frontend toolchain in the runtime image.
     for forbidden in ["tauri", "WebKit", "libgtk", "bun", "node_modules"] {
-        // `rust:` builder lines already passed; only fail when the
-        // forbidden token appears outside a comment.
         let hit = dockerfile.lines().any(|line| {
             let trimmed = line.trim();
             !trimmed.starts_with('#') && line.contains(forbidden)
@@ -201,6 +230,18 @@ fn dockerignore_keeps_build_context_small() {
     let dockerignore = read_repo_file(".dockerignore");
     for required in ["target/", ".git/"] {
         assert_contains(&dockerignore, required, ".dockerignore");
+    }
+    // The prebuilt per-arch binary staged by CI must stay in context.
+    assert_contains(&dockerignore, "!ci-image-input", ".dockerignore");
+    for line in dockerignore.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            continue;
+        }
+        assert!(
+            !trimmed.contains("ci-image-input"),
+            ".dockerignore must not exclude ci-image-input, got: {trimmed}"
+        );
     }
 }
 
@@ -249,6 +290,12 @@ fn container_image_build_and_smoke_when_docker_available() {
         return;
     }
     let context = manifest_dir();
+    // Runtime-only images need the CI-staged binary; without it a local
+    // `docker build` cannot succeed, so record the gap and pass.
+    if !context.join("ci-image-input/phasegent").is_file() {
+        eprintln!("SKIP container_image_build_and_smoke: ci-image-input/phasegent not staged (CI builds it per-arch); static contract tests above still validate the runtime-only Dockerfile");
+        return;
+    }
     let tag = "phasegent:container-contract-test";
     let build = Command::new("docker")
         .args(["build", "-t", tag, "."])
