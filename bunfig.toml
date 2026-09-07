@@ -1,0 +1,4 @@
+[install]
+# Only install package versions published at least 7 days ago (7 * 24 * 60 * 60 = 604800 seconds).
+# Verified against bun 1.4.0: key is `minimumReleaseAge` (seconds), CLI equivalent `--minimum-release-age`.
+minimumReleaseAge = 604800
