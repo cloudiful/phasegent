@@ -183,7 +183,15 @@ phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
 提供需认证的 streamable HTTP MCP，未设置 bearer token 时直接拒绝启动；
 状态数据持久化在 `/data` 下。镜像仅在版本标签（`v*`）时发布为
 `ghcr.io/OWNER/REPO:<tag>` 与 `ghcr.io/OWNER/REPO:latest`；请将
-`OWNER/REPO` 替换为 GitHub 仓库 slug。
+`OWNER/REPO` 替换为 GitHub 仓库 slug。Dockerfile 为纯运行时镜像：
+CI 在原生 runner 上按架构以
+`cargo build --release --bin phasegent --no-default-features` 构建 CLI，
+将产物暂存于 `ci-image-input/phasegent`，Dockerfile 仅 `COPY` 该预构建
+产物（Docker 内无 Rust 工具链、无 `cargo build`，也无 QEMU 编译 Rust）。
+每个 `v*` 标签都会发布按架构划分的镜像，并合并多架构 manifest，
+覆盖 `<tag>` 与 `latest`。本地执行 `docker build` 前需先按同样方式
+暂存产物：先按上述命令构建 CLI，再将二进制复制到
+`ci-image-input/phasegent`。
 
 ```sh
 docker pull ghcr.io/OWNER/REPO:latest

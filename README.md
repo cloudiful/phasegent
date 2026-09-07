@@ -196,7 +196,15 @@ command serves authenticated MCP over streamable HTTP on loopback and
 fails closed without a bearer token; state persists under `/data`.
 Images publish only for version tags (`v*`) as
 `ghcr.io/OWNER/REPO:<tag>` plus `ghcr.io/OWNER/REPO:latest`; substitute
-the GitHub repository slug for `OWNER/REPO`.
+the GitHub repository slug for `OWNER/REPO`. The Dockerfile is
+runtime-only: CI builds the CLI per-arch on native runners with
+`cargo build --release --bin phasegent --no-default-features`, stages the
+binary at `ci-image-input/phasegent`, and the Dockerfile only `COPY`s that
+prebuilt artifact (no Rust toolchain or `cargo build` inside Docker, no
+QEMU Rust compile). Each `v*` tag publishes per-arch images plus a
+multi-arch manifest for `<tag>` and `latest`. A local `docker build`
+needs the same staged input first: build the CLI as above, then copy the
+binary to `ci-image-input/phasegent`.
 
 ```sh
 docker pull ghcr.io/OWNER/REPO:latest
