@@ -13,6 +13,7 @@ mod config;
 mod help_topic;
 mod hooks;
 mod issue;
+mod mcp;
 mod notify;
 mod parse_helpers;
 mod project;
@@ -116,6 +117,10 @@ pub enum Command {
     /// hooks in issue/status/comment/workflow/timer fire the same path
     /// post-success with a local warning only. Requires `--role`.
     Notify(NotifyCommand),
+    /// rmcp MCP server over stdio (default) or streamable HTTP on
+    /// `/mcp`. Tools run with the server-side `--role` and provider
+    /// flags; clients never supply a role. Requires `--role`.
+    Mcp(McpCommand),
 }
 
 #[derive(Debug)]
@@ -133,6 +138,8 @@ pub enum HelpTopic {
     ConfigProviderCommand(String),
     Notify,
     NotifyCommand(String),
+    Mcp,
+    McpCommand(String),
     Repo,
     IssueCommand(String),
     CommentCommand(String),
@@ -372,6 +379,42 @@ pub enum NotifyCommand {
     },
 }
 
+/// MCP transport selector for `mcp serve`. Stdio is the default
+/// local transport; HTTP serves streamable HTTP via axum on `/mcp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpTransport {
+    Stdio,
+    Http,
+}
+
+impl McpTransport {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdio => "stdio",
+            Self::Http => "http",
+        }
+    }
+}
+
+impl std::fmt::Display for McpTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// `mcp serve` invocation. `bind` is the HTTP socket address (used
+/// only for `--transport http`); `authorized` is the server-side
+/// opt-in that enables the `comment_create` tool for non-orchestrator
+/// roles. No client-supplied role is ever trusted.
+#[derive(Debug)]
+pub enum McpCommand {
+    Serve {
+        transport: McpTransport,
+        bind: String,
+        authorized: bool,
+    },
+}
+
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if args.is_empty() {
         return Ok(Invocation {
@@ -524,6 +567,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "repo" => crate::repo_command::parse(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
         "notify" => notify::parse_notify(rest)?,
+        "mcp" => mcp::parse_mcp(rest)?,
         value => return Err(format!("unknown command '{value}'")),
     };
     // Local branch context and hooks never touch provider credentials. The

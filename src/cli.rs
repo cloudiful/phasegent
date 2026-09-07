@@ -258,6 +258,15 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         },
         Command::Hooks(command) => hooks::execute_hooks(command),
         Command::Notify(command) => notify::execute_notify(invocation.role, command),
+        Command::Mcp(command) => crate::mcp::server::execute(
+            required_role(invocation.role),
+            invocation.provider,
+            invocation.api_base,
+            invocation.repository,
+            invocation.project_id,
+            invocation.close_status_id,
+            command,
+        ),
         // Explicit desktop entry only. Every other branch above stays
         // GUI-free so normal CLI commands never initialize Tauri.
         Command::Gui => crate::gui::run(),

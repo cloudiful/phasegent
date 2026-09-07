@@ -9,6 +9,7 @@ mod gui;
 mod hooks;
 mod launch;
 mod lifecycle;
+mod mcp;
 mod notifications;
 mod policy;
 mod remote;

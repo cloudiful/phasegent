@@ -29,7 +29,7 @@ use issue::{print_issue_command_help, print_issue_help};
 use notify::{print_notify_command_help, print_notify_help};
 use project::{print_project_command_help, print_project_help};
 use relation::{print_relation_command_help, print_relation_help};
-use root::print_root_help;
+use root::{print_mcp_command_help, print_mcp_help, print_root_help};
 use status::{print_status_command_help, print_status_help};
 use timer::{print_timer_command_help, print_timer_help};
 use version::{print_version_command_help, print_version_help};
@@ -78,6 +78,8 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
         HelpTopic::Notify => print_notify_help(role),
         HelpTopic::NotifyCommand(command) => print_notify_command_help(role, &command),
+        HelpTopic::Mcp => print_mcp_help(role),
+        HelpTopic::McpCommand(command) => print_mcp_command_help(role, &command),
     }
 }
 

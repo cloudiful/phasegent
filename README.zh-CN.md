@@ -14,6 +14,7 @@
 - `issue search` 自动预热本地 issue 索引，并在 provider 失败时提供按范围过滤的
   stale 本地回退。
 - 支持本地分支与 issue 绑定，以及托管 Git hooks。
+- 支持 stdio / streamable HTTP 的 MCP 服务，复用同一套角色权限。
 - 成功输出紧凑 JSON，错误输出结构化信息。
 
 ## 安装
@@ -157,6 +158,24 @@ phasegent issue unbind
 ```
 
 这些命令只操作本地 checkout，不需要访问 provider。
+
+## MCP 服务
+
+通过 Model Context Protocol 对外提供约定的操作：
+
+```sh
+# Stdio（默认，供本地 MCP 客户端使用）
+phasegent --role executor mcp serve
+
+# Streamable HTTP，挂载于 /mcp
+phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
+```
+
+工具以启动时的 `--role` 和 provider 参数运行；MCP 客户端永远不需要
+（也不能）提供 role。约定工具：`capabilities`、`issue_get`、
+`issue_search`、`status_next`、`comment_create` 和 `notify_send`。
+除 server role 为 orchestrator 外，`comment_create` 需要服务端
+`--authorized`。`status_advance`、timer 和角色提升永远不会暴露。
 
 成功命令返回紧凑 JSON；错误写入 stderr，并以非零状态退出。
 

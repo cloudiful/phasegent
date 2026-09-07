@@ -16,6 +16,7 @@ comments, and workflow automation.
 - Automatic local issue-index warming and scoped stale fallback for
   `issue search`.
 - Local branch-to-issue context and managed Git hooks.
+- MCP server over stdio or streamable HTTP with the same role policy.
 - Compact JSON output and structured errors.
 
 ## Install
@@ -168,6 +169,25 @@ phasegent issue unbind
 
 These commands operate on the local checkout and do not require provider
 access.
+
+## MCP server
+
+Serve the contracted operations over the Model Context Protocol:
+
+```sh
+# Stdio (default, for local MCP clients)
+phasegent --role executor mcp serve
+
+# Streamable HTTP at /mcp
+phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
+```
+
+Tools run with the startup `--role` and provider flags; MCP clients
+never supply a role. Contracted tools: `capabilities`, `issue_get`,
+`issue_search`, `status_next`, `comment_create`, and `notify_send`.
+`comment_create` needs server-side `--authorized` unless the server role
+is orchestrator. `status_advance`, timers, and role elevation are never
+exposed.
 
 Successful commands return compact JSON. Errors are written to stderr and use
 a non-zero exit status.
