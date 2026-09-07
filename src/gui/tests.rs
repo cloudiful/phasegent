@@ -160,6 +160,7 @@ fn task_and_status_payloads_serialize_without_secrets() {
         fetched_at: 1_700_000_000,
         warning: None,
         statuses_unsupported: None,
+        frontend_dist_hash: Some("0011223344556677".to_owned()),
     };
     let encoded = serde_json::to_string(&status).expect("status must serialize");
     assert!(encoded.contains("connected"));

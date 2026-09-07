@@ -134,6 +134,7 @@ export interface StatusPayloadRaw {
   fetched_at: number
   warning?: string | null
   statuses_unsupported?: string | null
+  frontend_dist_hash?: string | null
 }
 
 export interface TasksView {
@@ -152,6 +153,7 @@ export interface StatusView {
   boundIssueTitle: string | null
   warning: string | null
   unsupported: string | null
+  frontendDistHash: string | null
 }
 
 export function mapIssueStateToTaskStatus(state: string): TaskStatus {
@@ -240,6 +242,7 @@ export function mapStatusPayload(payload: StatusPayloadRaw): FetchResult<StatusV
     boundIssueTitle: payload.bound_issue_title ?? null,
     warning: payload.warning ?? null,
     unsupported: payload.statuses_unsupported ?? null,
+    frontendDistHash: payload.frontend_dist_hash ?? null,
   }
   return { data: view, fetchedAt: fetchedMs }
 }
@@ -285,6 +288,7 @@ export async function fetchStatus(): Promise<FetchResult<StatusView>> {
       boundIssueTitle: null,
       warning: null,
       unsupported: null,
+      frontendDistHash: null,
     }
     return { data: empty, fetchedAt: now }
   }
@@ -309,6 +313,7 @@ export async function fetchStatus(): Promise<FetchResult<StatusView>> {
         boundIssueTitle: null,
         warning: null,
         unsupported: null,
+        frontendDistHash: null,
       }
       return { data: empty, fetchedAt: now }
     }

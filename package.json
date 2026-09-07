@@ -12,7 +12,8 @@
     "lint": "eslint --config frontend/eslint.config.mjs frontend/src frontend/tests frontend/vite.config.ts",
     "test": "bun test frontend/tests",
     "tauri": "tauri",
-    "validate": "bun run build-only && bun frontend/scripts/validate-dist.mjs"
+    "validate": "bun run build-only && bun frontend/scripts/validate-dist.mjs",
+    "dist:hash": "bun scripts/dist-hash.mjs"
   },
   "dependencies": {
     "@nuxt/ui": "4.11.0",

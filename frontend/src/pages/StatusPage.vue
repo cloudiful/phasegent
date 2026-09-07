@@ -26,6 +26,7 @@ const branch = computed(() => data.value?.branch ?? null)
 const boundIssue = computed(() => data.value?.boundIssue ?? null)
 const backendWarning = computed(() => data.value?.warning ?? null)
 const unsupported = computed(() => data.value?.unsupported ?? null)
+const frontendHash = computed(() => data.value?.frontendDistHash ?? null)
 
 const columns: TableColumn<StatusEvent>[] = [
   { accessorKey: 'at', header: 'Time' },
@@ -195,6 +196,14 @@ const columns: TableColumn<StatusEvent>[] = [
           </p>
         </UCard>
       </div>
+
+      <p
+        v-if="frontendHash"
+        class="mt-3 text-xs text-muted"
+      >
+        Shell bundle
+        <span class="ml-1 font-mono">#{{ frontendHash }}</span>
+      </p>
 
       <h3 class="mb-2 mt-4 text-sm font-semibold">
         Recent events

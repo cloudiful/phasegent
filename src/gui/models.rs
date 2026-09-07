@@ -99,6 +99,12 @@ pub struct StatusPayload {
     pub warning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statuses_unsupported: Option<String>,
+    /// Short content hash of the embedded `frontend/dist` tree. Lets the
+    /// operator confirm the running binary embeds the same bundle their
+    /// build produced (`dist:hash`). Always present in gui builds so it
+    /// also keeps the dist hash a live compile input for freshness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend_dist_hash: Option<String>,
 }
 
 /// Non-secret setting mutation (secrets rejected here).

@@ -108,3 +108,22 @@ pub fn read_config_snapshot() -> Result<crate::config_snapshot::ConfigSnapshot, 
     let storage = crate::infra::storage::Storage::open().map_err(validate::bound_message)?;
     crate::config_snapshot::render(&storage, None).map_err(validate::bound_message)
 }
+
+/// Content hash of the embedded `frontend/dist` tree written by
+/// `build.rs` to `OUT_DIR` during a gui build. Because this is included
+/// via `include_str!` it is a real compile input: any dist change alters
+/// the crate's inputs and busts the Cargo fingerprint, so `cargo install`
+/// re-embeds even when no Rust source changed. Returns a placeholder when
+/// the binary was built without gui (no `OUT_DIR` hash) so the field stays
+/// stable and warning-free.
+#[allow(dead_code)]
+pub fn frontend_dist_hash() -> String {
+    #[cfg(feature = "gui")]
+    {
+        include_str!(concat!(env!("OUT_DIR"), "/frontend_dist.hash")).to_owned()
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        "unavailable".to_owned()
+    }
+}
