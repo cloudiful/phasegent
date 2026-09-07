@@ -143,6 +143,28 @@ CREATE INDEX IF NOT EXISTS execution_timer_runs_issue_phase_idx
 
 CREATE INDEX IF NOT EXISTS execution_timer_runs_status_idx
     ON execution_timer_runs (status, started_at DESC);
+
+-- Agent notification outbox. One row per structured intent, written
+-- before delivery so a crash between intent and delivery stays
+-- observable. `event` is one of completion, blocked, failure,
+-- interruption_suspected, publish_failed. `channel` is the resolved
+-- ntfy/webhook/dingtalk/email literal. `title`/`body` are the bounded
+-- summaries actually delivered. `status` is pending, delivered, or
+-- failed; `error` carries the bounded delivery failure when failed.
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    issue_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS notification_deliveries_created_idx
+    ON notification_deliveries (created_at DESC);
 ";
 
 /// Additive migrations applied on every `Storage::open`. Each entry is a
@@ -179,6 +201,36 @@ pub(crate) const GLOBAL_INDEX_BACKEND: &str = "PHASEGENT_INDEX_BACKEND";
 /// secret global setting and never echoed in snapshots or errors.
 pub(crate) const GLOBAL_INDEX_PG_URL: &str = "PHASEGENT_INDEX_PG_URL";
 
+/// Agent notification channel configuration. One `global_setting` row
+/// per field so operators persist each value with `config set` and the
+/// resolver keeps the env-over-SQLite precedence used by every other
+/// global. Secrets (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`) are write-only:
+/// `config show` reports presence/length only and errors never echo
+/// values. Non-secret URLs are sanitised before rendering. TOML
+/// overlay does not cover notify settings; precedence is env, then
+/// SQLite. Default notifier features are ntfy plus webhook;
+/// dingtalk/email fields are accepted always but delivery requires the
+/// matching `notify-dingtalk` / `notify-email` Cargo feature.
+pub(crate) const GLOBAL_NOTIFY_ENABLED: &str = "PHASEGENT_NOTIFY_ENABLED";
+pub(crate) const GLOBAL_NOTIFY_CHANNEL: &str = "PHASEGENT_NOTIFY_CHANNEL";
+pub(crate) const GLOBAL_NOTIFY_NTFY_BASE_URL: &str = "PHASEGENT_NOTIFY_NTFY_BASE_URL";
+pub(crate) const GLOBAL_NOTIFY_NTFY_TOPIC: &str = "PHASEGENT_NOTIFY_NTFY_TOPIC";
+pub(crate) const GLOBAL_NOTIFY_NTFY_TOKEN: &str = "PHASEGENT_NOTIFY_NTFY_TOKEN";
+pub(crate) const GLOBAL_NOTIFY_WEBHOOK_URL: &str = "PHASEGENT_NOTIFY_WEBHOOK_URL";
+pub(crate) const GLOBAL_NOTIFY_WEBHOOK_TOKEN: &str = "PHASEGENT_NOTIFY_WEBHOOK_TOKEN";
+pub(crate) const GLOBAL_NOTIFY_DINGTALK_WEBHOOK_URL: &str = "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL";
+pub(crate) const GLOBAL_NOTIFY_DINGTALK_SECRET: &str = "PHASEGENT_NOTIFY_DINGTALK_SECRET";
+pub(crate) const GLOBAL_NOTIFY_DINGTALK_KEYWORDS: &str = "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS";
+pub(crate) const GLOBAL_NOTIFY_DINGTALK_MSG_TYPE: &str = "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_SMTP_HOST: &str = "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_SMTP_PORT: &str = "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_TLS: &str = "PHASEGENT_NOTIFY_EMAIL_TLS";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_USERNAME: &str = "PHASEGENT_NOTIFY_EMAIL_USERNAME";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_PASSWORD: &str = "PHASEGENT_NOTIFY_EMAIL_PASSWORD";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_FROM: &str = "PHASEGENT_NOTIFY_EMAIL_FROM";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_TO: &str = "PHASEGENT_NOTIFY_EMAIL_TO";
+pub(crate) const GLOBAL_NOTIFY_EMAIL_REPLY_TO: &str = "PHASEGENT_NOTIFY_EMAIL_REPLY_TO";
+
 /// All `global_setting` row names the resolver layer currently
 /// recognises. Listed in one place so `config show` can iterate over
 /// the canonical set without relying on string constants scattered
@@ -189,6 +241,25 @@ pub(crate) const GLOBAL_SETTING_NAMES: &[&str] = &[
     GLOBAL_DEFAULT_PROVIDER,
     GLOBAL_INDEX_BACKEND,
     GLOBAL_INDEX_PG_URL,
+    GLOBAL_NOTIFY_ENABLED,
+    GLOBAL_NOTIFY_CHANNEL,
+    GLOBAL_NOTIFY_NTFY_BASE_URL,
+    GLOBAL_NOTIFY_NTFY_TOPIC,
+    GLOBAL_NOTIFY_NTFY_TOKEN,
+    GLOBAL_NOTIFY_WEBHOOK_URL,
+    GLOBAL_NOTIFY_WEBHOOK_TOKEN,
+    GLOBAL_NOTIFY_DINGTALK_WEBHOOK_URL,
+    GLOBAL_NOTIFY_DINGTALK_SECRET,
+    GLOBAL_NOTIFY_DINGTALK_KEYWORDS,
+    GLOBAL_NOTIFY_DINGTALK_MSG_TYPE,
+    GLOBAL_NOTIFY_EMAIL_SMTP_HOST,
+    GLOBAL_NOTIFY_EMAIL_SMTP_PORT,
+    GLOBAL_NOTIFY_EMAIL_TLS,
+    GLOBAL_NOTIFY_EMAIL_USERNAME,
+    GLOBAL_NOTIFY_EMAIL_PASSWORD,
+    GLOBAL_NOTIFY_EMAIL_FROM,
+    GLOBAL_NOTIFY_EMAIL_TO,
+    GLOBAL_NOTIFY_EMAIL_REPLY_TO,
 ];
 
 /// Statement used by the schema initializer. Splitting `PRAGMA`s from

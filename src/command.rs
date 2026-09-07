@@ -13,6 +13,7 @@ mod config;
 mod help_topic;
 mod hooks;
 mod issue;
+mod notify;
 mod parse_helpers;
 mod project;
 mod relation;
@@ -110,6 +111,11 @@ pub enum Command {
     /// shell is an operator-local launcher, not a role-scoped
     /// provider operation.
     Gui,
+    /// Agent notifications via `cloudiful-notifier`. `notify send`
+    /// delivers a bounded envelope on the configured channel; trigger
+    /// hooks in issue/status/comment/workflow/timer fire the same path
+    /// post-success with a local warning only. Requires `--role`.
+    Notify(NotifyCommand),
 }
 
 #[derive(Debug)]
@@ -125,6 +131,8 @@ pub enum HelpTopic {
     ConfigCommand(String),
     ConfigProvider,
     ConfigProviderCommand(String),
+    Notify,
+    NotifyCommand(String),
     Repo,
     IssueCommand(String),
     CommentCommand(String),
@@ -349,6 +357,21 @@ pub enum WorkflowCommand {
     },
 }
 
+/// Agent notification send. `event` is the structured kind
+/// (completion, blocked, failure, interruption_suspected,
+/// publish_failed); `title`/`body` are bounded at the envelope layer
+/// and persisted before delivery.
+#[derive(Debug)]
+pub enum NotifyCommand {
+    Send {
+        event: crate::notifications::NotificationEvent,
+        title: String,
+        body: String,
+        issue: Option<u64>,
+        phase: Option<String>,
+    },
+}
+
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if args.is_empty() {
         return Ok(Invocation {
@@ -500,6 +523,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "workflow" => workflow::parse_workflow(rest)?,
         "repo" => crate::repo_command::parse(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
+        "notify" => notify::parse_notify(rest)?,
         value => return Err(format!("unknown command '{value}'")),
     };
     // Local branch context and hooks never touch provider credentials. The

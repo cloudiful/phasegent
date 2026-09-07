@@ -110,7 +110,10 @@ fn config_show_redacts_credentials_and_sanitises_url() {
             Value::from("redmine-secret-key".len())
         );
         let global = snapshot["global_settings"].as_array().expect("global");
-        assert_eq!(global.len(), 5);
+        assert_eq!(
+            global.len(),
+            crate::infra::storage_schema::GLOBAL_SETTING_NAMES.len()
+        );
         let key = global
             .iter()
             .find(|entry| entry["name"] == "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")

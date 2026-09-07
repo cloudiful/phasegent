@@ -247,6 +247,9 @@ pub(crate) fn execute_issue(
                 }
                 // Close upserts the returned closed document.
                 issue_search::warm_single_summary(&provider, &summary, "issue close");
+                // Post-success completion notification: persisted before
+                // delivery, warning-only, never fails the close.
+                fire_completion_for_issue(number, "issue closed");
                 super::print_json(&summary)
             }
             Err(error) => super::provider_error(error),
@@ -254,5 +257,25 @@ pub(crate) fn execute_issue(
         IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch => {
             unreachable!("local branch context commands bypass provider execution")
         }
+    }
+}
+
+/// Post-success completion hook for `issue close`. Opens storage
+/// best-effort (missing DB means skip), persists the intent before
+/// delivery, and reports delivery problems as a local stderr warning
+/// so the close JSON stays the success signal.
+fn fire_completion_for_issue(number: u64, detail: &str) {
+    let Ok(storage) = crate::infra::storage::Storage::open() else {
+        return;
+    };
+    let intent = crate::notifications::NotificationIntent::new(
+        crate::notifications::NotificationEvent::Completion,
+        format!("issue #{number} closed"),
+        format!("{detail}: issue #{number}"),
+    )
+    .with_issue(number);
+    let outcome = crate::notifications::fire_best_effort(&storage, &intent);
+    if let Some(warning) = outcome.warning {
+        super::report_local_warnings("notify completion", Some(warning));
     }
 }

@@ -96,7 +96,15 @@ pub(crate) fn execute_status(
         },
         StatusCommand::Advance { number, status } => match provider {
             ProviderDispatcher::Redmine(redmine) => {
-                super::print_result(redmine.advance_issue_status(number, &status))
+                let result = redmine.advance_issue_status(number, &status);
+                if result.is_ok() {
+                    // Post-success blocked-attention hook: only fires
+                    // for blocked-like targets so ordinary advances
+                    // stay quiet. Persisted before delivery,
+                    // warning-only.
+                    fire_blocked_hook(number, &status);
+                }
+                super::print_result(result)
             }
             other => super::provider_error(ForgejoError::not_supported(
                 other.kind().as_str(),
@@ -105,7 +113,11 @@ pub(crate) fn execute_status(
         },
         StatusCommand::Set { number, status } => match provider {
             ProviderDispatcher::Gitlab(gitlab) => {
-                super::print_result(gitlab.set_workflow_status(number, &status))
+                let result = gitlab.set_workflow_status(number, &status);
+                if result.is_ok() {
+                    fire_blocked_hook(number, &status);
+                }
+                super::print_result(result)
             }
             ProviderDispatcher::Redmine(redmine) => {
                 let statuses = match redmine.list_issue_statuses() {
@@ -116,12 +128,40 @@ pub(crate) fn execute_status(
                     Ok(target) => target,
                     Err(error) => return super::provider_error(error),
                 };
-                super::print_result(redmine.set_issue_status(number, target.id))
+                let result = redmine.set_issue_status(number, target.id);
+                if result.is_ok() {
+                    fire_blocked_hook(number, &status);
+                }
+                super::print_result(result)
             }
             ProviderDispatcher::Forgejo(_) => super::provider_error(ForgejoError::not_supported(
                 "forgejo",
                 "issue status update",
             )),
         },
+    }
+}
+
+/// Post-success hook for status moves. Fires a `blocked` intent only
+/// when the target looks blocked-like (case-insensitive `block`
+/// substring); other targets return silently so normal progress does
+/// not spam the channel.
+fn fire_blocked_hook(number: u64, status: &str) {
+    if !status.to_ascii_lowercase().contains("block") {
+        return;
+    }
+    let Ok(storage) = crate::infra::storage::Storage::open() else {
+        return;
+    };
+    let intent = crate::notifications::NotificationIntent::new(
+        crate::notifications::NotificationEvent::BlockedAttention,
+        format!("issue #{number} blocked: {status}"),
+        format!("status moved to {status} and needs attention"),
+    )
+    .with_issue(number)
+    .with_meta("status", status);
+    let outcome = crate::notifications::fire_best_effort(&storage, &intent);
+    if let Some(warning) = outcome.warning {
+        super::report_local_warnings("notify blocked", Some(warning));
     }
 }

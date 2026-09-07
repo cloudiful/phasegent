@@ -198,13 +198,22 @@ fn global_setting_to_json(
     storage: &Storage,
     summary: GlobalSettingSummary,
 ) -> Result<GlobalSettingJson, String> {
-    // The sanitised URL is only rendered for the repository URL override
-    // because it is the only non-secret global setting whose value
-    // contains URL-shaped data. The bearer key summary stays at
-    // presence/length. Index settings follow the same rule: the legacy
-    // backend literal is non-secret, the pg url is secret and never
-    // rendered beyond presence/length.
-    let sanitized_value = if summary.name == "PHASEGENT_REDMINE_REPOSITORY_URL" {
+    // The sanitised URL is rendered for the repository URL override and
+    // the notify webhook-style URLs because they are the non-secret
+    // global settings whose values contain URL-shaped data. Bearer
+    // keys and notify secrets stay at presence/length. Index settings
+    // follow the same rule: the legacy backend literal is non-secret,
+    // the pg url is secret and never rendered beyond presence/length.
+    // Notify non-URL fields stay at presence/length so dynamic values
+    // (topics, hosts, address lists) never echo verbatim; URLs are
+    // sanitised to strip userinfo before rendering.
+    let sanitized_value = if matches!(
+        summary.name,
+        "PHASEGENT_REDMINE_REPOSITORY_URL"
+            | "PHASEGENT_NOTIFY_NTFY_BASE_URL"
+            | "PHASEGENT_NOTIFY_WEBHOOK_URL"
+            | "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL"
+    ) {
         storage
             .load_global_setting(summary.name)?
             .map(|value| sanitize_url(&value))

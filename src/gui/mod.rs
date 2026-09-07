@@ -101,7 +101,8 @@ pub fn app_metadata() -> AppMetadata {
 /// Read the redacted configuration snapshot through the existing
 /// `config show` facade. Secrets are never echoed: credentials report
 /// presence/length only and the repository URL is sanitised by
-/// [`crate::config_snapshot`].
+/// [`crate::config_snapshot`]. Notify channel secrets stay write-only
+/// the same way; notify URLs render sanitised.
 #[allow(dead_code)]
 pub fn read_config_snapshot() -> Result<crate::config_snapshot::ConfigSnapshot, String> {
     let storage = crate::infra::storage::Storage::open().map_err(validate::bound_message)?;

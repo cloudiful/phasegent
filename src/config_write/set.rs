@@ -233,6 +233,116 @@ fn persist_set_value(
             }
             storage.save_global_setting(canonical, trimmed)?;
         }
+        "PHASEGENT_NOTIFY_ENABLED" => {
+            let lower = trimmed.to_ascii_lowercase();
+            let normalised = match lower.as_str() {
+                "true" | "1" | "yes" | "on" | "enabled" => "true",
+                "false" | "0" | "no" | "off" | "disabled" => "false",
+                _ => {
+                    return Err(format!(
+                        "invalid PHASEGENT_NOTIFY_ENABLED '{trimmed}'; expected true or false"
+                    ));
+                }
+            };
+            storage.save_global_setting(canonical, normalised)?;
+        }
+        "PHASEGENT_NOTIFY_CHANNEL" => {
+            let lower = trimmed.to_ascii_lowercase();
+            if !matches!(lower.as_str(), "ntfy" | "webhook" | "dingtalk" | "email") {
+                return Err(format!(
+                    "invalid PHASEGENT_NOTIFY_CHANNEL '{trimmed}'; expected ntfy, webhook, dingtalk, or email"
+                ));
+            }
+            storage.save_global_setting(canonical, &lower)?;
+        }
+        "PHASEGENT_NOTIFY_NTFY_BASE_URL" => {
+            validate_http_base_url(canonical, trimmed)?;
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_NTFY_TOPIC" => {
+            validate_ntfy_topic(trimmed)?;
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_NTFY_TOKEN"
+        | "PHASEGENT_NOTIFY_WEBHOOK_TOKEN"
+        | "PHASEGENT_NOTIFY_DINGTALK_SECRET"
+        | "PHASEGENT_NOTIFY_EMAIL_PASSWORD" => {
+            if trimmed.is_empty() {
+                return Err(format!("value for '{canonical}' cannot be empty"));
+            }
+            if trimmed.chars().count() > 8192 {
+                return Err(format!("value for '{canonical}' is too long"));
+            }
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_WEBHOOK_URL" => {
+            validate_webhook_url(canonical, trimmed)?;
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL" => {
+            validate_webhook_url(canonical, trimmed)?;
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS" => {
+            if trimmed.is_empty() {
+                return Err(format!("value for '{canonical}' cannot be empty"));
+            }
+            if trimmed.chars().count() > 1024 {
+                return Err(format!("value for '{canonical}' is too long"));
+            }
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE" => {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower != "text" && lower != "markdown" {
+                return Err(format!(
+                    "invalid {canonical} '{trimmed}'; expected text or markdown"
+                ));
+            }
+            storage.save_global_setting(canonical, &lower)?;
+        }
+        "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST" => {
+            if trimmed.is_empty() {
+                return Err(format!("value for '{canonical}' cannot be empty"));
+            }
+            if trimmed.chars().any(char::is_control) || trimmed.contains(char::is_whitespace) {
+                return Err(format!("value for '{canonical}' must be a bare hostname"));
+            }
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT" => {
+            let port: u16 = trimmed
+                .parse()
+                .map_err(|_| format!("could not parse {canonical} '{trimmed}': must be 1-65535"))?;
+            if port == 0 {
+                return Err(format!("{canonical} must be greater than zero"));
+            }
+            storage.save_global_setting(canonical, &port.to_string())?;
+        }
+        "PHASEGENT_NOTIFY_EMAIL_TLS" => {
+            let lower = trimmed.to_ascii_lowercase();
+            if !matches!(lower.as_str(), "implicit" | "starttls" | "plain") {
+                return Err(format!(
+                    "invalid {canonical} '{trimmed}'; expected implicit, starttls, or plain"
+                ));
+            }
+            storage.save_global_setting(canonical, &lower)?;
+        }
+        "PHASEGENT_NOTIFY_EMAIL_USERNAME"
+        | "PHASEGENT_NOTIFY_EMAIL_FROM"
+        | "PHASEGENT_NOTIFY_EMAIL_TO"
+        | "PHASEGENT_NOTIFY_EMAIL_REPLY_TO" => {
+            if trimmed.is_empty() {
+                return Err(format!("value for '{canonical}' cannot be empty"));
+            }
+            if !trimmed.contains('@') {
+                return Err(format!("value for '{canonical}' must contain '@'"));
+            }
+            if trimmed.chars().count() > 2048 {
+                return Err(format!("value for '{canonical}' is too long"));
+            }
+            storage.save_global_setting(canonical, trimmed)?;
+        }
         _ => return Err(format!("unknown setting '{canonical}'")),
     }
     Ok(())
@@ -244,6 +354,72 @@ fn read_stdin_trimmed() -> Result<String, String> {
         .read_to_string(&mut input)
         .map_err(|e| format!("could not read from stdin: {e}"))?;
     Ok(input.trim().to_owned())
+}
+
+/// Validate an ntfy server base URL: http/https with a host and no
+/// credentials, query, or fragment. The topic is appended as a path
+/// segment at send time, so the base must be a clean origin.
+fn validate_http_base_url(canonical: &str, value: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(value)
+        .map_err(|e| format!("value for '{canonical}' is not a valid URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("value for '{canonical}' must use http or https"));
+    }
+    if parsed.host_str().is_none() {
+        return Err(format!("value for '{canonical}' must include a host"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!(
+            "value for '{canonical}' must not contain credentials"
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(format!(
+            "value for '{canonical}' must not contain a query or fragment"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a webhook-style URL: http/https with a host and no
+/// userinfo. Query and fragment are allowed because signed webhook
+/// URLs commonly carry them; secrets still belong in the token
+/// setting, never in the URL.
+fn validate_webhook_url(canonical: &str, value: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(value)
+        .map_err(|e| format!("value for '{canonical}' is not a valid URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("value for '{canonical}' must use http or https"));
+    }
+    if parsed.host_str().is_none() {
+        return Err(format!("value for '{canonical}' must include a host"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!(
+            "value for '{canonical}' must not contain credentials"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate an ntfy topic: non-empty, no whitespace/control/slash,
+/// bounded length. The value becomes a single path segment.
+fn validate_ntfy_topic(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("value for 'PHASEGENT_NOTIFY_NTFY_TOPIC' cannot be empty".to_owned());
+    }
+    if value.chars().count() > 256 {
+        return Err("value for 'PHASEGENT_NOTIFY_NTFY_TOPIC' is too long".to_owned());
+    }
+    if value
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '/')
+    {
+        return Err(
+            "value for 'PHASEGENT_NOTIFY_NTFY_TOPIC' must not contain whitespace or '/'".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn prompt_secret(canonical: &str) -> Result<String, String> {

@@ -8,6 +8,7 @@ pub mod common;
 pub mod config;
 pub mod hooks;
 pub mod issue;
+pub mod notify;
 pub mod project;
 pub mod relation;
 pub mod root;
@@ -25,6 +26,7 @@ use config::{
 };
 use hooks::{print_hooks_command_help, print_hooks_help};
 use issue::{print_issue_command_help, print_issue_help};
+use notify::{print_notify_command_help, print_notify_help};
 use project::{print_project_command_help, print_project_help};
 use relation::{print_relation_command_help, print_relation_help};
 use root::print_root_help;
@@ -74,6 +76,8 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         }
         HelpTopic::Hooks => print_hooks_help(),
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
+        HelpTopic::Notify => print_notify_help(role),
+        HelpTopic::NotifyCommand(command) => print_notify_command_help(role, &command),
     }
 }
 

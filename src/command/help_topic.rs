@@ -114,6 +114,11 @@ pub(crate) fn help_topic(
             Some("install") => Ok(HelpTopic::HooksCommand("install".to_owned())),
             Some(value) => Err(format!("unknown hooks help topic '{value}'")),
         },
+        "notify" => match subcommand {
+            None => Ok(HelpTopic::Notify),
+            Some("send") => Ok(HelpTopic::NotifyCommand("send".to_owned())),
+            Some(value) => Err(format!("unknown notify help topic '{value}'")),
+        },
         _ => Err(format!("unknown help topic '{value}'")),
     }
 }
