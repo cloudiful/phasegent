@@ -7,8 +7,8 @@
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
-    handler::server::tool::{Parameters, ToolRouter},
-    model::{CallToolResult, Content},
+    handler::server::{tool::ToolRouter, wrapper::Parameters},
+    model::{CallToolResult, ContentBlock},
     tool, tool_handler, tool_router,
 };
 
@@ -466,7 +466,7 @@ fn run_notify_strict(
 }
 
 fn ok_json(payload: &serde_json::Value) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_owned()),
     )]))
 }
