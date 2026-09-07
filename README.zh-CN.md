@@ -209,7 +209,7 @@ docker run --rm -p 127.0.0.1:3000:3000 \
 - 警告：默认仅绑定回环地址。使用 `--bind 0.0.0.0:3000`
   （配合 `-p 0.0.0.0:3000:3000`）会将已认证的 HTTP 暴露到回环之外：
   请妥善保管 bearer token，配合防火墙或反向代理，且未设置
-  `PHASEGENT_MCP_AUTH_TOKEN` 时不要对外发布（security warning）。
+  `PHASEGENT_MCP_AUTH_TOKEN` 时不要对外发布。
 
 成功命令返回紧凑 JSON；错误写入 stderr，并以非零状态退出。
 

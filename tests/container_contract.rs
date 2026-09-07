@@ -222,9 +222,12 @@ fn assert_readme_container_contract(name: &str) {
     // Transports: loopback HTTP default plus stdio override.
     assert_contains(&readme, "127.0.0.1:3000", name);
     assert_contains(&readme.to_ascii_lowercase(), "stdio", name);
-    // Security warning: loopback default, 0.0.0.0 exposure needs care.
+    // Security warning: loopback default, 0.0.0.0 exposure needs care
+    // (English "warn" or Chinese "警告" for the localized README).
     assert!(
-        readme.contains("0.0.0.0") && readme.to_ascii_lowercase().contains("warn"),
+        readme.contains("0.0.0.0")
+            && (readme.to_ascii_lowercase().contains("warn")
+                || readme.contains("警告")),
         "{name} must warn about exposing HTTP beyond loopback"
     );
 }
