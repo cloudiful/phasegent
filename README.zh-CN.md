@@ -177,6 +177,23 @@ phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
 除 server role 为 orchestrator 外，`comment_create` 需要服务端
 `--authorized`。`status_advance`、timer 和角色提升永远不会暴露。
 
+## 通知
+
+通知仅支持手动发送：无自动触发，其他命令不会发送通知。通过
+`notify send`（CLI）或 `notify_send`（MCP）显式发送：
+
+```sh
+phasegent --role executor notify send --event completion --title "Done" --body "Details"
+```
+
+事件：`completion`、`blocked`、`failure`、`interruption_suspected`、
+`publish_failed`。标题/正文会被截断（140/2000 字符），发送前会先持久化
+意图。通过 `config set notify-enabled true` 和
+`config set notify-channel <name>` 配置；secret 须经 `--stdin` 传入。
+未启用或未配置时仍会持久化一条 skipped 记录并输出
+`{"notified": false}`，不会失败；投递失败返回结构化通知错误。适用于
+`orchestrator`、`executor`、`reviewer` 和 `tester`。
+
 ## 容器镜像
 
 纯 CLI 镜像（无 GUI 依赖），以非 root 用户运行。默认命令在回环地址上

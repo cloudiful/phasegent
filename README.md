@@ -189,6 +189,25 @@ never supply a role. Contracted tools: `capabilities`, `issue_get`,
 is orchestrator. `status_advance`, timers, and role elevation are never
 exposed.
 
+## Notifications
+
+Notifications are manual-only: nothing sends automatically, and other
+commands never send notifications. Send explicitly with `notify send`
+(CLI) or `notify_send` (MCP):
+
+```sh
+phasegent --role executor notify send --event completion --title "Done" --body "Details"
+```
+
+Events: `completion`, `blocked`, `failure`, `interruption_suspected`,
+`publish_failed`. Titles/bodies are truncated (140/2000 chars) and the
+intent is persisted before delivery. Configure with
+`config set notify-enabled true` and `config set notify-channel <name>`;
+secrets require `--stdin`. Disabled or unconfigured channels persist a
+skipped row and print `{"notified": false}` without failing; delivery
+failures return a structured notification error. Available to
+`orchestrator`, `executor`, `reviewer`, and `tester`.
+
 ## Container image
 
 CLI-only image (no GUI dependencies) running as non-root. The default

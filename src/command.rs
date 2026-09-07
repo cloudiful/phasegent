@@ -112,10 +112,10 @@ pub enum Command {
     /// shell is an operator-local launcher, not a role-scoped
     /// provider operation.
     Gui,
-    /// Agent notifications via `cloudiful-notifier`. `notify send`
-    /// delivers a bounded envelope on the configured channel; trigger
-    /// hooks in issue/status/comment/workflow/timer fire the same path
-    /// post-success with a local warning only. Requires `--role`.
+    /// Manual-only agent notifications via `cloudiful-notifier`.
+    /// `notify send` delivers a bounded envelope on the configured
+    /// channel; there are no automatic triggers and no post-success
+    /// side effects. Requires `--role`.
     Notify(NotifyCommand),
     /// rmcp MCP server over stdio (default) or streamable HTTP on
     /// `/mcp`. Tools run with the server-side `--role` and provider
