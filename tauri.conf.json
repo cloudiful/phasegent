@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.cloud1ful.phasegent",
   "build": {
+    "beforeBuildCommand": "bun run validate",
     "frontendDist": "frontend/dist"
   },
   "app": {

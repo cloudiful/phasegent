@@ -28,6 +28,7 @@ fn main() {
         .map(std::path::PathBuf::from)
         .expect("OUT_DIR must be set by cargo");
     let dist = std::path::PathBuf::from("frontend/dist");
+    ensure_frontend_ready(&dist);
     tauri_build::build();
     emit_frontend_hints(&dist, &out_dir);
 }
@@ -112,4 +113,152 @@ fn emit_frontend_hints(dist: &std::path::Path, out_dir: &std::path::Path) {
         println!("cargo:rerun-if-changed={}", dist.join(relative).display());
     }
     let _ = std::fs::write(out_dir.join("frontend_dist.hash"), &hash);
+}
+
+/// Auto-build the GUI frontend bundle before Tauri embeds it.
+///
+/// `cargo install --path .` (and every plain `cargo build/check --features
+/// gui`) drives the build directly, so the Tauri-CLI `beforeBuildCommand`
+/// never fires and an untracked (or stale) `frontend/dist` would silently be
+/// embedded. This hook compensates: when the dist is missing or out of date
+/// against the frontend sources, it runs `bun run validate` from the repo
+/// root to (re)build and verify the bundle.
+///
+/// The check never mutates the tree when the dist is fresh and requires no
+/// frontend toolchain in that case. It only ever *fails* (before
+/// `tauri_build`) when it actually needs to rebuild but the toolchain is
+/// missing — it never runs `bun install` or touches the network.
+#[cfg(feature = "gui")]
+fn ensure_frontend_ready(dist: &std::path::Path) {
+    if !dist_is_stale(dist) {
+        println!("build.rs: frontend dist is fresh; skipping `bun run validate`");
+        return;
+    }
+    if !bun_available() {
+        eprintln!(
+            "build.rs: ERROR: frontend is missing or stale but `bun` is not on PATH; run `bun install`, then rebuild."
+        );
+        std::process::exit(1);
+    }
+    if !std::path::Path::new("frontend/node_modules").exists() {
+        eprintln!(
+            "build.rs: ERROR: frontend is missing or stale but `frontend/node_modules` is absent; run `bun install`, then rebuild."
+        );
+        std::process::exit(1);
+    }
+    println!("build.rs: frontend dist is missing or stale; running `bun run validate`");
+    let status = std::process::Command::new("bun")
+        .args(["run", "validate"])
+        .current_dir(".")
+        .status();
+    match status {
+        Ok(ok) if ok.success() => {}
+        Ok(not_ok) => {
+            eprintln!(
+                "build.rs: ERROR: `bun run validate` failed (exit {not_ok}); the GUI build needs a fresh frontend bundle; run `bun install`, then rebuild."
+            );
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!(
+                "build.rs: ERROR: failed to spawn `bun run validate` ({err}); run `bun install`, then rebuild."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `true` when the emitted frontend bundle is missing/empty or any frontend
+/// source is newer than the newest emitted file.
+///
+/// Freshness is compared against the newest *emitted* file so an untouched
+/// dist stays the fast path. Sources considered: every file under
+/// `frontend/src`, top-level `frontend/*.ts` (excluding the generated
+/// `auto-imports.d.ts`/`components.d.ts` build byproducts) and
+/// `frontend/*.html`, plus `package.json` and `bun.lock`.
+#[cfg(feature = "gui")]
+fn dist_is_stale(dist: &std::path::Path) -> bool {
+    let Some(newest_dist) = newest_mtime_under(dist) else {
+        // dist missing or empty: a build is required.
+        return true;
+    };
+    frontend_sources()
+        .into_iter()
+        .any(|source| mtime(&source).is_some_and(|m| m > newest_dist))
+}
+
+#[cfg(feature = "gui")]
+fn bun_available() -> bool {
+    std::process::Command::new("bun")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(feature = "gui")]
+fn frontend_sources() -> Vec<std::path::PathBuf> {
+    let mut sources = Vec::new();
+    collect_source_files(&std::path::Path::new("frontend/src"), &mut sources);
+    if let Ok(entries) = std::fs::read_dir("frontend") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
+                if matches!(ext.as_deref(), Some("ts" | "html")) && !is_generated_declaration(&path) {
+                    sources.push(path);
+                }
+            }
+        }
+    }
+    sources.push(std::path::PathBuf::from("package.json"));
+    sources.push(std::path::PathBuf::from("bun.lock"));
+    sources
+}
+
+/// `@nuxt/ui`'s Vite plugin rewrites these declaration files on every build, so
+/// they are build byproducts (gitignored) rather than human-authored sources.
+/// Including them as staleness checks would re-trigger `bun run validate` right
+/// after a build that already wrote them (they can land a moment newer than
+/// `frontend/dist`), causing a needless rebuild.
+#[cfg(feature = "gui")]
+fn is_generated_declaration(path: &std::path::Path) -> bool {
+    matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some("auto-imports.d.ts" | "components.d.ts")
+    )
+}
+
+#[cfg(feature = "gui")]
+fn collect_source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+/// Whole-second precision on the emitted-tree side would let a same-second
+/// source edit slip through as "fresh", so freshness compares full-precision
+/// mtimes. Returning `None` means the path is absent or unreadable.
+#[cfg(feature = "gui")]
+fn mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+#[cfg(feature = "gui")]
+fn newest_mtime_under(root: &std::path::Path) -> Option<std::time::SystemTime> {
+    let mut files = Vec::new();
+    collect_files(root, &mut files);
+    files
+        .iter()
+        .filter_map(|relative| mtime(&root.join(relative)))
+        .max()
 }
