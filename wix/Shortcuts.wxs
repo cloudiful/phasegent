@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shortcut directories, properties, and conditional components for phasegent.
+
+  Source shape follows the WiX Toolset v6 Start Menu how-to and the
+  WixUI_InstallDir customization pattern documented at
+  https://wixtoolset.org/docs/schema/wxs/shortcut/ (Shortcut parents
+  File/CreateFolder/Component; Arguments/Target/WorkingDirectory/Directory),
+  https://wixtoolset.org/docs/schema/wxs/component/ (Condition/Directory/Guid),
+  https://wixtoolset.org/docs/schema/wxs/property/ (Secure public properties),
+  https://wixtoolset.org/docs/schema/wxs/registryvalue/ (HKCU KeyPath for
+  non-advertised per-user shortcuts), and
+  https://wixtoolset.org/docs/schema/wxs/removefolder/ (uninstall cleanup),
+  plus https://wixtoolset.org/docs/tools/wixext/wixui/ (copy-and-rename the
+  WixUI_InstallDir sequence to insert a custom dialog).
+
+  Both shortcuts are non-advertised shell links (Advertise defaults to "no";
+  set explicitly) that invoke the installed executable with the literal
+  `gui` argument, so a double-click opens the desktop shell while plain
+  `phasegent <command>` invocations stay on the CLI.
+
+  Upgrade behavior: component GUIDs are stable, the UpgradeCode lives in
+  wix/phasegent.wxs, and MajorUpgrade reinstalls these components from
+  scratch, so the checkboxes/defaults apply the same way on upgrade.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <!--
+      Public properties backing the two independent checkboxes in
+      ShortcutOptionsDlg. Uppercase names keep them settable from the UI
+      and from msiexec command lines; Secure="yes" lets the values reach
+      the execute sequence. Start Menu defaults to checked (Value="1"),
+      Desktop defaults to unchecked (no Value).
+    -->
+    <Property Id="PHASEGENT_STARTMENU_SHORTCUT" Value="1" Secure="yes" />
+    <Property Id="PHASEGENT_DESKTOP_SHORTCUT" Secure="yes" />
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="phasegent" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ShortcutComponents">
+      <!--
+        Start Menu shortcut. Condition "=1" keeps the component independent
+        of the Desktop selection; unchecked (null/empty) or explicit 0 skips
+        it. Target uses the [!FileId] form so the link resolves to the exe
+        installed by PhasegentExeComponent without tripping ICE69 for a
+        cross-component file reference in the same feature.
+      -->
+      <Component
+        Id="PhasegentStartMenuShortcutComponent"
+        Guid="932CC295-B320-45AC-AE27-45B5115101CE"
+        Directory="ApplicationProgramsFolder"
+        Condition="PHASEGENT_STARTMENU_SHORTCUT=1">
+        <Shortcut
+          Id="PhasegentStartMenuShortcut"
+          Name="phasegent"
+          Target="[!PhasegentExeFile]"
+          Arguments="gui"
+          WorkingDirectory="INSTALLFOLDER"
+          Description="phasegent desktop app"
+          Advertise="no" />
+        <RemoveFolder Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\phasegent"
+          Name="StartMenuShortcut"
+          Value="1"
+          Type="string"
+          KeyPath="yes" />
+      </Component>
+
+      <!--
+        Desktop shortcut. Independent property/condition pair; defaults to
+        absent so a default install creates no Desktop link. No RemoveFolder
+        is needed: removing the component removes the .lnk itself.
+      -->
+      <Component
+        Id="PhasegentDesktopShortcutComponent"
+        Guid="59C3A30A-67EA-4214-8A19-6D3150F6E363"
+        Directory="DesktopFolder"
+        Condition="PHASEGENT_DESKTOP_SHORTCUT=1">
+        <Shortcut
+          Id="PhasegentDesktopShortcut"
+          Name="phasegent"
+          Target="[!PhasegentExeFile]"
+          Arguments="gui"
+          WorkingDirectory="INSTALLFOLDER"
+          Description="phasegent desktop app"
+          Advertise="no" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\phasegent"
+          Name="DesktopShortcut"
+          Value="1"
+          Type="string"
+          KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

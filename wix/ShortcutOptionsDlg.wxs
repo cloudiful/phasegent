@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shortcut options dialog plus the renamed WixUI_InstallDir sequence.
+
+  Copied from WiX Toolset v6.0.2
+  src/ext/UI/wixlib/WixUI_InstallDir.wxs (see
+  https://github.com/wixtoolset/wix/blob/v6.0.2/src/ext/UI/wixlib/WixUI_InstallDir.wxs)
+  following https://wixtoolset.org/docs/tools/wixext/wixui/#addingremovingdialogs:
+  copy the dialog-set authoring, rename the UI ids, define the new dialog,
+  and rewire Next/Back publish events. Only the fresh-install path changes:
+
+    InstallDirDlg -> ShortcutOptionsDlg -> VerifyReadyDlg
+
+  Maintenance (MaintenanceTypeDlg -> VerifyReadyDlg) and patch
+  (WelcomeDlg -> VerifyReadyDlg) flows are untouched. Control/Dialog/Publish
+  shapes follow https://wixtoolset.org/docs/schema/wxs/dialog/,
+  https://wixtoolset.org/docs/schema/wxs/control/, and
+  https://wixtoolset.org/docs/schema/wxs/publish/ (CheckBox Property +
+  CheckBoxValue; UI-level Publish with Dialog/Control/Event/Value/Order).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI>
+      <Dialog Id="ShortcutOptionsDlg" Width="370" Height="270" Title="Shortcut Options">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="15" Width="300" Height="15" Text="Select shortcut options" />
+        <Control
+          Id="Description"
+          Type="Text"
+          X="25"
+          Y="60"
+          Width="320"
+          Height="40"
+          Text="Choose where to create shortcuts for the phasegent desktop app. Shortcuts open the installed app with the gui command." />
+        <Control
+          Id="StartMenuShortcutCheckBox"
+          Type="CheckBox"
+          X="25"
+          Y="110"
+          Width="320"
+          Height="18"
+          Property="PHASEGENT_STARTMENU_SHORTCUT"
+          CheckBoxValue="1"
+          Text="Create a Start Menu shortcut" />
+        <Control
+          Id="DesktopShortcutCheckBox"
+          Type="CheckBox"
+          X="25"
+          Y="134"
+          Width="320"
+          Height="18"
+          Property="PHASEGENT_DESKTOP_SHORTCUT"
+          CheckBoxValue="1"
+          Text="Create a Desktop shortcut" />
+        <Control Id="Back" Type="PushButton" X="156" Y="243" Width="56" Height="17" Text="Back" />
+        <Control Id="Next" Type="PushButton" X="212" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      </Dialog>
+    </UI>
+  </Fragment>
+
+  <?foreach WIXUIARCH in X86;X64;A64 ?>
+  <Fragment>
+    <UI Id="WixUI_Phasegent_$(WIXUIARCH)">
+      <Publish Dialog="BrowseDlg" Control="OK" Event="CheckTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="CheckTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ShortcutOptionsDlg" Order="4" />
+    </UI>
+
+    <UIRef Id="WixUI_Phasegent" />
+  </Fragment>
+  <?endforeach?>
+
+  <?foreach WIXUIARCH in X86;X64;A64 ?>
+  <Fragment>
+    <UI Id="WixUI_Phasegent_ExtendedPathValidation_$(WIXUIARCH)">
+      <Publish Dialog="BrowseDlg" Control="OK" Event="DoAction" Value="WixUIValidatePath_$(WIXUIARCH)" Order="1" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SpawnDialog" Value="InvalidDirDlg" Order="2" Condition="WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;" />
+
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction" Value="WixUIValidatePath_$(WIXUIARCH)" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SpawnDialog" Value="InvalidDirDlg" Order="2" Condition="WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ShortcutOptionsDlg" Order="4" Condition="WIXUI_INSTALLDIR_VALID=&quot;1&quot;" />
+    </UI>
+
+    <UIRef Id="WixUI_Phasegent" />
+  </Fragment>
+  <?endforeach?>
+
+  <Fragment>
+    <UI Id="file WixUI_Phasegent">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="BrowseDlg" />
+      <DialogRef Id="DiskCostDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Condition="LicenseAccepted = &quot;1&quot;" />
+
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="3" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog" Value="BrowseDlg" Order="2" />
+
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SetTargetPath" Value="[_BrowseProperty]" Order="3" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="EndDialog" Value="Return" Order="4" />
+
+      <Publish Dialog="ShortcutOptionsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" Order="1" />
+      <Publish Dialog="ShortcutOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="1" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ShortcutOptionsDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Property Id="ARPNOMODIFY" Value="1" />
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+</Wix>

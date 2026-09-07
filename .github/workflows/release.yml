@@ -132,6 +132,9 @@ jobs:
       # WiX MSI path is kept (no Tauri bundling on Windows). Single x64 MSI
       # only; portable zip creation was removed. The WiX compiler emits a
       # `.wixpdb` sidecar next to the MSI; it is deleted and never uploaded.
+      # All three WiX sources (phasegent, Shortcuts, ShortcutOptionsDlg)
+      # compile together so the MSI keeps the per-user Start Menu/Desktop
+      # shortcut options.
       - name: Build MSI (Windows x64 only)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -149,7 +152,7 @@ jobs:
           Copy-Item -Path $exeName -Destination 'msi-stage\phasegent.exe' -Force
           $wixLog = 'wix-build-${{ matrix.target }}.log'
           if (Test-Path $wixLog) { Remove-Item $wixLog -Force }
-          wix build wix/phasegent.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
+          wix build wix/phasegent.wxs wix/Shortcuts.wxs wix/ShortcutOptionsDlg.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
           if ($LASTEXITCODE -ne 0) {
             $wixExit = $LASTEXITCODE
             $wixDetail = ''

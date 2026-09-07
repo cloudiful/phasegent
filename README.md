@@ -103,6 +103,20 @@ or via `auth setup`; stored keys are never displayed. Release downloads:
 Windows provides one x64 MSI plus the matching raw exe; macOS provides an
 unsigned Tauri app inside the `.dmg`, so Gatekeeper may warn on first open.
 
+Windows installer shortcut options: the MSI shows a Shortcut Options page.
+Start Menu is checked by default, Desktop is unchecked. Both shortcuts
+start the installed app with `phasegent gui`. Silent installs keep the
+defaults; override when needed:
+
+```sh
+msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn
+msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn PHASEGENT_DESKTOP_SHORTCUT=1
+msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn PHASEGENT_STARTMENU_SHORTCUT=0
+```
+
+Upgrades keep the same per-user install identity; uninstall removes the
+shortcuts, the Start Menu folder, and the user `PATH` entry.
+
 ## Configuration
 
 `auth setup` stores provider credentials in the local configuration database.

@@ -98,6 +98,19 @@ phasegent gui
 MSI 及对应的 raw exe；macOS 提供 `.dmg` 中的未签名 Tauri 应用，首次打开时
 Gatekeeper 可能会提示。
 
+Windows 安装包快捷方式选项：MSI 会显示 Shortcut Options 页面。默认勾选
+Start Menu，不勾选 Desktop。两个快捷方式均以 `phasegent gui` 启动已安装
+应用。静默安装保持默认；需要时覆盖：
+
+```sh
+msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn
+msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn PHASEGENT_DESKTOP_SHORTCUT=1
+msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn PHASEGENT_STARTMENU_SHORTCUT=0
+```
+
+升级保持相同的 per-user 安装标识；卸载会删除快捷方式、Start Menu 文件夹
+和用户 `PATH` 条目。
+
 ## 配置
 
 `auth setup` 将 provider credential 保存在本地配置数据库中。`config show` 提供
