@@ -16,3 +16,5 @@ node_modules/
 bun.lock
 frontend/auto-imports.d.ts
 frontend/components.d.ts
+
+gen/
