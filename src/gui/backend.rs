@@ -58,8 +58,15 @@ fn build_dispatcher(
                 .map_err(redact_provider_error)
         }
         // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // dispatch lands in P2/P3.
-        ProviderKind::Local => Err("local provider dispatch is not wired in this phase".to_owned()),
+        // dispatch lands in P2/P3. Shape the error like the other arms'
+        // redacted not_supported envelope so the GUI treats `local`
+        // uniformly (kind "not_supported", not a bare string).
+        ProviderKind::Local => Err(redact_provider_error(
+            crate::providers::forgejo::ForgejoError::not_supported(
+                "local",
+                "provider dispatch is not wired in this phase",
+            ),
+        )),
     }
 }
 

@@ -841,6 +841,7 @@ fn config_provider_set_parses_valid_values() {
         ("forgejo", crate::providers::ProviderKind::Forgejo),
         ("redmine", crate::providers::ProviderKind::Redmine),
         ("gitlab", crate::providers::ProviderKind::Gitlab),
+        ("local", crate::providers::ProviderKind::Local),
     ] {
         let args = ["config", "provider", "set", raw]
             .into_iter()

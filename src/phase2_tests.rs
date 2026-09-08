@@ -1583,8 +1583,44 @@ fn provider_kind_gitlab_round_trips_and_rejects_unknown_values() {
 
     let error = "wrong".parse::<ProviderKind>().unwrap_err();
     assert!(
-        error.contains("forgejo, redmine, or gitlab"),
+        error.contains("forgejo, redmine, gitlab, or local"),
         "parse error must enumerate the supported providers: {error}"
+    );
+}
+
+#[test]
+fn provider_kind_local_round_trips_and_resolves_without_credentials() {
+    // Issue 211 P1/P2/P3: `local` must parse/render/display like the
+    // other providers, round-trip through `ProviderKind::from_str`, and
+    // resolve through the persisted-default chain so `--provider local`
+    // commands need no credential and no network.
+    use std::str::FromStr;
+
+    let parsed: ProviderKind = "local".parse().expect("local must parse");
+    assert_eq!(parsed, ProviderKind::Local);
+    assert_eq!(parsed.as_str(), "local");
+    assert_eq!(format!("{parsed}"), "local");
+
+    let round_trip = ProviderKind::from_str(ProviderKind::Local.as_str())
+        .expect("as_str must parse back to Local");
+    assert_eq!(round_trip, ProviderKind::Local);
+
+    // The top-level `--provider local` flag flows through the parser.
+    let args = [
+        "--role",
+        "executor",
+        "--provider",
+        "local",
+        "issue",
+        "search",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("--provider local must parse");
+    assert_eq!(
+        invocation.provider.expect("--provider must be captured"),
+        ProviderKind::Local
     );
 }
 

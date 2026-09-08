@@ -166,23 +166,27 @@ fn validate_provider_options(
     repository: &Option<String>,
     close_status_id: &Option<String>,
 ) -> Result<(), String> {
-    if provider == "forgejo" && close_status_id.is_some() {
+    // Provider-agnostic: the option-applicability rules reference the
+    // shared PROVIDER_* identity constants (never inline literals) so
+    // the messages describe which provider owns each option rather than
+    // which provider was configured. Credentials are not validated here;
+    // the `setup_provider` local arm skips credential handling entirely.
+    if provider == PROVIDER_FORGEJO && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
-    if provider == "redmine" && repository.is_some() {
+    if provider == PROVIDER_REDMINE && repository.is_some() {
         return Err("--repository requires the forgejo provider".to_owned());
     }
-    if provider == "gitlab" && repository.is_some() {
+    if provider == PROVIDER_GITLAB && repository.is_some() {
         return Err("--repository requires the forgejo provider".to_owned());
     }
-    if provider == "gitlab" && close_status_id.is_some() {
+    if provider == PROVIDER_GITLAB && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
     // Issue 211 P1: the local provider takes neither a Forgejo
     // repository nor a Redmine close-status-id, mirroring the GitLab
     // arms above so inapplicable options fail fast instead of being
-    // silently ignored. Credentials are not validated here; the
-    // `setup_provider` local arm skips credential handling entirely.
+    // silently ignored.
     if provider == PROVIDER_LOCAL && repository.is_some() {
         return Err("--repository requires the forgejo provider".to_owned());
     }
@@ -506,4 +510,100 @@ fn save_gitlab_config(
         storage.save_gitlab_config(role, &config)?;
     }
     storage.update_provider(role, PROVIDER_GITLAB)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use std::fs;
+
+    #[test]
+    fn auth_setup_local_is_password_free_and_flips_role_provider() {
+        // Issue 211 P1/P3: the local provider keeps no credential, needs
+        // no repository and no close-status-id, so `auth setup
+        // --provider local` must succeed without reading stdin or
+        // prompting, and persist only the role-scoped provider
+        // preference so `config show` / `resolve_kind` report `local`.
+        let _lock = lock_workflow_tests();
+        let dir = std::env::temp_dir().join(format!(
+            "phasegent-auth-local-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join(crate::infra::storage::DB_FILENAME);
+        let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
+
+        // read_stdin=false still must not prompt: the local arm returns
+        // before touching `read_credential`.
+        let out = setup_provider(
+            Role::Executor,
+            PROVIDER_LOCAL,
+            SetupOptions {
+                read_stdin: false,
+                api_base: None,
+                repository: None,
+                close_status_id: None,
+            },
+        )
+        .expect("local setup must not require credentials");
+        assert_eq!(out["configured"], true);
+        assert_eq!(out["role"], "executor");
+        assert_eq!(out["provider"], "local");
+
+        let storage = Storage::open().unwrap();
+        let provider = load_config(Role::Executor, &storage)
+            .unwrap()
+            .and_then(|config| config.provider);
+        assert_eq!(provider, Some(PROVIDER_LOCAL.to_owned()));
+        // No credential row is ever written for the local provider.
+        assert!(
+            storage
+                .load_credential(Role::Executor, PROVIDER_LOCAL)
+                .is_err()
+                || storage
+                    .load_credential(Role::Executor, PROVIDER_LOCAL)
+                    .unwrap()
+                    .is_none(),
+            "local must never store a credential"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn auth_setup_local_rejects_inapplicable_options() {
+        // Mirrors the GitLab arms: local takes neither a Forgejo
+        // repository nor a Redmine close-status-id, and the message is
+        // provider-agnostic (it names the owning provider).
+        let _lock = lock_workflow_tests();
+        let err = setup_provider(
+            Role::Executor,
+            PROVIDER_LOCAL,
+            SetupOptions {
+                read_stdin: true,
+                api_base: None,
+                repository: Some("owner/repo".to_owned()),
+                close_status_id: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "--repository requires the forgejo provider");
+
+        let err = setup_provider(
+            Role::Executor,
+            PROVIDER_LOCAL,
+            SetupOptions {
+                read_stdin: true,
+                api_base: None,
+                repository: None,
+                close_status_id: Some("1".to_owned()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "--close-status-id requires the redmine provider");
+    }
 }

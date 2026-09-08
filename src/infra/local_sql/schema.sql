@@ -5,7 +5,7 @@
 -- Mirrored by migrations/pg/0002_local.sql with identical column names.
 
 CREATE TABLE IF NOT EXISTS local_projects (
-    project TEXT PRIMARY KEY,
+    project TEXT PRIMARY KEY CHECK (project <> '' AND length(project) <= 200),
     description TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL CHECK (created_at > 0)
 );

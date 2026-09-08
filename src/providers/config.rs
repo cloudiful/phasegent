@@ -50,7 +50,7 @@ impl FromStr for ProviderKind {
             "gitlab" => Ok(Self::Gitlab),
             "local" => Ok(Self::Local),
             _ => Err(format!(
-                "invalid provider '{value}'; expected forgejo, redmine, or gitlab"
+                "invalid provider '{value}'; expected forgejo, redmine, gitlab, or local"
             )),
         }
     }
@@ -429,7 +429,7 @@ mod tests {
             ProviderKind::Gitlab
         );
         let error = "wrong".parse::<ProviderKind>().unwrap_err();
-        assert!(error.contains("forgejo, redmine, or gitlab"));
+        assert!(error.contains("forgejo, redmine, gitlab, or local"));
     }
 
     #[test]
