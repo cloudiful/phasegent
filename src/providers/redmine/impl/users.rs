@@ -13,8 +13,7 @@ impl RedmineProvider {
     /// creation response rarely carries the new user's API key; call
     /// [`Self::get_user_api_key`] after creation to retrieve it.
     ///
-    /// Phase 1 introduces this helper for contract tests; phase 2 wires
-    /// it into bootstrap provisioning.
+    /// Used by contract tests and admin provisioning.
     #[allow(dead_code)]
     pub fn create_user(
         &self,
@@ -54,8 +53,7 @@ impl RedmineProvider {
     /// the response exposes that user's `api_key` on
     /// [`RedmineUser::api_key`].
     ///
-    /// Phase 1 introduces this helper for contract tests; phase 2 wires
-    /// it into bootstrap provisioning.
+    /// Used by contract tests and admin provisioning.
     #[allow(dead_code)]
     pub fn get_user(&self, id: u64) -> Result<RedmineUser, ForgejoError> {
         if id == 0 {
@@ -71,8 +69,7 @@ impl RedmineProvider {
     /// surfaces as a `decode` error that never echoes the raw payload so
     /// no key material can leak into the message.
     ///
-    /// Phase 1 introduces this helper for contract tests; phase 2 wires
-    /// it into bootstrap provisioning.
+    /// Used by contract tests and admin provisioning.
     #[allow(dead_code)]
     pub fn get_user_api_key(&self, id: u64) -> Result<String, ForgejoError> {
         let user = self.get_user(id)?;
@@ -87,12 +84,12 @@ impl RedmineProvider {
 
     /// Create a service user with Redmine-generated credentials.
     ///
-    /// Phase 2 provisioning uses this so no password material ever
-    /// exists in phasegent memory, logs, or errors. Identity fields are
-    /// validated locally; Redmine-side duplicate-login validation
-    /// arrives as an `Http` 422 through the shared redacted path.
-    /// Call [`Self::get_user_api_key`] after creation to retrieve the
-    /// API key for persistence in `role_credential`.
+    /// Provisioning uses this so no password material ever exists in
+    /// phasegent memory, logs, or errors. Identity fields are validated
+    /// locally; Redmine-side duplicate-login validation arrives as an
+    /// `Http` 422 through the shared redacted path. Call
+    /// [`Self::get_user_api_key`] after creation to retrieve the API key
+    /// for persistence in `role_credential`.
     pub fn create_service_user(
         &self,
         login: &str,
@@ -122,10 +119,9 @@ impl RedmineProvider {
 
     /// Find one user by exact login via the admin REST API.
     ///
-    /// Used by Phase 2 provisioning to look up the deterministic
-    /// service-user login before creating, so reruns and legacy
-    /// databases never create duplicates. Blank logins fail fast
-    /// without HTTP.
+    /// Used by provisioning to look up the deterministic service-user
+    /// login before creating, so reruns and legacy databases never
+    /// create duplicates. Blank logins fail fast without HTTP.
     pub fn find_user_by_login(&self, login: &str) -> Result<Option<RedmineUser>, ForgejoError> {
         if login.trim().is_empty() {
             return Err(ForgejoError::config("Redmine user login cannot be empty"));

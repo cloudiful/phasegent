@@ -103,7 +103,7 @@ impl GitlabProvider {
         "projects".to_owned()
     }
 
-    // -- Not-supported helpers for later phases ------------------------------
+    // -- Not-supported helpers ------------------------------------------------
 
     #[allow(dead_code)]
     pub(crate) fn unsupported<T>(&self, operation: &str) -> Result<T, ForgejoError> {
@@ -114,11 +114,9 @@ impl GitlabProvider {
 // -- Capability surface ----------------------------------------------------
 
 impl GitlabProvider {
-    /// Capability table for GitLab. Phase 3 lights up repository
-    /// creation alongside the Phase 2 issue / comment / workflow
-    /// surface. Phase 4 lifts the relation surface from not-supported
-    /// to native so the shared CLI can dispatch `relation
-    /// list/create/delete` to the GitLab provider.
+    /// Capability table for GitLab. Repository creation and issue
+    /// relations are native so the shared CLI can dispatch `repo
+    /// create` and `relation list/create/delete` to the GitLab provider.
     pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
         crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
@@ -170,7 +168,7 @@ mod tests {
         assert!(provider.supports(Capability::IssueRead));
         assert!(provider.supports(Capability::CommentCreate));
         assert!(provider.supports(Capability::RepoCreate));
-        // Phase 4: relations are native on GitLab.
+        // Relations are native on GitLab.
         assert!(provider.supports(Capability::RelationRead));
         assert!(provider.supports(Capability::RelationCreate));
         assert!(provider.supports(Capability::RelationDelete));

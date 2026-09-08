@@ -1,11 +1,9 @@
 //! Redmine project resolution for repository-aware workflows.
 //!
-//! Implements Phase 3's repository-aware Redmine project selection:
-//!
 //! - Explicit `--project-id` is the highest-priority override and never
 //!   triggers discovery.
 //! - Otherwise, when the provider is Redmine, the current Git origin is
-//!   resolved and Phase 2's `discover_matching_projects` is consulted.
+//!   resolved and `discover_matching_projects` is consulted.
 //!   Exactly one `remote_url` match supplies the project id for the
 //!   current invocation; multiple matches fail with a bounded actionable
 //!   error listing candidate ids/names; discovery HTTP/auth/decode

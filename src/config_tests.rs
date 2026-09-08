@@ -360,8 +360,8 @@ fn config_import_env_is_rejected() {
 #[test]
 fn config_set_parses_canonical_and_kebab_alias() {
     // Canonical and kebab-case alias must both be accepted and resolve to same canonical.
-    // Project-id aliases were removed in Phase 1; they are asserted as
-    // rejected in the dedicated regression test below.
+    // Project-id aliases were removed; they are asserted as rejected in
+    // the dedicated regression test below.
     let cases = [
         ("PHASEGENT_API_BASE", "api-base"),
         (
@@ -413,8 +413,8 @@ fn config_set_parses_canonical_and_kebab_alias() {
 
 #[test]
 fn config_set_rejects_legacy_project_id_aliases() {
-    // Phase 1: project-id persistence removed. The canonical names and
-    // the ambiguous alias must be rejected as unknown settings at parse
+    // Project-id persistence removed. The canonical names and the
+    // ambiguous alias must be rejected as unknown settings at parse
     // time and via the config_write dispatch.
     for alias in [
         "PHASEGENT_REDMINE_PROJECT_ID",
@@ -974,8 +974,8 @@ fn config_show_includes_gitlab_fields_without_leaking_token() {
             executor["gitlab_api_base"].as_str(),
             Some("https://gitlab.example")
         );
-        // Project-id fields were removed in Phase 1; stored values are
-        // ignored and must not appear in the snapshot.
+        // Project-id fields were removed; stored values are ignored and
+        // must not appear in the snapshot.
         assert!(
             executor.get("gitlab_project_id").is_none(),
             "snapshot must not expose gitlab_project_id after Phase 1: {executor:?}"
@@ -1045,8 +1045,7 @@ fn gitlab_config_snapshot_omits_unset_fields() {
 fn legacy_project_id_values_are_inert_and_not_resolved() {
     with_isolated_storage("legacy-project-id-inert", |db_path, storage| {
         // Simulate a legacy database where project ids were persisted
-        // before Phase 1 by writing directly via SQL before the
-        // migration runs.
+        // by writing directly via SQL before the migration runs.
         storage
             .connection
             .execute(
@@ -1115,7 +1114,7 @@ fn legacy_project_id_values_are_inert_and_not_resolved() {
         let _env_gitlab = EnvGuard::set("PHASEGENT_GITLAB_PROJECT_ID", "123");
         let _env_generic = EnvGuard::set("PHASEGENT_PROJECT_ID", "generic-id");
         let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
-        // Redmine: explicit None, env present, but Phase 1 ignores env.
+        // Redmine: explicit None, env present, but env is ignored.
         let redmine_config = crate::providers::config::RedmineConfig::resolve(
             Role::Executor,
             Some("https://redmine.example"),
@@ -1936,7 +1935,7 @@ fn removed_index_commands_are_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// TOML overlay (phase 3): read-only human-editable layer with
+// TOML overlay: read-only human-editable layer with
 // explicit CLI > env > TOML > SQLite > defaults precedence.
 // ---------------------------------------------------------------------------
 

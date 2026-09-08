@@ -15,9 +15,8 @@ use crate::providers::local::LocalProvider;
 pub enum ProviderDispatcher {
     Forgejo(ForgejoProvider),
     Redmine(RedmineProvider),
-    /// GitLab provider. The dispatcher routes every trait call to
-    /// GitlabProvider's not-supported stubs so replacing the
-    /// implementation does not require touching the dispatch wiring.
+    /// GitLab provider. The dispatcher routes every trait call to the
+    /// GitlabProvider arm.
     Gitlab(GitlabProvider),
     /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),

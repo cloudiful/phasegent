@@ -12,13 +12,11 @@ pub enum ProviderKind {
     #[default]
     Forgejo,
     Redmine,
-    /// GitLab provider. Added in the Phase 1 foundation so the resolver,
-    /// dispatcher, config snapshot, and env-import paths all recognise
-    /// `gitlab` before the HTTP layer lands in subsequent phases.
+    /// GitLab provider. Recognised by the resolver, dispatcher, config
+    /// snapshot, and env-import paths.
     Gitlab,
-    /// Local provider (issue 211, P1). Recognised by the resolver,
-    /// `--provider` flag parsing, and the config snapshot via
-    /// `as_str`/`from_str` only; dispatcher arms land in P2/P3 so
+    /// Local provider. Recognised by the resolver, `--provider` flag
+    /// parsing, and the config snapshot via `as_str`/`from_str` only;
     /// runtime dispatch still treats `local` as unsupported there.
     Local,
 }
@@ -61,7 +59,7 @@ impl FromStr for ProviderKind {
 /// Precedence, highest first:
 ///   1. Explicit `--provider` argument supplied by the caller.
 ///   2. `PHASEGENT_PROVIDER` environment variable (one-process
-///      override, identical to phase 2 behaviour).
+///      override).
 ///   3. `PHASEGENT_DEFAULT_PROVIDER` environment variable
 ///      (one-process override for the persistent default).
 ///   4. TOML `default_provider` in `phasegent.toml` (human-editable
@@ -75,13 +73,12 @@ impl FromStr for ProviderKind {
 ///      `[roles.<role>] provider` TOML value shadows the SQLite row).
 ///   7. Forgejo fallback.
 ///
-/// Steps 1 and 2 already existed; steps 3 through 7 extend phase
-/// `global-provider-default` with the TOML overlay. The resolver is
-/// read-only: it never persists anything and never writes TOML, so a
-/// stray `--provider` omission cannot silently overwrite either store.
-/// `config set`/`clear` and `config provider set`/`clear` continue to
-/// touch SQLite only; a TOML value shadows SQLite until the file (or
-/// env) is removed.
+/// Steps 1 and 2 already existed; steps 3 through 7 add the TOML
+/// overlay. The resolver is read-only: it never persists anything and
+/// never writes TOML, so a stray `--provider` omission cannot silently
+/// overwrite either store. `config set`/`clear` and `config provider
+/// set`/`clear` continue to touch SQLite only; a TOML value shadows
+/// SQLite until the file (or env) is removed.
 pub fn resolve_kind(
     role: Role,
     explicit: Option<ProviderKind>,
@@ -309,7 +306,7 @@ impl GitlabConfig {
     ///      caller.
     ///   2. `PHASEGENT_GITLAB_API_BASE` / `PHASEGENT_API_BASE` environment
     ///      variables for the base (project-id env and persisted values
-    ///      were removed in Phase 1).
+    ///      were removed).
     ///   3. TOML `[roles.<role>] gitlab_api_base` via
     ///      `auth::load_gitlab_config` (TOML-over-SQLite) falling back to
     ///      the persisted `api_base` in `role_gitlab_config`.
@@ -339,8 +336,8 @@ impl GitlabConfig {
                 )
             })?;
         // Project id source: only explicit `--project-id`. Env and
-        // persisted values were removed in Phase 1 (remove-project-id)
-        // and are intentionally ignored to ensure legacy rows are inert.
+        // persisted values were removed and are intentionally ignored to
+        // ensure legacy rows are inert.
         let parsed_project: u64 = match explicit_project
             .as_deref()
             .map(str::trim)
@@ -408,12 +405,11 @@ pub fn normalize_gitlab_api_base(value: &str) -> Result<String, String> {
     Ok(url.to_string().trim_end_matches('/').to_owned())
 }
 
-/// Re-export the real GitLab provider implementation. The stub used
-/// to live in this module in Phase 1; Phase 2 moved the
-/// implementation to [`crate::providers::gitlab`] so the HTTP plumbing and the
-/// provider logic share a single file. Keeping the old name here
-/// means every existing `crate::providers::config::GitlabProvider`
-/// reference continues to compile without churn.
+/// Re-export the real GitLab provider implementation. The implementation
+/// moved to [`crate::providers::gitlab`] so the HTTP plumbing and the provider
+/// logic share a single file. Keeping the old name here means every
+/// existing `crate::providers::config::GitlabProvider` reference continues
+/// to compile without churn.
 pub use crate::providers::gitlab::GitlabProvider;
 
 #[cfg(test)]
@@ -434,9 +430,8 @@ mod tests {
 
     #[test]
     fn local_kind_round_trip() {
-        // Issue 211 P1: `local` parses, renders, and displays without
-        // touching the seven-level `resolve_kind` chain or any
-        // dispatcher arm (those land in P2/P3).
+        // `local` parses, renders, and displays without touching the
+        // seven-level `resolve_kind` chain or any dispatcher arm.
         assert_eq!(ProviderKind::Local.as_str(), "local");
         assert_eq!(
             "local".parse::<ProviderKind>().unwrap(),
