@@ -59,12 +59,11 @@ impl ApiProject {
 }
 
 impl GitlabProvider {
-    /// Resolve an authenticated-user namespace id from GitLab. Phase 3
-    /// deliberately resolves namespaces lazily: when the orchestrator
-    /// passes a bare `REPOSITORY` (no `OWNER/` prefix), this method
-    /// fetches the current user via `/user` and returns its numeric
-    /// id so the project lands in the caller's personal namespace,
-    /// matching the Forgejo behaviour.
+    /// Resolve an authenticated-user namespace id from GitLab. Namespaces
+    /// resolve lazily: when the orchestrator passes a bare `REPOSITORY`
+    /// (no `OWNER/` prefix), this method fetches the current user via
+    /// `/user` and returns its numeric id so the project lands in the
+    /// caller's personal namespace, matching the Forgejo behaviour.
     pub(crate) fn current_user_id(&self) -> Result<u64, ForgejoError> {
         #[derive(serde::Deserialize)]
         struct CurrentUser {
@@ -234,7 +233,7 @@ impl GitlabProvider {
     pub(crate) fn list_projects(
         &self,
     ) -> Result<Vec<crate::providers::redmine::model::RedmineProject>, ForgejoError> {
-        // GitLab project enumeration is part of Phase 3; surface the
+        // GitLab project enumeration is unsupported; surface the
         // structured not-supported error so callers do not silently
         // see a Redmine-shaped result.
         let _ = self;

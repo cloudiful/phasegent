@@ -45,8 +45,7 @@ pub(crate) const TRACKER_LABEL_FEATURE: &str = "type::feature";
 /// `RedmineProvider::select_tracker` rules can pass through. Numeric
 /// ids are rejected because the GitLab label convention is name-based
 /// and a project can have multiple `type::*` labels; mapping an id to
-/// a label would require a separate metadata round trip that Phase 2
-/// explicitly defers.
+/// a label would require a separate metadata round trip.
 pub(crate) fn tracker_label_from_name(value: &str) -> Result<&'static str, ForgejoError> {
     if value.eq_ignore_ascii_case("Bug") {
         Ok(TRACKER_LABEL_BUG)
@@ -169,8 +168,8 @@ mod tests {
 
     #[test]
     fn tracker_label_rejects_numeric_ids() {
-        // Numeric ids are explicitly unsupported in Phase 2: the
-        // label-based convention is name-only.
+        // Numeric ids are explicitly unsupported: the label-based
+        // convention is name-only.
         let error = tracker_label_from_name("2").unwrap_err();
         assert!(matches!(error, ForgejoError::Config(_)));
     }

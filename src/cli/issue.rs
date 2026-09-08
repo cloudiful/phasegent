@@ -92,14 +92,14 @@ pub(crate) fn execute_issue(
         && project_id.is_none()
         && matches!(&command, IssueCommand::Create { .. });
     let (project_id, close_status_id) = if automatic_workflow {
-        // Phase 3: try repository-aware discovery first. An explicit
-        // project id already won and is not inside this branch. When
-        // discovery finds exactly one match we use it directly and
-        // bypass bootstrap (no project creation, membership writes, or
-        // mirror POST). Multiple matches fail before any issue write
-        // with a bounded listing. Any other discovery HTTP/auth/decode
-        // error is propagated, not treated as NoMatch. Only NoMatch
-        // keeps the existing automatic bootstrap fallback.
+        // Try repository-aware discovery first. An explicit project id
+        // already won and is not inside this branch. When discovery
+        // finds exactly one match we use it directly and bypass bootstrap
+        // (no project creation, membership writes, or mirror POST).
+        // Multiple matches fail before any issue write with a bounded
+        // listing. Any other discovery HTTP/auth/decode error is
+        // propagated, not treated as NoMatch. Only NoMatch keeps the
+        // existing automatic bootstrap fallback.
         let discovered = match super::project_resolution::resolve_redmine_project(
             role,
             api_base,

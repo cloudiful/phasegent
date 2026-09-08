@@ -1590,10 +1590,10 @@ fn provider_kind_gitlab_round_trips_and_rejects_unknown_values() {
 
 #[test]
 fn provider_kind_local_round_trips_and_resolves_without_credentials() {
-    // Issue 211 P1/P2/P3: `local` must parse/render/display like the
-    // other providers, round-trip through `ProviderKind::from_str`, and
-    // resolve through the persisted-default chain so `--provider local`
-    // commands need no credential and no network.
+    // `local` must parse/render/display like the other providers,
+    // round-trip through `ProviderKind::from_str`, and resolve through
+    // the persisted-default chain so `--provider local` commands need no
+    // credential and no network.
     use std::str::FromStr;
 
     let parsed: ProviderKind = "local".parse().expect("local must parse");

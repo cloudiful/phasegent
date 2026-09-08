@@ -420,11 +420,11 @@ impl GitlabHttp {
         }
     }
 
-    /// Issue a `DELETE` against the GitLab API. Phase 4 introduces
-    /// this helper for issue link deletes (`/links/:id`) and any
-    /// future endpoint that follows the same shape. The method is
-    /// tolerant of an empty body so a successful `204 No Content`
-    /// surfaces as `Ok(None)` instead of a decode error.
+    /// Issue a `DELETE` against the GitLab API, used for issue link
+    /// deletes (`/links/:id`) and any future endpoint that follows the
+    /// same shape. The method is tolerant of an empty body so a
+    /// successful `204 No Content` surfaces as `Ok(None)` instead of a
+    /// decode error.
     pub(crate) fn delete<T: DeserializeOwned>(
         &self,
         path: &str,

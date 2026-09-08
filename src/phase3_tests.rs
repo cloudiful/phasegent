@@ -1,4 +1,4 @@
-//! Phase 3 lifecycle tests.
+//! Lifecycle tests.
 //!
 //! Covers repository identity matching, bootstrap hook auto-install gating,
 //! Redmine create auto-bind / close auto-unbind, and the guarantee that local
@@ -11,10 +11,6 @@ use crate::lifecycle::{
     self, AutoBindOutcome, AutoUnbindOutcome, HookAutoInstall, MAX_WARNING_CHARS,
 };
 use std::cell::RefCell;
-
-// ---------------------------------------------------------------------------
-// Fake runner driven by a scripted argv -> (status, stdout) table.
-// ---------------------------------------------------------------------------
 
 struct ScriptedRunner {
     responses: RefCell<Vec<(Vec<String>, i32, String)>>,
@@ -118,10 +114,6 @@ fn branch_and_binding_runner(branch: &str, stored: Option<u64>) -> ScriptedRunne
     runner
 }
 
-// ---------------------------------------------------------------------------
-// Repository identity matching.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn origin_identity_matches_owner_repo_across_url_shapes() {
     for url in [
@@ -183,10 +175,6 @@ fn checkout_gate_requires_origin_and_matching_explicit_repository() {
     no_origin.without_origin();
     assert!(lifecycle::current_checkout_matches(&no_origin, None).is_err());
 }
-
-// ---------------------------------------------------------------------------
-// Bootstrap hook auto-install gating (real temp repos, injectable runner).
-// ---------------------------------------------------------------------------
 
 struct TempRepo(std::path::PathBuf);
 
@@ -286,10 +274,6 @@ fn hooks_skip_without_origin() {
     #[cfg(unix)]
     assert!(!hook_path(&repo, "prepare-commit-msg").exists());
 }
-
-// ---------------------------------------------------------------------------
-// Redmine create auto-bind.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn create_binds_issue_to_current_branch_on_success() {
@@ -398,10 +382,6 @@ fn create_local_write_failure_warns_with_bounded_message() {
     assert!(warning.chars().count() <= MAX_WARNING_CHARS + 20);
     assert!(warning.contains("failed"), "{warning}");
 }
-
-// ---------------------------------------------------------------------------
-// Redmine close auto-unbind.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn close_unbinds_only_exact_current_issue() {
