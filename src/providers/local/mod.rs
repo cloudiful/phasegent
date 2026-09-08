@@ -1,9 +1,9 @@
-//! Local provider entry (issue 211 P2).
+//! Local provider entry.
 //!
 //! SQLite-backed [`LocalProvider`] implements the shared
 //! `IssueProvider` / `RedmineMetadataProvider` / `RepoProvider`
 //! surfaces; PostgreSQL stays a reserved stub (`PgLocalProvider`)
-//! so P2 compiles without a live PG database. Planning fields
+//! that fails with a structured not-supported error. Planning fields
 //! (`--parent-issue`, `--fixed-version`, dates, estimates) are
 //! accepted by the CLI but intentionally ignored and never persisted.
 
@@ -97,10 +97,10 @@ impl LocalProvider {
     }
 }
 
-/// Reserved PostgreSQL local provider (issue 211 P2).
+/// Reserved PostgreSQL local provider.
 ///
-/// SQLite is authoritative in P2; this struct only reserves the
-/// interface so P3/PG work adds CRUD without renaming. `open`
+/// SQLite is authoritative; this struct only reserves the interface
+/// so the PostgreSQL backend can add CRUD without renaming. `open`
 /// intentionally fails with a structured not-supported error.
 #[derive(Debug)]
 pub struct PgLocalProvider {
@@ -109,8 +109,8 @@ pub struct PgLocalProvider {
 
 impl PgLocalProvider {
     pub fn open(_url: &str) -> Result<Self, ForgejoError> {
-        // TODO(PG-local): implement PostgresLocalStore-backed CRUD
-        // mirroring Sqlite LocalProvider once P3 wires async dispatch.
+        // PG reserved by design: implement PostgresLocalStore-backed
+        // CRUD mirroring Sqlite LocalProvider once async dispatch is wired.
         Err(ForgejoError::not_supported(
             "local",
             "postgres backend (reserved)",

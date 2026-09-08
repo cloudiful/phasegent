@@ -8,8 +8,7 @@ use crate::providers::{IssueProvider, ProviderKind};
 /// role (orchestrator/executor/reviewer), while `create` and `delete` are
 /// orchestrator-only; the admin identity is denied all three. Forgejo
 /// rejects every relation operation with a structured not-supported error
-/// before any network access. Phase 4 lifts the GitLab foundation
-/// restriction so the dispatch path also handles GitLab's
+/// before any network access. The dispatch path handles GitLab's
 /// `/links` endpoint, with `precedes` and `--delay` rejected as
 /// structured config errors rather than silently mapped.
 pub(crate) fn execute_relation(
@@ -42,9 +41,9 @@ pub(crate) fn execute_relation(
             ));
         }
         Ok(ProviderKind::Redmine) | Ok(ProviderKind::Gitlab) => {}
-        // Issue 211 P3: local has no issue-relations surface; keep the
-        // structured not-supported error before any provider build so the
-        // only side effect is the structured error.
+        // Local has no issue-relations surface; keep the structured
+        // not-supported error before any provider build so the only side
+        // effect is the structured error.
         Ok(ProviderKind::Local) => {
             return super::provider_error(ForgejoError::not_supported(
                 "local",

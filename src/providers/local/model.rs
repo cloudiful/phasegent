@@ -1,4 +1,4 @@
-//! Local provider row mappings (issue 211 P2).
+//! Local provider row mappings.
 //!
 //! Converts `local_issues` / `local_comments` / `local_projects` rows
 //! into the shared Redmine-aligned envelopes (`IssueSummary`,
@@ -28,9 +28,9 @@ pub(crate) struct LocalIssueRow {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) status: String,
-    // Reserved for the future index view (P5/cross_backend); the current
-    // Redmine envelope only consumes id/title/body/status. Kept loaded so
-    // SELECTs stay stable while the index surface is designed.
+    // Reserved for the index view; the current Redmine envelope only
+    // consumes id/title/body/status. Kept loaded so SELECTs stay stable
+    // while the index surface is designed.
     #[allow(dead_code)]
     pub(crate) project: String,
     #[allow(dead_code)]

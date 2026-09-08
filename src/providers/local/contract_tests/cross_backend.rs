@@ -1,4 +1,4 @@
-//! Local provider cross-backend parity (issue 211 P5).
+//! Local provider cross-backend parity.
 //!
 //! The local provider is SQLite-first; PostgreSQL is selected by the
 //! same non-empty `PHASEGENT_INDEX_PG_URL` as the index (single-active,
@@ -42,7 +42,7 @@ fn search_open() -> IssueSearchOptions {
 #[test]
 fn sqlite_cross_backend_issue_comment_round_trip() {
     // Shared baseline: the provider CRUD a PostgreSQL backend must
-    // reproduce identically when its CRUD arm lands. Kept aligned with
+    // reproduce identically. Kept aligned with
     // `contract_tests::crud_round_trip_keeps_redmine_envelope`.
     let (provider, dir) = tmp_provider("sqlite");
     let created = provider.create_issue("Cross backend", "body").unwrap();
@@ -153,9 +153,9 @@ mod postgres_cross_backend {
         .expect("status seed query must run");
         assert_eq!(edges, 16);
 
-        // Constraint parity: after the P5 alignment the SQLite schema
-        // enforces the same `length(project) <= 200` CHECK as PG, so a
-        // too-long identifier must be rejected on PG as well.
+        // Constraint parity: the SQLite schema enforces the same
+        // `length(project) <= 200` CHECK as PG, so a too-long identifier
+        // must be rejected on PG as well.
         let long = "x".repeat(201);
         let oversized = block_on(
             sqlx::query(

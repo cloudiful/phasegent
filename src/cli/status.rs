@@ -52,8 +52,8 @@ pub(crate) fn execute_status(
         // `set` maps to a managed workflow label update; the
         // orchestrator-only guard above already protects it.
         Ok(ProviderKind::Gitlab) => {}
-        // Issue 211 P3: local flows through to the LocalProvider status
-        // catalogue; forgejo stays not-supported, redmine/gitlab unchanged.
+        // Local flows through to the LocalProvider status catalogue;
+        // forgejo stays not-supported, redmine/gitlab unchanged.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }

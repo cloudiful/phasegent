@@ -1,4 +1,4 @@
--- Local provider queries (issue 211 P2).
+-- Local provider queries.
 -- Single source for LocalProvider SQLite statements; loaded via
 -- include_str! and selected by `-- name:` headers. No DDL here;
 -- schema/seeds stay in schema.sql/seed.sql. Placeholders are rusqlite

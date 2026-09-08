@@ -29,7 +29,7 @@ pub(crate) fn resolve_planning(
     if options.is_empty() {
         return Ok(IssuePlanning::default());
     }
-    // Issue 211 P2 local backend ignores planning fields (no persistence).
+    // Local backend ignores planning fields (no persistence).
     if matches!(provider, ProviderDispatcher::Local(_)) {
         return Ok(IssuePlanning::default());
     }
@@ -186,7 +186,7 @@ pub(crate) fn create_issue(
             "forgejo",
             "issue tracker / planning fields",
         )),
-        // Issue 211 P2 local ignores tracker/planning and uses the plain path.
+        // Local ignores tracker/planning and uses the plain path.
         ProviderDispatcher::Local(_) => provider.create_issue(title, body),
     }
 }
@@ -247,7 +247,7 @@ pub(crate) fn update_body(
             "forgejo",
             "issue tracker / planning fields",
         )),
-        // Issue 211 P2 local ignores tracker/planning and uses the plain path.
+        // Local ignores tracker/planning and uses the plain path.
         ProviderDispatcher::Local(_) => provider.update_body(number, body),
     }
 }
@@ -261,13 +261,12 @@ fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, F
             "forgejo",
             "issue planning fields",
         )),
-        // Phase-4 GitLab provider: the GitLab planning surface is
-        // narrower than Redmine's (only `--tracker` and
-        // `--estimated-hours` are supported), and the dispatch above
-        // already validated every other flag before reaching this
-        // helper. Reaching this branch means the caller asked for a
-        // Redmine-only field; surface a structured not-supported error
-        // so the failure mode stays symmetric with the old behaviour.
+        // The GitLab planning surface is narrower than Redmine's (only
+        // `--tracker` and `--estimated-hours` are supported), and the
+        // dispatch above already validated every other flag before
+        // reaching this helper. Reaching this branch means the caller
+        // asked for a Redmine-only field; surface a structured
+        // not-supported error so the failure mode stays symmetric.
         ProviderDispatcher::Gitlab(_) => Err(ForgejoError::not_supported(
             "gitlab",
             "issue planning fields",

@@ -36,8 +36,8 @@ pub(crate) fn execute_project(
                 capability.operation(),
             ));
         }
-        // Issue 211 P3: local lists/creates via LocalProvider; forgejo
-        // and gitlab stay not-supported, redmine unchanged.
+        // Local lists/creates via LocalProvider; forgejo and gitlab
+        // stay not-supported, redmine unchanged.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }

@@ -1,4 +1,4 @@
--- Local provider SQLite seeds (issue 211 P4).
+-- Local provider SQLite seeds.
 -- Idempotent: INSERT OR IGNORE so re-open never duplicates.
 -- Status edges mirror redmine STATUS_TRANSITIONS exactly; the Redmine
 -- installation workflow stays authoritative at runtime (policy guidance

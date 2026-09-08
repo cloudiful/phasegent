@@ -1,4 +1,4 @@
--- Local provider SQLite schema (issue 211 P4).
+-- Local provider SQLite schema.
 -- Independent file phasegent-local.sqlite3; never touches
 -- phasegent.sqlite3 (config/credentials) or phasegent-index.sqlite3.
 -- Additive only: CREATE TABLE/INDEX IF NOT EXISTS, no destructive steps.

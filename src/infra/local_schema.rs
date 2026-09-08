@@ -1,11 +1,11 @@
-//! Local provider storage constants (issue 211 P4).
+//! Local provider storage constants.
 //!
 //! SQLite file `phasegent-local.sqlite3` is independent from
 //! `phasegent.sqlite3` (config/credentials) and
 //! `phasegent-index.sqlite3` (lexical index). DDL/seeds live in
 //! `local_sql/*.sql` and are embedded via `include_str!` so the file
-//! stays reviewable and P2 can add query files alongside. Status edges
-//! mirror `providers::redmine::model::status::STATUS_TRANSITIONS`.
+//! stays reviewable. Status edges mirror
+//! `providers::redmine::model::status::STATUS_TRANSITIONS`.
 
 /// Filename of the independent local SQLite inside the config dir.
 pub(crate) const DB_FILENAME_LOCAL: &str = "phasegent-local.sqlite3";
@@ -27,7 +27,7 @@ pub(crate) const SCHEMA_LOCAL: &str = include_str!("local_sql/schema.sql");
 pub(crate) const SEED_LOCAL: &str = include_str!("local_sql/seed.sql");
 
 /// Canonical status edges mirrored from Redmine `STATUS_TRANSITIONS`.
-/// Kept as data (not code) so seed verification and P2 policy checks
+/// Kept as data (not code) so seed verification and policy checks
 /// share one literal without importing the redmine model here.
 pub(crate) const STATUS_TRANSITION_SEED: &[(&str, &str)] = &[
     ("New", "In Progress"),
