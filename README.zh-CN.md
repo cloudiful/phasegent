@@ -34,6 +34,25 @@ cargo install --path .
 cargo install --path . --features postgres
 ```
 
+## OpenCode 集成
+
+`phasegent` 随附一个 OpenCode skill，位于 `skills/phasegent-workflow`。在
+OpenCode 一侧它只是薄入口，将工作委托给 CLI：选择 tracking 模式、委派给
+executor/reviewer/tester，并落实 marker、VERDICT、note-pointer 以及由
+orchestrator 独占的 timer/status/notify 契约。OpenCode 一侧不会重新实现
+CLI；`phasegent --role <role>` 始终是权威的语法参考。
+
+安装方式是将 skill 树复制到用户级 skills 目录：
+
+```sh
+cp -r skills/phasegent-workflow ~/.config/opencode/skills/
+```
+
+之后 skill 会依据其 `name: phasegent-workflow` 的 frontmatter 加载。tracking
+可以落在 Redmine issue（多阶段 `REDMINE_ISSUE`）、本地 provider issue
+（`--provider local`，它替代 `.opencode/plans/*.md` markdown），或用于
+琐碎只读工作的 inline。
+
 ## 快速开始
 
 Forgejo 是默认 provider。为需要使用 CLI 的每个 role 配置 credential。credential

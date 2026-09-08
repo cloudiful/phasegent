@@ -37,6 +37,26 @@ Enable the optional PostgreSQL index backend when needed:
 cargo install --path . --features postgres
 ```
 
+## OpenCode integration
+
+`phasegent` ships an OpenCode skill at `skills/phasegent-workflow`. On the
+OpenCode side it is a thin entry that delegates to the CLI: it picks the tracking
+mode, delegates to executor/reviewer/tester, and enforces the marker, VERDICT,
+note-pointer, and orchestrator-owned timer/status/notify contracts. Nothing on
+the OpenCode side reimplements the CLI; `phasegent --role <role>` stays the
+authoritative syntax reference.
+
+Install by copying the skill tree into the per-user skills directory:
+
+```sh
+cp -r skills/phasegent-workflow ~/.config/opencode/skills/
+```
+
+The skill then loads by its `name: phasegent-workflow` frontmatter. Tracking
+lives as a Redmine issue (multi-phase `REDMINE_ISSUE`), a local provider issue
+(`--provider local`, which replaces `.opencode/plans/*.md` markdown), or inline
+for trivial read-only work.
+
 ## Quick Start
 
 Forgejo is the default provider. Configure a credential for each role that

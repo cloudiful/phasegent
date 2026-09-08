@@ -37,6 +37,9 @@ mod hooks_tests;
 #[cfg(test)]
 mod config_tests;
 
+#[cfg(test)]
+mod skill_tests;
+
 fn main() {
     // Single-binary dispatch: the conservative no-argument desktop
     // heuristic lives here so `cli::run` keeps its exact existing
