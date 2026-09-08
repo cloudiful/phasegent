@@ -1,5 +1,7 @@
 //! Local provider contract tests (issue 211 P2, SQLite).
 
+pub(crate) mod cross_backend;
+
 use super::model::{local_sql, state_for_status};
 use super::{LocalProvider, PgLocalProvider};
 use crate::providers::api::IssueSearchOptions;

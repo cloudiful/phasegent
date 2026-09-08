@@ -62,7 +62,7 @@ pub(crate) fn print_mcp_command_help(role: Option<Role>, command: &str) {
         "serve" => {
             let role_text = role.map_or("ROLE", Role::as_str);
             println!(
-                "Usage: phasegent --role {role_text} [--provider forgejo|redmine|gitlab] mcp serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]\n\nServe the contracted MCP tools with the startup role. --transport stdio (default) speaks JSON-RPC on stdin/stdout; --transport http serves streamable HTTP via axum at /mcp on --bind (HTTP-only; requires --transport http). --authorized enables comment_create for non-orchestrator roles; without it the tool rejects with an authorization error. status_advance, timer start/finish, and role elevation are never exposed."
+                "Usage: phasegent --role {role_text} [--provider forgejo|redmine|gitlab|local] mcp serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]\n\nServe the contracted MCP tools with the startup role. --transport stdio (default) speaks JSON-RPC on stdin/stdout; --transport http serves streamable HTTP via axum at /mcp on --bind (HTTP-only; requires --transport http). --authorized enables comment_create for non-orchestrator roles; without it the tool rejects with an authorization error. status_advance, timer start/finish, and role elevation are never exposed."
             );
         }
         _ => print_mcp_help(role),

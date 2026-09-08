@@ -39,7 +39,7 @@ pub(crate) fn print_config_provider_command_help(command: &str) {
     match command {
         "get" => {
             println!(
-                "Usage: phasegent config provider get\n\nPrints a JSON object with the persisted PHASEGENT_DEFAULT_PROVIDER literal (`forgejo`, `redmine`, or `gitlab`) or `null` when the default has never been set. The output never echoes any secret value. Snapshot is persisted SQLite only; effective resolution still applies TOML before this value."
+                "Usage: phasegent config provider get\n\nPrints a JSON object with the persisted PHASEGENT_DEFAULT_PROVIDER literal (`forgejo`, `redmine`, `gitlab`, or `local`) or `null` when the default has never been set. The output never echoes any secret value. Snapshot is persisted SQLite only; effective resolution still applies TOML before this value."
             );
         }
         "set" => {

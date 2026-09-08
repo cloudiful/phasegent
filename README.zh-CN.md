@@ -8,6 +8,7 @@
 ## 功能
 
 - 支持 Forgejo（默认）、Redmine 和 GitLab。
+- 支持本地 provider（`--provider local`），离线使用，无需凭证与网络。
 - 支持 `admin`、`orchestrator`、`executor`、`reviewer`、`tester` 角色。
 - 按 provider 支持 issue 搜索、创建、更新、关闭，以及评论、状态、关系、版本
   和附件操作。
@@ -145,6 +146,32 @@ Issue 搜索优先访问 provider，并自动预热本地索引。provider 请�
 ```sh
 phasegent config set index-pg-url --stdin
 ```
+
+## 本地 provider
+
+`--provider local` 完全离线运行，无需凭证、网络，也不需要 `auth setup`
+的 token。它使用配置数据库旁边一个独立的本地数据库文件
+（`phasegent-local.sqlite3`），默认填充 project、issue、评论以及标准状态
+转移。`auth setup --provider local` 仅记录按 role 划分的 provider 偏好，
+永不提示输入 secret：
+
+```sh
+phasegent --role executor --provider local auth setup
+phasegent --role executor --provider local issue create \
+  --title "Local task" --body "Works offline"
+```
+
+issue、评论和状态相关命令在本地后端均可使用（`issue search`、
+`issue get`、`issue create`、`issue update-body`、`issue close`、
+`comment create`、状态 list/next/advance/set，以及 project list/create）。
+仓库与附件操作会返回结构化的 `not_supported` 错误，与当前能力一致。
+返回的 envelope 遵循 Redmine 对齐的形状，因此选择 `--provider local`
+的脚本能获得稳定格式。
+
+当索引所使用的非空 `PHASEGENT_INDEX_PG_URL` 已设置时选择 PostgreSQL，
+否则使用 SQLite。同一时刻只有一个本地后端处于活动状态（single-active，
+不会双写）。`migrations/pg/0002_local.sql` 下的加法迁移与 SQLite 结构保持
+一致。
 
 ## 本地分支上下文
 

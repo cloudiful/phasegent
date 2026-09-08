@@ -9,6 +9,8 @@ comments, and workflow automation.
 ## Features
 
 - Forgejo (default), Redmine, and GitLab providers.
+- Local provider (`--provider local`) that runs offline with no credential
+  and no network.
 - Role-aware operation for `admin`, `orchestrator`, `executor`, `reviewer`, and
   `tester`.
 - Issue search, creation, updates, closing, comments, statuses, relations,
@@ -155,6 +157,34 @@ the `postgres` feature and configure its URL through stdin:
 ```sh
 phasegent config set index-pg-url --stdin
 ```
+
+## Local provider
+
+`--provider local` runs fully offline with no credential, no network, and no
+`auth setup` token. It uses an independent local database file
+(`phasegent-local.sqlite3`) next to the config database, seeded with the
+default project, issues, comments, and the canonical status transitions.
+`auth setup --provider local` only records the role-scoped provider
+preference and never prompts for a secret:
+
+```sh
+phasegent --role executor --provider local auth setup
+phasegent --role executor --provider local issue create \
+  --title "Local task" --body "Works offline"
+```
+
+The same issue, comment, and status commands work against the local backend
+(`issue search`, `issue get`, `issue create`, `issue update-body`,
+`issue close`, `comment create`, status list/next/advance/set, and project
+list/create). Repository and attachment operations surface a structured
+`not_supported` error, matching the current surface. Envelopes follow the
+Redmine-aligned shape so scripts that select `--provider local` keep a
+stable format.
+
+PostgreSQL is selected when the same non-empty `PHASEGENT_INDEX_PG_URL` used
+by the index is set; otherwise SQLite is used. Only one local backend is
+active at a time (single-active, never dual-written). Additive migrations
+under `migrations/pg/0002_local.sql` mirror the SQLite schema.
 
 ## Local Branch Context
 
