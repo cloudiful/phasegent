@@ -177,7 +177,7 @@ fn parse_config_provider(args: &[String]) -> Result<Command, String> {
         Some("set") => {
             if args.len() != 2 {
                 return Err(
-                    "config provider set takes exactly one argument (forgejo, redmine, or gitlab)"
+                    "config provider set takes exactly one argument (forgejo, redmine, gitlab, or local)"
                         .to_owned(),
                 );
             }

@@ -41,8 +41,9 @@ pub(crate) fn execute_repo_or_gitlab(
         Ok(ProviderKind::Redmine) => {
             super::provider_error(ForgejoError::not_supported("redmine", "repo create"))
         }
-        // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // wiring lands in P2/P3.
+        // Issue 211 P3: local has no first-class repository endpoint, so
+        // repo creation stays a structured not-supported error (mirrors the
+        // Redmine arm).
         Ok(ProviderKind::Local) => {
             super::provider_error(ForgejoError::not_supported("local", "repo create"))
         }

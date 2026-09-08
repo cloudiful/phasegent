@@ -36,14 +36,9 @@ pub(crate) fn execute_project(
                 capability.operation(),
             ));
         }
-        // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // wiring lands in P2/P3.
-        Ok(ProviderKind::Local) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "local",
-                capability.operation(),
-            ));
-        }
+        // Issue 211 P3: local lists/creates via LocalProvider; forgejo
+        // and gitlab stay not-supported, redmine unchanged.
+        Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(

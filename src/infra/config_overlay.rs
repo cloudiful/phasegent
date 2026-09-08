@@ -170,10 +170,10 @@ impl ConfigOverlay {
                 ));
             }
             match trimmed.as_str() {
-                "forgejo" | "redmine" | "gitlab" => {}
+                "forgejo" | "redmine" | "gitlab" | "local" => {}
                 _ => {
                     return Err(format!(
-                        "TOML config at {origin}: invalid default_provider '{trimmed}'; expected forgejo, redmine, or gitlab"
+                        "TOML config at {origin}: invalid default_provider '{trimmed}'; expected forgejo, redmine, gitlab, or local"
                     ));
                 }
             }
@@ -226,10 +226,10 @@ impl RoleOverlay {
                 ));
             }
             match trimmed.as_str() {
-                "forgejo" | "redmine" | "gitlab" => {}
+                "forgejo" | "redmine" | "gitlab" | "local" => {}
                 _ => {
                     return Err(format!(
-                        "TOML config at {origin}: invalid provider '{trimmed}'; expected forgejo, redmine, or gitlab"
+                        "TOML config at {origin}: invalid provider '{trimmed}'; expected forgejo, redmine, gitlab, or local"
                     ));
                 }
             }

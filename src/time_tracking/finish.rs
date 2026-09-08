@@ -151,9 +151,12 @@ pub(crate) fn project_run(
             )
         }
         ProviderKind::Forgejo => Err(ForgejoError::not_supported("forgejo", "timer finish")),
-        // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // projection lands in P2/P3.
-        ProviderKind::Local => Err(ForgejoError::not_supported("local", "timer finish")),
+        // Issue 211 P3: local keeps the timer ledger in `Storage` and has
+        // no remote time-entry projection, so the finish transition above
+        // is the whole record. The projection arm is a no-op: the run keeps
+        // the sync_status `finish_timer_run` set ('failed' for a FAILED
+        // result, 'pending' otherwise) and nothing is POSTed anywhere.
+        ProviderKind::Local => Ok(()),
     }
 }
 

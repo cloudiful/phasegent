@@ -215,3 +215,80 @@ fn queries_sql_is_single_source_and_state_mapping() {
     let reserved = PgLocalProvider::open("postgres://example/db").unwrap_err();
     assert!(reserved.to_string().contains("postgres backend"));
 }
+
+#[test]
+fn set_issue_status_writes_status_and_stamps_closed_at() {
+    let (provider, dir) = tmp_provider("set-status");
+    let issue = provider.create_issue("Status", "body").unwrap();
+    // Closed target (id 7) stamps closed_at and flips the envelope state.
+    let closed = provider.set_issue_status(issue.number, 7).unwrap();
+    assert_eq!(closed.state, "closed");
+    let closed_at: Option<i64> = provider.with_conn("test", |conn| {
+        conn.query_row(
+            "SELECT closed_at FROM local_issues WHERE id=?1",
+            rusqlite::params![issue.number as i64],
+            |row| row.get(0),
+        )
+    }).unwrap();
+    assert!(closed_at.unwrap_or(0) > 0, "closed target must stamp closed_at");
+    // Open target (id 6) clears closed_at and returns the open state.
+    let reopened = provider.set_issue_status(issue.number, 6).unwrap();
+    assert_eq!(reopened.state, "open");
+    let cleared: Option<i64> = provider.with_conn("test", |conn| {
+        conn.query_row(
+            "SELECT closed_at FROM local_issues WHERE id=?1",
+            rusqlite::params![issue.number as i64],
+            |row| row.get(0),
+        )
+    }).unwrap();
+    assert!(cleared.is_none(), "open target must clear closed_at");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn set_issue_status_rejects_unknown_id() {
+    let (provider, dir) = tmp_provider("set-status-unknown");
+    let issue = provider.create_issue("Reject", "body").unwrap();
+    let err = provider.set_issue_status(issue.number, 99_999).unwrap_err();
+    assert!(
+        err.to_string().contains("local status id 99999 was not found"),
+        "got: {err}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn advance_issue_status_respects_policy_with_advisory_and_noop_branches() {
+    let (provider, dir) = tmp_provider("advance-policy");
+    let issue = provider.create_issue("Advance", "body").unwrap();
+    // Allowed canonical edge: New -> In Progress.
+    let allowed = provider
+        .advance_issue_status(issue.number, "In Progress")
+        .unwrap();
+    assert!(allowed.changed);
+    assert!(!allowed.advisory);
+    assert_eq!(allowed.from.name, "New");
+    assert_eq!(allowed.to.name, "In Progress");
+    // No-op: re-applying the current (canonical) status.
+    let noop = provider
+        .advance_issue_status(issue.number, "In Progress")
+        .unwrap();
+    assert!(!noop.changed);
+    assert!(!noop.advisory);
+    assert!(noop.caveat.is_none());
+    // Advisory: current status is unknown/custom, so policy defers to the server.
+    provider.with_conn("test", |conn| {
+        conn.execute(
+            "UPDATE local_issues SET status='Custom', updated_at=2 WHERE id=?1",
+            rusqlite::params![issue.number as i64],
+        )?;
+        Ok(())
+    }).unwrap();
+    let advisory = provider
+        .advance_issue_status(issue.number, "In Progress")
+        .unwrap();
+    assert!(advisory.changed);
+    assert!(advisory.advisory);
+    assert!(advisory.caveat.is_some());
+    let _ = std::fs::remove_dir_all(dir);
+}
