@@ -35,7 +35,7 @@ pub(crate) fn execute(
         ProviderDispatcher::Forgejo(_) => {
             Err(ForgejoError::not_supported("forgejo", "issue relations"))
         }
-        // Issue 211 P2 local backend has no relations yet.
+        // Local backend has no relations.
         ProviderDispatcher::Local(_) => {
             Err(ForgejoError::not_supported("local", "issue relations"))
         }

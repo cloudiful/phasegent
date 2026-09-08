@@ -130,7 +130,7 @@ pub fn provider_scope(
             source: "gitlab".to_owned(),
             project: provider.config.project_id.to_string(),
         }),
-        // Issue 211 P2 local backend warms under a stable local scope.
+        // Local backend warms under a stable local scope.
         crate::providers::ProviderDispatcher::Local(_) => Ok(IssueIndexScope {
             source: "local".to_owned(),
             project: "default".to_owned(),
@@ -185,8 +185,7 @@ pub fn explicit_scope(
             }
             IssueIndexScope::new("gitlab", parsed.to_string()).ok()
         }
-        // Issue 211 P1: the local index scope is owned by P4, so an
-        // explicit local kind yields no narrow scope here and callers
+        // Local yields no narrow scope from an explicit kind; callers
         // fall back to the global scope.
         crate::providers::ProviderKind::Local => None,
     }

@@ -36,12 +36,12 @@ pub(crate) fn execute_version(
                 capability.operation(),
             ));
         }
-        // Issue 211 P3: local returns the empty version catalogue via
-        // LocalProvider; forgejo/gitlab stay not-supported.
+        // Local returns the empty version catalogue via LocalProvider;
+        // forgejo/gitlab stay not-supported.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
-    // Phase 3: repository-aware resolution for project-scoped reads.
+    // Repository-aware resolution for project-scoped reads.
     // Explicit --project-id wins; otherwise discover the project that
     // owns the current Git origin's mirror. Local skips discovery
     // entirely (no project id, no network) and lists the empty catalogue.

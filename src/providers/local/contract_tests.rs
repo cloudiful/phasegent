@@ -1,4 +1,4 @@
-//! Local provider contract tests (issue 211 P2, SQLite).
+//! Local provider contract tests (SQLite).
 
 pub(crate) mod cross_backend;
 
@@ -126,7 +126,6 @@ fn close_validates_transition_and_writes_closed_at() {
     }).unwrap();
     let closed = provider.close_issue(created.number).unwrap();
     assert_eq!(closed.state, "closed");
-    // closed_at was written.
     let closed_at: Option<i64> = provider.with_conn("test", |conn| {
         conn.query_row(
             "SELECT closed_at FROM local_issues WHERE id=?1",
@@ -135,7 +134,6 @@ fn close_validates_transition_and_writes_closed_at() {
         )
     }).unwrap();
     assert!(closed_at.unwrap_or(0) > 0);
-    // Idempotent second close.
     let again = provider.close_issue(created.number).unwrap();
     assert_eq!(again.state, "closed");
     let _ = std::fs::remove_dir_all(dir);
@@ -170,7 +168,7 @@ fn comment_marker_conflict_is_friendly() {
 
 #[test]
 fn marker_is_globally_unique_across_issues() {
-    // P4 schema makes local_comments.marker globally UNIQUE
+    // The schema makes local_comments.marker globally UNIQUE
     // (schema.sql), so the same marker cannot be reused on a second
     // issue. Forgejo/Redmine/GitLab allow per-issue reuse; local
     // intentionally diverges and this test pins that behaviour so any

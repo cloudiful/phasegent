@@ -1,4 +1,4 @@
-//! Local status catalogue + transition policy (issue 211 P2/P3).
+//! Local status catalogue + transition policy.
 
 use super::model::{is_closed_status, local_sql, local_statuses, now_epoch_seconds};
 use super::LocalProvider;
@@ -13,7 +13,7 @@ use crate::providers::config::RedmineProvider;
 
 /// Allowed next statuses for a canonical status, derived from
 /// `infra::local_schema::STATUS_TRANSITION_SEED` so the local
-/// workflow and the P4 seeds share one literal.
+/// workflow and the seeds share one literal.
 pub(crate) fn allowed_next_for(status: &str) -> Vec<&'static str> {
     crate::infra::local_schema::STATUS_TRANSITION_SEED
         .iter()

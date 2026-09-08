@@ -1,4 +1,4 @@
-//! Local provider storage backends (issue 211 P4).
+//! Local provider storage backends.
 //!
 //! SQLite file `phasegent-local.sqlite3` is independent from config and
 //! index files. Backend selection is URL-driven via the same
@@ -26,8 +26,8 @@ use sqlx::postgres::PgPoolOptions;
 #[cfg(feature = "postgres")]
 use sqlx::PgPool;
 
-/// SQLite backend for the local provider. P2 builds issue/comment CRUD on
-/// top; P4 only guarantees open, schema, and seeds.
+/// SQLite backend for the local provider. Stands up the connection,
+/// schema, and seeds.
 #[allow(dead_code)]
 pub struct SqliteLocalStore {
     pub(crate) connection: Connection,
@@ -85,7 +85,7 @@ impl SqliteLocalStore {
     }
 }
 
-/// Exact-name opener required by the P4 spec: independent file plus
+/// Exact-name opener: independent file plus
 /// `CREATE TABLE IF NOT EXISTS` via [`SqliteLocalStore::open`].
 #[allow(dead_code)]
 pub fn open_local() -> Result<SqliteLocalStore, String> {

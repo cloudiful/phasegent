@@ -113,7 +113,7 @@ pub fn read_config_snapshot() -> Result<crate::config_snapshot::ConfigSnapshot, 
 /// `build.rs` to `OUT_DIR` during a gui build. Because this is included
 /// via `include_str!` it is a real compile input: any dist change alters
 /// the crate's inputs and busts the Cargo fingerprint, so `cargo install`
-/// re-embeds even when no Rust source changed. Returns a placeholder when
+/// re-embeds even when no Rust source changed. Returns a fallback when
 /// the binary was built without gui (no `OUT_DIR` hash) so the field stays
 /// stable and warning-free.
 #[allow(dead_code)]

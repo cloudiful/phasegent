@@ -1,4 +1,4 @@
-//! Local comment lifecycle (issue 211 P2).
+//! Local comment lifecycle.
 
 use super::model::{LocalCommentRow, is_unique_violation, local_sql, now_epoch_seconds};
 use super::LocalProvider;

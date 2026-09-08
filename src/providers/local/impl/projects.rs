@@ -1,4 +1,4 @@
-//! Local project + version metadata (issue 211 P2).
+//! Local project + version metadata.
 
 use super::model::{LocalProjectRow, empty_versions, local_sql, now_epoch_seconds};
 use super::LocalProvider;
@@ -81,8 +81,8 @@ impl LocalProvider {
     }
 
     pub fn list_versions(&self) -> Result<Vec<RedmineVersion>, ForgejoError> {
-        // P4 ships no versions table; P2 returns an empty catalogue so
-        // the envelope stays Redmine-compatible without inventing rows.
+        // No versions table; return an empty catalogue so the envelope
+        // stays Redmine-compatible without inventing rows.
         Ok(empty_versions())
     }
 }

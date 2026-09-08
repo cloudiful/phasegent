@@ -1,4 +1,4 @@
-//! Local issue CRUD + search (issue 211 P2).
+//! Local issue CRUD + search.
 
 use super::model::{LocalIssueRow, local_sql, now_epoch_seconds};
 use super::status_impl::{allowed_next_for, is_transition_allowed};

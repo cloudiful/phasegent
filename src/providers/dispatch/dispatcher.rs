@@ -15,12 +15,11 @@ use crate::providers::local::LocalProvider;
 pub enum ProviderDispatcher {
     Forgejo(ForgejoProvider),
     Redmine(RedmineProvider),
-    /// Phase-1 GitLab foundation. The dispatcher already routes every
-    /// trait call to GitlabProvider's not-supported stubs so subsequent
-    /// phases only need to replace the implementation, not the dispatch
-    /// wiring.
+    /// GitLab provider. The dispatcher routes every trait call to
+    /// GitlabProvider's not-supported stubs so replacing the
+    /// implementation does not require touching the dispatch wiring.
     Gitlab(GitlabProvider),
-    /// Issue 211 P2 local backend (SQLite-first, PG reserved).
+    /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),
 }
 
@@ -46,18 +45,17 @@ impl ProviderDispatcher {
         Ok(Self::Gitlab(GitlabProvider::for_role(role, config)?))
     }
 
-    /// Issue 211 P2 local backend. SQLite opens synchronously with no
-    /// credentials; the PostgreSQL variant stays reserved in
-    /// `PgLocalProvider` until async dispatch lands.
+    /// Local backend. SQLite opens synchronously with no credentials;
+    /// the PostgreSQL variant stays reserved in `PgLocalProvider`.
     pub fn local(provider: LocalProvider) -> Self {
         Self::Local(provider)
     }
 
     /// Drive a `RepoCommand::Create` through whichever provider arm
-    /// resolved. Phase 3 adds GitLab support; Redmine still surfaces a
-    /// structured not-supported error. The provider-side enforcement
-    /// of `--private` and namespace resolution stays inside each
-    /// provider so this dispatcher stays thin.
+    /// resolved. Redmine still surfaces a structured not-supported
+    /// error. The provider-side enforcement of `--private` and
+    /// namespace resolution stays inside each provider so this
+    /// dispatcher stays thin.
     pub fn create_repo_for_command(
         &self,
         command: &RepoCommand,
