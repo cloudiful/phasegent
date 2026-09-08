@@ -47,3 +47,9 @@ SELECT rowid, project, description FROM local_projects ORDER BY project ASC;
 
 -- name: insert_project
 INSERT INTO local_projects (project, description, created_at) VALUES (?1, ?2, ?3);
+
+-- name: get_issue_status
+SELECT status FROM local_issues WHERE id = ?1;
+
+-- name: update_issue_status
+UPDATE local_issues SET status = ?1, updated_at = ?2, closed_at = ?3 WHERE id = ?4;

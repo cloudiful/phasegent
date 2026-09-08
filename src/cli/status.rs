@@ -52,14 +52,9 @@ pub(crate) fn execute_status(
         // `set` maps to a managed workflow label update; the
         // orchestrator-only guard above already protects it.
         Ok(ProviderKind::Gitlab) => {}
-        // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // wiring lands in P2/P3.
-        Ok(ProviderKind::Local) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "local",
-                capability.operation(),
-            ));
-        }
+        // Issue 211 P3: local flows through to the LocalProvider status
+        // catalogue; forgejo stays not-supported, redmine/gitlab unchanged.
+        Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(
@@ -90,13 +85,13 @@ pub(crate) fn execute_status(
             }
             _ => super::print_result(provider.list_issue_statuses()),
         },
-        // `next` and `advance` are Redmine-only capabilities: the
-        // canonical policy is expressed with Redmine status names and
-        // resolved against this installation's status ids.
+        // `next` and `advance` run the canonical policy against the
+        // installation catalogue (Redmine) or the static local catalogue.
         StatusCommand::Next { number } => match provider {
             ProviderDispatcher::Redmine(redmine) => {
                 super::print_result(redmine.status_next(number))
             }
+            ProviderDispatcher::Local(local) => super::print_result(local.status_next(number)),
             other => super::provider_error(ForgejoError::not_supported(
                 other.kind().as_str(),
                 "issue status next",
@@ -105,6 +100,10 @@ pub(crate) fn execute_status(
         StatusCommand::Advance { number, status } => match provider {
             ProviderDispatcher::Redmine(redmine) => {
                 let result = redmine.advance_issue_status(number, &status);
+                super::print_result(result)
+            }
+            ProviderDispatcher::Local(local) => {
+                let result = local.advance_issue_status(number, &status);
                 super::print_result(result)
             }
             other => super::provider_error(ForgejoError::not_supported(
@@ -129,10 +128,108 @@ pub(crate) fn execute_status(
                 let result = redmine.set_issue_status(number, target.id);
                 super::print_result(result)
             }
+            ProviderDispatcher::Local(local) => {
+                let statuses = match local.list_issue_statuses() {
+                    Ok(statuses) => statuses,
+                    Err(error) => return super::provider_error(error),
+                };
+                let target = match RedmineProvider::select_status_by_value(&statuses, &status) {
+                    Ok(target) => target,
+                    Err(error) => return super::provider_error(error),
+                };
+                let result = local.set_issue_status(number, target.id);
+                super::print_result(result)
+            }
             other => super::provider_error(ForgejoError::not_supported(
                 other.kind().as_str(),
                 "issue status update",
             )),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+    use crate::providers::local::LocalProvider;
+
+    fn tmp_db(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "phasegent-cli-status-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("phasegent-local.sqlite3");
+        (dir, db)
+    }
+
+    #[test]
+    fn local_dispatch_routes_next_advance_and_set_arms() {
+        let _lock = lock_workflow_tests();
+        let (dir, db) = tmp_db("local-dispatch");
+        let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        // Seed one local issue so each status arm resolves a real row
+        // instead of the not-found fallback.
+        let provider = LocalProvider::open().unwrap();
+        let number = provider.create_issue("Dispatch", "body").unwrap().number;
+
+        // Each dispatcher arm must route `--provider local` through the
+        // LocalProvider method and return success (exit 0), not the
+        // not_supported fallback (exit 1).
+        let next_exit = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Next { number },
+        );
+        assert_eq!(
+            next_exit, 0,
+            "status next must route through the ProviderDispatcher::Local arm"
+        );
+
+        let advance_exit = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Advance {
+                number,
+                status: "In Progress".to_owned(),
+            },
+        );
+        assert_eq!(
+            advance_exit, 0,
+            "status advance must route through the ProviderDispatcher::Local arm"
+        );
+
+        let set_exit = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Set {
+                number,
+                status: "Resolved".to_owned(),
+            },
+        );
+        assert_eq!(
+            set_exit, 0,
+            "status set must route through the ProviderDispatcher::Local arm"
+        );
+
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -324,8 +324,7 @@ pub(crate) fn provider_for(
                     "Forgejo configuration selected an unsupported provider",
                 )),
                 // Issue 211 P1 placeholder: unreachable (Forgejo config
-                // always reports Forgejo); kept only for exhaustiveness
-                // until P3 wires the local provider.
+                // always reports Forgejo); kept only for exhaustiveness.
                 ProviderKind::Local => Err(ForgejoError::config(
                     "Forgejo configuration selected an unsupported provider",
                 )),
@@ -347,10 +346,12 @@ pub(crate) fn provider_for(
             let config = GitlabConfig::resolve(role, api_base, project_id)?;
             ProviderDispatcher::gitlab(role, config)
         }
-        // Issue 211 P1 placeholder for exhaustiveness only: real local
-        // dispatch lands in P2/P3, so resolving `--provider local` here
-        // surfaces not-supported instead of silently misrouting.
-        ProviderKind::Local => Err(ForgejoError::not_supported("local", "dispatch")),
+        // Issue 211 P3: local needs no credentials or remote config;
+        // open the independent SQLite store directly. Auth stays
+        // passwordless and forgejo/redmine/gitlab paths are untouched.
+        ProviderKind::Local => {
+            crate::providers::local::LocalProvider::open().map(ProviderDispatcher::local)
+        }
     }
 }
 

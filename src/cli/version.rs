@@ -4,9 +4,10 @@ use crate::providers::config::resolve_kind;
 use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 
-/// Redmine-only project version discovery. Every role may read versions
-/// (planning is read-mostly), while Forgejo rejects the operation with a
-/// structured not-supported error before any network access.
+/// Redmine or local project version discovery. Every role may read
+/// versions (planning is read-mostly), while Forgejo/GitLab reject the
+/// operation with a structured not-supported error before any network
+/// access. Local returns the empty catalogue without project discovery.
 pub(crate) fn execute_version(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -35,23 +36,22 @@ pub(crate) fn execute_version(
                 capability.operation(),
             ));
         }
-        // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // wiring lands in P2/P3.
-        Ok(ProviderKind::Local) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "local",
-                capability.operation(),
-            ));
-        }
+        // Issue 211 P3: local returns the empty version catalogue via
+        // LocalProvider; forgejo/gitlab stay not-supported.
+        Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
     // Phase 3: repository-aware resolution for project-scoped reads.
     // Explicit --project-id wins; otherwise discover the project that
-    // owns the current Git origin's mirror. A unique match supplies the
-    // project id, NoMatch returns an actionable error, and Multiple or
-    // any discovery HTTP/auth error is propagated. Reads never
-    // auto-bootstrap.
-    let resolved_project_id: Option<String> = if project_id
+    // owns the current Git origin's mirror. Local skips discovery
+    // entirely (no project id, no network) and lists the empty catalogue.
+    let resolved_kind = match resolve_kind(role, provider_kind) {
+        Ok(kind) => kind,
+        Err(error) => return super::provider_error(error),
+    };
+    let resolved_project_id: Option<String> = if resolved_kind == ProviderKind::Local {
+        None
+    } else if project_id
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
     {

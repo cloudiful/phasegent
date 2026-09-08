@@ -42,8 +42,9 @@ pub(crate) fn execute_relation(
             ));
         }
         Ok(ProviderKind::Redmine) | Ok(ProviderKind::Gitlab) => {}
-        // Issue 211 P1 placeholder for exhaustiveness only; real local
-        // wiring lands in P2/P3.
+        // Issue 211 P3: local has no issue-relations surface; keep the
+        // structured not-supported error before any provider build so the
+        // only side effect is the structured error.
         Ok(ProviderKind::Local) => {
             return super::provider_error(ForgejoError::not_supported(
                 "local",
