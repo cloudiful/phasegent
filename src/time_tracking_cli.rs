@@ -1,12 +1,6 @@
-// Compatibility facade for the Phase 2 timer CLI decomposition.
-// The authoritative implementation now lives in `src/time_tracking/`.
-// This file intentionally contains no logic; it only re-exports the
-// stable `crate::time_tracking_cli::*` surface so existing callers
-// (`src/infra/timer_store.rs`, provider contract tests, `phase2_tests`)
-// continue to compile without churn. New code should import from
+// Compatibility facade: re-exports the `crate::time_tracking` surface so
+// existing callers keep compiling. New code should import from
 // `crate::time_tracking` directly.
-// The facade re-exports via `crate::time_tracking` to keep the
-// aggregator `mod.rs` as the single source of truth.
 
 #[allow(unused_imports)]
 pub(crate) use crate::time_tracking::{

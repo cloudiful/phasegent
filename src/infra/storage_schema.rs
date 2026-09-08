@@ -14,14 +14,14 @@ pub(crate) const DB_FILENAME: &str = "phasegent.sqlite3";
 /// without pulling in that module to keep this layer transport-agnostic.
 pub(crate) const PROVIDER_FORGEJO: &str = "forgejo";
 pub(crate) const PROVIDER_REDMINE: &str = "redmine";
-/// GitLab is a Foundation-phase addition. The literal is duplicated here
-/// so the storage layer never depends on `provider_config` while still
-/// holding the same string the resolver understands via `FromStr`.
+/// The literal is duplicated here so the storage layer never depends on
+/// `provider_config` while still holding the same string the resolver
+/// understands via `FromStr`.
 pub(crate) const PROVIDER_GITLAB: &str = "gitlab";
-/// Local provider (issue 211, P1). Same duplication rationale as above:
-/// the literal stays in sync with `ProviderKind::Local::as_str` while
-/// keeping this layer transport-agnostic. P1 persists only the provider
-/// preference; credential and backend tables land in later phases.
+/// Local provider. Same duplication rationale as above: the literal stays
+/// in sync with `ProviderKind::Local::as_str` while keeping this layer
+/// transport-agnostic. Persists only the provider preference; credential
+/// and backend tables are separate.
 pub(crate) const PROVIDER_LOCAL: &str = "local";
 
 /// Schema for the phasegent SQLite database.
@@ -33,29 +33,27 @@ pub(crate) const PROVIDER_LOCAL: &str = "local";
 /// * `role_redmine_config` stores the Redmine-only fields so loading a
 ///   Redmine config never has to guess whether a missing `project_id`
 ///   belongs to the legacy Forgejo row or to Redmine. The `project_id`
-///   column is legacy in Phase 1 (remove-project-id); new code never
-///   reads or writes it and the `Storage::open` migration clears any
-///   legacy values, but the column remains for non-destructive
-///   compatibility with old databases.
+///   column is legacy: new code never reads or writes it and the
+///   `Storage::open` migration clears any legacy values, but the column
+///   remains for non-destructive compatibility with old databases.
 /// * `role_credential` stores per-(role, provider) credentials; the
 ///   composite primary key lets the same role keep both a Forgejo token
 ///   and a Redmine API key without collision.
 /// * `role_redmine_user` stores the admin-provisioned Redmine identity
-///   (`user_id`, `login`) for each agent role. Phase 2 (admin-only
-///   provisioning) writes this row when a deterministic service user is
-///   found or created via the admin REST API and reads it on reruns so
-///   provisioning is idempotent without re-listing users. Legacy
-///   databases gain the table via `CREATE TABLE IF NOT EXISTS` with no
-///   destructive migration; legacy `role_credential` rows without a
-///   mapping are reconciled by looking up the deterministic login
-///   before creating.
+///   (`user_id`, `login`) for each agent role. Written when a
+///   deterministic service user is found or created via the admin REST
+///   API and read on reruns so provisioning is idempotent without
+///   re-listing users. Legacy databases gain the table via
+///   `CREATE TABLE IF NOT EXISTS` with no destructive migration; legacy
+///   `role_credential` rows without a mapping are reconciled by looking
+///   up the deterministic login before creating.
 /// * `global_setting` stores deployment-level secrets that are not
 ///   tied to a role (for example the Redmine git mirror plugin key and
 ///   its repository URL override). `config show` returns their
 ///   presence and length; the resolver layer reads the value out of
 ///   SQLite only when the matching environment variable is unset.
 /// * `role_gitlab_config` mirrors the Redmine split; its `project_id`
-///   column is also legacy in Phase 1 for the same reasons.
+///   column is also legacy for the same reasons.
 ///
 /// All non-key columns are nullable so the layer can distinguish
 /// "missing" (no row) from "present but empty" (row with NULL).
@@ -74,13 +72,12 @@ CREATE TABLE IF NOT EXISTS role_redmine_config (
     close_status_id INTEGER
 );
 
--- Phase 1 GitLab foundation. The table mirrors the Redmine-only split so
--- GitLab credentials and configuration never collide with the existing
--- Forgejo/Redmine rows, and the resolver can distinguish a GitLab row
--- from a missing row without inspecting either legacy table. The
--- `project_id` column is INTEGER because GitLab identifiers are numeric
--- project ids, unlike Redmine's free-text identifier slug.
--- Phase 1 (remove-project-id) makes `project_id` legacy in both
+-- The table mirrors the Redmine-only split so GitLab credentials and
+-- configuration never collide with the existing Forgejo/Redmine rows, and
+-- the resolver can distinguish a GitLab row from a missing row without
+-- inspecting either legacy table. The `project_id` column is INTEGER
+-- because GitLab identifiers are numeric project ids, unlike Redmine's
+-- free-text identifier slug. `project_id` is legacy in both
 -- role_redmine_config and role_gitlab_config: new code never reads or
 -- writes the column and Storage::open clears legacy values, but the
 -- column remains for non-destructive compatibility.
@@ -97,10 +94,9 @@ CREATE TABLE IF NOT EXISTS role_credential (
     PRIMARY KEY (role, provider)
 );
 
--- Phase 2 admin-only provisioning. One row per agent role holding the
--- Redmine user provisioned through the administrator REST API. Additive
--- so databases created before Phase 2 gain the table on open via
--- `CREATE TABLE IF NOT EXISTS` with no data migration.
+-- One row per agent role holding the Redmine user provisioned through the
+-- administrator REST API. Additive so older databases gain the table on
+-- open via `CREATE TABLE IF NOT EXISTS` with no data migration.
 CREATE TABLE IF NOT EXISTS role_redmine_user (
     role TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL CHECK (user_id > 0),
@@ -112,16 +108,16 @@ CREATE TABLE IF NOT EXISTS global_setting (
     value TEXT
 );
 
--- Phase 5A execution ledger.  The table is additive so databases created
--- by earlier phasegent versions remain readable and never need a destructive
--- migration.  Rounded hours are retained for the Redmine projection, while
--- elapsed_seconds remains the authoritative exact-duration value.
+-- Execution ledger. The table is additive so databases created by earlier
+-- versions remain readable and never need a destructive migration. Rounded
+-- hours are retained for the Redmine projection, while elapsed_seconds
+-- remains the authoritative exact-duration value.
 --
--- Phase 3 adds nullable `owner_session_id` / `owner_call_id` columns so the
--- OpenCode plugin can record which subagent invocation owns a run without
--- growing the primary key. Existing rows keep their NULL owner; the
--- additive MIGRATIONS block below adds the columns on databases that were
--- initialised before the field existed.
+-- Nullable `owner_session_id` / `owner_call_id` columns let the OpenCode
+-- plugin record which subagent invocation owns a run without growing the
+-- primary key. Existing rows keep their NULL owner; the additive MIGRATIONS
+-- block below adds the columns on databases that were initialised before
+-- the field existed.
 CREATE TABLE IF NOT EXISTS execution_timer_runs (
     run_id TEXT PRIMARY KEY,
     issue_id INTEGER NOT NULL CHECK (issue_id > 0),

@@ -2,9 +2,8 @@ use crate::infra::storage::{
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_FORGEJO,
     PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
 };
-// `PROVIDER_LOCAL` is imported from `storage_schema` directly: the
-// `storage` aggregator re-export is owned by a later phase (P2/P3) and
-// stays untouched in P1.
+// `PROVIDER_LOCAL` is imported from `storage_schema` directly because the
+// `storage` aggregator re-export lists only the non-local provider constants.
 use crate::infra::storage_schema::PROVIDER_LOCAL;
 use crate::policy::Role;
 use serde::{Deserialize, Serialize};
@@ -27,10 +26,9 @@ pub struct RedmineStoredConfig {
     #[serde(default)]
     pub api_base: Option<String>,
     /// Legacy Redmine project identifier. Preserved for backward-compatible
-    /// JSON and SQLite decoding; Phase 1 (remove-project-id) no longer
-    /// persists or reads this field—resolution uses only explicit
-    /// `--project-id`. The SQLite column remains for non-destructive
-    /// migration but values are ignored and cleared on open.
+    /// JSON and SQLite decoding; no longer persisted or read—resolution
+    /// uses only explicit `--project-id`. The SQLite column remains for
+    /// non-destructive migration but values are ignored and cleared on open.
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -57,9 +55,9 @@ pub struct GitlabStoredConfig {
     #[serde(default)]
     pub api_base: Option<String>,
     /// Legacy GitLab project identifier. Preserved for backward-compatible
-    /// JSON and SQLite decoding; Phase 1 no longer persists or reads this
-    /// field—resolution uses only explicit `--project-id`. The SQLite
-    /// column remains but values are ignored and cleared on open.
+    /// JSON and SQLite decoding; no longer persisted or read—resolution
+    /// uses only explicit `--project-id`. The SQLite column remains but
+    /// values are ignored and cleared on open.
     #[serde(default)]
     pub project_id: Option<u64>,
 }
@@ -103,13 +101,12 @@ pub fn setup_provider(
     } = options;
     validate_provider_options(provider, &repository, &close_status_id)?;
     if provider == PROVIDER_LOCAL {
-        // Issue 211 P1: the local provider keeps no credential, needs no
-        // repository and no close-status-id (both rejected above), and
-        // has no backend table yet (P4). Flip the role-scoped provider
-        // preference only so `resolve_kind` and `config show` report
-        // `local` while forgejo/redmine/gitlab rows stay intact.
-        // `api_base`/`read_stdin` are inert here: there is nowhere to
-        // persist a base URL yet and nothing to read from stdin.
+        // The local provider keeps no credential, needs no repository and no
+        // close-status-id (both rejected above), and has no backend table.
+        // Flip the role-scoped provider preference only so `resolve_kind`
+        // and `config show` report `local` while forgejo/redmine/gitlab
+        // rows stay intact. `api_base`/`read_stdin` are inert: there is
+        // nowhere to persist a base URL yet and nothing to read from stdin.
         let storage = Storage::open()?;
         storage.update_provider(role, PROVIDER_LOCAL)?;
         return Ok(serde_json::json!({
@@ -183,10 +180,9 @@ fn validate_provider_options(
     if provider == PROVIDER_GITLAB && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
-    // Issue 211 P1: the local provider takes neither a Forgejo
-    // repository nor a Redmine close-status-id, mirroring the GitLab
-    // arms above so inapplicable options fail fast instead of being
-    // silently ignored.
+    // The local provider takes neither a Forgejo repository nor a Redmine
+    // close-status-id, mirroring the GitLab arms above so inapplicable
+    // options fail fast instead of being silently ignored.
     if provider == PROVIDER_LOCAL && repository.is_some() {
         return Err("--repository requires the forgejo provider".to_owned());
     }
@@ -321,8 +317,7 @@ pub fn persist_redmine_bootstrap(
 }
 
 /// Load the admin-provisioned Redmine identity (`user_id`, `login`) for
-/// `role`. Phase 2 persists one row per agent role when the deterministic
-/// service user is found or created; `None` means "never provisioned".
+/// `role`. Returns `None` when never provisioned.
 pub fn load_redmine_user(role: Role, storage: &Storage) -> Result<Option<(u64, String)>, String> {
     storage.load_redmine_user(role)
 }
@@ -351,11 +346,9 @@ pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> 
 
 /// Read the GitLab PRIVATE-TOKEN stored for `role`.
 ///
-/// Mirrors `redmine_api_key` for symmetry with the rest of the auth
-/// surface. Empty values produce a structured error so a noisy
-/// `auth setup` run never silently returns an empty bearer key. The
-/// token value is never surfaced in error messages; callers receive
-/// only the typed error.
+/// Empty values produce a structured error so a noisy `auth setup` run
+/// never silently returns an empty bearer key. The token value is never
+/// surfaced in error messages; callers receive only the typed error.
 pub fn gitlab_token(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_GITLAB)?
@@ -520,11 +513,11 @@ mod tests {
 
     #[test]
     fn auth_setup_local_is_password_free_and_flips_role_provider() {
-        // Issue 211 P1/P3: the local provider keeps no credential, needs
-        // no repository and no close-status-id, so `auth setup
-        // --provider local` must succeed without reading stdin or
-        // prompting, and persist only the role-scoped provider
-        // preference so `config show` / `resolve_kind` report `local`.
+        // The local provider keeps no credential, needs no repository and no
+        // close-status-id, so `auth setup --provider local` must succeed
+        // without reading stdin or prompting, and persist only the
+        // role-scoped provider preference so `config show` / `resolve_kind`
+        // report `local`.
         let _lock = lock_workflow_tests();
         let dir = std::env::temp_dir().join(format!(
             "phasegent-auth-local-{}-{}",

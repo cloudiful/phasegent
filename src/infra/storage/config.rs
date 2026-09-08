@@ -82,10 +82,10 @@ impl Storage {
 
     /// Load the Redmine-specific configuration for `role`. Mirrors the
     /// semantics of [`load_role_config`].
-    /// Project-id was removed in Phase 1; stored values are ignored
-    /// (always returned as `None`) and the column is lazily cleared
-    /// via the connection migration. `group_name`/`group_role` remain
-    /// legacy-decodable but are never read.
+    /// Project-id was removed; stored values are ignored (always returned
+    /// as `None`) and the column is lazily cleared via the connection
+    /// migration. `group_name`/`group_role` remain legacy-decodable but
+    /// are never read.
     pub fn load_redmine_config(&self, role: Role) -> Result<Option<RedmineStoredConfig>, String> {
         let mut statement = self
             .connection
@@ -143,12 +143,11 @@ impl Storage {
         Ok(())
     }
 
-    /// Set only the bootstrap identity (api_base, close_status_id)
-    /// without disturbing an existing provider preference on
-    /// `role_config`. The `project_id` argument is retained for
-    /// backward-compatible call sites but is ignored: Phase 1 no longer
-    /// persists the project id. The provider preference is still
-    /// updated to `redmine` so later phases can rely on it.
+    /// Set only the bootstrap identity (api_base, close_status_id) without
+    /// disturbing an existing provider preference on `role_config`. The
+    /// `project_id` argument is retained for backward-compatible call sites
+    /// but is ignored: it is no longer persisted. The provider preference
+    /// is still updated to `redmine`.
     pub fn persist_redmine_bootstrap(
         &self,
         role: Role,
@@ -175,9 +174,8 @@ impl Storage {
 
     /// Load the GitLab-specific configuration for `role`. Mirrors the
     /// Redmine helper except the persisted `project_id` is a numeric
-    /// GitLab identifier, not a free-text slug. Phase 1 makes the
-    /// project id inert: stored values are ignored and always returned
-    /// as `None`.
+    /// GitLab identifier, not a free-text slug. The project id is inert:
+    /// stored values are ignored and always returned as `None`.
     pub fn load_gitlab_config(&self, role: Role) -> Result<Option<GitlabStoredConfig>, String> {
         let mut statement = self
             .connection
@@ -198,7 +196,7 @@ impl Storage {
     /// Upsert the GitLab-specific configuration. The numeric project id
     /// is stored as `INTEGER` so the column never holds a placeholder
     /// string that callers might confuse with a Redmine slug.
-    /// Phase 1 no longer persists `project_id`; the column is left
+    /// `project_id` is no longer persisted; the column is left
     /// untouched and `load` always returns `None`.
     pub fn save_gitlab_config(
         &self,
@@ -227,9 +225,9 @@ impl Storage {
     /// Persist the bootstrap identity (`api_base`) without disturbing an
     /// existing provider preference on `role_config`. The `project_id`
     /// argument is retained for backward-compatible call sites but is
-    /// ignored: Phase 1 no longer persists the numeric project id.
-    /// The provider preference is still flipped to "gitlab" so the
-    /// resolver doesn't drift back to the default Forgejo path.
+    /// ignored: it is no longer persisted. The provider preference is
+    /// still flipped to "gitlab" so the resolver doesn't drift back to
+    /// the default Forgejo path.
     #[cfg(test)]
     pub fn persist_gitlab_bootstrap(
         &self,
@@ -251,12 +249,12 @@ impl Storage {
 
     /// Load the admin-provisioned Redmine identity for `role`.
     ///
-    /// Phase 2 (admin-only provisioning) persists one row per agent role
-    /// when the deterministic service user is found or created through
-    /// the administrator REST API. Returns `None` when no row exists so
-    /// callers can distinguish "never provisioned" (lookup-or-create)
-    /// from "provisioned" (reuse without HTTP). The login is returned
-    /// trimmed; blank logins are treated as missing.
+    /// One row per agent role is written when the deterministic service
+    /// user is found or created through the administrator REST API.
+    /// Returns `None` when no row exists so callers can distinguish
+    /// "never provisioned" (lookup-or-create) from "provisioned" (reuse
+    /// without HTTP). The login is returned trimmed; blank logins are
+    /// treated as missing.
     pub fn load_redmine_user(&self, role: Role) -> Result<Option<(u64, String)>, String> {
         let mut statement = self
             .connection

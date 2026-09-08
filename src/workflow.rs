@@ -139,12 +139,12 @@ fn bootstrap_resolved(
     close_status_name: Option<&str>,
 ) -> Result<BootstrapResult, ForgejoError> {
     let identifier = remote::redmine_identifier(&repository).map_err(ForgejoError::config)?;
-    // Phase 2 admin-only provisioning: the administrator credential is
-    // sufficient for the entire bootstrap. Project lookup/creation,
-    // service-user lookup/creation, API-key retrieval, and membership
-    // writes all use the admin provider. Role-scoped keys are written
-    // for downstream providers but never read for identity, and a
-    // missing admin key never falls back to another role key.
+    // Admin-only provisioning: the administrator credential is sufficient
+    // for the entire bootstrap. Project lookup/creation, service-user
+    // lookup/creation, API-key retrieval, and membership writes all use
+    // the admin provider. Role-scoped keys are written for downstream
+    // providers but never read for identity, and a missing admin key
+    // never falls back to another role key.
     if roles.provider != Role::Admin {
         return Err(ForgejoError::config(
             "workflow bootstrap requires the admin Redmine API key; missing admin credential cannot fall back to another role key",
