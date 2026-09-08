@@ -13,6 +13,7 @@ use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
+use crate::providers::local::LocalProvider;
 
 impl RedmineMetadataProvider for ForgejoProvider {
     type Error = ForgejoError;
@@ -106,6 +107,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.list_projects(),
             Self::Redmine(provider) => provider.list_projects(),
             Self::Gitlab(provider) => provider.list_projects(),
+            Self::Local(provider) => provider.list_projects(),
         }
     }
 
@@ -119,6 +121,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.create_project(name, identifier, description),
             Self::Redmine(provider) => provider.create_project(name, identifier, description),
             Self::Gitlab(provider) => provider.create_project(name, identifier, description),
+            Self::Local(provider) => provider.create_project(name, identifier, description),
         }
     }
 
@@ -127,6 +130,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.list_issue_statuses(),
             Self::Redmine(provider) => provider.list_issue_statuses(),
             Self::Gitlab(provider) => provider.list_issue_statuses(),
+            Self::Local(provider) => provider.list_issue_statuses(),
         }
     }
 
@@ -135,6 +139,32 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.list_project_versions(),
             Self::Redmine(provider) => provider.list_project_versions(),
             Self::Gitlab(provider) => provider.list_project_versions(),
+            Self::Local(provider) => provider.list_project_versions(),
         }
+    }
+}
+
+impl RedmineMetadataProvider for LocalProvider {
+    type Error = ForgejoError;
+
+    fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
+        LocalProvider::list_projects(self)
+    }
+
+    fn create_project(
+        &self,
+        name: &str,
+        identifier: &str,
+        description: Option<&str>,
+    ) -> Result<RedmineProject, Self::Error> {
+        LocalProvider::create_project(self, name, identifier, description)
+    }
+
+    fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error> {
+        LocalProvider::list_issue_statuses(self)
+    }
+
+    fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error> {
+        LocalProvider::list_versions(self)
     }
 }

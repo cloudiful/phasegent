@@ -10,6 +10,7 @@ use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
+use crate::providers::local::LocalProvider;
 
 pub enum ProviderDispatcher {
     Forgejo(ForgejoProvider),
@@ -19,6 +20,8 @@ pub enum ProviderDispatcher {
     /// phases only need to replace the implementation, not the dispatch
     /// wiring.
     Gitlab(GitlabProvider),
+    /// Issue 211 P2 local backend (SQLite-first, PG reserved).
+    Local(LocalProvider),
 }
 
 impl ProviderDispatcher {
@@ -41,6 +44,13 @@ impl ProviderDispatcher {
         config: crate::providers::config::GitlabConfig,
     ) -> Result<Self, ForgejoError> {
         Ok(Self::Gitlab(GitlabProvider::for_role(role, config)?))
+    }
+
+    /// Issue 211 P2 local backend. SQLite opens synchronously with no
+    /// credentials; the PostgreSQL variant stays reserved in
+    /// `PgLocalProvider` until async dispatch lands.
+    pub fn local(provider: LocalProvider) -> Self {
+        Self::Local(provider)
     }
 
     /// Drive a `RepoCommand::Create` through whichever provider arm
@@ -69,6 +79,7 @@ impl ProviderDispatcher {
             Self::Forgejo(_) => ProviderKind::Forgejo,
             Self::Redmine(_) => ProviderKind::Redmine,
             Self::Gitlab(_) => ProviderKind::Gitlab,
+            Self::Local(_) => ProviderKind::Local,
         }
     }
 }

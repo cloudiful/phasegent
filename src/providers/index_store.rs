@@ -130,6 +130,11 @@ pub fn provider_scope(
             source: "gitlab".to_owned(),
             project: provider.config.project_id.to_string(),
         }),
+        // Issue 211 P2 local backend warms under a stable local scope.
+        crate::providers::ProviderDispatcher::Local(_) => Ok(IssueIndexScope {
+            source: "local".to_owned(),
+            project: "default".to_owned(),
+        }),
     }
 }
 
