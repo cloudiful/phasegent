@@ -85,20 +85,20 @@ pub(crate) fn execute_finish(
             // Owner-bound failure: only the lease holder may mark
             // projecting->failed. A caller that did not acquire ownership
             // must NOT destroy the live owner's ability to finalize.
-            // The unconditional fallback was the P1 race in round 3:
-            // between the `load_timer_run` liveness check and the
-            // `mark_timer_sync` write a concurrent caller could claim
-            // the row, and the unconditional mark would clobber the new
-            // holder's `projecting` state. If we never acquired the lease
-            // we leave the row alone; it already carries the durable
-            // `pending`/`failed`/`unconfirmed` state from `finish_timer_run`
-            // locally before any provider attempt, so the structured
-            // error is the only observable signal of the projection
-            // failure. The next retry with the same run id reuses the
-            // marker-based reconciliation before any POST. If the user
-            // explicitly passed `--result FAILED` the row is already at
-            // `sync_status='failed'`; otherwise it stays at `pending` so
-            // a future retry can still attempt projection.
+            // The unconditional fallback was a race: between the
+            // `load_timer_run` liveness check and the `mark_timer_sync`
+            // write a concurrent caller could claim the row, and the
+            // unconditional mark would clobber the new holder's
+            // `projecting` state. If we never acquired the lease we leave
+            // the row alone; it already carries the durable
+            // `pending`/`failed`/`unconfirmed` state from
+            // `finish_timer_run` locally before any provider attempt, so
+            // the structured error is the only observable signal of the
+            // projection failure. The next retry with the same run id
+            // reuses the marker-based reconciliation before any POST. If
+            // the user explicitly passed `--result FAILED` the row is
+            // already at `sync_status='failed'`; otherwise it stays at
+            // `pending` so a future retry can still attempt projection.
             let _ = storage.mark_timer_sync_with_token(
                 run_id,
                 &token,
@@ -151,10 +151,10 @@ pub(crate) fn project_run(
             )
         }
         ProviderKind::Forgejo => Err(ForgejoError::not_supported("forgejo", "timer finish")),
-        // Issue 211 P3: local keeps the timer ledger in `Storage` and has
-        // no remote time-entry projection, so the finish transition above
-        // is the whole record. The projection arm is a no-op: the run keeps
-        // the sync_status `finish_timer_run` set ('failed' for a FAILED
+        // Local keeps the timer ledger in `Storage` and has no remote
+        // time-entry projection, so the finish transition above is the
+        // whole record. The projection arm is a no-op: the run keeps the
+        // sync_status `finish_timer_run` set ('failed' for a FAILED
         // result, 'pending' otherwise) and nothing is POSTed anywhere.
         ProviderKind::Local => Ok(()),
     }

@@ -1,6 +1,4 @@
-// Thin aggregator for the timer CLI decomposition (Phase 2).
-// All behavior remains in the focused submodules; this file only
-// declares the module tree and re-exports the stable public(crate)
+// Thin aggregator: declares the module tree and re-exports the stable
 // surface used by `crate::time_tracking_cli` and tests.
 
 pub(crate) mod dispatch;
@@ -11,8 +9,8 @@ pub(crate) mod recover;
 pub(crate) mod start;
 pub(crate) mod util;
 
-// Stable re-exports: keep the `crate::time_tracking::*` surface
-// aligned with the historic `crate::time_tracking_cli::*` path.
+// Keep the `crate::time_tracking::*` surface aligned with the historic
+// `crate::time_tracking_cli::*` path.
 pub(crate) use dispatch::{TimerListOutput, TimerOutput, execute, execute_recovery};
 pub(crate) use finish::auto_finish_run;
 pub(crate) use projection_gitlab::{

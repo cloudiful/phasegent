@@ -339,10 +339,6 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), Bran
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Internal `hooks run` execution used by the generated scripts.
-// ---------------------------------------------------------------------------
-
 pub fn run(
     hook: HookKind,
     message_file: &str,

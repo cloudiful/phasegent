@@ -183,10 +183,10 @@ fn timer_ledger_rejects_conflicting_identity_and_invalid_timestamps() {
 
 #[test]
 fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
-    // Phase 4: GitLab has no numeric time-entry id, so its projection
-    // path advances sync_status to `synced` while leaving
-    // `redmine_time_entry_id` null. The Redmine path keeps its id-based
-    // behaviour so `load_timer_run` always reports the actual state.
+    // GitLab has no numeric time-entry id, so its projection path advances
+    // sync_status to `synced` while leaving `redmine_time_entry_id` null.
+    // The Redmine path keeps its id-based behaviour so `load_timer_run`
+    // always reports the actual state.
     let (temp_dir, storage) = open_at_temp("timer-gitlab-sync");
     let _ = storage
         .start_timer_run(
@@ -251,8 +251,8 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
 
 #[test]
 fn timer_ledger_marks_failure_with_bounded_error_message() {
-    // Phase 4: the failed-state recovery path records the bounded
-    // error so a retry can see why the last projection failed.
+    // The failed-state recovery path records the bounded error so a retry
+    // can see why the last projection failed.
     let (temp_dir, storage) = open_at_temp("timer-failed");
     let _ = storage
         .start_timer_run(
@@ -435,10 +435,10 @@ fn persist_redmine_bootstrap_validates_zero_ids() {
 
 #[test]
 fn role_redmine_user_round_trips_per_role_and_validates() {
-    // Phase 2 admin-only provisioning persists one (user_id, login) row
-    // per agent role. The table is additive; fresh databases report
-    // missing, saves round-trip, overwrites replace, roles stay
-    // isolated, and zero/blank inputs are rejected before SQL.
+    // Admin-only provisioning persists one (user_id, login) row per agent
+    // role. The table is additive; fresh databases report missing, saves
+    // round-trip, overwrites replace, roles stay isolated, and zero/blank
+    // inputs are rejected before SQL.
     let (temp_dir, storage) = open_at_temp("redmine-user");
     assert!(
         storage
@@ -501,10 +501,10 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
 
 #[test]
 fn role_gitlab_config_round_trip_and_numeric_project_id() {
-    // Phase 1 (remove-project-id): GitLab `project_id` is no longer
-    // persisted; the column remains for non-destructive migration but
-    // `load` always returns `None` and `save` ignores the field. The
-    // test verifies api_base round-trip and that legacy values are
+    // GitLab `project_id` is no longer persisted; the column remains for
+    // non-destructive migration but `load` always returns `None` and
+    // `save` ignores the field. The test verifies api_base round-trip
+    // and that legacy values are
     // inert rather than asserting the old persistence.
     let (temp_dir, storage) = open_at_temp("gitlab-round-trip");
     assert!(
@@ -565,7 +565,7 @@ fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
     // `auth setup` flows don't have to know about the underlying
     // column. Confirm the zero-id guard and the provider flip in one
     // test so the foundation never silently accepts an id of zero.
-    // Phase 1: project_id is ignored on persist, only api_base is kept.
+    // project_id is ignored on persist, only api_base is kept.
     let (temp_dir, storage) = open_at_temp("gitlab-bootstrap");
     let zero = storage
         .persist_gitlab_bootstrap(Role::Executor, None, 0)
@@ -601,10 +601,9 @@ fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
 fn credentials_for_all_three_providers_are_isolated_per_role() {
     // The role_credential table uses (role, provider) as a composite
     // primary key so the same role can keep three independent
-    // credentials. Phase-1 GitLab foundation: confirm the new
-    // gitlab row coexists with forgejo and redmine values without
-    // any cross-write or leak, and that overwriting one credential
-    // never touches another.
+    // credentials. Confirm the new gitlab row coexists with forgejo and
+    // redmine values without any cross-write or leak, and that
+    // overwriting one credential never touches another.
     let (temp_dir, storage) = open_at_temp("credential-coexistence");
     storage
         .save_credential(Role::Orchestrator, PROVIDER_FORGEJO, "forgejo-secret")
@@ -843,10 +842,10 @@ fn list_timer_runs_groups_running_and_finished_with_clamped_limit() {
 
 #[test]
 fn additive_owner_migration_is_idempotent_across_reopens() {
-    // Phase 3 ships additive ALTER TABLE statements for the owner
-    // columns. Opening an already-migrated database must not error
-    // (column_exists returns true and the ALTER is skipped) and a row
-    // written before the migration must remain readable.
+    // Additive ALTER TABLE statements add the owner columns. Opening an
+    // already-migrated database must not error (column_exists returns
+    // true and the ALTER is skipped) and a row written before the
+    // migration must remain readable.
     let (temp_dir, storage) = open_at_temp("owner-migration");
     storage
         .start_timer_run(
@@ -974,10 +973,10 @@ fn concurrent_projection_claim_is_serialized() {
 
 #[test]
 fn projection_lease_token_binds_finalization_and_prevents_second_post() {
-    // Regression for P1: a second finish that loads a terminal projecting
-    // row must not be treated as the owner. Only the holder of the token
-    // may finalize to synced; a concurrent caller with a different token
-    // must see "projection already in progress" and never POST.
+    // Regression: a second finish that loads a terminal projecting row
+    // must not be treated as the owner. Only the holder of the token may
+    // finalize to synced; a concurrent caller with a different token must
+    // see "projection already in progress" and never POST.
     let (temp_dir, storage) = open_at_temp("projection-ownership");
     storage
         .start_timer_run(

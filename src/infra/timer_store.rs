@@ -145,9 +145,9 @@ impl Storage {
     /// Persist the start of one wall-clock run. Repeating the same run id and
     /// identity is a no-op; a different identity or an already-finished run is
     /// rejected before any remote operation is attempted. The legacy
-    /// six-argument signature preserves backward compatibility with the
-    /// Phase 5A callers; new code should prefer
-    /// [`start_timer_run_with_owner`] when owner metadata is available.
+    /// six-argument signature preserves backward compatibility; new code
+    /// should prefer [`start_timer_run_with_owner`] when owner metadata is
+    /// available.
     #[allow(dead_code)]
     pub fn start_timer_run(
         &self,

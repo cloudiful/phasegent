@@ -124,12 +124,11 @@ impl Storage {
                     }
                 }
             }
-            // Phase 1 (remove-project-id): clear legacy project_id values
-            // from both Redmine and GitLab tables. The columns remain for
-            // non-destructive, compatibility-safe migration, but values
-            // must be inert. The updates are idempotent and run inside
-            // the same IMMEDIATE transaction that protects the column
-            // migrations.
+            // Clear legacy project_id values from both Redmine and GitLab
+            // tables. The columns remain for non-destructive,
+            // compatibility-safe migration, but values must be inert. The
+            // updates are idempotent and run inside the same IMMEDIATE
+            // transaction that protects the column migrations.
             for (table, column) in [
                 ("role_redmine_config", "project_id"),
                 ("role_gitlab_config", "project_id"),

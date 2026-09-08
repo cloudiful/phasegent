@@ -419,8 +419,8 @@ mod postgres_tests {
 
     #[test]
     fn postgres_backend_selection_requires_url() {
-        // Phase 1 URL-driven selection: absent/blank PG URL selects SQLite
-        // even when the legacy backend says postgres; only a non-empty URL
+        // URL-driven selection: absent/blank PG URL selects SQLite even
+        // when the legacy backend says postgres; only a non-empty URL
         // selects PostgreSQL. A legacy value can never force a different
         // backend and never fails open.
         let _lock = lock_workflow_tests();
