@@ -323,6 +323,12 @@ pub(crate) fn provider_for(
                 ProviderKind::Gitlab => Err(ForgejoError::config(
                     "Forgejo configuration selected an unsupported provider",
                 )),
+                // Issue 211 P1 placeholder: unreachable (Forgejo config
+                // always reports Forgejo); kept only for exhaustiveness
+                // until P3 wires the local provider.
+                ProviderKind::Local => Err(ForgejoError::config(
+                    "Forgejo configuration selected an unsupported provider",
+                )),
             }
         }
         ProviderKind::Redmine => {
@@ -341,6 +347,10 @@ pub(crate) fn provider_for(
             let config = GitlabConfig::resolve(role, api_base, project_id)?;
             ProviderDispatcher::gitlab(role, config)
         }
+        // Issue 211 P1 placeholder for exhaustiveness only: real local
+        // dispatch lands in P2/P3, so resolving `--provider local` here
+        // surfaces not-supported instead of silently misrouting.
+        ProviderKind::Local => Err(ForgejoError::not_supported("local", "dispatch")),
     }
 }
 

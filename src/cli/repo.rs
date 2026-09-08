@@ -41,6 +41,11 @@ pub(crate) fn execute_repo_or_gitlab(
         Ok(ProviderKind::Redmine) => {
             super::provider_error(ForgejoError::not_supported("redmine", "repo create"))
         }
+        // Issue 211 P1 placeholder for exhaustiveness only; real local
+        // wiring lands in P2/P3.
+        Ok(ProviderKind::Local) => {
+            super::provider_error(ForgejoError::not_supported("local", "repo create"))
+        }
         Err(error) => super::provider_error(error),
     }
 }

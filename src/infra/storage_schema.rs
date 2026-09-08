@@ -18,6 +18,11 @@ pub(crate) const PROVIDER_REDMINE: &str = "redmine";
 /// so the storage layer never depends on `provider_config` while still
 /// holding the same string the resolver understands via `FromStr`.
 pub(crate) const PROVIDER_GITLAB: &str = "gitlab";
+/// Local provider (issue 211, P1). Same duplication rationale as above:
+/// the literal stays in sync with `ProviderKind::Local::as_str` while
+/// keeping this layer transport-agnostic. P1 persists only the provider
+/// preference; credential and backend tables land in later phases.
+pub(crate) const PROVIDER_LOCAL: &str = "local";
 
 /// Schema for the phasegent SQLite database.
 ///

@@ -16,6 +16,11 @@ pub enum ProviderKind {
     /// dispatcher, config snapshot, and env-import paths all recognise
     /// `gitlab` before the HTTP layer lands in subsequent phases.
     Gitlab,
+    /// Local provider (issue 211, P1). Recognised by the resolver,
+    /// `--provider` flag parsing, and the config snapshot via
+    /// `as_str`/`from_str` only; dispatcher arms land in P2/P3 so
+    /// runtime dispatch still treats `local` as unsupported there.
+    Local,
 }
 
 impl ProviderKind {
@@ -24,7 +29,14 @@ impl ProviderKind {
             Self::Forgejo => "forgejo",
             Self::Redmine => "redmine",
             Self::Gitlab => "gitlab",
+            Self::Local => "local",
         }
+    }
+}
+
+impl std::fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -36,6 +48,7 @@ impl FromStr for ProviderKind {
             "forgejo" => Ok(Self::Forgejo),
             "redmine" => Ok(Self::Redmine),
             "gitlab" => Ok(Self::Gitlab),
+            "local" => Ok(Self::Local),
             _ => Err(format!(
                 "invalid provider '{value}'; expected forgejo, redmine, or gitlab"
             )),
@@ -406,6 +419,7 @@ pub use crate::providers::gitlab::GitlabProvider;
 #[cfg(test)]
 mod tests {
     use super::{GitlabConfig, ProviderKind, normalize_gitlab_api_base};
+    use std::str::FromStr;
 
     #[test]
     fn provider_kind_round_trip_includes_gitlab() {
@@ -416,6 +430,28 @@ mod tests {
         );
         let error = "wrong".parse::<ProviderKind>().unwrap_err();
         assert!(error.contains("forgejo, redmine, or gitlab"));
+    }
+
+    #[test]
+    fn local_kind_round_trip() {
+        // Issue 211 P1: `local` parses, renders, and displays without
+        // touching the seven-level `resolve_kind` chain or any
+        // dispatcher arm (those land in P2/P3).
+        assert_eq!(ProviderKind::Local.as_str(), "local");
+        assert_eq!(
+            "local".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Local
+        );
+        assert_eq!(format!("{}", ProviderKind::Local), "local");
+        // Existing providers keep their mappings so the
+        // forgejo/redmine/gitlab CLI paths are unaffected.
+        assert_eq!(ProviderKind::Forgejo.as_str(), "forgejo");
+        assert_eq!(ProviderKind::Redmine.as_str(), "redmine");
+        assert_eq!(ProviderKind::Gitlab.as_str(), "gitlab");
+        assert_eq!(
+            ProviderKind::from_str(ProviderKind::Local.as_str()).unwrap(),
+            ProviderKind::Local
+        );
     }
 
     #[test]

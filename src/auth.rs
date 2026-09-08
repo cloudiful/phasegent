@@ -2,6 +2,10 @@ use crate::infra::storage::{
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_FORGEJO,
     PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
 };
+// `PROVIDER_LOCAL` is imported from `storage_schema` directly: the
+// `storage` aggregator re-export is owned by a later phase (P2/P3) and
+// stays untouched in P1.
+use crate::infra::storage_schema::PROVIDER_LOCAL;
 use crate::policy::Role;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -98,6 +102,22 @@ pub fn setup_provider(
         close_status_id,
     } = options;
     validate_provider_options(provider, &repository, &close_status_id)?;
+    if provider == PROVIDER_LOCAL {
+        // Issue 211 P1: the local provider keeps no credential, needs no
+        // repository and no close-status-id (both rejected above), and
+        // has no backend table yet (P4). Flip the role-scoped provider
+        // preference only so `resolve_kind` and `config show` report
+        // `local` while forgejo/redmine/gitlab rows stay intact.
+        // `api_base`/`read_stdin` are inert here: there is nowhere to
+        // persist a base URL yet and nothing to read from stdin.
+        let storage = Storage::open()?;
+        storage.update_provider(role, PROVIDER_LOCAL)?;
+        return Ok(serde_json::json!({
+            "configured": true,
+            "role": role.as_str(),
+            "provider": provider
+        }));
+    }
     let credential_label = match provider {
         PROVIDER_FORGEJO => "Forgejo token",
         PROVIDER_REDMINE => "Redmine API key",
@@ -156,6 +176,17 @@ fn validate_provider_options(
         return Err("--repository requires the forgejo provider".to_owned());
     }
     if provider == "gitlab" && close_status_id.is_some() {
+        return Err("--close-status-id requires the redmine provider".to_owned());
+    }
+    // Issue 211 P1: the local provider takes neither a Forgejo
+    // repository nor a Redmine close-status-id, mirroring the GitLab
+    // arms above so inapplicable options fail fast instead of being
+    // silently ignored. Credentials are not validated here; the
+    // `setup_provider` local arm skips credential handling entirely.
+    if provider == PROVIDER_LOCAL && repository.is_some() {
+        return Err("--repository requires the forgejo provider".to_owned());
+    }
+    if provider == PROVIDER_LOCAL && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
     Ok(())
