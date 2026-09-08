@@ -151,6 +151,9 @@ pub(crate) fn project_run(
             )
         }
         ProviderKind::Forgejo => Err(ForgejoError::not_supported("forgejo", "timer finish")),
+        // Issue 211 P1 placeholder for exhaustiveness only; real local
+        // projection lands in P2/P3.
+        ProviderKind::Local => Err(ForgejoError::not_supported("local", "timer finish")),
     }
 }
 

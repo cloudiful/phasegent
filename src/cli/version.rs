@@ -35,6 +35,14 @@ pub(crate) fn execute_version(
                 capability.operation(),
             ));
         }
+        // Issue 211 P1 placeholder for exhaustiveness only; real local
+        // wiring lands in P2/P3.
+        Ok(ProviderKind::Local) => {
+            return super::provider_error(ForgejoError::not_supported(
+                "local",
+                capability.operation(),
+            ));
+        }
         Err(error) => return super::provider_error(error),
     }
     // Phase 3: repository-aware resolution for project-scoped reads.

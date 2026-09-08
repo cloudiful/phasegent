@@ -52,6 +52,14 @@ pub(crate) fn execute_status(
         // `set` maps to a managed workflow label update; the
         // orchestrator-only guard above already protects it.
         Ok(ProviderKind::Gitlab) => {}
+        // Issue 211 P1 placeholder for exhaustiveness only; real local
+        // wiring lands in P2/P3.
+        Ok(ProviderKind::Local) => {
+            return super::provider_error(ForgejoError::not_supported(
+                "local",
+                capability.operation(),
+            ));
+        }
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(

@@ -180,6 +180,10 @@ pub fn explicit_scope(
             }
             IssueIndexScope::new("gitlab", parsed.to_string()).ok()
         }
+        // Issue 211 P1: the local index scope is owned by P4, so an
+        // explicit local kind yields no narrow scope here and callers
+        // fall back to the global scope.
+        crate::providers::ProviderKind::Local => None,
     }
 }
 

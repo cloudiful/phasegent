@@ -57,6 +57,9 @@ fn build_dispatcher(
             crate::providers::ProviderDispatcher::gitlab(role, config)
                 .map_err(redact_provider_error)
         }
+        // Issue 211 P1 placeholder for exhaustiveness only; real local
+        // dispatch lands in P2/P3.
+        ProviderKind::Local => Err("local provider dispatch is not wired in this phase".to_owned()),
     }
 }
 
@@ -106,6 +109,9 @@ fn endpoint_for_role(
             .ok()
             .flatten()
             .and_then(|c| c.api_base),
+        // Issue 211 P1: no local endpoint exists yet (P4 owns local
+        // storage), so there is nothing to surface here.
+        ProviderKind::Local => None,
     };
     raw.map(|v| crate::config_snapshot::sanitize_url(&v))
 }
