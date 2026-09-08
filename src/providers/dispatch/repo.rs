@@ -15,6 +15,7 @@ use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
+use crate::providers::local::LocalProvider;
 
 impl RepoProvider for GitlabProvider {
     type Error = ForgejoError;
@@ -82,6 +83,21 @@ impl RepoProvider for ProviderDispatcher {
                 provider.create_repo(target, private, description, auto_init)
             }
             Self::Gitlab(provider) => provider.create_repo(target, private, description, auto_init),
+            Self::Local(provider) => provider.create_repo(target, private, description, auto_init),
         }
+    }
+}
+
+impl RepoProvider for LocalProvider {
+    type Error = ForgejoError;
+
+    fn create_repo(
+        &self,
+        _target: &str,
+        _private: bool,
+        _description: &str,
+        _auto_init: bool,
+    ) -> Result<RepoSummary, Self::Error> {
+        Err(ForgejoError::not_supported("local", "repo create"))
     }
 }

@@ -15,6 +15,7 @@ use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
+use crate::providers::local::LocalProvider;
 
 impl IssueProvider for ForgejoProvider {
     type Error = ForgejoError;
@@ -236,6 +237,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.capabilities(),
             Self::Redmine(provider) => provider.capabilities(),
             Self::Gitlab(provider) => provider.capabilities(),
+            Self::Local(provider) => provider.capabilities(),
         }
     }
 
@@ -244,6 +246,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.supports(capability),
             Self::Redmine(provider) => provider.supports(capability),
             Self::Gitlab(provider) => provider.supports(capability),
+            Self::Local(provider) => provider.supports(capability),
         }
     }
 
@@ -252,6 +255,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.get_issue(number),
             Self::Redmine(provider) => provider.get_issue(number),
             Self::Gitlab(provider) => provider.get_issue(number),
+            Self::Local(provider) => provider.get_issue(number),
         }
     }
 
@@ -263,6 +267,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.search_issues(options),
             Self::Redmine(provider) => provider.search_issues(options),
             Self::Gitlab(provider) => provider.search_issues(options),
+            Self::Local(provider) => provider.search_issues(options),
         }
     }
 
@@ -274,6 +279,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.search_issue_page(options),
             Self::Redmine(provider) => provider.search_issue_page(options),
             Self::Gitlab(provider) => provider.search_issue_page(options),
+            Self::Local(provider) => provider.search_issue_page(options),
         }
     }
 
@@ -282,6 +288,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.create_issue(title, body),
             Self::Redmine(provider) => provider.create_issue(title, body),
             Self::Gitlab(provider) => provider.create_issue(title, body),
+            Self::Local(provider) => provider.create_issue(title, body),
         }
     }
 
@@ -290,6 +297,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.update_body(number, body),
             Self::Redmine(provider) => provider.update_body(number, body),
             Self::Gitlab(provider) => provider.update_body(number, body),
+            Self::Local(provider) => provider.update_body(number, body),
         }
     }
 
@@ -298,6 +306,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.close_issue(number),
             Self::Redmine(provider) => provider.close_issue(number),
             Self::Gitlab(provider) => provider.close_issue(number),
+            Self::Local(provider) => provider.close_issue(number),
         }
     }
 
@@ -311,6 +320,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.create_comment(issue, body, marker),
             Self::Redmine(provider) => provider.create_comment(issue, body, marker),
             Self::Gitlab(provider) => provider.create_comment(issue, body, marker),
+            Self::Local(provider) => provider.create_comment(issue, body, marker),
         }
     }
 
@@ -319,6 +329,7 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.get_comment(issue, comment),
             Self::Redmine(provider) => provider.get_comment(issue, comment),
             Self::Gitlab(provider) => provider.get_comment(issue, comment),
+            Self::Local(provider) => provider.get_comment(issue, comment),
         }
     }
 
@@ -327,6 +338,55 @@ impl IssueProvider for ProviderDispatcher {
             Self::Forgejo(provider) => provider.find_marker(issue, marker),
             Self::Redmine(provider) => provider.find_marker(issue, marker),
             Self::Gitlab(provider) => provider.find_marker(issue, marker),
+            Self::Local(provider) => provider.find_marker(issue, marker),
         }
+    }
+}
+
+impl IssueProvider for LocalProvider {
+    type Error = ForgejoError;
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        LocalProvider::capabilities(self)
+    }
+
+    fn supports(&self, capability: Capability) -> bool {
+        LocalProvider::supports(self, capability)
+    }
+
+    fn get_issue(&self, number: u64) -> Result<IssueSummary, Self::Error> {
+        LocalProvider::get_issue(self, number)
+    }
+
+    fn search_issues(&self, options: &IssueSearchOptions) -> Result<IssueSearchResult, Self::Error> {
+        LocalProvider::search_issues(self, options)
+    }
+
+    fn search_issue_page(&self, options: &IssueSearchOptions) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
+        LocalProvider::search_issue_page(self, options)
+    }
+
+    fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
+        LocalProvider::create_issue(self, title, body)
+    }
+
+    fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, Self::Error> {
+        LocalProvider::update_body(self, number, body)
+    }
+
+    fn close_issue(&self, number: u64) -> Result<IssueSummary, Self::Error> {
+        LocalProvider::close_issue(self, number)
+    }
+
+    fn create_comment(&self, issue: u64, body: &str, marker: &str) -> Result<CommentOutput, Self::Error> {
+        LocalProvider::create_comment(self, issue, body, marker)
+    }
+
+    fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, Self::Error> {
+        LocalProvider::get_comment(self, issue, comment)
+    }
+
+    fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, Self::Error> {
+        LocalProvider::find_marker(self, issue, marker)
     }
 }

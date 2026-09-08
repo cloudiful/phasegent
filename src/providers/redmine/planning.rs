@@ -29,6 +29,10 @@ pub(crate) fn resolve_planning(
     if options.is_empty() {
         return Ok(IssuePlanning::default());
     }
+    // Issue 211 P2 local backend ignores planning fields (no persistence).
+    if matches!(provider, ProviderDispatcher::Local(_)) {
+        return Ok(IssuePlanning::default());
+    }
     match provider {
         ProviderDispatcher::Gitlab(_) => {
             // GitLab accepts `--estimated-hours` (mapped to the
@@ -75,6 +79,8 @@ pub(crate) fn resolve_planning(
             ));
         }
         ProviderDispatcher::Redmine(_) => {}
+        // Local is handled by the early return above; kept for exhaustiveness.
+        ProviderDispatcher::Local(_) => {}
     }
     let parent_issue_id = match &options.parent_issue {
         None => None,
@@ -180,6 +186,8 @@ pub(crate) fn create_issue(
             "forgejo",
             "issue tracker / planning fields",
         )),
+        // Issue 211 P2 local ignores tracker/planning and uses the plain path.
+        ProviderDispatcher::Local(_) => provider.create_issue(title, body),
     }
 }
 
@@ -239,6 +247,8 @@ pub(crate) fn update_body(
             "forgejo",
             "issue tracker / planning fields",
         )),
+        // Issue 211 P2 local ignores tracker/planning and uses the plain path.
+        ProviderDispatcher::Local(_) => provider.update_body(number, body),
     }
 }
 
@@ -260,6 +270,12 @@ fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, F
         // so the failure mode stays symmetric with the old behaviour.
         ProviderDispatcher::Gitlab(_) => Err(ForgejoError::not_supported(
             "gitlab",
+            "issue planning fields",
+        )),
+        // Local never reaches here: resolve_planning returns early for
+        // Local providers, so this wildcard only documents exhaustiveness.
+        other => Err(ForgejoError::not_supported(
+            other.kind().as_str(),
             "issue planning fields",
         )),
     }

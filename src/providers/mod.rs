@@ -5,6 +5,7 @@ pub mod forgejo;
 pub mod gitlab;
 pub mod index;
 pub mod index_store;
+pub mod local;
 pub mod redmine;
 
 use crate::policy::Capability;

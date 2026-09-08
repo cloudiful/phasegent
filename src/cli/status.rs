@@ -129,8 +129,8 @@ pub(crate) fn execute_status(
                 let result = redmine.set_issue_status(number, target.id);
                 super::print_result(result)
             }
-            ProviderDispatcher::Forgejo(_) => super::provider_error(ForgejoError::not_supported(
-                "forgejo",
+            other => super::provider_error(ForgejoError::not_supported(
+                other.kind().as_str(),
                 "issue status update",
             )),
         },
