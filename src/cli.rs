@@ -13,6 +13,7 @@ mod help;
 mod hooks;
 mod issue;
 mod notify;
+pub(crate) mod plugin;
 mod project;
 mod project_resolution;
 mod relation;
@@ -20,6 +21,7 @@ mod repo;
 mod status;
 mod version;
 mod workflow;
+pub(crate) mod worktree;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -257,7 +259,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             .map_or_else(crate::cli::provider_error, |output| print_json(&output)),
         },
         Command::Hooks(command) => hooks::execute_hooks(command),
+        Command::Plugin(command) => plugin::execute_plugin(command),
         Command::Notify(command) => notify::execute_notify(invocation.role, command),
+        Command::Worktree(command) => worktree::execute_worktree(invocation.role, command),
         Command::Mcp(command) => crate::mcp::server::execute(
             required_role(invocation.role),
             invocation.provider,

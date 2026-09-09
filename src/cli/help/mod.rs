@@ -9,6 +9,7 @@ pub mod config;
 pub mod hooks;
 pub mod issue;
 pub mod notify;
+pub mod plugin;
 pub mod project;
 pub mod relation;
 pub mod root;
@@ -16,6 +17,7 @@ pub mod status;
 pub mod timer;
 pub mod version;
 pub mod workflow;
+pub mod worktree;
 
 use auth::print_auth_help;
 use comment::{print_comment_command_help, print_comment_help};
@@ -27,6 +29,7 @@ use config::{
 use hooks::{print_hooks_command_help, print_hooks_help};
 use issue::{print_issue_command_help, print_issue_help};
 use notify::{print_notify_command_help, print_notify_help};
+use plugin::{print_plugin_command_help, print_plugin_help};
 use project::{print_project_command_help, print_project_help};
 use relation::{print_relation_command_help, print_relation_help};
 use root::{print_mcp_command_help, print_mcp_help, print_root_help};
@@ -34,6 +37,7 @@ use status::{print_status_command_help, print_status_help};
 use timer::{print_timer_command_help, print_timer_help};
 use version::{print_version_command_help, print_version_help};
 use workflow::{print_workflow_command_help, print_workflow_help};
+use worktree::{print_worktree_command_help, print_worktree_help};
 
 pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, topic: HelpTopic) {
     match topic {
@@ -76,10 +80,14 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         }
         HelpTopic::Hooks => print_hooks_help(),
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
+        HelpTopic::Plugin => print_plugin_help(),
+        HelpTopic::PluginCommand(command) => print_plugin_command_help(&command),
         HelpTopic::Notify => print_notify_help(role),
         HelpTopic::NotifyCommand(command) => print_notify_command_help(role, &command),
         HelpTopic::Mcp => print_mcp_help(role),
         HelpTopic::McpCommand(command) => print_mcp_command_help(role, &command),
+        HelpTopic::Worktree => print_worktree_help(role),
+        HelpTopic::WorktreeCommand(command) => print_worktree_command_help(role, &command),
     }
 }
 

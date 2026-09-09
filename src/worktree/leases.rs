@@ -1,0 +1,292 @@
+//! Lease-row storage helpers for the worktree module.
+//!
+//! The DDL is created lazily via [`ensure_schema`] (a `CREATE TABLE
+//! IF NOT EXISTS` block) so opening the database before Phase 1
+//! still succeeds; there is no row in the central `MIGRATIONS` block
+//! and the table is created the first time a worktree helper runs.
+//! All queries pass parameters through `rusqlite::params!` so a
+//! caller-supplied string can never reach the SQL parser unsanitised.
+
+use rusqlite::OptionalExtension;
+
+use crate::infra::storage::Storage;
+use crate::worktree::{LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, now_unix_secs};
+
+/// Hard cap on `list()` / `status()` results so a runaway query never
+/// floods the response. Mirrors the timer-ledger 64-row ceiling.
+#[allow(dead_code)]
+pub(super) const MAX_LEASES_PER_QUERY: i64 = 256;
+/// Hard cap on leases scanned when checking for an existing
+/// `(repo, issue, session)` match. Phase 1 always has a tiny per-repo
+/// population, but the cap is a defensive upper bound.
+#[allow(dead_code)]
+pub(super) const MAX_ACTIVE_LEASES_PER_REPO: i64 = 256;
+
+/// Inline `CREATE TABLE IF NOT EXISTS` for the worktree lease table.
+/// The DDL stays self-contained in this module (per Phase 1 scope) so
+/// opening the database before Phase 1 still succeeds: there is no
+/// migration row in the central `MIGRATIONS` block, and the table is
+/// created lazily the first time a worktree helper runs.
+#[allow(dead_code)]
+pub fn ensure_schema(storage: &Storage) -> Result<(), String> {
+    storage
+        .connection
+        .execute_batch(WORKTREE_LEASES_SCHEMA)
+        .map_err(|error| format!("could not initialise worktree lease table: {error}"))
+}
+
+#[allow(dead_code)]
+const WORKTREE_LEASES_SCHEMA: &str = "\
+CREATE TABLE IF NOT EXISTS worktree_leases (
+    lease_id TEXT PRIMARY KEY,
+    repo_identity TEXT NOT NULL,
+    issue INTEGER NOT NULL,
+    session TEXT NOT NULL DEFAULT '',
+    checkout_path TEXT NOT NULL,
+    worktree_path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    heartbeat_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS worktree_leases_repo_path_idx
+    ON worktree_leases (repo_identity, worktree_path);
+
+CREATE INDEX IF NOT EXISTS worktree_leases_repo_status_idx
+    ON worktree_leases (repo_identity, status);
+";
+
+#[allow(dead_code)]
+pub(super) fn find_active_lease(
+    storage: &Storage,
+    identity: &str,
+    issue: u64,
+    session: &str,
+) -> Result<Option<LeaseRow>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+                    branch, status, created_at, heartbeat_at \
+             FROM worktree_leases \
+             WHERE repo_identity = ?1 AND issue = ?2 AND session = ?3 AND status = ?4 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .map_err(|error| {
+            WorktreeError::new("storage", format!("prepare active lookup: {error}"))
+        })?;
+    let mut rows = statement
+        .query(rusqlite::params![
+            identity,
+            issue as i64,
+            session,
+            LEASE_STATUS_ACTIVE
+        ])
+        .map_err(|error| WorktreeError::new("storage", format!("active lookup: {error}")))?;
+    if let Some(row) = rows
+        .next()
+        .map_err(|error| WorktreeError::new("storage", format!("active row: {error}")))?
+    {
+        return Ok(Some(decode_lease_row(row)?));
+    }
+    Ok(None)
+}
+
+#[allow(dead_code)]
+pub(super) fn count_other_active_leases(
+    storage: &Storage,
+    identity: &str,
+    issue: u64,
+    session: &str,
+) -> Result<i64, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT COUNT(*) FROM worktree_leases \
+             WHERE repo_identity = ?1 AND status = ?2 \
+               AND NOT (issue = ?3 AND session = ?4) \
+             LIMIT ?5",
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("prepare count: {error}")))?;
+    let total: i64 = statement
+        .query_row(
+            rusqlite::params![
+                identity,
+                LEASE_STATUS_ACTIVE,
+                issue as i64,
+                session,
+                MAX_ACTIVE_LEASES_PER_REPO
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("count: {error}")))?;
+    Ok(total)
+}
+
+#[allow(dead_code)]
+pub(crate) fn load_lease(
+    storage: &Storage,
+    lease_id: &str,
+) -> Result<Option<LeaseRow>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+                    branch, status, created_at, heartbeat_at \
+             FROM worktree_leases WHERE lease_id = ?1",
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("prepare load: {error}")))?;
+    let row: Option<LeaseRow> = statement
+        .query_row(rusqlite::params![lease_id], decode_lease_row)
+        .optional()
+        .map_err(|error| WorktreeError::new("storage", format!("load: {error}")))?;
+    Ok(row)
+}
+
+#[allow(dead_code)]
+pub fn insert_lease(storage: &Storage, lease: NewLease<'_>) -> Result<(), WorktreeError> {
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_leases \
+                (lease_id, repo_identity, issue, session, checkout_path, worktree_path, branch, \
+                 status, created_at, heartbeat_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                lease.lease_id,
+                lease.identity,
+                lease.issue as i64,
+                lease.session,
+                lease.checkout_path,
+                lease.worktree_path,
+                lease.branch,
+                lease.status,
+                lease.created_at,
+                lease.heartbeat_at,
+            ],
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("insert lease: {error}")))?;
+    Ok(())
+}
+
+/// Borrowed view of every field the `worktree_leases` table stores.
+/// Using a struct keeps `insert_lease` under the clippy
+/// `too_many_arguments` threshold (which is 7 by default) and lets
+/// the caller thread the same `NewLease` value through both
+/// `idempotent reuse` and `new_worktree` acquire paths without
+/// losing readability.
+#[derive(Debug, Clone)]
+pub struct NewLease<'a> {
+    pub lease_id: &'a str,
+    pub identity: &'a str,
+    pub issue: u64,
+    pub session: &'a str,
+    pub checkout_path: &'a str,
+    pub worktree_path: &'a str,
+    pub branch: &'a str,
+    pub status: &'a str,
+    pub created_at: i64,
+    pub heartbeat_at: i64,
+}
+
+#[allow(dead_code)]
+pub(super) fn refresh_heartbeat(storage: &Storage, lease_id: &str) -> Result<(), WorktreeError> {
+    let now = now_unix_secs();
+    storage
+        .connection
+        .execute(
+            "UPDATE worktree_leases SET heartbeat_at = ?2 WHERE lease_id = ?1",
+            rusqlite::params![lease_id, now],
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("heartbeat: {error}")))?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn update_status(
+    storage: &Storage,
+    lease_id: &str,
+    target_status: &str,
+) -> Result<(), WorktreeError> {
+    let now = now_unix_secs();
+    storage
+        .connection
+        .execute(
+            "UPDATE worktree_leases SET status = ?2, heartbeat_at = ?3 WHERE lease_id = ?1",
+            rusqlite::params![lease_id, target_status, now],
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("release: {error}")))?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn list_for_issue(storage: &Storage, issue: u64) -> Result<Vec<LeaseRow>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+                    branch, status, created_at, heartbeat_at \
+             FROM worktree_leases \
+             WHERE issue = ?1 AND status = ?2 \
+             ORDER BY created_at DESC LIMIT ?3",
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("prepare issue list: {error}")))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![issue as i64, LEASE_STATUS_ACTIVE, MAX_LEASES_PER_QUERY],
+            decode_lease_row,
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("issue list: {error}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|error| WorktreeError::new("storage", format!("issue row: {error}")))?,
+        );
+    }
+    Ok(out)
+}
+
+#[allow(dead_code)]
+pub fn list_for_repo(storage: &Storage, identity: &str) -> Result<Vec<LeaseRow>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+                    branch, status, created_at, heartbeat_at \
+             FROM worktree_leases \
+             WHERE repo_identity = ?1 \
+             ORDER BY created_at DESC LIMIT ?2",
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("prepare repo list: {error}")))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![identity, MAX_LEASES_PER_QUERY],
+            decode_lease_row,
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("repo list: {error}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|error| WorktreeError::new("storage", format!("repo row: {error}")))?);
+    }
+    Ok(out)
+}
+
+#[allow(dead_code)]
+fn decode_lease_row(row: &rusqlite::Row<'_>) -> Result<LeaseRow, rusqlite::Error> {
+    Ok(LeaseRow {
+        lease_id: row.get(0)?,
+        repo_identity: row.get(1)?,
+        issue: {
+            let raw: i64 = row.get(2)?;
+            raw.max(0) as u64
+        },
+        session: row.get(3)?,
+        checkout_path: row.get(4)?,
+        worktree_path: row.get(5)?,
+        branch: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        heartbeat_at: row.get(9)?,
+    })
+}

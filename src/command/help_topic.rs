@@ -114,6 +114,13 @@ pub(crate) fn help_topic(
             Some("install") => Ok(HelpTopic::HooksCommand("install".to_owned())),
             Some(value) => Err(format!("unknown hooks help topic '{value}'")),
         },
+        "plugin" => match subcommand {
+            None => Ok(HelpTopic::Plugin),
+            Some(value) if ["install", "status", "uninstall"].contains(&value) => {
+                Ok(HelpTopic::PluginCommand(value.to_owned()))
+            }
+            Some(value) => Err(format!("unknown plugin help topic '{value}'")),
+        },
         "notify" => match subcommand {
             None => Ok(HelpTopic::Notify),
             Some("send") => Ok(HelpTopic::NotifyCommand("send".to_owned())),
@@ -123,6 +130,13 @@ pub(crate) fn help_topic(
             None => Ok(HelpTopic::Mcp),
             Some("serve") => Ok(HelpTopic::McpCommand("serve".to_owned())),
             Some(value) => Err(format!("unknown mcp help topic '{value}'")),
+        },
+        "worktree" => match subcommand {
+            None => Ok(HelpTopic::Worktree),
+            Some(value) if ["acquire", "release", "status", "list", "prune"].contains(&value) => {
+                Ok(HelpTopic::WorktreeCommand(value.to_owned()))
+            }
+            Some(value) => Err(format!("unknown worktree help topic '{value}'")),
         },
         _ => Err(format!("unknown help topic '{value}'")),
     }

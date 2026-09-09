@@ -170,6 +170,44 @@ phasegent issue unbind
 These commands operate on the local checkout and do not require provider
 access.
 
+## Worktree leases (issue #239 Phase 2)
+
+Auto-isolate a per-(repo, issue, session) worktree so multiple phasegent
+tasks can run side by side without colliding on the same checkout. The
+AI never sees the branch: run `phasegent plugin install` once and the
+OpenCode adapter auto-acquires per session (no manual npm).
+
+```sh
+# Acquire or reuse a worktree for issue 239 (idempotent)
+phasegent --role orchestrator worktree acquire --issue 239 \
+  --session alpha
+# { "lease_id": "...", "path": "...", "branch": "phasegent/239-...",
+#   "repo_identity": "...", "created": true, "reason": "new_worktree" }
+
+# List active leases for an issue (read-only; available to
+# orchestrator, executor, and reviewer)
+phasegent --role executor worktree status --issue 239
+
+# List every lease for the current repo (read-only)
+phasegent --role executor worktree list
+
+# Release an active lease; --retain defaults to true (orchestrator-only)
+phasegent --role orchestrator worktree release --lease lease-...
+
+# Prune clean + expired + retained worktrees; --dry-run lists
+# candidates without mutating. Branches are never deleted; only
+# `git worktree remove` is invoked, and only on a clean worktree.
+phasegent --role orchestrator worktree prune --stale-days 14 --dry-run
+```
+
+`acquire` / `release` / `prune` are orchestrator-only at the command
+level. `status` / `list` are read-only and available to orchestrator,
+executor, and reviewer; tester is denied. **`.env` is never read,
+copied, or written by any worktree command** — copy environment files
+by hand when you need them inside the new worktree (per the issue
+#239 Decisions). MCP never exposes worktree operations regardless of
+role.
+
 ## Phase time tracking
 
 Phase time tracking is **internal and auto-managed**: time accumulates

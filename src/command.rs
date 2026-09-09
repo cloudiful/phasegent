@@ -16,12 +16,14 @@ mod issue;
 mod mcp;
 mod notify;
 mod parse_helpers;
+mod plugin;
 mod project;
 mod relation;
 mod status;
 mod timer;
 mod version;
 mod workflow;
+mod worktree;
 
 pub(crate) use parse_helpers::{has_flag, optional_option, validate_options};
 
@@ -100,12 +102,25 @@ pub enum Command {
     Workflow(WorkflowCommand),
     Repo(RepoCommand),
     Hooks(HooksCommand),
+    /// Local OpenCode plugin installation (issue #239 Phase 3).
+    /// `install` writes the worktree adapter into the OpenCode plugin
+    /// directory (global and/or project scope); `status` reports the
+    /// per-slot managed-flag match; `uninstall` removes managed
+    /// files. Operator-local: no role or provider required (mirrors
+    /// the `hooks` family).
+    Plugin(PluginCommand),
     /// Redmine issue relations. List, create, and delete by id; the create
     /// direction is `issue` -> `to` with a canonical `--type`.
     Relation(RelationCommand),
     /// Orchestrator-owned local phase timer and Redmine Time Entry
     /// projection. The child executor/reviewer roles do not call this CLI.
     Timer(TimerCommand),
+    /// Local worktree leases (issue #239). Acquires/releases per-(repo,
+    /// issue, session) worktrees backed by the `worktree_leases` table;
+    /// reports status and lists existing leases; prunes clean+expired
+    /// retained worktrees. Mutating subcommands are
+    /// orchestrator-only at execution time.
+    Worktree(WorktreeCommand),
     /// Explicit desktop entry point for the single-binary shell.
     /// `phasegent gui` opens the Tauri window; every other CLI command
     /// never initializes the GUI. Usable without `--role` because the
@@ -152,10 +167,14 @@ pub enum HelpTopic {
     RepoCommand(String),
     Hooks,
     HooksCommand(String),
+    Plugin,
+    PluginCommand(String),
     Relation,
     RelationCommand(String),
     Timer,
     TimerCommand(String),
+    Worktree,
+    WorktreeCommand(String),
 }
 
 #[derive(Debug)]
@@ -364,6 +383,89 @@ pub enum WorkflowCommand {
     },
 }
 
+/// OpenCode plugin management (issue #239 Phase 3).
+///
+/// * `install [--global] [--project] [--force]` writes the managed
+///   worktree adapter (`phasegent-worktree.js`) into the OpenCode
+///   plugin directory. When neither `--global` nor `--project` is
+///   supplied, both slots are written. Existing managed files are
+///   updated in place; foreign files (no `// phasegent:managed`
+///   marker) are refused unless `--force` is supplied, in which case
+///   the foreign file is renamed to `phasegent-worktree.js.phasegent-orig`.
+///   Operator-local; no role or provider required.
+/// * `status` reports the global + project slots: path, exists,
+///   managed-flag match, size, and mtime. Read-only.
+/// * `uninstall [--global] [--project]` removes managed adapter
+///   files only; foreign files are refused; missing files report a
+///   warning rather than an error. The worktree itself (and its
+///   branch) is never touched; `phasegent worktree prune` handles
+///   that.
+#[derive(Debug)]
+pub enum PluginCommand {
+    Install {
+        global: bool,
+        project: bool,
+        force: bool,
+    },
+    Status,
+    Uninstall {
+        global: bool,
+        project: bool,
+    },
+}
+
+/// Worktree lease management (issue #239 Phase 2).
+///
+/// * `acquire` returns a `(lease_id, path, branch, repo_identity,
+///   created, reason)` JSON envelope (`reason ∈ {idempotent,
+///   no_conflict, new_worktree}`) on stdout; the same session triple
+///   reuses the prior lease. `--base` is accepted for forward
+///   compatibility; the current implementation always bases on `HEAD`.
+///   Orchestrator-only.
+/// * `release` flips the lease to `retained` (default) or `released`.
+///   Orchestrator-only. Never deletes the directory or the branch in
+///   the current Phase 2 surface; prune is a separate subcommand.
+/// * `status --issue N` lists active leases for the issue. Read-only;
+///   available to orchestrator, executor, and reviewer.
+/// * `list [--repo PATH]` lists every lease (active + terminal) for
+///   the resolved repo identity; `--repo` defaults to the current
+///   working directory. Read-only; available to orchestrator,
+///   executor, and reviewer.
+/// * `prune [--stale-days N] [--dry-run]` removes clean + expired +
+///   retained worktrees. Branches are never deleted; only
+///   `git worktree remove` (no `--force`) is invoked, and only when
+///   `is_clean` reports an empty porcelain. Orchestrator-only.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum WorktreeCommand {
+    Acquire {
+        issue: u64,
+        session: String,
+        /// Accepted for forward compatibility; the current Phase 2
+        /// implementation always bases on `HEAD`. The dispatcher in
+        /// `cli::worktree::execute_acquire` acknowledges the value
+        /// and ignores it without warning so the CLI surface stays
+        /// stable when a future Phase ships the actual `--base`
+        /// routing.
+        base: Option<String>,
+        format: String,
+    },
+    Release {
+        lease: String,
+        retain: bool,
+    },
+    Status {
+        issue: u64,
+    },
+    List {
+        repo: Option<String>,
+    },
+    Prune {
+        stale_days: u32,
+        dry_run: bool,
+    },
+}
+
 /// Agent notification send. `event` is the structured kind
 /// (completion, blocked, failure, interruption_suspected,
 /// publish_failed); `title`/`body` are bounded at the envelope layer
@@ -564,8 +666,10 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "relation" => relation::parse_relation(rest)?,
         "timer" => timer::parse_timer(rest)?,
         "workflow" => workflow::parse_workflow(rest)?,
+        "worktree" => worktree::parse_worktree(rest)?,
         "repo" => crate::repo_command::parse(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
+        "plugin" => plugin::parse_plugin(rest)?,
         "notify" => notify::parse_notify(rest)?,
         "mcp" => mcp::parse_mcp(rest)?,
         value => return Err(format!("unknown command '{value}'")),
@@ -582,6 +686,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         | Command::ConfigProviderSet { .. }
         | Command::ConfigProviderClear
         | Command::Hooks(_)
+        | Command::Plugin(_)
         | Command::Issue(
             IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch,
         ) => true,

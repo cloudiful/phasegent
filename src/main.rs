@@ -12,6 +12,7 @@ mod lifecycle;
 mod lifecycle_auto;
 mod mcp;
 mod notifications;
+mod plugin;
 mod policy;
 mod remote;
 mod repo_cli;
@@ -19,6 +20,7 @@ mod repo_command;
 mod time_tracking;
 mod time_tracking_cli;
 mod workflow;
+mod worktree;
 
 mod infra;
 mod providers;
@@ -40,6 +42,15 @@ mod config_tests;
 
 #[cfg(test)]
 mod lifecycle_auto_tests;
+
+#[cfg(test)]
+mod worktree_tests;
+
+#[cfg(test)]
+mod worktree_cli_tests;
+
+#[cfg(test)]
+mod plugin_tests;
 
 fn main() {
     // Single-binary dispatch: the conservative no-argument desktop

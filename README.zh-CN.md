@@ -159,6 +159,40 @@ phasegent issue unbind
 
 这些命令只操作本地 checkout，不需要访问 provider。
 
+## Worktree 租约（issue #239 Phase 2）
+
+按 (repo, issue, session) 自动隔离一个 worktree，让多个 phasegent 任务
+并行时不会撞到同一份 checkout。AI 看不见分支：执行一次
+`phasegent plugin install` 即可写入 OpenCode adapter 自动按 session
+申请 worktree（无需手动 npm）。
+
+```sh
+# 为 issue 239 申请或复用 worktree（幂等）
+phasegent --role orchestrator worktree acquire --issue 239 \
+  --session alpha
+# { "lease_id": "...", "path": "...", "branch": "phasegent/239-...",
+#   "repo_identity": "...", "created": true, "reason": "new_worktree" }
+
+# 列出某 issue 的 active 租约（只读；orchestrator、executor、reviewer 可用）
+phasegent --role executor worktree status --issue 239
+
+# 列出当前 repo 的所有租约（只读）
+phasegent --role executor worktree list
+
+# 释放一个 active 租约；--retain 默认 true（仅 orchestrator）
+phasegent --role orchestrator worktree release --lease lease-...
+
+# 清理 clean + 过期 + retained 的 worktree；--dry-run 只列候选不改动。
+# 分支永远不会被删；只调用 `git worktree remove`，且仅在 clean 时执行。
+phasegent --role orchestrator worktree prune --stale-days 14 --dry-run
+```
+
+`acquire` / `release` / `prune` 在命令级仅限 orchestrator。
+`status` / `list` 只读，orchestrator、executor、reviewer 可用，tester
+被拒。**worktree 命令永远不读、不复制、不写 `.env`**——需要环境
+文件时请手动复制到新 worktree（issue #239 Decisions）。无论哪种
+role，MCP 都不暴露 worktree 操作。
+
 ## 阶段计时
 
 阶段计时属于**内部自动管理**：随着 `status set` / `status advance` 的状态
