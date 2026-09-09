@@ -9,6 +9,7 @@ mod gui;
 mod hooks;
 mod launch;
 mod lifecycle;
+mod lifecycle_auto;
 mod mcp;
 mod notifications;
 mod policy;
@@ -36,6 +37,9 @@ mod hooks_tests;
 
 #[cfg(test)]
 mod config_tests;
+
+#[cfg(test)]
+mod lifecycle_auto_tests;
 
 fn main() {
     // Single-binary dispatch: the conservative no-argument desktop

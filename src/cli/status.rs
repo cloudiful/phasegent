@@ -97,6 +97,17 @@ pub(crate) fn execute_status(
         StatusCommand::Advance { number, status } => match provider {
             ProviderDispatcher::Redmine(redmine) => {
                 let result = redmine.advance_issue_status(number, &status);
+                if result.is_ok() {
+                    super::report_local_warnings(
+                        "status advance",
+                        crate::lifecycle_auto::auto_transition_timer(
+                            number,
+                            ProviderKind::Redmine,
+                            &status,
+                        )
+                        .warning(),
+                    );
+                }
                 super::print_result(result)
             }
             other => super::provider_error(ForgejoError::not_supported(
@@ -107,6 +118,17 @@ pub(crate) fn execute_status(
         StatusCommand::Set { number, status } => match provider {
             ProviderDispatcher::Gitlab(gitlab) => {
                 let result = gitlab.set_workflow_status(number, &status);
+                if result.is_ok() {
+                    super::report_local_warnings(
+                        "status set",
+                        crate::lifecycle_auto::auto_transition_timer(
+                            number,
+                            ProviderKind::Gitlab,
+                            &status,
+                        )
+                        .warning(),
+                    );
+                }
                 super::print_result(result)
             }
             ProviderDispatcher::Redmine(redmine) => {
@@ -119,6 +141,17 @@ pub(crate) fn execute_status(
                     Err(error) => return super::provider_error(error),
                 };
                 let result = redmine.set_issue_status(number, target.id);
+                if result.is_ok() {
+                    super::report_local_warnings(
+                        "status set",
+                        crate::lifecycle_auto::auto_transition_timer(
+                            number,
+                            ProviderKind::Redmine,
+                            &status,
+                        )
+                        .warning(),
+                    );
+                }
                 super::print_result(result)
             }
             ProviderDispatcher::Forgejo(_) => super::provider_error(ForgejoError::not_supported(

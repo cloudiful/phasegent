@@ -207,3 +207,22 @@ fn gitlab_provider_for_finish(
         crate::providers::config::GitlabConfig::resolve(Role::Orchestrator, api_base, project_id)?;
     GitlabProvider::for_role(Role::Orchestrator, config)
 }
+
+/// Internal entry point used by the lifecycle auto-accounting path.
+/// Unlike [`execute_finish`] it skips the orchestrator-role check,
+/// the provider-kind gating, and the projection call. The lifecycle
+/// path opens and closes runs purely as a local bookkeeping
+/// transition: the operator still drives `timer finish` / `timer
+/// recover` when they want a real Redmine Time Entry or GitLab spent
+/// time POST. The result is hard-coded to `DONE` because the
+/// orchestrator's status set/advance path always represents a
+/// successful transition; a failed transition already returned an
+/// error before reaching this helper.
+pub(crate) fn auto_finish_run(run_id: &str) -> Result<(), String> {
+    let storage = Storage::open().map_err(|error| format!("auto finish storage: {error}"))?;
+    let finished_at = now_epoch_seconds();
+    let _ = storage
+        .finish_timer_run(run_id, "DONE", finished_at)
+        .map_err(|error| format!("auto finish: {error}"))?;
+    Ok(())
+}

@@ -79,6 +79,69 @@ impl Storage {
         Ok(runs)
     }
 
+    /// List every still-running row whose `issue_id` matches `issue`,
+    /// newest-started-first. Used by the lifecycle auto-accounting path
+    /// so a status transition can finish the open segment before
+    /// opening the next one. The lookup is intentionally a separate
+    /// query (rather than re-using `list_timer_runs(Running, N)`) so
+    /// the cap on `list_timer_runs` cannot silently drop an open run
+    /// for a high-traffic ledger. The hard cap of 64 keeps the
+    /// auto-cleanup scan bounded even after a long crash.
+    pub fn list_running_runs_for_issue(&self, issue: u64) -> Result<Vec<TimerRun>, String> {
+        const MAX_AUTO_RUNS_PER_ISSUE: i64 = 64;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT run_id, issue_id, phase, role, attempt, started_at, finished_at, status, \
+                        elapsed_seconds, rounded_hours, activity_id, redmine_time_entry_id, \
+                        sync_status, sync_error, owner_session_id, owner_call_id, \
+                        projection_token, projection_claimed_at \
+                 FROM execution_timer_runs \
+                 WHERE status = 'running' AND issue_id = ?1 \
+                 ORDER BY started_at DESC LIMIT ?2",
+            )
+            .map_err(|error| format!("could not prepare running-by-issue list: {error}"))?;
+        let rows = statement
+            .query_map(
+                params![issue as i64, MAX_AUTO_RUNS_PER_ISSUE],
+                timer_run_from_row,
+            )
+            .map_err(|error| format!("could not read running-by-issue list: {error}"))?;
+        let mut runs = Vec::new();
+        for row in rows {
+            runs.push(
+                row.map_err(|error| format!("could not decode running-by-issue row: {error}"))?,
+            );
+        }
+        Ok(runs)
+    }
+
+    /// Sum the `elapsed_seconds` of every finished row for `issue` whose
+    /// `phase` matches `phase` (case-sensitive). Used by tests and the
+    /// future cumulative-sum reporting to confirm that repeated
+    /// same-state entries sum (not overwrite). The query is
+    /// deliberately narrow so a status name with a wildcard can never
+    /// match an unrelated phase.
+    #[allow(dead_code)]
+    pub fn sum_elapsed_seconds_for_issue_phase(
+        &self,
+        issue: u64,
+        phase: &str,
+    ) -> Result<i64, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT COALESCE(SUM(elapsed_seconds), 0) \
+                 FROM execution_timer_runs \
+                 WHERE issue_id = ?1 AND phase = ?2 AND status <> 'running'",
+            )
+            .map_err(|error| format!("could not prepare phase-sum query: {error}"))?;
+        let total: i64 = statement
+            .query_row(params![issue as i64, phase], |row| row.get(0))
+            .map_err(|error| format!("could not read phase-sum query: {error}"))?;
+        Ok(total)
+    }
+
     /// Persist the start of one wall-clock run. Repeating the same run id and
     /// identity is a no-op; a different identity or an already-finished run is
     /// rejected before any remote operation is attempted. The legacy

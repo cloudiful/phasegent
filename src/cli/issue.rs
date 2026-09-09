@@ -245,6 +245,19 @@ pub(crate) fn execute_issue(
                         .warning(),
                     );
                 }
+                // Auto-accounting side effect: finish any running
+                // auto-run for the issue. The helper is gated for
+                // Forgejo internally and returns `Noop` so a
+                // Forgejo close never mutates the Redmine or
+                // GitLab ledger rows; for Redmine and GitLab it
+                // finishes every running row for the issue. The
+                // branch-context `unbind_closed_issue` above is a
+                // Redmine-only sibling helper and is unaffected by
+                // this hook.
+                super::report_local_warnings(
+                    "issue close",
+                    crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind).warning(),
+                );
                 // Close upserts the returned closed document.
                 issue_search::warm_single_summary(&provider, &summary, "issue close");
                 super::print_json(&summary)

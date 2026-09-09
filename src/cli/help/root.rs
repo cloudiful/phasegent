@@ -35,7 +35,9 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
     }
     if provider == Some(ProviderKind::Redmine) && role.is_none_or(|role| role == Role::Orchestrator)
     {
-        println!("  timer                  Redmine phase time tracking");
+        println!(
+            "  timer                  Redmine phase time tracking (internal/auto; manual fallback only)"
+        );
     }
     if provider == Some(ProviderKind::Redmine) && role.is_none_or(|role| role == Role::Admin) {
         println!("  workflow               Redmine workflow bootstrap");

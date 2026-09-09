@@ -170,6 +170,36 @@ phasegent issue unbind
 These commands operate on the local checkout and do not require provider
 access.
 
+## Phase time tracking
+
+Phase time tracking is **internal and auto-managed**: time accumulates
+segment-by-segment as an issue moves through `status set` / `status advance`
+and closes out on `issue close`. The orchestrator owns the only legitimate
+trigger; AI workflows **must not** call the timer CLI directly.
+
+The `timer` command group remains available as a **manual fallback and
+recovery** surface only — useful for inspecting the local ledger, finishing a
+run the lifecycle path could not auto-close, or recovering an orphan:
+
+```sh
+# Inspect local phase runs (read-only, local-only)
+phasegent --role orchestrator timer list
+phasegent --role orchestrator timer get <RUN_ID>
+
+# Manual fallback / recovery (operator only)
+phasegent --role orchestrator timer start <ISSUE> --phase NAME \
+  --agent-role executor|reviewer|tester --attempt N
+phasegent --role orchestrator timer finish <RUN_ID> \
+  --result DONE|PARTIAL|BLOCKED|FAILED
+phasegent --role orchestrator timer recover <RUN_ID>
+```
+
+`timer start` / `timer finish` are still orchestrator-only. `list` and `get`
+never touch the provider; `finish` and `recover` project to Redmine or GitLab
+(Forgejo rejects both) and may fail without making the underlying status or
+close operation fail — failures are bounded stderr warnings. MCP never exposes
+timer operations regardless of role.
+
 ## MCP server
 
 Serve the contracted operations over the Model Context Protocol:

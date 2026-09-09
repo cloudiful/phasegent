@@ -159,6 +159,33 @@ phasegent issue unbind
 
 这些命令只操作本地 checkout，不需要访问 provider。
 
+## 阶段计时
+
+阶段计时属于**内部自动管理**：随着 `status set` / `status advance` 的状态
+流转按段累计耗时，并在 `issue close` 时收尾。仅 orchestrator 拥有合法触发权，
+AI 工作流**不应**直接调用 timer CLI。
+
+`timer` 命令组仍然保留，作为**手动兜底与恢复**专用面 —— 用于查看本地
+ledger、手动收尾生命周期未自动关闭的 run，或恢复孤儿记录：
+
+```sh
+# 查看本地阶段 run（只读，仅本地）
+phasegent --role orchestrator timer list
+phasegent --role orchestrator timer get <RUN_ID>
+
+# 手动兜底 / 恢复（仅运维使用）
+phasegent --role orchestrator timer start <ISSUE> --phase NAME \
+  --agent-role executor|reviewer|tester --attempt N
+phasegent --role orchestrator timer finish <RUN_ID> \
+  --result DONE|PARTIAL|BLOCKED|FAILED
+phasegent --role orchestrator timer recover <RUN_ID>
+```
+
+`timer start` / `timer finish` 仍仅限 orchestrator。`list` / `get` 不接触
+provider；`finish` / `recover` 投影到 Redmine 或 GitLab（Forgejo 两者均拒绝），
+失败不会让底层状态流转或关闭操作失败 —— 失败仅以 stderr 警告形式输出。
+无论哪种 role，MCP 都不暴露 timer 操作。
+
 ## MCP 服务
 
 通过 Model Context Protocol 对外提供约定的操作：

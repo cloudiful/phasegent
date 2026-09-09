@@ -52,9 +52,28 @@ pub(crate) fn bounded_error_message(message: &str) -> String {
 }
 
 pub(crate) fn generate_run_id() -> String {
+    generate_run_id_with_prefix("timer")
+}
+
+pub(crate) fn generate_run_id_with_prefix(prefix: &str) -> String {
     let timestamp = now_epoch_seconds();
     let counter = NEXT_TIMER_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("timer-{timestamp:x}-{}-{:x}", std::process::id(), counter)
+    // Sanitize the prefix to a single bounded token: drop any character
+    // that would fail `validate_timer_identity` (controls or whitespace)
+    // and cap it at 32 chars so the resulting id is always well below
+    // the 128-char limit. Empty prefixes collapse to the legacy
+    // `timer-` token so an empty caller still produces a valid id.
+    let safe_prefix: String = prefix
+        .chars()
+        .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+        .take(32)
+        .collect();
+    let head = if safe_prefix.is_empty() {
+        "timer"
+    } else {
+        &safe_prefix
+    };
+    format!("{head}-{timestamp:x}-{}-{:x}", std::process::id(), counter)
 }
 
 pub(crate) fn generate_projection_token() -> String {
