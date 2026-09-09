@@ -174,6 +174,23 @@ fn unique_cache(label: &str) -> TempDir {
     TempDir::new(&format!("cache-{label}"))
 }
 
+/// Bind the temp repo's current branch to `issue` using the same local
+/// git config key `branch_context::read_issue_id` reads
+/// (`branch.<name>.redmine-issue-id`), so binding resolution in the
+/// dirty-tree triggers sees exactly what a hand-written binding sets.
+fn bind_current_branch(repo: &TempRepo, issue: u64) {
+    let runner = ProcessWorktreeRunner::new();
+    let key = crate::branch_context::config_key(&repo.head_branch);
+    let issue_text = issue.to_string();
+    let output = runner
+        .run(
+            &["config", "--local", key.as_str(), &issue_text],
+            repo.dir.path(),
+        )
+        .expect("git config binding write");
+    assert_eq!(output.status, 0, "binding write must succeed");
+}
+
 // ---------------------------------------------------------------------------
 // Pure helper tests (no DB, no git).
 // ---------------------------------------------------------------------------
@@ -573,6 +590,10 @@ fn acquire_is_idempotent_for_the_same_repo_issue_session() {
     assert_eq!(first.path, second.path);
     assert_eq!(first.branch, second.branch);
     assert_eq!(second.reason, "idempotent");
+    assert!(
+        first.warnings.is_empty() && second.warnings.is_empty(),
+        "idempotent reuse on a clean tree must not warn"
+    );
     drop(cache);
     drop(db_temp);
 }
@@ -624,6 +645,222 @@ fn acquire_creates_a_new_worktree_for_a_second_session() {
     .expect("third acquire");
     assert_eq!(third.reason, "new_worktree");
     assert!(third.branch.starts_with("phasegent/240-"));
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
+    // Issue #246 replica: empty lease table + dirty checkout bound to
+    // issue 241, acquiring issue 245 must NOT reuse the dirty tree.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("dirty-foreign-bound") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-dirty-foreign-bound");
+    let cache = unique_cache("dirty-foreign-bound");
+    let runner = ProcessWorktreeRunner::new();
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+    )
+    .expect("dirty + foreign-bound must isolate, not error");
+    assert!(
+        outcome.created,
+        "dirty + bound-to-241 must create a worktree for 245"
+    );
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(
+        outcome
+            .path
+            .starts_with(cache.path().to_string_lossy().as_ref()),
+        "new worktree must live under the cache base"
+    );
+    assert!(outcome.branch.starts_with("phasegent/245-"));
+    assert!(Path::new(&outcome.path).exists(), "worktree dir must exist");
+    assert!(
+        outcome.warnings.iter().any(|w| w.contains("241")),
+        "trigger detail (dirty + bound #N) belongs in warnings: {:?}",
+        outcome.warnings
+    );
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_clean_foreign_bound_reuses_current_checkout() {
+    // A clean checkout bound to another issue is not contaminated, so
+    // the existing no_conflict reuse behaviour is unchanged.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("clean-foreign-bound") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-clean-foreign-bound");
+    let cache = unique_cache("clean-foreign-bound");
+    let runner = ProcessWorktreeRunner::new();
+    bind_current_branch(&repo, 241);
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+    )
+    .expect("acquire on a clean foreign-bound checkout");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
+    assert!(
+        outcome.warnings.is_empty(),
+        "clean + bound-other must stay silent: {:?}",
+        outcome.warnings
+    );
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_dirty_unbound_reuses_current_checkout_with_warning() {
+    // Dirty + unbound: no task evidence for the dirt, so reuse the
+    // checkout but surface a best-effort warning.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("dirty-unbound") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-dirty-unbound");
+    let cache = unique_cache("dirty-unbound");
+    let runner = ProcessWorktreeRunner::new();
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+    )
+    .expect("dirty + unbound must reuse, not error");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    let joined = outcome.warnings.join(" ");
+    assert!(
+        joined.contains("dirty") && joined.contains("not bound"),
+        "reuse of a dirty unbound checkout must carry a warning: {joined}"
+    );
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_dirty_same_issue_other_session_lease_creates_new_worktree() {
+    // Two parallel sessions on the same dirty checkout bound to the
+    // same issue must not share the tree: once session A has recorded
+    // a lease, session B gets its own worktree.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("dirty-same-issue") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-dirty-same-issue");
+    let cache = unique_cache("dirty-same-issue");
+    let runner = ProcessWorktreeRunner::new();
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 245);
+    let first = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+    )
+    .expect("first session acquire");
+    // No lease exists yet and the dirt belongs to our own issue: the
+    // crashed-predecessor fall-through reuses the checkout.
+    assert!(!first.created);
+    assert_eq!(first.reason, "no_conflict");
+    let second = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-B",
+        Some(cache.path()),
+    )
+    .expect("second session acquire");
+    assert!(
+        second.created,
+        "parallel session must not share a dirty tree"
+    );
+    assert_eq!(second.reason, "new_worktree");
+    assert!(
+        second
+            .path
+            .starts_with(cache.path().to_string_lossy().as_ref())
+    );
+    assert!(second.branch.starts_with("phasegent/245-"));
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_binding_read_failure_falls_through_without_error() {
+    // Binding resolution is best-effort: when the fake runner reports
+    // the checkout dirty and the real binding read then fails (the
+    // path is not a git checkout), acquire falls through to reuse
+    // instead of hard-erroring, and the failure is surfaced as a
+    // warning.
+    let _lock = lock_workflow_tests();
+    let (db_temp, _storage, _env) = open_temp_db("acquire-binding-failure");
+    let cache = unique_cache("binding-failure");
+    let no_repo = std::env::temp_dir().join(format!(
+        "phasegent-wt-no-repo-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&no_repo);
+    let runner = FakeWorktreeRunner::new(vec![
+        FakeResponse {
+            args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
+            status: 0,
+            stdout: ".git".to_string(),
+        },
+        FakeResponse {
+            args: vec!["status".to_string(), "--porcelain".to_string()],
+            status: 0,
+            stdout: " M scratch.txt".to_string(),
+        },
+        FakeResponse {
+            args: vec![
+                "symbolic-ref".to_string(),
+                "--quiet".to_string(),
+                "--short".to_string(),
+                "HEAD".to_string(),
+            ],
+            status: 0,
+            stdout: "main".to_string(),
+        },
+    ]);
+    let outcome = acquire_lease(&runner, &no_repo, 245, "session-A", Some(cache.path()))
+        .expect("binding read failure must never hard-error the acquire");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    assert!(
+        outcome.warnings.iter().any(|w| w.contains("unbound")),
+        "binding read failure must be surfaced as a warning: {:?}",
+        outcome.warnings
+    );
+    let _ = std::fs::remove_dir_all(&no_repo);
     drop(cache);
     drop(db_temp);
 }
@@ -774,6 +1011,7 @@ fn acquire_lease_outcome_serialises_required_fields() {
         repo_identity: "/tmp/r/.git".to_owned(),
         created: true,
         reason: "new_worktree".to_owned(),
+        warnings: Vec::new(),
     };
     assert_eq!(outcome.lease_id, "lease-x");
     assert!(outcome.created);

@@ -9,11 +9,12 @@ use std::path::Path;
 
 use rusqlite::params;
 
+use crate::branch_context::{ProcessGitRunner, read_issue_id};
 use crate::infra::storage::Storage;
-use crate::worktree::git::{current_branch_for, worktree_add, worktree_remove};
+use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_remove};
 use crate::worktree::leases::{
     NewLease, count_other_active_leases, ensure_schema, find_active_lease, insert_lease,
-    load_lease, refresh_heartbeat, update_status,
+    list_for_repo, load_lease, refresh_heartbeat, update_status,
 };
 use crate::worktree::naming::{
     cache_root, cache_root_in, compute_fingerprint, generate_branch, new_lease_id, slug_from_branch,
@@ -30,19 +31,36 @@ use crate::worktree::{
 /// error is returned; partial state is never left behind because the
 /// `git worktree add` runs before the lease row is inserted.
 ///
-/// * If an active lease exists for `(repo, issue, session)`, the
-///   same `lease_id`, `path`, and `branch` are returned and
-///   `heartbeat_at` is updated. `created` is `false` and
-///   `reason == "idempotent"`.
-/// * Otherwise, if any other active lease exists for the repo, a
-///   fresh `phasegent/<issue>-<short6hex>` branch is created and a
-///   new worktree is added under
-///   `~/.cache/phasegent/worktrees/<fingerprint>/<slug>`. `created`
-///   is `true` and `reason == "new_worktree"`.
-/// * Otherwise, the current checkout is reused (no new worktree, no
-///   new branch), but an `active` lease is still recorded so the
-///   release path can flip it later. `created` is `false` and
-///   `reason == "no_conflict"`.
+/// The decision table (issue #246) is evaluated in order:
+///
+/// 1. An active lease exists for `(repo, issue, session)` — the same
+///    `lease_id`, `path`, and `branch` are returned and `heartbeat_at`
+///    is updated. `created` is `false` and `reason == "idempotent"`.
+/// 2. The checkout is dirty (`is_clean` probe on `repo_path`) and its
+///    branch is bound to a *different* issue — a fresh
+///    `phasegent/<issue>-<short6hex>` branch and worktree are created
+///    so the new task never lands in a dirty tree that belongs to
+///    another task. `created` is `true`, `reason == "new_worktree"`.
+/// 3. The checkout is dirty and bound to *this* issue, but another
+///    active session already holds a lease for `(repo, issue)` — a new
+///    worktree is created because parallel sessions must not share a
+///    dirty tree. If no such lease exists (the dirty tree is likely a
+///    crashed predecessor's own work) the decision falls through.
+/// 4. Any other active lease exists for the repo — a fresh
+///    `phasegent/<issue>-<short6hex>` branch is created and a new
+///    worktree is added under
+///    `~/.cache/phasegent/worktrees/<fingerprint>/<slug>`. `created`
+///    is `true` and `reason == "new_worktree"`.
+/// 5. Otherwise the current checkout is reused (no new worktree, no
+///    new branch), but an `active` lease is still recorded so the
+///    release path can flip it later. `created` is `false` and
+///    `reason == "no_conflict"`. When that checkout is dirty and
+///    carries no branch binding, a best-effort warning is recorded in
+///    `AcquireOutcome::warnings` and emitted on stderr.
+///
+/// The binding read mirrors `hooks.rs` `bound_issue_id`: a detached
+/// HEAD or any lookup failure is treated as *unbound* and never
+/// errors the acquire — it falls through with a warning instead.
 ///
 /// .env / secrets: this function never reads or copies `.env` files
 /// or credential material. The AI / user is expected to copy
@@ -75,6 +93,9 @@ pub fn acquire_lease(
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
 
+    // Rule 1: idempotent home-coming for the same triple. The dirty
+    // probe is deliberately skipped here so a re-entering session is
+    // never misjudged against its own tree.
     if let Some(existing) = find_active_lease(&storage, &identity, issue, session)? {
         refresh_heartbeat(&storage, &existing.lease_id)?;
         return Ok(AcquireOutcome {
@@ -84,17 +105,166 @@ pub fn acquire_lease(
             repo_identity: existing.repo_identity,
             created: false,
             reason: "idempotent".to_owned(),
+            warnings: Vec::new(),
         });
     }
 
-    let other_active = count_other_active_leases(&storage, &identity, issue, session)?;
-    if other_active == 0 {
-        return acquire_reuse_current(runner, &storage, &identity, repo_path, issue, session);
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Dirty probe. A probe failure is best-effort: it is surfaced as a
+    // warning and the decision falls back to lease evidence only
+    // (dirty is treated as unknown) so acquire never hard-errors on a
+    // git status hiccup.
+    let clean = match is_clean(runner, repo_path) {
+        Ok(value) => value,
+        Err(error) => {
+            warnings.push(format!(
+                "dirty probe failed ({}); falling back to lease-based decisions",
+                error.message
+            ));
+            true
+        }
+    };
+    let dirty = !clean;
+
+    // The branch binding is only resolved when the checkout is dirty:
+    // a clean tree cannot be "contaminated", so rules 2/3 never apply
+    // and the extra git calls are skipped.
+    let (bound, binding_failure) = if dirty {
+        resolve_bound_issue(runner, repo_path)
+    } else {
+        (None, None)
+    };
+
+    // Rules 2 and 3: dirty-tree triggers.
+    if dirty {
+        match bound {
+            Some(bound_issue) if bound_issue != issue => {
+                warnings.push(format!(
+                    "checkout is dirty and bound to issue {bound_issue}; \
+                     acquiring issue {issue} in an isolated worktree"
+                ));
+                return with_warnings(
+                    acquire_new_worktree(
+                        runner, &storage, &identity, repo_path, issue, session, cache_base,
+                    ),
+                    warnings,
+                );
+            }
+            Some(_) => {
+                if active_lease_for_issue_other_session(&storage, &identity, issue, session)? {
+                    warnings.push(format!(
+                        "checkout is dirty and another active session holds a lease for issue \
+                         {issue}; parallel sessions must not share a dirty tree"
+                    ));
+                    return with_warnings(
+                        acquire_new_worktree(
+                            runner, &storage, &identity, repo_path, issue, session, cache_base,
+                        ),
+                        warnings,
+                    );
+                }
+            }
+            None => {
+                if let Some(message) = binding_failure.as_ref() {
+                    warnings.push(message.clone());
+                }
+            }
+        }
     }
 
-    acquire_new_worktree(
-        runner, &storage, &identity, repo_path, issue, session, cache_base,
+    // Rule 4: any other active lease for the repo forces a new worktree.
+    let other_active = count_other_active_leases(&storage, &identity, issue, session)?;
+    if other_active > 0 {
+        return with_warnings(
+            acquire_new_worktree(
+                runner, &storage, &identity, repo_path, issue, session, cache_base,
+            ),
+            warnings,
+        );
+    }
+
+    // Rule 5: reuse the current checkout. A dirty checkout that is not
+    // bound to any issue gets a warning (there is no task evidence for
+    // the dirt, so we do not create a worktree on suspicion, but the
+    // operator should know the reused tree is not pristine).
+    if dirty && bound.is_none() && binding_failure.is_none() {
+        warnings.push(
+            "checkout is dirty and not bound to an issue; reusing it (no task evidence of a \
+             conflict)"
+                .to_owned(),
+        );
+    }
+    with_warnings(
+        acquire_reuse_current(runner, &storage, &identity, repo_path, issue, session),
+        warnings,
     )
+}
+
+/// Resolve the issue the current branch is bound to, following the
+/// `hooks.rs` `bound_issue_id` pattern but never erroring: a detached
+/// HEAD or any config lookup failure is treated as *unbound* and
+/// returned as a warning string so the caller falls through the
+/// decision table instead of failing the acquire.
+fn resolve_bound_issue(
+    runner: &dyn WorktreeRunner,
+    repo_path: &Path,
+) -> (Option<u64>, Option<String>) {
+    let branch = match current_branch_for(runner, repo_path) {
+        Ok(branch) => branch,
+        Err(error) => {
+            return (
+                None,
+                Some(format!(
+                    "could not resolve current branch ({}); treating checkout as unbound",
+                    error.message
+                )),
+            );
+        }
+    };
+    let git_runner = ProcessGitRunner::in_directory(repo_path.to_path_buf());
+    match read_issue_id(&git_runner, &branch) {
+        Ok(bound) => (bound, None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "could not read binding for branch '{branch}' ({}); treating checkout as unbound",
+                error.message
+            )),
+        ),
+    }
+}
+
+/// True when an *active* lease exists for `(repo, issue)` under a
+/// session different from ours. Only active rows count: a released or
+/// retained predecessor is not a live parallel session, so the caller
+/// falls through to reuse its own tree.
+fn active_lease_for_issue_other_session(
+    storage: &Storage,
+    identity: &str,
+    issue: u64,
+    session: &str,
+) -> Result<bool, WorktreeError> {
+    Ok(list_for_repo(storage, identity)?.iter().any(|row| {
+        row.status == LEASE_STATUS_ACTIVE && row.issue == issue && row.session != session
+    }))
+}
+
+/// Attach best-effort warnings to a successful outcome and forward each
+/// one to stderr so stdout (and the CLI JSON envelope) stays clean for
+/// consumers that key on `created`. Errors pass through untouched.
+fn with_warnings(
+    result: Result<AcquireOutcome, WorktreeError>,
+    warnings: Vec<String>,
+) -> Result<AcquireOutcome, WorktreeError> {
+    let outcome = result?;
+    for warning in &warnings {
+        crate::cli::report_local_warnings("worktree acquire", Some(warning.clone()));
+    }
+    Ok(AcquireOutcome {
+        warnings,
+        ..outcome
+    })
 }
 
 fn acquire_reuse_current(
@@ -138,6 +308,7 @@ fn acquire_reuse_current(
         repo_identity: identity.to_owned(),
         created: false,
         reason: "no_conflict".to_owned(),
+        warnings: Vec::new(),
     })
 }
 
@@ -210,6 +381,7 @@ fn acquire_new_worktree(
         repo_identity: identity.to_owned(),
         created: true,
         reason: "new_worktree".to_owned(),
+        warnings: Vec::new(),
     })
 }
 /// Flip a lease to `retained` (default) or `released`. Never deletes

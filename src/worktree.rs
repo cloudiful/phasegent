@@ -115,6 +115,13 @@ pub struct AcquireOutcome {
     /// when a fresh dir / branch was created; `idempotent` when a
     /// pre-existing `(repo, issue, session)` lease was reused.
     pub reason: String,
+    /// Best-effort, stderr-bound warnings collected while deciding the
+    /// outcome (e.g. a dirty checkout reused because it is not bound
+    /// to a task, or the trigger detail behind a `new_worktree`
+    /// decision). Never changes `created` / `reason`; the CLI JSON
+    /// envelope deliberately does not carry this field, so consumers
+    /// that key on `created` need no changes.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
