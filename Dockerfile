@@ -2,10 +2,12 @@
 
 # phasegent MCP container: CLI-only runtime-only image.
 #
-# - CI builds the CLI per-arch (`cargo build --release --bin phasegent
-#   --no-default-features`, no `gui` feature) and stages the binary at
-#   `ci-image-input/phasegent`; this Dockerfile only copies that prebuilt
-#   artifact, so no Rust toolchain or `cargo build` runs inside Docker.
+# - CI release `build` compiles the CLI per-arch with
+#   `cargo build --release --bin phasegent --features postgres,notify-dingtalk,notify-email`
+#   (no `gui` feature) and the image job reuses that release binary verbatim,
+#   staging it at `ci-image-input/phasegent`; this Dockerfile only copies
+#   that prebuilt artifact, so no Rust toolchain or `cargo build` runs
+#   inside Docker.
 # - Runtime is a minimal Debian slim image running as a non-root user.
 # - Default command serves authenticated MCP over streamable HTTP on
 #   loopback (`127.0.0.1:3000`); stdio stays available via an explicit

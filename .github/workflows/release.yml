@@ -1,6 +1,27 @@
 name: Release
 
-# Tag-triggered release only. There is intentionally no PR CI workflow.
+# Tag-triggered release + MCP image in one workflow. There is intentionally
+# no PR CI workflow.
+#
+# - Trigger is version tags `v*` only; branch pushes never build or publish.
+# - `build` compiles every release binary once with full CLI features
+#   (`postgres,notify-dingtalk,notify-email`; GUI targets additionally add
+#   `gui`). Linux stays CLI-only (no `gui`, no frontend build); Windows and
+#   macOS add `gui` on top of the same CLI feature set. `--all-features` is
+#   intentionally not used so Linux never pulls Tauri GUI dependencies.
+# - The MCP image reuses the `build` Linux binaries verbatim (download the
+#   matching `phasegent-<target>` artifact, stage at
+#   `ci-image-input/phasegent`, docker buildx per-arch + multi-arch
+#   manifest). No second `cargo build`, no QEMU Rust compile, and the image
+#   binary is bit-identical to the release asset.
+# - Dockerfile stays runtime-only (copies the prebuilt artifact, no Rust
+#   toolchain inside Docker). Per-arch correctness: each arch image copies
+#   the matching arch binary; no cross-arch reuse.
+# - Pushes the version tag plus `latest` to GHCR. Image path derives from
+#   the repository slug at runtime (`github.repository`); no owner/repo
+#   literal is baked in.
+# - Image checkouts pin the immutable commit (`github.sha`), never a
+#   mutable ref.
 on:
   push:
     tags:
@@ -9,6 +30,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
 jobs:
   build:
     permissions:
@@ -16,7 +44,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # Linux stays a plain CLI binary (no GUI, no frontend build).
+          # Linux stays a plain CLI binary (no GUI, no frontend build),
+          # but with the full CLI feature set (postgres + notify channels).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             gui: false
@@ -87,13 +116,13 @@ jobs:
         if: matrix.gui
         run: bun run validate
 
-      - name: Build release binary (CLI)
+      - name: Build release binary (CLI, full CLI features)
         if: matrix.gui != true
-        run: cargo build --release --bin phasegent --target ${{ matrix.target }}
+        run: cargo build --release --bin phasegent --target ${{ matrix.target }} --features postgres,notify-dingtalk,notify-email
 
       - name: Build release binary (GUI-enabled single binary, Windows)
         if: matrix.gui && runner.os == 'Windows'
-        run: cargo build --release --features gui --bin phasegent --target ${{ matrix.target }}
+        run: cargo build --release --features gui,postgres,notify-dingtalk,notify-email --bin phasegent --target ${{ matrix.target }}
 
       # macOS GUI is built and bundled via the pinned Tauri v2 CLI so the
       # .dmg contains a real `.app` for Finder users. Unsigned: no
@@ -105,7 +134,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          bun run tauri build --target ${{ matrix.target }} --features gui --bundles app,dmg
+          bun run tauri build --target ${{ matrix.target }} --features gui,postgres,notify-dingtalk,notify-email --bundles app,dmg
           echo "Tauri bundle outputs:"
           find target/${{ matrix.target }}/release/bundle -maxdepth 4 | head -n 60
 
@@ -233,6 +262,135 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats
+
+  image-prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+    steps:
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+  build-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs_on: ubuntu-24.04
+            platform: linux/amd64
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runs_on: ubuntu-24.04-arm
+            platform: linux/arm64
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runs_on }}
+    needs:
+      - build
+      - image-prepare
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      # Reuse the release `build` binary verbatim: no second `cargo build`.
+      - name: Download release binary bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: phasegent-${{ matrix.target }}
+          path: dist-image
+
+      - name: Stage image input from release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ci-image-input
+          mkdir -p ci-image-input
+          SRC="$(find dist-image -maxdepth 2 -type f -name "phasegent-*" | head -n 1)"
+          if [ -z "$SRC" ]; then echo "release artifact missing under dist-image"; exit 1; fi
+          install -Dm755 "$SRC" ci-image-input/phasegent
+          ls -lh ci-image-input/phasegent
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Compute architecture tags
+        id: tags
+        shell: bash
+        run: |
+          {
+            echo 'value<<EOF'
+            while IFS= read -r tag; do
+              [ -n "$tag" ] && printf '%s-${{ matrix.arch }}\n' "$tag"
+            done <<'TAGS'
+          ${{ needs.image-prepare.outputs.tags }}
+          TAGS
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.arch }} image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+          labels: ${{ needs.image-prepare.outputs.labels }}
+          cache-from: type=gha,scope=phasegent-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=phasegent-${{ matrix.arch }}
+
+  publish-manifest:
+    runs-on: ubuntu-24.04
+    needs:
+      - image-prepare
+      - build-image
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Publish multi-arch manifests
+        shell: bash
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker buildx imagetools create \
+              --tag "$tag" \
+              "$tag-amd64" \
+              "$tag-arm64"
+          done <<'TAGS'
+          ${{ needs.image-prepare.outputs.tags }}
+          TAGS
 
   release:
     needs: build
