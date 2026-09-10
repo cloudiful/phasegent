@@ -17,7 +17,47 @@ pub(crate) fn print_config_command_help(role: Option<Role>, command: &str) {
         "set" => {
             let role_text = role.map_or("ROLE", Role::as_str);
             println!(
-                "Usage: phasegent [--role {role_text}] config set <SETTING> [VALUE|--stdin]\n\nPersists a single setting in the local SQLite database. The value is never echoed in output.\n\nSupported settings (canonical name and kebab-case alias):\n  PHASEGENT_PROVIDER / provider\n  PHASEGENT_API_BASE / api-base\n  PHASEGENT_REPOSITORY / repository\n  PHASEGENT_REDMINE_API_BASE / redmine-api-base\n  PHASEGENT_REDMINE_CLOSE_STATUS_ID / redmine-close-status-id\n  PHASEGENT_GITLAB_API_BASE / gitlab-api-base\n  PHASEGENT_CLOSE_STATUS_ID / close-status-id      (generic Redmine alias)\n  PHASEGENT_REDMINE_GIT_MIRROR_API_KEY / redmine-git-mirror-api-key   (secret)\n  PHASEGENT_REDMINE_REPOSITORY_URL / redmine-repository-url\n  PHASEGENT_DEFAULT_PROVIDER / default-provider      (validated through ProviderKind)\n  PHASEGENT_INDEX_BACKEND / index-backend            (legacy, ignored for selection)\n  PHASEGENT_INDEX_PG_URL / index-pg-url              (secret; presence selects PostgreSQL)\n\nNotify channel fields (one row per field; secrets need --stdin):\n  PHASEGENT_NOTIFY_ENABLED / notify-enabled, PHASEGENT_NOTIFY_CHANNEL / notify-channel,\n  PHASEGENT_NOTIFY_NTFY_BASE_URL / notify-ntfy-base-url, PHASEGENT_NOTIFY_NTFY_TOPIC / notify-ntfy-topic,\n  PHASEGENT_NOTIFY_NTFY_TOKEN / notify-ntfy-token (secret), PHASEGENT_NOTIFY_WEBHOOK_URL / notify-webhook-url,\n  PHASEGENT_NOTIFY_WEBHOOK_TOKEN / notify-webhook-token (secret), plus dingtalk/email fields (see notify help)\n\nProject-id settings (redmine-project-id, gitlab-project-id, project-id) were removed in Phase 1;\nuse explicit --project-id per invocation instead. Secrets and project-id persistence are rejected.\n\nSecret settings (redmine-git-mirror-api-key, index-pg-url, notify-ntfy-token, notify-webhook-token, notify-dingtalk-secret, notify-email-password) never accept a direct value:\n  phasegent config set redmine-git-mirror-api-key            # secure prompt\n  phasegent config set redmine-git-mirror-api-key --stdin    # read from stdin\n  phasegent config set index-pg-url --stdin < /secure/path/pg-url\n\nNon-secret settings use a positional value or --stdin. Index selection is URL-driven (no index-backend value needed):\n  phasegent --role executor config set api-base https://forgejo.example\n  phasegent --role executor config set api-base --stdin\n  phasegent config set index-pg-url --stdin < /secure/path/pg-url  # select PostgreSQL\n  phasegent config clear index-pg-url  # return to SQLite (index-backend is legacy, ignored)\n\nGlobal settings (mirror key, repository URL, default provider, index pg-url) are machine-wide and work without --role;\nrole-scoped settings require --role. `config set default-provider` reuses the same validation as `config provider set`; `index-backend` is legacy, validated when set but ignored for selection. `config set` writes SQLite only (TOML is a read-only overlay); a TOML value shadows SQLite until the file (or env) is removed. Effective precedence is CLI flags > PHASEGENT_* environment > TOML phasegent.toml (absolute PHASEGENT_CONFIG_PATH override) > legacy SQLite > built-in defaults. Stable non-secret settings may instead be edited directly in phasegent.toml; credentials stay in SQLite/env and never belong in TOML."
+                "Usage: phasegent [--role {role_text}] config set <SETTING> [VALUE|--stdin]
+
+Persists a single setting in the local SQLite database. The value is never echoed in output.
+
+Supported settings (canonical name and kebab-case alias):
+  PHASEGENT_PROVIDER / provider
+  PHASEGENT_API_BASE / api-base
+  PHASEGENT_REPOSITORY / repository
+  PHASEGENT_REDMINE_API_BASE / redmine-api-base
+  PHASEGENT_REDMINE_CLOSE_STATUS_ID / redmine-close-status-id
+  PHASEGENT_GITLAB_API_BASE / gitlab-api-base
+  PHASEGENT_CLOSE_STATUS_ID / close-status-id      (generic Redmine alias)
+  PHASEGENT_REDMINE_GIT_MIRROR_API_KEY / redmine-git-mirror-api-key   (secret)
+  PHASEGENT_REDMINE_REPOSITORY_URL / redmine-repository-url
+  PHASEGENT_DEFAULT_PROVIDER / default-provider      (validated through ProviderKind)
+  PHASEGENT_INDEX_BACKEND / index-backend            (legacy, ignored for selection)
+  PHASEGENT_INDEX_PG_URL / index-pg-url              (secret; presence selects PostgreSQL)
+  PHASEGENT_WORKTREE_AUTO / worktree-auto           (boolean, default false; gates worktree acquire auto-isolation, see issue #247)
+
+Notify channel fields (one row per field; secrets need --stdin):
+  PHASEGENT_NOTIFY_ENABLED / notify-enabled, PHASEGENT_NOTIFY_CHANNEL / notify-channel,
+  PHASEGENT_NOTIFY_NTFY_BASE_URL / notify-ntfy-base-url, PHASEGENT_NOTIFY_NTFY_TOPIC / notify-ntfy-topic,
+  PHASEGENT_NOTIFY_NTFY_TOKEN / notify-ntfy-token (secret), PHASEGENT_NOTIFY_WEBHOOK_URL / notify-webhook-url,
+  PHASEGENT_NOTIFY_WEBHOOK_TOKEN / notify-webhook-token (secret), plus dingtalk/email fields (see notify help)
+
+Project-id settings (redmine-project-id, gitlab-project-id, project-id) were removed in Phase 1;
+use explicit --project-id per invocation instead. Secrets and project-id persistence are rejected.
+
+Secret settings (redmine-git-mirror-api-key, index-pg-url, notify-ntfy-token, notify-webhook-token, notify-dingtalk-secret, notify-email-password) never accept a direct value:
+  phasegent config set redmine-git-mirror-api-key            # secure prompt
+  phasegent config set redmine-git-mirror-api-key --stdin    # read from stdin
+  phasegent config set index-pg-url --stdin < /secure/path/pg-url
+
+Non-secret settings use a positional value or --stdin. Index selection is URL-driven (no index-backend value needed):
+  phasegent --role executor config set api-base https://forgejo.example
+  phasegent --role executor config set api-base --stdin
+  phasegent config set index-pg-url --stdin < /secure/path/pg-url  # select PostgreSQL
+  phasegent config clear index-pg-url  # return to SQLite (index-backend is legacy, ignored)
+
+Global settings (mirror key, repository URL, default provider, index pg-url) are machine-wide and work without --role;
+role-scoped settings require --role. `config set default-provider` reuses the same validation as `config provider set`; `index-backend` is legacy, validated when set but ignored for selection. `config set` writes SQLite only (TOML is a read-only overlay); a TOML value shadows SQLite until the file (or env) is removed. Effective precedence is CLI flags > PHASEGENT_* environment > TOML phasegent.toml (absolute PHASEGENT_CONFIG_PATH override) > legacy SQLite > built-in defaults. Stable non-secret settings may instead be edited directly in phasegent.toml; credentials stay in SQLite/env and never belong in TOML."
             );
         }
         "clear" => {

@@ -201,6 +201,14 @@ pub(crate) const GLOBAL_INDEX_BACKEND: &str = "PHASEGENT_INDEX_BACKEND";
 /// secret global setting and never echoed in snapshots or errors.
 pub(crate) const GLOBAL_INDEX_PG_URL: &str = "PHASEGENT_INDEX_PG_URL";
 
+/// Worktree auto-isolation switch. When `true`, `worktree acquire` may
+/// create an isolated branch/worktree on a conflict; when `false` (the
+/// default) acquire reuses the current checkout and only warns. The
+/// string doubles as the environment variable name so `config set`
+/// persists it without a translation table. Non-secret; resolved
+/// env-over-SQLite like every other global.
+pub(crate) const GLOBAL_WORKTREE_AUTO: &str = "PHASEGENT_WORKTREE_AUTO";
+
 /// Agent notification channel configuration. One `global_setting` row
 /// per field so operators persist each value with `config set` and the
 /// resolver keeps the env-over-SQLite precedence used by every other
@@ -241,6 +249,7 @@ pub(crate) const GLOBAL_SETTING_NAMES: &[&str] = &[
     GLOBAL_DEFAULT_PROVIDER,
     GLOBAL_INDEX_BACKEND,
     GLOBAL_INDEX_PG_URL,
+    GLOBAL_WORKTREE_AUTO,
     GLOBAL_NOTIFY_ENABLED,
     GLOBAL_NOTIFY_CHANNEL,
     GLOBAL_NOTIFY_NTFY_BASE_URL,

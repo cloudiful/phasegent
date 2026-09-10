@@ -17,11 +17,13 @@
 //!
 //! ## Subcommands
 //!
-//! * `acquire --issue N [--session S] [--base REF] [--format json]`
+//! * `acquire --issue N [--session S] [--base REF] [--isolate] [--format json]`
 //!   Idempotent. Returns `AcquireOutcome` JSON. The optional `--base`
 //!   flag is accepted for future Phase 2 follow-up; the current
 //!   implementation always bases on `HEAD` (matching the Phase 1
-//!   contract).
+//!   contract). `--isolate` forces a fresh branch/worktree on a
+//!   conflict; without it (and with `worktree-auto` off) acquire reuses
+//!   the current checkout and warns.
 //! * `release --lease ID [--retain=true]`
 //!   Default `--retain` is `true`. `--retain=false` flips the lease to
 //!   `released`; `--retain=true` (or omitted) flips to `retained`.
@@ -67,7 +69,7 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         args,
         0,
         &["--issue", "--session", "--base", "--format"],
-        &[],
+        &["--isolate"],
         "worktree acquire",
     )?;
     let issue_raw = required_nonempty_option(args, "--issue", "worktree acquire")?;
@@ -90,11 +92,13 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
     if format != "json" {
         return Err("worktree acquire --format must be 'json'".to_owned());
     }
+    let isolate = has_flag(args, "--isolate");
     Ok(Command::Worktree(WorktreeCommand::Acquire {
         issue,
         session,
         base,
         format,
+        isolate,
     }))
 }
 
@@ -191,11 +195,33 @@ mod tests {
                 session,
                 base,
                 format,
+                isolate,
             }) => {
                 assert_eq!(issue, 239);
                 assert_eq!(session, "phasegent");
                 assert_eq!(base, None);
                 assert_eq!(format, "json");
+                assert!(!isolate, "--isolate must default off");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn acquire_parses_isolate_flag() {
+        let invocation = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "acquire",
+            "--issue",
+            "247",
+            "--isolate",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::Acquire { isolate, .. }) => {
+                assert!(isolate, "--isolate must round-trip to the command");
             }
             other => panic!("unexpected command {other:?}"),
         }
@@ -224,11 +250,13 @@ mod tests {
                 session,
                 base,
                 format,
+                isolate,
             }) => {
                 assert_eq!(issue, 239);
                 assert_eq!(session, "alpha");
                 assert_eq!(base.as_deref(), Some("main"));
                 assert_eq!(format, "json");
+                assert!(!isolate);
             }
             other => panic!("unexpected command {other:?}"),
         }

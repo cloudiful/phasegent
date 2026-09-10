@@ -26,7 +26,10 @@
 //! * `acquire_lease` may create a fresh worktree under
 //!   `~/.cache/phasegent/worktrees/<fingerprint>/<slug>` (or reuse the
 //!   current checkout when no other lease is active for the repo).
-//!   It never deletes a worktree or branch.
+//!   Creation is gated by issue #247: it only happens when `--isolate`
+//!   or the resolved `worktree-auto` switch is on, so the default path
+//!   reuses the current checkout and warns on a conflict. It never
+//!   deletes a worktree or branch.
 //! * `release_lease` flips the row to `retained` (default) or
 //!   `released`. Directory and branch pruning is a Phase 2 concern and
 //!   is intentionally not implemented here.
@@ -60,7 +63,7 @@ mod naming;
 // the test target is not being analysed, so silence the false
 // positive here.
 #[allow(unused_imports)]
-pub use acquire::{acquire_lease, release_lease};
+pub use acquire::{WORKTREE_AUTO_SETTING, acquire_lease, release_lease, resolve_worktree_auto};
 #[allow(unused_imports)]
 pub use git::{is_clean, parse_worktree_list, worktree_add, worktree_remove};
 #[allow(unused_imports)]

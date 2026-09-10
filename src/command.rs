@@ -449,6 +449,11 @@ pub enum WorktreeCommand {
         /// routing.
         base: Option<String>,
         format: String,
+        /// Per-call isolation override (issue #247). `--isolate` forces
+        /// a fresh branch/worktree on a conflict; the resolved
+        /// `worktree-auto` switch is OR-ed with it, so the default
+        /// (both off) reuses the current checkout with a warning.
+        isolate: bool,
     },
     Release {
         lease: String,

@@ -49,6 +49,7 @@ pub(crate) const ALL_CANONICAL: &[&str] = &[
     "PHASEGENT_DEFAULT_PROVIDER",
     "PHASEGENT_INDEX_BACKEND",
     "PHASEGENT_INDEX_PG_URL",
+    "PHASEGENT_WORKTREE_AUTO",
     "PHASEGENT_NOTIFY_ENABLED",
     "PHASEGENT_NOTIFY_CHANNEL",
     "PHASEGENT_NOTIFY_NTFY_BASE_URL",
@@ -76,6 +77,7 @@ const GLOBAL_SETTINGS: &[&str] = &[
     "PHASEGENT_DEFAULT_PROVIDER",
     "PHASEGENT_INDEX_BACKEND",
     "PHASEGENT_INDEX_PG_URL",
+    "PHASEGENT_WORKTREE_AUTO",
     "PHASEGENT_NOTIFY_ENABLED",
     "PHASEGENT_NOTIFY_CHANNEL",
     "PHASEGENT_NOTIFY_NTFY_BASE_URL",
@@ -148,6 +150,18 @@ pub fn is_secret_setting(name: &str) -> bool {
 
 pub fn is_role_scoped_setting(name: &str) -> bool {
     !is_global_setting(name)
+}
+
+/// Parse a boolean setting literal with the synonyms the per-setting
+/// validators accept: `true/1/yes/on/enabled` and
+/// `false/0/no/off/disabled`. Returns `None` for anything else so the
+/// caller can raise a setting-specific error without echoing secrets.
+pub fn parse_bool_literal(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" | "enabled" => Some(true),
+        "false" | "0" | "no" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
 }
 
 /// Outcome of `config set`. The value itself is never echoed;

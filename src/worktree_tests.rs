@@ -546,6 +546,8 @@ fn acquire_reuses_current_checkout_when_no_other_lease_is_active() {
         239,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("acquire no_conflict");
     let expected_path = repo.dir.path().to_string_lossy().to_string();
@@ -573,6 +575,8 @@ fn acquire_is_idempotent_for_the_same_repo_issue_session() {
         239,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("first acquire");
     let second = acquire_lease(
@@ -581,6 +585,8 @@ fn acquire_is_idempotent_for_the_same_repo_issue_session() {
         239,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("second acquire");
     assert_eq!(
@@ -613,6 +619,8 @@ fn acquire_creates_a_new_worktree_for_a_second_session() {
         239,
         "session-A",
         Some(cache.path()),
+        true,
+        false,
     )
     .expect("first acquire");
     assert_eq!(first.reason, "no_conflict");
@@ -622,6 +630,8 @@ fn acquire_creates_a_new_worktree_for_a_second_session() {
         239,
         "session-B",
         Some(cache.path()),
+        true,
+        false,
     )
     .expect("second acquire");
     assert_eq!(second.reason, "new_worktree");
@@ -641,6 +651,8 @@ fn acquire_creates_a_new_worktree_for_a_second_session() {
         240,
         "session-A",
         Some(cache.path()),
+        true,
+        false,
     )
     .expect("third acquire");
     assert_eq!(third.reason, "new_worktree");
@@ -669,6 +681,8 @@ fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
         245,
         "session-A",
         Some(cache.path()),
+        true,
+        false,
     )
     .expect("dirty + foreign-bound must isolate, not error");
     assert!(
@@ -712,6 +726,8 @@ fn acquire_clean_foreign_bound_reuses_current_checkout() {
         245,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("acquire on a clean foreign-bound checkout");
     assert!(!outcome.created);
@@ -745,6 +761,8 @@ fn acquire_dirty_unbound_reuses_current_checkout_with_warning() {
         245,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("dirty + unbound must reuse, not error");
     assert!(!outcome.created);
@@ -780,6 +798,8 @@ fn acquire_dirty_same_issue_other_session_lease_creates_new_worktree() {
         245,
         "session-A",
         Some(cache.path()),
+        true,
+        false,
     )
     .expect("first session acquire");
     // No lease exists yet and the dirt belongs to our own issue: the
@@ -792,6 +812,8 @@ fn acquire_dirty_same_issue_other_session_lease_creates_new_worktree() {
         245,
         "session-B",
         Some(cache.path()),
+        true,
+        false,
     )
     .expect("second session acquire");
     assert!(
@@ -851,8 +873,16 @@ fn acquire_binding_read_failure_falls_through_without_error() {
             stdout: "main".to_string(),
         },
     ]);
-    let outcome = acquire_lease(&runner, &no_repo, 245, "session-A", Some(cache.path()))
-        .expect("binding read failure must never hard-error the acquire");
+    let outcome = acquire_lease(
+        &runner,
+        &no_repo,
+        245,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("binding read failure must never hard-error the acquire");
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
     assert!(
@@ -880,6 +910,8 @@ fn release_flips_lease_to_retained_or_released_and_is_idempotent() {
         239,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("acquire");
     let retain = release_lease(&outcome.lease_id, true).expect("release retain");
@@ -908,6 +940,8 @@ fn release_can_flip_a_lease_to_released() {
         239,
         "session-A",
         Some(cache.path()),
+        false,
+        false,
     )
     .expect("acquire");
     let released = release_lease(&outcome.lease_id, false).expect("release released");
@@ -925,12 +959,28 @@ fn acquire_rejects_zero_issue_and_oversized_session() {
     let (db_temp, _storage, _env) = open_temp_db("acquire-args");
     let cache = unique_cache("acquire-args");
     let runner = ProcessWorktreeRunner::new();
-    let error = acquire_lease(&runner, repo.dir.path(), 0, "session", Some(cache.path()))
-        .expect_err("zero issue must error");
+    let error = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        0,
+        "session",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect_err("zero issue must error");
     assert_eq!(error.kind, "argument");
     let huge = "x".repeat(129);
-    let error = acquire_lease(&runner, repo.dir.path(), 239, &huge, Some(cache.path()))
-        .expect_err("oversized session must error");
+    let error = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        239,
+        &huge,
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect_err("oversized session must error");
     assert_eq!(error.kind, "argument");
     drop(cache);
     drop(db_temp);

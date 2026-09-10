@@ -34,7 +34,7 @@ use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
     ProcessWorktreeRunner, WorktreeRunner, acquire_lease, ensure_schema, list_for_repo,
-    now_unix_secs, repo_identity,
+    now_unix_secs, repo_identity, resolve_worktree_auto,
 };
 use std::path::PathBuf;
 
@@ -143,11 +143,33 @@ fn parse_acquire_minimal() {
             session,
             base,
             format,
+            isolate,
         }) => {
             assert_eq!(issue, 1);
             assert_eq!(session, "phasegent");
             assert_eq!(base, None);
             assert_eq!(format, "json");
+            assert!(!isolate, "--isolate must default off");
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+#[test]
+fn parse_acquire_isolate_flag_round_trips() {
+    let invocation = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "acquire",
+        "--issue",
+        "247",
+        "--isolate",
+    ]))
+    .unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Acquire { isolate, .. }) => {
+            assert!(isolate, "--isolate must round-trip to the command");
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -181,11 +203,13 @@ fn parse_acquire_with_session_and_base() {
             session,
             base,
             format,
+            isolate,
         }) => {
             assert_eq!(issue, 42);
             assert_eq!(session, "alpha");
             assert_eq!(base.as_deref(), Some("main"));
             assert_eq!(format, "json");
+            assert!(!isolate);
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -407,6 +431,7 @@ fn executor_cannot_acquire() {
             session: "s".to_owned(),
             base: None,
             format: "json".to_owned(),
+            isolate: false,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -459,6 +484,7 @@ fn admin_cannot_acquire() {
             session: "s".to_owned(),
             base: None,
             format: "json".to_owned(),
+            isolate: false,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -882,8 +908,16 @@ fn cli_acquire_dirty_foreign_bound_returns_new_worktree_envelope_with_warning() 
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 241);
     let runner = ProcessWorktreeRunner::new();
-    let outcome = acquire_lease(&runner, repo.dir.path(), 245, "session-A", None)
-        .expect("dirty + foreign-bound must isolate, not error");
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        true,
+        false,
+    )
+    .expect("dirty + foreign-bound must isolate, not error");
     assert!(
         outcome.created,
         "dirty + bound-to-241 must create a worktree for 245"
@@ -918,8 +952,16 @@ fn cli_acquire_dirty_unbound_returns_reuse_envelope_with_warning() {
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     let runner = ProcessWorktreeRunner::new();
-    let outcome = acquire_lease(&runner, repo.dir.path(), 245, "session-A", None)
-        .expect("dirty + unbound must reuse, not error");
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        false,
+        false,
+    )
+    .expect("dirty + unbound must reuse, not error");
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
     assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
@@ -983,8 +1025,16 @@ fn cli_acquire_executor_resolves_cache_through_env_override() {
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 7);
     let runner = ProcessWorktreeRunner::new();
-    let outcome = acquire_lease(&runner, repo.dir.path(), 245, "session-A", None)
-        .expect("acquire through env-resolved cache");
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        true,
+        false,
+    )
+    .expect("acquire through env-resolved cache");
     assert!(outcome.created);
     assert!(
         outcome
@@ -1012,8 +1062,16 @@ fn cli_acquire_dirty_foreign_bound_recorded_in_temp_db_only() {
     bind_current_branch(&repo, 241);
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let outcome = acquire_lease(&runner, repo.dir.path(), 245, "session-A", None)
-        .expect("dirty + foreign-bound acquire");
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        true,
+        false,
+    )
+    .expect("dirty + foreign-bound acquire");
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     ensure_schema(&storage).expect("ensure_schema");
     let rows = list_for_repo(&storage, &identity).expect("list temp db");
@@ -1026,5 +1084,354 @@ fn cli_acquire_dirty_foreign_bound_recorded_in_temp_db_only() {
     assert_eq!(rows[0].lease_id, outcome.lease_id);
     assert_eq!(rows[0].worktree_path, outcome.path);
     assert_eq!(rows[0].status, LEASE_STATUS_ACTIVE);
+    let _ = std::fs::remove_file(&scratch);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #247: worktree-auto switch + `--isolate` gating
+// ---------------------------------------------------------------------------
+//
+// The default is off: a dirty checkout bound to another issue (or any
+// other active lease) must be reused with a warning and must not create
+// a worktree directory. `--isolate` or the resolved `worktree-auto`
+// switch (env over SQLite, default false) restores the issue #246
+// isolation behaviour. All tests pin their DB and cache to temp dirs.
+
+#[test]
+fn acquire_default_off_reuses_dirty_foreign_bound_with_warning_and_no_new_dir() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-default-off") else {
+        return;
+    };
+    let (_db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-default-off");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        false,
+        false,
+    )
+    .expect("default-off acquire must reuse, not error");
+    assert!(!outcome.created, "default-off must not create a worktree");
+    assert_eq!(outcome.reason, "no_conflict");
+    assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
+    assert!(
+        outcome.warnings.iter().any(|w| w.contains("241")),
+        "conflict warning must name the bound trigger: {:?}",
+        outcome.warnings
+    );
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "default-off must not create any worktree directory"
+    );
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn acquire_isolate_flag_creates_new_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-isolate") else {
+        return;
+    };
+    let (_db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-isolate");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        true,
+        false,
+    )
+    .expect("--isolate must create, not error");
+    assert!(outcome.created, "--isolate must create a worktree");
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(
+        outcome
+            .path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "new worktree must live under the temp cache"
+    );
+    assert!(outcome.branch.starts_with("phasegent/245-"));
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn acquire_env_worktree_auto_true_creates_new_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-env-auto") else {
+        return;
+    };
+    let (_db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-env-auto");
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "true");
+    let storage = Storage::open().expect("storage open");
+    let auto = resolve_worktree_auto(&storage).expect("resolve worktree-auto");
+    assert!(auto, "PHASEGENT_WORKTREE_AUTO=true must resolve true");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        false,
+        auto,
+    )
+    .expect("auto=true must create, not error");
+    assert!(outcome.created);
+    assert_eq!(outcome.reason, "new_worktree");
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn acquire_sqlite_worktree_auto_true_creates_new_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-sqlite-auto") else {
+        return;
+    };
+    let (_db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-sqlite-auto");
+    let storage = Storage::open().expect("storage open");
+    crate::config_write::set_setting_value(None, "PHASEGENT_WORKTREE_AUTO", "true", &storage)
+        .expect("config set worktree-auto true");
+    let auto = resolve_worktree_auto(&storage).expect("resolve worktree-auto");
+    assert!(auto, "SQLite worktree-auto=true must resolve true");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        false,
+        auto,
+    )
+    .expect("SQLite auto=true must create, not error");
+    assert!(outcome.created);
+    assert_eq!(outcome.reason, "new_worktree");
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn resolve_worktree_auto_defaults_false_and_env_false_overrides_sqlite_true() {
+    let _lock = lock_workflow_tests();
+    let (_db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-precedence");
+    let storage = Storage::open().expect("storage open");
+    // Empty env behaves as unset -> default false.
+    {
+        let _unset = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "");
+        assert!(
+            !resolve_worktree_auto(&storage).expect("resolve default"),
+            "unset worktree-auto must default false"
+        );
+    }
+    crate::config_write::set_setting_value(None, "PHASEGENT_WORKTREE_AUTO", "true", &storage)
+        .expect("config set worktree-auto true");
+    assert!(
+        resolve_worktree_auto(&storage).expect("resolve sqlite true"),
+        "SQLite worktree-auto=true must resolve true"
+    );
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
+    assert!(
+        !resolve_worktree_auto(&storage).expect("resolve env false"),
+        "env false must override SQLite true"
+    );
+}
+
+#[test]
+fn acquire_precedence_env_false_over_sqlite_true_reuses_current_checkout() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-precedence-reuse") else {
+        return;
+    };
+    let (_db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-precedence-reuse");
+    let storage = Storage::open().expect("storage open");
+    crate::config_write::set_setting_value(None, "PHASEGENT_WORKTREE_AUTO", "true", &storage)
+        .expect("config set worktree-auto true");
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
+    let auto = resolve_worktree_auto(&storage).expect("resolve worktree-auto");
+    assert!(!auto, "env false must override SQLite true");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        None,
+        false,
+        auto,
+    )
+    .expect("env-false precedence acquire must reuse, not error");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "env-false precedence must not create a worktree directory"
+    );
+    let _ = std::fs::remove_file(&scratch);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #247 Phase 2: three-state CLI-surface contract tests
+// ---------------------------------------------------------------------------
+//
+// These tests drive the CLI executor (`execute_worktree`) end-to-end so the
+// contract the help text advertises is exercised through the same code path
+// the operator's shell runs. Each test pins its DB and cache to temp dirs
+// (temp-only guarantee), chdirs into a temp repo so the executor's
+// `std::env::current_dir()` resolves to a sandboxed checkout, and asserts on
+// the exit code together with the post-condition (lease row in the temp DB
+// + presence/absence of the worktree dir under the temp cache).
+//
+// The three states covered:
+//   1. Default off: dirty + foreign-bound + no `--isolate` + no env +
+//      no SQLite setting -> exit 0, lease row inserted, NO worktree dir.
+//   2. `--isolate`: dirty + foreign-bound + `--isolate=true` -> exit 0,
+//      lease row inserted, worktree dir under the temp cache.
+//   3. Env true: dirty + foreign-bound + `PHASEGENT_WORKTREE_AUTO=true` ->
+//      exit 0, lease row inserted, worktree dir under the temp cache.
+
+fn run_cli_acquire_in_temp_repo(repo: &TempRepo, _db_path: &std::path::Path, isolate: bool) -> i32 {
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(repo.dir.path()).expect("set cwd to temp repo");
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        WorktreeCommand::Acquire {
+            issue: 245,
+            session: "session-A".to_owned(),
+            base: None,
+            format: "json".to_owned(),
+            isolate,
+        },
+    );
+    let _ = std::env::set_current_dir(&previous_cwd);
+    exit
+}
+
+#[test]
+fn cli_surface_acquire_default_off_reuses_dirty_foreign_bound_with_no_worktree_dir() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p2-cli-default-off") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-default-off");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit =
+        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
+    assert_eq!(
+        exit, 0,
+        "default-off acquire through CLI surface must succeed"
+    );
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(
+        rows.len(),
+        1,
+        "default-off CLI acquire must still record one lease"
+    );
+    assert_eq!(rows[0].issue, 245);
+    assert_eq!(
+        rows[0].worktree_path,
+        repo.dir.path().to_string_lossy().to_string(),
+        "default-off CLI acquire must reuse the current checkout as the worktree_path"
+    );
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "default-off CLI acquire must not create a worktree directory"
+    );
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn cli_surface_acquire_isolate_flag_creates_new_worktree_in_temp_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p2-cli-isolate") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-isolate");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit = run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), true);
+    assert_eq!(exit, 0, "--isolate CLI acquire must succeed");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(rows.len(), 1, "--isolate CLI acquire must record one lease");
+    assert_eq!(rows[0].issue, 245);
+    assert!(
+        rows[0].branch.starts_with("phasegent/245-"),
+        "--isolate CLI acquire must use the new-issue branch slug"
+    );
+    assert!(
+        rows[0]
+            .worktree_path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "--isolate CLI acquire must land under the temp cache, not the operator's real cache"
+    );
+    assert!(
+        std::path::Path::new(&rows[0].worktree_path).exists(),
+        "--isolate CLI acquire must create the worktree directory on disk"
+    );
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn cli_surface_acquire_env_worktree_auto_true_creates_new_worktree_in_temp_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p2-cli-env-auto") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-env-auto");
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "true");
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit =
+        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
+    assert_eq!(exit, 0, "env-true CLI acquire must succeed");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(rows.len(), 1, "env-true CLI acquire must record one lease");
+    assert_eq!(rows[0].issue, 245);
+    assert!(
+        rows[0].branch.starts_with("phasegent/245-"),
+        "env-true CLI acquire must use the new-issue branch slug"
+    );
+    assert!(
+        rows[0]
+            .worktree_path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "env-true CLI acquire must land under the temp cache, not the operator's real cache"
+    );
+    assert!(
+        std::path::Path::new(&rows[0].worktree_path).exists(),
+        "env-true CLI acquire must create the worktree directory on disk"
+    );
     let _ = std::fs::remove_file(&scratch);
 }

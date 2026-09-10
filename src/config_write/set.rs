@@ -233,18 +233,11 @@ fn persist_set_value(
             }
             storage.save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_ENABLED" => {
-            let lower = trimmed.to_ascii_lowercase();
-            let normalised = match lower.as_str() {
-                "true" | "1" | "yes" | "on" | "enabled" => "true",
-                "false" | "0" | "no" | "off" | "disabled" => "false",
-                _ => {
-                    return Err(format!(
-                        "invalid PHASEGENT_NOTIFY_ENABLED '{trimmed}'; expected true or false"
-                    ));
-                }
-            };
-            storage.save_global_setting(canonical, normalised)?;
+        "PHASEGENT_NOTIFY_ENABLED" | "PHASEGENT_WORKTREE_AUTO" => {
+            let normalised = crate::config_write::parse_bool_literal(trimmed).ok_or_else(|| {
+                format!("invalid {canonical} '{trimmed}'; expected true or false")
+            })?;
+            storage.save_global_setting(canonical, if normalised { "true" } else { "false" })?;
         }
         "PHASEGENT_NOTIFY_CHANNEL" => {
             let lower = trimmed.to_ascii_lowercase();

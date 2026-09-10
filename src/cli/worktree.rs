@@ -25,7 +25,7 @@ use crate::worktree::leases::{ensure_schema, list_for_repo, load_lease, update_s
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED,
     ProcessWorktreeRunner, ReleaseOutcome, WorktreeError, WorktreeRunner, leases_for_issue,
-    now_unix_secs, repo_identity,
+    now_unix_secs, repo_identity, resolve_worktree_auto,
 };
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -143,11 +143,12 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             session,
             base: _,
             format,
+            isolate,
         } => {
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree acquire");
             }
-            execute_acquire(role, issue, &session, &format)
+            execute_acquire(role, issue, &session, &format, isolate)
         }
         WorktreeCommand::Release { lease, retain } => {
             if role != Role::Orchestrator {
@@ -195,12 +196,30 @@ fn permission_error(role: Role, operation: &str) -> i32 {
     )
 }
 
-fn execute_acquire(role: Role, issue: u64, session: &str, format: &str) -> i32 {
+fn execute_acquire(role: Role, issue: u64, session: &str, format: &str, isolate: bool) -> i32 {
     debug_assert_eq!(role, Role::Orchestrator);
     let _ = format; // only "json" is accepted at the parser layer
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let runner = ProcessWorktreeRunner::new();
-    match crate::worktree::acquire_lease(&runner, &repo_path, issue, session, None) {
+    // Resolve the persisted `worktree-auto` switch (env over SQLite,
+    // default false) so `--isolate` and the setting share one gate.
+    let storage = match open_storage() {
+        Ok(storage) => storage,
+        Err(message) => return config_error(&message),
+    };
+    let auto = match resolve_worktree_auto(&storage) {
+        Ok(auto) => auto,
+        Err(error) => {
+            return super::structured_error(
+                serde_json::json!({
+                    "kind": error.kind,
+                    "message": error.message,
+                }),
+                1,
+            );
+        }
+    };
+    match crate::worktree::acquire_lease(&runner, &repo_path, issue, session, None, isolate, auto) {
         Ok(outcome) => {
             let payload = AcquireJson::from(outcome);
             super::print_json(&payload)

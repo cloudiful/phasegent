@@ -170,12 +170,20 @@ phasegent issue unbind
 These commands operate on the local checkout and do not require provider
 access.
 
-## Worktree leases (issue #239 Phase 2)
+## Worktree leases (issue #239 Phase 2 + issue #247 default-off)
 
 Auto-isolate a per-(repo, issue, session) worktree so multiple phasegent
 tasks can run side by side without colliding on the same checkout. The
 AI never sees the branch: run `phasegent plugin install` once and the
-OpenCode adapter auto-acquires per session (no manual npm).
+OpenCode adapter auto-acquires per session (no manual npm). Auto-isolation
+defaults **off** (issue #247): `acquire` never implicitly creates a branch
+or directory on a conflict trigger — it reuses the current checkout and
+warns. Enable it two ways: `phasegent config set worktree-auto true`
+(persisted in SQLite, same effect as `PHASEGENT_WORKTREE_AUTO=true`,
+env over SQLite) or pass `--isolate` on a single `acquire` call. The
+OpenCode adapter does not pass `--isolate`; it follows the switch — when
+the switch is on, every adapter-driven session resumes the creating
+behaviour; when off, sessions stay in the current checkout.
 
 ```sh
 # Acquire or reuse a worktree for issue 239 (idempotent)

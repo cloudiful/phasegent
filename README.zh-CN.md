@@ -159,12 +159,18 @@ phasegent issue unbind
 
 这些命令只操作本地 checkout，不需要访问 provider。
 
-## Worktree 租约（issue #239 Phase 2）
+## Worktree 租约（issue #239 Phase 2 + issue #247 默认关闭）
 
 按 (repo, issue, session) 自动隔离一个 worktree，让多个 phasegent 任务
 并行时不会撞到同一份 checkout。AI 看不见分支：执行一次
 `phasegent plugin install` 即可写入 OpenCode adapter 自动按 session
-申请 worktree（无需手动 npm）。
+申请 worktree（无需手动 npm）。自动隔离**默认关闭**（issue #247）：
+`acquire` 不会在冲突触发时隐式创建分支或目录——它会复用当前 checkout
+并发出警告。两种开启方式：`phasegent config set worktree-auto true`
+（持久化到 SQLite，等价于 `PHASEGENT_WORKTREE_AUTO=true`，env 覆盖
+SQLite），或在单次 `acquire` 调用上追加 `--isolate`。OpenCode adapter
+不直接传 `--isolate`，而是跟随开关——开关开时，所有 adapter 驱动的
+session 自动恢复创建行为；开关关时，session 留在当前 checkout。
 
 ```sh
 # 为 issue 239 申请或复用 worktree（幂等）
