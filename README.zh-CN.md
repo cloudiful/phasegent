@@ -11,9 +11,8 @@
 - 支持 `admin`、`orchestrator`、`executor`、`reviewer`、`tester` 角色。
 - 按 provider 支持 issue 搜索、创建、更新、关闭，以及评论、状态、关系、版本
   和附件操作。
-- `issue search` 自动预热本地 issue 索引，并在 provider 失败时提供按范围过滤的
-  stale 本地回退。
-- 支持本地分支与 issue 绑定，以及托管 Git hooks。
+- 本地 issue 索引（默认 SQLite，可选 PostgreSQL）。
+- 本地分支与 issue 绑定，以及托管 Git hooks。
 - 支持 stdio / streamable HTTP 的 MCP 服务，复用同一套角色权限。
 - 成功输出紧凑 JSON，错误输出结构化信息。
 
@@ -53,7 +52,7 @@ phasegent --role orchestrator --provider redmine auth setup \
   --stdin --api-base https://redmine.example.com
 ```
 
-使用 Redmine 时，管理员仅需 admin API key 即可准备 project 和 role membership：
+准备 Redmine 的 project 和 role membership：
 
 ```sh
 phasegent --role admin --provider redmine workflow bootstrap \
@@ -94,28 +93,13 @@ phasegent gui
 在终端中无参数运行 `phasegent` 仍显示帮助。从 Explorer/Finder（无终端）
 启动则会打开桌面应用。
 
-角色 credential 始终保存在本地且只写：可在 Settings 页面或通过
-`auth setup` 输入，已保存的 key 不会被显示。发布包：Windows 提供一个 x64
-MSI 及对应的 raw exe；macOS 提供 `.dmg` 中的未签名 Tauri 应用，首次打开时
-Gatekeeper 可能会提示。
-
-Windows 安装包快捷方式选项：MSI 会显示 Shortcut Options 页面。默认勾选
-Start Menu，不勾选 Desktop。两个快捷方式均以 `phasegent gui` 启动已安装
-应用。静默安装保持默认；需要时覆盖：
-
-```sh
-msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn
-msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn PHASEGENT_DESKTOP_SHORTCUT=1
-msiexec /i phasegent-<tag>-x86_64-pc-windows-msvc.msi /qn PHASEGENT_STARTMENU_SHORTCUT=0
-```
-
-升级保持相同的 per-user 安装标识；卸载会删除快捷方式、Start Menu 文件夹
-和用户 `PATH` 条目。
+发布包：Windows 提供一个 x64 MSI 及对应的 raw exe；macOS 提供 `.dmg`
+中的未签名应用，首次打开时 Gatekeeper 可能会提示。
 
 ## 配置
 
-`auth setup` 将 provider credential 保存在本地配置数据库中。`config show` 提供
-脱敏视图，永远不会打印 secret。
+`auth setup` 将 credential 保存在本地。`config show` 提供脱敏视图，
+永远不会打印 secret。
 
 ```sh
 phasegent config show
@@ -124,23 +108,12 @@ phasegent config provider set redmine
 phasegent config provider clear
 ```
 
-可以通过单次命令的 `--provider` 或环境变量 `PHASEGENT_PROVIDER` 选择 provider。
-未指定时使用 Forgejo。完整优先级见 `phasegent --help config provider`：CLI >
-环境变量 > TOML > SQLite > 默认值。
+可以通过单次命令的 `--provider` 或环境变量 `PHASEGENT_PROVIDER` 选择
+provider。稳定的非 secret 配置可直接编辑 `phasegent.toml`（可用
+`PHASEGENT_CONFIG_PATH` 覆盖其位置）。有效优先级为 CLI 参数 > 环境变量 >
+TOML > SQLite > 默认值。
 
-Redmine `workflow bootstrap` 仅需 admin API key。它会通过 admin API 查找或创建
-内置 orchestrator、executor、reviewer、tester 用户，并将其 key 保存在本地
-SQLite；生成的 credential 始终保留在 SQLite，不应写入 TOML。
-
-稳定的非 secret 配置可直接编辑 `phasegent.toml`（默认 ProjectDirs 配置目录，
-可用绝对路径 `PHASEGENT_CONFIG_PATH` 覆盖）。有效优先级为 CLI 参数 > 环境变量 >
-TOML > SQLite > 默认值。TOML 为只读叠加层；`config set`/`clear` 与
-`config provider set`/`clear` 仍只写 SQLite，TOML 值会一直覆盖 SQLite，直到文件
-（或环境变量）被移除。
-
-Issue 搜索优先访问 provider，并自动预热本地索引。provider 请求失败时，非空查询
-可以使用按范围过滤的 stale 本地结果。默认索引后端是 SQLite。使用 PostgreSQL
-时，先以 `postgres` feature 安装，再通过 stdin 配置 URL：
+使用 PostgreSQL 作为 issue 索引后端时，通过 stdin 配置 URL：
 
 ```sh
 phasegent config set index-pg-url --stdin
@@ -159,72 +132,20 @@ phasegent issue unbind
 
 这些命令只操作本地 checkout，不需要访问 provider。
 
-## Worktree 租约（issue #239 Phase 2 + issue #247 默认关闭）
+## Worktree
 
-按 (repo, issue, session) 自动隔离一个 worktree，让多个 phasegent 任务
-并行时不会撞到同一份 checkout。AI 看不见分支：执行一次
-`phasegent plugin install` 即可写入 OpenCode adapter 自动按 session
-申请 worktree（无需手动 npm）。自动隔离**默认关闭**（issue #247）：
-`acquire` 不会在冲突触发时隐式创建分支或目录——它会复用当前 checkout
-并发出警告。两种开启方式：`phasegent config set worktree-auto true`
-（持久化到 SQLite，等价于 `PHASEGENT_WORKTREE_AUTO=true`，env 覆盖
-SQLite），或在单次 `acquire` 调用上追加 `--isolate`。OpenCode adapter
-不直接传 `--isolate`，而是跟随开关——开关开时，所有 adapter 驱动的
-session 自动恢复创建行为；开关关时，session 留在当前 checkout。
+按 issue 隔离 worktree，让多个任务共享同一仓库而不互相冲突。自动隔离
+默认关闭：冲突时 `acquire` 复用当前 checkout 并发出警告。用
+`config set worktree-auto true` 或单次 `--isolate` 开启。新 worktree
+需要环境文件时请手动复制 `.env`。
 
 ```sh
-# 为 issue 239 申请或复用 worktree（幂等）
-phasegent --role orchestrator worktree acquire --issue 239 \
-  --session alpha
-# { "lease_id": "...", "path": "...", "branch": "phasegent/239-...",
-#   "repo_identity": "...", "created": true, "reason": "new_worktree" }
-
-# 列出某 issue 的 active 租约（只读；orchestrator、executor、reviewer 可用）
+phasegent --role orchestrator worktree acquire --issue 239 --session alpha
 phasegent --role executor worktree status --issue 239
-
-# 列出当前 repo 的所有租约（只读）
 phasegent --role executor worktree list
-
-# 释放一个 active 租约；--retain 默认 true（仅 orchestrator）
 phasegent --role orchestrator worktree release --lease lease-...
-
-# 清理 clean + 过期 + retained 的 worktree；--dry-run 只列候选不改动。
-# 分支永远不会被删；只调用 `git worktree remove`，且仅在 clean 时执行。
 phasegent --role orchestrator worktree prune --stale-days 14 --dry-run
 ```
-
-`acquire` / `release` / `prune` 在命令级仅限 orchestrator。
-`status` / `list` 只读，orchestrator、executor、reviewer 可用，tester
-被拒。**worktree 命令永远不读、不复制、不写 `.env`**——需要环境
-文件时请手动复制到新 worktree（issue #239 Decisions）。无论哪种
-role，MCP 都不暴露 worktree 操作。
-
-## 阶段计时
-
-阶段计时属于**内部自动管理**：随着 `status set` / `status advance` 的状态
-流转按段累计耗时，并在 `issue close` 时收尾。仅 orchestrator 拥有合法触发权，
-AI 工作流**不应**直接调用 timer CLI。
-
-`timer` 命令组仍然保留，作为**手动兜底与恢复**专用面 —— 用于查看本地
-ledger、手动收尾生命周期未自动关闭的 run，或恢复孤儿记录：
-
-```sh
-# 查看本地阶段 run（只读，仅本地）
-phasegent --role orchestrator timer list
-phasegent --role orchestrator timer get <RUN_ID>
-
-# 手动兜底 / 恢复（仅运维使用）
-phasegent --role orchestrator timer start <ISSUE> --phase NAME \
-  --agent-role executor|reviewer|tester --attempt N
-phasegent --role orchestrator timer finish <RUN_ID> \
-  --result DONE|PARTIAL|BLOCKED|FAILED
-phasegent --role orchestrator timer recover <RUN_ID>
-```
-
-`timer start` / `timer finish` 仍仅限 orchestrator。`list` / `get` 不接触
-provider；`finish` / `recover` 投影到 Redmine 或 GitLab（Forgejo 两者均拒绝），
-失败不会让底层状态流转或关闭操作失败 —— 失败仅以 stderr 警告形式输出。
-无论哪种 role，MCP 都不暴露 timer 操作。
 
 ## MCP 服务
 
@@ -238,44 +159,27 @@ phasegent --role executor mcp serve
 phasegent --role executor mcp serve --transport http --bind 127.0.0.1:3000
 ```
 
-工具以启动时的 `--role` 和 provider 参数运行；MCP 客户端永远不需要
-（也不能）提供 role。约定工具：`capabilities`、`issue_get`、
-`issue_search`、`status_next`、`comment_create` 和 `notify_send`。
-除 server role 为 orchestrator 外，`comment_create` 需要服务端
-`--authorized`。`status_advance`、timer 和角色提升永远不会暴露。
+工具以启动时的 `--role` 和 `--provider` 参数运行；MCP 客户端永远不需要
+（也不能）提供 role。
 
 ## 通知
 
-通知仅支持手动发送：无自动触发，其他命令不会发送通知。通过
-`notify send`（CLI）或 `notify_send`（MCP）显式发送：
+通知仅支持手动发送：无自动触发。 通过 `notify send`（CLI）或
+`notify_send`（MCP）显式发送：
 
 ```sh
 phasegent --role executor notify send --event completion --title "Done" --body "Details"
 ```
 
 事件：`completion`、`blocked`、`failure`、`interruption_suspected`、
-`publish_failed`。标题/正文会被截断（140/2000 字符），发送前会先持久化
-意图。通过 `config set notify-enabled true` 和
+`publish_failed`。通过 `config set notify-enabled true` 和
 `config set notify-channel <name>` 配置；secret 须经 `--stdin` 传入。
-未启用或未配置时仍会持久化一条 skipped 记录并输出
-`{"notified": false}`，不会失败；投递失败返回结构化通知错误。适用于
-`orchestrator`、`executor`、`reviewer` 和 `tester`。
 
 ## 容器镜像
 
-纯 CLI 镜像（无 GUI 依赖），以非 root 用户运行。默认命令在回环地址上
-提供需认证的 streamable HTTP MCP，未设置 bearer token 时直接拒绝启动；
-状态数据持久化在 `/data` 下。镜像仅在版本标签（`v*`）时发布为
-`ghcr.io/OWNER/REPO:<tag>` 与 `ghcr.io/OWNER/REPO:latest`；请将
-`OWNER/REPO` 替换为 GitHub 仓库 slug。Dockerfile 为纯运行时镜像：
-CI 在原生 runner 上按架构以
-`cargo build --release --bin phasegent --no-default-features` 构建 CLI，
-将产物暂存于 `ci-image-input/phasegent`，Dockerfile 仅 `COPY` 该预构建
-产物（Docker 内无 Rust 工具链、无 `cargo build`，也无 QEMU 编译 Rust）。
-每个 `v*` 标签都会发布按架构划分的镜像，并合并多架构 manifest，
-覆盖 `<tag>` 与 `latest`。本地执行 `docker build` 前需先按同样方式
-暂存产物：先按上述命令构建 CLI，再将二进制复制到
-`ci-image-input/phasegent`。
+纯 CLI 镜像，以非 root 用户运行。默认命令在回环地址上提供需认证的
+streamable HTTP MCP；状态数据持久化在 `/data` 下。镜像随版本标签（`v*`）
+发布为 `<tag>` 和 `latest`。请将 `OWNER/REPO` 替换为实际仓库 slug：
 
 ```sh
 docker pull ghcr.io/OWNER/REPO:latest
@@ -286,22 +190,14 @@ docker run --rm -p 127.0.0.1:3000:3000 \
   ghcr.io/OWNER/REPO:latest
 ```
 
-- Token：通过 `-e`（或 secrets 管理器）传入
-  `PHASEGENT_MCP_AUTH_TOKEN`；不要作为命令行参数传递，也不会烘焙进镜像。
+- Token：通过 `-e` 传入 `PHASEGENT_MCP_AUTH_TOKEN`，不会烘焙进镜像。
   未设置时 HTTP 会在绑定前直接退出。
-- Role/provider 保留在服务端：默认是 `--role executor`，如需变更请覆盖
-  镜像 CMD，客户端永远不提供 role：
-  `docker run ... ghcr.io/OWNER/REPO:latest --role executor --provider redmine mcp serve --transport http --bind 127.0.0.1:3000`
-- 存储：`/data` 为 volume；默认
-  `PHASEGENT_DB_PATH=/data/phasegent.sqlite3`，
-  `PHASEGENT_CONFIG_PATH=/data/phasegent.toml`。请挂载
-  `-v ./phasegent-data:/data`，或用 `-e` 同时覆盖这两个路径。
+- 存储：`/data` 为 volume；默认 `PHASEGENT_DB_PATH=/data/phasegent.sqlite3`，
+  `PHASEGENT_CONFIG_PATH=/data/phasegent.toml`。
 - 本地 MCP 客户端可用 stdio 覆盖（stdout 保持协议干净，诊断信息走 stderr）：
   `docker run --rm -i -v ./phasegent-data:/data ghcr.io/OWNER/REPO:latest --role executor mcp serve --transport stdio`
-- 警告：默认仅绑定回环地址。使用 `--bind 0.0.0.0:3000`
-  （配合 `-p 0.0.0.0:3000:3000`）会将已认证的 HTTP 暴露到回环之外：
-  请妥善保管 bearer token，配合防火墙或反向代理，且未设置
-  `PHASEGENT_MCP_AUTH_TOKEN` 时不要对外发布。
+- 警告：默认仅绑定回环地址。使用 `--bind 0.0.0.0:3000` 会将 HTTP 暴露到回环之外：
+  请妥善保管 token，并配合防火墙或反向代理。
 
 成功命令返回紧凑 JSON；错误写入 stderr，并以非零状态退出。
 
