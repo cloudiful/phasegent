@@ -10,7 +10,57 @@ permissions:
   contents: read
 
 jobs:
+  version-check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Fail-fast version guard. The release workflow is tag-triggered and
+      # the Windows MSI version is derived from the tag with strict
+      # MAJOR.MINOR.PATCH enforcement, so the tag and the three manifest
+      # files must agree before any build work is scheduled. Uses Python 3
+      # stdlib only (tomllib, json, re) — no third-party dependencies.
+      - name: Assert tag matches all manifest versions
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, re, sys, tomllib
+
+          tag = "${{ github.ref_name }}"
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              print(f"::error::Tag '{tag}' must match ^v\\d+\\.\\d+\\.\\d+$ (for example v1.2.3).")
+              sys.exit(1)
+          expected = tag[1:]
+
+          with open("Cargo.toml", "rb") as fh:
+              cargo_ver = tomllib.load(fh)["package"]["version"]
+          with open("package.json", "rb") as fh:
+              pkg_ver = json.load(fh)["version"]
+          with open("tauri.conf.json", "rb") as fh:
+              tauri_ver = json.load(fh)["version"]
+
+          mismatches = [
+              (name, value)
+              for name, value in (
+                  ("Cargo.toml", cargo_ver),
+                  ("package.json", pkg_ver),
+                  ("tauri.conf.json", tauri_ver),
+              )
+              if value != expected
+          ]
+          if mismatches:
+              details = ", ".join(f"{name}={value!r}" for name, value in mismatches)
+              print(f"::error::Tag '{tag}' (version '{expected}') does not match manifest versions: {details}.")
+              sys.exit(1)
+
+          print(f"Tag {tag} matches Cargo.toml={cargo_ver}, package.json={pkg_ver}, tauri.conf.json={tauri_ver}.")
+          PY
+
   build:
+    needs: version-check
     permissions:
       contents: read
     strategy:
