@@ -28,12 +28,11 @@ fn search_issues_open_sends_state_opened_and_paginates() {
         include_body: false,
         all: false,
     };
-    let (base, requests, server) = sequence(vec![MockResponse::ok(format!(
-        "[{}]",
-        issue_payload(1, "One", "opened", &[])
-    ))
-    .with_header("x-next-page", "2")
-    .with_header("x-total", "2")]);
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(format!("[{}]", issue_payload(1, "One", "opened", &[])))
+            .with_header("x-next-page", "2")
+            .with_header("x-total", "2"),
+    ]);
     let dispatcher = dispatcher(base);
     let result = dispatcher.search_issues(&options).unwrap();
     assert_eq!(result.items.len(), 1);
@@ -185,10 +184,9 @@ fn search_reports_truncation_and_validates_bounds() {
         include_body: true,
         all: false,
     };
-    let (result, _request) = one(
-        MockResponse::ok(format!("[{long_payload}]")),
-        |provider| provider.search_issues(&with_body),
-    );
+    let (result, _request) = one(MockResponse::ok(format!("[{long_payload}]")), |provider| {
+        provider.search_issues(&with_body)
+    });
     let output = result.unwrap();
     assert_eq!(output.items[0].body_truncated, Some(true));
     assert_eq!(

@@ -320,10 +320,7 @@ fn repeated_non_empty_page_returns_without_looping() {
         include_body: false,
         all: false,
     };
-    let (base, requests, server) = sequence(vec![MockResponse::ok(format!(
-        "[{}]",
-        issue_json()
-    ))]);
+    let (base, requests, server) = sequence(vec![MockResponse::ok(format!("[{}]", issue_json()))]);
     let provider = dispatcher(base);
     let result = provider.search_issues(&options).unwrap();
     assert_eq!(result.items.len(), 1);
@@ -387,7 +384,10 @@ fn issue_search_rejects_invalid_page_limit_and_whitespace_query() {
         include_body: false,
         all: false,
     };
-    assert_eq!(base.search_issues(&bad_page).unwrap_err().json()["kind"], "config");
+    assert_eq!(
+        base.search_issues(&bad_page).unwrap_err().json()["kind"],
+        "config"
+    );
     let bad_limit = crate::providers::IssueSearchOptions {
         query: Some("needle".to_owned()),
         state: "all".to_owned(),
@@ -396,7 +396,10 @@ fn issue_search_rejects_invalid_page_limit_and_whitespace_query() {
         include_body: false,
         all: false,
     };
-    assert_eq!(base.search_issues(&bad_limit).unwrap_err().json()["kind"], "config");
+    assert_eq!(
+        base.search_issues(&bad_limit).unwrap_err().json()["kind"],
+        "config"
+    );
     let whitespace = crate::providers::IssueSearchOptions {
         query: Some("   ".to_owned()),
         state: "all".to_owned(),

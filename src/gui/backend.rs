@@ -6,6 +6,7 @@
 //! (`search_issue_page` directly); the issue-index `block_on` bridge
 //! is never called from the Tauri runtime.
 
+use super::frontend_dist_hash;
 use super::models::{
     BranchContextPayload, StatusPayload, StatusRequest, TaskEntry, TasksPayload, TasksRequest,
     TimerDto,
@@ -14,7 +15,6 @@ use super::validate::{
     bound_message, bound_title, now_fetched_at, parse_provider_optional, parse_role_with_default,
     sanitize_optional_url, validate_task_limit, validate_task_state,
 };
-use super::frontend_dist_hash;
 
 #[allow(dead_code)]
 fn redact_provider_error(error: crate::providers::forgejo::ForgejoError) -> String {

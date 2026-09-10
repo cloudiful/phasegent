@@ -206,7 +206,8 @@ fn frontend_sources() -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_file() {
                 let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
-                if matches!(ext.as_deref(), Some("ts" | "html")) && !is_generated_declaration(&path) {
+                if matches!(ext.as_deref(), Some("ts" | "html")) && !is_generated_declaration(&path)
+                {
                     sources.push(path);
                 }
             }

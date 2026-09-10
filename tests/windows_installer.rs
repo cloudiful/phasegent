@@ -12,8 +12,7 @@ use std::path::PathBuf;
 
 fn workspace_file(name: &str) -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    std::fs::read_to_string(root.join(name))
-        .unwrap_or_else(|err| panic!("read {name}: {err}"))
+    std::fs::read_to_string(root.join(name)).unwrap_or_else(|err| panic!("read {name}: {err}"))
 }
 
 fn phasegent_wxs() -> String {
@@ -169,14 +168,8 @@ fn options_dialog_binds_two_independent_checkboxes() {
         "custom dialog must exist; got:\n{wxs}"
     );
     for (control, property) in [
-        (
-            "StartMenuShortcutCheckBox",
-            "PHASEGENT_STARTMENU_SHORTCUT",
-        ),
-        (
-            "DesktopShortcutCheckBox",
-            "PHASEGENT_DESKTOP_SHORTCUT",
-        ),
+        ("StartMenuShortcutCheckBox", "PHASEGENT_STARTMENU_SHORTCUT"),
+        ("DesktopShortcutCheckBox", "PHASEGENT_DESKTOP_SHORTCUT"),
     ] {
         assert!(
             wxs.contains(control) && wxs.contains(property),
@@ -213,13 +206,11 @@ fn options_dialog_sequence_only_forks_fresh_install() {
         "InstallDir Next must route to the options dialog; got:\n{wxs}"
     );
     assert!(
-        wxs.contains("Dialog=\"ShortcutOptionsDlg\"")
-            && wxs.contains("Value=\"VerifyReadyDlg\""),
+        wxs.contains("Dialog=\"ShortcutOptionsDlg\"") && wxs.contains("Value=\"VerifyReadyDlg\""),
         "options dialog Next must continue to VerifyReadyDlg; got:\n{wxs}"
     );
     assert!(
-        wxs.contains("Value=\"ShortcutOptionsDlg\"")
-            && wxs.contains("Condition=\"NOT Installed\""),
+        wxs.contains("Value=\"ShortcutOptionsDlg\"") && wxs.contains("Condition=\"NOT Installed\""),
         "VerifyReadyDlg Back on fresh install must return to options; got:\n{wxs}"
     );
     assert!(
@@ -241,9 +232,7 @@ fn release_workflow_compiles_all_wix_sources_without_changing_shape() {
     let yml = release_yml();
 
     assert!(
-        yml.contains(
-            "wix build wix/phasegent.wxs wix/Shortcuts.wxs wix/ShortcutOptionsDlg.wxs"
-        ),
+        yml.contains("wix build wix/phasegent.wxs wix/Shortcuts.wxs wix/ShortcutOptionsDlg.wxs"),
         "wix build must compile all three sources together; got:\n{yml}"
     );
     assert!(
@@ -251,8 +240,7 @@ fn release_workflow_compiles_all_wix_sources_without_changing_shape() {
         "WiX 6.0.2 plus the UI extension must be preserved; got:\n{yml}"
     );
     assert!(
-        yml.contains("x86_64-pc-windows-msvc.msi")
-            && yml.contains("x86_64-pc-windows-msvc.exe"),
+        yml.contains("x86_64-pc-windows-msvc.msi") && yml.contains("x86_64-pc-windows-msvc.exe"),
         "Windows artifact pair (exe plus MSI) must be preserved; got:\n{yml}"
     );
     // Scope the no-zip/no-pdb check to the Windows upload block: cleanup

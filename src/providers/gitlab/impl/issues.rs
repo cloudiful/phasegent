@@ -63,7 +63,9 @@ impl GitlabProvider {
         if let Some(query) = query {
             params.push(("search", query.to_owned()));
         }
-        let (items, headers, _raw) = self.http.get_page::<ApiIssue>(&path, &params, "issue search")?;
+        let (items, headers, _raw) =
+            self.http
+                .get_page::<ApiIssue>(&path, &params, "issue search")?;
         let count = items.len();
         // GitLab signals more pages via x-next-page (empty = last page)
         // and x-total-pages / x-total. Preserve that metadata.
@@ -122,7 +124,9 @@ impl GitlabProvider {
         if let Some(query) = query {
             params.push(("search", query.to_owned()));
         }
-        let (items, headers, _raw) = self.http.get_page::<ApiIssue>(&path, &params, "issue search")?;
+        let (items, headers, _raw) =
+            self.http
+                .get_page::<ApiIssue>(&path, &params, "issue search")?;
         let count = items.len();
         let total_count = headers
             .get("x-total")

@@ -188,7 +188,11 @@ fn search_paginates_and_filters_by_requested_state() {
     };
     let result = redmine.search_issues(&options).unwrap();
     assert_eq!(
-        result.items.iter().map(|issue| issue.number).collect::<Vec<_>>(),
+        result
+            .items
+            .iter()
+            .map(|issue| issue.number)
+            .collect::<Vec<_>>(),
         [31]
     );
     assert!(result.items.iter().all(|issue| issue.state == "open"));
