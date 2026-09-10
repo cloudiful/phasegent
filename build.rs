@@ -140,9 +140,9 @@ fn ensure_frontend_ready(dist: &std::path::Path) {
         );
         std::process::exit(1);
     }
-    if !std::path::Path::new("frontend/node_modules").exists() {
+    if !std::path::Path::new("node_modules").exists() {
         eprintln!(
-            "build.rs: ERROR: frontend is missing or stale but `frontend/node_modules` is absent; run `bun install`, then rebuild."
+            "build.rs: ERROR: frontend is missing or stale but `node_modules` is absent from the repo root; run `bun install` (or `bun run validate`) at the repo root, then rebuild."
         );
         std::process::exit(1);
     }
