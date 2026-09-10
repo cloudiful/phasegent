@@ -23,6 +23,19 @@ impl GlobalSettingSummary {
     }
 }
 
+/// Row fields for [`Storage::record_notification`]. Groups the
+/// notification-delivery columns so the recorder takes one parameter
+/// instead of seven positional arguments.
+pub struct NotificationRecord<'a> {
+    pub event: &'a str,
+    pub channel: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub issue_id: Option<u64>,
+    pub status: &'a str,
+    pub error: Option<&'a str>,
+}
+
 impl Storage {
     /// Read the stored value for a global setting. Returns
     /// `Ok(None)` when no row exists or the stored value is empty so
@@ -106,17 +119,7 @@ impl Storage {
     /// `skipped` when notifications are disabled) and then update to
     /// `delivered`/`failed` after the network attempt. Titles/bodies
     /// are already bounded by the caller.
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_notification(
-        &self,
-        event: &str,
-        channel: &str,
-        title: &str,
-        body: &str,
-        issue_id: Option<u64>,
-        status: &str,
-        error: Option<&str>,
-    ) -> Result<i64, String> {
+    pub fn record_notification(&self, record: &NotificationRecord<'_>) -> Result<i64, String> {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -127,13 +130,13 @@ impl Storage {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     created_at,
-                    event,
-                    channel,
-                    title,
-                    body,
-                    issue_id.map(|v| v as i64),
-                    status,
-                    error
+                    record.event,
+                    record.channel,
+                    record.title,
+                    record.body,
+                    record.issue_id.map(|v| v as i64),
+                    record.status,
+                    record.error
                 ],
             )
             .map_err(|error| format!("could not record notification: {error}"))?;

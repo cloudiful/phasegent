@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::fmt;
 
+use crate::providers::index_store::IssueIndexSearchItem;
+
 pub const ISSUE_SEARCH_DEFAULT_PAGE: usize = 1;
 pub const ISSUE_SEARCH_DEFAULT_LIMIT: usize = 50;
 pub const ISSUE_SEARCH_MAX_LIMIT: usize = 100;
@@ -129,23 +131,13 @@ impl IssueSearchItem {
         }
     }
 
-    /// Build a stale-fallback item from local index fields without
+    /// Build a stale-fallback item from a local index row without
     /// inventing numeric ids: `id`/`number` reuse the stored numeric
     /// `issue_number`, while the opaque `external_id` string is retained
     /// verbatim alongside `source`/`project` so consumers can tell the
     /// row is stale and scoped.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_local_parts(
-        source: String,
-        project: String,
-        external_id: String,
-        issue_number: u64,
-        title: String,
-        state: String,
-        html_url: Option<String>,
-        body_full: String,
-        include_body: bool,
-    ) -> Self {
+    pub fn from_local_parts(item: &IssueIndexSearchItem, include_body: bool) -> Self {
+        let body_full = item.body.clone().unwrap_or_default();
         let (body, body_truncated) = if !include_body {
             (None, None)
         } else {
@@ -158,16 +150,16 @@ impl IssueSearchItem {
             (Some(body), Some(truncated))
         };
         Self {
-            id: issue_number,
-            number: issue_number,
-            title,
-            state,
-            html_url,
+            id: item.issue_number,
+            number: item.issue_number,
+            title: item.title.clone(),
+            state: item.state.clone(),
+            html_url: item.html_url.clone(),
             body,
             body_truncated,
-            source: Some(source),
-            project: Some(project),
-            external_id: Some(external_id),
+            source: Some(item.source.clone()),
+            project: Some(item.project.clone()),
+            external_id: Some(item.external_id.clone()),
         }
     }
 }

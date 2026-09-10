@@ -130,28 +130,6 @@ impl std::fmt::Display for PluginError {
 
 impl std::error::Error for PluginError {}
 
-/// Which scope an install / status / uninstall call targets. Both
-/// scopes install by default when no flag is supplied so the
-/// operator never has to think about which slot OpenCode is reading.
-/// Reserved for callers that want to drive the installer without
-/// going through the CLI flag layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum InstallScope {
-    Global,
-    Project,
-}
-
-#[allow(dead_code)]
-impl InstallScope {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Global => "global",
-            Self::Project => "project",
-        }
-    }
-}
-
 /// Resolve the global OpenCode plugins directory. Honours
 /// `$XDG_CONFIG_HOME` first (per the XDG Base Directory spec) and
 /// falls back to `$HOME/.config`. Returns a structured error when

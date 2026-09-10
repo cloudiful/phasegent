@@ -2,10 +2,9 @@
 //!
 //! SQLite-backed [`LocalProvider`] implements the shared
 //! `IssueProvider` / `RedmineMetadataProvider` / `RepoProvider`
-//! surfaces; PostgreSQL stays a reserved stub (`PgLocalProvider`)
-//! that fails with a structured not-supported error. Planning fields
-//! (`--parent-issue`, `--fixed-version`, dates, estimates) are
-//! accepted by the CLI but intentionally ignored and never persisted.
+//! surfaces. Planning fields (`--parent-issue`, `--fixed-version`,
+//! dates, estimates) are accepted by the CLI but intentionally
+//! ignored and never persisted.
 
 pub mod model;
 
@@ -23,6 +22,7 @@ mod contract_tests;
 
 use crate::policy::Capability;
 use crate::providers::api::ForgejoError;
+#[cfg(test)]
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -48,7 +48,7 @@ impl LocalProvider {
         })
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn open_at(path: &Path) -> Result<Self, ForgejoError> {
         let store = crate::infra::local_store::open_local_at(path).map_err(ForgejoError::config)?;
         Ok(Self {
@@ -95,28 +95,5 @@ impl LocalProvider {
             | Capability::RelationCreate
             | Capability::RelationDelete => false,
         }
-    }
-}
-
-/// Reserved PostgreSQL local provider.
-///
-/// SQLite is authoritative; this struct only reserves the interface
-/// so the PostgreSQL backend can add CRUD without renaming. `open`
-/// intentionally fails with a structured not-supported error.
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct PgLocalProvider {
-    _private: (),
-}
-
-#[allow(dead_code)]
-impl PgLocalProvider {
-    pub fn open(_url: &str) -> Result<Self, ForgejoError> {
-        // PG reserved by design: implement PostgresLocalStore-backed
-        // CRUD mirroring Sqlite LocalProvider once async dispatch is wired.
-        Err(ForgejoError::not_supported(
-            "local",
-            "postgres backend (reserved)",
-        ))
     }
 }

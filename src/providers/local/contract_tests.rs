@@ -2,8 +2,8 @@
 
 pub(crate) mod cross_backend;
 
+use super::LocalProvider;
 use super::model::{local_sql, state_for_status};
-use super::{LocalProvider, PgLocalProvider};
 use crate::providers::api::IssueSearchOptions;
 use std::path::PathBuf;
 
@@ -224,8 +224,6 @@ fn queries_sql_is_single_source_and_state_mapping() {
     assert!(local_sql("search_issues").contains("LIMIT"));
     assert_eq!(state_for_status("Closed"), "closed");
     assert_eq!(state_for_status("New"), "open");
-    let reserved = PgLocalProvider::open("postgres://example/db").unwrap_err();
-    assert!(reserved.to_string().contains("postgres backend"));
 }
 
 #[test]

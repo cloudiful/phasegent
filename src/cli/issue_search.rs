@@ -344,30 +344,10 @@ pub(crate) fn fallback_or_provider_error(
         .iter()
         .map(|item| {
             if include_body {
-                IssueSearchItem::from_local_parts(
-                    item.source.clone(),
-                    item.project.clone(),
-                    item.external_id.clone(),
-                    item.issue_number,
-                    item.title.clone(),
-                    item.state.clone(),
-                    item.html_url.clone(),
-                    item.body.clone().unwrap_or_default(),
-                    true,
-                )
+                IssueSearchItem::from_local_parts(item, true)
             } else {
                 // Bodies omitted: keep them omitted (no empty-string body).
-                IssueSearchItem::from_local_parts(
-                    item.source.clone(),
-                    item.project.clone(),
-                    item.external_id.clone(),
-                    item.issue_number,
-                    item.title.clone(),
-                    item.state.clone(),
-                    item.html_url.clone(),
-                    String::new(),
-                    false,
-                )
+                IssueSearchItem::from_local_parts(item, false)
             }
         })
         .collect();

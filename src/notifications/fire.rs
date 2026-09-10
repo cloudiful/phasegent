@@ -74,15 +74,16 @@ fn record_intent(
     status: &str,
     error: Option<&str>,
 ) -> Result<i64, String> {
-    storage.record_notification(
-        intent.event.as_str(),
+    let record = crate::infra::storage::NotificationRecord {
+        event: intent.event.as_str(),
         channel,
-        &intent.title,
-        &intent.body,
-        intent.issue_id,
+        title: &intent.title,
+        body: &intent.body,
+        issue_id: intent.issue_id,
         status,
         error,
-    )
+    };
+    storage.record_notification(&record)
 }
 
 fn mark_result(storage: &Storage, row_id: i64, status: &str, error: Option<&str>) {

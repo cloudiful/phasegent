@@ -14,7 +14,6 @@ const MAX_TITLE_CHARS: usize = 500;
 /// Bound an error/message string: single line, truncated, no control
 /// chars. Never appends secret values; callers must not interpolate
 /// credentials or raw URLs with userinfo.
-#[allow(dead_code)]
 pub fn bound_message(raw: impl AsRef<str>) -> String {
     let raw = raw.as_ref();
     let mut text = raw.trim().replace(['\n', '\r'], " ");
@@ -32,7 +31,6 @@ pub fn bound_message(raw: impl AsRef<str>) -> String {
     cleaned[..end].to_owned()
 }
 
-#[allow(dead_code)]
 pub(crate) fn now_fetched_at() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -40,12 +38,10 @@ pub(crate) fn now_fetched_at() -> i64 {
         .unwrap_or(0)
 }
 
-#[allow(dead_code)]
 pub(crate) fn sanitize_optional_url(value: Option<String>) -> Option<String> {
     value.map(|v| crate::config_snapshot::sanitize_url(&v))
 }
 
-#[allow(dead_code)]
 pub(crate) fn bound_title(raw: &str) -> String {
     let single = raw.trim().replace(['\n', '\r'], " ");
     let cleaned: String = single.chars().filter(|c| !c.is_control()).collect();
@@ -56,7 +52,6 @@ pub(crate) fn bound_title(raw: &str) -> String {
     trimmed.chars().take(MAX_TITLE_CHARS).collect()
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_role_with_default(input: Option<&str>) -> Result<crate::policy::Role, String> {
     match input.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok(crate::policy::Role::Executor),
@@ -67,7 +62,6 @@ pub(crate) fn parse_role_with_default(input: Option<&str>) -> Result<crate::poli
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_role_optional(
     input: Option<&str>,
 ) -> Result<Option<crate::policy::Role>, String> {
@@ -81,7 +75,6 @@ pub(crate) fn parse_role_optional(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_provider_optional(
     input: Option<&str>,
 ) -> Result<Option<crate::providers::config::ProviderKind>, String> {
@@ -95,7 +88,6 @@ pub(crate) fn parse_provider_optional(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_provider_required(
     input: &str,
 ) -> Result<crate::providers::config::ProviderKind, String> {
@@ -109,7 +101,6 @@ pub(crate) fn parse_provider_required(
         .map_err(bound_message)
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_role_required(input: &str) -> Result<crate::policy::Role, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -121,7 +112,6 @@ pub(crate) fn parse_role_required(input: &str) -> Result<crate::policy::Role, St
         .map_err(bound_message)
 }
 
-#[allow(dead_code)]
 pub fn validate_task_limit(input: Option<usize>) -> Result<usize, String> {
     match input {
         None => Ok(DEFAULT_TASK_LIMIT),
@@ -133,7 +123,6 @@ pub fn validate_task_limit(input: Option<usize>) -> Result<usize, String> {
     }
 }
 
-#[allow(dead_code)]
 pub fn validate_task_state(input: Option<&str>) -> Result<String, String> {
     match input.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok("open".to_owned()),
@@ -148,7 +137,6 @@ pub fn validate_task_state(input: Option<&str>) -> Result<String, String> {
     }
 }
 
-#[allow(dead_code)]
 pub fn canonical_non_secret_setting(input: &str) -> Result<&'static str, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -164,7 +152,6 @@ pub fn canonical_non_secret_setting(input: &str) -> Result<&'static str, String>
     Ok(canonical)
 }
 
-#[allow(dead_code)]
 pub fn validate_setting_value(canonical: &str, value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -183,7 +170,6 @@ pub fn validate_setting_value(canonical: &str, value: &str) -> Result<String, St
     Ok(trimmed.to_owned())
 }
 
-#[allow(dead_code)]
 pub fn validate_credential_value(value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

@@ -79,22 +79,16 @@ impl SqliteLocalStore {
             .map_err(|e| format!("could not seed local database: {e}"))?;
         Ok(())
     }
-
-    #[allow(dead_code)]
-    pub fn db_path(&self) -> &Path {
-        &self.path
-    }
 }
 
 /// Exact-name opener: independent file plus
 /// `CREATE TABLE IF NOT EXISTS` via [`SqliteLocalStore::open`].
-#[allow(dead_code)]
 pub fn open_local() -> Result<SqliteLocalStore, String> {
     SqliteLocalStore::open()
 }
 
 /// Testable exact-name opener at an explicit path.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn open_local_at(path: &Path) -> Result<SqliteLocalStore, String> {
     SqliteLocalStore::open_at(path)
 }

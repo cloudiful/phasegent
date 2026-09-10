@@ -6,7 +6,9 @@ use crate::providers::api::{IssueSearchItem, IssueSummary};
 use crate::providers::forgejo::ForgejoError;
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore, LexicalScope};
-use crate::providers::index_store::{explicit_scope, lexical_scope_for_state};
+use crate::providers::index_store::{
+    IssueIndexSearchItem, explicit_scope, lexical_scope_for_state,
+};
 use crate::providers::{ProviderDispatcher, ProviderKind};
 
 fn tmp_index_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -375,17 +377,18 @@ fn mutation_write_through_covers_get_create_update_close() {
 
 #[test]
 fn fallback_items_retain_scope_without_invented_ids() {
-    let item = IssueSearchItem::from_local_parts(
-        "redmine".to_owned(),
-        "42".to_owned(),
-        "non-numeric-ext".to_owned(),
-        99,
-        "title".to_owned(),
-        "open".to_owned(),
-        None,
-        "body".to_owned(),
-        false,
-    );
+    let row = IssueIndexSearchItem {
+        source: "redmine".to_owned(),
+        project: "42".to_owned(),
+        external_id: "non-numeric-ext".to_owned(),
+        issue_number: 99,
+        title: "title".to_owned(),
+        state: "open".to_owned(),
+        html_url: None,
+        body: Some("body".to_owned()),
+        body_truncated: None,
+    };
+    let item = IssueSearchItem::from_local_parts(&row, false);
     assert_eq!(item.id, 99);
     assert_eq!(item.number, 99);
     assert_eq!(item.source.as_deref(), Some("redmine"));

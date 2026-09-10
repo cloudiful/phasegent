@@ -23,11 +23,12 @@ mod global_settings;
 pub(crate) mod test_support;
 
 pub use connection::Storage;
-pub use global_settings::GlobalSettingSummary;
+pub use global_settings::{GlobalSettingSummary, NotificationRecord};
 
-#[allow(unused_imports)]
+#[cfg(test)]
+pub(crate) use crate::infra::storage_schema::DB_FILENAME;
 pub(crate) use crate::infra::storage_schema::{
-    DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE,
+    PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE,
 };
 
 /// Re-export the canonical global setting names so callers do not
