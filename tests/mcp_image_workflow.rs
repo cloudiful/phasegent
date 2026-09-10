@@ -1,9 +1,10 @@
 //! GHCR publish contract for the MCP image.
 //!
-//! Static-only guarantees for `.github/workflows/mcp-image.yml` plus
-//! bilingual README alignment. No test requires registry credentials,
-//! a Docker daemon, or network access: all assertions read committed
-//! files.
+//! Static-only guarantees for the image jobs inside the merged
+//! `.github/workflows/release.yml` (the release `build` binaries are
+//! reused verbatim, no second compile) plus bilingual README alignment.
+//! No test requires registry credentials, a Docker daemon, or network
+//! access: all assertions read committed files.
 
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ fn read_repo_file(name: &str) -> String {
 }
 
 fn workflow() -> String {
-    read_repo_file(".github/workflows/mcp-image.yml")
+    read_repo_file(".github/workflows/release.yml")
 }
 
 fn assert_contains(haystack: &str, needle: &str, context: &str) {
@@ -37,7 +38,7 @@ fn assert_not_contains(haystack: &str, needle: &str, context: &str) {
 #[test]
 fn workflow_triggers_on_version_tags_only() {
     let workflow = workflow();
-    // Tag-only trigger shape mirrors release.yml.
+    // Tag-only trigger: branch pushes never build or publish.
     assert_contains(&workflow, "tags:", "mcp-image trigger");
     assert!(
         workflow.contains("'v*'") || workflow.contains("\"v*\""),
@@ -93,16 +94,8 @@ fn workflow_builds_native_per_arch_with_artifact_reuse_and_manifest() {
     assert_contains(&workflow, "platforms:", "mcp-image platforms");
     assert_contains(&workflow, "linux/amd64", "mcp-image platforms");
     assert_contains(&workflow, "linux/arm64", "mcp-image platforms");
-    assert_contains(
-        &workflow,
-        "x86_64-unknown-linux-gnu",
-        "mcp-image targets",
-    );
-    assert_contains(
-        &workflow,
-        "aarch64-unknown-linux-gnu",
-        "mcp-image targets",
-    );
+    assert_contains(&workflow, "x86_64-unknown-linux-gnu", "mcp-image targets");
+    assert_contains(&workflow, "aarch64-unknown-linux-gnu", "mcp-image targets");
     // Single-arch image build per matrix row.
     assert_contains(
         &workflow,
@@ -116,22 +109,16 @@ fn workflow_builds_native_per_arch_with_artifact_reuse_and_manifest() {
     );
     assert_contains(&workflow, "setup-buildx-action", "mcp-image builder");
     assert_contains(&workflow, "docker/build-push-action", "mcp-image builder");
-    // Prebuilt-artifact reuse across jobs.
-    assert_contains(
-        &workflow,
-        "phasegent-image-input",
-        "mcp-image artifacts",
-    );
+    // Release-binary reuse: the image job downloads the release `build`
+    // artifact verbatim instead of recompiling (no second cargo build).
     assert_contains(&workflow, "upload-artifact", "mcp-image artifacts");
     assert_contains(&workflow, "download-artifact", "mcp-image artifacts");
+    assert_contains(&workflow, "ci-image-input/phasegent", "mcp-image artifacts");
+    assert_not_contains(&workflow, "phasegent-image-input-", "mcp-image artifacts");
     // Multi-arch manifest merge.
     assert_contains(&workflow, "imagetools create", "mcp-image manifest");
     // Pinned checkout, concurrency, and minimal permissions.
-    assert_contains(
-        &workflow,
-        "ref: ${{ github.sha }}",
-        "mcp-image checkout",
-    );
+    assert_contains(&workflow, "ref: ${{ github.sha }}", "mcp-image checkout");
     assert_contains(
         &workflow,
         "cancel-in-progress: false",

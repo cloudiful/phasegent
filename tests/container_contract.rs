@@ -72,25 +72,38 @@ fn dockerfile_is_runtime_only_copying_prebuilt_artifact() {
         has_copy_input,
         "Dockerfile must COPY ci-image-input/phasegent into the image"
     );
-    // The documented CI build stays CLI-only without the `gui` feature.
+    // The documented CI build stays CLI-only: full CLI features, no `gui`.
     assert_contains(
         &dockerfile,
         "cargo build --release --bin phasegent",
         "Dockerfile CI build docs",
     );
-    assert_contains(&dockerfile, "--no-default-features", "Dockerfile CI build docs");
+    assert_contains(
+        &dockerfile,
+        "--features postgres,notify-dingtalk,notify-email",
+        "Dockerfile CI build docs",
+    );
     for forbidden in ["--features gui", "--features=gui", "features gui"] {
         assert_not_contains(&dockerfile, forbidden, "Dockerfile CLI-only docs");
     }
     // Runtime-only: no compile inside Docker, no Rust toolchain.
     // Comments may document the CI build command; only fail when the
     // forbidden token appears in an actual Dockerfile instruction.
-    for forbidden in ["cargo build", "cargo install", "rust:", "rustup", "AS builder"] {
+    for forbidden in [
+        "cargo build",
+        "cargo install",
+        "rust:",
+        "rustup",
+        "AS builder",
+    ] {
         let hit = dockerfile.lines().any(|line| {
             let trimmed = line.trim();
             !trimmed.starts_with('#') && line.contains(forbidden)
         });
-        assert!(!hit, "Dockerfile runtime-only must not contain {forbidden:?}");
+        assert!(
+            !hit,
+            "Dockerfile runtime-only must not contain {forbidden:?}"
+        );
     }
     // No desktop toolchain may leak into the image build.
     for forbidden in ["tauri build", "WebKit", "libgtk", "bun run", "npm run"] {
@@ -267,8 +280,7 @@ fn assert_readme_container_contract(name: &str) {
     // (English "warn" or Chinese "警告" for the localized README).
     assert!(
         readme.contains("0.0.0.0")
-            && (readme.to_ascii_lowercase().contains("warn")
-                || readme.contains("警告")),
+            && (readme.to_ascii_lowercase().contains("warn") || readme.contains("警告")),
         "{name} must warn about exposing HTTP beyond loopback"
     );
 }
@@ -286,14 +298,18 @@ fn readme_documents_container_runtime_contract_zh() {
 #[test]
 fn container_image_build_and_smoke_when_docker_available() {
     if !docker_available() {
-        eprintln!("SKIP container_image_build_and_smoke: Docker daemon unavailable (`docker info` failed); static contract tests above still validate the Dockerfile without registry credentials");
+        eprintln!(
+            "SKIP container_image_build_and_smoke: Docker daemon unavailable (`docker info` failed); static contract tests above still validate the Dockerfile without registry credentials"
+        );
         return;
     }
     let context = manifest_dir();
     // Runtime-only images need the CI-staged binary; without it a local
     // `docker build` cannot succeed, so record the gap and pass.
     if !context.join("ci-image-input/phasegent").is_file() {
-        eprintln!("SKIP container_image_build_and_smoke: ci-image-input/phasegent not staged (CI builds it per-arch); static contract tests above still validate the runtime-only Dockerfile");
+        eprintln!(
+            "SKIP container_image_build_and_smoke: ci-image-input/phasegent not staged (CI builds it per-arch); static contract tests above still validate the runtime-only Dockerfile"
+        );
         return;
     }
     let tag = "phasegent:container-contract-test";
