@@ -106,6 +106,7 @@ impl Storage {
     /// `skipped` when notifications are disabled) and then update to
     /// `delivered`/`failed` after the network attempt. Titles/bodies
     /// are already bounded by the caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_notification(
         &self,
         event: &str,

@@ -422,13 +422,13 @@ fn mcp_http_fails_closed_without_token() {
             "stderr must name the env var; token={token:?} stderr={stderr}"
         );
         // Fail-closed errors must never echo a secret.
-        if let Some(secret) = token {
-            if !secret.trim().is_empty() {
-                assert!(
-                    !stderr.contains(secret),
-                    "stderr must not leak token; stderr={stderr}"
-                );
-            }
+        if let Some(secret) = token
+            && !secret.trim().is_empty()
+        {
+            assert!(
+                !stderr.contains(secret),
+                "stderr must not leak token; stderr={stderr}"
+            );
         }
     }
 }

@@ -132,12 +132,11 @@ pub fn canonical_setting_name(input: &str) -> Option<&'static str> {
         }
     }
     let with_prefix = format!("PHASEGENT_{upper}");
-    for &canonical in ALL_CANONICAL {
-        if with_prefix == canonical {
-            return Some(canonical);
-        }
-    }
-    None
+    ALL_CANONICAL
+        .iter()
+        .find(|&&canonical| with_prefix == canonical)
+        .copied()
+        .map(|v| v as _)
 }
 
 pub fn is_global_setting(name: &str) -> bool {

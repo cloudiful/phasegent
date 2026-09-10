@@ -157,7 +157,7 @@ impl IssueIndexStore for SqliteIssueIndex {
         let escaped = normalize_query(query)?;
         // FTS errors (e.g., malformed after escaping) are surfaced as config
         // errors so the CLI can return a structured failure without crashing.
-        lexical_search_inner(&self.connection, &escaped, limit, offset, include_body).map_err(|e| e)
+        lexical_search_inner(&self.connection, &escaped, limit, offset, include_body)
     }
 
     async fn lexical_search_scoped(
@@ -183,7 +183,6 @@ impl IssueIndexStore for SqliteIssueIndex {
             include_body,
             scope,
         )
-        .map_err(|e| e)
     }
 }
 

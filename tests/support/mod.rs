@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared scaffolding for the `redmine_status_*` integration tests. Every
 //! scenario launches the compiled `phasegent` binary and asserts on the
 //! request sequence, exit codes, and JSON payloads produced by the full

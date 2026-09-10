@@ -7,7 +7,7 @@
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
-    handler::server::{tool::ToolRouter, wrapper::Parameters},
+    handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
     tool, tool_handler, tool_router,
 };
@@ -63,15 +63,11 @@ impl McpConfig {
 #[derive(Clone)]
 pub struct PhasegentMcpServer {
     config: McpConfig,
-    tool_router: ToolRouter<Self>,
 }
 
 impl PhasegentMcpServer {
     pub fn new(config: McpConfig) -> Self {
-        Self {
-            config,
-            tool_router: Self::tool_router(),
-        }
+        Self { config }
     }
 
     fn dispatcher(&self) -> Result<ProviderDispatcher, McpError> {

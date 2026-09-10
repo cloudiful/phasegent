@@ -125,11 +125,7 @@ fn upload_fails_on_malformed_token_response_without_exposing_token() {
             .upload_attachment(11, p.to_str().unwrap(), None)
             .unwrap_err();
         let js = err.json().to_string();
-        assert_eq!(
-            js.contains("\"kind\":\"decode\""),
-            true,
-            "expected decode: {js}"
-        );
+        assert!(js.contains("\"kind\":\"decode\""), "expected decode: {js}");
         assert!(!js.contains(TEST_TOKEN));
         assert!(!js.contains("content"));
         srv.join().unwrap();

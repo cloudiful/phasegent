@@ -9,15 +9,15 @@ mod support;
 
 use support::{phasegent_bin, stdout_text};
 
-fn scratch_db() -> tempfile_like_dir {
-    tempfile_like_dir::new()
+fn scratch_db() -> TempfileLikeDir {
+    TempfileLikeDir::new()
 }
 
-struct tempfile_like_dir {
+struct TempfileLikeDir {
     dir: std::path::PathBuf,
 }
 
-impl tempfile_like_dir {
+impl TempfileLikeDir {
     fn new() -> Self {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -40,13 +40,13 @@ impl tempfile_like_dir {
     }
 }
 
-impl Drop for tempfile_like_dir {
+impl Drop for TempfileLikeDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
-fn run_phasegent(scratch: &tempfile_like_dir, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+fn run_phasegent(scratch: &TempfileLikeDir, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -72,7 +72,7 @@ fn run_phasegent(scratch: &tempfile_like_dir, args: &[&str], extra_env: &[(&str,
     command.output().expect("spawn phasegent binary")
 }
 
-fn run_with_stdin(scratch: &tempfile_like_dir, args: &[&str], stdin_text: &str) -> Output {
+fn run_with_stdin(scratch: &TempfileLikeDir, args: &[&str], stdin_text: &str) -> Output {
     use std::io::Write;
     let mut child = Command::new(phasegent_bin())
         .args(args)

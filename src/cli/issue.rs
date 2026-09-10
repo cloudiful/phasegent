@@ -80,13 +80,13 @@ pub(crate) fn execute_issue(
     // Redmine-only upload-attachment fast path: reject non-Redmine before
     // any file, network, or credential access so Forgejo/GitLab return the
     // structured not-supported result without trying to upload.
-    if let IssueCommand::UploadAttachment { .. } = &command {
-        if provider_kind != ProviderKind::Redmine {
-            return super::provider_error(ForgejoError::not_supported(
-                provider_kind.as_str(),
-                capability.operation(),
-            ));
-        }
+    if let IssueCommand::UploadAttachment { .. } = &command
+        && provider_kind != ProviderKind::Redmine
+    {
+        return super::provider_error(ForgejoError::not_supported(
+            provider_kind.as_str(),
+            capability.operation(),
+        ));
     }
     let automatic_workflow = provider_kind == ProviderKind::Redmine
         && project_id.is_none()

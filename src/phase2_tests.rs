@@ -414,7 +414,6 @@ fn phase2_persisted_provider_config_paths_have_been_removed() {
     // the migration they are gone and this regression guard pins the
     // absence. The test body only documents the contract so future
     // contributors do not reintroduce a parallel file layout.
-    assert!(true);
 }
 
 #[test]

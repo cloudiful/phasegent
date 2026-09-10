@@ -278,10 +278,10 @@ fn provision_agent_users(
     Ok(provisioned)
 }
 
-fn find_provisioned<'a>(
-    provisioned: &'a [(Role, RedmineCurrentUser)],
+fn find_provisioned(
+    provisioned: &[(Role, RedmineCurrentUser)],
     role: Role,
-) -> Result<&'a RedmineCurrentUser, ForgejoError> {
+) -> Result<&RedmineCurrentUser, ForgejoError> {
     provisioned
         .iter()
         .find(|(candidate, _)| *candidate == role)
@@ -315,16 +315,18 @@ fn provision_single_role(
     let persisted_key = storage
         .load_credential(role, PROVIDER_REDMINE)
         .map_err(ForgejoError::config)?;
-    if let (Some((user_id, login)), Some(api_key)) = (persisted_user, persisted_key) {
-        if user_id > 0 && !login.trim().is_empty() && !api_key.trim().is_empty() {
-            return Ok(RedmineCurrentUser {
-                id: user_id,
-                login,
-                firstname: String::new(),
-                lastname: String::new(),
-                mail: String::new(),
-            });
-        }
+    if let (Some((user_id, login)), Some(api_key)) = (persisted_user, persisted_key)
+        && user_id > 0
+        && !login.trim().is_empty()
+        && !api_key.trim().is_empty()
+    {
+        return Ok(RedmineCurrentUser {
+            id: user_id,
+            login,
+            firstname: String::new(),
+            lastname: String::new(),
+            mail: String::new(),
+        });
     }
 
     if let Some(existing) = admin.find_user_by_login(metadata.login).map_err(|error| {

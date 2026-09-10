@@ -134,6 +134,7 @@ impl IssueSearchItem {
     /// `issue_number`, while the opaque `external_id` string is retained
     /// verbatim alongside `source`/`project` so consumers can tell the
     /// row is stale and scoped.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_local_parts(
         source: String,
         project: String,

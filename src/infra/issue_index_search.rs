@@ -113,7 +113,7 @@ pub fn lexical_search_scoped_inner(
         }
     };
     let total_count = total_count as usize;
-    return lexical_search_scoped_page_inner(
+    lexical_search_scoped_page_inner(
         conn,
         escaped_query,
         limit,
@@ -121,7 +121,7 @@ pub fn lexical_search_scoped_inner(
         include_body,
         scope,
         total_count,
-    );
+    )
 }
 
 /// Scoped page fetch with explicit filter bindings. Split out so the

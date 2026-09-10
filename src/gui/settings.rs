@@ -49,7 +49,7 @@ pub fn clear_setting_blocking(
         return Err("setting cannot be empty".to_owned());
     }
     let canonical = crate::config_write::canonical_setting_name(trimmed)
-        .ok_or_else(|| bound_message(&format!("unknown setting '{trimmed}'")))?;
+        .ok_or_else(|| bound_message(format!("unknown setting '{trimmed}'")))?;
     if crate::config_write::is_secret_setting(canonical) {
         return Err(format!(
             "secret setting '{canonical}' must use the credential path"

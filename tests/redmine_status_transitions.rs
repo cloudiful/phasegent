@@ -18,7 +18,7 @@ use support::{
 
 const POLICY_SOURCE: &str = "phasegent/canonical-phase-workflow@v1";
 
-fn status_args<'a>(target: Option<&'a str>) -> Vec<&'a str> {
+fn status_args(target: Option<&str>) -> Vec<&str> {
     let mut args = vec![
         "--role",
         "orchestrator",

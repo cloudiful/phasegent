@@ -65,14 +65,60 @@ impl fmt::Display for IssueIndexKey {
     }
 }
 
-#[rustfmt::skip]
-fn validate_identifier(v: &str, f: &str, m: usize) -> Result<(), String> { let t=v.trim(); if t.is_empty(){return Err(format!("{f} must be non-empty"));} if t.chars().count()>m{return Err(format!("{f} must be at most {m} characters"));} if t.chars().any(|c| c.is_control()){return Err(format!("{f} must not contain control characters"));} Ok(()) }
-#[rustfmt::skip]
-fn validate_title(v: &str) -> Result<(), String> { let t=v.trim(); if t.is_empty(){return Err("title must be non-empty".into());} if t.chars().count()>ISSUE_INDEX_MAX_TITLE_CHARS{return Err(format!("title must be at most {} characters",ISSUE_INDEX_MAX_TITLE_CHARS));} if t.len()>ISSUE_INDEX_MAX_TITLE_BYTES{return Err(format!("title must be at most {} bytes",ISSUE_INDEX_MAX_TITLE_BYTES));} if t.chars().any(|c| c.is_control()&&c!=' '&&c!='\t'){return Err("title must not contain control characters".into());} Ok(()) }
-#[rustfmt::skip]
-fn validate_state(v: &str) -> Result<(), String> { let t=v.trim(); if t.is_empty(){return Err("state must be non-empty".into());} if t.chars().count()>ISSUE_INDEX_MAX_STATE_CHARS{return Err(format!("state must be at most {} characters",ISSUE_INDEX_MAX_STATE_CHARS));} if t.chars().any(|c| c.is_control()){return Err("state must not contain control characters".into());} Ok(()) }
-#[rustfmt::skip]
-fn validate_url(v: &str) -> Result<(), String> { let t=v.trim(); if t.is_empty(){return Err("url must be non-empty when present".into());} if t.chars().count()>ISSUE_INDEX_MAX_URL_CHARS{return Err(format!("url must be at most {} characters",ISSUE_INDEX_MAX_URL_CHARS));} if t.chars().any(|c| c.is_control()){return Err("url must not contain control characters".into());} Ok(()) }
+fn validate_identifier(v: &str, f: &str, m: usize) -> Result<(), String> {
+    let t = v.trim();
+    if t.is_empty() {
+        return Err(format!("{f} must be non-empty"));
+    } else if t.chars().count() > m {
+        return Err(format!("{f} must be at most {m} characters"));
+    } else if t.chars().any(|c| c.is_control()) {
+        return Err(format!("{f} must not contain control characters"));
+    }
+    Ok(())
+}
+fn validate_title(v: &str) -> Result<(), String> {
+    let t = v.trim();
+    if t.is_empty() {
+        return Err("title must be non-empty".into());
+    } else if t.chars().count() > ISSUE_INDEX_MAX_TITLE_CHARS {
+        return Err(format!(
+            "title must be at most {ISSUE_INDEX_MAX_TITLE_CHARS} characters"
+        ));
+    } else if t.len() > ISSUE_INDEX_MAX_TITLE_BYTES {
+        return Err(format!(
+            "title must be at most {ISSUE_INDEX_MAX_TITLE_BYTES} bytes"
+        ));
+    } else if t.chars().any(|c| c.is_control() && c != ' ' && c != '\t') {
+        return Err("title must not contain control characters".into());
+    }
+    Ok(())
+}
+fn validate_state(v: &str) -> Result<(), String> {
+    let t = v.trim();
+    if t.is_empty() {
+        return Err("state must be non-empty".into());
+    } else if t.chars().count() > ISSUE_INDEX_MAX_STATE_CHARS {
+        return Err(format!(
+            "state must be at most {ISSUE_INDEX_MAX_STATE_CHARS} characters"
+        ));
+    } else if t.chars().any(|c| c.is_control()) {
+        return Err("state must not contain control characters".into());
+    }
+    Ok(())
+}
+fn validate_url(v: &str) -> Result<(), String> {
+    let t = v.trim();
+    if t.is_empty() {
+        return Err("url must be non-empty when present".into());
+    } else if t.chars().count() > ISSUE_INDEX_MAX_URL_CHARS {
+        return Err(format!(
+            "url must be at most {ISSUE_INDEX_MAX_URL_CHARS} characters"
+        ));
+    } else if t.chars().any(|c| c.is_control()) {
+        return Err("url must not contain control characters".into());
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssueIndexChunk {
@@ -157,10 +203,10 @@ impl IssueIndexDocument {
         if indexed_at <= 0 {
             return Err("indexed_at must be greater than zero".to_owned());
         }
-        if let Some(ts) = provider_updated_at {
-            if ts <= 0 {
-                return Err("provider_updated_at must be greater than zero when present".to_owned());
-            }
+        if let Some(ts) = provider_updated_at
+            && ts <= 0
+        {
+            return Err("provider_updated_at must be greater than zero when present".to_owned());
         }
         if body.len() > ISSUE_INDEX_MAX_DOCUMENT_BYTES {
             return Err(format!(
@@ -201,10 +247,10 @@ impl IssueIndexDocument {
         if self.indexed_at <= 0 {
             return Err("indexed_at must be greater than zero".to_owned());
         }
-        if let Some(ts) = self.provider_updated_at {
-            if ts <= 0 {
-                return Err("provider_updated_at must be greater than zero when present".to_owned());
-            }
+        if let Some(ts) = self.provider_updated_at
+            && ts <= 0
+        {
+            return Err("provider_updated_at must be greater than zero when present".to_owned());
         }
         if self.deleted {
             match self.deleted_at {
@@ -231,8 +277,7 @@ impl IssueIndexDocument {
                 ISSUE_INDEX_MAX_CHUNKS
             ));
         }
-        let mut exp = 0;
-        for chunk in &self.chunks {
+        for (exp, chunk) in self.chunks.iter().enumerate() {
             if chunk.ordinal != exp {
                 return Err(format!(
                     "chunk ordinal {} does not match expected {}",
@@ -240,7 +285,6 @@ impl IssueIndexDocument {
                 ));
             }
             chunk.validate()?;
-            exp += 1;
         }
         let expected = content_hash(&self.title, &self.body, &self.state);
         if self.content_hash != expected {

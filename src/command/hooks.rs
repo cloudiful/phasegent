@@ -46,7 +46,6 @@ pub(crate) fn parse_hooks(args: &[String]) -> Result<Command, String> {
 /// scripts: `hooks run prepare-commit-msg <file> [source]` and
 /// `hooks run commit-msg <file>`. Exact argument counts are validated here
 /// and again at execution time.
-
 fn parse_hooks_run(args: &[String]) -> Result<Command, String> {
     let hook_name = args.get(1).map(String::as_str).ok_or_else(|| {
         "hooks run requires a hook name: prepare-commit-msg or commit-msg".to_owned()

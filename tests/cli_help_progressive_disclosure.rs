@@ -10,7 +10,6 @@
 
 // This shared fixture module serves several integration tests; this test
 // intentionally uses only its binary and stdout helpers.
-#[allow(dead_code)]
 #[path = "support/mod.rs"]
 mod support;
 

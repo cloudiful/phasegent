@@ -80,26 +80,26 @@ fn persist_clear_value(
         "PHASEGENT_API_BASE" => {
             let role = role.expect("role required");
             let mut cleared = false;
-            if let Some(mut cfg) = storage.load_role_config(role)? {
-                if cfg.api_base.is_some() {
-                    cfg.api_base = None;
-                    storage.save_role_config(role, &cfg)?;
-                    cleared = true;
-                }
+            if let Some(mut cfg) = storage.load_role_config(role)?
+                && cfg.api_base.is_some()
+            {
+                cfg.api_base = None;
+                storage.save_role_config(role, &cfg)?;
+                cleared = true;
             }
-            if let Some(mut cfg) = storage.load_redmine_config(role)? {
-                if cfg.api_base.is_some() {
-                    cfg.api_base = None;
-                    storage.save_redmine_config(role, &cfg)?;
-                    cleared = true;
-                }
+            if let Some(mut cfg) = storage.load_redmine_config(role)?
+                && cfg.api_base.is_some()
+            {
+                cfg.api_base = None;
+                storage.save_redmine_config(role, &cfg)?;
+                cleared = true;
             }
-            if let Some(mut cfg) = storage.load_gitlab_config(role)? {
-                if cfg.api_base.is_some() {
-                    cfg.api_base = None;
-                    storage.save_gitlab_config(role, &cfg)?;
-                    cleared = true;
-                }
+            if let Some(mut cfg) = storage.load_gitlab_config(role)?
+                && cfg.api_base.is_some()
+            {
+                cfg.api_base = None;
+                storage.save_gitlab_config(role, &cfg)?;
+                cleared = true;
             }
             Ok(cleared)
         }

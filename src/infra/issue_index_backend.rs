@@ -193,7 +193,7 @@ pub fn resolve_pg_url(storage: &Storage) -> Result<Option<String>, String> {
         }
         return Ok(Some(env));
     }
-    Ok(storage.load_global_setting("PHASEGENT_INDEX_PG_URL")?)
+    storage.load_global_setting("PHASEGENT_INDEX_PG_URL")
 }
 
 /// Helper used by `resolve_index_backend` / `resolve_pg_url` so every
