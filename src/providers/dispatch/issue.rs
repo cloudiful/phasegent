@@ -21,6 +21,12 @@ impl IssueProvider for ForgejoProvider {
     type Error = ForgejoError;
 
     fn capabilities(&self) -> ProviderCapabilities {
+        // Phase 1 parity matrix (issue 257): Forgejo stays native on
+        // issue/comment/repository rows and uniformly not-supported on
+        // attachment / metadata / relation rows. Every `false` here is
+        // the contract surface the CLI/MCP layer relies on to reject
+        // operations with a structured not-supported result before any
+        // network call.
         ProviderCapabilities {
             issue_lifecycle: true,
             comments: true,
@@ -29,6 +35,11 @@ impl IssueProvider for ForgejoProvider {
     }
 
     fn supports(&self, capability: Capability) -> bool {
+        // Forgejo exposes no native attachment / project / version /
+        // status / relation surface, so every GitLab↔Redmine parity
+        // row that is uniformly not-supported stays false here. Issue
+        // 257 Phase 1 only documents and unifies this row; no Phase 1
+        // change touches the Forgejo arm.
         match capability {
             Capability::IssueRead
             | Capability::IssueSearch
@@ -110,6 +121,12 @@ impl IssueProvider for RedmineProvider {
     }
 
     fn supports(&self, capability: Capability) -> bool {
+        // Phase 4 parity (issue 257): every provider's inherent
+        // `supports` already reports `IssueAttachmentUpload = false`,
+        // so the dispatcher arm forwards to the inherent provider
+        // directly. Phase 1 enforced the uniform row here as an extra
+        // guard; Phase 4 sinks the value down so the dispatcher does
+        // not own a separate copy of the matrix.
         RedmineProvider::supports(self, capability)
     }
 
@@ -169,6 +186,12 @@ impl IssueProvider for GitlabProvider {
     }
 
     fn supports(&self, capability: Capability) -> bool {
+        // Phase 1 parity matrix (issue 257): forward directly to the
+        // inherent provider `supports` so any future Phase 2/3 work
+        // (status static catalogue, milestone-backed version reads,
+        // project list) lands in one place. GitLab already reports
+        // `IssueAttachmentUpload = false` so this arm is uniformly
+        // not-supported on that row.
         GitlabProvider::supports(self, capability)
     }
 
@@ -242,6 +265,12 @@ impl IssueProvider for ProviderDispatcher {
     }
 
     fn supports(&self, capability: Capability) -> bool {
+        // Phase 4 parity (issue 257): every per-provider arm already
+        // forwards to its inherent provider's `supports`, and the
+        // uniform `IssueAttachmentUpload = false` row now lives on
+        // the inherent surface (Phase 4 sinking). The dispatcher
+        // stays a thin forwarder so the CLI/MCP guard sees one
+        // matrix, not two.
         match self {
             Self::Forgejo(provider) => provider.supports(capability),
             Self::Redmine(provider) => provider.supports(capability),

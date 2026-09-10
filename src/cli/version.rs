@@ -30,14 +30,14 @@ pub(crate) fn execute_version(
             ));
         }
         Ok(ProviderKind::Redmine) => {}
-        Ok(ProviderKind::Gitlab) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "gitlab",
-                capability.operation(),
-            ));
-        }
+        // Phase 2 parity matrix (issue 257): GitLab now reports
+        // `VersionRead = true` (via `GET /projects/:id/milestones`),
+        // so the version list flows through the dispatcher and
+        // renders the shared `RedmineVersion` shape (milestones map
+        // onto Redmine versions). Forgejo stays not-supported.
+        Ok(ProviderKind::Gitlab) => {}
         // Local returns the empty version catalogue via LocalProvider;
-        // forgejo/gitlab stay not-supported.
+        // forgejo stays not-supported.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }

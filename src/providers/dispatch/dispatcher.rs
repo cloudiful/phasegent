@@ -21,7 +21,6 @@ pub enum ProviderDispatcher {
     /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),
 }
-
 impl ProviderDispatcher {
     pub fn for_role(
         role: crate::policy::Role,

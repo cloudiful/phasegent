@@ -10,8 +10,8 @@
 - 支持 Forgejo（默认）、Redmine 和 GitLab。
 - 支持本地 provider（`--provider local`），离线使用，无需凭证与网络。
 - 支持 `admin`、`orchestrator`、`executor`、`reviewer`、`tester` 角色。
-- 按 provider 支持 issue 搜索、创建、更新、关闭，以及评论、状态、关系、版本
-  和附件操作。
+- 按 provider 支持 issue 搜索、创建、更新、关闭，以及评论、状态、关系、
+  版本、project 列表（参见 [Provider 能力矩阵](#provider-能力矩阵)）。
 - 本地 issue 索引（默认 SQLite，可选 PostgreSQL）。
 - 本地分支与 issue 绑定，以及托管 Git hooks。
 - 支持 stdio / streamable HTTP 的 MCP 服务，复用同一套角色权限。
@@ -102,6 +102,78 @@ phasegent --help issue
 phasegent --help auth
 ```
 
+## Provider 能力矩阵
+
+`phasegent` 面向四个 provider（`forgejo`、`redmine`、`gitlab`、
+`local`）。下表与 `src/policy.rs` 一致；所有 CLI/MCP 守卫与
+dispatcher 分支都对齐这张表。单元格为 `yes` 表示该 provider 已实现
+对应能力，`no` 表示在触及任何网络/文件前返回结构化的
+`not_supported` 错误。
+
+| 能力 | Forgejo | Redmine | GitLab | Local |
+|---|:---:|:---:|:---:|:---:|
+| IssueRead / IssueSearch / IssueCreate / IssueUpdateBody / IssueClose | yes | yes | yes | yes |
+| IssueAttachmentUpload | no | **no** | no | no |
+| CommentCreate / CommentRead / CommentFindMarker | yes | yes | yes | yes |
+| RepoCreate | yes | no | yes | no |
+| ProjectRead | no | yes | yes | yes |
+| ProjectCreate | no | yes | no | yes |
+| IssueStatusRead | no | yes | yes | yes |
+| VersionRead | no | yes | yes | yes |
+| RelationRead / RelationCreate / RelationDelete | no | yes | yes | no |
+
+### IssueAttachmentUpload — 统一 not-supported
+
+所有 provider 都拒绝 `issue upload-attachment`（退出码 1，
+`not_supported`）。该能力保留（orchestrator 或 tester），以便未来
+phase 在不重命名能力的前提下重新启用底层上传路径。证据改走评论
+或外部链接。
+
+### GitLab 读侧对等（Phase 2）
+
+原本对 GitLab 保持 `no` 的三行已用等价读侧补齐：
+
+- `ProjectRead` → `GET /projects`，映射到 `RedmineProject`。
+- `IssueStatusRead` → 静态 `WORKFLOW_LABELS` 目录，映射到
+  `RedmineIssueStatus`（GitLab 没有原生 status 枚举，工作流以项目
+  label 编码）。
+- `VersionRead` → `GET /projects/:id/milestones`，映射到
+  `RedmineVersion`。
+
+GitLab 的 `ProjectCreate` 保持 `no`，因为等价路径是 `repo create`
+（`POST /projects`），且按设计只有这一个入口。Phase 2 加宽了 GitLab
+的 `ApiIssue` DTO，可解码 `milestone`、`due_date`、`weight`、
+`time_stats`、`assignee(s)`、`created_at`、`updated_at`，同时保留旧
+字段为 required，确保旧 fixture 与审计评论消费方继续可用。
+
+### Planning 标志的例外
+
+`--tracker`、`--parent-issue`、`--fixed-version`、`--start-date`、
+`--due-date`、`--estimated-hours`、`--done-ratio` 在 CLI 上接受，但
+按 provider 不同方式转发或拒绝：
+
+- Redmine：每个标志都是原生字段。`--fixed-version` 按精确名称或
+  数字 id 在已配置的 project 内解析。
+- GitLab：`--estimated-hours` 通过原生 `time_estimate` 端点转发；
+  `--tracker` 映射为 `type::bug` / `type::feature` label；其他
+  planning 标志一律拒绝。
+- Forgejo：拒绝所有 planning 标志。
+- Local：为保持解析兼容而全部接受，但不持久化（本地索引只保存
+  title、body、state）。
+
+### 写侧 relation 自动（Phase 3）
+
+在 Redmine 或 GitLab 上使用 `issue create --parent-issue <ID>` 时，
+lifecycle 助手会自动创建一条从新建子 issue 指向父 issue 的
+`relates` 关联，具备幂等性（通过 `list_relations` /
+`list_issue_links` 检测已存在的 `relates` 关联，不会重复创建）。
+助手在失败时（parent id 为 `0`、自指、provider 错误）返回受控的
+warning，不会污染 stdout JSON 或 exit code。AI 工作流不需要单独
+调用 `relation create`；`status set`、`status advance`、`issue close`
+也已挂载同一钩子，但目前传入 `None`（因为读侧 DTO 还未暴露 parent
+linkage），助手返回 `Skipped` 静默。Forgejo 和 Local 没有 relation
+面，助手直接跳过。
+
 ## 桌面应用
 
 普通的 `phasegent <command>` 调用仍为 CLI。显式打开桌面应用：
@@ -156,9 +228,10 @@ phasegent --role executor --provider local issue create \
 issue、评论和状态相关命令在本地后端均可使用（`issue search`、
 `issue get`、`issue create`、`issue update-body`、`issue close`、
 `comment create`、状态 list/next/advance/set，以及 project list/create）。
-仓库与附件操作会返回结构化的 `not_supported` 错误，与当前能力一致。
-返回的 envelope 遵循 Redmine 对齐的形状，因此选择 `--provider local`
-的脚本能获得稳定格式。
+仓库创建、附件上传以及 relation 操作会返回结构化的 `not_supported`
+错误；`version list` 返回空目录，与能力矩阵一致。返回的 envelope
+遵循 Redmine 对齐的形状，因此选择 `--provider local` 的脚本能获得
+稳定格式。
 
 当索引所使用的非空 `PHASEGENT_INDEX_PG_URL` 已设置时选择 PostgreSQL，
 否则使用 SQLite。同一时刻只有一个本地后端处于活动状态（single-active，

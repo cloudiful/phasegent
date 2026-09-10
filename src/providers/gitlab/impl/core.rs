@@ -103,6 +103,10 @@ impl GitlabProvider {
         "projects".to_owned()
     }
 
+    pub(crate) fn milestones_path(&self) -> String {
+        format!("projects/{}/milestones", self.project_id())
+    }
+
     // -- Not-supported helpers ------------------------------------------------
 
     #[allow(dead_code)]
@@ -126,6 +130,26 @@ impl GitlabProvider {
     }
 
     pub(crate) fn supports(&self, capability: Capability) -> bool {
+        // Phase 2 parity matrix (issue 257): the read-side parity
+        // rows that Phase 1 documented as `false` now flip to `true`
+        // because the dispatcher arm forwards to equivalent reads:
+        //
+        // * `ProjectRead` → `GET /projects` (paginated list).
+        // * `IssueStatusRead` → static `WORKFLOW_LABELS` catalogue
+        //   (no native GitLab status enum; the workflow is encoded as
+        //   project labels and the orchestrator surfaces the same
+        //   catalogue the `status set`/`status next` flows already
+        //   consume).
+        // * `VersionRead` → `GET /projects/:id/milestones` (GitLab
+        //   milestones map onto Redmine versions).
+        //
+        // `ProjectCreate` stays `false`: the equivalent is `repo
+        // create` (already wired via `RepoProvider::create_repo`), so
+        // the `project create` CLI command keeps its not-supported
+        // result for GitLab. `IssueAttachmentUpload` stays `false`
+        // (Phase 1 uniform not-supported row). Repository creation
+        // and relation rows stay `true` because GitLab exposes the
+        // native endpoint family.
         match capability {
             Capability::IssueRead
             | Capability::IssueSearch
@@ -140,10 +164,11 @@ impl GitlabProvider {
             Capability::RelationRead | Capability::RelationCreate | Capability::RelationDelete => {
                 true
             }
-            Capability::ProjectRead
-            | Capability::ProjectCreate
-            | Capability::IssueStatusRead
-            | Capability::VersionRead => false,
+            // Phase 2 read-side parity rows.
+            Capability::ProjectRead | Capability::IssueStatusRead | Capability::VersionRead => true,
+            // ProjectCreate stays `false`: the equivalent is `repo
+            // create`, which lives on the RepoProvider surface.
+            Capability::ProjectCreate => false,
         }
     }
 }
@@ -155,7 +180,16 @@ mod tests {
     use crate::providers::config::GitlabConfig;
 
     #[test]
-    fn capabilities_match_phase_4_scope() {
+    fn capabilities_match_phase_2_parity_matrix() {
+        // Phase 2 issue 257 parity matrix: GitLab now matches every
+        // other provider on the read-side parity rows (ProjectRead,
+        // IssueStatusRead, VersionRead) by routing them to equivalent
+        // reads (GET /projects, static WORKFLOW_LABELS, GET
+        // /projects/:id/milestones). ProjectCreate stays false
+        // because the equivalent lives on the `repo create` path
+        // (RepoProvider), not on the `project create` CLI command.
+        // IssueAttachmentUpload stays false (Phase 1 uniform
+        // not-supported row).
         let provider = GitlabProvider::new(
             GitlabConfig::new("https://gitlab.example/api/v4", 42),
             "test-token".to_owned(),
@@ -172,7 +206,13 @@ mod tests {
         assert!(provider.supports(Capability::RelationRead));
         assert!(provider.supports(Capability::RelationCreate));
         assert!(provider.supports(Capability::RelationDelete));
-        assert!(!provider.supports(Capability::IssueStatusRead));
-        assert!(!provider.supports(Capability::ProjectRead));
+        // Phase 1 uniform not-supported row.
+        assert!(!provider.supports(Capability::IssueAttachmentUpload));
+        // Phase 2 read-side parity rows: equivalent reads now report
+        // `true`. ProjectCreate stays `false` (use `repo create`).
+        assert!(provider.supports(Capability::ProjectRead));
+        assert!(provider.supports(Capability::IssueStatusRead));
+        assert!(provider.supports(Capability::VersionRead));
+        assert!(!provider.supports(Capability::ProjectCreate));
     }
 }

@@ -1,7 +1,10 @@
-//! Namespace resolution and private repository creation.
+//! Namespace resolution and private repository creation, plus the
+//! Phase 2 read-only `GET /projects` enumeration that maps onto the
+//! shared `RedmineProject` shape.
 
 use crate::providers::api::{ForgejoError, RepoSummary};
 use crate::providers::gitlab::model::{ApiNamespace, ApiProject, NewProject};
+use crate::providers::redmine::model::RedmineProject;
 
 use super::core::GitlabProvider;
 
@@ -230,20 +233,76 @@ impl GitlabProvider {
         Ok(project.into_summary())
     }
 
-    pub(crate) fn list_projects(
-        &self,
-    ) -> Result<Vec<crate::providers::redmine::model::RedmineProject>, ForgejoError> {
-        // GitLab project enumeration is unsupported; surface the
-        // structured not-supported error so callers do not silently
-        // see a Redmine-shaped result.
-        let _ = self;
-        Err(ForgejoError::not_supported("gitlab", "project list"))
+    /// `GET /projects` paginated across all pages, mapped onto the
+    /// shared `RedmineProject` shape so the existing `project list`
+    /// CLI command (and any downstream planning flow that consumes
+    /// `RedmineProject`) works against GitLab without a separate
+    /// code path.
+    ///
+    /// GitLab returns the project list as a top-level JSON array (no
+    /// wrapper); the shared `paginate` helper walks every page,
+    /// repeats the `x-next-page`/`x-total-pages` heuristics, and stops
+    /// before the safety cap. Each page is mapped onto the shared
+    /// `RedmineProject` shape; the mapping is intentionally
+    /// conservative — `id` and `path` are required, `name` falls back
+    /// to `path` when the API omitted it, and `description` defaults
+    /// to an empty string (GitLab returns `null` when the project has
+    /// no description).
+    pub(crate) fn list_projects(&self) -> Result<Vec<RedmineProject>, ForgejoError> {
+        let path = self.projects_path();
+        let projects: Vec<ApiProject> = self.http.paginate("project list", |http, page| {
+            http.get_page::<ApiProject>(&path, &[("page", page.to_string())], "project list")
+        })?;
+        Ok(projects.into_iter().map(Into::into).collect())
+    }
+}
+
+impl From<ApiProject> for RedmineProject {
+    fn from(project: ApiProject) -> Self {
+        // GitLab's `visibility` maps onto Redmine's `is_public`
+        // boolean: only `public` projects are surfaced as public;
+        // `private`, `internal`, and the (legacy) absent value all
+        // land as not-public so the audit output stays aligned with
+        // the Redmine vocabulary. `id` is required by `RedmineProject`
+        // so the `Default::default()` fallback covers the rare case
+        // where a GitLab instance omits it (older mocked fixtures).
+        let is_public = matches!(project.visibility.as_deref(), Some("public"));
+        RedmineProject {
+            id: project.id.unwrap_or_default(),
+            // Redmine `name` is the human-readable label; GitLab's
+            // `name` is exactly that, with `path` as the URL slug.
+            // Falls back to `path` so the field is never empty.
+            name: project
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| project.path.clone()),
+            // Redmine uses `identifier` as the URL slug; GitLab's
+            // `path` is the equivalent. Falls back to the bare `id`
+            // when `path` is somehow missing (it is a required field
+            // on the API, so this branch is a defensive fallback).
+            identifier: if project.path.trim().is_empty() {
+                format!("{}", project.id.unwrap_or_default())
+            } else {
+                project.path.clone()
+            },
+            description: project.description.unwrap_or_default(),
+            status: None,
+            is_public: Some(is_public),
+            inherit_members: None,
+            created_on: project.created_at,
+            updated_on: project.updated_at,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::providers::gitlab::GitlabProvider;
+    use crate::providers::gitlab::model::{ApiProject, ApiProjectNamespace};
 
     #[test]
     fn resolve_namespace_target_personal_path() {
@@ -273,5 +332,66 @@ mod tests {
     fn resolve_namespace_target_empty_string_errors() {
         let error = GitlabProvider::resolve_namespace_target("", None, 7).unwrap_err();
         assert!(error.to_string().contains("non-empty"));
+    }
+
+    #[test]
+    fn api_project_maps_to_redmine_project_for_public_visibility() {
+        let api = ApiProject {
+            path: "widget".to_owned(),
+            path_with_namespace: Some("acme/widget".to_owned()),
+            web_url: Some("https://gitlab.example/acme/widget".to_owned()),
+            visibility: Some("public".to_owned()),
+            namespace: Some(ApiProjectNamespace {
+                path: Some("acme".to_owned()),
+                full_path: Some("acme".to_owned()),
+            }),
+            http_url_to_repo: Some("https://gitlab.example/acme/widget.git".to_owned()),
+            ssh_url_to_repo: Some("ssh://git@gitlab.example/acme/widget.git".to_owned()),
+            id: Some(42),
+            name: Some("Widget".to_owned()),
+            description: Some("A widget project".to_owned()),
+            created_at: Some("2026-09-01T00:00:00.000Z".to_owned()),
+            updated_at: Some("2026-09-10T00:00:00.000Z".to_owned()),
+            default_branch: Some("main".to_owned()),
+            archived: Some(false),
+        };
+        let project: RedmineProject = api.into();
+        assert_eq!(project.id, 42);
+        assert_eq!(project.name, "Widget");
+        assert_eq!(project.identifier, "widget");
+        assert_eq!(project.description, "A widget project");
+        assert_eq!(project.is_public, Some(true));
+        assert_eq!(
+            project.created_on.as_deref(),
+            Some("2026-09-01T00:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn api_project_maps_private_visibility_as_not_public() {
+        let api = ApiProject {
+            path: "secret".to_owned(),
+            path_with_namespace: Some("acme/secret".to_owned()),
+            web_url: None,
+            visibility: Some("private".to_owned()),
+            namespace: None,
+            http_url_to_repo: None,
+            ssh_url_to_repo: None,
+            id: Some(7),
+            name: None,
+            description: None,
+            created_at: None,
+            updated_at: None,
+            default_branch: None,
+            archived: None,
+        };
+        let project: RedmineProject = api.into();
+        assert_eq!(project.id, 7);
+        // Missing `name` falls back to `path`.
+        assert_eq!(project.name, "secret");
+        assert_eq!(project.identifier, "secret");
+        // Missing `description` defaults to empty string.
+        assert_eq!(project.description, "");
+        assert_eq!(project.is_public, Some(false));
     }
 }

@@ -273,7 +273,9 @@ fn upload_cli_requires_orchestrator_and_validates_args() {
         ]));
         assert_eq!(e, 3, "{role}");
     }
-    // Tester is allowed alongside orchestrator for uploads; permission must not be denied.
+    // Tester passes the role gate; the dispatcher rejects uniformly
+    // (Phase 1 + Phase 4 sink), so the exit is 1 (not_supported) and
+    // never 3 (permission denied).
     let tester_exit = crate::cli::run(strings([
         "--role",
         "tester",
@@ -287,7 +289,7 @@ fn upload_cli_requires_orchestrator_and_validates_args() {
     ]));
     assert_ne!(
         tester_exit, 3,
-        "tester must be allowed for upload-attachment"
+        "tester must clear the role gate on upload-attachment"
     );
     assert_eq!(
         crate::cli::run(strings([

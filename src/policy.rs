@@ -1,3 +1,76 @@
+//! Role and capability policy. The five roles (`admin`, `orchestrator`,
+//! `executor`, `reviewer`, `tester`) gate every CLI/MCP primitive and
+//! the `Capability` enum is the closed set of operations the CLI
+//! exposes to roles and providers.
+//!
+//! # Issue 257 — GitLab/Redmine parity matrix
+//!
+//! This module is the documentation anchor for the GitLab↔Redmine
+//! capability parity tracked in issue 257. The matrix below is the
+//! contract every provider dispatcher and CLI guard relies on; the
+//! underlying provider implementations and dispatcher arm forwards
+//! in `src/providers/dispatch/issue.rs` stay the source of truth for
+//! the live `supports()` result.
+//!
+//! | Capability             | Forgejo | Redmine | GitLab | Local |
+//! |------------------------|:-------:|:-------:|:------:|:-----:|
+//! | IssueRead              |   yes   |   yes   |  yes   |  yes  |
+//! | IssueSearch            |   yes   |   yes   |  yes   |  yes  |
+//! | IssueCreate            |   yes   |   yes   |  yes   |  yes  |
+//! | IssueUpdateBody        |   yes   |   yes   |  yes   |  yes  |
+//! | IssueClose             |   yes   |   yes   |  yes   |  yes  |
+//! | IssueAttachmentUpload  |   no    | **no**  |  no    |  no   |
+//! | CommentCreate          |   yes   |   yes   |  yes   |  yes  |
+//! | CommentRead            |   yes   |   yes   |  yes   |  yes  |
+//! | CommentFindMarker      |   yes   |   yes   |  yes   |  yes  |
+//! | RepoCreate             |   yes   |   no    |  yes   |  no   |
+//! | ProjectRead            |   no    |   yes   |  yes   |  yes  |
+//! | ProjectCreate          |   no    |   yes   |  no    |  yes  |
+//! | IssueStatusRead        |   no    |   yes   |  yes   |  yes  |
+//! | VersionRead            |   no    |   yes   |  yes   |  yes  |
+//! | RelationRead           |   no    |   yes   |  yes   |  no   |
+//! | RelationCreate         |   no    |   yes   |  yes   |  no   |
+//! | RelationDelete         |   no    |   yes   |  yes   |  no   |
+//!
+//! **IssueAttachmentUpload** is the only row where the matrix unifies
+//! the GitLab↔Redmine pair (both sides report not-supported so the
+//! CLI/MCP layer rejects every provider uniformly; evidence moves to
+//! comments / external links). Phase 4 sank the value onto the
+//! inherent provider's `supports` so the dispatcher arm is a thin
+//! forwarder and no longer carries a separate override.
+//!
+//! **Phase 2** filled the read-side parity rows that originally
+//! stayed `no` for GitLab with equivalent reads:
+//!   * `ProjectRead` → `GET /projects` (mapped onto `RedmineProject`).
+//!   * `IssueStatusRead` → static `WORKFLOW_LABELS` catalogue
+//!     (mapped onto `RedmineIssueStatus`; GitLab has no native status
+//!     enum).
+//!   * `VersionRead` → `GET /projects/:id/milestones` (mapped onto
+//!     `RedmineVersion`).
+//!
+//! `ProjectCreate` stays `no` for GitLab because the equivalent lives
+//! on the `repo create` path (`POST /projects` via
+//! `RepoProvider::create_repo`); there is intentionally only one
+//! entry point to that endpoint.
+//!
+//! **Phase 3** added `relates` relation auto on the `issue create`
+//! CLI path when `--parent-issue` is provided (Redmine and GitLab).
+//! The helper is idempotent and reports a bounded warning on failure
+//! without polluting stdout or exit code. Forgejo and Local have no
+//! relation surface, so they stay `no` on every relation row.
+//!
+//! The DTO widening (Phase 2 — `ApiIssue` now decodes `milestone`,
+//! `due_date`, `weight`, `time_stats`, `assignee(s)`, `created_at`,
+//! `updated_at`) keeps the old field shape required so existing
+//! fixtures and audit-comment consumers stay compatible. Planning
+//! flags are accepted as CLI input but accepted differently per
+//! provider: Redmine forwards them as native fields (parent issue,
+//! fixed version, dates, estimated hours, done ratio), GitLab accepts
+//! `--estimated-hours` via the native time_estimate endpoint and maps
+//! `--tracker` to a `type::*` label, Forgejo rejects every planning
+//! flag, and Local accepts them but does not persist (the local index
+//! only stores title/body/state).
+
 use std::fmt;
 use std::str::FromStr;
 
@@ -117,18 +190,22 @@ impl Capability {
             Self::IssueCreate => "Create an issue",
             Self::IssueUpdateBody => "Update an issue body",
             Self::IssueClose => "Close an issue",
-            Self::IssueAttachmentUpload => "Upload an attachment to a Redmine issue",
+            Self::IssueAttachmentUpload => {
+                "Upload an issue attachment (uniformly not-supported; kept for parity and future re-enable)"
+            }
             Self::RepoCreate => "Create a private repository",
             Self::CommentCreate => "Create one authorized comment",
             Self::CommentRead => "Read issue comments",
             Self::CommentFindMarker => "Find a comment by marker",
-            Self::ProjectRead => "List Redmine projects",
-            Self::ProjectCreate => "Create a Redmine project",
-            Self::IssueStatusRead => "List Redmine issue statuses",
-            Self::VersionRead => "List Redmine project versions",
-            Self::RelationRead => "List Redmine or GitLab issue relations",
-            Self::RelationCreate => "Create a Redmine or GitLab issue relation",
-            Self::RelationDelete => "Delete a Redmine or GitLab issue relation",
+            Self::ProjectRead => "List projects (Redmine, GitLab, or local)",
+            Self::ProjectCreate => {
+                "Create a project (Redmine or local; Forgejo/GitLab use `repo create`)"
+            }
+            Self::IssueStatusRead => "List issue statuses (Redmine, GitLab catalogue, or local)",
+            Self::VersionRead => "List project versions (Redmine or GitLab milestones)",
+            Self::RelationRead => "List issue relations (Redmine or GitLab)",
+            Self::RelationCreate => "Create an issue relation (Redmine or GitLab)",
+            Self::RelationDelete => "Delete an issue relation (Redmine or GitLab)",
         }
     }
 

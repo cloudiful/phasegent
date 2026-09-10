@@ -48,9 +48,12 @@ pub(crate) fn execute_status(
             ));
         }
         Ok(ProviderKind::Redmine) => {}
-        // GitLab: list is unsupported (no native status enum), but
-        // `set` maps to a managed workflow label update; the
-        // orchestrator-only guard above already protects it.
+        // GitLab: Phase 2 surfaces the static `WORKFLOW_LABELS`
+        // catalogue through `list_issue_statuses`, so the shared
+        // `status list` command now resolves the same eight
+        // statuses the Redmine catalogue does. `set` still maps to a
+        // managed workflow label update; the orchestrator-only guard
+        // above already protects it.
         Ok(ProviderKind::Gitlab) => {}
         // Local flows through to the LocalProvider status catalogue;
         // forgejo stays not-supported, redmine/gitlab unchanged.
@@ -68,23 +71,19 @@ pub(crate) fn execute_status(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
-    // GitLab exposes `IssueStatusRead` so the dispatch does not bail
-    // out on the capability check; the per-command branch below
-    // decides whether the call is supported. Redmine still uses the
-    // capability surface for the actual work.
-    if !provider.supports(capability) && !matches!(provider, ProviderDispatcher::Gitlab(_)) {
+    // Phase 2 parity matrix (issue 257): the dispatcher now reports
+    // `IssueStatusRead = true` for GitLab because the static
+    // `WORKFLOW_LABELS` catalogue fills the parity row. Redmine and
+    // Local remain native; Forgejo stays not-supported via the
+    // explicit reject above.
+    if !provider.supports(capability) {
         return super::provider_error(ForgejoError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));
     }
     match command {
-        StatusCommand::List => match provider {
-            ProviderDispatcher::Gitlab(_) => {
-                super::provider_error(ForgejoError::not_supported("gitlab", "issue status list"))
-            }
-            _ => super::print_result(provider.list_issue_statuses()),
-        },
+        StatusCommand::List => super::print_result(provider.list_issue_statuses()),
         // `next` and `advance` run the canonical policy against the
         // installation catalogue (Redmine) or the static local catalogue.
         StatusCommand::Next { number } => match provider {
@@ -97,10 +96,30 @@ pub(crate) fn execute_status(
                 "issue status next",
             )),
         },
-        StatusCommand::Advance { number, status } => match provider {
+        StatusCommand::Advance { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
                 let result = redmine.advance_issue_status(number, &status);
                 if result.is_ok() {
+                    // Phase 3 write-side relation auto (issue 257):
+                    // the trigger point for the parent-child
+                    // `relates` auto-link is the successful status
+                    // transition. The shared issue DTO is narrow
+                    // and does not surface the parent linkage
+                    // without a server fetch, so the call site
+                    // passes `None` today; the helper stays
+                    // idempotent and silent. The create path
+                    // (cli/issue.rs) fires the helper with the
+                    // resolved `parent_issue_id` and is the only
+                    // branch that actually creates a relation in
+                    // Phase 3. See Remaining in the audit note
+                    // for the deferred lookup shape.
+                    super::report_local_warnings(
+                        "status advance",
+                        crate::lifecycle_auto::auto_create_parent_child_relation(
+                            &provider, number, None,
+                        )
+                        .warning(),
+                    );
                     super::report_local_warnings(
                         "status advance",
                         crate::lifecycle_auto::auto_transition_timer(
@@ -122,10 +141,23 @@ pub(crate) fn execute_status(
                 "issue status advance",
             )),
         },
-        StatusCommand::Set { number, status } => match provider {
+        StatusCommand::Set { number, status } => match &provider {
             ProviderDispatcher::Gitlab(gitlab) => {
                 let result = gitlab.set_workflow_status(number, &status);
                 if result.is_ok() {
+                    // See the `Advance` arm above for the
+                    // Phase 3 relation-auto wiring rationale:
+                    // the trigger lives at status transitions
+                    // but the parent linkage is only resolvable
+                    // through the create arm today. The helper
+                    // stays silent here.
+                    super::report_local_warnings(
+                        "status set",
+                        crate::lifecycle_auto::auto_create_parent_child_relation(
+                            &provider, number, None,
+                        )
+                        .warning(),
+                    );
                     super::report_local_warnings(
                         "status set",
                         crate::lifecycle_auto::auto_transition_timer(
@@ -149,6 +181,15 @@ pub(crate) fn execute_status(
                 };
                 let result = redmine.set_issue_status(number, target.id);
                 if result.is_ok() {
+                    // See the `Advance` arm above for the
+                    // Phase 3 relation-auto wiring rationale.
+                    super::report_local_warnings(
+                        "status set",
+                        crate::lifecycle_auto::auto_create_parent_child_relation(
+                            &provider, number, None,
+                        )
+                        .warning(),
+                    );
                     super::report_local_warnings(
                         "status set",
                         crate::lifecycle_auto::auto_transition_timer(
@@ -260,6 +301,42 @@ mod tests {
         assert_eq!(
             set_exit, 0,
             "status set must route through the ProviderDispatcher::Local arm"
+        );
+
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn local_status_advance_fires_relation_auto_silently() {
+        // Phase 3 relation auto: the helper is invoked at every
+        // status set/advance success path. The Local provider has
+        // no relation surface so the helper returns
+        // `AutoRelationOutcome::Skipped` with no warning; this
+        // test pins that contract by routing the same `Advance`
+        // arm through the LocalProvider and asserting the
+        // success exit is unchanged (the helper never poisons
+        // stdout or the exit code).
+        let _lock = lock_workflow_tests();
+        let (dir, db) = tmp_db("rel-auto-silent");
+        let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        let provider = LocalProvider::open().unwrap();
+        let number = provider.create_issue("Phase3", "body").unwrap().number;
+        let exit = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Advance {
+                number,
+                status: "In Progress".to_owned(),
+            },
+        );
+        assert_eq!(
+            exit, 0,
+            "status advance must remain successful even when relation auto is a silent skip"
         );
 
         drop(_guard);

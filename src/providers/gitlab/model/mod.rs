@@ -13,8 +13,8 @@ pub mod labels;
 pub mod relations;
 pub mod time;
 pub(crate) use dto::{
-    ApiError, ApiIssue, ApiLabel, ApiNamespace, ApiNote, ApiProject, ApiProjectNamespace, NewIssue,
-    NewLabel, NewNote, NewProject, UpdateIssue,
+    ApiError, ApiIssue, ApiIssueAssignee, ApiLabel, ApiMilestone, ApiNamespace, ApiNote,
+    ApiProject, ApiProjectNamespace, NewIssue, NewLabel, NewNote, NewProject, UpdateIssue,
 };
 pub(crate) use duration::format_gitlab_duration;
 pub(crate) use labels::{

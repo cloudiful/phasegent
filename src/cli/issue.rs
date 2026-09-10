@@ -77,9 +77,15 @@ pub(crate) fn execute_issue(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
-    // Redmine-only upload-attachment fast path: reject non-Redmine before
-    // any file, network, or credential access so Forgejo/GitLab return the
-    // structured not-supported result without trying to upload.
+    // Uniform upload-attachment fast path (Phase 1 parity + Phase 4
+    // sink): every provider's inherent `supports` reports
+    // `IssueAttachmentUpload = false`, so we reject non-Redmine early
+    // — before any file, network, or credential access — with the
+    // structured not-supported result. The Redmine arm still falls
+    // through to `provider.supports(...)` below and short-circuits
+    // there, but the early branch keeps the message tight and avoids
+    // resolving `provider_for` for a command we already know to
+    // reject.
     if let IssueCommand::UploadAttachment { .. } = &command
         && provider_kind != ProviderKind::Redmine
     {
@@ -183,6 +189,28 @@ pub(crate) fn execute_issue(
             tracker,
             planning,
         } => {
+            // Phase 3 write-side relation auto (issue 257): the
+            // auto-relation fires ONLY on the parent-child split
+            // path, so we resolve the planning up front here, keep
+            // the freshly validated `parent_issue_id` for the hook
+            // below, and pass the original `PlanningOptions` to
+            // `planning::create_issue` so the create payload stays
+            // byte-identical with the pre-Phase-3 path. The cost
+            // of resolving twice (once here, once inside
+            // `planning::create_issue`) is one extra
+            // GET /versions.json only when `--fixed-version` is
+            // supplied alongside `--parent-issue`, which is the
+            // rare Phase 3 combination; we accept that so the
+            // allowlist stays inside `src/cli/issue.rs` /
+            // `src/lifecycle_auto.rs` / relation dispatch +
+            // tests. AI agents never run `relation create` by
+            // hand for the parent-child split.
+            let resolved_planning =
+                match crate::providers::redmine::planning::resolve_planning(&provider, &planning) {
+                    Ok(resolved) => resolved,
+                    Err(error) => return super::provider_error(error),
+                };
+            let parent_issue_id = resolved_planning.parent_issue_id;
             match crate::providers::redmine::planning::create_issue(
                 &provider,
                 &title,
@@ -205,6 +233,24 @@ pub(crate) fn execute_issue(
                             .warning(),
                         );
                     }
+                    // Phase 3 relation auto: fire the helper
+                    // after a successful create when the parent
+                    // linkage was supplied. The helper is
+                    // idempotent (skips on Forgejo/Local, skips
+                    // silently when parent linkage is absent),
+                    // so callers that never use `--parent-issue`
+                    // stay unaffected. Any failure degrades to a
+                    // bounded Warning on stderr so the JSON
+                    // contract on stdout is preserved.
+                    super::report_local_warnings(
+                        "issue create",
+                        crate::lifecycle_auto::auto_create_parent_child_relation(
+                            &provider,
+                            summary.number,
+                            parent_issue_id,
+                        )
+                        .warning(),
+                    );
                     issue_search::warm_single_summary(&provider, &summary, "issue create");
                     super::print_json(&summary)
                 }
@@ -257,6 +303,23 @@ pub(crate) fn execute_issue(
                 super::report_local_warnings(
                     "issue close",
                     crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind).warning(),
+                );
+                // Phase 3 relation auto: fire the helper after a
+                // successful close. The shared issue DTO does not
+                // surface the parent linkage without a server
+                // fetch so the call site passes `None`; the
+                // helper is silent on the common path. The create
+                // arm fires the helper with the resolved
+                // `parent_issue_id` and is the only branch that
+                // actually creates a relation in Phase 3. See
+                // Remaining in the audit note for the deferred
+                // lookup shape.
+                super::report_local_warnings(
+                    "issue close",
+                    crate::lifecycle_auto::auto_create_parent_child_relation(
+                        &provider, number, None,
+                    )
+                    .warning(),
                 );
                 // Close upserts the returned closed document.
                 issue_search::warm_single_summary(&provider, &summary, "issue close");

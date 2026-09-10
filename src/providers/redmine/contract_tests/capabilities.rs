@@ -16,8 +16,8 @@ use crate::infra::storage::{Storage, TimerRun};
 use crate::policy::{Capability, Role};
 use crate::providers::redmine::model::{RedmineRelationType, RedmineTimeEntryActivity};
 use crate::providers::{
-    ProviderDispatcher, ProviderKind, RedmineConfig, RedmineIssueStatus, RedmineMetadataProvider,
-    RedmineProvider,
+    IssueProvider, ProviderDispatcher, ProviderKind, RedmineConfig, RedmineIssueStatus,
+    RedmineMetadataProvider, RedmineProvider,
 };
 use std::str::FromStr;
 use std::{fs, time};
@@ -330,14 +330,31 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
 }
 
 #[test]
-fn issue_attachment_upload_is_redmine_orchestrator_only() {
+fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
+    // Phase 4 parity matrix (issue 257): the uniform
+    // `IssueAttachmentUpload = false` row now lives on every inherent
+    // provider's `supports`, including Redmine. The dispatcher arm is
+    // a thin forwarder and no longer carries a separate guard. The
+    // capability stays in the matrix so a future phase may re-enable
+    // the underlying upload path, and the role gate remains
+    // (orchestrator / tester). The underlying `upload_attachment`
+    // inherent method stays compiled for the legacy
+    // `contract_tests/attachments.rs` wire-shape tests; no CLI/MCP
+    // path reaches it because every entry point is gated by
+    // `provider.supports(...)`.
+
+    // Role gates stay.
     assert!(Role::Orchestrator.allows(Capability::IssueAttachmentUpload));
     assert!(Role::Tester.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Admin.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Executor.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Reviewer.allows(Capability::IssueAttachmentUpload));
+
+    // Inherent provider surfaces (Phase 4 sinking): every provider
+    // reports `false` so the dispatcher arm does not need a separate
+    // override.
     let redmine = provider("http://redmine.test".to_owned());
-    assert!(redmine.supports(Capability::IssueAttachmentUpload));
+    assert!(!redmine.supports(Capability::IssueAttachmentUpload));
     let forgejo = crate::providers::forgejo::ForgejoProvider::new(
         crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
         "token".to_owned(),
@@ -355,53 +372,69 @@ fn issue_attachment_upload_is_redmine_orchestrator_only() {
     )
     .unwrap();
     assert!(!gitlab.supports(Capability::IssueAttachmentUpload));
-    for role in ["admin", "executor", "reviewer"] {
-        assert_eq!(
-            crate::cli::run(strings([
-                "--role",
-                role,
-                "--provider",
-                "redmine",
-                "issue",
-                "upload-attachment",
-                "5",
-                "--path",
-                "/tmp/any.txt"
-            ])),
-            3
-        );
-    }
-    // Tester is allowed (Redmine-only) so permission must not be denied.
-    let tester_exit = crate::cli::run(strings([
-        "--role",
-        "tester",
-        "--provider",
-        "redmine",
-        "issue",
-        "upload-attachment",
-        "5",
-        "--path",
-        "/tmp/any.txt",
-    ]));
-    assert_ne!(
-        tester_exit, 3,
-        "tester must be allowed to attempt upload (Redmine-only), got permission denied"
+
+    // Dispatcher surface: thin forwarder; the uniform row is enforced
+    // by the inherent providers.
+    let redmine_dispatcher =
+        ProviderDispatcher::Redmine(provider("http://redmine.test".to_owned()));
+    assert!(!redmine_dispatcher.supports(Capability::IssueAttachmentUpload));
+    let forgejo_provider = crate::providers::forgejo::ForgejoProvider::new(
+        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
+        "token".to_owned(),
+    )
+    .unwrap();
+    let forgejo_dispatcher = ProviderDispatcher::Forgejo(forgejo_provider);
+    assert!(!forgejo_dispatcher.supports(Capability::IssueAttachmentUpload));
+    let gitlab_dispatcher = ProviderDispatcher::Gitlab(
+        crate::providers::gitlab::GitlabProvider::new(
+            crate::providers::config::GitlabConfig::new("https://gitlab.example/api/v4", 42),
+            "token".to_owned(),
+        )
+        .unwrap(),
     );
-    // Non-Redmine remains not-supported even for tester.
-    assert_eq!(
-        crate::cli::run(strings([
+    assert!(!gitlab_dispatcher.supports(Capability::IssueAttachmentUpload));
+
+    // Role gate still fires before the dispatcher guard.
+    for role in ["admin", "executor", "reviewer"] {
+        for provider in ["redmine", "forgejo", "gitlab"] {
+            assert_eq!(
+                crate::cli::run(strings([
+                    "--role",
+                    role,
+                    "--provider",
+                    provider,
+                    "issue",
+                    "upload-attachment",
+                    "5",
+                    "--path",
+                    "/tmp/any.txt"
+                ])),
+                3,
+                "role {role} on {provider} must hit the permission gate first"
+            );
+        }
+    }
+
+    // Every provider reports not-supported (exit 1). Tester is
+    // allowed by the role gate but the inherent provider rejects
+    // uniformly.
+    for provider in ["redmine", "forgejo", "gitlab"] {
+        let exit = crate::cli::run(strings([
             "--role",
             "tester",
             "--provider",
-            "forgejo",
+            provider,
             "issue",
             "upload-attachment",
             "5",
             "--path",
-            "/tmp/any.txt"
-        ])),
-        1
-    );
+            "/tmp/any.txt",
+        ]));
+        assert_eq!(
+            exit, 1,
+            "tester upload-attachment on {provider} must be not_supported (Phase 4 sinking)"
+        );
+    }
 }
 
 #[test]

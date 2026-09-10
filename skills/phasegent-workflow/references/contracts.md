@@ -16,21 +16,21 @@ prompt or `--stdin`).
 | `issue create` | IssueCreate | orchestrator only | planning flags Redmine/GitLab; Forgejo rejects every planning flag |
 | `issue update-body` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
 | `issue close` | IssueClose | orchestrator only | — |
-| `issue upload-attachment` | IssueAttachmentUpload | orchestrator, tester | Redmine-only; file ≤25 MiB; upload token never printed |
+| `issue upload-attachment` | IssueAttachmentUpload | orchestrator, tester | Uniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects with `not_supported` (exit 1) before any file, network, or credential access |
 | `issue bind` / `issue unbind` / `issue status` | IssueRead | orchestrator, executor, reviewer, tester | local branch–issue binding; no provider/network |
 | `comment create` | CommentCreate | orchestrator, executor, reviewer, tester | `--authorized` required unless orchestrator (CLI) |
 | `comment get` | CommentRead | orchestrator, executor, reviewer, tester | — |
 | `comment find-marker` | CommentFindMarker | orchestrator, executor, reviewer, tester | marker matched verbatim |
-| `project list` | ProjectRead | orchestrator, admin, executor, reviewer | Redmine-only; does not need `--project-id` |
-| `project create` | ProjectCreate | orchestrator, admin | Redmine-only; requires `--confirm` |
-| `status list` | IssueStatusRead | orchestrator, admin, executor, reviewer | Redmine and local; Forgejo/GitLab return not-supported |
+| `project list` | ProjectRead | orchestrator, admin, executor, reviewer | Redmine, GitLab, and local; Forgejo rejects; does not need `--project-id` |
+| `project create` | ProjectCreate | orchestrator, admin | Redmine and local; GitLab/Forgejo use `repo create` (single entry point to `POST /projects`); requires `--confirm` |
+| `status list` | IssueStatusRead | orchestrator, admin, executor, reviewer | Redmine, GitLab (static `WORKFLOW_LABELS` catalogue), and local; Forgejo returns not-supported |
 | `status next` | IssueStatusRead | orchestrator, admin, executor, reviewer | read-only; current + policy-allowed next + recovery command; Redmine and local |
 | `status set` | role == orchestrator | orchestrator only | validated name/id; Redmine, GitLab (workflow label), and local |
 | `status advance` | role == orchestrator | orchestrator only | policy preflight; idempotent no-op; Redmine and local |
-| `version list` | VersionRead | orchestrator, admin, executor, reviewer | Redmine-only; never auto-bootstraps |
-| `relation list` | RelationRead | orchestrator, executor, reviewer | Redmine/GitLab; Forgejo rejects |
-| `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo rejects |
-| `relation delete` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo rejects |
+| `version list` | VersionRead | orchestrator, admin, executor, reviewer | Redmine (native) and GitLab (GET /projects/:id/milestones); local returns an empty catalogue (no versions table); Forgejo returns not-supported; never auto-bootstraps |
+| `relation list` | RelationRead | orchestrator, executor, reviewer | Redmine/GitLab; Forgejo and local reject (no relation surface) |
+| `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject; Phase 3 lifecycle helper auto-creates a `relates` link on `issue create --parent-issue <ID>` (idempotent, bounded warning on failure) |
+| `relation delete` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject |
 | `timer start/finish/list/get/recover` | role == orchestrator | orchestrator only | local ledger; finish/recover project to Redmine/GitLab (Forgejo rejects); list/get never reach a provider |
 | `worktree acquire/release/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; prune only clean + expired + retained, never deletes a branch or a dirty worktree |
 | `worktree status/list` | command-level read gate | orchestrator, executor, reviewer | read-only lease inspection; tester denied |

@@ -12,8 +12,9 @@ comments, and workflow automation.
 - Local provider (`--provider local`) that runs offline with no credential
   and no network.
 - Roles for `admin`, `orchestrator`, `executor`, `reviewer`, and `tester`.
-- Issue search, creation, updates, closing, comments, statuses, relations,
-  versions, and attachments where supported by the provider.
+- Issue search, creation, updates, closing, comments, statuses,
+  relations, versions, and project listing where supported by the
+  provider (see the [Provider capability matrix](#provider-capability-matrix)).
 - Local issue index (SQLite by default, optional PostgreSQL).
 - Local branch-to-issue context and managed Git hooks.
 - MCP server over stdio or streamable HTTP with the same role policy.
@@ -106,6 +107,85 @@ phasegent --help issue
 phasegent --help auth
 ```
 
+## Provider capability matrix
+
+`phasegent` targets four providers (`forgejo`, `redmine`, `gitlab`,
+`local`). The matrix below mirrors `src/policy.rs`; every CLI/MCP guard
+and dispatcher arm aligns with it. Cells read `yes` (capability is
+implemented for that provider) or `no` (structured `not_supported` error
+before any network/file access).
+
+| Capability | Forgejo | Redmine | GitLab | Local |
+|---|:---:|:---:|:---:|:---:|
+| IssueRead / IssueSearch / IssueCreate / IssueUpdateBody / IssueClose | yes | yes | yes | yes |
+| IssueAttachmentUpload | no | **no** | no | no |
+| CommentCreate / CommentRead / CommentFindMarker | yes | yes | yes | yes |
+| RepoCreate | yes | no | yes | no |
+| ProjectRead | no | yes | yes | yes |
+| ProjectCreate | no | yes | no | yes |
+| IssueStatusRead | no | yes | yes | yes |
+| VersionRead | no | yes | yes | yes |
+| RelationRead / RelationCreate / RelationDelete | no | yes | yes | no |
+
+### IssueAttachmentUpload — uniformly not-supported
+
+Every provider rejects `issue upload-attachment` (exit 1,
+`not_supported`). The capability stays reserved (orchestrator or
+tester) so a future phase may re-enable the underlying upload path
+without a capability rename. Evidence moves to comments or external
+links.
+
+### Read-side parity for GitLab (Phase 2)
+
+Three rows that originally stayed `no` for GitLab are now backed by
+equivalent reads:
+
+- `ProjectRead` → `GET /projects` mapped onto `RedmineProject`.
+- `IssueStatusRead` → static `WORKFLOW_LABELS` catalogue mapped onto
+  `RedmineIssueStatus` (GitLab has no native status enum; the workflow
+  is encoded as project labels).
+- `VersionRead` → `GET /projects/:id/milestones` mapped onto
+  `RedmineVersion`.
+
+`ProjectCreate` stays `no` for GitLab because the equivalent lives on
+the `repo create` path (`POST /projects`); there is intentionally one
+entry point to that endpoint. The GitLab `ApiIssue` DTO widened in
+Phase 2 to decode `milestone`, `due_date`, `weight`, `time_stats`,
+`assignee(s)`, `created_at`, and `updated_at` while keeping the legacy
+field shape required so older fixtures and audit-comment consumers
+stay compatible.
+
+### Planning-flag exceptions
+
+`--tracker`, `--parent-issue`, `--fixed-version`, `--start-date`,
+`--due-date`, `--estimated-hours`, and `--done-ratio` are accepted as
+CLI input but forwarded or rejected per provider:
+
+- Redmine: every flag is a native field. `--fixed-version` resolves
+  by exact version name or numeric id within the configured project.
+- GitLab: `--estimated-hours` is forwarded through the native
+  `time_estimate` endpoint; `--tracker` maps to a `type::bug` /
+  `type::feature` label; every other planning flag is rejected.
+- Forgejo: rejects every planning flag.
+- Local: accepts every flag for parser compatibility but does not
+  persist any of them (the local index only stores title, body, and
+  state).
+
+### Write-side relation auto (Phase 3)
+
+When `issue create --parent-issue <ID>` is used on Redmine or GitLab,
+a `relates` link from the new child to the parent is created
+automatically by the lifecycle helper, with idempotency (a pre-existing
+`relates` link to the same parent is detected via `list_relations` /
+`list_issue_links` and does not produce a duplicate). The helper
+returns a bounded warning on failure (parent id `0`, self-link, or
+provider error) and never pollutes stdout JSON or exit code. AI
+workflows do not need to call `relation create` separately; `status
+set`, `status advance`, and `issue close` also have the hook wired,
+but they pass `None` today because the read-side DTO does not yet
+expose the parent linkage — the helper returns `Skipped` silently.
+Forgejo and Local have no relation surface, so they skip the helper.
+
 ## Desktop app
 
 Normal `phasegent <command>` invocations stay in the CLI. Open the desktop
@@ -165,10 +245,11 @@ phasegent --role executor --provider local issue create \
 The same issue, comment, and status commands work against the local backend
 (`issue search`, `issue get`, `issue create`, `issue update-body`,
 `issue close`, `comment create`, status list/next/advance/set, and project
-list/create). Repository and attachment operations surface a structured
-`not_supported` error, matching the current surface. Envelopes follow the
-Redmine-aligned shape so scripts that select `--provider local` keep a
-stable format.
+list/create). Repository creation, attachment upload, and relation
+operations surface a structured `not_supported` error; `version list`
+returns an empty catalogue, matching the parity matrix. Envelopes follow
+the Redmine-aligned shape so scripts that select `--provider local` keep
+a stable format.
 
 PostgreSQL is selected when the same non-empty `PHASEGENT_INDEX_PG_URL` used
 by the index is set; otherwise SQLite is used. Only one local backend is

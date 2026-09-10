@@ -30,14 +30,30 @@ pub(crate) fn execute_project(
             ));
         }
         Ok(ProviderKind::Redmine) => {}
+        // Phase 2 parity matrix (issue 257): GitLab now reports
+        // `ProjectRead = true` (via `GET /projects`), so the
+        // `ProjectCommand::List` arm flows through the dispatcher and
+        // renders the shared `RedmineProject` shape. `ProjectCreate`
+        // still reports `false` for GitLab — the equivalent lives on
+        // the `repo create` path (`POST /projects` via
+        // `RepoProvider::create_repo`) and there is intentionally only
+        // one entry point to that endpoint. The dispatcher guard
+        // below rejects the `ProjectCommand::Create` arm with a
+        // structured not-supported result.
         Ok(ProviderKind::Gitlab) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "gitlab",
-                capability.operation(),
-            ));
+            if matches!(command, ProjectCommand::List) {
+                // ProjectRead is supported; fall through to the
+                // dispatcher call below so the request is dispatched
+                // to `GitlabProvider::list_projects`.
+            } else {
+                return super::provider_error(ForgejoError::not_supported(
+                    "gitlab",
+                    capability.operation(),
+                ));
+            }
         }
         // Local lists/creates via LocalProvider; forgejo and gitlab
-        // stay not-supported, redmine unchanged.
+        // stay not-supported on ProjectCreate, redmine unchanged.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }

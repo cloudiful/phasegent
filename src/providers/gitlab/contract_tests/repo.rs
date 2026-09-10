@@ -5,11 +5,25 @@ use crate::providers::gitlab::GitlabProvider;
 use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 
 #[test]
-fn list_projects_returns_not_supported_error() {
-    let error = zero_request(|provider| provider.list_projects());
-    let error = error.unwrap_err();
-    assert_eq!(error.json()["kind"], "not_supported");
-    assert_eq!(error.json()["operation"], "project list");
+fn list_projects_hits_projects_endpoint_and_maps_to_redmine_project() {
+    // Phase 2 (issue 257): `list_projects` is no longer a
+    // not-supported stub. It hits `GET /projects`, walks the
+    // pagination headers, and maps the GitLab `ApiProject` payload
+    // onto the shared `RedmineProject` shape.
+    let (result, request) = one(
+        MockResponse::ok(format!(
+            "[{}]",
+            project_payload(42, "widget", "acme", "private")
+        )),
+        |provider| provider.list_projects(),
+    );
+    let projects = result.unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, 42);
+    assert_eq!(projects[0].name, "widget");
+    assert_eq!(projects[0].identifier, "widget");
+    assert_eq!(projects[0].is_public, Some(false));
+    assert_request(&request, "GET", "/api/v4/projects?", None);
 }
 
 #[test]
