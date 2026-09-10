@@ -49,4 +49,5 @@ pub(crate) const STATUS_TRANSITION_SEED: &[(&str, &str)] = &[
 ];
 
 /// Expected seed row count (16 edges; Closed/Cancelled are terminal).
+#[allow(dead_code)]
 pub(crate) const STATUS_TRANSITION_SEED_LEN: usize = 16;

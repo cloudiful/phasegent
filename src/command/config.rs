@@ -146,7 +146,6 @@ fn parse_config_clear(args: &[String]) -> Result<Command, String> {
 /// machine-wide default through `get`/`set`/`clear`. None of these
 /// commands require `--role` because the global default is, by
 /// definition, machine-wide rather than role-scoped.
-
 fn parse_config_provider(args: &[String]) -> Result<Command, String> {
     if args
         .first()

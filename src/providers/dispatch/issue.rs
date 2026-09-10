@@ -10,12 +10,12 @@ use crate::providers::api::{
 use crate::providers::forgejo::ForgejoConfig;
 #[allow(unused_imports)]
 use crate::providers::forgejo::ForgejoProvider;
+use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
-use crate::providers::local::LocalProvider;
 
 impl IssueProvider for ForgejoProvider {
     type Error = ForgejoError;
@@ -358,11 +358,17 @@ impl IssueProvider for LocalProvider {
         LocalProvider::get_issue(self, number)
     }
 
-    fn search_issues(&self, options: &IssueSearchOptions) -> Result<IssueSearchResult, Self::Error> {
+    fn search_issues(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<IssueSearchResult, Self::Error> {
         LocalProvider::search_issues(self, options)
     }
 
-    fn search_issue_page(&self, options: &IssueSearchOptions) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
+    fn search_issue_page(
+        &self,
+        options: &IssueSearchOptions,
+    ) -> Result<crate::providers::api::IssueSummaryPage, Self::Error> {
         LocalProvider::search_issue_page(self, options)
     }
 
@@ -378,7 +384,12 @@ impl IssueProvider for LocalProvider {
         LocalProvider::close_issue(self, number)
     }
 
-    fn create_comment(&self, issue: u64, body: &str, marker: &str) -> Result<CommentOutput, Self::Error> {
+    fn create_comment(
+        &self,
+        issue: u64,
+        body: &str,
+        marker: &str,
+    ) -> Result<CommentOutput, Self::Error> {
         LocalProvider::create_comment(self, issue, body, marker)
     }
 

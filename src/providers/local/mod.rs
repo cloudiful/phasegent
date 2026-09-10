@@ -9,14 +9,14 @@
 
 pub mod model;
 
-#[path = "impl/issues.rs"]
-mod issues;
 #[path = "impl/comments.rs"]
 mod comments;
-#[path = "impl/status.rs"]
-mod status_impl;
+#[path = "impl/issues.rs"]
+mod issues;
 #[path = "impl/projects.rs"]
 mod projects_impl;
+#[path = "impl/status.rs"]
+mod status_impl;
 
 #[cfg(test)]
 mod contract_tests;
@@ -34,22 +34,23 @@ pub struct LocalProvider {
 
 impl std::fmt::Debug for LocalProvider {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("LocalProvider").finish_non_exhaustive()
+        formatter
+            .debug_struct("LocalProvider")
+            .finish_non_exhaustive()
     }
 }
 
 impl LocalProvider {
     pub fn open() -> Result<Self, ForgejoError> {
-        let store =
-            crate::infra::local_store::open_local().map_err(ForgejoError::config)?;
+        let store = crate::infra::local_store::open_local().map_err(ForgejoError::config)?;
         Ok(Self {
             conn: Mutex::new(store.connection),
         })
     }
 
+    #[allow(dead_code)]
     pub fn open_at(path: &Path) -> Result<Self, ForgejoError> {
-        let store =
-            crate::infra::local_store::open_local_at(path).map_err(ForgejoError::config)?;
+        let store = crate::infra::local_store::open_local_at(path).map_err(ForgejoError::config)?;
         Ok(Self {
             conn: Mutex::new(store.connection),
         })
@@ -103,10 +104,12 @@ impl LocalProvider {
 /// so the PostgreSQL backend can add CRUD without renaming. `open`
 /// intentionally fails with a structured not-supported error.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PgLocalProvider {
     _private: (),
 }
 
+#[allow(dead_code)]
 impl PgLocalProvider {
     pub fn open(_url: &str) -> Result<Self, ForgejoError> {
         // PG reserved by design: implement PostgresLocalStore-backed

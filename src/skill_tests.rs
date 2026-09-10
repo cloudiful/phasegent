@@ -18,7 +18,10 @@ fn skill_root() -> PathBuf {
 fn read_skill(relative: &str) -> String {
     let path = skill_root().join(relative);
     fs::read_to_string(&path).unwrap_or_else(|err| {
-        panic!("expected skill file {} to be readable: {err}", path.display())
+        panic!(
+            "expected skill file {} to be readable: {err}",
+            path.display()
+        )
     })
 }
 
@@ -55,10 +58,7 @@ fn verdict_vocabulary_matches_reviewer_contract() {
         skill.contains("`PASS` · `FAIL` · `REQUEST_CHANGES` · `BLOCKED` · `AUDIT_FAILED`"),
         "SKILL.md must delimit the five-token reviewer VERDICT vocabulary"
     );
-    let normalised: String = skill
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let normalised: String = skill.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         normalised.contains(
             "Use exactly one of these five case-sensitive tokens on the note's `VERDICT:` line"
@@ -123,11 +123,17 @@ fn role_table_agrees_with_policy() {
         }) {
             continue;
         }
-        let capability = cells.get(1).map(|cell| cell.trim().to_owned()).unwrap_or_default();
+        let capability = cells
+            .get(1)
+            .map(|cell| cell.trim().to_owned())
+            .unwrap_or_default();
         if capability.is_empty() {
             continue;
         }
-        let operation = cells.get(operation_col).map(|cell| cell.trim().to_owned()).unwrap_or_default();
+        let operation = cells
+            .get(operation_col)
+            .map(|cell| cell.trim().to_owned())
+            .unwrap_or_default();
         table.insert(
             capability.clone(),
             (
@@ -172,12 +178,36 @@ fn role_table_agrees_with_policy() {
             .get(*name)
             .unwrap_or_else(|| panic!("roles.md table must contain {name}"))
             .clone();
-        assert_eq!(operation, capability.operation(), "operation mismatch for {name}");
-        assert_eq!(orchestrator, Role::Orchestrator.allows(*capability), "orchestrator row for {name}");
-        assert_eq!(admin, Role::Admin.allows(*capability), "admin row for {name}");
-        assert_eq!(executor, Role::Executor.allows(*capability), "executor row for {name}");
-        assert_eq!(reviewer, Role::Reviewer.allows(*capability), "reviewer row for {name}");
-        assert_eq!(tester, Role::Tester.allows(*capability), "tester row for {name}");
+        assert_eq!(
+            operation,
+            capability.operation(),
+            "operation mismatch for {name}"
+        );
+        assert_eq!(
+            orchestrator,
+            Role::Orchestrator.allows(*capability),
+            "orchestrator row for {name}"
+        );
+        assert_eq!(
+            admin,
+            Role::Admin.allows(*capability),
+            "admin row for {name}"
+        );
+        assert_eq!(
+            executor,
+            Role::Executor.allows(*capability),
+            "executor row for {name}"
+        );
+        assert_eq!(
+            reviewer,
+            Role::Reviewer.allows(*capability),
+            "reviewer row for {name}"
+        );
+        assert_eq!(
+            tester,
+            Role::Tester.allows(*capability),
+            "tester row for {name}"
+        );
     }
 }
 
@@ -194,9 +224,6 @@ fn reference_chain_files_exist_and_are_linked() {
             !fs::read_to_string(&path).unwrap_or_default().is_empty(),
             "{file} must not be empty"
         );
-        assert!(
-            skill.contains(link),
-            "SKILL.md must link to {link}"
-        );
+        assert!(skill.contains(link), "SKILL.md must link to {link}");
     }
 }

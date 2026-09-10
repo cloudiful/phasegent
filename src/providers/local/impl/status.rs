@@ -1,15 +1,15 @@
 //! Local status catalogue + transition policy.
 
-use super::model::{is_closed_status, local_sql, local_statuses, now_epoch_seconds};
 use super::LocalProvider;
+use super::model::{is_closed_status, local_sql, local_statuses, now_epoch_seconds};
+use crate::providers::RedmineIssueStatus;
 use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
     STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, StatusNextReport, StatusRef,
     StatusTransitionOutcome, TransitionVerdict, canonical_allowed_next, canonical_status_name,
     evaluate_transition,
 };
-use crate::providers::RedmineIssueStatus;
-use crate::providers::config::RedmineProvider;
 
 /// Allowed next statuses for a canonical status, derived from
 /// `infra::local_schema::STATUS_TRANSITION_SEED` so the local

@@ -5,12 +5,12 @@ use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
-use crate::providers::local::LocalProvider;
 
 pub enum ProviderDispatcher {
     Forgejo(ForgejoProvider),

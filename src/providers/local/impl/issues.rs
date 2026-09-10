@@ -1,8 +1,8 @@
 //! Local issue CRUD + search.
 
+use super::LocalProvider;
 use super::model::{LocalIssueRow, local_sql, now_epoch_seconds};
 use super::status_impl::{allowed_next_for, is_transition_allowed};
-use super::LocalProvider;
 use crate::providers::api::{
     ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
     IssueSummaryPage,
@@ -24,13 +24,19 @@ fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalIssueRow, rusqlite::Err
 }
 
 fn fetch_one(conn: &rusqlite::Connection, id: u64) -> Result<LocalIssueRow, rusqlite::Error> {
-    conn.query_row(local_sql("get_issue_by_id"), rusqlite::params![id as i64], row_from_stmt)
+    conn.query_row(
+        local_sql("get_issue_by_id"),
+        rusqlite::params![id as i64],
+        row_from_stmt,
+    )
 }
 
 impl LocalProvider {
     pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
         if number == 0 {
-            return Err(ForgejoError::config("issue number must be greater than zero"));
+            return Err(ForgejoError::config(
+                "issue number must be greater than zero",
+            ));
         }
         self.with_conn("issue get", |conn| fetch_one(conn, number))
             .map_err(|error| match_not_found(error, number, "issue get"))
@@ -53,12 +59,7 @@ impl LocalProvider {
             let mut stmt = conn.prepare(local_sql("search_issues"))?;
             let items = stmt
                 .query_map(
-                    rusqlite::params![
-                        options.state,
-                        query,
-                        options.limit as i64,
-                        offset as i64,
-                    ],
+                    rusqlite::params![options.state, query, options.limit as i64, offset as i64,],
                     row_from_stmt,
                 )?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -66,9 +67,7 @@ impl LocalProvider {
         })?;
         let total_count = usize::try_from(total).ok();
         let count = rows.len();
-        let has_more = total_count.map_or(count == options.limit, |total| {
-            offset + count < total
-        });
+        let has_more = total_count.map_or(count == options.limit, |total| offset + count < total);
         let items = rows
             .into_iter()
             .map(|row| {
@@ -101,12 +100,7 @@ impl LocalProvider {
             let mut stmt = conn.prepare(local_sql("search_issues"))?;
             let items = stmt
                 .query_map(
-                    rusqlite::params![
-                        options.state,
-                        query,
-                        options.limit as i64,
-                        offset as i64,
-                    ],
+                    rusqlite::params![options.state, query, options.limit as i64, offset as i64,],
                     row_from_stmt,
                 )?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -114,9 +108,7 @@ impl LocalProvider {
         })?;
         let total_count = usize::try_from(total).ok();
         let count = rows.len();
-        let has_more = total_count.map_or(count == options.limit, |total| {
-            offset + count < total
-        });
+        let has_more = total_count.map_or(count == options.limit, |total| offset + count < total);
         Ok(IssueSummaryPage {
             items: rows.into_iter().map(|row| row.into_summary()).collect(),
             page: options.page,
@@ -132,7 +124,9 @@ impl LocalProvider {
             return Err(ForgejoError::config("issue title cannot be empty"));
         }
         if title.len() > 1024 {
-            return Err(ForgejoError::config("issue title must be at most 1024 bytes"));
+            return Err(ForgejoError::config(
+                "issue title must be at most 1024 bytes",
+            ));
         }
         let now = now_epoch_seconds();
         let title_owned = title.to_owned();
@@ -158,7 +152,9 @@ impl LocalProvider {
 
     pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ForgejoError> {
         if number == 0 {
-            return Err(ForgejoError::config("issue number must be greater than zero"));
+            return Err(ForgejoError::config(
+                "issue number must be greater than zero",
+            ));
         }
         let now = now_epoch_seconds();
         let body_owned = body.to_owned();
@@ -184,7 +180,9 @@ impl LocalProvider {
 
     pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
         if number == 0 {
-            return Err(ForgejoError::config("issue number must be greater than zero"));
+            return Err(ForgejoError::config(
+                "issue number must be greater than zero",
+            ));
         }
         let current: LocalIssueRow = self
             .with_conn("issue close", |conn| fetch_one(conn, number))
@@ -224,8 +222,7 @@ impl LocalProvider {
 }
 
 fn is_no_rows(error: &ForgejoError) -> bool {
-    error.to_string().contains("QueryReturnedNoRows")
-        || error.to_string().contains("no rows")
+    error.to_string().contains("QueryReturnedNoRows") || error.to_string().contains("no rows")
 }
 
 fn match_not_found(error: ForgejoError, number: u64, operation: &str) -> ForgejoError {

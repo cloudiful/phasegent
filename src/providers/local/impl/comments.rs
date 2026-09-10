@@ -1,7 +1,7 @@
 //! Local comment lifecycle.
 
-use super::model::{LocalCommentRow, is_unique_violation, local_sql, now_epoch_seconds};
 use super::LocalProvider;
+use super::model::{LocalCommentRow, is_unique_violation, local_sql, now_epoch_seconds};
 use crate::providers::api::{CommentOutput, ForgejoError};
 
 fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalCommentRow, rusqlite::Error> {
@@ -21,7 +21,9 @@ impl LocalProvider {
         marker: &str,
     ) -> Result<CommentOutput, ForgejoError> {
         if issue == 0 {
-            return Err(ForgejoError::config("issue number must be greater than zero"));
+            return Err(ForgejoError::config(
+                "issue number must be greater than zero",
+            ));
         }
         if marker.is_empty() {
             return Err(ForgejoError::config("marker cannot be empty"));
@@ -82,7 +84,9 @@ impl LocalProvider {
 
     pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, ForgejoError> {
         if issue == 0 || comment == 0 {
-            return Err(ForgejoError::config("issue and comment ids must be greater than zero"));
+            return Err(ForgejoError::config(
+                "issue and comment ids must be greater than zero",
+            ));
         }
         self.with_conn("comment get", |conn| {
             conn.query_row(
@@ -110,7 +114,9 @@ impl LocalProvider {
             return Err(ForgejoError::config("marker cannot be empty"));
         }
         if issue == 0 {
-            return Err(ForgejoError::config("issue number must be greater than zero"));
+            return Err(ForgejoError::config(
+                "issue number must be greater than zero",
+            ));
         }
         let marker_owned = marker.to_owned();
         self.with_conn("comment find-marker", |conn| {

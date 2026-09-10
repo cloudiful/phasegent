@@ -8,12 +8,12 @@ use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSumma
 use crate::providers::forgejo::ForgejoConfig;
 #[allow(unused_imports)]
 use crate::providers::forgejo::ForgejoProvider;
+use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
     GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
     RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
 };
-use crate::providers::local::LocalProvider;
 
 impl RedmineMetadataProvider for ForgejoProvider {
     type Error = ForgejoError;

@@ -22,9 +22,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "postgres")]
-use sqlx::postgres::PgPoolOptions;
-#[cfg(feature = "postgres")]
 use sqlx::PgPool;
+#[cfg(feature = "postgres")]
+use sqlx::postgres::PgPoolOptions;
 
 /// SQLite backend for the local provider. Stands up the connection,
 /// schema, and seeds.
@@ -51,8 +51,8 @@ impl SqliteLocalStore {
         if let Some(parent) = path.parent() {
             create_private_dir(parent)?;
         }
-        let connection = Connection::open(path)
-            .map_err(|e| format!("could not open local database: {e}"))?;
+        let connection =
+            Connection::open(path).map_err(|e| format!("could not open local database: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -80,6 +80,7 @@ impl SqliteLocalStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn db_path(&self) -> &Path {
         &self.path
     }
@@ -327,11 +328,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dir.join("phasegent.sqlite3");
         let storage = Storage::open_at(&cfg).unwrap();
-        storage.delete_global_setting("PHASEGENT_INDEX_PG_URL").unwrap();
-        let _g = crate::infra::storage::test_support::EnvGuard::set(
-            "PHASEGENT_INDEX_PG_URL",
-            "",
-        );
+        storage
+            .delete_global_setting("PHASEGENT_INDEX_PG_URL")
+            .unwrap();
+        let _g = crate::infra::storage::test_support::EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
         let kind = resolve_index_backend(&storage).unwrap();
         assert_eq!(kind, IndexBackendKind::Sqlite);
         let _ = std::fs::remove_dir_all(dir);

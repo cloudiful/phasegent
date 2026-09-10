@@ -1,7 +1,7 @@
 //! Local project + version metadata.
 
-use super::model::{LocalProjectRow, empty_versions, local_sql, now_epoch_seconds};
 use super::LocalProvider;
+use super::model::{LocalProjectRow, empty_versions, local_sql, now_epoch_seconds};
 use crate::providers::api::ForgejoError;
 use crate::providers::{RedmineProject, RedmineVersion};
 
