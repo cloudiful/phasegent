@@ -148,11 +148,6 @@ Rules:
 
 ## Primitives (who may call what)
 
-- **timer** — `phasegent --role orchestrator timer start <ISSUE> --phase NAME
-  --agent-role executor|reviewer|tester --attempt N [--run-id ID]`, then
-  `timer finish <RUN_ID> --result DONE|PARTIAL|BLOCKED|FAILED`, `timer list`,
-  `timer get`, `timer recover`. Orchestrator-only. No `phasegent-timer` plugin
-  exists, so never emulate it.
 - **status** — `status list`/`status next` are read-only and available to the
   IssueStatusRead roles; `status set`/`status advance` are orchestrator-only.
   Children never advance statuses.

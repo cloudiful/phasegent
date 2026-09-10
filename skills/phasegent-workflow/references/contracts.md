@@ -32,6 +32,9 @@ prompt or `--stdin`).
 | `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo rejects |
 | `relation delete` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo rejects |
 | `timer start/finish/list/get/recover` | role == orchestrator | orchestrator only | local ledger; finish/recover project to Redmine/GitLab (Forgejo rejects); list/get never reach a provider |
+| `worktree acquire/release/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; prune only clean + expired + retained, never deletes a branch or a dirty worktree |
+| `worktree status/list` | command-level read gate | orchestrator, executor, reviewer | read-only lease inspection; tester denied |
+| `plugin install/status/uninstall` | no role gate | any | local OpenCode adapter file; managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
 | `workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |
 | `repo create` | RepoCreate | orchestrator only | Forgejo/GitLab; `--private` required; Redmine/local reject as not-supported |
 | `notify send` | role gate | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |
