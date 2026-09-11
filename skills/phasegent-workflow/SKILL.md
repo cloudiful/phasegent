@@ -84,9 +84,15 @@ Rules:
 - The JSON top-level `status` (executor/tester) or `verdict` (reviewer) must
   match the note's labelled line verbatim.
 - Publish with the child's own role key: `phasegent --role <child>
-  [--provider <p>] comment create <ISSUE> --body <BODY> --marker <MARKER>
+  [--provider <p>] comment create <ISSUE> --body-file <PATH> --marker <MARKER>
   --authorized` (children require `--authorized`; orchestrator does not). Omit
   `--provider` on the configured default; `--provider local` is always explicit.
+- Default note flow: write the note to a temporary Markdown file and pass it with
+  `--body-file`, so long Markdown never goes through the shell; `--body-file` and
+  `--body` are mutually exclusive. After a successful publish the CLI deletes the
+  file; any read, validation, marker, authorization, or provider failure keeps it
+  for diagnosis. Use `--keep-body-file` only when the file must survive success,
+  and never rely on it to clean up permanent files.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
   clean finish.
 

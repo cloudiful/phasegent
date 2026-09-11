@@ -102,6 +102,24 @@ Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 `phasegent doctor` 无需 role 即可报告 credential 存在性（指纹而非明文）
 和索引状态。
 
+### 一次性 Markdown 正文（`--body-file`）
+
+`issue create`、`issue update-body` 与 `comment create` 支持以
+`--body-file PATH` 代替 `--body`，长 Markdown 无需经过 shell。两个参数互斥；
+`--body-file` 只接受普通文件，最大 2 MiB，且必须为有效 UTF-8。
+
+文件在 provider 解析、项目发现和任何网络访问之前完成本地读取与校验，provider
+收到的正是文件内容。成功写入后默认删除文件，除非传入 `--keep-body-file`；任何
+读取、校验、参数或 provider 失败都会保留文件。读取后被替换或修改的路径永不删除，
+只会输出有界 warning。
+
+```sh
+phasegent --role orchestrator issue create --title "Plan" --body-file /tmp/plan.md
+phasegent --role orchestrator issue update-body 123 --body-file /tmp/plan.md
+phasegent --role executor comment create 123 --body-file /tmp/audit.md \
+  --marker "<!-- ai-executor ... -->" --authorized
+```
+
 查看可用命令：
 
 ```sh

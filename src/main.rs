@@ -1,4 +1,5 @@
 mod auth;
+mod body_file;
 mod branch_context;
 mod cli;
 mod command;
@@ -60,6 +61,9 @@ mod admin_tests;
 
 #[cfg(test)]
 mod comment_tests;
+
+#[cfg(test)]
+mod body_file_tests;
 
 #[cfg(test)]
 mod doctor_tests;

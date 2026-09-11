@@ -107,6 +107,27 @@ the human-operator `admin` group (`phasegent admin ...`) and is never invoked
 by AI roles. `phasegent doctor` reports credential presence (fingerprint, never
 values) and index state without a role.
 
+### One-shot Markdown bodies (`--body-file`)
+
+`issue create`, `issue update-body`, and `comment create` accept
+`--body-file PATH` instead of `--body`, so long Markdown never has to pass
+through the shell. The flags are mutually exclusive, and `--body-file` reads a
+regular file of at most 2 MiB that must be valid UTF-8.
+
+The file is read and validated locally before provider resolution, project
+discovery, or any network access, and its content is exactly what the provider
+receives. After a successful write the file is deleted unless
+`--keep-body-file` is given; any read, validation, argument, or provider failure
+keeps it. A path that was replaced or modified after the read is never deleted —
+a bounded warning is emitted instead.
+
+```sh
+phasegent --role orchestrator issue create --title "Plan" --body-file /tmp/plan.md
+phasegent --role orchestrator issue update-body 123 --body-file /tmp/plan.md
+phasegent --role executor comment create 123 --body-file /tmp/audit.md \
+  --marker "<!-- ai-executor ... -->" --authorized
+```
+
 Inspect the available commands with:
 
 ```sh

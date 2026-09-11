@@ -36,13 +36,17 @@ pub(crate) fn parse_comment(args: &[String]) -> Result<Command, String> {
             validate_options(
                 args,
                 1,
-                &["--body", "--marker"],
-                &["--authorized"],
+                &["--body", "--body-file", "--marker"],
+                &["--authorized", "--keep-body-file"],
                 "comment create",
             )?;
+            let (body, body_file, keep_body_file) =
+                crate::body_file::parse_body_flags(args, "comment create", true)?;
             Ok(Command::Comment(CommentCommand::Create {
                 issue: positional_number(args, 1, "comment create")?,
-                body: required_option(args, "--body", "comment create")?,
+                body,
+                body_file,
+                keep_body_file,
                 marker: required_nonempty_option(args, "--marker", "comment create")?,
                 authorized: has_flag(args, "--authorized"),
             }))

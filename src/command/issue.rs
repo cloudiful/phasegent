@@ -41,6 +41,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 &[
                     "--title",
                     "--body",
+                    "--body-file",
                     "--tracker",
                     "--parent-issue",
                     "--fixed-version",
@@ -49,12 +50,16 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                     "--estimated-hours",
                     "--done-ratio",
                 ],
-                &[],
+                &["--keep-body-file"],
                 "issue create",
             )?;
+            let (body, body_file, keep_body_file) =
+                crate::body_file::parse_body_flags(args, "issue create", false)?;
             Ok(Command::Issue(IssueCommand::Create {
                 title: required_option(args, "--title", "issue create")?,
-                body: optional_option(args, "--body").unwrap_or_default(),
+                body,
+                body_file,
+                keep_body_file,
                 tracker: optional_option(args, "--tracker"),
                 planning: planning_options(args),
             }))
@@ -65,6 +70,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 1,
                 &[
                     "--body",
+                    "--body-file",
                     "--tracker",
                     "--parent-issue",
                     "--fixed-version",
@@ -73,12 +79,16 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                     "--estimated-hours",
                     "--done-ratio",
                 ],
-                &[],
+                &["--keep-body-file"],
                 "issue update-body",
             )?;
+            let (body, body_file, keep_body_file) =
+                crate::body_file::parse_body_flags(args, "issue update-body", true)?;
             Ok(Command::Issue(IssueCommand::UpdateBody {
                 number: positional_number(args, 1, "issue update-body")?,
-                body: required_option(args, "--body", "issue update-body")?,
+                body,
+                body_file,
+                keep_body_file,
                 tracker: optional_option(args, "--tracker"),
                 planning: planning_options(args),
             }))

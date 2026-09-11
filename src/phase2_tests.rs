@@ -90,12 +90,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline --title should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::Create {
-            title,
-            body,
-            tracker: _,
-            planning: _,
-        }) => {
+        command::Command::Issue(command::IssueCommand::Create { title, body, .. }) => {
             assert_eq!(title, "-starts-with-dash");
             assert_eq!(body, "ok");
         }
@@ -116,12 +111,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline --body should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::Create {
-            title,
-            body,
-            tracker: _,
-            planning: _,
-        }) => {
+        command::Command::Issue(command::IssueCommand::Create { title, body, .. }) => {
             assert_eq!(title, "ok");
             assert_eq!(body, "- Goal");
         }
@@ -142,12 +132,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline --body should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::UpdateBody {
-            number,
-            body,
-            tracker: _,
-            planning: _,
-        }) => {
+        command::Command::Issue(command::IssueCommand::UpdateBody { number, body, .. }) => {
             assert_eq!(number, 1);
             assert_eq!(body, "---");
         }
@@ -219,6 +204,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
             body,
             marker,
             authorized,
+            ..
         }) => {
             assert_eq!(issue, 1);
             assert_eq!(body, "---");
@@ -349,12 +335,7 @@ fn inline_form_accepts_empty_value_for_body_but_rejects_empty_marker() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline empty body should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::Create {
-            title,
-            body,
-            tracker: _,
-            planning: _,
-        }) => {
+        command::Command::Issue(command::IssueCommand::Create { title, body, .. }) => {
             assert_eq!(title, "ok");
             assert_eq!(body, "");
         }
@@ -827,6 +808,7 @@ fn issue_create_and_update_body_accept_optional_tracker_selection() {
             body,
             tracker,
             planning,
+            ..
         }) => {
             assert_eq!(title, "Plan");
             assert_eq!(body, "");
@@ -854,6 +836,7 @@ fn issue_create_and_update_body_accept_optional_tracker_selection() {
             body,
             tracker,
             planning,
+            ..
         }) => {
             assert_eq!(number, 9);
             assert_eq!(body, "Updated");

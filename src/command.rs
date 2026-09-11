@@ -210,6 +210,11 @@ pub enum IssueCommand {
     Create {
         title: String,
         body: String,
+        /// Optional one-shot Markdown file input (`--body-file`); mutually
+        /// exclusive with `--body`, deleted after a successful write unless
+        /// `--keep-body-file` was supplied.
+        body_file: Option<String>,
+        keep_body_file: bool,
         /// Optional Redmine tracker selector (validated name or id) resolved
         /// against `/trackers.json` at execution time.
         tracker: Option<String>,
@@ -220,6 +225,11 @@ pub enum IssueCommand {
     UpdateBody {
         number: u64,
         body: String,
+        /// Optional one-shot Markdown file input (`--body-file`); mutually
+        /// exclusive with `--body`, deleted after a successful write unless
+        /// `--keep-body-file` was supplied.
+        body_file: Option<String>,
+        keep_body_file: bool,
         /// Optional Redmine tracker re-selection applied in the same PUT.
         tracker: Option<String>,
         /// Optional native Redmine planning fields applied in the same PUT.
@@ -254,6 +264,11 @@ pub enum CommentCommand {
     Create {
         issue: u64,
         body: String,
+        /// Optional one-shot Markdown file input (`--body-file`); mutually
+        /// exclusive with `--body`, deleted after a successful write unless
+        /// `--keep-body-file` was supplied.
+        body_file: Option<String>,
+        keep_body_file: bool,
         marker: String,
         authorized: bool,
     },

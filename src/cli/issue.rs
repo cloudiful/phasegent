@@ -44,6 +44,20 @@ pub(crate) fn execute_issue(
     if !role.allows(capability) {
         return super::permission_error(role, capability);
     }
+    // One-shot `--body-file` input (issue 298): read and validate the
+    // local file before any provider resolution, project discovery, or
+    // network access. A read/validation failure exits with the file
+    // preserved.
+    let body_input = match crate::body_file::resolve_for_issue(&command) {
+        Some(Ok(resolved)) => resolved,
+        Some(Err((operation, message))) => {
+            return super::structured_error(
+                serde_json::json!({"kind":"argument", "operation":operation, "message":message}),
+                2,
+            );
+        }
+        None => None,
+    };
     // Ordinary search validates before any provider work so argument
     // errors never trigger stale fallback.
     if let IssueCommand::Search {
@@ -203,7 +217,9 @@ pub(crate) fn execute_issue(
         }
         IssueCommand::Create {
             title,
-            body,
+            body: _,
+            body_file: _,
+            keep_body_file: _,
             tracker,
             planning,
         } => {
@@ -229,10 +245,23 @@ pub(crate) fn execute_issue(
                     Err(error) => return super::provider_error(error),
                 };
             let parent_issue_id = resolved_planning.parent_issue_id;
+            let (body, body_file) = match body_input.as_ref() {
+                Some((body, body_file)) => (body.as_str(), body_file.as_ref()),
+                None => {
+                    return super::structured_error(
+                        serde_json::json!({
+                            "kind":"argument",
+                            "operation":"issue create",
+                            "message":"--body or --body-file is required"
+                        }),
+                        2,
+                    );
+                }
+            };
             match crate::providers::redmine::planning::create_issue(
                 &provider,
                 &title,
-                &body,
+                body,
                 tracker.as_deref(),
                 &planning,
             ) {
@@ -270,29 +299,62 @@ pub(crate) fn execute_issue(
                         .warning(),
                     );
                     issue_search::warm_single_summary(&provider, &summary, "issue create");
-                    super::print_json(&summary)
+                    let exit = super::print_json(&summary);
+                    // One-shot `--body-file` cleanup (issue 298): delete
+                    // after success unless `--keep-body-file` was given.
+                    if exit == 0
+                        && let Some(body_file) = body_file
+                        && let Some(warning) = body_file.cleanup_after_success()
+                    {
+                        super::report_local_warnings("issue create", Some(warning));
+                    }
+                    exit
                 }
                 Err(error) => super::provider_error(error),
             }
         }
         IssueCommand::UpdateBody {
             number,
-            body,
+            body: _,
+            body_file: _,
+            keep_body_file: _,
             tracker,
             planning,
-        } => match crate::providers::redmine::planning::update_body(
-            &provider,
-            number,
-            &body,
-            tracker.as_deref(),
-            &planning,
-        ) {
-            Ok(summary) => {
-                issue_search::warm_single_summary(&provider, &summary, "issue update-body");
-                super::print_json(&summary)
+        } => {
+            let (body, body_file) = match body_input.as_ref() {
+                Some((body, body_file)) => (body.as_str(), body_file.as_ref()),
+                None => {
+                    return super::structured_error(
+                        serde_json::json!({
+                            "kind":"argument",
+                            "operation":"issue update-body",
+                            "message":"--body or --body-file is required"
+                        }),
+                        2,
+                    );
+                }
+            };
+            match crate::providers::redmine::planning::update_body(
+                &provider,
+                number,
+                body,
+                tracker.as_deref(),
+                &planning,
+            ) {
+                Ok(summary) => {
+                    issue_search::warm_single_summary(&provider, &summary, "issue update-body");
+                    let exit = super::print_json(&summary);
+                    if exit == 0
+                        && let Some(body_file) = body_file
+                        && let Some(warning) = body_file.cleanup_after_success()
+                    {
+                        super::report_local_warnings("issue update-body", Some(warning));
+                    }
+                    exit
+                }
+                Err(error) => super::provider_error(error),
             }
-            Err(error) => super::provider_error(error),
-        },
+        }
         IssueCommand::Close { number } => match provider.close_issue(number) {
             Ok(summary) => {
                 // Redmine-only local side effect: unbind only when the current
