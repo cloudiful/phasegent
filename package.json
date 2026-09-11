@@ -1,7 +1,7 @@
 {
   "name": "phasegent",
   "private": true,
-  "version": "2.12.5",
+  "version": "2.12.7",
   "type": "module",
   "description": "phasegent desktop shell (Tauri static dist: Vue 3 + Nuxt UI + Tailwind CSS v4).",
   "scripts": {
