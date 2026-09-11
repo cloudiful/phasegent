@@ -67,11 +67,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_REGION: auto
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_ENDPOINT }}
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
