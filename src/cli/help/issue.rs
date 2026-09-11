@@ -31,7 +31,11 @@ pub(crate) fn print_issue_help(role: Option<Role>) {
 
 pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
     let (capability, text) = match command {
-        "get" => (Capability::IssueRead, "Usage: issue get <NUMBER>"),
+        "get" => (
+            Capability::IssueRead,
+            "Usage: issue get <NUMBER> [<NUMBER>...] (at most 20, unique, positive)\n\nOne number returns the legacy single-issue object. Two or more return an {issues, errors} envelope: successes and per-number failures are collected side by side so one missing issue never discards the rest; the exit code is 0 only when every fetch succeeds. Each fetched summary warms the local index exactly like a single get.",
+        ),
+
         "search" => (
             Capability::IssueSearch,
             concat!(

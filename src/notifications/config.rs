@@ -100,7 +100,7 @@ pub fn load(storage: &Storage) -> Result<Option<NotifyConfig>, String> {
     }
     let channel_raw = resolve_field(storage, "PHASEGENT_NOTIFY_CHANNEL")?
         .ok_or_else(|| {
-            "notifications are enabled but PHASEGENT_NOTIFY_CHANNEL is not set; use config set notify-channel <ntfy|webhook|dingtalk|email>".to_owned()
+            "notifications are enabled but PHASEGENT_NOTIFY_CHANNEL is not set; use admin config set notify-channel <ntfy|webhook|dingtalk|email>".to_owned()
         })?;
     let channel = NotifyChannel::parse(&channel_raw)?;
     let mut config = NotifyConfig {

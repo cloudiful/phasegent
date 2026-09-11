@@ -189,6 +189,6 @@ impl IssueIndexStore for SqliteIssueIndex {
 fn create_private_dir(path: &Path) -> Result<(), String> {
     self::issue_index_store::create_private_dir(path)
 }
-fn project_dirs_index_path() -> Result<PathBuf, String> {
+pub(crate) fn project_dirs_index_path() -> Result<PathBuf, String> {
     self::issue_index_store::project_dirs_index_path()
 }

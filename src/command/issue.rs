@@ -32,12 +32,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
         )));
     }
     match name.unwrap() {
-        "get" => {
-            require_exact_positionals(args, 2, "issue get")?;
-            Ok(Command::Issue(IssueCommand::Get {
-                number: positional_number(args, 1, "issue get")?,
-            }))
-        }
+        "get" => parse_issue_get(args),
         "search" => parse_issue_search(args),
         "create" => {
             validate_options(
@@ -189,4 +184,46 @@ fn parse_issue_search(args: &[String]) -> Result<Command, String> {
         all,
         include_body,
     }))
+}
+
+/// Upper bound for `issue get` batch fetches: one invocation stays a
+/// bounded burst of single-issue reads, never an unbounded crawl.
+pub(crate) const MAX_BATCH_GET: usize = 20;
+
+/// `issue get <NUMBER> [<NUMBER>...]`. A single number keeps the
+/// legacy `Get` shape (and its single-object output); two or more
+/// numbers become `GetBatch`. Numbers must be positive, unique, and
+/// within the batch cap so one call cannot fan out without limit.
+fn parse_issue_get(args: &[String]) -> Result<Command, String> {
+    const OPERATION: &str = "issue get";
+    if args.len() < 2 {
+        return Err(format!("{OPERATION} requires an issue number"));
+    }
+    let mut numbers = Vec::with_capacity(args.len() - 1);
+    for raw in args.iter().skip(1) {
+        let number: u64 = raw
+            .parse()
+            .map_err(|_| format!("{OPERATION} requires a numeric issue number"))?;
+        if number == 0 {
+            return Err(format!(
+                "{OPERATION} requires issue numbers greater than zero"
+            ));
+        }
+        if numbers.contains(&number) {
+            return Err(format!(
+                "{OPERATION} rejects duplicate issue number {number}"
+            ));
+        }
+        numbers.push(number);
+    }
+    if numbers.len() > MAX_BATCH_GET {
+        return Err(format!(
+            "{OPERATION} accepts at most {MAX_BATCH_GET} issue numbers per invocation"
+        ));
+    }
+    if numbers.len() == 1 {
+        Ok(Command::Issue(IssueCommand::Get { number: numbers[0] }))
+    } else {
+        Ok(Command::Issue(IssueCommand::GetBatch { numbers }))
+    }
 }

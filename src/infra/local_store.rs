@@ -204,7 +204,7 @@ impl LocalStore {
             IndexBackendKind::Postgres => {
                 let url = crate::infra::issue_index_backend::resolve_pg_url(storage)?.ok_or_else(
                     || {
-                        "postgres local backend requires PHASEGENT_INDEX_PG_URL; use config set index-pg-url --stdin"
+                        "postgres local backend requires PHASEGENT_INDEX_PG_URL; use admin config set index-pg-url --stdin"
                             .to_owned()
                     },
                 )?;

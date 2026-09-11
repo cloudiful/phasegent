@@ -64,6 +64,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
         "orchestrator",
         "--provider",
         "redmine",
+        "admin",
         "auth",
         "setup",
         "--stdin",
@@ -90,6 +91,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
         "orchestrator",
         "--provider",
         "redmine",
+        "admin",
         "auth",
         "setup",
         "--stdin",
@@ -270,12 +272,13 @@ fn tester_credential_is_role_scoped_and_isolated() {
 #[test]
 fn tester_role_parsing_and_auth_setup_provider() {
     assert_eq!("tester".parse::<Role>().unwrap(), Role::Tester);
-    // auth setup --role tester --provider redmine must parse and store separate row
+    // admin auth setup --role tester --provider redmine must parse and store separate row
     let args = strings([
         "--role",
         "tester",
         "--provider",
         "redmine",
+        "admin",
         "auth",
         "setup",
         "--stdin",

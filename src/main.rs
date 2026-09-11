@@ -55,6 +55,18 @@ mod plugin_tests;
 #[cfg(test)]
 mod skill_tests;
 
+#[cfg(test)]
+mod admin_tests;
+
+#[cfg(test)]
+mod comment_tests;
+
+#[cfg(test)]
+mod doctor_tests;
+
+#[cfg(test)]
+mod issue_tests;
+
 fn main() {
     // Single-binary dispatch: the conservative no-argument desktop
     // heuristic lives here so `cli::run` keeps its exact existing

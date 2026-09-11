@@ -107,6 +107,10 @@ impl IssueProvider for ForgejoProvider {
     fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, Self::Error> {
         ForgejoProvider::find_marker(self, issue, marker)
     }
+
+    fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
+        ForgejoProvider::list_all_comments(self, issue)
+    }
 }
 
 impl IssueProvider for RedmineProvider {
@@ -175,6 +179,10 @@ impl IssueProvider for RedmineProvider {
 
     fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, Self::Error> {
         RedmineProvider::find_marker(self, issue, marker)
+    }
+
+    fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
+        RedmineProvider::list_comments(self, issue)
     }
 }
 
@@ -249,6 +257,10 @@ impl IssueProvider for GitlabProvider {
 
     fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, Self::Error> {
         GitlabProvider::find_marker(self, issue, marker)
+    }
+
+    fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
+        GitlabProvider::list_notes(self, issue)
     }
 }
 
@@ -370,6 +382,15 @@ impl IssueProvider for ProviderDispatcher {
             Self::Local(provider) => provider.find_marker(issue, marker),
         }
     }
+
+    fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
+        match self {
+            Self::Forgejo(provider) => provider.list_comments(issue),
+            Self::Redmine(provider) => provider.list_comments(issue),
+            Self::Gitlab(provider) => provider.list_comments(issue),
+            Self::Local(provider) => provider.list_comments(issue),
+        }
+    }
 }
 
 impl IssueProvider for LocalProvider {
@@ -428,5 +449,9 @@ impl IssueProvider for LocalProvider {
 
     fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, Self::Error> {
         LocalProvider::find_marker(self, issue, marker)
+    }
+
+    fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
+        LocalProvider::list_comments(self, issue)
     }
 }

@@ -73,6 +73,7 @@ fn fresh_lease_row(
         status: status.to_owned(),
         created_at: heartbeat_at,
         heartbeat_at,
+        release_reason: None,
     }
 }
 
@@ -260,9 +261,16 @@ fn parse_release_default_retain_is_true() {
     ]))
     .unwrap();
     match invocation.command {
-        Command::Worktree(WorktreeCommand::Release { lease, retain }) => {
+        Command::Worktree(WorktreeCommand::Release {
+            lease,
+            retain,
+            force,
+            reason,
+        }) => {
             assert_eq!(lease, "lease-1");
             assert!(retain);
+            assert!(!force);
+            assert_eq!(reason, None);
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -282,9 +290,16 @@ fn parse_release_retain_false_round_trip() {
     ]))
     .unwrap();
     match invocation.command {
-        Command::Worktree(WorktreeCommand::Release { lease, retain }) => {
+        Command::Worktree(WorktreeCommand::Release {
+            lease,
+            retain,
+            force,
+            reason,
+        }) => {
             assert_eq!(lease, "lease-1");
             assert!(!retain);
+            assert!(!force);
+            assert_eq!(reason, None);
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -444,6 +459,8 @@ fn reviewer_cannot_release() {
         WorktreeCommand::Release {
             lease: "lease-1".to_owned(),
             retain: true,
+            force: false,
+            reason: None,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");

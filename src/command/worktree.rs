@@ -24,9 +24,11 @@
 //!   contract). `--isolate` forces a fresh branch/worktree on a
 //!   conflict; without it (and with `worktree-auto` off) acquire reuses
 //!   the current checkout and warns.
-//! * `release --lease ID [--retain=true]`
+//! * `release --lease ID [--retain=true] [--force --reason TEXT]`
 //!   Default `--retain` is `true`. `--retain=false` flips the lease to
 //!   `released`; `--retain=true` (or omitted) flips to `retained`.
+//!   `--force` requires a non-empty `--reason` and persists it on the
+//!   row; lease rows are never deleted.
 //! * `status --issue N`
 //!   Lists active leases for the issue. Read-only.
 //! * `list [--repo PATH]`
@@ -103,7 +105,13 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_release(args: &[String]) -> Result<Command, String> {
-    validate_options(args, 0, &["--lease", "--retain"], &[], "worktree release")?;
+    validate_options(
+        args,
+        0,
+        &["--lease", "--retain", "--reason"],
+        &["--force"],
+        "worktree release",
+    )?;
     let lease = required_nonempty_option(args, "--lease", "worktree release")?;
     let retain = match optional_option(args, "--retain") {
         Some(raw) => {
@@ -120,9 +128,27 @@ fn parse_release(args: &[String]) -> Result<Command, String> {
         }
         None => true,
     };
+    let force = has_flag(args, "--force");
+    let reason = optional_option(args, "--reason")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if force && reason.is_none() {
+        return Err(
+            "worktree release --force requires a non-empty --reason so the override stays attributable"
+                .to_owned(),
+        );
+    }
+    if !force && reason.is_some() {
+        return Err(
+            "worktree release --reason requires --force; ordinary releases record no reason"
+                .to_owned(),
+        );
+    }
     Ok(Command::Worktree(WorktreeCommand::Release {
         lease,
         retain,
+        force,
+        reason,
     }))
 }
 
@@ -304,9 +330,16 @@ mod tests {
         ]))
         .unwrap();
         match invocation.command {
-            Command::Worktree(WorktreeCommand::Release { lease, retain }) => {
+            Command::Worktree(WorktreeCommand::Release {
+                lease,
+                retain,
+                force,
+                reason,
+            }) => {
                 assert_eq!(lease, "lease-1");
                 assert!(retain);
+                assert!(!force);
+                assert_eq!(reason, None);
             }
             other => panic!("unexpected command {other:?}"),
         }
@@ -326,9 +359,16 @@ mod tests {
         ]))
         .unwrap();
         match invocation.command {
-            Command::Worktree(WorktreeCommand::Release { lease, retain }) => {
+            Command::Worktree(WorktreeCommand::Release {
+                lease,
+                retain,
+                force,
+                reason,
+            }) => {
                 assert_eq!(lease, "lease-1");
                 assert!(!retain);
+                assert!(!force);
+                assert_eq!(reason, None);
             }
             other => panic!("unexpected command {other:?}"),
         }
@@ -348,6 +388,67 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(err.contains("--retain"));
+    }
+
+    #[test]
+    fn release_force_requires_non_empty_reason() {
+        let invocation = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "release",
+            "--lease",
+            "lease-1",
+            "--force",
+            "--reason",
+            "stuck session cleanup",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::Release {
+                lease,
+                retain,
+                force,
+                reason,
+            }) => {
+                assert_eq!(lease, "lease-1");
+                assert!(retain);
+                assert!(force);
+                assert_eq!(reason.as_deref(), Some("stuck session cleanup"));
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+
+        let missing = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "release",
+            "--lease",
+            "lease-1",
+            "--force",
+        ]))
+        .unwrap_err();
+        assert!(
+            missing.contains("--force requires a non-empty --reason"),
+            "unexpected error: {missing}"
+        );
+
+        let dangling = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "release",
+            "--lease",
+            "lease-1",
+            "--reason",
+            "no force",
+        ]))
+        .unwrap_err();
+        assert!(
+            dangling.contains("--reason requires --force"),
+            "unexpected error: {dangling}"
+        );
     }
 
     #[test]

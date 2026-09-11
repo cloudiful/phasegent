@@ -20,8 +20,8 @@ pub(crate) fn execute_workflow(
             serde_json::json!({
                 "kind":"permission",
                 "role":role.as_str(),
-                "operation":"workflow bootstrap",
-                "message":"workflow bootstrap is admin-only"
+                "operation":"admin workflow bootstrap",
+                "message":"admin workflow bootstrap is admin-only (human-operator only)"
             }),
             3,
         );
@@ -33,7 +33,7 @@ pub(crate) fn execute_workflow(
     if provider != ProviderKind::Redmine {
         return super::provider_error(ForgejoError::not_supported(
             provider.as_str(),
-            "workflow bootstrap",
+            "admin workflow bootstrap",
         ));
     }
     let WorkflowCommand::Bootstrap {
@@ -44,14 +44,16 @@ pub(crate) fn execute_workflow(
     if close_status_id.is_some() && global_close_status_id.is_some()
         || close_status_name.is_some() && global_close_status_name.is_some()
     {
-        return super::usage_error("workflow bootstrap received a duplicate close-status option");
+        return super::usage_error(
+            "admin workflow bootstrap received a duplicate close-status option",
+        );
     }
     let close_status_id = close_status_id.or_else(|| global_close_status_id.map(str::to_owned));
     let close_status_name =
         close_status_name.or_else(|| global_close_status_name.map(str::to_owned));
     if close_status_id.is_some() && close_status_name.is_some() {
         return super::usage_error(
-            "workflow bootstrap accepts either --close-status-id or --close-status-name",
+            "admin workflow bootstrap accepts either --close-status-id or --close-status-name",
         );
     }
     let result = match workflow::bootstrap(

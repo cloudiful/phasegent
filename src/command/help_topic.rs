@@ -46,7 +46,7 @@ pub(crate) fn help_topic(
         },
         "comment" => match subcommand {
             None => Ok(HelpTopic::Comment),
-            Some(value) if ["create", "get", "find-marker"].contains(&value) => {
+            Some(value) if ["create", "get", "list", "find-marker"].contains(&value) => {
                 Ok(HelpTopic::CommentCommand(value.to_owned()))
             }
             Some(value) => Err(format!("unknown comment help topic '{value}'")),
@@ -88,6 +88,21 @@ pub(crate) fn help_topic(
             None => Ok(HelpTopic::Workflow),
             Some("bootstrap") => Ok(HelpTopic::WorkflowCommand("bootstrap".to_owned())),
             Some(value) => Err(format!("unknown workflow help topic '{value}'")),
+        },
+        "admin" => match (subcommand, nested_subcommand) {
+            (None, _) => Ok(HelpTopic::Admin),
+            (Some("auth"), _) => Ok(HelpTopic::Auth),
+            (Some("workflow"), _) => Ok(HelpTopic::Workflow),
+            (Some("config"), None) => Ok(HelpTopic::Config),
+            (Some("config"), Some(value)) if ["show", "set", "clear"].contains(&value) => {
+                Ok(HelpTopic::ConfigCommand(value.to_owned()))
+            }
+            (Some("config"), Some("provider")) => Ok(HelpTopic::ConfigProvider),
+            (Some(value), _) => Err(format!("unknown admin help topic '{value}'")),
+        },
+        "doctor" => match subcommand {
+            None => Ok(HelpTopic::Doctor),
+            Some(value) => Err(format!("unknown doctor help topic '{value}'")),
         },
         "auth" => Ok(HelpTopic::Auth),
         "config" => match subcommand {

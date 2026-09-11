@@ -7,6 +7,7 @@ use crate::providers::redmine::model::RedmineRelationType;
 pub use crate::hooks::HooksCommand;
 pub use crate::repo_command::RepoCommand;
 
+mod admin;
 mod auth;
 mod comment;
 mod config;
@@ -121,6 +122,11 @@ pub enum Command {
     /// retained worktrees. Mutating subcommands are
     /// orchestrator-only at execution time.
     Worktree(WorktreeCommand),
+    /// Read-only self-check: credential presence (fingerprint, never
+    /// values), index backend state, and the masked PostgreSQL URL.
+    /// Usable without `--role`; the approved replacement for schema
+    /// dumps and raw setting reads.
+    Doctor,
     /// Explicit desktop entry point for the single-binary shell.
     /// `phasegent gui` opens the Tauri window; every other CLI command
     /// never initializes the GUI. Usable without `--role` because the
@@ -141,6 +147,10 @@ pub enum Command {
 #[derive(Debug)]
 pub enum HelpTopic {
     Root,
+    /// Human-operator provisioning group (`admin auth/config/workflow`).
+    Admin,
+    /// Read-only self-check.
+    Doctor,
     Gui,
     Issue,
     Comment,
@@ -181,6 +191,13 @@ pub enum HelpTopic {
 pub enum IssueCommand {
     Get {
         number: u64,
+    },
+    /// Batch fetch of 2–20 issues in one invocation. The parser keeps
+    /// single-number invocations on `Get` so the legacy single-object
+    /// output shape is preserved; batches return an
+    /// `{issues, errors}` envelope instead of failing fast.
+    GetBatch {
+        numbers: Vec<u64>,
     },
     Search {
         query: Option<String>,
@@ -243,6 +260,12 @@ pub enum CommentCommand {
     Get {
         issue: u64,
         comment: u64,
+    },
+    /// Full bodies of every comment on the issue, in provider order.
+    /// The approved bulk-read path so agents never need raw
+    /// `?include=journals` calls to see all notes at once.
+    List {
+        issue: u64,
     },
     FindMarker {
         issue: u64,
@@ -458,6 +481,10 @@ pub enum WorktreeCommand {
     Release {
         lease: String,
         retain: bool,
+        /// True when invoked with `--force`: the transition is
+        /// recorded with the operator justification in `reason`.
+        force: bool,
+        reason: Option<String>,
     },
     Status {
         issue: u64,
@@ -661,8 +688,31 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             }
             Command::Gui
         }
-        "auth" => auth::parse_auth(rest)?,
-        "config" => config::parse_config(rest)?,
+        "doctor" => {
+            if !rest.is_empty() {
+                return Err("doctor takes no arguments".to_owned());
+            }
+            Command::Doctor
+        }
+        "admin" => admin::parse_admin(rest)?,
+        "auth" => match auth::parse_auth(rest)? {
+            help @ Command::Help(_) => help,
+            _ => {
+                return Err(admin::moved_error("auth setup", "admin auth setup"));
+            }
+        },
+        "config" => {
+            let parsed = config::parse_config(rest)?;
+            match parsed {
+                Command::Help(_) | Command::ConfigShow | Command::ConfigProviderGet => parsed,
+                _ => {
+                    return Err(admin::moved_error(
+                        "config set/clear and config provider set/clear",
+                        "admin config ...",
+                    ));
+                }
+            }
+        }
         "issue" => issue::parse_issue(rest)?,
         "comment" => comment::parse_comment(rest)?,
         "project" => project::parse_project(rest)?,
@@ -670,7 +720,15 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "version" => version::parse_version(rest)?,
         "relation" => relation::parse_relation(rest)?,
         "timer" => timer::parse_timer(rest)?,
-        "workflow" => workflow::parse_workflow(rest)?,
+        "workflow" => match workflow::parse_workflow(rest)? {
+            help @ Command::Help(_) => help,
+            _ => {
+                return Err(admin::moved_error(
+                    "workflow bootstrap",
+                    "admin workflow bootstrap",
+                ));
+            }
+        },
         "worktree" => worktree::parse_worktree(rest)?,
         "repo" => crate::repo_command::parse(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
@@ -686,6 +744,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let no_role_allowed = match &command {
         Command::Help(_)
         | Command::Gui
+        | Command::Doctor
         | Command::ConfigShow
         | Command::ConfigProviderGet
         | Command::ConfigProviderSet { .. }

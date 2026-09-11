@@ -17,6 +17,28 @@ use crate::providers::api::ForgejoError;
 #[allow(unused_imports)]
 use crate::providers::redmine::model::RedmineRelationType;
 
+/// `admin config ...` — write-only provisioning surface. Reuses the shared
+/// parser, then rejects the read-only views (which stay top-level) so the
+/// group never becomes a backdoor read path and `--help` keeps working.
+pub(crate) fn parse_config_admin(args: &[String]) -> Result<Command, String> {
+    if args.is_empty() {
+        return Err(
+            "admin config requires a subcommand (set, clear, or provider set/clear)".to_owned(),
+        );
+    }
+    match parse_config(args)? {
+        Command::ConfigShow => Err(
+            "`config show` is read-only and stays top-level: run `phasegent config show`"
+                .to_owned(),
+        ),
+        Command::ConfigProviderGet => Err(
+            "`config provider get` is read-only and stays top-level: run `phasegent config provider get`"
+                .to_owned(),
+        ),
+        command => Ok(command),
+    }
+}
+
 pub(crate) fn parse_config(args: &[String]) -> Result<Command, String> {
     if args
         .first()

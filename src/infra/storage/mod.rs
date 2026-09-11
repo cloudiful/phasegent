@@ -23,6 +23,9 @@ mod global_settings;
 pub(crate) mod test_support;
 
 pub use connection::Storage;
+pub use credentials::CredentialIdentity;
+#[cfg(test)]
+pub use credentials::credential_fingerprint;
 pub use global_settings::{GlobalSettingSummary, NotificationRecord};
 
 #[cfg(test)]

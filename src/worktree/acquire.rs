@@ -14,7 +14,7 @@ use crate::infra::storage::Storage;
 use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_remove};
 use crate::worktree::leases::{
     NewLease, count_other_active_leases, ensure_schema, find_active_lease, insert_lease,
-    list_for_repo, load_lease, refresh_heartbeat, update_status,
+    list_for_repo, load_lease, record_release_reason, refresh_heartbeat, update_status,
 };
 use crate::worktree::naming::{
     cache_root, cache_root_in, compute_fingerprint, generate_branch, new_lease_id, slug_from_branch,
@@ -478,6 +478,28 @@ fn acquire_new_worktree(
 /// in the requested terminal state.
 #[allow(dead_code)]
 pub fn release_lease(lease_id: &str, retain: bool) -> Result<ReleaseOutcome, WorktreeError> {
+    release_lease_inner(lease_id, retain, None)
+}
+
+/// Forced release with a recorded operator justification
+/// (`worktree release --force --reason`). Behaves like
+/// `release_lease` for the state transition, but persists `reason`
+/// on the row so the override stays attributable in `worktree
+/// list`. Lease rows are never deleted; a no-op on an
+/// already-terminal lease records nothing.
+pub fn release_lease_forced(
+    lease_id: &str,
+    retain: bool,
+    reason: &str,
+) -> Result<ReleaseOutcome, WorktreeError> {
+    release_lease_inner(lease_id, retain, Some(reason))
+}
+
+fn release_lease_inner(
+    lease_id: &str,
+    retain: bool,
+    reason: Option<&str>,
+) -> Result<ReleaseOutcome, WorktreeError> {
     let target = if retain {
         LEASE_STATUS_RETAINED
     } else {
@@ -491,12 +513,19 @@ pub fn release_lease(lease_id: &str, retain: bool) -> Result<ReleaseOutcome, Wor
         return Ok(ReleaseOutcome {
             lease_id: existing.lease_id,
             status: existing.status,
+            forced: false,
+            reason: None,
         });
     }
     update_status(&storage, lease_id, target)?;
+    if let Some(reason) = reason {
+        record_release_reason(&storage, lease_id, reason)?;
+    }
     Ok(ReleaseOutcome {
         lease_id: lease_id.to_owned(),
         status: target.to_owned(),
+        forced: reason.is_some(),
+        reason: reason.map(str::to_owned),
     })
 }
 

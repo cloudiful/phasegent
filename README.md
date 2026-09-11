@@ -64,23 +64,23 @@ are never accepted as command-line values.
 
 ```sh
 # Secure prompt
-phasegent --role orchestrator auth setup
+phasegent --role orchestrator admin auth setup
 
 # Read from a protected file or another secure source
-phasegent --role executor auth setup --stdin < /secure/path/token
+phasegent --role executor admin auth setup --stdin < /secure/path/token
 ```
 
 Select another provider and its API base explicitly:
 
 ```sh
-phasegent --role orchestrator --provider redmine auth setup \
+phasegent --role orchestrator --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
 ```
 
 Prepare the Redmine project and role memberships:
 
 ```sh
-phasegent --role admin --provider redmine workflow bootstrap \
+phasegent --role admin --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
 
@@ -89,22 +89,30 @@ phasegent --role admin --provider redmine workflow bootstrap \
 ```sh
 phasegent --role orchestrator issue search --query "bug"
 phasegent --role orchestrator issue get 123
+phasegent --role orchestrator issue get 123 124 125
+phasegent --role orchestrator comment list 123
 phasegent --role orchestrator issue create \
   --title "Short title" --body "Issue details"
 phasegent --role orchestrator issue update-body 123 --body "Updated details"
 phasegent --role orchestrator issue close 123
+phasegent doctor
 ```
 
 Use `--provider redmine` or `--provider gitlab` on a command when the selected
 provider is not the default. Use `--repository OWNER/REPOSITORY` and
 `--project-id ID` to override repository or project discovery when required.
 
+Provisioning (`auth setup`, config writes, `workflow bootstrap`) lives under
+the human-operator `admin` group (`phasegent admin ...`) and is never invoked
+by AI roles. `phasegent doctor` reports credential presence (fingerprint, never
+values) and index state without a role.
+
 Inspect the available commands with:
 
 ```sh
 phasegent --help
 phasegent --help issue
-phasegent --help auth
+phasegent --help admin
 ```
 
 ## Provider capability matrix
@@ -205,14 +213,14 @@ first open.
 
 ## Configuration
 
-`auth setup` stores provider credentials locally. `config show` provides a
+`admin auth setup` stores provider credentials locally. `config show` provides a
 redacted view; secret values are never printed.
 
 ```sh
 phasegent config show
 phasegent config provider get
-phasegent config provider set redmine
-phasegent config provider clear
+phasegent admin config provider set redmine
+phasegent admin config provider clear
 ```
 
 Provider selection can be set per command with `--provider` or with
@@ -224,20 +232,20 @@ To use PostgreSQL as the issue index backend, configure its URL through
 stdin:
 
 ```sh
-phasegent config set index-pg-url --stdin
+phasegent admin config set index-pg-url --stdin
 ```
 
 ## Local provider
 
 `--provider local` runs fully offline with no credential, no network, and no
-`auth setup` token. It uses an independent local database file
+`admin auth setup` token. It uses an independent local database file
 (`phasegent-local.sqlite3`) next to the config database, seeded with the
 default project, issues, comments, and the canonical status transitions.
-`auth setup --provider local` only records the role-scoped provider
+`admin auth setup --provider local` only records the role-scoped provider
 preference and never prompts for a secret:
 
 ```sh
-phasegent --role executor --provider local auth setup
+phasegent --role executor --provider local admin auth setup
 phasegent --role executor --provider local issue create \
   --title "Local task" --body "Works offline"
 ```
@@ -275,7 +283,7 @@ access.
 Run isolated per-issue worktrees so multiple tasks can share one repo
 without colliding. Auto-isolation defaults off: on conflict, `acquire`
 reuses the current checkout and warns. Enable it with
-`config set worktree-auto true` or per call with `--isolate`. Copy `.env`
+`admin config set worktree-auto true` or per call with `--isolate`. Copy `.env`
 files by hand when the new worktree needs them.
 
 ```sh
@@ -311,8 +319,8 @@ phasegent --role executor notify send --event completion --title "Done" --body "
 ```
 
 Events: `completion`, `blocked`, `failure`, `interruption_suspected`,
-`publish_failed`. Configure with `config set notify-enabled true` and
-`config set notify-channel <name>`; secrets require `--stdin`.
+`publish_failed`. Configure with `admin config set notify-enabled true` and
+`admin config set notify-channel <name>`; secrets require `--stdin`. The admin group is human-operator only.
 
 ## Container image
 

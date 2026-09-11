@@ -39,6 +39,22 @@ impl GitlabProvider {
     /// lookup therefore never accidentally returns a system note as
     /// an audit note unless the operator deliberately embedded the
     /// marker in such a note.
+    /// Full bodies of every note on the issue, in API order.
+    /// Backs `comment list` through the trait forwarder. System notes
+    /// are included (unlike marker lookup, which only matches them by
+    /// accident): the list is a faithful read, not a search.
+    pub(crate) fn list_notes(&self, iid: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+        let issue_web_url = self.get_issue(iid)?.html_url;
+        let path = self.notes_path(iid);
+        let notes = self.http.paginate("comment list", |http, page| {
+            http.get_page::<ApiNote>(&path, &[("page", page.to_string())], "comment list")
+        })?;
+        Ok(notes
+            .into_iter()
+            .map(|note| note.into_output(issue_web_url.as_deref()))
+            .collect())
+    }
+
     pub(crate) fn find_marker(
         &self,
         iid: u64,

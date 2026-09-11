@@ -15,7 +15,7 @@ pub(crate) fn execute_comment(
     let role = super::required_role(role_value);
     let capability = match command {
         CommentCommand::Create { .. } => Capability::CommentCreate,
-        CommentCommand::Get { .. } => Capability::CommentRead,
+        CommentCommand::Get { .. } | CommentCommand::List { .. } => Capability::CommentRead,
         CommentCommand::FindMarker { .. } => Capability::CommentFindMarker,
     };
     if !role.allows(capability) {
@@ -84,6 +84,12 @@ pub(crate) fn execute_comment(
         CommentCommand::Get { issue, comment } => {
             super::print_result(provider.get_comment(issue, comment))
         }
+        CommentCommand::List { issue } => match provider.list_comments(issue) {
+            Ok(comments) => {
+                super::print_json(&serde_json::json!({"issue": issue, "comments": comments}))
+            }
+            Err(error) => super::provider_error(error),
+        },
         CommentCommand::FindMarker { issue, marker } => {
             super::print_result(provider.find_marker(issue, &marker))
         }

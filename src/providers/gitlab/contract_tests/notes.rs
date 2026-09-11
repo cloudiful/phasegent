@@ -169,3 +169,30 @@ fn find_marker_empty_marker_returns_config_error_without_request() {
     let error = result.unwrap_err();
     assert_eq!(error.json()["kind"], "config");
 }
+
+#[test]
+fn list_notes_returns_every_note_with_full_bodies() {
+    // `comment list` is the approved bulk-read path: one call returns
+    // all notes, full bodies, in API order (system notes included —
+    // the list is a faithful read, not a search).
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(issue_payload(7, "Title", "opened", &[])),
+        MockResponse::ok(format!(
+            "[{},{}]",
+            note_payload(1, "first body"),
+            note_payload(2, "second body")
+        ))
+        .with_header("x-next-page", ""),
+    ]);
+    let provider = provider(base);
+    let comments = provider.list_notes(7).unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0].id, 1);
+    assert_eq!(comments[0].body.as_deref(), Some("first body"));
+    assert_eq!(comments[1].id, 2);
+    assert_eq!(comments[1].body.as_deref(), Some("second body"));
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].contains("page=1"));
+    server.join().unwrap();
+}

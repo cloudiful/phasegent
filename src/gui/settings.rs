@@ -81,14 +81,14 @@ pub fn write_credential_blocking(
     storage
         .save_credential(role, provider.as_str(), &credential)
         .map_err(bound_message)?;
-    let (_, length) = storage
+    let identity = storage
         .credential_summary(role, provider.as_str())
         .map_err(bound_message)?;
     Ok(CredentialPresence {
         role: role.as_str().to_owned(),
         provider: provider.as_str().to_owned(),
         present: true,
-        length,
+        length: identity.length,
         source: "storage".to_owned(),
     })
 }
@@ -123,14 +123,14 @@ pub fn read_provisioning_blocking(query: ProvisioningQuery) -> Result<Provisioni
     let role = parse_role_required(&query.role)?;
     let storage = crate::infra::storage::Storage::open().map_err(bound_message)?;
     let identity = crate::auth::load_redmine_user(role, &storage).map_err(bound_message)?;
-    let (present, length) = storage
+    let identity_summary = storage
         .credential_summary(role, "redmine")
         .map_err(bound_message)?;
     Ok(ProvisioningStatus {
         role: role.as_str().to_owned(),
         user_id: identity.as_ref().map(|(id, _)| *id),
         login: identity.map(|(_, login)| login),
-        credential_present: present,
-        credential_length: length,
+        credential_present: identity_summary.present,
+        credential_length: identity_summary.length,
     })
 }

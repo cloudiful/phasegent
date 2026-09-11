@@ -47,6 +47,10 @@ pub trait IssueProvider {
     ) -> Result<CommentOutput, Self::Error>;
     fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, Self::Error>;
     fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, Self::Error>;
+    /// Full bodies of every comment/note on the issue, in provider
+    /// order. Backs `comment list`: one approved read path so agents
+    /// never need raw `?include=journals` calls for bulk reads.
+    fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error>;
 }
 
 pub trait RedmineMetadataProvider {

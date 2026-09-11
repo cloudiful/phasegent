@@ -54,13 +54,13 @@ pub(crate) fn parse_workflow(args: &[String]) -> Result<Command, String> {
                 0,
                 &["--repository", "--close-status-id", "--close-status-name"],
                 &[],
-                "workflow bootstrap",
+                "admin workflow bootstrap",
             )?;
             let close_status_id = optional_option(args, "--close-status-id");
             let close_status_name = optional_option(args, "--close-status-name");
             if close_status_id.is_some() && close_status_name.is_some() {
                 return Err(
-                    "workflow bootstrap accepts either --close-status-id or --close-status-name"
+                    "admin workflow bootstrap accepts either --close-status-id or --close-status-name"
                         .to_owned(),
                 );
             }

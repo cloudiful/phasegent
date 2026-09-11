@@ -9,9 +9,10 @@ use serde::Serialize;
 
 mod branch;
 mod comment;
+pub(crate) mod doctor;
 mod help;
 mod hooks;
-mod issue;
+pub(crate) mod issue;
 mod notify;
 pub(crate) mod plugin;
 mod project;
@@ -80,6 +81,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                 }
             }
         }
+        Command::Doctor => doctor::execute_doctor(),
         Command::ConfigShow => {
             // The CLI re-uses `invocation.role` so a user that runs
             // `phasegent --role executor config show` gets a

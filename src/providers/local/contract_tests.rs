@@ -179,6 +179,27 @@ fn comment_marker_conflict_is_friendly() {
 }
 
 #[test]
+fn list_comments_returns_every_comment_with_full_bodies_in_order() {
+    // `comment list` is the approved bulk-read path on the local
+    // backend too: all rows, full bodies, id order.
+    let (provider, dir) = tmp_provider("comment-list");
+    let issue = provider.create_issue("L", "b").unwrap();
+    let first = provider
+        .create_comment(issue.number, "<!-- m-one --> first", "<!-- m-one -->")
+        .unwrap();
+    let second = provider
+        .create_comment(issue.number, "<!-- m-two --> second", "<!-- m-two -->")
+        .unwrap();
+    let listed = provider.list_comments(issue.number).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, first.id);
+    assert_eq!(listed[0].body.as_deref(), Some("<!-- m-one --> first"));
+    assert_eq!(listed[1].id, second.id);
+    assert_eq!(listed[1].body.as_deref(), Some("<!-- m-two --> second"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn marker_is_globally_unique_across_issues() {
     // The schema makes local_comments.marker globally UNIQUE
     // (schema.sql), so the same marker cannot be reused on a second

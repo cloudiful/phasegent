@@ -310,6 +310,17 @@ impl ForgejoProvider {
             .ok_or_else(|| ForgejoError::not_found("comment find-marker", "marker was not found"))
     }
 
+    /// Full bodies of every comment on the issue, in API order.
+    /// Backs `comment list` through the trait forwarder.
+    pub fn list_all_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+        self.list_comments(issue).map(|comments| {
+            comments
+                .into_iter()
+                .map(|comment| CommentOutput::from_api(comment, None, true))
+                .collect()
+        })
+    }
+
     fn list_comments(&self, issue: u64) -> Result<Vec<ApiComment>, ForgejoError> {
         let mut comments = Vec::new();
         let mut page = 1;

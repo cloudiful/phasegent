@@ -59,23 +59,23 @@ Forgejo 是默认 provider。为需要使用 CLI 的每个 role 配置 credentia
 
 ```sh
 # 安全提示输入
-phasegent --role orchestrator auth setup
+phasegent --role orchestrator admin auth setup
 
 # 从受保护文件或其他安全来源读取
-phasegent --role executor auth setup --stdin < /secure/path/token
+phasegent --role executor admin auth setup --stdin < /secure/path/token
 ```
 
 显式选择其他 provider 及其 API base：
 
 ```sh
-phasegent --role orchestrator --provider redmine auth setup \
+phasegent --role orchestrator --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
 ```
 
 准备 Redmine 的 project 和 role membership：
 
 ```sh
-phasegent --role admin --provider redmine workflow bootstrap \
+phasegent --role admin --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
 
@@ -84,22 +84,30 @@ phasegent --role admin --provider redmine workflow bootstrap \
 ```sh
 phasegent --role orchestrator issue search --query "bug"
 phasegent --role orchestrator issue get 123
+phasegent --role orchestrator issue get 123 124 125
+phasegent --role orchestrator comment list 123
 phasegent --role orchestrator issue create \
   --title "Short title" --body "Issue details"
 phasegent --role orchestrator issue update-body 123 --body "Updated details"
 phasegent --role orchestrator issue close 123
+phasegent doctor
 ```
 
 默认使用 Forgejo；需要时在命令上添加 `--provider redmine` 或
 `--provider gitlab`。可以使用 `--repository OWNER/REPOSITORY` 和
 `--project-id ID` 覆盖仓库或 project 的自动发现。
 
+Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
+人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。
+`phasegent doctor` 无需 role 即可报告 credential 存在性（指纹而非明文）
+和索引状态。
+
 查看可用命令：
 
 ```sh
 phasegent --help
 phasegent --help issue
-phasegent --help auth
+phasegent --help admin
 ```
 
 ## Provider 能力矩阵
@@ -190,14 +198,14 @@ phasegent gui
 
 ## 配置
 
-`auth setup` 将 credential 保存在本地。`config show` 提供脱敏视图，
+`admin auth setup` 将 credential 保存在本地。`config show` 提供脱敏视图，
 永远不会打印 secret。
 
 ```sh
 phasegent config show
 phasegent config provider get
-phasegent config provider set redmine
-phasegent config provider clear
+phasegent admin config provider set redmine
+phasegent admin config provider clear
 ```
 
 可以通过单次命令的 `--provider` 或环境变量 `PHASEGENT_PROVIDER` 选择
@@ -208,19 +216,19 @@ TOML > SQLite > 默认值。
 使用 PostgreSQL 作为 issue 索引后端时，通过 stdin 配置 URL：
 
 ```sh
-phasegent config set index-pg-url --stdin
+phasegent admin config set index-pg-url --stdin
 ```
 
 ## 本地 provider
 
-`--provider local` 完全离线运行，无需凭证、网络，也不需要 `auth setup`
+`--provider local` 完全离线运行，无需凭证、网络，也不需要 `admin auth setup`
 的 token。它使用配置数据库旁边一个独立的本地数据库文件
 （`phasegent-local.sqlite3`），默认填充 project、issue、评论以及标准状态
-转移。`auth setup --provider local` 仅记录按 role 划分的 provider 偏好，
+转移。`admin auth setup --provider local` 仅记录按 role 划分的 provider 偏好，
 永不提示输入 secret：
 
 ```sh
-phasegent --role executor --provider local auth setup
+phasegent --role executor --provider local admin auth setup
 phasegent --role executor --provider local issue create \
   --title "Local task" --body "Works offline"
 ```
@@ -255,7 +263,7 @@ phasegent issue unbind
 
 按 issue 隔离 worktree，让多个任务共享同一仓库而不互相冲突。自动隔离
 默认关闭：冲突时 `acquire` 复用当前 checkout 并发出警告。用
-`config set worktree-auto true` 或单次 `--isolate` 开启。新 worktree
+`admin config set worktree-auto true` 或单次 `--isolate` 开启。新 worktree
 需要环境文件时请手动复制 `.env`。
 
 ```sh
@@ -291,8 +299,8 @@ phasegent --role executor notify send --event completion --title "Done" --body "
 ```
 
 事件：`completion`、`blocked`、`failure`、`interruption_suspected`、
-`publish_failed`。通过 `config set notify-enabled true` 和
-`config set notify-channel <name>` 配置；secret 须经 `--stdin` 传入。
+`publish_failed`。通过 `admin config set notify-enabled true` 和
+`admin config set notify-channel <name>` 配置；secret 须经 `--stdin` 传入。admin 组仅限人类操作者。
 
 ## 容器镜像
 

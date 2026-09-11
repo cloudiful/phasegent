@@ -6,7 +6,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\nUsage:\n  phasegent --role <ROLE> [--provider forgejo|redmine|gitlab|local] <COMMAND> [OPTIONS]\n  phasegent gui\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, reviewer, or tester\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  auth                   Authentication setup\n  config                 Local configuration show, set, clear, and provider default\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\nUsage:\n  phasegent --role <ROLE> [--provider forgejo|redmine|gitlab|local] <COMMAND> [OPTIONS]\n  phasegent gui\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, reviewer, or tester\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)\n  config                 Local configuration (read-only show/get; writes live under admin)\n  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no --role needed)\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
   plugin                 Managed OpenCode plugin installation (issue #239 Phase 3)"
     );
     if provider != Some(ProviderKind::Redmine)
@@ -40,9 +40,6 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
             "  timer                  Redmine phase time tracking (internal/auto; manual fallback only)"
         );
     }
-    if provider == Some(ProviderKind::Redmine) && role.is_none_or(|role| role == Role::Admin) {
-        println!("  workflow               Redmine workflow bootstrap");
-    }
     if role.is_none_or(|role| {
         role == Role::Orchestrator || role == Role::Executor || role == Role::Reviewer
     }) {
@@ -52,8 +49,8 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
     }
     println!(
         "\nUse 'phasegent --help <command>' for the next level.\n\
-         Provider resolution chain and machine-wide default: 'phasegent --help config provider'.\n\
-         Role and credential guidance: 'phasegent --help auth'."
+          Provider resolution chain and machine-wide default: 'phasegent --help config provider'.\n\
+          Role and credential guidance: 'phasegent --help admin'."
     );
 }
 

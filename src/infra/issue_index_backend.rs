@@ -81,7 +81,7 @@ impl IssueIndexBackend {
             }
             IndexBackendKind::Postgres => {
                 let url = resolve_pg_url(storage)?.ok_or_else(|| {
-                    "postgres index backend requires PHASEGENT_INDEX_PG_URL; use config set index-pg-url --stdin".to_owned()
+                    "postgres index backend requires PHASEGENT_INDEX_PG_URL; use admin config set index-pg-url --stdin".to_owned()
                 })?;
                 // The URL itself is never echoed in the error.
                 let pg = PostgresIssueIndex::open(&url).await?;

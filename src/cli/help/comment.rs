@@ -8,6 +8,7 @@ pub(crate) fn print_comment_help(role: Option<Role>) {
     for (name, capability) in [
         ("create", Capability::CommentCreate),
         ("get", Capability::CommentRead),
+        ("list", Capability::CommentRead),
         ("find-marker", Capability::CommentFindMarker),
     ] {
         if role.is_none_or(|role| role.allows(capability)) {
@@ -26,6 +27,10 @@ pub(crate) fn print_comment_command_help(role: Option<Role>, command: &str) {
         "get" => (
             Capability::CommentRead,
             "Usage: comment get <ISSUE> <COMMENT_ID>",
+        ),
+        "list" => (
+            Capability::CommentRead,
+            "Usage: comment list <ISSUE>\n\nFull bodies of every comment on the issue, in provider order, as {issue, comments}. The approved bulk-read path: prefer it over raw provider calls when all notes are needed at once.",
         ),
         "find-marker" => (
             Capability::CommentFindMarker,

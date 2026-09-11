@@ -63,7 +63,10 @@ mod naming;
 // the test target is not being analysed, so silence the false
 // positive here.
 #[allow(unused_imports)]
-pub use acquire::{WORKTREE_AUTO_SETTING, acquire_lease, release_lease, resolve_worktree_auto};
+pub use acquire::{
+    WORKTREE_AUTO_SETTING, acquire_lease, release_lease, release_lease_forced,
+    resolve_worktree_auto,
+};
 #[allow(unused_imports)]
 pub use git::{is_clean, parse_worktree_list, worktree_add, worktree_remove};
 #[allow(unused_imports)]
@@ -101,6 +104,9 @@ pub struct LeaseRow {
     pub status: String,
     pub created_at: i64,
     pub heartbeat_at: i64,
+    /// Operator justification for a forced release; `None` for
+    /// ordinary releases. Lease rows are never deleted.
+    pub release_reason: Option<String>,
 }
 
 /// Outcome of a successful `acquire_lease`. `created == false` means
@@ -131,6 +137,11 @@ pub struct AcquireOutcome {
 pub struct ReleaseOutcome {
     pub lease_id: String,
     pub status: String,
+    /// True when the transition went through the forced path with a
+    /// recorded reason. A no-op on an already-terminal lease reports
+    /// `forced: false` because nothing was overridden.
+    pub forced: bool,
+    pub reason: Option<String>,
 }
 
 /// One parsed entry from `git worktree list --porcelain`. The

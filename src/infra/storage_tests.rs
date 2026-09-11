@@ -1539,3 +1539,104 @@ fn finalize_without_lease_does_not_mutate_projection_state() {
     );
     let _ = fs::remove_dir_all(temp_dir);
 }
+
+#[test]
+fn credential_summary_reports_fingerprint_and_store_time() {
+    // `save_credential` maintains the non-secret fingerprint and store
+    // timestamp so display paths never load the secret. The fingerprint
+    // is the last 4 characters; overwriting refreshes both columns.
+    use crate::infra::storage::credential_fingerprint;
+
+    assert_eq!(
+        credential_fingerprint("redmine-secret-key-1234").as_deref(),
+        Some("1234")
+    );
+    assert_eq!(credential_fingerprint("abcd").as_deref(), Some("abcd"));
+    assert_eq!(credential_fingerprint("abc"), None);
+    assert_eq!(credential_fingerprint(""), None);
+
+    let (temp_dir, storage) = open_at_temp("credential-fingerprint");
+    storage
+        .save_credential(Role::Executor, PROVIDER_REDMINE, "redmine-secret-key-1234")
+        .unwrap();
+    let summary = storage
+        .credential_summary(Role::Executor, PROVIDER_REDMINE)
+        .unwrap();
+    assert!(summary.present);
+    assert_eq!(summary.length, "redmine-secret-key-1234".chars().count());
+    assert_eq!(summary.fingerprint.as_deref(), Some("1234"));
+    assert!(
+        summary.updated_at.is_some_and(|stamp| stamp > 0),
+        "store timestamp must be recorded"
+    );
+
+    storage
+        .save_credential(Role::Executor, PROVIDER_REDMINE, "rotated-key-5678")
+        .unwrap();
+    let rotated = storage
+        .credential_summary(Role::Executor, PROVIDER_REDMINE)
+        .unwrap();
+    assert_eq!(rotated.fingerprint.as_deref(), Some("5678"));
+
+    // Short secrets report presence/length but no fingerprint.
+    storage
+        .save_credential(Role::Executor, PROVIDER_FORGEJO, "abc")
+        .unwrap();
+    let short = storage
+        .credential_summary(Role::Executor, PROVIDER_FORGEJO)
+        .unwrap();
+    assert!(short.present);
+    assert_eq!(short.fingerprint, None);
+
+    // Missing rows stay fully absent.
+    let missing = storage
+        .credential_summary(Role::Reviewer, PROVIDER_REDMINE)
+        .unwrap();
+    assert!(!missing.present);
+    assert_eq!(missing.length, 0);
+    assert_eq!(missing.fingerprint, None);
+    assert_eq!(missing.updated_at, None);
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn credential_summary_backfills_legacy_rows_without_fingerprint() {
+    // Rows written before the fingerprint columns existed carry NULLs
+    // (simulated here by clearing the columns after save). The first
+    // summary read backfills the fingerprint from the stored value;
+    // the secret itself is never returned.
+    let (temp_dir, storage) = open_at_temp("credential-backfill");
+    storage
+        .save_credential(
+            Role::Orchestrator,
+            PROVIDER_GITLAB,
+            "legacy-gitlab-token-99",
+        )
+        .unwrap();
+    storage
+        .connection
+        .execute(
+            "UPDATE role_credential SET fingerprint = NULL, credential_updated_at = NULL \
+             WHERE role = 'orchestrator' AND provider = 'gitlab'",
+            [],
+        )
+        .unwrap();
+
+    let summary = storage
+        .credential_summary(Role::Orchestrator, PROVIDER_GITLAB)
+        .unwrap();
+    assert!(summary.present);
+    assert_eq!(summary.fingerprint.as_deref(), Some("n-99"));
+
+    // The backfill persisted: a second read finds the stored value.
+    let stored: Option<String> = storage
+        .connection
+        .query_row(
+            "SELECT fingerprint FROM role_credential WHERE role = 'orchestrator' AND provider = 'gitlab'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("n-99"));
+    let _ = fs::remove_dir_all(temp_dir);
+}

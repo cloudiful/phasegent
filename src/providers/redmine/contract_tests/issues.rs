@@ -326,3 +326,53 @@ fn search_rejects_empty_query_unless_all_and_reports_truncation() {
     server.join().unwrap();
     drop(requests);
 }
+
+#[test]
+fn list_comments_returns_every_journal_with_full_bodies() {
+    // `comment list` is the approved bulk-read path: one call returns
+    // all journals, full bodies, in API order.
+    let (result, request) = one(
+        MockResponse::ok(issue_response(
+            21,
+            "Subject",
+            "Description",
+            false,
+            &[(11, "first <!-- m1 -->"), (12, "second")],
+        )),
+        |redmine| redmine.list_comments(21),
+    );
+    let comments = result.unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0].id, 11);
+    assert_eq!(comments[0].body.as_deref(), Some("first <!-- m1 -->"));
+    assert_eq!(comments[1].id, 12);
+    assert_eq!(comments[1].body.as_deref(), Some("second"));
+    support::assert_request(&request, "GET", "/issues/21.json?include=journals", None);
+}
+
+#[test]
+fn batch_fetch_collects_successes_beside_per_number_failures() {
+    // `issue get` batches must never let one missing issue discard the
+    // rest: successes and per-number failures share one envelope.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(issue_response(17, "First", "Body", false, &[])),
+        MockResponse::status(404, r#"{"errors":["Not found"]}"#),
+        MockResponse::ok(issue_response(19, "Second", "Body", false, &[])),
+    ]);
+    let redmine = provider(base);
+    let (issues, errors) = crate::cli::issue::batch_fetch_issues(&redmine, &[17, 999, 19]);
+    assert_eq!(
+        issues.iter().map(|issue| issue.number).collect::<Vec<_>>(),
+        vec![17, 19]
+    );
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["number"], serde_json::json!(999));
+    assert!(
+        errors[0].get("error").is_some(),
+        "failure entries must carry the structured provider error"
+    );
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 3, "every number must be fetched exactly once");
+    server.join().unwrap();
+    drop(seen);
+}

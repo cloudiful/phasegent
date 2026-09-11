@@ -106,10 +106,12 @@ fn root_help_is_short_and_points_at_deep_pages() {
     );
 
     // Visible command index entries that operators rely on for one-glance routing.
+    // Provisioning lives under the human-operator `admin` group; the legacy
+    // top-level `auth`/`workflow` entries are gone by design.
     for command in [
         "issue",
         "comment",
-        "auth",
+        "admin",
         "config",
         "hooks",
         "--help <command>",
@@ -127,7 +129,7 @@ fn root_help_is_short_and_points_at_deep_pages() {
         "root help must point operators at the resolver chain page; got:\n{stdout}",
     );
     assert!(
-        stdout.contains("phasegent --help auth"),
+        stdout.contains("phasegent --help admin"),
         "root help must point operators at the role/credential page; got:\n{stdout}",
     );
 

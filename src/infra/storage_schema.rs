@@ -87,10 +87,18 @@ CREATE TABLE IF NOT EXISTS role_gitlab_config (
     project_id INTEGER
 );
 
+-- `fingerprint` (last 4 characters, NULL for short secrets) and
+-- `credential_updated_at` (epoch seconds) let `config show` and `doctor`
+-- identify *which* credential is stored without ever loading the secret
+-- for display. Both columns are maintained by `save_credential` and
+-- backfilled on first read by `credential_summary`, so pre-existing rows
+-- gain them lazily with no destructive migration.
 CREATE TABLE IF NOT EXISTS role_credential (
     role TEXT NOT NULL,
     provider TEXT NOT NULL,
     credential TEXT NOT NULL,
+    fingerprint TEXT,
+    credential_updated_at INTEGER,
     PRIMARY KEY (role, provider)
 );
 
@@ -174,6 +182,8 @@ CREATE INDEX IF NOT EXISTS notification_deliveries_created_idx
 /// `ALTER TABLE ADD COLUMN` would otherwise error on a database that was
 /// initialised with the new schema already present.
 pub(crate) const MIGRATIONS: &[(&str, &str, &str)] = &[
+    ("role_credential", "fingerprint", "TEXT"),
+    ("role_credential", "credential_updated_at", "INTEGER"),
     ("execution_timer_runs", "owner_session_id", "TEXT"),
     ("execution_timer_runs", "owner_call_id", "TEXT"),
     ("execution_timer_runs", "projection_token", "TEXT"),

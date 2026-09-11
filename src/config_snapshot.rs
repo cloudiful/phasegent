@@ -62,14 +62,19 @@ pub struct GlobalSettingJson {
     pub value: Option<&'static str>,
 }
 
-/// Compact summary for a per-role credential. Only presence and
-/// length are reported so the snapshot can never echo secret
+/// Compact summary for a per-role credential. Only presence,
+/// length, the last-4-characters fingerprint, and the store
+/// timestamp are reported so the snapshot can never echo secret
 /// content even by accident.
 #[derive(Debug, Serialize)]
 pub struct CredentialSummary {
     pub present: bool,
     #[serde(skip_serializing_if = "is_zero")]
     pub length: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -142,16 +147,19 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
     })
 }
 
-fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> {
+pub(crate) fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> {
     let role_config = storage.load_role_config(role)?;
     let redmine_config = storage.load_redmine_config(role)?;
     let gitlab_config = storage.load_gitlab_config(role)?;
-    let (forgejo_present, forgejo_length) =
-        storage.credential_summary(role, crate::infra::storage::PROVIDER_FORGEJO)?;
-    let (redmine_present, redmine_length) =
-        storage.credential_summary(role, crate::infra::storage::PROVIDER_REDMINE)?;
-    let (gitlab_present, gitlab_length) =
-        storage.credential_summary(role, crate::infra::storage::PROVIDER_GITLAB)?;
+    let forgejo = storage.credential_summary(role, crate::infra::storage::PROVIDER_FORGEJO)?;
+    let redmine = storage.credential_summary(role, crate::infra::storage::PROVIDER_REDMINE)?;
+    let gitlab = storage.credential_summary(role, crate::infra::storage::PROVIDER_GITLAB)?;
+    let summarize = |identity: crate::infra::storage::CredentialIdentity| CredentialSummary {
+        present: identity.present,
+        length: identity.length,
+        fingerprint: identity.fingerprint,
+        updated_at: identity.updated_at,
+    };
     Ok(RoleSnapshot {
         role: role.as_str(),
         provider: role_config
@@ -170,18 +178,9 @@ fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> 
         gitlab_api_base: gitlab_config
             .as_ref()
             .and_then(|config| config.api_base.clone()),
-        forgejo_credential: CredentialSummary {
-            present: forgejo_present,
-            length: forgejo_length,
-        },
-        redmine_credential: CredentialSummary {
-            present: redmine_present,
-            length: redmine_length,
-        },
-        gitlab_credential: CredentialSummary {
-            present: gitlab_present,
-            length: gitlab_length,
-        },
+        forgejo_credential: summarize(forgejo),
+        redmine_credential: summarize(redmine),
+        gitlab_credential: summarize(gitlab),
     })
 }
 

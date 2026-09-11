@@ -59,6 +59,9 @@ impl From<AcquireOutcome> for AcquireJson {
 pub struct ReleaseJson {
     pub lease_id: String,
     pub status: String,
+    pub forced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl From<ReleaseOutcome> for ReleaseJson {
@@ -66,6 +69,8 @@ impl From<ReleaseOutcome> for ReleaseJson {
         Self {
             lease_id: outcome.lease_id,
             status: outcome.status,
+            forced: outcome.forced,
+            reason: outcome.reason,
         }
     }
 }
@@ -83,6 +88,10 @@ pub struct LeaseJson {
     pub status: String,
     pub created_at: i64,
     pub heartbeat_at: i64,
+    /// Operator justification for a forced release; absent for
+    /// ordinary releases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_reason: Option<String>,
 }
 
 impl From<crate::worktree::LeaseRow> for LeaseJson {
@@ -98,6 +107,7 @@ impl From<crate::worktree::LeaseRow> for LeaseJson {
             status: row.status,
             created_at: row.created_at,
             heartbeat_at: row.heartbeat_at,
+            release_reason: row.release_reason,
         }
     }
 }
@@ -150,11 +160,16 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             }
             execute_acquire(role, issue, &session, &format, isolate)
         }
-        WorktreeCommand::Release { lease, retain } => {
+        WorktreeCommand::Release {
+            lease,
+            retain,
+            force,
+            reason,
+        } => {
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree release");
             }
-            execute_release(&lease, retain)
+            execute_release(&lease, retain, force, reason)
         }
         WorktreeCommand::Status { issue } => {
             if !is_read_role(role) {
@@ -234,8 +249,34 @@ fn execute_acquire(role: Role, issue: u64, session: &str, format: &str, isolate:
     }
 }
 
-fn execute_release(lease: &str, retain: bool) -> i32 {
-    match crate::worktree::release_lease(lease, retain) {
+fn execute_release(lease: &str, retain: bool, force: bool, reason: Option<String>) -> i32 {
+    let outcome = if force {
+        // `--reason` is guaranteed non-empty by the parser when
+        // `--force` is set; re-check defensively so a future caller
+        // cannot persist an empty justification.
+        match reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            Some(justification) => {
+                crate::worktree::release_lease_forced(lease, retain, justification)
+            }
+            None => {
+                return super::structured_error(
+                    serde_json::json!({
+                        "kind":"argument",
+                        "operation":"worktree release",
+                        "message":"worktree release --force requires a non-empty --reason"
+                    }),
+                    2,
+                );
+            }
+        }
+    } else {
+        crate::worktree::release_lease(lease, retain)
+    };
+    match outcome {
         Ok(outcome) => {
             let payload = ReleaseJson::from(outcome);
             super::print_json(&payload)

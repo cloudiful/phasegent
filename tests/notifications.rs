@@ -170,7 +170,7 @@ fn notify_channel_config_round_trips_and_snapshot_redacts_secrets() {
         ("notify-channel", "webhook"),
         ("notify-webhook-url", "https://hooks.example.com/notify"),
     ] {
-        let output = run_phasegent(&scratch, &["config", "set", setting, value], &[]);
+        let output = run_phasegent(&scratch, &["admin", "config", "set", setting, value], &[]);
         assert!(
             output.status.success(),
             "set {setting} failed: {}",
@@ -180,13 +180,19 @@ fn notify_channel_config_round_trips_and_snapshot_redacts_secrets() {
     // Secret via --stdin only; direct value must be rejected.
     let direct = run_phasegent(
         &scratch,
-        &["config", "set", "notify-webhook-token", "secret-value"],
+        &[
+            "admin",
+            "config",
+            "set",
+            "notify-webhook-token",
+            "secret-value",
+        ],
         &[],
     );
     assert!(!direct.status.success());
     let via_stdin = run_with_stdin(
         &scratch,
-        &["config", "set", "notify-webhook-token", "--stdin"],
+        &["admin", "config", "set", "notify-webhook-token", "--stdin"],
         "s3cret-token",
     );
     assert!(
@@ -216,7 +222,11 @@ fn notify_channel_config_round_trips_and_snapshot_redacts_secrets() {
         "snapshot missing sanitised webhook url; stdout={stdout}"
     );
     // Clear works for notify fields.
-    let clear = run_phasegent(&scratch, &["config", "clear", "notify-channel"], &[]);
+    let clear = run_phasegent(
+        &scratch,
+        &["admin", "config", "clear", "notify-channel"],
+        &[],
+    );
     assert!(clear.status.success());
 }
 

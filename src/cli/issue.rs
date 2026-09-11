@@ -1,5 +1,6 @@
 use crate::command::IssueCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::IssueSummary;
 use crate::providers::config::resolve_kind;
 use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind};
@@ -20,7 +21,9 @@ pub(crate) fn execute_issue(
     command: IssueCommand,
 ) -> i32 {
     let (role, capability) = match &command {
-        IssueCommand::Get { .. } => (super::required_role(role_value), Capability::IssueRead),
+        IssueCommand::Get { .. } | IssueCommand::GetBatch { .. } => {
+            (super::required_role(role_value), Capability::IssueRead)
+        }
         IssueCommand::Search { .. } => (super::required_role(role_value), Capability::IssueSearch),
         IssueCommand::Create { .. } => (super::required_role(role_value), Capability::IssueCreate),
         IssueCommand::UpdateBody { .. } => (
@@ -180,6 +183,21 @@ pub(crate) fn execute_issue(
             }
             Err(error) => super::provider_error(error),
         },
+        IssueCommand::GetBatch { numbers } => {
+            let (issues, errors) = batch_fetch_issues(&provider, &numbers);
+            for summary in &issues {
+                issue_search::warm_single_summary(&provider, summary, "issue get");
+            }
+            let failed = !errors.is_empty();
+            let code = super::print_json(&serde_json::json!({"issues": issues, "errors": errors}));
+            if code != 0 {
+                code
+            } else if failed {
+                1
+            } else {
+                0
+            }
+        }
         IssueCommand::Search { .. } => {
             unreachable!("transparent search bypassed provider execution")
         }
@@ -331,4 +349,27 @@ pub(crate) fn execute_issue(
             unreachable!("local branch context commands bypass provider execution")
         }
     }
+}
+
+/// Fetch several issues for `issue get` batches. Successes and
+/// failures are collected side by side so one missing issue never
+/// discards the rest; the caller renders the `{issues, errors}`
+/// envelope. Generic over the provider so tests can drive it
+/// against a mock server without a full CLI invocation.
+pub(crate) fn batch_fetch_issues<P>(
+    provider: &P,
+    numbers: &[u64],
+) -> (Vec<IssueSummary>, Vec<serde_json::Value>)
+where
+    P: IssueProvider<Error = ForgejoError>,
+{
+    let mut issues = Vec::with_capacity(numbers.len());
+    let mut errors = Vec::new();
+    for number in numbers {
+        match provider.get_issue(*number) {
+            Ok(summary) => issues.push(summary),
+            Err(error) => errors.push(serde_json::json!({"number": number, "error": error.json()})),
+        }
+    }
+    (issues, errors)
 }

@@ -32,11 +32,41 @@ pub fn ensure_schema(storage: &Storage) -> Result<(), String> {
     storage
         .connection
         .execute_batch(WORKTREE_LEASES_SCHEMA)
-        .map_err(|error| format!("could not initialise worktree lease table: {error}"))
+        .map_err(|error| format!("could not initialise worktree lease table: {error}"))?;
+    ensure_release_reason_column(storage)
+}
+
+/// Additive migration for `worktree_leases.release_reason`: databases
+/// created before the force-release surface gain a NULL column on
+/// open. Idempotent via `PRAGMA table_info`, mirroring the storage
+/// `MIGRATIONS` runner without pulling it in.
+fn ensure_release_reason_column(storage: &Storage) -> Result<(), String> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT name FROM pragma_table_info('worktree_leases') WHERE name = 'release_reason'",
+        )
+        .map_err(|error| format!("could not inspect worktree lease table: {error}"))?;
+    let present: bool = statement
+        .exists([])
+        .map_err(|error| format!("could not inspect worktree lease table: {error}"))?;
+    if !present {
+        storage
+            .connection
+            .execute(
+                "ALTER TABLE worktree_leases ADD COLUMN release_reason TEXT",
+                [],
+            )
+            .map_err(|error| format!("could not migrate worktree lease table: {error}"))?;
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
 const WORKTREE_LEASES_SCHEMA: &str = "\
+-- `release_reason` records the operator justification for a forced
+-- release (`worktree release --force --reason`); ordinary releases
+-- keep it NULL. Lease rows are audit records and are never deleted.
 CREATE TABLE IF NOT EXISTS worktree_leases (
     lease_id TEXT PRIMARY KEY,
     repo_identity TEXT NOT NULL,
@@ -47,7 +77,8 @@ CREATE TABLE IF NOT EXISTS worktree_leases (
     branch TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    heartbeat_at INTEGER NOT NULL
+    heartbeat_at INTEGER NOT NULL,
+    release_reason TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS worktree_leases_repo_path_idx
@@ -68,7 +99,7 @@ pub(super) fn find_active_lease(
         .connection
         .prepare(
             "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at \
+                    branch, status, created_at, heartbeat_at, release_reason \
              FROM worktree_leases \
              WHERE repo_identity = ?1 AND issue = ?2 AND session = ?3 AND status = ?4 \
              ORDER BY created_at DESC LIMIT 1",
@@ -133,7 +164,7 @@ pub(crate) fn load_lease(
         .connection
         .prepare(
             "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at \
+                    branch, status, created_at, heartbeat_at, release_reason \
              FROM worktree_leases WHERE lease_id = ?1",
         )
         .map_err(|error| WorktreeError::new("storage", format!("prepare load: {error}")))?;
@@ -204,6 +235,24 @@ pub(super) fn refresh_heartbeat(storage: &Storage, lease_id: &str) -> Result<(),
 }
 
 #[allow(dead_code)]
+/// Persist the operator justification for a forced release. Only
+/// called on the forced path after the status flip; ordinary
+/// releases keep `release_reason` NULL.
+pub(crate) fn record_release_reason(
+    storage: &Storage,
+    lease_id: &str,
+    reason: &str,
+) -> Result<(), WorktreeError> {
+    storage
+        .connection
+        .execute(
+            "UPDATE worktree_leases SET release_reason = ?2 WHERE lease_id = ?1",
+            rusqlite::params![lease_id, reason],
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("record reason: {error}")))?;
+    Ok(())
+}
+
 pub(crate) fn update_status(
     storage: &Storage,
     lease_id: &str,
@@ -226,7 +275,7 @@ pub fn list_for_issue(storage: &Storage, issue: u64) -> Result<Vec<LeaseRow>, Wo
         .connection
         .prepare(
             "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at \
+                    branch, status, created_at, heartbeat_at, release_reason \
              FROM worktree_leases \
              WHERE issue = ?1 AND status = ?2 \
              ORDER BY created_at DESC LIMIT ?3",
@@ -253,7 +302,7 @@ pub fn list_for_repo(storage: &Storage, identity: &str) -> Result<Vec<LeaseRow>,
         .connection
         .prepare(
             "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at \
+                    branch, status, created_at, heartbeat_at, release_reason \
              FROM worktree_leases \
              WHERE repo_identity = ?1 \
              ORDER BY created_at DESC LIMIT ?2",
@@ -288,5 +337,6 @@ fn decode_lease_row(row: &rusqlite::Row<'_>) -> Result<LeaseRow, rusqlite::Error
         status: row.get(7)?,
         created_at: row.get(8)?,
         heartbeat_at: row.get(9)?,
+        release_reason: row.get(10)?,
     })
 }

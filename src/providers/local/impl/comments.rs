@@ -109,6 +109,25 @@ impl LocalProvider {
         })
     }
 
+    /// Full bodies of every comment on the issue, in id order.
+    /// Backs `comment list` through the trait forwarder.
+    pub fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+        if issue == 0 {
+            return Err(ForgejoError::config(
+                "issue number must be greater than zero",
+            ));
+        }
+        self.with_conn("comment list", |conn| {
+            let mut statement = conn.prepare(local_sql("list_comments"))?;
+            let rows = statement.query_map(rusqlite::params![issue as i64], row_from_stmt)?;
+            let mut comments = Vec::new();
+            for row in rows {
+                comments.push(row?.to_get_output());
+            }
+            Ok(comments)
+        })
+    }
+
     pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ForgejoError> {
         if marker.is_empty() {
             return Err(ForgejoError::config("marker cannot be empty"));

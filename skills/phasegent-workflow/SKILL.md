@@ -164,3 +164,10 @@ Rules:
   owns timer/status/closure).
 - Each child uses its own `--role` only. Omit `--provider` on the configured
   default; pass it only to override (and always for `local`).
+- The `admin` group (`admin auth setup`, `admin config set/clear`,
+  `admin config provider set/clear`, `admin workflow bootstrap`) is
+  human-operator only — no AI role ever invokes it, and orchestrator
+  never delegates it. Need a credential or setting? Ask the operator.
+  Need to check state? Use `config show`, `config provider get`, or
+  `doctor`. Never read the SQLite files or call provider REST
+  directly: `comment list` and batch `issue get` cover bulk reads.

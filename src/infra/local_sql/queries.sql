@@ -42,6 +42,10 @@ FROM local_comments WHERE id = ?1 AND issue_id = ?2;
 SELECT id, issue_id, role, phase, attempt, marker, body, created_at
 FROM local_comments WHERE issue_id = ?1 AND marker = ?2;
 
+-- name: list_comments
+SELECT id, issue_id, role, phase, attempt, marker, body, created_at
+FROM local_comments WHERE issue_id = ?1 ORDER BY id ASC;
+
 -- name: list_projects
 SELECT rowid, project, description FROM local_projects ORDER BY project ASC;
 

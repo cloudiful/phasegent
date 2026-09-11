@@ -378,6 +378,7 @@ fn config_set_parses_canonical_and_kebab_alias() {
                 vec![
                     "--role".to_owned(),
                     "executor".to_owned(),
+                    "admin".to_owned(),
                     "config".to_owned(),
                     "set".to_owned(),
                     name.to_owned(),
@@ -389,6 +390,7 @@ fn config_set_parses_canonical_and_kebab_alias() {
                 let mut a = vec![
                     "--role".to_owned(),
                     "executor".to_owned(),
+                    "admin".to_owned(),
                     "config".to_owned(),
                     "set".to_owned(),
                     name.to_owned(),
@@ -429,13 +431,13 @@ fn config_set_rejects_legacy_project_id_aliases() {
             config_write::canonical_setting_name(alias).is_none(),
             "alias '{alias}' must be unknown after Phase 1"
         );
-        let args = ["--role", "executor", "config", "set", alias, "42"]
+        let args = ["--role", "executor", "admin", "config", "set", alias, "42"]
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let error = command::parse(&args).expect_err("project-id alias must be rejected");
         assert!(error.contains("unknown config setting"), "got: {error}");
-        let clear_args = ["--role", "executor", "config", "clear", alias]
+        let clear_args = ["--role", "executor", "admin", "config", "clear", alias]
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
@@ -467,10 +469,16 @@ fn config_set_rejects_legacy_project_id_aliases() {
 #[test]
 fn config_set_global_without_role_parses() {
     // Global settings must be usable without --role.
-    let args = ["config", "set", "redmine-git-mirror-api-key", "--stdin"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let args = [
+        "admin",
+        "config",
+        "set",
+        "redmine-git-mirror-api-key",
+        "--stdin",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("global set without --role must parse");
     match invocation.command {
         Command::ConfigSet { setting, stdin, .. } => {
@@ -480,6 +488,7 @@ fn config_set_global_without_role_parses() {
         other => panic!("expected ConfigSet global without role, got {other:?}"),
     }
     let args = [
+        "admin",
         "config",
         "set",
         "redmine-repository-url",
@@ -499,7 +508,7 @@ fn config_set_global_without_role_parses() {
 
 #[test]
 fn config_set_role_scoped_requires_role() {
-    let args = ["config", "set", "api-base", "https://example.com"]
+    let args = ["admin", "config", "set", "api-base", "https://example.com"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -551,7 +560,7 @@ fn config_set_rejects_unknown_setting() {
 
 #[test]
 fn config_set_rejects_missing_value_for_non_secret() {
-    let args = ["--role", "executor", "config", "set", "api-base"]
+    let args = ["--role", "executor", "admin", "config", "set", "api-base"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -766,7 +775,7 @@ fn config_clear_global_without_role_and_role_scoped() {
 
 #[test]
 fn config_clear_command_parsing() {
-    let args = ["config", "clear", "redmine-git-mirror-api-key"]
+    let args = ["admin", "config", "clear", "redmine-git-mirror-api-key"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -777,14 +786,14 @@ fn config_clear_command_parsing() {
         }
         other => panic!("got {other:?}"),
     }
-    let args = ["config", "clear", "api-base"]
+    let args = ["admin", "config", "clear", "api-base"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let err = command::parse(&args).expect_err("clear role-scoped without role must error");
     assert!(err.contains("--role is required"), "got: {err}");
 
-    let args = ["--role", "executor", "config", "clear", "api-base"]
+    let args = ["--role", "executor", "admin", "config", "clear", "api-base"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -794,14 +803,14 @@ fn config_clear_command_parsing() {
         other => panic!("got {other:?}"),
     }
 
-    let args = ["--role", "executor", "config", "clear"]
+    let args = ["--role", "executor", "admin", "config", "clear"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let err = command::parse(&args).expect_err("clear without setting must error");
     assert!(err.contains("requires a setting"), "got: {err}");
 
-    let args = ["--role", "executor", "config", "clear", "unknown"]
+    let args = ["--role", "executor", "admin", "config", "clear", "unknown"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -843,7 +852,7 @@ fn config_provider_set_parses_valid_values() {
         ("gitlab", crate::providers::ProviderKind::Gitlab),
         ("local", crate::providers::ProviderKind::Local),
     ] {
-        let args = ["config", "provider", "set", raw]
+        let args = ["admin", "config", "provider", "set", raw]
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
@@ -858,7 +867,7 @@ fn config_provider_set_parses_valid_values() {
 
 #[test]
 fn config_provider_set_rejects_unknown_value() {
-    let args = ["config", "provider", "set", "wrong"]
+    let args = ["admin", "config", "provider", "set", "wrong"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -875,7 +884,7 @@ fn config_provider_set_rejects_unknown_value() {
 
 #[test]
 fn config_provider_set_rejects_missing_value() {
-    let args = ["config", "provider", "set"]
+    let args = ["admin", "config", "provider", "set"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -885,7 +894,7 @@ fn config_provider_set_rejects_missing_value() {
 
 #[test]
 fn config_provider_set_rejects_extra_arguments() {
-    let args = ["config", "provider", "set", "redmine", "extra"]
+    let args = ["admin", "config", "provider", "set", "redmine", "extra"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -895,7 +904,7 @@ fn config_provider_set_rejects_extra_arguments() {
 
 #[test]
 fn config_provider_clear_parses_without_role() {
-    let args = ["config", "provider", "clear"]
+    let args = ["admin", "config", "provider", "clear"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -909,7 +918,7 @@ fn config_provider_clear_parses_without_role() {
 
 #[test]
 fn config_provider_clear_rejects_extra_arguments() {
-    let args = ["config", "provider", "clear", "extra"]
+    let args = ["admin", "config", "provider", "clear", "extra"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -1410,7 +1419,7 @@ fn index_backend_alias_and_validation() {
     ));
 
     // Parser: backend without role, pg-url requires stdin/prompt and rejects direct value.
-    let args = ["config", "set", "index-backend", "postgres"]
+    let args = ["admin", "config", "set", "index-backend", "postgres"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -1419,7 +1428,7 @@ fn index_backend_alias_and_validation() {
         Command::ConfigSet { setting, .. } => assert_eq!(setting, "PHASEGENT_INDEX_BACKEND"),
         other => panic!("unexpected {other:?}"),
     }
-    let args = ["config", "set", "index-pg-url", "--stdin"]
+    let args = ["admin", "config", "set", "index-pg-url", "--stdin"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -1431,10 +1440,16 @@ fn index_backend_alias_and_validation() {
         }
         other => panic!("unexpected {other:?}"),
     }
-    let args = ["config", "set", "index-pg-url", "postgres://example"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let args = [
+        "admin",
+        "config",
+        "set",
+        "index-pg-url",
+        "postgres://example",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
     let err = command::parse(&args).expect_err("direct secret value must be rejected");
     assert!(err.contains("does not accept a direct value"), "got: {err}");
     assert!(

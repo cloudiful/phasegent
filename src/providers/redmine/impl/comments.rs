@@ -46,6 +46,18 @@ impl RedmineProvider {
         Ok(journal.to_comment(&self.http.issue_url(issue_data.id), None, true))
     }
 
+    /// Full bodies of every journal on the issue, in API order.
+    /// Backs `comment list` through the trait forwarder.
+    pub fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+        let issue_data = self.issue_with_journals(issue, "comment list")?;
+        let url = self.http.issue_url(issue_data.id);
+        Ok(issue_data
+            .journals
+            .iter()
+            .map(|journal| journal.to_comment(&url, None, true))
+            .collect())
+    }
+
     pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ForgejoError> {
         if marker.is_empty() {
             return Err(ForgejoError::config("marker cannot be empty"));

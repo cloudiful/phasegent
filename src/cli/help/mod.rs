@@ -2,10 +2,12 @@ use crate::command::HelpTopic;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
 
+pub mod admin;
 pub mod auth;
 pub mod comment;
 pub mod common;
 pub mod config;
+pub mod doctor;
 pub mod hooks;
 pub mod issue;
 pub mod notify;
@@ -19,6 +21,7 @@ pub mod version;
 pub mod workflow;
 pub mod worktree;
 
+use admin::print_admin_help;
 use auth::print_auth_help;
 use comment::{print_comment_command_help, print_comment_help};
 use common::print_not_supported_help;
@@ -26,6 +29,7 @@ use config::{
     print_config_command_help, print_config_help, print_config_provider_command_help,
     print_config_provider_help,
 };
+use doctor::print_doctor_help;
 use hooks::{print_hooks_command_help, print_hooks_help};
 use issue::{print_issue_command_help, print_issue_help};
 use notify::{print_notify_command_help, print_notify_help};
@@ -45,9 +49,11 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::Gui => print_gui_help(),
         HelpTopic::Issue => print_issue_help(role),
         HelpTopic::Comment => print_comment_help(role),
+        HelpTopic::Doctor => print_doctor_help(),
         HelpTopic::Project => print_project_help(role),
         HelpTopic::Status => print_status_help(role),
         HelpTopic::Version => print_version_help(role),
+        HelpTopic::Admin => print_admin_help(role),
         HelpTopic::Workflow => print_workflow_help(role),
         HelpTopic::Auth => print_auth_help(role),
         HelpTopic::Config => print_config_help(role),
