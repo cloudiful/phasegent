@@ -16,7 +16,7 @@
     "dist:hash": "bun scripts/dist-hash.mjs"
   },
   "dependencies": {
-    "@nuxt/ui": "4.11.0",
+    "@nuxt/ui": "4.11.1",
     "@tauri-apps/api": "2.11.1",
     "tailwindcss": "4.3.3",
     "vue": "3.5.42",
@@ -32,8 +32,8 @@
     "eslint": "10.10.0",
     "eslint-plugin-vue": "10.11.0",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.69.0",
-    "vite": "8.2.2",
+    "typescript-eslint": "8.70.0",
+    "vite": "8.3.0",
     "vue-tsc": "3.3.11"
   }
 }
