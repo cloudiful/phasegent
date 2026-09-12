@@ -14,7 +14,9 @@ export default defineConfig({
   plugins: [
     vue(),
     tailwindcss(),
-    ui(),
+    ui({
+      experimental: { componentDetection: true },
+    }),
   ],
   resolve: {
     alias: {
