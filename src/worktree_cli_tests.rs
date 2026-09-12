@@ -26,8 +26,9 @@
 //! worktrees are never mutated.
 
 use crate::cli::worktree::{
-    AcquireJson, PruneAction, PruneCombinedSummary, PruneSummary, ReleaseStaleAction,
-    ReleaseStaleSummary, execute_worktree, prune_pass,
+    AcquireJson, PruneAction, PruneCombinedSummary, PruneDisposition, PruneMode, PruneSummary,
+    ReleaseStaleAction, ReleaseStaleSummary, execute_worktree, prune_pass,
+    scan_worktree_candidates,
 };
 use crate::command::{Command, WorktreeCommand};
 use crate::infra::storage::Storage;
@@ -37,7 +38,7 @@ use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
     ProcessWorktreeRunner, WorktreeRunner, acquire_lease, ensure_schema, list_for_repo,
-    now_unix_secs, repo_identity, resolve_worktree_auto,
+    now_unix_secs, repo_identity, resolve_worktree_auto, worktree_add,
 };
 use std::path::PathBuf;
 
@@ -682,7 +683,7 @@ fn prune_dry_run_classifies_every_status_correctly() {
         std::path::Path::new("/tmp/repo"),
         &list_for_repo(&storage, "/tmp/repo").expect("list"),
         14,
-        true,
+        PruneMode::Report,
     );
     let action_by_id: std::collections::HashMap<&str, &PruneAction> = summary
         .actions
@@ -749,7 +750,7 @@ fn prune_summary_envelope_fields_are_populated() {
         std::path::Path::new("/tmp/repo"),
         &list_for_repo(&storage, "/tmp/repo").expect("list"),
         14,
-        true,
+        PruneMode::Report,
     );
     let payload = serde_json::to_value(&summary).expect("serialise");
     for field in [
@@ -795,7 +796,7 @@ fn prune_active_leases_never_mutate() {
         std::path::Path::new("/tmp/repo"),
         &list_for_repo(&storage, "/tmp/repo").expect("list"),
         14,
-        false,
+        PruneMode::Remove,
     );
     assert_eq!(summary.pruned, 0);
     let row_after = list_for_repo(&storage, "/tmp/repo")
@@ -882,7 +883,7 @@ fn prune_dry_run_against_real_temp_repo_reports_dirty_lease() {
         repo.dir.path(),
         &list_for_repo(&storage, &row.repo_identity).expect("list"),
         14,
-        true,
+        PruneMode::Report,
     );
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.pruned, 0);
@@ -2143,4 +2144,314 @@ fn prune_combined_summary_records_lease_and_directory_actions_separately() {
     assert_eq!(payload["remove"], serde_json::json!(false));
     assert_eq!(payload["leases"]["apply"], serde_json::json!(true));
     assert_eq!(payload["worktrees"]["dry_run"], serde_json::json!(true));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #337 Phase 2: prune candidate-scan / action-apply boundary
+// ---------------------------------------------------------------------------
+//
+// The scan is pure classification: it receives the rows and returns a
+// disposition per row without touching storage or deleting anything.
+// Only `PruneMode::Remove` may mutate. These tests pin both halves of
+// that boundary against real temp worktrees so a future change cannot
+// silently re-entangle classification with side effects.
+
+/// Create a real linked worktree on a fresh generated branch and return
+/// its path. Uses the same wrapper the production acquire path uses so
+/// prune runs against a real worktree rather than a stub directory.
+fn add_real_worktree(repo: &TempRepo, branch: &str) -> PathBuf {
+    let runner = ProcessWorktreeRunner::new();
+    let target = repo.dir.path().join(branch.replace('/', "-"));
+    worktree_add(&runner, repo.dir.path(), &target, branch).expect("worktree add");
+    target
+}
+
+fn branch_exists(repo: &TempRepo, branch: &str) -> bool {
+    let runner = ProcessWorktreeRunner::new();
+    runner
+        .run(&["branch", "--list", branch], repo.dir.path())
+        .map(|out| out.status == 0 && !out.stdout.trim().is_empty())
+        .unwrap_or(false)
+}
+
+#[test]
+fn scan_worktree_candidates_classifies_without_writing() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("scan-classify") else {
+        return;
+    };
+    let clean = add_real_worktree(&repo, "phasegent/7-clean01");
+    let dirty = add_real_worktree(&repo, "phasegent/7-dirty01");
+    std::fs::write(dirty.join("scratch.txt"), "scratch\n").expect("write scratch");
+    let now = now_unix_secs();
+    let old = now - 30 * 86_400;
+    let recent = now - 60;
+    let rows = vec![
+        fresh_lease_row(
+            "lease-active",
+            7,
+            "s",
+            &clean.to_string_lossy(),
+            "phasegent/7-active",
+            LEASE_STATUS_ACTIVE,
+            old,
+        ),
+        fresh_lease_row(
+            "lease-released",
+            7,
+            "s",
+            &clean.to_string_lossy(),
+            "phasegent/7-released",
+            LEASE_STATUS_RELEASED,
+            old,
+        ),
+        fresh_lease_row(
+            "lease-unknown",
+            7,
+            "s",
+            &clean.to_string_lossy(),
+            "phasegent/7-unknown",
+            "quarantined",
+            old,
+        ),
+        fresh_lease_row(
+            "lease-recent",
+            7,
+            "s",
+            &clean.to_string_lossy(),
+            "phasegent/7-recent",
+            LEASE_STATUS_RETAINED,
+            recent,
+        ),
+        fresh_lease_row(
+            "lease-missing",
+            7,
+            "s",
+            "/tmp/phasegent-337-missing",
+            "phasegent/7-missing",
+            LEASE_STATUS_RETAINED,
+            old,
+        ),
+        fresh_lease_row(
+            "lease-clean",
+            7,
+            "s",
+            &clean.to_string_lossy(),
+            "phasegent/7-clean",
+            LEASE_STATUS_RETAINED,
+            old,
+        ),
+        fresh_lease_row(
+            "lease-dirty",
+            7,
+            "s",
+            &dirty.to_string_lossy(),
+            "phasegent/7-dirty",
+            LEASE_STATUS_RETAINED,
+            old,
+        ),
+    ];
+    let runner = ProcessWorktreeRunner::new();
+    let scanned = scan_worktree_candidates(&runner, &rows, now, i64::from(14u32) * 86_400);
+    let by_id: std::collections::HashMap<&str, &PruneDisposition> = scanned
+        .iter()
+        .map(|candidate| (candidate.lease_id.as_str(), &candidate.disposition))
+        .collect();
+    assert_eq!(by_id["lease-active"], &PruneDisposition::SkippedActive);
+    assert_eq!(by_id["lease-released"], &PruneDisposition::SkippedReleased);
+    assert_eq!(
+        by_id["lease-unknown"],
+        &PruneDisposition::SkippedUnknownStatus
+    );
+    assert!(matches!(
+        by_id["lease-recent"],
+        PruneDisposition::SkippedRecent { .. }
+    ));
+    assert_eq!(by_id["lease-missing"], &PruneDisposition::MissingDirectory);
+    assert_eq!(by_id["lease-clean"], &PruneDisposition::Removable);
+    assert_eq!(
+        by_id["lease-dirty"],
+        &PruneDisposition::SkippedDirty("worktree has uncommitted changes".to_owned())
+    );
+    // The scan performed no side effect: both real worktrees survive.
+    assert!(clean.exists(), "scan must not delete a removable worktree");
+    assert!(dirty.exists());
+}
+
+#[test]
+fn prune_report_mode_never_removes_a_removable_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-report-keep") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-report-keep");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/7-report01");
+    insert_lease_for_identity(
+        &storage,
+        "lease-report",
+        &identity,
+        "session-A",
+        LEASE_STATUS_RETAINED,
+        now_unix_secs() - 30 * 86_400,
+        &target.to_string_lossy(),
+    );
+    let summary = prune_pass(
+        &storage,
+        &runner,
+        repo.dir.path(),
+        &list_for_repo(&storage, &identity).expect("list"),
+        14,
+        PruneMode::Report,
+    );
+    assert!(summary.dry_run);
+    assert_eq!(summary.pruned, 0);
+    assert_eq!(summary.candidates, 1, "clean retained row is a candidate");
+    assert!(target.exists(), "report mode must never delete a worktree");
+    let row = list_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-report")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RETAINED);
+}
+
+#[test]
+fn cli_prune_remove_deletes_clean_retained_worktree_and_keeps_branch() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-prune-remove") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("cli-prune-remove");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let branch = "phasegent/7-remove01";
+    let target = add_real_worktree(&repo, branch);
+    insert_lease_for_identity(
+        &storage,
+        "lease-remove",
+        &identity,
+        "session-A",
+        LEASE_STATUS_RETAINED,
+        now_unix_secs() - 30 * 86_400,
+        &target.to_string_lossy(),
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        prune_command(&repo, false, true, None),
+    );
+    assert_eq!(exit, 0, "prune --remove must succeed");
+    assert!(!target.exists(), "--remove must delete the clean worktree");
+    assert!(
+        branch_exists(&repo, branch),
+        "prune must never delete the branch"
+    );
+    let row = list_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-remove")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RELEASED);
+}
+
+#[test]
+fn cli_prune_remove_skips_dirty_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-prune-dirty") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("cli-prune-dirty");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/7-dirtyskip");
+    std::fs::write(target.join("scratch.txt"), "scratch\n").expect("write scratch");
+    insert_lease_for_identity(
+        &storage,
+        "lease-dirty",
+        &identity,
+        "session-A",
+        LEASE_STATUS_RETAINED,
+        now_unix_secs() - 30 * 86_400,
+        &target.to_string_lossy(),
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        prune_command(&repo, false, true, None),
+    );
+    assert_eq!(exit, 0, "a dirty candidate is reported, not fatal");
+    assert!(target.exists(), "--remove must keep a dirty worktree");
+    let row = list_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-dirty")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RETAINED);
+}
+
+#[test]
+fn cli_prune_release_stale_and_remove_act_on_separate_candidate_sets() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-prune-combined") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("cli-prune-combined");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let active_target = add_real_worktree(&repo, "phasegent/7-active1");
+    let retained_target = add_real_worktree(&repo, "phasegent/7-retained1");
+    let old = now_unix_secs() - 30 * 86_400;
+    insert_lease_for_identity(
+        &storage,
+        "lease-active",
+        &identity,
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        &active_target.to_string_lossy(),
+    );
+    insert_lease_for_identity(
+        &storage,
+        "lease-retained",
+        &identity,
+        "session-B",
+        LEASE_STATUS_RETAINED,
+        old,
+        &retained_target.to_string_lossy(),
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        prune_command(&repo, true, true, Some("stale session recovery")),
+    );
+    assert_eq!(exit, 0, "combined prune must succeed");
+    let rows = list_for_repo(&storage, &identity).expect("list");
+    let active = rows
+        .iter()
+        .find(|row| row.lease_id == "lease-active")
+        .expect("active row");
+    // The recovery flips the active lease to retained and refreshes its
+    // heartbeat, so the directory pass sees it as recent and keeps the
+    // worktree; the removal set is the pre-existing retained candidate.
+    assert_eq!(active.status, LEASE_STATUS_RETAINED);
+    assert_eq!(
+        active.release_reason.as_deref(),
+        Some("stale session recovery")
+    );
+    assert!(
+        active_target.exists(),
+        "a just-recovered lease must not be removed in the same pass"
+    );
+    let retained = rows
+        .iter()
+        .find(|row| row.lease_id == "lease-retained")
+        .expect("retained row");
+    assert_eq!(retained.status, LEASE_STATUS_RELEASED);
+    assert!(
+        !retained_target.exists(),
+        "the retained + aged + clean candidate is removed"
+    );
 }

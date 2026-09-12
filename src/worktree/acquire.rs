@@ -14,8 +14,8 @@ use crate::infra::storage::Storage;
 use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_remove};
 use crate::worktree::leases::{
     NewLease, count_other_active_leases, ensure_schema, find_active_lease, heartbeat_active_lease,
-    insert_lease, list_for_repo, load_lease, record_release_reason, recover_stale_active_leases,
-    refresh_heartbeat, retain_active_leases_for_issue_session, stale_active_leases, update_status,
+    insert_lease, list_for_repo, load_lease, record_release_reason, refresh_heartbeat,
+    retain_active_leases_for_issue_session, update_status,
 };
 use crate::worktree::naming::{
     cache_root, cache_root_in, compute_fingerprint, generate_branch, new_lease_id, slug_from_branch,
@@ -623,59 +623,6 @@ pub fn heartbeat_lease(lease_id: &str, session: &str, now: i64) -> Result<LeaseR
                 row.session, session
             ),
         )),
-    }
-}
-
-/// List (dry-run) or apply (`reason = Some`) stale recovery for
-/// `repo_identity`.
-///
-/// With `reason = None` the function is read-only and returns the active
-/// leases whose heartbeat is older than `stale_before` as `active`
-/// outcomes. With a non-empty `reason` it flips exactly those rows to
-/// `retained`, records the reason, and returns them as `retained`
-/// outcomes in one write transaction. The worktree directory and branch
-/// are never touched in either mode (issue 305 Task 2).
-pub fn release_stale_leases(
-    repo_identity: &str,
-    stale_before: i64,
-    reason: Option<&str>,
-) -> Result<Vec<ReleaseOutcome>, WorktreeError> {
-    let mut storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
-    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
-    match reason {
-        None => Ok(stale_active_leases(&storage, repo_identity, stale_before)?
-            .into_iter()
-            .map(|row| ReleaseOutcome {
-                lease_id: row.lease_id,
-                status: row.status,
-                forced: false,
-                reason: None,
-            })
-            .collect()),
-        Some(raw) => {
-            let reason = raw.trim();
-            if reason.is_empty() {
-                return Err(WorktreeError::new(
-                    "argument",
-                    "stale recovery requires a non-empty reason",
-                ));
-            }
-            Ok(recover_stale_active_leases(
-                &mut storage,
-                repo_identity,
-                stale_before,
-                reason,
-                now_unix_secs(),
-            )?
-            .into_iter()
-            .map(|row| ReleaseOutcome {
-                lease_id: row.lease_id,
-                status: row.status,
-                forced: true,
-                reason: Some(reason.to_owned()),
-            })
-            .collect())
-        }
     }
 }
 

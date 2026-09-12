@@ -66,7 +66,7 @@ mod session;
 #[allow(unused_imports)]
 pub use acquire::{
     WORKTREE_AUTO_SETTING, acquire_lease, heartbeat_lease, release_active_leases_for_issue_session,
-    release_lease, release_lease_forced, release_stale_leases, resolve_worktree_auto,
+    release_lease, release_lease_forced, resolve_worktree_auto,
 };
 #[allow(unused_imports)]
 pub use git::{is_clean, parse_worktree_list, worktree_add, worktree_remove};

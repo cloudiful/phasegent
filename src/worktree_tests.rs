@@ -23,14 +23,17 @@
 
 use crate::infra::storage::Storage;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::worktree::leases::{NewLease, insert_lease};
+use crate::worktree::leases::{
+    NewLease, heartbeat_active_lease, insert_lease, recover_stale_active_leases,
+    stale_active_leases,
+};
 use crate::worktree::{
     AcquireOutcome, GitOutput, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED,
     ProcessWorktreeRunner, WorktreeError, WorktreeListEntry, WorktreeRunner, acquire_lease,
     cache_root_in, compute_fingerprint, generate_branch, heartbeat_lease, is_clean,
     leases_for_issue, leases_for_repo, now_unix_secs, parse_worktree_list, release_lease,
-    release_lease_forced, release_stale_leases, repo_identity, slug_from_branch,
-    validate_ref_format, worktree_add, worktree_remove,
+    release_lease_forced, repo_identity, slug_from_branch, validate_ref_format, worktree_add,
+    worktree_remove,
 };
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -1414,7 +1417,7 @@ fn heartbeat_rejects_terminal_and_missing_leases() {
 }
 
 #[test]
-fn release_stale_dry_run_lists_only_aged_active_leases() {
+fn stale_scan_lists_only_aged_active_leases() {
     let _lock = lock_workflow_tests();
     let (db_temp, storage, _env) = open_temp_db("stale-dry");
     crate::worktree::ensure_schema(&storage).expect("schema");
@@ -1446,32 +1449,24 @@ fn release_stale_dry_run_lists_only_aged_active_leases() {
         "/tmp/wt-retained",
     );
     let stale_before = now - 14 * 86_400;
-    let candidates = release_stale_leases("/tmp/stale-repo", stale_before, None).expect("dry-run");
-    let ids: Vec<&str> = candidates
-        .iter()
-        .map(|outcome| outcome.lease_id.as_str())
-        .collect();
+    let candidates = stale_active_leases(&storage, "/tmp/stale-repo", stale_before).expect("scan");
+    let ids: Vec<&str> = candidates.iter().map(|row| row.lease_id.as_str()).collect();
     assert_eq!(ids, vec!["stale-old"]);
     assert_eq!(candidates[0].status, LEASE_STATUS_ACTIVE);
-    assert!(!candidates[0].forced);
-    assert_eq!(candidates[0].reason, None);
     let after = leases_for_repo("/tmp/stale-repo").expect("list");
     let old_row = after
         .iter()
         .find(|row| row.lease_id == "stale-old")
         .expect("row");
-    assert_eq!(
-        old_row.status, LEASE_STATUS_ACTIVE,
-        "dry-run must not mutate"
-    );
+    assert_eq!(old_row.status, LEASE_STATUS_ACTIVE, "scan must not mutate");
     assert!(old_row.release_reason.is_none());
     drop(db_temp);
 }
 
 #[test]
-fn release_stale_apply_flips_candidates_and_keeps_worktree() {
+fn stale_recovery_apply_flips_candidates_and_keeps_worktree() {
     let _lock = lock_workflow_tests();
-    let (db_temp, storage, _env) = open_temp_db("stale-apply");
+    let (db_temp, mut storage, _env) = open_temp_db("stale-apply");
     crate::worktree::ensure_schema(&storage).expect("schema");
     let now = now_unix_secs();
     let old = now - 30 * 86_400;
@@ -1495,17 +1490,21 @@ fn release_stale_apply_flips_candidates_and_keeps_worktree() {
         "/tmp/wt-keep",
     );
     let stale_before = now - 14 * 86_400;
-    let flipped = release_stale_leases(
+    let flipped = recover_stale_active_leases(
+        &mut storage,
         "/tmp/stale-repo",
         stale_before,
-        Some("stale session recovery"),
+        "stale session recovery",
+        now,
     )
     .expect("apply");
     assert_eq!(flipped.len(), 1);
     assert_eq!(flipped[0].lease_id, "stale-flip");
     assert_eq!(flipped[0].status, LEASE_STATUS_RETAINED);
-    assert!(flipped[0].forced);
-    assert_eq!(flipped[0].reason.as_deref(), Some("stale session recovery"));
+    assert_eq!(
+        flipped[0].release_reason.as_deref(),
+        Some("stale session recovery")
+    );
     let rows = leases_for_repo("/tmp/stale-repo").expect("list");
     let flipped_row = rows
         .iter()
@@ -1531,9 +1530,9 @@ fn release_stale_apply_flips_candidates_and_keeps_worktree() {
 }
 
 #[test]
-fn release_stale_apply_requires_non_empty_reason() {
+fn stale_recovery_rejects_blank_reason() {
     let _lock = lock_workflow_tests();
-    let (db_temp, storage, _env) = open_temp_db("stale-reason");
+    let (db_temp, mut storage, _env) = open_temp_db("stale-reason");
     crate::worktree::ensure_schema(&storage).expect("schema");
     let now = now_unix_secs();
     let old = now - 30 * 86_400;
@@ -1545,8 +1544,14 @@ fn release_stale_apply_requires_non_empty_reason() {
         old,
         "/tmp/wt-blank",
     );
-    let error = release_stale_leases("/tmp/stale-repo", now - 14 * 86_400, Some("   "))
-        .expect_err("blank reason must be rejected");
+    let error = recover_stale_active_leases(
+        &mut storage,
+        "/tmp/stale-repo",
+        now - 14 * 86_400,
+        "   ",
+        now,
+    )
+    .expect_err("blank reason must be rejected");
     assert_eq!(error.kind, "argument");
     let row = leases_for_repo("/tmp/stale-repo")
         .expect("list")
@@ -1559,9 +1564,9 @@ fn release_stale_apply_requires_non_empty_reason() {
 }
 
 #[test]
-fn release_stale_is_scoped_to_repo_identity() {
+fn stale_recovery_is_scoped_to_repo_identity() {
     let _lock = lock_workflow_tests();
-    let (db_temp, storage, _env) = open_temp_db("stale-scope");
+    let (db_temp, mut storage, _env) = open_temp_db("stale-scope");
     crate::worktree::ensure_schema(&storage).expect("schema");
     let now = now_unix_secs();
     let old = now - 30 * 86_400;
@@ -1581,8 +1586,14 @@ fn release_stale_is_scoped_to_repo_identity() {
         old,
         "/tmp/wt-b",
     );
-    let flipped =
-        release_stale_leases("/tmp/repo-a", now - 14 * 86_400, Some("repo a only")).expect("apply");
+    let flipped = recover_stale_active_leases(
+        &mut storage,
+        "/tmp/repo-a",
+        now - 14 * 86_400,
+        "repo a only",
+        now,
+    )
+    .expect("apply");
     assert_eq!(flipped.len(), 1);
     let other = leases_for_repo("/tmp/repo-b")
         .expect("list b")
@@ -1615,8 +1626,18 @@ fn concurrent_stale_recovery_flips_each_lease_at_most_once() {
     let handles: Vec<_> = (0..4)
         .map(|_| {
             std::thread::spawn(move || {
-                release_stale_leases("/tmp/race-repo", stale_before, Some("race recovery"))
-                    .map(|outcomes| outcomes.len())
+                let mut storage =
+                    Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+                crate::worktree::ensure_schema(&storage)
+                    .map_err(|error| WorktreeError::new("storage", error))?;
+                recover_stale_active_leases(
+                    &mut storage,
+                    "/tmp/race-repo",
+                    stale_before,
+                    "race recovery",
+                    now_unix_secs(),
+                )
+                .map(|rows| rows.len())
             })
         })
         .collect();
@@ -1637,5 +1658,53 @@ fn concurrent_stale_recovery_flips_each_lease_at_most_once() {
         rows.iter().all(|row| row.status == LEASE_STATUS_RETAINED),
         "every stale lease must end retained"
     );
+    drop(db_temp);
+}
+
+#[test]
+fn stale_recovery_rechecks_the_cutoff_after_a_heartbeat() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, mut storage, _env) = open_temp_db("stale-recheck");
+    crate::worktree::ensure_schema(&storage).expect("schema");
+    let now = now_unix_secs();
+    let old = now - 30 * 86_400;
+    insert_lease_row(
+        &storage,
+        "stale-recheck",
+        "/tmp/recheck-repo",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/wt-recheck",
+    );
+    let stale_before = now - 14 * 86_400;
+    // The read-only scan reports the aged active lease as a candidate.
+    let candidates =
+        stale_active_leases(&storage, "/tmp/recheck-repo", stale_before).expect("scan");
+    assert_eq!(candidates.len(), 1);
+    // A heartbeat from the owning session lands between the scan and the
+    // apply, so the transactional recovery must re-check the predicate
+    // and leave the row active instead of clobbering the fresh heartbeat.
+    assert!(
+        heartbeat_active_lease(&storage, "stale-recheck", "session-A", now + 1).expect("heartbeat")
+    );
+    let flipped = recover_stale_active_leases(
+        &mut storage,
+        "/tmp/recheck-repo",
+        stale_before,
+        "race recovery",
+        now + 2,
+    )
+    .expect("apply");
+    assert!(
+        flipped.is_empty(),
+        "a freshly heartbeated lease must not flip"
+    );
+    let row = leases_for_repo("/tmp/recheck-repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "stale-recheck")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_ACTIVE);
+    assert!(row.release_reason.is_none());
     drop(db_temp);
 }

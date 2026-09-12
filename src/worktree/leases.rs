@@ -14,6 +14,31 @@ use crate::worktree::{
     LEASE_STATUS_ACTIVE, LEASE_STATUS_RETAINED, LeaseRow, WorktreeError, now_unix_secs,
 };
 
+/// Seconds in a day, shared by the prune stale-window computation so
+/// the read-only scan and the transactional recovery derive the same
+/// cutoff from `stale_days` (issue 337 Phase 2).
+pub(crate) const SECONDS_PER_DAY: i64 = 86_400;
+
+/// A resolved stale window: the age threshold and the absolute cutoff
+/// derived from the same `stale_days`. Bundling them keeps the
+/// read-only candidate scan and the transactional recovery on one
+/// definition of "stale".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StaleWindow {
+    pub threshold_secs: i64,
+    pub before: i64,
+}
+
+/// Build the stale window for `now` and `stale_days`, saturating at the
+/// integer bounds so an absurd day count cannot overflow.
+pub(crate) fn stale_window(now: i64, stale_days: u32) -> StaleWindow {
+    let threshold_secs = i64::from(stale_days).saturating_mul(SECONDS_PER_DAY);
+    StaleWindow {
+        threshold_secs,
+        before: now.saturating_sub(threshold_secs),
+    }
+}
+
 /// Hard cap on `list()` / `status()` results so a runaway query never
 /// floods the response. Mirrors the timer-ledger 64-row ceiling.
 #[allow(dead_code)]
@@ -345,7 +370,8 @@ fn select_stale_active_leases(
 /// the flipped rows. All updates run in one `BEGIN IMMEDIATE` write
 /// transaction and each re-checks `status = 'active' AND heartbeat_at <
 /// stale_before`, so a heartbeat that refreshed the row first is never
-/// clobbered and a lease flips at most once under concurrent racers. The
+/// clobbered and a lease flips at most once under concurrent racers. A
+/// blank `reason` is rejected so the recovery stays attributable. The
 /// worktree directory and branch are never touched (issue 305 Task 2).
 pub(crate) fn recover_stale_active_leases(
     storage: &mut Storage,
@@ -354,6 +380,13 @@ pub(crate) fn recover_stale_active_leases(
     reason: &str,
     now: i64,
 ) -> Result<Vec<LeaseRow>, WorktreeError> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(WorktreeError::new(
+            "argument",
+            "stale recovery requires a non-empty reason",
+        ));
+    }
     storage
         .connection
         .set_transaction_behavior(TransactionBehavior::Immediate);
