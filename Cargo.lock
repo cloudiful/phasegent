@@ -2764,7 +2764,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
- "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "url",
 ]

@@ -1,7 +1,5 @@
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-#[allow(unused_imports)]
-use crate::providers::api::ForgejoError;
 use crate::providers::redmine::model::RedmineRelationType;
 
 pub use crate::hooks::HooksCommand;
@@ -18,6 +16,7 @@ mod mcp;
 mod notify;
 mod parse_helpers;
 mod plugin;
+mod prelude;
 mod project;
 mod relation;
 mod status;

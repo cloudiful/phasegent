@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 pub mod issue;
 pub mod mirror;
 pub mod project;
@@ -13,17 +12,17 @@ pub use status::{RedmineIssueStatus, RedmineTracker, RedmineVersion, StatusNextR
 pub use mirror::RedmineGitMirrorOutcome;
 pub use time::RedmineTimeEntryActivity;
 #[rustfmt::skip]
-pub(crate) use issue::{AttachmentUploadOutput, IssuePlanning, RedmineErrorResponse, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse, RedmineIssueUploadFields, RedmineIssueUploadUpdate, RedmineJournal, RedmineNewIssue, RedmineNewIssueFields, RedmineNotes, RedmineNotesFields, RedmineStatus, RedmineUpdateIssue, RedmineUpdateIssueFields, RedmineUploadEntry};
+pub(crate) use issue::{IssuePlanning, RedmineErrorResponse, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse, RedmineNewIssue, RedmineNotes, RedmineNotesFields, RedmineStatus, RedmineUpdateIssue};
 #[rustfmt::skip]
 pub(crate) use mirror::{RedmineGitMirrorRequest, RedmineGitMirrorResponse};
 #[rustfmt::skip]
-pub(crate) use project::{RedmineCurrentUser, RedmineCurrentUserResponse, RedmineEnabledModule, RedmineMembership, RedmineMembershipCollection, RedmineMembershipRole, RedmineMembershipUser, RedmineNewProject, RedmineNewProjectFields, RedmineNewUserMembership, RedmineNewUserMembershipFields, RedmineProjectCollection, RedmineProjectResponse, RedmineRole, RedmineRoleCollection, RedmineUpdateMembership, RedmineUpdateMembershipFields};
+pub(crate) use project::{RedmineCurrentUser, RedmineCurrentUserResponse, RedmineMembership, RedmineMembershipCollection, RedmineNewProject, RedmineNewUserMembership, RedmineNewUserMembershipFields, RedmineProjectCollection, RedmineProjectResponse, RedmineRole, RedmineRoleCollection, RedmineUpdateMembership, RedmineUpdateMembershipFields};
 #[rustfmt::skip]
-pub(crate) use relation::{RedmineNewRelation, RedmineNewRelationFields, RedmineRelation, RedmineRelationCollection, RedmineRelationResponse, RedmineRelationType, RelationSummary};
+pub(crate) use relation::{RedmineNewRelation, RedmineRelationCollection, RedmineRelationResponse, RedmineRelationType, RelationSummary};
 #[rustfmt::skip]
 pub(crate) use user::{RedmineNewUser, RedmineNewUserFields, RedmineUserCollection, RedmineUserResponse};
 pub use user::{RedmineUser, RoleProvisioningMetadata, provisioned_roles, provisioning_metadata};
 #[rustfmt::skip]
 pub(crate) use status::{RedmineIssueStatusCollection, RedmineTrackerCollection, RedmineVersionCollection};
 #[rustfmt::skip]
-pub(crate) use time::{RedmineNewTimeEntry, RedmineNewTimeEntryFields, RedmineTimeEntry, RedmineTimeEntryActivityCollection, RedmineTimeEntryCollection, RedmineTimeEntryIssue, RedmineTimeEntryResponse};
+pub(crate) use time::{RedmineNewTimeEntry, RedmineNewTimeEntryFields, RedmineTimeEntry, RedmineTimeEntryActivityCollection, RedmineTimeEntryCollection, RedmineTimeEntryResponse};
