@@ -68,6 +68,35 @@ Detail matrix (from `src/policy.rs`) is in
 - Capability is how-much-can-it-do, not who; credentials stay role-scoped and
   least-privilege, and a role never invokes another role's `--role`.
 
+## Session identity and worktree leases
+
+Worktree leases are keyed by `(repo, issue, session)`. The tracking session is
+what keeps two concurrent AI sessions on the same issue from colliding on one
+lease, so the workflow owns it:
+
+- At the start of every OpenCode session, generate one stable session id and
+  export it as `PHASEGENT_SESSION_ID`; reuse that exact value for every
+  `worktree acquire`, `worktree heartbeat`, and `issue close` call in the
+  session. Never derive a fresh id per command or per phase.
+- Resolution order is the explicit flag (`--session`, or
+  `issue close --worktree-session`) first, then `PHASEGENT_SESSION_ID`, then the
+  legacy `phasegent` fallback. The legacy fallback only warns on stderr and may
+  let concurrent sessions share a lease; do not rely on it.
+- Keep a long-running session alive with `worktree heartbeat`; an update only
+  matches the owning session's active lease, so never heartbeat another
+  session's lease.
+- Stale recovery is read-only by default. `worktree prune` reports aged active
+  leases and removable worktrees; `worktree prune --release-stale --reason TEXT`
+  flips exactly those stale active leases to `retained`, and
+  `worktree prune --remove` deletes only clean, expired, retained worktrees.
+  Neither action is implied by the other; never guess an owner.
+- Clean up on session exit: release the current session's lease explicitly (or
+  close the issue, which releases only the current repo/issue/session lease
+  after the remote close succeeds). Never delete lease rows, worktree
+  directories, or branches to force cleanup, and never remove a dirty worktree.
+
+`phasegent --help worktree` owns the exact flags for these commands.
+
 ## Marker protocol
 
 One HTML-comment marker at the top of the note body; the parent-supplied value

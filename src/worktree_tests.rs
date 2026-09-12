@@ -23,12 +23,14 @@
 
 use crate::infra::storage::Storage;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, GitOutput, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED,
     ProcessWorktreeRunner, WorktreeError, WorktreeListEntry, WorktreeRunner, acquire_lease,
-    cache_root_in, compute_fingerprint, generate_branch, is_clean, leases_for_issue,
-    leases_for_repo, parse_worktree_list, release_lease, release_lease_forced, repo_identity,
-    slug_from_branch, validate_ref_format, worktree_add, worktree_remove,
+    cache_root_in, compute_fingerprint, generate_branch, heartbeat_lease, is_clean,
+    leases_for_issue, leases_for_repo, now_unix_secs, parse_worktree_list, release_lease,
+    release_lease_forced, release_stale_leases, repo_identity, slug_from_branch,
+    validate_ref_format, worktree_add, worktree_remove,
 };
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -896,6 +898,161 @@ fn acquire_binding_read_failure_falls_through_without_error() {
 }
 
 #[test]
+fn acquire_git_status_failure_with_auto_isolation_creates_isolated_worktree() {
+    // Issue 305 Task 4: a failing `git status` is an unknown state, not
+    // a clean tree. With auto-isolation on we must not reuse the
+    // untrusted checkout, so a fresh worktree is created.
+    let _lock = lock_workflow_tests();
+    let (db_temp, _storage, _env) = open_temp_db("acquire-unknown-auto");
+    let cache = unique_cache("unknown-auto");
+    let repo_path = PathBuf::from("/tmp/phasegent-wt-unknown-auto-repo");
+    let runner = FakeWorktreeRunner::new(vec![
+        FakeResponse {
+            args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
+            status: 0,
+            stdout: ".git".to_string(),
+        },
+        FakeResponse {
+            args: vec!["status".to_string(), "--porcelain".to_string()],
+            status: 128,
+            stdout: "fatal: index file corrupt".to_string(),
+        },
+        FakeResponse {
+            args: vec!["worktree".to_string(), "add".to_string()],
+            status: 0,
+            stdout: String::new(),
+        },
+    ]);
+    let outcome = acquire_lease(
+        &runner,
+        &repo_path,
+        245,
+        "session-A",
+        Some(cache.path()),
+        true,
+        false,
+    )
+    .expect("unknown state + auto-isolation must isolate, not error");
+    assert!(outcome.created, "unknown checkout must not be reused");
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(
+        outcome
+            .path
+            .starts_with(cache.path().to_string_lossy().as_ref()),
+        "isolated worktree must live under the cache base"
+    );
+    let joined = outcome.warnings.join(" ");
+    assert!(
+        joined.contains("dirty probe failed")
+            && joined.contains("auto-isolation is enabled")
+            && joined.contains("unknown"),
+        "unknown probe must be surfaced as a warning: {joined}"
+    );
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_git_status_failure_with_auto_isolation_disabled_reuses_with_warning() {
+    // Issue 305 Task 4: with isolation off the unknown checkout is
+    // reused, but the operator must be warned rather than told the tree
+    // is clean.
+    let _lock = lock_workflow_tests();
+    let (db_temp, _storage, _env) = open_temp_db("acquire-unknown-off");
+    let cache = unique_cache("unknown-off");
+    let repo_path = PathBuf::from("/tmp/phasegent-wt-unknown-off-repo");
+    let runner = FakeWorktreeRunner::new(vec![
+        FakeResponse {
+            args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
+            status: 0,
+            stdout: ".git".to_string(),
+        },
+        FakeResponse {
+            args: vec!["status".to_string(), "--porcelain".to_string()],
+            status: 128,
+            stdout: "fatal: index file corrupt".to_string(),
+        },
+        FakeResponse {
+            args: vec![
+                "symbolic-ref".to_string(),
+                "--quiet".to_string(),
+                "--short".to_string(),
+                "HEAD".to_string(),
+            ],
+            status: 0,
+            stdout: "main".to_string(),
+        },
+    ]);
+    let outcome = acquire_lease(
+        &runner,
+        &repo_path,
+        245,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("unknown state + default off must reuse, not error");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    assert_eq!(outcome.path, repo_path.to_string_lossy().to_string());
+    let joined = outcome.warnings.join(" ");
+    assert!(
+        joined.contains("dirty probe failed")
+            && joined.contains("auto-isolation is disabled")
+            && joined.contains("unknown"),
+        "default-off unknown state must warn instead of staying silent: {joined}"
+    );
+    assert!(
+        !cache.path().join("worktrees").exists(),
+        "default-off unknown state must not create a worktree directory"
+    );
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_dirty_bound_same_issue_keeps_stale_branch_binding() {
+    // Issue 305 Task 4: a dirty checkout bound to this issue with no
+    // active lease is a crashed predecessor's work. Acquire reuses it
+    // and must keep the stale branch binding as safe evidence instead of
+    // auto-clearing it.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("stale-binding") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-stale-binding");
+    let cache = unique_cache("stale-binding");
+    let runner = ProcessWorktreeRunner::new();
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 245);
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+        true,
+        false,
+    )
+    .expect("dirty + same-issue with no other lease must fall through to reuse");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
+    let bound =
+        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
+    assert_eq!(
+        bound,
+        Some(245),
+        "stale branch binding must survive acquire"
+    );
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
 fn release_flips_lease_to_retained_or_released_and_is_idempotent() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("release") else {
@@ -1113,4 +1270,372 @@ fn acquire_lease_outcome_serialises_required_fields() {
     assert_eq!(outcome.lease_id, "lease-x");
     assert!(outcome.created);
     assert_eq!(outcome.reason, "new_worktree");
+}
+
+// ---------------------------------------------------------------------------
+// Issue 305 Task 2: heartbeat + stale active lease recovery
+// ---------------------------------------------------------------------------
+
+fn insert_lease_row(
+    storage: &Storage,
+    lease_id: &str,
+    identity: &str,
+    status: &str,
+    heartbeat_at: i64,
+    worktree_path: &str,
+) {
+    insert_lease(
+        storage,
+        NewLease {
+            lease_id,
+            identity,
+            issue: 1,
+            session: "session-A",
+            checkout_path: "/tmp/checkout",
+            worktree_path,
+            branch: "phasegent/1-aaaaaa",
+            status,
+            created_at: heartbeat_at,
+            heartbeat_at,
+        },
+    )
+    .expect("insert lease row");
+}
+
+fn heartbeat_of(identity: &str, lease_id: &str) -> i64 {
+    leases_for_repo(identity)
+        .expect("list leases")
+        .into_iter()
+        .find(|row| row.lease_id == lease_id)
+        .expect("lease row")
+        .heartbeat_at
+}
+
+#[test]
+fn heartbeat_refreshes_owned_active_lease() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("heartbeat-own") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("heartbeat-own");
+    let cache = unique_cache("heartbeat-own");
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        239,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("acquire");
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let before = heartbeat_of(&identity, &outcome.lease_id);
+    let refreshed =
+        heartbeat_lease(&outcome.lease_id, "session-A", before + 100).expect("owned heartbeat");
+    assert_eq!(refreshed.status, LEASE_STATUS_ACTIVE);
+    assert_eq!(refreshed.heartbeat_at, before + 100);
+    assert_eq!(heartbeat_of(&identity, &outcome.lease_id), before + 100);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn heartbeat_rejects_foreign_session_without_mutation() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("heartbeat-foreign") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("heartbeat-foreign");
+    let cache = unique_cache("heartbeat-foreign");
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        239,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("acquire");
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let before = heartbeat_of(&identity, &outcome.lease_id);
+    let error = heartbeat_lease(&outcome.lease_id, "session-B", before + 500)
+        .expect_err("foreign session must conflict");
+    assert_eq!(error.kind, "state");
+    assert!(error.message.contains("session"), "unexpected: {error}");
+    assert_eq!(
+        heartbeat_of(&identity, &outcome.lease_id),
+        before,
+        "a foreign heartbeat must not move the row"
+    );
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn heartbeat_rejects_terminal_and_missing_leases() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("heartbeat-terminal") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("heartbeat-terminal");
+    let cache = unique_cache("heartbeat-terminal");
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        239,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("acquire");
+    release_lease(&outcome.lease_id, true).expect("retain");
+    let terminal = heartbeat_lease(&outcome.lease_id, "session-A", now_unix_secs() + 10)
+        .expect_err("terminal lease must conflict");
+    assert_eq!(terminal.kind, "state");
+    assert!(
+        terminal.message.contains("not active"),
+        "unexpected: {terminal}"
+    );
+    let missing = heartbeat_lease("lease-does-not-exist", "session-A", now_unix_secs())
+        .expect_err("unknown lease must conflict");
+    assert_eq!(missing.kind, "state");
+    assert!(
+        missing.message.contains("not found"),
+        "unexpected: {missing}"
+    );
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn release_stale_dry_run_lists_only_aged_active_leases() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, storage, _env) = open_temp_db("stale-dry");
+    crate::worktree::ensure_schema(&storage).expect("schema");
+    let now = now_unix_secs();
+    let old = now - 30 * 86_400;
+    let recent = now - 60;
+    insert_lease_row(
+        &storage,
+        "stale-old",
+        "/tmp/stale-repo",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/wt-old",
+    );
+    insert_lease_row(
+        &storage,
+        "stale-recent",
+        "/tmp/stale-repo",
+        LEASE_STATUS_ACTIVE,
+        recent,
+        "/tmp/wt-recent",
+    );
+    insert_lease_row(
+        &storage,
+        "stale-retained",
+        "/tmp/stale-repo",
+        LEASE_STATUS_RETAINED,
+        old,
+        "/tmp/wt-retained",
+    );
+    let stale_before = now - 14 * 86_400;
+    let candidates = release_stale_leases("/tmp/stale-repo", stale_before, None).expect("dry-run");
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|outcome| outcome.lease_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["stale-old"]);
+    assert_eq!(candidates[0].status, LEASE_STATUS_ACTIVE);
+    assert!(!candidates[0].forced);
+    assert_eq!(candidates[0].reason, None);
+    let after = leases_for_repo("/tmp/stale-repo").expect("list");
+    let old_row = after
+        .iter()
+        .find(|row| row.lease_id == "stale-old")
+        .expect("row");
+    assert_eq!(
+        old_row.status, LEASE_STATUS_ACTIVE,
+        "dry-run must not mutate"
+    );
+    assert!(old_row.release_reason.is_none());
+    drop(db_temp);
+}
+
+#[test]
+fn release_stale_apply_flips_candidates_and_keeps_worktree() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, storage, _env) = open_temp_db("stale-apply");
+    crate::worktree::ensure_schema(&storage).expect("schema");
+    let now = now_unix_secs();
+    let old = now - 30 * 86_400;
+    let recent = now - 60;
+    let worktree = unique_cache("stale-apply-wt");
+    let worktree_path = worktree.path().to_string_lossy().to_string();
+    insert_lease_row(
+        &storage,
+        "stale-flip",
+        "/tmp/stale-repo",
+        LEASE_STATUS_ACTIVE,
+        old,
+        &worktree_path,
+    );
+    insert_lease_row(
+        &storage,
+        "stale-keep",
+        "/tmp/stale-repo",
+        LEASE_STATUS_ACTIVE,
+        recent,
+        "/tmp/wt-keep",
+    );
+    let stale_before = now - 14 * 86_400;
+    let flipped = release_stale_leases(
+        "/tmp/stale-repo",
+        stale_before,
+        Some("stale session recovery"),
+    )
+    .expect("apply");
+    assert_eq!(flipped.len(), 1);
+    assert_eq!(flipped[0].lease_id, "stale-flip");
+    assert_eq!(flipped[0].status, LEASE_STATUS_RETAINED);
+    assert!(flipped[0].forced);
+    assert_eq!(flipped[0].reason.as_deref(), Some("stale session recovery"));
+    let rows = leases_for_repo("/tmp/stale-repo").expect("list");
+    let flipped_row = rows
+        .iter()
+        .find(|row| row.lease_id == "stale-flip")
+        .expect("flipped row");
+    assert_eq!(flipped_row.status, LEASE_STATUS_RETAINED);
+    assert_eq!(
+        flipped_row.release_reason.as_deref(),
+        Some("stale session recovery")
+    );
+    let kept_row = rows
+        .iter()
+        .find(|row| row.lease_id == "stale-keep")
+        .expect("kept row");
+    assert_eq!(kept_row.status, LEASE_STATUS_ACTIVE);
+    assert!(kept_row.release_reason.is_none());
+    assert!(
+        worktree.path().exists(),
+        "stale recovery must never delete the worktree directory"
+    );
+    drop(worktree);
+    drop(db_temp);
+}
+
+#[test]
+fn release_stale_apply_requires_non_empty_reason() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, storage, _env) = open_temp_db("stale-reason");
+    crate::worktree::ensure_schema(&storage).expect("schema");
+    let now = now_unix_secs();
+    let old = now - 30 * 86_400;
+    insert_lease_row(
+        &storage,
+        "stale-blank",
+        "/tmp/stale-repo",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/wt-blank",
+    );
+    let error = release_stale_leases("/tmp/stale-repo", now - 14 * 86_400, Some("   "))
+        .expect_err("blank reason must be rejected");
+    assert_eq!(error.kind, "argument");
+    let row = leases_for_repo("/tmp/stale-repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "stale-blank")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_ACTIVE);
+    assert!(row.release_reason.is_none());
+    drop(db_temp);
+}
+
+#[test]
+fn release_stale_is_scoped_to_repo_identity() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, storage, _env) = open_temp_db("stale-scope");
+    crate::worktree::ensure_schema(&storage).expect("schema");
+    let now = now_unix_secs();
+    let old = now - 30 * 86_400;
+    insert_lease_row(
+        &storage,
+        "stale-a",
+        "/tmp/repo-a",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/wt-a",
+    );
+    insert_lease_row(
+        &storage,
+        "stale-b",
+        "/tmp/repo-b",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/wt-b",
+    );
+    let flipped =
+        release_stale_leases("/tmp/repo-a", now - 14 * 86_400, Some("repo a only")).expect("apply");
+    assert_eq!(flipped.len(), 1);
+    let other = leases_for_repo("/tmp/repo-b")
+        .expect("list b")
+        .into_iter()
+        .find(|row| row.lease_id == "stale-b")
+        .expect("row b");
+    assert_eq!(other.status, LEASE_STATUS_ACTIVE, "other repos stay active");
+    assert!(other.release_reason.is_none());
+    drop(db_temp);
+}
+
+#[test]
+fn concurrent_stale_recovery_flips_each_lease_at_most_once() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, storage, _env) = open_temp_db("stale-race");
+    crate::worktree::ensure_schema(&storage).expect("schema");
+    let now = now_unix_secs();
+    let old = now - 40 * 86_400;
+    for index in 0..4 {
+        insert_lease_row(
+            &storage,
+            &format!("race-{index}"),
+            "/tmp/race-repo",
+            LEASE_STATUS_ACTIVE,
+            old,
+            &format!("/tmp/wt-race-{index}"),
+        );
+    }
+    let stale_before = now - 14 * 86_400;
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            std::thread::spawn(move || {
+                release_stale_leases("/tmp/race-repo", stale_before, Some("race recovery"))
+                    .map(|outcomes| outcomes.len())
+            })
+        })
+        .collect();
+    let mut total = 0usize;
+    for handle in handles {
+        total += handle
+            .join()
+            .expect("racer thread panicked")
+            .expect("racer must not hit a storage error");
+    }
+    assert_eq!(
+        total, 4,
+        "each stale lease must flip exactly once across concurrent racers"
+    );
+    let rows = leases_for_repo("/tmp/race-repo").expect("list");
+    assert_eq!(rows.len(), 4);
+    assert!(
+        rows.iter().all(|row| row.status == LEASE_STATUS_RETAINED),
+        "every stale lease must end retained"
+    );
+    drop(db_temp);
 }

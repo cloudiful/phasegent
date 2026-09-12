@@ -17,7 +17,7 @@ pub(crate) fn help_topic(
                     "get",
                     "search",
                     "create",
-                    "update-body",
+                    "update",
                     "close",
                     "upload-attachment",
                 ]
@@ -131,7 +131,10 @@ pub(crate) fn help_topic(
         },
         "worktree" => match subcommand {
             None => Ok(HelpTopic::Worktree),
-            Some(value) if ["acquire", "release", "status", "list", "prune"].contains(&value) => {
+            Some(value)
+                if ["acquire", "release", "heartbeat", "status", "list", "prune"]
+                    .contains(&value) =>
+            {
                 Ok(HelpTopic::WorktreeCommand(value.to_owned()))
             }
             Some(value) => Err(format!("unknown worktree help topic '{value}'")),

@@ -25,7 +25,10 @@
 //! integration test also uses its own temp git repo so production
 //! worktrees are never mutated.
 
-use crate::cli::worktree::{AcquireJson, PruneAction, execute_worktree, prune_pass};
+use crate::cli::worktree::{
+    AcquireJson, PruneAction, PruneCombinedSummary, PruneSummary, ReleaseStaleAction,
+    ReleaseStaleSummary, execute_worktree, prune_pass,
+};
 use crate::command::{Command, WorktreeCommand};
 use crate::infra::storage::Storage;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
@@ -147,7 +150,7 @@ fn parse_acquire_minimal() {
             isolate,
         }) => {
             assert_eq!(issue, 1);
-            assert_eq!(session, "phasegent");
+            assert_eq!(session, None);
             assert_eq!(base, None);
             assert_eq!(format, "json");
             assert!(!isolate, "--isolate must default off");
@@ -207,7 +210,7 @@ fn parse_acquire_with_session_and_base() {
             isolate,
         }) => {
             assert_eq!(issue, 42);
-            assert_eq!(session, "alpha");
+            assert_eq!(session.as_deref(), Some("alpha"));
             assert_eq!(base.as_deref(), Some("main"));
             assert_eq!(format, "json");
             assert!(!isolate);
@@ -342,43 +345,76 @@ fn parse_list_repo_optional() {
 }
 
 #[test]
-fn parse_prune_defaults_dry_run_off_stale_days_14() {
+fn parse_prune_defaults_to_read_only_and_stale_days_14() {
     let invocation =
         crate::command::parse(&strings(["--role", "orchestrator", "worktree", "prune"])).unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Prune {
+            repo,
             stale_days,
-            dry_run,
+            release_stale,
+            remove,
+            reason,
         }) => {
+            assert_eq!(repo, None);
             assert_eq!(stale_days, 14);
-            assert!(!dry_run);
+            assert!(!release_stale);
+            assert!(!remove);
+            assert_eq!(reason, None);
         }
         other => panic!("unexpected command {other:?}"),
     }
 }
 
 #[test]
-fn parse_prune_dry_run_flag_round_trip() {
+fn parse_prune_remove_flag_round_trip() {
     let invocation = crate::command::parse(&strings([
         "--role",
         "orchestrator",
         "worktree",
         "prune",
-        "--dry-run",
+        "--remove",
         "--stale-days",
         "7",
     ]))
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Prune {
-            stale_days,
-            dry_run,
+            stale_days, remove, ..
         }) => {
             assert_eq!(stale_days, 7);
-            assert!(dry_run);
+            assert!(remove);
         }
         other => panic!("unexpected command {other:?}"),
     }
+}
+
+#[test]
+fn parse_prune_rejects_removed_dry_run_flag() {
+    let err = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "prune",
+        "--dry-run",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("--dry-run"), "unexpected error: {err}");
+}
+
+#[test]
+fn parse_prune_rejects_removed_release_stale_subcommand() {
+    let err = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "release-stale",
+    ]))
+    .unwrap_err();
+    assert!(
+        err.contains("unknown worktree command 'release-stale'"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -433,6 +469,26 @@ fn subcommand_help_routes_to_command_topic() {
     }
 }
 
+#[test]
+fn root_help_topic_routes_heartbeat_and_prune() {
+    for command in ["heartbeat", "prune"] {
+        let invocation = crate::command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "--help",
+            "worktree",
+            command,
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Help(crate::command::HelpTopic::WorktreeCommand(value)) => {
+                assert_eq!(value, command);
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Policy gates (command-level role checks)
 // ---------------------------------------------------------------------------
@@ -443,7 +499,7 @@ fn executor_cannot_acquire() {
         Some(Role::Executor),
         WorktreeCommand::Acquire {
             issue: 1,
-            session: "s".to_owned(),
+            session: Some("s".to_owned()),
             base: None,
             format: "json".to_owned(),
             isolate: false,
@@ -471,8 +527,11 @@ fn executor_cannot_prune() {
     let exit = execute_worktree(
         Some(Role::Executor),
         WorktreeCommand::Prune {
+            repo: None,
             stale_days: 14,
-            dry_run: true,
+            release_stale: false,
+            remove: false,
+            reason: None,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -498,7 +557,7 @@ fn admin_cannot_acquire() {
         Some(Role::Admin),
         WorktreeCommand::Acquire {
             issue: 1,
-            session: "s".to_owned(),
+            session: Some("s".to_owned()),
             base: None,
             format: "json".to_owned(),
             isolate: false,
@@ -1327,13 +1386,17 @@ fn acquire_precedence_env_false_over_sqlite_true_reuses_current_checkout() {
 //      exit 0, lease row inserted, worktree dir under the temp cache.
 
 fn run_cli_acquire_in_temp_repo(repo: &TempRepo, _db_path: &std::path::Path, isolate: bool) -> i32 {
+    run_cli_acquire_with_session(repo, isolate, Some("session-A"))
+}
+
+fn run_cli_acquire_with_session(repo: &TempRepo, isolate: bool, session: Option<&str>) -> i32 {
     let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     std::env::set_current_dir(repo.dir.path()).expect("set cwd to temp repo");
     let exit = execute_worktree(
         Some(Role::Orchestrator),
         WorktreeCommand::Acquire {
             issue: 245,
-            session: "session-A".to_owned(),
+            session: session.map(str::to_owned),
             base: None,
             format: "json".to_owned(),
             isolate,
@@ -1451,4 +1514,633 @@ fn cli_surface_acquire_env_worktree_auto_true_creates_new_worktree_in_temp_cache
         "env-true CLI acquire must create the worktree directory on disk"
     );
     let _ = std::fs::remove_file(&scratch);
+}
+
+#[test]
+fn cli_acquire_explicit_session_overrides_environment_and_persists() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p2-cli-session-explicit") else {
+        return;
+    };
+    let (db_temp, _cache_temp, _db_env, _cache_env) =
+        open_temp_db_and_cache("p2-cli-session-explicit");
+    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "env-session");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit = run_cli_acquire_with_session(&repo, false, Some("explicit-session"));
+    assert_eq!(exit, 0, "explicit-session acquire must succeed");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].session, "explicit-session",
+        "--session must win over PHASEGENT_SESSION_ID"
+    );
+}
+
+#[test]
+fn cli_acquire_uses_environment_session_when_flag_absent() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p2-cli-session-env") else {
+        return;
+    };
+    let (db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-session-env");
+    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "env-session");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit = run_cli_acquire_with_session(&repo, false, None);
+    assert_eq!(exit, 0, "environment-session acquire must succeed");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].session, "env-session",
+        "PHASEGENT_SESSION_ID must supply the session when --session is absent"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue 305 Task 4: unknown `git status` through the CLI surface
+// ---------------------------------------------------------------------------
+//
+// A corrupt `.git/index` makes `git status --porcelain` fail while
+// `git rev-parse --git-common-dir` and `git worktree add` keep working,
+// so the real `execute_worktree` path can be driven into the `Unknown`
+// dirty state. Auto-isolation on must create an isolated worktree;
+// auto-isolation off must reuse the current checkout, never silently
+// treating the checkout as clean.
+
+fn corrupt_git_index(repo: &TempRepo) {
+    std::fs::write(repo.dir.path().join(".git/index"), b"not-a-valid-index")
+        .expect("corrupt git index");
+}
+
+#[test]
+fn cli_surface_acquire_unknown_status_auto_isolation_creates_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("t4-cli-unknown-auto") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("t4-cli-unknown-auto");
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "true");
+    corrupt_git_index(&repo);
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit =
+        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
+    assert_eq!(
+        exit, 0,
+        "unknown status + auto-isolation CLI acquire must succeed"
+    );
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(rows.len(), 1, "CLI acquire must record one lease");
+    assert_eq!(rows[0].issue, 245);
+    assert!(
+        rows[0].branch.starts_with("phasegent/245-"),
+        "unknown status with isolation must create a fresh worktree"
+    );
+    assert!(
+        rows[0]
+            .worktree_path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "isolated worktree must land under the temp cache"
+    );
+    assert!(
+        std::path::Path::new(&rows[0].worktree_path).exists(),
+        "unknown status with isolation must create the worktree directory"
+    );
+}
+
+#[test]
+fn cli_surface_acquire_unknown_status_default_off_reuses_checkout() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("t4-cli-unknown-off") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("t4-cli-unknown-off");
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
+    corrupt_git_index(&repo);
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit =
+        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
+    assert_eq!(
+        exit, 0,
+        "unknown status + default off CLI acquire must succeed"
+    );
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(rows.len(), 1, "CLI acquire must record one lease");
+    assert_eq!(rows[0].issue, 245);
+    assert_eq!(
+        rows[0].worktree_path,
+        repo.dir.path().to_string_lossy().to_string(),
+        "default-off unknown status must reuse the current checkout"
+    );
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "default-off unknown status must not create a worktree directory"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue 305 Task 2 / issue 337 Phase 1: heartbeat + prune CLI surface
+// ---------------------------------------------------------------------------
+
+fn insert_lease_for_identity(
+    storage: &Storage,
+    lease_id: &str,
+    identity: &str,
+    session: &str,
+    status: &str,
+    heartbeat_at: i64,
+    worktree_path: &str,
+) {
+    insert_lease(
+        storage,
+        NewLease {
+            lease_id,
+            identity,
+            issue: 7,
+            session,
+            checkout_path: "/tmp/checkout",
+            worktree_path,
+            branch: "phasegent/7-aaaaaa",
+            status,
+            created_at: heartbeat_at,
+            heartbeat_at,
+        },
+    )
+    .expect("insert row");
+}
+
+fn prune_command(
+    repo: &TempRepo,
+    release_stale: bool,
+    remove: bool,
+    reason: Option<&str>,
+) -> WorktreeCommand {
+    WorktreeCommand::Prune {
+        repo: Some(repo.dir.path().to_string_lossy().to_string()),
+        stale_days: 14,
+        release_stale,
+        remove,
+        reason: reason.map(str::to_owned),
+    }
+}
+
+#[test]
+fn parse_heartbeat_requires_lease_and_parses_session() {
+    let invocation = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "heartbeat",
+        "--lease",
+        "lease-1",
+        "--session",
+        "alpha",
+    ]))
+    .unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Heartbeat { lease, session }) => {
+            assert_eq!(lease, "lease-1");
+            assert_eq!(session.as_deref(), Some("alpha"));
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+    let missing = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "heartbeat",
+    ]))
+    .unwrap_err();
+    assert!(missing.contains("--lease"), "unexpected error: {missing}");
+}
+
+#[test]
+fn parse_heartbeat_rejects_blank_session() {
+    let error = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "heartbeat",
+        "--lease",
+        "lease-1",
+        "--session",
+        "",
+    ]))
+    .unwrap_err();
+    assert!(error.contains("session"), "unexpected error: {error}");
+}
+
+#[test]
+fn parse_prune_defaults_to_read_only_scan_and_14_days() {
+    let invocation =
+        crate::command::parse(&strings(["--role", "orchestrator", "worktree", "prune"])).unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Prune {
+            repo,
+            stale_days,
+            release_stale,
+            remove,
+            reason,
+        }) => {
+            assert_eq!(repo, None);
+            assert_eq!(stale_days, 14);
+            assert!(!release_stale);
+            assert!(!remove);
+            assert_eq!(reason, None);
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+#[test]
+fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale() {
+    let missing_reason = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "prune",
+        "--release-stale",
+    ]))
+    .unwrap_err();
+    assert!(
+        missing_reason.contains("--reason"),
+        "unexpected error: {missing_reason}"
+    );
+    let dangling_reason = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "prune",
+        "--reason",
+        "cleanup",
+    ]))
+    .unwrap_err();
+    assert!(
+        dangling_reason.contains("--release-stale"),
+        "unexpected error: {dangling_reason}"
+    );
+    let invocation = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "prune",
+        "--repo",
+        "/tmp/repo",
+        "--stale-days",
+        "3",
+        "--release-stale",
+        "--remove",
+        "--reason",
+        "cleanup",
+    ]))
+    .unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Prune {
+            repo,
+            stale_days,
+            release_stale,
+            remove,
+            reason,
+        }) => {
+            assert_eq!(repo.as_deref(), Some("/tmp/repo"));
+            assert_eq!(stale_days, 3);
+            assert!(release_stale);
+            assert!(remove);
+            assert_eq!(reason.as_deref(), Some("cleanup"));
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+#[test]
+fn parse_prune_rejects_non_numeric_stale_days() {
+    let error = crate::command::parse(&strings([
+        "--role",
+        "orchestrator",
+        "worktree",
+        "prune",
+        "--stale-days",
+        "soon",
+    ]))
+    .unwrap_err();
+    assert!(error.contains("--stale-days"), "unexpected error: {error}");
+}
+
+#[test]
+fn heartbeat_and_prune_help_route_to_command_topics() {
+    for command in ["heartbeat", "prune"] {
+        let invocation = crate::command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            command,
+            "--help",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Help(crate::command::HelpTopic::WorktreeCommand(value)) => {
+                assert_eq!(value, command);
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn executor_cannot_heartbeat() {
+    let exit = execute_worktree(
+        Some(Role::Executor),
+        WorktreeCommand::Heartbeat {
+            lease: "lease-1".to_owned(),
+            session: Some("s".to_owned()),
+        },
+    );
+    assert_eq!(exit, 3, "permission error must return exit code 3");
+}
+
+#[test]
+fn reviewer_cannot_prune() {
+    let exit = execute_worktree(
+        Some(Role::Reviewer),
+        WorktreeCommand::Prune {
+            repo: None,
+            stale_days: 14,
+            release_stale: false,
+            remove: false,
+            reason: None,
+        },
+    );
+    assert_eq!(exit, 3, "permission error must return exit code 3");
+}
+
+#[test]
+fn cli_heartbeat_refreshes_owned_active_lease() {
+    let _lock = lock_workflow_tests();
+    let (_temp, storage, _env) = open_temp_db("cli-heartbeat");
+    ensure_schema(&storage).expect("schema");
+    let old = now_unix_secs() - 1000;
+    insert_lease_for_identity(
+        &storage,
+        "lease-hb",
+        "/tmp/repo",
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/repo",
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        WorktreeCommand::Heartbeat {
+            lease: "lease-hb".to_owned(),
+            session: Some("session-A".to_owned()),
+        },
+    );
+    assert_eq!(exit, 0, "owned heartbeat must succeed");
+    let row = list_for_repo(&storage, "/tmp/repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-hb")
+        .expect("row");
+    assert!(row.heartbeat_at > old, "heartbeat must advance");
+}
+
+#[test]
+fn cli_heartbeat_rejects_foreign_session_without_mutation() {
+    let _lock = lock_workflow_tests();
+    let (_temp, storage, _env) = open_temp_db("cli-heartbeat-foreign");
+    ensure_schema(&storage).expect("schema");
+    let old = now_unix_secs() - 1000;
+    insert_lease_for_identity(
+        &storage,
+        "lease-hb",
+        "/tmp/repo",
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/repo",
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        WorktreeCommand::Heartbeat {
+            lease: "lease-hb".to_owned(),
+            session: Some("session-B".to_owned()),
+        },
+    );
+    assert_eq!(exit, 1, "foreign session is a structured state conflict");
+    let row = list_for_repo(&storage, "/tmp/repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-hb")
+        .expect("row");
+    assert_eq!(row.heartbeat_at, old, "conflict must not mutate the row");
+}
+
+#[test]
+fn cli_heartbeat_uses_environment_session() {
+    let _lock = lock_workflow_tests();
+    let (_temp, storage, _env) = open_temp_db("cli-heartbeat-env");
+    ensure_schema(&storage).expect("schema");
+    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "env-session");
+    let old = now_unix_secs() - 1000;
+    insert_lease_for_identity(
+        &storage,
+        "lease-hb",
+        "/tmp/repo",
+        "env-session",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/repo",
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        WorktreeCommand::Heartbeat {
+            lease: "lease-hb".to_owned(),
+            session: None,
+        },
+    );
+    assert_eq!(exit, 0, "environment session must own the lease");
+    let row = list_for_repo(&storage, "/tmp/repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-hb")
+        .expect("row");
+    assert!(row.heartbeat_at > old, "heartbeat must advance");
+}
+
+#[test]
+fn cli_prune_dry_run_does_not_mutate() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-stale-dry") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("cli-stale-dry");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let old = now_unix_secs() - 30 * 86_400;
+    insert_lease_for_identity(
+        &storage,
+        "lease-stale",
+        &identity,
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/wt-stale",
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        prune_command(&repo, false, false, None),
+    );
+    assert_eq!(exit, 0, "default prune dry-run must succeed");
+    let row = list_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-stale")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_ACTIVE, "dry-run must not mutate");
+    assert!(row.release_reason.is_none());
+}
+
+#[test]
+fn cli_prune_release_stale_flips_candidates_and_keeps_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-stale-apply") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("cli-stale-apply");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let old = now_unix_secs() - 30 * 86_400;
+    let worktree = TempDir::new("cli-stale-apply-wt");
+    let worktree_path = worktree.path().to_string_lossy().to_string();
+    insert_lease_for_identity(
+        &storage,
+        "lease-flip",
+        &identity,
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        &worktree_path,
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        prune_command(&repo, true, false, Some("stale session recovery")),
+    );
+    assert_eq!(exit, 0, "prune --release-stale must succeed");
+    let row = list_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-flip")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RETAINED);
+    assert_eq!(
+        row.release_reason.as_deref(),
+        Some("stale session recovery")
+    );
+    assert!(
+        worktree.path().exists(),
+        "stale recovery without --remove must never delete the worktree directory"
+    );
+}
+
+#[test]
+fn release_stale_summary_envelope_fields_are_populated() {
+    let summary = ReleaseStaleSummary {
+        repo_identity: "/tmp/repo".to_owned(),
+        stale_days: 14,
+        stale_before: 100,
+        apply: false,
+        candidates: 1,
+        released: 0,
+        reason: None,
+        leases: vec![ReleaseStaleAction {
+            lease_id: "lease-1".to_owned(),
+            issue: 7,
+            session: "session-A".to_owned(),
+            worktree_path: "/tmp/wt".to_owned(),
+            branch: "phasegent/7-aaaaaa".to_owned(),
+            heartbeat_at: 0,
+            age_secs: 100,
+            status: "active".to_owned(),
+        }],
+    };
+    let payload = serde_json::to_value(&summary).expect("serialise");
+    for field in [
+        "repo_identity",
+        "stale_days",
+        "stale_before",
+        "apply",
+        "candidates",
+        "released",
+        "leases",
+    ] {
+        assert!(payload.get(field).is_some(), "summary missing {field}");
+    }
+    assert!(
+        payload.get("reason").is_none(),
+        "dry-run must omit the reason field"
+    );
+}
+
+#[test]
+fn prune_combined_summary_records_lease_and_directory_actions_separately() {
+    let summary = PruneCombinedSummary {
+        repo_identity: "/tmp/repo".to_owned(),
+        stale_days: 14,
+        release_stale: true,
+        remove: false,
+        reason: Some("recovery".to_owned()),
+        leases: ReleaseStaleSummary {
+            repo_identity: "/tmp/repo".to_owned(),
+            stale_days: 14,
+            stale_before: 100,
+            apply: true,
+            candidates: 1,
+            released: 1,
+            reason: Some("recovery".to_owned()),
+            leases: vec![ReleaseStaleAction {
+                lease_id: "lease-1".to_owned(),
+                issue: 7,
+                session: "session-A".to_owned(),
+                worktree_path: "/tmp/wt".to_owned(),
+                branch: "phasegent/7-aaaaaa".to_owned(),
+                heartbeat_at: 0,
+                age_secs: 100,
+                status: "retained".to_owned(),
+            }],
+        },
+        worktrees: PruneSummary {
+            scanned: 1,
+            candidates: 0,
+            pruned: 0,
+            skipped_dirty: 0,
+            skipped_active_or_released: 0,
+            skipped_recent: 0,
+            dry_run: true,
+            stale_days: 14,
+            actions: vec![],
+        },
+    };
+    let payload = serde_json::to_value(&summary).expect("serialise");
+    for field in [
+        "repo_identity",
+        "stale_days",
+        "release_stale",
+        "remove",
+        "leases",
+        "worktrees",
+    ] {
+        assert!(payload.get(field).is_some(), "summary missing {field}");
+    }
+    assert_eq!(payload["release_stale"], serde_json::json!(true));
+    assert_eq!(payload["remove"], serde_json::json!(false));
+    assert_eq!(payload["leases"]["apply"], serde_json::json!(true));
+    assert_eq!(payload["worktrees"]["dry_run"], serde_json::json!(true));
 }

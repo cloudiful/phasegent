@@ -12,7 +12,7 @@ Legend: `✓` allowed, `—` denied.
 | IssueRead | issue read | — | ✓ | ✓ | ✓ | ✓ |
 | IssueSearch | issue search | — | ✓ | — | — | — |
 | IssueCreate | issue create | — | ✓ | — | — | — |
-| IssueUpdateBody | issue update-body | — | ✓ | — | — | — |
+| IssueUpdateBody | issue update | — | ✓ | — | — | — |
 | IssueClose | issue close | — | ✓ | — | — | — |
 | IssueAttachmentUpload | issue upload-attachment | — | ✓ | — | — | ✓ |
 | RepoCreate | repo create | — | ✓ | — | — | — |

@@ -6,7 +6,7 @@ pub(crate) fn normal_issue_commands() -> Vec<(&'static str, Capability)> {
         ("get", Capability::IssueRead),
         ("search", Capability::IssueSearch),
         ("create", Capability::IssueCreate),
-        ("update-body", Capability::IssueUpdateBody),
+        ("update", Capability::IssueUpdateBody),
         ("close", Capability::IssueClose),
         ("upload-attachment", Capability::IssueAttachmentUpload),
     ]
@@ -29,8 +29,11 @@ pub(crate) fn print_issue_help(role: Option<Role>) {
     println!("\nUse 'phasegent --help issue <command>' for options.");
 }
 
-pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
-    let (capability, text) = match command {
+/// Resolve the help entry for one `issue` subcommand, or `None` when the
+/// command is unknown. Split out from [`print_issue_command_help`] so the
+/// help text itself is testable without capturing stdout.
+pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'static str)> {
+    let entry = match command {
         "get" => (
             Capability::IssueRead,
             "Usage: issue get <NUMBER> [<NUMBER>...] (at most 20, unique, positive)\n\nOne number returns the legacy single-issue object. Two or more return an {issues, errors} envelope: successes and per-number failures are collected side by side so one missing issue never discards the rest; the exit code is 0 only when every fetch succeeds. Each fetched summary warms the local index exactly like a single get.",
@@ -52,11 +55,14 @@ pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
             Capability::IssueCreate,
             "Usage: issue create --title TEXT [--body TEXT | --body-file PATH [--keep-body-file]] [--tracker NAME_OR_ID] [--parent-issue ID] [--fixed-version NAME_OR_ID] [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD] [--estimated-hours HOURS] [--done-ratio 0-100]\n\n--body-file reads the body from a one-shot Markdown file (regular file, at most 2 MiB, valid UTF-8) instead of passing long text through the shell. It is mutually exclusive with --body. The file is read and validated locally before any provider or network access. After a successful write the file is deleted unless --keep-body-file is given; any read, validation, or provider failure keeps the file, and a path that was replaced or modified after the read is never deleted (a bounded warning is emitted instead).\n\n--tracker accepts a validated tracker name (Bug, Feature) or numeric id and is Redmine-only (GitLab maps it to a `type::bug` / `type::feature` label). Planning flags set native Redmine fields; --fixed-version resolves by exact version name or numeric id within the configured project. All Redmine planning flags are Redmine-only except --estimated-hours, which GitLab forwards through the native time_estimate endpoint. Forgejo rejects every planning flag.\n\nRedmine: when --project-id is omitted the current Git origin is matched against existing redmine_git_mirror records. Exactly one match uses that project and bypasses bootstrap; multiple matches fail before any write with candidate ids/names and require --project-id; no match automatically bootstraps the project (admin credentials) as before. Explicit --project-id always wins and skips discovery. An explicit --repository that does not equal the origin is not silently matched; it keeps the existing bootstrap behavior.\n\nValues beginning with `-` (Markdown bullets, separator lines) must use the inline form: --title=TEXT or --body=TEXT.",
         ),
-        "update-body" => (
+        "update" => (
             Capability::IssueUpdateBody,
-            "Usage: issue update-body <NUMBER> (--body TEXT | --body-file PATH [--keep-body-file]) [--tracker NAME_OR_ID] [--parent-issue ID] [--fixed-version NAME_OR_ID] [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD] [--estimated-hours HOURS] [--done-ratio 0-100]\n\n--body-file reads the body from a one-shot Markdown file (regular file, at most 2 MiB, valid UTF-8) instead of passing long text through the shell. It is mutually exclusive with --body. The file is read and validated locally before any provider or network access. After a successful write the file is deleted unless --keep-body-file is given; any read, validation, or provider failure keeps the file, and a path that was replaced or modified after the read is never deleted (a bounded warning is emitted instead).\n\n--tracker re-targets the issue's tracker in the same update (Redmine native; GitLab maps to a type::* label). Planning flags update native Redmine fields in the same PUT; --fixed-version resolves by exact version name or numeric id within the configured project. --estimated-hours is also accepted for GitLab (time_estimate); every other planning flag is Redmine-only. Forgejo rejects every planning flag.\n\nValues beginning with `-` (Markdown bullets, separator lines) must use the inline form: --body=TEXT.",
+            "Usage: issue update <NUMBER> (--body TEXT | --body-file PATH [--keep-body-file]) [--tracker NAME_OR_ID] [--parent-issue ID] [--fixed-version NAME_OR_ID] [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD] [--estimated-hours HOURS] [--done-ratio 0-100]\n\nUpdate one issue in a single PUT. --body-file reads the body from a one-shot Markdown file (regular file, at most 2 MiB, valid UTF-8) instead of passing long text through the shell. It is mutually exclusive with --body. The file is read and validated locally before any provider or network access. After a successful write the file is deleted unless --keep-body-file is given; any read, validation, or provider failure keeps the file, and a path that was replaced or modified after the read is never deleted (a bounded warning is emitted instead).\n\n--tracker re-targets the issue's tracker in the same update (Redmine native; GitLab maps to a type::* label). Planning flags update native Redmine fields in the same PUT; --fixed-version resolves by exact version name or numeric id within the configured project. --estimated-hours is also accepted for GitLab (time_estimate); every other planning flag is Redmine-only. Forgejo rejects every planning flag.\n\nValues beginning with `-` (Markdown bullets, separator lines) must use the inline form: --body=TEXT.",
         ),
-        "close" => (Capability::IssueClose, "Usage: issue close <NUMBER>"),
+        "close" => (
+            Capability::IssueClose,
+            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity, this issue, and the current session flipped to `retained` with release_reason \"issue closed: <session>\". The current session resolves from --worktree-session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback; on the legacy fallback no owner is guessed and no lease is released, and a migration warning is written to stderr. A failed remote close leaves every local lease untouched, and other sessions, issues, and repo identities are never affected. No worktree directory or branch is deleted.",
+        ),
         "upload-attachment" => (
             Capability::IssueAttachmentUpload,
             "Usage: issue upload-attachment <NUMBER> --path PATH [--description TEXT]\n\nUniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects the command with `not_supported` (exit 1) before any file, network, or credential access. The capability stays reserved (orchestrator or tester) so a future phase may re-enable the underlying upload path. The wire shape it would have used is documented for reference only: raw POST /uploads.json?filename=<basename> with Content-Type application/octet-stream, then PUT /issues/<id>.json {\"issue\":{\"uploads\":[{\"token\":...,\"filename\":...}],\"notes\":...}}; the transient upload token is never printed; outputs compact JSON with issue, filename, bytes, and success. Values beginning with `-` must use the inline form: --path=PATH or --description=TEXT.",
@@ -73,10 +79,15 @@ pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
             Capability::IssueRead,
             "Usage: issue status\n\nPrints the current branch and its bound Redmine issue, if any. Detached HEAD is an error.",
         ),
-        _ => {
-            print_issue_help(role);
-            return;
-        }
+        _ => return None,
+    };
+    Some(entry)
+}
+
+pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
+    let Some((capability, text)) = issue_command_help_entry(command) else {
+        print_issue_help(role);
+        return;
     };
     if role.is_none_or(|role| role.allows(capability)) {
         println!("{text}\n\n{}", capability.description());
@@ -104,6 +115,44 @@ mod tests {
     }
 
     #[test]
+    fn close_help_documents_worktree_session_and_release_rule() {
+        let (capability, text) = issue_command_help_entry("close").expect("close help entry");
+        assert_eq!(capability, Capability::IssueClose);
+        assert!(
+            text.contains("--worktree-session"),
+            "close help must advertise --worktree-session; got: {text}"
+        );
+        assert!(
+            text.contains("PHASEGENT_SESSION_ID"),
+            "close help must document the session environment variable; got: {text}"
+        );
+        assert!(
+            text.contains("retained"),
+            "close help must document the retained lease outcome; got: {text}"
+        );
+        assert!(
+            text.contains("failed remote close leaves every local lease untouched"),
+            "close help must state the remote-failure boundary; got: {text}"
+        );
+    }
+
+    #[test]
+    fn unknown_issue_command_has_no_help_entry() {
+        assert!(issue_command_help_entry("fly").is_none());
+    }
+
+    #[test]
+    fn update_help_entry_replaces_removed_update_body_topic() {
+        let (capability, text) = issue_command_help_entry("update").expect("update help entry");
+        assert_eq!(capability, Capability::IssueUpdateBody);
+        assert!(text.contains("Usage: issue update <NUMBER>"), "got: {text}");
+        assert!(
+            issue_command_help_entry("update-body").is_none(),
+            "the removed update-body topic must not resolve"
+        );
+    }
+
+    #[test]
     fn removed_index_help_topics_are_rejected() {
         for topic in ["index", "index sync", "index search"] {
             let mut parts = vec![
@@ -121,5 +170,36 @@ mod tests {
                 "help {topic} must be rejected as unknown help topic, got: {error}"
             );
         }
+    }
+
+    #[test]
+    fn help_routes_update_and_rejects_removed_update_body() {
+        let invocation = crate::command::parse(&[
+            "--role".to_owned(),
+            "orchestrator".to_owned(),
+            "--help".to_owned(),
+            "issue".to_owned(),
+            "update".to_owned(),
+        ])
+        .expect("help issue update must route");
+        match invocation.command {
+            crate::command::Command::Help(crate::command::HelpTopic::IssueCommand(value)) => {
+                assert_eq!(value, "update");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+
+        let error = crate::command::parse(&[
+            "--role".to_owned(),
+            "orchestrator".to_owned(),
+            "--help".to_owned(),
+            "issue".to_owned(),
+            "update-body".to_owned(),
+        ])
+        .expect_err("help issue update-body must be rejected");
+        assert!(
+            error.contains("unknown issue help topic 'update-body'"),
+            "unexpected error: {error}"
+        );
     }
 }

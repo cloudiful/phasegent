@@ -8,6 +8,7 @@ use crate::providers::redmine::model::{
     TransitionVerdict, canonical_allowed_next, canonical_status_name, evaluate_transition,
 };
 use crate::remote;
+use crate::worktree::WorktreeRunner;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -43,14 +44,7 @@ fn option_values_cannot_be_omitted() {
             "--state",
             "all",
         ],
-        vec![
-            "--role",
-            "orchestrator",
-            "issue",
-            "update-body",
-            "1",
-            "--body",
-        ],
+        vec!["--role", "orchestrator", "issue", "update", "1", "--body"],
         vec![
             "--role",
             "orchestrator",
@@ -66,6 +60,139 @@ fn option_values_cannot_be_omitted() {
             command::parse(&args).is_err(),
             "accepted missing value: {args:?}"
         );
+    }
+}
+
+#[test]
+fn issue_close_parses_worktree_session_option() {
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "close",
+        "42",
+        "--worktree-session",
+        "alpha",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("close with --worktree-session parses");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Close {
+            number,
+            worktree_session,
+        }) => {
+            assert_eq!(number, 42);
+            assert_eq!(worktree_session.as_deref(), Some("alpha"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn issue_close_worktree_session_defaults_to_none() {
+    // Legacy `issue close N` keeps parsing with no explicit session; the
+    // CLI resolves PHASEGENT_SESSION_ID / legacy fallback at execution.
+    let args = ["--role", "orchestrator", "issue", "close", "42"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("legacy close parses");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Close {
+            number,
+            worktree_session,
+        }) => {
+            assert_eq!(number, 42);
+            assert_eq!(worktree_session, None);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn issue_close_rejects_blank_worktree_session() {
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "close",
+        "42",
+        "--worktree-session",
+        "",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).unwrap_err();
+    assert!(error.contains("session"), "unexpected error: {error}");
+}
+
+#[test]
+fn issue_close_rejects_overlong_worktree_session() {
+    let overlong = "s".repeat(129);
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "close",
+        "42",
+        "--worktree-session",
+        overlong.as_str(),
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).unwrap_err();
+    assert!(
+        error.contains("session") && error.contains("128"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn issue_close_still_rejects_extra_positionals() {
+    let args = ["--role", "orchestrator", "issue", "close", "42", "extra"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(command::parse(&args).is_err());
+}
+
+#[test]
+fn issue_close_still_rejects_unknown_options() {
+    let args = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "close",
+        "42",
+        "--session",
+        "alpha",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&args).unwrap_err();
+    assert!(
+        error.contains("unknown option"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn issue_close_help_routes_to_command_topic() {
+    let args = ["--role", "orchestrator", "issue", "close", "--help"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("issue close --help parses");
+    match invocation.command {
+        command::Command::Help(command::HelpTopic::IssueCommand(name)) => {
+            assert_eq!(name, "close");
+        }
+        other => panic!("unexpected command {other:?}"),
     }
 }
 
@@ -123,7 +250,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
         "--role",
         "orchestrator",
         "issue",
-        "update-body",
+        "update",
         "1",
         "--body=---",
     ]
@@ -132,7 +259,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .collect::<Vec<_>>();
     let invocation = command::parse(&args).expect("inline --body should parse");
     match invocation.command {
-        command::Command::Issue(command::IssueCommand::UpdateBody { number, body, .. }) => {
+        command::Command::Issue(command::IssueCommand::Update { number, body, .. }) => {
             assert_eq!(number, 1);
             assert_eq!(body, "---");
         }
@@ -259,7 +386,7 @@ fn two_arg_value_with_leading_dash_still_errors_via_strict_missing_check() {
             "--role",
             "orchestrator",
             "issue",
-            "update-body",
+            "update",
             "1",
             "--body",
             "---",
@@ -822,7 +949,7 @@ fn issue_create_and_update_body_accept_optional_tracker_selection() {
         "--role",
         "orchestrator",
         "issue",
-        "update-body",
+        "update",
         "9",
         "--body",
         "Updated",
@@ -831,7 +958,7 @@ fn issue_create_and_update_body_accept_optional_tracker_selection() {
     .map(str::to_owned)
     .collect::<Vec<_>>();
     match command::parse(&update).unwrap().command {
-        command::Command::Issue(command::IssueCommand::UpdateBody {
+        command::Command::Issue(command::IssueCommand::Update {
             number,
             body,
             tracker,
@@ -1285,7 +1412,7 @@ fn issue_planning_flags_parse_on_create_and_update_body() {
         "--role",
         "orchestrator",
         "issue",
-        "update-body",
+        "update",
         "9",
         "--body",
         "Updated",
@@ -1296,7 +1423,7 @@ fn issue_planning_flags_parse_on_create_and_update_body() {
     .map(str::to_owned)
     .collect::<Vec<_>>();
     match command::parse(&update).unwrap().command {
-        command::Command::Issue(command::IssueCommand::UpdateBody { planning, .. }) => {
+        command::Command::Issue(command::IssueCommand::Update { planning, .. }) => {
             assert_eq!(planning.fixed_version.as_deref(), Some("7"));
             assert!(planning.parent_issue.is_none());
         }
@@ -2846,4 +2973,283 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         item.body.unwrap().len(),
         crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue 305 Task 3: `issue close` releases only the current session's
+// worktree leases, and only after the provider confirmed the close.
+//
+// These tests drive `execute_issue` end-to-end against the deterministic
+// local provider (no mock HTTP) with a temp worktree database and a temp
+// git checkout. They prove the provider success/failure split, the current
+// vs. other session isolation, and the no-session no-op.
+// ---------------------------------------------------------------------------
+
+fn close_cli_root(label: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "phasegent-close-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    root
+}
+
+fn close_cli_init_repo(repo: &std::path::Path) {
+    fs::create_dir_all(repo).unwrap();
+    let runner = crate::worktree::ProcessWorktreeRunner::new();
+    runner
+        .run(&["init", "-q", "-b", "main"], repo)
+        .expect("git init");
+    let _ = runner.run(
+        &[
+            "-c",
+            "user.name=phasegent-test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ],
+        repo,
+    );
+}
+
+fn close_cli_seed_lease(identity: &str, issue: u64, session: &str, status: &str) -> String {
+    let storage = Storage::open().unwrap();
+    crate::worktree::ensure_schema(&storage).unwrap();
+    let lease_id = format!(
+        "close-cli-{issue}-{session}-{}",
+        crate::worktree::compute_fingerprint(identity)
+    );
+    let now = crate::worktree::now_unix_secs();
+    let worktree_path = format!("/tmp/phasegent-close-cli-{issue}-{session}");
+    crate::worktree::leases::insert_lease(
+        &storage,
+        crate::worktree::leases::NewLease {
+            lease_id: &lease_id,
+            identity,
+            issue,
+            session,
+            checkout_path: "/tmp/phasegent-close-cli-checkout",
+            worktree_path: &worktree_path,
+            branch: "main",
+            status,
+            created_at: now,
+            heartbeat_at: now,
+        },
+    )
+    .unwrap();
+    lease_id
+}
+
+fn close_cli_lease_state(lease_id: &str) -> (String, Option<String>) {
+    let storage = Storage::open().unwrap();
+    let row = crate::worktree::leases::load_lease(&storage, lease_id)
+        .unwrap()
+        .unwrap();
+    (row.status, row.release_reason)
+}
+
+fn close_cli_seed_issue(title: &str, status: &str) -> u64 {
+    let provider = crate::providers::local::LocalProvider::open().unwrap();
+    let issue = provider.create_issue(title, "body").unwrap();
+    if status != "New" {
+        provider
+            .with_conn("seed issue status", |conn| {
+                conn.execute(
+                    "UPDATE local_issues SET status = ?1 WHERE id = ?2",
+                    rusqlite::params![status, issue.number as i64],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    issue.number
+}
+
+/// RAII helper that removes `PHASEGENT_SESSION_ID` for the duration of a
+/// test and restores the host value on Drop so the no-session path is
+/// exercised deterministically.
+struct SessionEnvRestore(Option<std::ffi::OsString>);
+
+impl SessionEnvRestore {
+    fn remove() -> Self {
+        let previous = std::env::var_os("PHASEGENT_SESSION_ID");
+        // SAFETY: serialised by `lock_workflow_tests`; the Drop guard
+        // restores the host value when the test unwinds.
+        unsafe {
+            std::env::remove_var("PHASEGENT_SESSION_ID");
+        }
+        Self(previous)
+    }
+}
+
+impl Drop for SessionEnvRestore {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        // SAFETY: symmetric with `remove` above.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PHASEGENT_SESSION_ID", value),
+                None => std::env::remove_var("PHASEGENT_SESSION_ID"),
+            }
+        }
+    }
+}
+
+#[test]
+fn cli_issue_close_releases_current_session_lease_after_provider_success() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("success");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let previous_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&repo).unwrap();
+
+    let number = close_cli_seed_issue("Close me", "Resolved");
+    let identity =
+        crate::worktree::repo_identity(&crate::worktree::ProcessWorktreeRunner::new(), &repo)
+            .unwrap();
+    let lease_a = close_cli_seed_lease(&identity, number, "session-a", "active");
+    let lease_b = close_cli_seed_lease(&identity, number, "session-b", "active");
+
+    let exit = crate::cli::issue::execute_issue(
+        Some(Role::Orchestrator),
+        Some(ProviderKind::Local),
+        None,
+        None,
+        None,
+        None,
+        command::IssueCommand::Close {
+            number,
+            worktree_session: Some("session-a".to_owned()),
+        },
+    );
+    let _ = std::env::set_current_dir(&previous_cwd);
+
+    assert_eq!(exit, 0, "a valid local-provider close must succeed");
+    let (status_a, reason_a) = close_cli_lease_state(&lease_a);
+    assert_eq!(status_a, "retained");
+    assert_eq!(reason_a.as_deref(), Some("issue closed: session-a"));
+    assert_eq!(
+        close_cli_lease_state(&lease_b).0,
+        "active",
+        "another session's lease must stay active"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cli_issue_close_provider_failure_leaves_lease_active() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("failure");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let previous_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&repo).unwrap();
+
+    // `New -> Closed` is rejected by the local transition policy, so the
+    // provider close fails before the lease hook is reached.
+    let number = close_cli_seed_issue("Close me", "New");
+    let identity =
+        crate::worktree::repo_identity(&crate::worktree::ProcessWorktreeRunner::new(), &repo)
+            .unwrap();
+    let lease_a = close_cli_seed_lease(&identity, number, "session-a", "active");
+
+    let exit = crate::cli::issue::execute_issue(
+        Some(Role::Orchestrator),
+        Some(ProviderKind::Local),
+        None,
+        None,
+        None,
+        None,
+        command::IssueCommand::Close {
+            number,
+            worktree_session: Some("session-a".to_owned()),
+        },
+    );
+    let _ = std::env::set_current_dir(&previous_cwd);
+
+    assert_ne!(exit, 0, "a rejected provider close must fail");
+    assert_eq!(
+        close_cli_lease_state(&lease_a).0,
+        "active",
+        "a failed provider close must not release the lease"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cli_issue_close_without_session_leaves_lease_active() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let _session_env = SessionEnvRestore::remove();
+    let root = close_cli_root("no-session");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let previous_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&repo).unwrap();
+
+    let number = close_cli_seed_issue("Close me", "Resolved");
+    let identity =
+        crate::worktree::repo_identity(&crate::worktree::ProcessWorktreeRunner::new(), &repo)
+            .unwrap();
+    let lease_a = close_cli_seed_lease(&identity, number, "session-a", "active");
+    let lease_b = close_cli_seed_lease(&identity, number, "session-b", "active");
+
+    let exit = crate::cli::issue::execute_issue(
+        Some(Role::Orchestrator),
+        Some(ProviderKind::Local),
+        None,
+        None,
+        None,
+        None,
+        command::IssueCommand::Close {
+            number,
+            worktree_session: None,
+        },
+    );
+    let _ = std::env::set_current_dir(&previous_cwd);
+
+    // The provider close succeeded (exit 0), so the stdout envelope is the
+    // unchanged provider close document; no owner is guessed locally.
+    assert_eq!(exit, 0);
+    assert_eq!(close_cli_lease_state(&lease_a).0, "active");
+    assert_eq!(close_cli_lease_state(&lease_b).0, "active");
+    let _ = fs::remove_dir_all(root);
 }

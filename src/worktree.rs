@@ -56,6 +56,7 @@ mod acquire;
 pub(crate) mod git;
 pub(crate) mod leases;
 mod naming;
+mod session;
 
 // The re-exports below are part of the public surface of the
 // `worktree` module and are consumed by the integration tests
@@ -64,8 +65,8 @@ mod naming;
 // positive here.
 #[allow(unused_imports)]
 pub use acquire::{
-    WORKTREE_AUTO_SETTING, acquire_lease, release_lease, release_lease_forced,
-    resolve_worktree_auto,
+    WORKTREE_AUTO_SETTING, acquire_lease, heartbeat_lease, release_active_leases_for_issue_session,
+    release_lease, release_lease_forced, release_stale_leases, resolve_worktree_auto,
 };
 #[allow(unused_imports)]
 pub use git::{is_clean, parse_worktree_list, worktree_add, worktree_remove};
@@ -74,6 +75,11 @@ pub use leases::{ensure_schema, list_for_issue, list_for_repo};
 #[allow(unused_imports)]
 pub use naming::{
     cache_root_in, compute_fingerprint, generate_branch, slug_from_branch, validate_ref_format,
+};
+#[allow(unused_imports)]
+pub(crate) use session::{
+    LEGACY_SESSION_ID, MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource,
+    resolve_session, resolve_session_with,
 };
 
 /// Status of a single lease row. `active` rows are the ones

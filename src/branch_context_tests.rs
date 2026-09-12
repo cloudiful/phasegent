@@ -187,7 +187,7 @@ fn existing_issue_commands_still_parse() {
     let invocation =
         parse_args(&["--role", "orchestrator", "issue", "close", "5"]).expect("close parses");
     match invocation.command {
-        Command::Issue(IssueCommand::Close { number }) => assert_eq!(number, 5),
+        Command::Issue(IssueCommand::Close { number, .. }) => assert_eq!(number, 5),
         other => panic!("unexpected command: {other:?}"),
     }
     assert!(parse_args(&["--role", "orchestrator", "issue", "search"]).is_ok());

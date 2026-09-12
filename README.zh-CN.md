@@ -88,7 +88,7 @@ phasegent --role orchestrator issue get 123 124 125
 phasegent --role orchestrator comment list 123
 phasegent --role orchestrator issue create \
   --title "Short title" --body "Issue details"
-phasegent --role orchestrator issue update-body 123 --body "Updated details"
+phasegent --role orchestrator issue update 123 --body "Updated details"
 phasegent --role orchestrator issue close 123
 phasegent doctor
 ```
@@ -104,7 +104,7 @@ Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 
 ### 一次性 Markdown 正文（`--body-file`）
 
-`issue create`、`issue update-body` 与 `comment create` 支持以
+`issue create`、`issue update` 与 `comment create` 支持以
 `--body-file PATH` 代替 `--body`，长 Markdown 无需经过 shell。两个参数互斥；
 `--body-file` 只接受普通文件，最大 2 MiB，且必须为有效 UTF-8。
 
@@ -115,7 +115,7 @@ Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 
 ```sh
 phasegent --role orchestrator issue create --title "Plan" --body-file /tmp/plan.md
-phasegent --role orchestrator issue update-body 123 --body-file /tmp/plan.md
+phasegent --role orchestrator issue update 123 --body-file /tmp/plan.md
 phasegent --role executor comment create 123 --body-file /tmp/audit.md \
   --marker "<!-- ai-executor ... -->" --authorized
 ```
@@ -252,7 +252,7 @@ phasegent --role executor --provider local issue create \
 ```
 
 issue、评论和状态相关命令在本地后端均可使用（`issue search`、
-`issue get`、`issue create`、`issue update-body`、`issue close`、
+`issue get`、`issue create`、`issue update`、`issue close`、
 `comment create`、状态 list/next/advance/set，以及 project list/create）。
 仓库创建、附件上传以及 relation 操作会返回结构化的 `not_supported`
 错误；`version list` 返回空目录，与能力矩阵一致。返回的 envelope
@@ -279,18 +279,43 @@ phasegent issue unbind
 
 ## Worktree
 
-按 issue 隔离 worktree，让多个任务共享同一仓库而不互相冲突。自动隔离
-默认关闭：冲突时 `acquire` 复用当前 checkout 并发出警告。用
-`admin config set worktree-auto true` 或单次 `--isolate` 开启。新 worktree
-需要环境文件时请手动复制 `.env`。
+按 issue 隔离 worktree，让多个任务共享同一仓库而不互相冲突。lease 以
+`(repo, issue, session)` 为键。session 的解析顺序为：`--session`（issue close
+用 `--worktree-session`）、`PHASEGENT_SESSION_ID`、最后是兼容性的
+`phasegent` 回退值。legacy 回退只会在 stderr 输出警告，并可能让并发的
+session 共用同一 lease，因此 OpenCode 工作流必须在每个 session 开始时生成
+一个稳定 id，并在所有 worktree 操作中复用。自动隔离默认关闭：冲突时
+`acquire` 复用当前 checkout 并发出警告。用
+`admin config set worktree-auto true` 或单次 `--isolate` 开启。当 `git status`
+探测本身失败时，dirty 状态未知：开启自动隔离会创建新 worktree，关闭则复用
+当前 checkout，两种情况都会在 stderr 警告 —— 未知状态绝不会被静默当作干净。
+新 worktree 需要环境文件时请手动复制 `.env`。
 
 ```sh
-phasegent --role orchestrator worktree acquire --issue 239 --session alpha
-phasegent --role executor worktree status --issue 239
+export PHASEGENT_SESSION_ID="<stable-session-id>"
+phasegent --role orchestrator worktree acquire --issue ISSUE --session "$PHASEGENT_SESSION_ID" --isolate
+phasegent --role orchestrator worktree heartbeat --lease LEASE --session "$PHASEGENT_SESSION_ID"
+phasegent --role executor worktree status --issue ISSUE
 phasegent --role executor worktree list
-phasegent --role orchestrator worktree release --lease lease-...
-phasegent --role orchestrator worktree prune --stale-days 14 --dry-run
+phasegent --role orchestrator worktree prune --stale-days 14
+phasegent --role orchestrator worktree prune --stale-days 14 --release-stale --reason "stale session recovery"
+phasegent --role orchestrator worktree prune --stale-days 14 --remove
+phasegent --role orchestrator worktree release --lease LEASE
 ```
+
+`heartbeat` 只会刷新 stored session 与调用方一致、且仍为 active 的 lease；
+session 不匹配或已终结的 lease 会返回结构化冲突且行内容保持不变。
+`prune` 默认是只读报告：列出 heartbeat 早于 `--stale-days`（默认 14）的
+active lease 以及所有可删除的 worktree，不做任何修改。`--release-stale` 必须
+同时给出 `--reason TEXT`，把恰好这些 stale active lease 转为 `retained` 并
+记录原因；`--remove` 只删除同时满足 `retained`、已过期、且干净的 worktree
+（若同时请求恢复，则先执行恢复）。两个动作都需显式开启；没有
+`--release-stale` 而给出 `--reason` 会被拒绝。任何动作都不会删除分支，且
+`git worktree remove` 永远不会带 `--force`，因此 dirty worktree、active lease
+和未提交内容都不会被删除。
+关闭 issue 只释放当前 repo、issue、session 匹配的 lease：远程关闭失败不会改变
+任何本地 lease，没有已解析 session 时不会释放任何 lease，也不会影响其他
+session。
 
 ## MCP 服务
 

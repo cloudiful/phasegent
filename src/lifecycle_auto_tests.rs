@@ -26,6 +26,7 @@ use crate::lifecycle_auto::{
     status_to_agent_role,
 };
 use crate::providers::ProviderKind;
+use crate::worktree::WorktreeRunner;
 use std::fs;
 
 fn unique_temp_dir(label: &str) -> std::path::PathBuf {
@@ -897,4 +898,207 @@ fn auto_prefixed_orphan_recover_projects_to_provider_with_idempotent_retry() {
 
     server.join().unwrap();
     let _ = fs::remove_dir_all(home);
+}
+
+// ---------------------------------------------------------------------------
+// Issue 305 Task 3: issue-close worktree-lease release.
+//
+// The lifecycle helper resolves the current repo identity and delegates to
+// the worktree domain flip. These tests pin the session isolation contract:
+// only the closed session's active lease for the closed issue/repo becomes
+// `retained`; every other session, issue, and repo is left `active`, and an
+// absent session never guesses an owner.
+// ---------------------------------------------------------------------------
+
+fn temp_git_repo(label: &str) -> Option<(std::path::PathBuf, String)> {
+    let dir = unique_temp_dir(&format!("close-repo-{label}"));
+    fs::create_dir_all(&dir).ok()?;
+    let runner = crate::worktree::ProcessWorktreeRunner::new();
+    if runner.run(&["init", "-q", "-b", "main"], &dir).is_err() {
+        let _ = fs::remove_dir_all(&dir);
+        return None;
+    }
+    // Best-effort initial commit: an unborn HEAD is still a valid repo
+    // identity for the lease-release hook under test.
+    let _ = runner.run(
+        &[
+            "-c",
+            "user.name=phasegent-test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ],
+        &dir,
+    );
+    let identity = crate::worktree::repo_identity(&runner, &dir).ok()?;
+    Some((dir, identity))
+}
+
+fn seed_lease(identity: &str, issue: u64, session: &str, status: &str) -> String {
+    let storage = Storage::open().expect("storage for lease seed");
+    crate::worktree::ensure_schema(&storage).expect("worktree schema");
+    let lease_id = format!(
+        "lease-{issue}-{session}-{}",
+        crate::worktree::compute_fingerprint(identity)
+    );
+    let now = crate::worktree::now_unix_secs();
+    let worktree_path = format!("/tmp/phasegent-lease-{issue}-{session}");
+    crate::worktree::leases::insert_lease(
+        &storage,
+        crate::worktree::leases::NewLease {
+            lease_id: &lease_id,
+            identity,
+            issue,
+            session,
+            checkout_path: "/tmp/phasegent-checkout",
+            worktree_path: &worktree_path,
+            branch: "main",
+            status,
+            created_at: now,
+            heartbeat_at: now,
+        },
+    )
+    .expect("seed lease");
+    lease_id
+}
+
+fn lease_state(lease_id: &str) -> (String, Option<String>) {
+    let storage = Storage::open().expect("storage for lease read");
+    let row = crate::worktree::leases::load_lease(&storage, lease_id)
+        .expect("load lease")
+        .expect("lease exists");
+    (row.status, row.release_reason)
+}
+
+#[test]
+fn close_release_flips_only_current_session_lease_for_issue_and_repo() {
+    let _lock = lock_workflow_tests();
+    let (temp, _storage, _env) = open_temp_storage("close-release");
+    let Some((repo_dir, identity)) = temp_git_repo("current") else {
+        let _ = fs::remove_dir_all(temp);
+        return;
+    };
+    let lease_a = seed_lease(&identity, 305, "session-a", "active");
+    let lease_b = seed_lease(&identity, 305, "session-b", "active");
+    let same_session_other_issue = seed_lease(&identity, 306, "session-a", "active");
+    let other_repo = seed_lease("git-common-dir:/elsewhere/.git", 305, "session-a", "active");
+
+    let outcome = crate::lifecycle::release_closed_issue_leases(
+        &crate::worktree::ProcessWorktreeRunner::new(),
+        &repo_dir,
+        305,
+        Some("session-a"),
+    );
+    assert_eq!(
+        outcome,
+        crate::lifecycle::AutoReleaseLeaseOutcome::Released { released: 1 }
+    );
+    assert!(outcome.warning().is_none());
+
+    let (status_a, reason_a) = lease_state(&lease_a);
+    assert_eq!(status_a, "retained");
+    assert_eq!(reason_a.as_deref(), Some("issue closed: session-a"));
+    assert_eq!(lease_state(&lease_b).0, "active");
+    assert_eq!(lease_state(&same_session_other_issue).0, "active");
+    assert_eq!(lease_state(&other_repo).0, "active");
+    let _ = fs::remove_dir_all(repo_dir);
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn close_release_without_session_is_noop_with_warning() {
+    let _lock = lock_workflow_tests();
+    let (temp, _storage, _env) = open_temp_storage("close-no-session");
+    let Some((repo_dir, identity)) = temp_git_repo("no-session") else {
+        let _ = fs::remove_dir_all(temp);
+        return;
+    };
+    let lease_a = seed_lease(&identity, 305, "session-a", "active");
+    let lease_b = seed_lease(&identity, 305, "session-b", "active");
+
+    let outcome = crate::lifecycle::release_closed_issue_leases(
+        &crate::worktree::ProcessWorktreeRunner::new(),
+        &repo_dir,
+        305,
+        None,
+    );
+    match &outcome {
+        crate::lifecycle::AutoReleaseLeaseOutcome::NoSession { reason } => {
+            assert!(
+                reason.contains("left untouched"),
+                "no-session reason must say leases were left untouched: {reason}"
+            );
+        }
+        other => panic!("expected NoSession, got {other:?}"),
+    }
+    let warning = outcome
+        .warning()
+        .expect("an absent session must surface a stderr warning");
+    assert!(
+        warning.contains("PHASEGENT_SESSION_ID"),
+        "warning must name the session source, got: {warning}"
+    );
+    assert_eq!(lease_state(&lease_a).0, "active");
+    assert_eq!(lease_state(&lease_b).0, "active");
+    let _ = fs::remove_dir_all(repo_dir);
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn close_release_with_blank_session_is_noop_with_warning() {
+    let _lock = lock_workflow_tests();
+    let (temp, _storage, _env) = open_temp_storage("close-blank-session");
+    let Some((repo_dir, identity)) = temp_git_repo("blank-session") else {
+        let _ = fs::remove_dir_all(temp);
+        return;
+    };
+    let lease_a = seed_lease(&identity, 305, "session-a", "active");
+
+    let outcome = crate::lifecycle::release_closed_issue_leases(
+        &crate::worktree::ProcessWorktreeRunner::new(),
+        &repo_dir,
+        305,
+        Some("   "),
+    );
+    assert!(matches!(
+        outcome,
+        crate::lifecycle::AutoReleaseLeaseOutcome::NoSession { .. }
+    ));
+    assert_eq!(lease_state(&lease_a).0, "active");
+    let _ = fs::remove_dir_all(repo_dir);
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn close_release_warns_when_repo_identity_is_unavailable() {
+    let _lock = lock_workflow_tests();
+    let (temp, _storage, _env) = open_temp_storage("close-bad-repo");
+    // A plain directory that is not a git checkout: resolving the
+    // canonical identity fails, but the remote close already succeeded,
+    // so the hook must degrade to a bounded warning instead of failing.
+    let dir = unique_temp_dir("close-bad-repo-dir");
+    fs::create_dir_all(&dir).unwrap();
+
+    let outcome = crate::lifecycle::release_closed_issue_leases(
+        &crate::worktree::ProcessWorktreeRunner::new(),
+        &dir,
+        305,
+        Some("session-a"),
+    );
+    match &outcome {
+        crate::lifecycle::AutoReleaseLeaseOutcome::Warning { reason } => {
+            assert!(
+                reason.contains("repository identity"),
+                "warning must explain the identity failure: {reason}"
+            );
+        }
+        other => panic!("expected Warning, got {other:?}"),
+    }
+    assert!(outcome.warning().is_some());
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(temp);
 }

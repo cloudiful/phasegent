@@ -21,11 +21,14 @@ use crate::command::WorktreeCommand;
 use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::worktree::git::{is_clean, worktree_remove};
-use crate::worktree::leases::{ensure_schema, list_for_repo, load_lease, update_status};
+use crate::worktree::leases::{
+    ensure_schema, list_for_repo, load_lease, stale_active_leases, update_status,
+};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED,
-    ProcessWorktreeRunner, ReleaseOutcome, WorktreeError, WorktreeRunner, leases_for_issue,
-    now_unix_secs, repo_identity, resolve_worktree_auto,
+    ProcessWorktreeRunner, ReleaseOutcome, WorktreeError, WorktreeRunner, heartbeat_lease,
+    leases_for_issue, now_unix_secs, release_stale_leases, repo_identity, resolve_session,
+    resolve_worktree_auto,
 };
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -145,6 +148,76 @@ pub struct PruneSummary {
     pub actions: Vec<PruneAction>,
 }
 
+/// Envelope returned by `heartbeat`. Only the fields an operator needs to
+/// confirm ownership and freshness are surfaced.
+#[derive(Debug, Serialize)]
+pub struct HeartbeatJson {
+    pub lease_id: String,
+    pub issue: u64,
+    pub session: String,
+    pub status: String,
+    pub heartbeat_at: i64,
+}
+
+impl From<crate::worktree::LeaseRow> for HeartbeatJson {
+    fn from(row: crate::worktree::LeaseRow) -> Self {
+        Self {
+            lease_id: row.lease_id,
+            issue: row.issue,
+            session: row.session,
+            status: row.status,
+            heartbeat_at: row.heartbeat_at,
+        }
+    }
+}
+
+/// One candidate row in the `release-stale` report. `status` is the
+/// resulting status: `active` for a dry-run candidate, `retained` after
+/// an applied recovery.
+#[derive(Debug, Serialize)]
+pub struct ReleaseStaleAction {
+    pub lease_id: String,
+    pub issue: u64,
+    pub session: String,
+    pub worktree_path: String,
+    pub branch: String,
+    pub heartbeat_at: i64,
+    pub age_secs: i64,
+    pub status: String,
+}
+
+/// Envelope returned by `release-stale`. `dry_run`/`apply` echo the
+/// input mode; `candidates` is the pre-apply count and `released` is the
+/// number of rows actually flipped.
+#[derive(Debug, Serialize)]
+pub struct ReleaseStaleSummary {
+    pub repo_identity: String,
+    pub stale_days: u32,
+    pub stale_before: i64,
+    pub apply: bool,
+    pub candidates: usize,
+    pub released: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub leases: Vec<ReleaseStaleAction>,
+}
+
+/// Envelope returned by `worktree prune`. Lease and directory actions are
+/// recorded separately so a caller can tell a lease recovery (status
+/// flip) apart from a worktree removal; the default dry-run writes
+/// nothing (`leases.apply` false, `worktrees.dry_run` true).
+#[derive(Debug, Serialize)]
+pub struct PruneCombinedSummary {
+    pub repo_identity: String,
+    pub stale_days: u32,
+    pub release_stale: bool,
+    pub remove: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub leases: ReleaseStaleSummary,
+    pub worktrees: PruneSummary,
+}
+
 pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeCommand) -> i32 {
     let role = super::required_role(role_value);
     match command {
@@ -158,7 +231,7 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree acquire");
             }
-            execute_acquire(role, issue, &session, &format, isolate)
+            execute_acquire(role, issue, session.as_deref(), &format, isolate)
         }
         WorktreeCommand::Release {
             lease,
@@ -184,13 +257,22 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             execute_list(repo.as_deref())
         }
         WorktreeCommand::Prune {
+            repo,
             stale_days,
-            dry_run,
+            release_stale,
+            remove,
+            reason,
         } => {
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree prune");
             }
-            execute_prune(stale_days, dry_run)
+            execute_prune(repo.as_deref(), stale_days, release_stale, remove, reason)
+        }
+        WorktreeCommand::Heartbeat { lease, session } => {
+            if role != Role::Orchestrator {
+                return permission_error(role, "worktree heartbeat");
+            }
+            execute_heartbeat(&lease, session.as_deref())
         }
     }
 }
@@ -211,9 +293,33 @@ fn permission_error(role: Role, operation: &str) -> i32 {
     )
 }
 
-fn execute_acquire(role: Role, issue: u64, session: &str, format: &str, isolate: bool) -> i32 {
+fn execute_acquire(
+    role: Role,
+    issue: u64,
+    session: Option<&str>,
+    format: &str,
+    isolate: bool,
+) -> i32 {
     debug_assert_eq!(role, Role::Orchestrator);
     let _ = format; // only "json" is accepted at the parser layer
+    // Resolve the session before any storage / git work so a blank or
+    // overlong `PHASEGENT_SESSION_ID` fails fast with exit 2. The legacy
+    // fallback emits a migration warning on stderr only; the stdout JSON
+    // envelope is unchanged (issue 305 Task 1).
+    let session = match resolve_session(session) {
+        Ok(context) => context,
+        Err(error) => {
+            return super::structured_error(
+                serde_json::json!({
+                    "kind": error.kind,
+                    "operation": "worktree acquire",
+                    "message": error.message,
+                }),
+                2,
+            );
+        }
+    };
+    super::report_local_warnings("worktree acquire", session.legacy_warning());
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let runner = ProcessWorktreeRunner::new();
     // Resolve the persisted `worktree-auto` switch (env over SQLite,
@@ -234,7 +340,15 @@ fn execute_acquire(role: Role, issue: u64, session: &str, format: &str, isolate:
             );
         }
     };
-    match crate::worktree::acquire_lease(&runner, &repo_path, issue, session, None, isolate, auto) {
+    match crate::worktree::acquire_lease(
+        &runner,
+        &repo_path,
+        issue,
+        &session.id,
+        None,
+        isolate,
+        auto,
+    ) {
         Ok(outcome) => {
             let payload = AcquireJson::from(outcome);
             super::print_json(&payload)
@@ -291,6 +405,34 @@ fn execute_release(lease: &str, retain: bool, force: bool, reason: Option<String
     }
 }
 
+fn execute_heartbeat(lease: &str, session: Option<&str>) -> i32 {
+    let session = match resolve_session(session) {
+        Ok(context) => context,
+        Err(error) => {
+            return super::structured_error(
+                serde_json::json!({
+                    "kind": error.kind,
+                    "operation": "worktree heartbeat",
+                    "message": error.message,
+                }),
+                2,
+            );
+        }
+    };
+    super::report_local_warnings("worktree heartbeat", session.legacy_warning());
+    match heartbeat_lease(lease, &session.id, now_unix_secs()) {
+        Ok(row) => super::print_json(&HeartbeatJson::from(row)),
+        Err(error) => super::structured_error(
+            serde_json::json!({
+                "kind": error.kind,
+                "operation": "worktree heartbeat",
+                "message": error.message,
+            }),
+            1,
+        ),
+    }
+}
+
 fn execute_status(issue: u64) -> i32 {
     match leases_for_issue(issue) {
         Ok(rows) => {
@@ -328,7 +470,13 @@ fn execute_list(repo: Option<&str>) -> i32 {
     }
 }
 
-fn execute_prune(stale_days: u32, dry_run: bool) -> i32 {
+fn execute_prune(
+    repo: Option<&str>,
+    stale_days: u32,
+    release_stale: bool,
+    remove: bool,
+    reason: Option<String>,
+) -> i32 {
     let storage = match open_storage() {
         Ok(storage) => storage,
         Err(message) => return config_error(&message),
@@ -336,25 +484,112 @@ fn execute_prune(stale_days: u32, dry_run: bool) -> i32 {
     if let Err(message) = ensure_schema(&storage) {
         return config_error(&message);
     }
-    let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let runner = ProcessWorktreeRunner::new();
-    let identity = match repo_identity(&runner, &repo_path) {
+    let identity = match resolve_list_identity(&storage, repo) {
         Ok(identity) => identity,
-        Err(error) => {
+        Err(message) => return super::structured_error(message, 2),
+    };
+    let now = now_unix_secs();
+    let stale_before = now.saturating_sub(i64::from(stale_days) * SECONDS_PER_DAY);
+    // Stale lease recovery runs first so a lease flipped to `retained`
+    // in this invocation can be removed by the directory pass below.
+    let candidates = match stale_active_leases(&storage, &identity, stale_before) {
+        Ok(rows) => rows,
+        Err(error) => return storage_error(&error),
+    };
+    let candidate_count = candidates.len();
+    let (released, applied_reason, flipped_ids) = if release_stale {
+        let Some(reason) = reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
             return super::structured_error(
                 serde_json::json!({
-                    "kind": error.kind,
-                    "message": error.message,
+                    "kind": "argument",
+                    "operation": "worktree prune",
+                    "message": "worktree prune --release-stale requires a non-empty --reason",
                 }),
                 2,
             );
+        };
+        match release_stale_leases(&identity, stale_before, Some(reason)) {
+            Ok(outcomes) => {
+                // Report exactly the rows the transactional recovery
+                // flipped: a heartbeat that raced the dry-run read cannot
+                // leave an unflipped row labelled `retained`.
+                let ids: std::collections::HashSet<String> = outcomes
+                    .iter()
+                    .map(|outcome| outcome.lease_id.clone())
+                    .collect();
+                (outcomes.len(), Some(reason.to_owned()), Some(ids))
+            }
+            Err(error) => {
+                return super::structured_error(
+                    serde_json::json!({
+                        "kind": error.kind,
+                        "operation": "worktree prune",
+                        "message": error.message,
+                    }),
+                    1,
+                );
+            }
         }
+    } else {
+        (0, None, None)
     };
+    let lease_actions: Vec<ReleaseStaleAction> = candidates
+        .into_iter()
+        .filter(|row| {
+            flipped_ids
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&row.lease_id))
+        })
+        .map(|row| ReleaseStaleAction {
+            age_secs: now.saturating_sub(row.heartbeat_at),
+            status: if release_stale {
+                LEASE_STATUS_RETAINED.to_owned()
+            } else {
+                row.status
+            },
+            lease_id: row.lease_id,
+            issue: row.issue,
+            session: row.session,
+            worktree_path: row.worktree_path,
+            branch: row.branch,
+            heartbeat_at: row.heartbeat_at,
+        })
+        .collect();
+    let lease_summary = ReleaseStaleSummary {
+        repo_identity: identity.clone(),
+        stale_days,
+        stale_before,
+        apply: release_stale,
+        candidates: candidate_count,
+        released,
+        reason: applied_reason.clone(),
+        leases: lease_actions,
+    };
+    let repo_path = match repo {
+        Some(raw) => PathBuf::from(raw),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let runner = ProcessWorktreeRunner::new();
     let rows = match list_for_repo(&storage, &identity) {
         Ok(rows) => rows,
         Err(error) => return storage_error(&error),
     };
-    let summary = prune_pass(&storage, &runner, &repo_path, &rows, stale_days, dry_run);
+    // `--remove` is the only switch that may delete a directory; without
+    // it the pass reports the same classification as a dry-run.
+    let worktree_summary = prune_pass(&storage, &runner, &repo_path, &rows, stale_days, !remove);
+    let summary = PruneCombinedSummary {
+        repo_identity: identity,
+        stale_days,
+        release_stale,
+        remove,
+        reason: applied_reason,
+        leases: lease_summary,
+        worktrees: worktree_summary,
+    };
     super::print_json(&summary)
 }
 

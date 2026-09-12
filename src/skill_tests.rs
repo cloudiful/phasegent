@@ -211,6 +211,40 @@ fn role_table_agrees_with_policy() {
     }
 }
 
+/// The issue 337 refactor removed `worktree release-stale` (folded into
+/// `worktree prune --release-stale --reason TEXT`), the `worktree prune
+/// --dry-run` flag, and `issue update-body` (renamed to `issue update`).
+/// Shipped docs and the skill must never advertise the removed surface as an
+/// available entry point; `--release-stale` itself remains a valid flag.
+#[test]
+fn docs_and_skill_do_not_advertise_removed_issue_337_surface() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut corpus = String::new();
+    for relative in [
+        "README.md",
+        "README.zh-CN.md",
+        "skills/phasegent-workflow/SKILL.md",
+        "skills/phasegent-workflow/references/roles.md",
+        "skills/phasegent-workflow/references/contracts.md",
+    ] {
+        let text = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|err| panic!("expected {relative} to be readable: {err}"));
+        corpus.push_str(&text);
+        corpus.push('\n');
+    }
+    for forbidden in [
+        "worktree release-stale",
+        "issue update-body",
+        "--dry-run",
+        "--apply",
+    ] {
+        assert!(
+            !corpus.contains(forbidden),
+            "removed issue 337 command surface {forbidden:?} must not appear in the shipped docs or skill"
+        );
+    }
+}
+
 #[test]
 fn reference_chain_files_exist_and_are_linked() {
     let skill = read_skill("SKILL.md");

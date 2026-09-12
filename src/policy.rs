@@ -188,7 +188,7 @@ impl Capability {
             Self::IssueRead => "Read one issue",
             Self::IssueSearch => "Search issues",
             Self::IssueCreate => "Create an issue",
-            Self::IssueUpdateBody => "Update an issue body",
+            Self::IssueUpdateBody => "Update an issue",
             Self::IssueClose => "Close an issue",
             Self::IssueAttachmentUpload => {
                 "Upload an issue attachment (uniformly not-supported; kept for parity and future re-enable)"
@@ -214,7 +214,7 @@ impl Capability {
             Self::IssueRead => "issue read",
             Self::IssueSearch => "issue search",
             Self::IssueCreate => "issue create",
-            Self::IssueUpdateBody => "issue update-body",
+            Self::IssueUpdateBody => "issue update",
             Self::IssueClose => "issue close",
             Self::IssueAttachmentUpload => "issue upload-attachment",
             Self::RepoCreate => "repo create",

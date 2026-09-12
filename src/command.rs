@@ -221,7 +221,10 @@ pub enum IssueCommand {
         /// validated and version-resolved at execution time.
         planning: PlanningOptions,
     },
-    UpdateBody {
+    /// `issue update <NUMBER>` — single update entry point (folds the
+    /// former `update-body`). The body plus optional tracker/planning
+    /// fields are applied in one PUT.
+    Update {
         number: u64,
         body: String,
         /// Optional one-shot Markdown file input (`--body-file`); mutually
@@ -236,6 +239,10 @@ pub enum IssueCommand {
     },
     Close {
         number: u64,
+        /// Optional explicit worktree session id (`--worktree-session`).
+        /// `None` defers to `PHASEGENT_SESSION_ID` and then the legacy
+        /// `phasegent` fallback at execution time (issue 305 Task 1).
+        worktree_session: Option<String>,
     },
     /// Redmine-only orchestrator attachment upload. Validates the local
     /// file (exists, regular, non-empty, bounded 25 MiB, valid filename)
@@ -468,16 +475,30 @@ pub enum PluginCommand {
 ///   the resolved repo identity; `--repo` defaults to the current
 ///   working directory. Read-only; available to orchestrator,
 ///   executor, and reviewer.
-/// * `prune [--stale-days N] [--dry-run]` removes clean + expired +
-///   retained worktrees. Branches are never deleted; only
+/// * `prune [--repo PATH] [--stale-days N] [--release-stale --reason
+///   TEXT] [--remove]` is the single pruning entry point (folds the
+///   former `release-stale`). With neither `--release-stale` nor
+///   `--remove` it is a read-only dry-run that reports stale active
+///   leases and prunable worktrees and writes nothing. `--release-stale`
+///   requires a non-empty `--reason` and flips exactly the stale active
+///   leases to `retained`; `--remove` deletes clean + expired +
+///   retained worktrees. Both flags together run the recovery first and
+///   then the removal. Branches are never deleted; only
 ///   `git worktree remove` (no `--force`) is invoked, and only when
 ///   `is_clean` reports an empty porcelain. Orchestrator-only.
+/// * `heartbeat --lease ID [--session SESSION]` refreshes the heartbeat
+///   of an active lease, but only when the resolved session owns the
+///   row; a foreign session or terminal lease is a structured conflict.
+///   Orchestrator-only.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum WorktreeCommand {
     Acquire {
         issue: u64,
-        session: String,
+        /// Explicit `--session` value as supplied by the caller. `None`
+        /// defers to `PHASEGENT_SESSION_ID` and then the legacy
+        /// `phasegent` fallback at execution time (issue 305 Task 1).
+        session: Option<String>,
         /// Accepted for forward compatibility; the current Phase 2
         /// implementation always bases on `HEAD`. The dispatcher in
         /// `cli::worktree::execute_acquire` acknowledges the value
@@ -507,8 +528,24 @@ pub enum WorktreeCommand {
         repo: Option<String>,
     },
     Prune {
+        /// Optional `--repo`; `None` resolves the current directory.
+        repo: Option<String>,
         stale_days: u32,
-        dry_run: bool,
+        /// `--release-stale`: explicitly flip stale active leases to
+        /// `retained`. Defaults off (read-only dry-run).
+        release_stale: bool,
+        /// `--remove`: explicitly delete clean + expired + retained
+        /// worktrees. Defaults off (read-only dry-run).
+        remove: bool,
+        /// Required (non-empty) when `release_stale` is true so the
+        /// recovery stays attributable; rejected on its own.
+        reason: Option<String>,
+    },
+    Heartbeat {
+        lease: String,
+        /// Explicit `--session`; `None` defers to
+        /// `PHASEGENT_SESSION_ID` and then the legacy fallback.
+        session: Option<String>,
     },
 }
 

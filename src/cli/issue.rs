@@ -26,7 +26,7 @@ pub(crate) fn execute_issue(
         }
         IssueCommand::Search { .. } => (super::required_role(role_value), Capability::IssueSearch),
         IssueCommand::Create { .. } => (super::required_role(role_value), Capability::IssueCreate),
-        IssueCommand::UpdateBody { .. } => (
+        IssueCommand::Update { .. } => (
             super::required_role(role_value),
             Capability::IssueUpdateBody,
         ),
@@ -313,7 +313,7 @@ pub(crate) fn execute_issue(
                 Err(error) => super::provider_error(error),
             }
         }
-        IssueCommand::UpdateBody {
+        IssueCommand::Update {
             number,
             body: _,
             body_file: _,
@@ -327,7 +327,7 @@ pub(crate) fn execute_issue(
                     return super::structured_error(
                         serde_json::json!({
                             "kind":"argument",
-                            "operation":"issue update-body",
+                            "operation":"issue update",
                             "message":"--body or --body-file is required"
                         }),
                         2,
@@ -342,71 +342,121 @@ pub(crate) fn execute_issue(
                 &planning,
             ) {
                 Ok(summary) => {
-                    issue_search::warm_single_summary(&provider, &summary, "issue update-body");
+                    issue_search::warm_single_summary(&provider, &summary, "issue update");
                     let exit = super::print_json(&summary);
                     if exit == 0
                         && let Some(body_file) = body_file
                         && let Some(warning) = body_file.cleanup_after_success()
                     {
-                        super::report_local_warnings("issue update-body", Some(warning));
+                        super::report_local_warnings("issue update", Some(warning));
                     }
                     exit
                 }
                 Err(error) => super::provider_error(error),
             }
         }
-        IssueCommand::Close { number } => match provider.close_issue(number) {
-            Ok(summary) => {
-                // Redmine-only local side effect: unbind only when the current
-                // branch points at exactly the closed issue. A failed local
-                // unbind never undoes the remote close; warnings go to stderr.
-                if provider_kind == ProviderKind::Redmine {
+        IssueCommand::Close {
+            number,
+            worktree_session,
+        } => {
+            // Resolve the worktree session before the remote close so a
+            // blank or overlong value fails fast without closing the
+            // issue. The resolved context scopes the local lease release
+            // to this session (issue 305 Task 3); Task 1 only resolves
+            // the identity and emits the legacy migration warning.
+            let session = match crate::worktree::resolve_session(worktree_session.as_deref()) {
+                Ok(context) => context,
+                Err(error) => {
+                    return super::structured_error(
+                        serde_json::json!({
+                            "kind": error.kind,
+                            "operation": "issue close",
+                            "message": error.message,
+                        }),
+                        2,
+                    );
+                }
+            };
+            match provider.close_issue(number) {
+                Ok(summary) => {
+                    // Legacy fallback is never silent: warn on stderr only
+                    // so the stdout close document stays byte-identical.
+                    super::report_local_warnings("issue close", session.legacy_warning());
+                    // Redmine-only local side effect: unbind only when the current
+                    // branch points at exactly the closed issue. A failed local
+                    // unbind never undoes the remote close; warnings go to stderr.
+                    if provider_kind == ProviderKind::Redmine {
+                        super::report_local_warnings(
+                            "issue close",
+                            crate::lifecycle::unbind_closed_issue(
+                                &crate::branch_context::ProcessGitRunner::new(),
+                                number,
+                                repository,
+                            )
+                            .warning(),
+                        );
+                    }
+                    // Auto-accounting side effect: finish any running
+                    // auto-run for the issue. The helper is gated for
+                    // Forgejo internally and returns `Noop` so a
+                    // Forgejo close never mutates the Redmine or
+                    // GitLab ledger rows; for Redmine and GitLab it
+                    // finishes every running row for the issue. The
+                    // branch-context `unbind_closed_issue` above is a
+                    // Redmine-only sibling helper and is unaffected by
+                    // this hook.
                     super::report_local_warnings(
                         "issue close",
-                        crate::lifecycle::unbind_closed_issue(
-                            &crate::branch_context::ProcessGitRunner::new(),
+                        crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind)
+                            .warning(),
+                    );
+                    // Release only the worktree leases this session owns
+                    // (issue 305 Task 3). The legacy fallback never guesses
+                    // an owner: it is passed as `None` so no lease is
+                    // released. The hook runs after the remote close
+                    // succeeded, so a failed close never mutates local
+                    // lease state, and warnings stay on stderr.
+                    let release_session = match session.source {
+                        crate::worktree::SessionSource::Explicit
+                        | crate::worktree::SessionSource::Environment => Some(session.id.as_str()),
+                        crate::worktree::SessionSource::LegacyFallback => None,
+                    };
+                    let repo_path =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    super::report_local_warnings(
+                        "issue close",
+                        crate::lifecycle::release_closed_issue_leases(
+                            &crate::worktree::ProcessWorktreeRunner::new(),
+                            &repo_path,
                             number,
-                            repository,
+                            release_session,
                         )
                         .warning(),
                     );
+                    // Phase 3 relation auto: fire the helper after a
+                    // successful close. The shared issue DTO does not
+                    // surface the parent linkage without a server
+                    // fetch so the call site passes `None`; the
+                    // helper is silent on the common path. The create
+                    // arm fires the helper with the resolved
+                    // `parent_issue_id` and is the only branch that
+                    // actually creates a relation in Phase 3. See
+                    // Remaining in the audit note for the deferred
+                    // lookup shape.
+                    super::report_local_warnings(
+                        "issue close",
+                        crate::lifecycle_auto::auto_create_parent_child_relation(
+                            &provider, number, None,
+                        )
+                        .warning(),
+                    );
+                    // Close upserts the returned closed document.
+                    issue_search::warm_single_summary(&provider, &summary, "issue close");
+                    super::print_json(&summary)
                 }
-                // Auto-accounting side effect: finish any running
-                // auto-run for the issue. The helper is gated for
-                // Forgejo internally and returns `Noop` so a
-                // Forgejo close never mutates the Redmine or
-                // GitLab ledger rows; for Redmine and GitLab it
-                // finishes every running row for the issue. The
-                // branch-context `unbind_closed_issue` above is a
-                // Redmine-only sibling helper and is unaffected by
-                // this hook.
-                super::report_local_warnings(
-                    "issue close",
-                    crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind).warning(),
-                );
-                // Phase 3 relation auto: fire the helper after a
-                // successful close. The shared issue DTO does not
-                // surface the parent linkage without a server
-                // fetch so the call site passes `None`; the
-                // helper is silent on the common path. The create
-                // arm fires the helper with the resolved
-                // `parent_issue_id` and is the only branch that
-                // actually creates a relation in Phase 3. See
-                // Remaining in the audit note for the deferred
-                // lookup shape.
-                super::report_local_warnings(
-                    "issue close",
-                    crate::lifecycle_auto::auto_create_parent_child_relation(
-                        &provider, number, None,
-                    )
-                    .warning(),
-                );
-                // Close upserts the returned closed document.
-                issue_search::warm_single_summary(&provider, &summary, "issue close");
-                super::print_json(&summary)
+                Err(error) => super::provider_error(error),
             }
-            Err(error) => super::provider_error(error),
-        },
+        }
         IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch => {
             unreachable!("local branch context commands bypass provider execution")
         }

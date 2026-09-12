@@ -130,7 +130,7 @@ fn body_flags_are_mutually_exclusive_and_keep_requires_body_file() {
         "unexpected error: {error}"
     );
 
-    let update_missing_body = ["--role", "orchestrator", "issue", "update-body", "9"]
+    let update_missing_body = ["--role", "orchestrator", "issue", "update", "9"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -508,7 +508,7 @@ fn local_issue_update_body_keeps_file_on_provider_failure() {
             "--provider",
             "local",
             "issue",
-            "update-body",
+            "update",
             "999999",
             "--body-file",
             body_path.to_str().unwrap(),

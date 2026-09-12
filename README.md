@@ -93,7 +93,7 @@ phasegent --role orchestrator issue get 123 124 125
 phasegent --role orchestrator comment list 123
 phasegent --role orchestrator issue create \
   --title "Short title" --body "Issue details"
-phasegent --role orchestrator issue update-body 123 --body "Updated details"
+phasegent --role orchestrator issue update 123 --body "Updated details"
 phasegent --role orchestrator issue close 123
 phasegent doctor
 ```
@@ -109,7 +109,7 @@ values) and index state without a role.
 
 ### One-shot Markdown bodies (`--body-file`)
 
-`issue create`, `issue update-body`, and `comment create` accept
+`issue create`, `issue update`, and `comment create` accept
 `--body-file PATH` instead of `--body`, so long Markdown never has to pass
 through the shell. The flags are mutually exclusive, and `--body-file` reads a
 regular file of at most 2 MiB that must be valid UTF-8.
@@ -123,7 +123,7 @@ a bounded warning is emitted instead.
 
 ```sh
 phasegent --role orchestrator issue create --title "Plan" --body-file /tmp/plan.md
-phasegent --role orchestrator issue update-body 123 --body-file /tmp/plan.md
+phasegent --role orchestrator issue update 123 --body-file /tmp/plan.md
 phasegent --role executor comment create 123 --body-file /tmp/audit.md \
   --marker "<!-- ai-executor ... -->" --authorized
 ```
@@ -272,7 +272,7 @@ phasegent --role executor --provider local issue create \
 ```
 
 The same issue, comment, and status commands work against the local backend
-(`issue search`, `issue get`, `issue create`, `issue update-body`,
+(`issue search`, `issue get`, `issue create`, `issue update`,
 `issue close`, `comment create`, status list/next/advance/set, and project
 list/create). Repository creation, attachment upload, and relation
 operations surface a structured `not_supported` error; `version list`
@@ -301,19 +301,46 @@ access.
 
 ## Worktrees
 
-Run isolated per-issue worktrees so multiple tasks can share one repo
-without colliding. Auto-isolation defaults off: on conflict, `acquire`
-reuses the current checkout and warns. Enable it with
-`admin config set worktree-auto true` or per call with `--isolate`. Copy `.env`
-files by hand when the new worktree needs them.
+Run isolated per-issue worktrees so multiple tasks can share one repo without
+colliding. A lease is keyed by `(repo, issue, session)`. Resolve the session in
+this order: `--session` (or `issue close --worktree-session`), then
+`PHASEGENT_SESSION_ID`, then the legacy `phasegent` fallback. The legacy
+fallback only warns on stderr and can let concurrent sessions share a lease, so
+the OpenCode workflow must generate one stable id per session and reuse it for
+every worktree call. Auto-isolation defaults off: on conflict, `acquire` reuses
+the current checkout and warns. Enable it with
+`admin config set worktree-auto true` or per call with `--isolate`. When the
+`git status` probe itself fails, the dirty state is unknown: auto-isolation on
+creates a fresh worktree, off reuses the checkout, and both warn on stderr — an
+unknown status is never silently treated as clean. Copy `.env` files by hand
+when the new worktree needs them.
 
 ```sh
-phasegent --role orchestrator worktree acquire --issue 239 --session alpha
-phasegent --role executor worktree status --issue 239
+export PHASEGENT_SESSION_ID="<stable-session-id>"
+phasegent --role orchestrator worktree acquire --issue ISSUE --session "$PHASEGENT_SESSION_ID" --isolate
+phasegent --role orchestrator worktree heartbeat --lease LEASE --session "$PHASEGENT_SESSION_ID"
+phasegent --role executor worktree status --issue ISSUE
 phasegent --role executor worktree list
-phasegent --role orchestrator worktree release --lease lease-...
-phasegent --role orchestrator worktree prune --stale-days 14 --dry-run
+phasegent --role orchestrator worktree prune --stale-days 14
+phasegent --role orchestrator worktree prune --stale-days 14 --release-stale --reason "stale session recovery"
+phasegent --role orchestrator worktree prune --stale-days 14 --remove
+phasegent --role orchestrator worktree release --lease LEASE
 ```
+
+`heartbeat` refreshes only an active lease whose stored session matches the
+caller; a foreign session or terminal lease returns a structured conflict and
+is left untouched. `prune` is a read-only report by default: it lists every
+active lease whose heartbeat is older than `--stale-days` (default 14) and every
+removable worktree, and changes nothing. `--release-stale` requires
+`--reason TEXT` and flips exactly those stale active leases to `retained` with
+the reason recorded; `--remove` deletes only worktrees that are `retained`,
+expired, and clean, after any requested recovery runs first. Either action is
+opt-in, and `--reason` without `--release-stale` is rejected. No action ever
+deletes a branch, and `git worktree remove` never receives `--force`, so dirty
+worktrees, active leases, and uncommitted changes are never removed. Closing an
+issue releases only the leases matching the current repo, issue, and session: a
+failed remote close changes no local lease, a close without a resolved session
+releases nothing, and other sessions are never affected.
 
 ## MCP server
 

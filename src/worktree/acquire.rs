@@ -13,15 +13,16 @@ use crate::branch_context::{ProcessGitRunner, read_issue_id};
 use crate::infra::storage::Storage;
 use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_remove};
 use crate::worktree::leases::{
-    NewLease, count_other_active_leases, ensure_schema, find_active_lease, insert_lease,
-    list_for_repo, load_lease, record_release_reason, refresh_heartbeat, update_status,
+    NewLease, count_other_active_leases, ensure_schema, find_active_lease, heartbeat_active_lease,
+    insert_lease, list_for_repo, load_lease, record_release_reason, recover_stale_active_leases,
+    refresh_heartbeat, retain_active_leases_for_issue_session, stale_active_leases, update_status,
 };
 use crate::worktree::naming::{
     cache_root, cache_root_in, compute_fingerprint, generate_branch, new_lease_id, slug_from_branch,
 };
 use crate::worktree::{
-    AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED,
-    ReleaseOutcome, WorktreeError, WorktreeRunner, now_unix_secs, repo_identity,
+    AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
+    MAX_SESSION_CHARS, ReleaseOutcome, WorktreeError, WorktreeRunner, now_unix_secs, repo_identity,
 };
 
 /// Canonical global-setting / environment name for the worktree
@@ -85,6 +86,12 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
 /// `reason == "no_conflict"` and a conflict warning naming the trigger,
 /// while still recording the lease for bookkeeping. The default is
 /// disabled, so acquire never implicitly creates a branch or directory.
+///
+/// The dirty probe feeding rules 2/3/5 is a three-state value
+/// (`Clean` / `Dirty` / `Unknown`, issue 305 Task 4). A failed
+/// `git status` yields `Unknown` and never counts as `Clean`: with
+/// isolation enabled a fresh worktree is created, and with isolation
+/// disabled the current checkout is reused with an explicit warning.
 ///
 /// 1. An active lease exists for `(repo, issue, session)` — the same
 ///    `lease_id`, `path`, and `branch` are returned and `heartbeat_at`
@@ -173,25 +180,40 @@ pub fn acquire_lease(
 
     let mut warnings: Vec<String> = Vec::new();
 
-    // Dirty probe. A probe failure is best-effort: it is surfaced as a
-    // warning and the decision falls back to lease evidence only
-    // (dirty is treated as unknown) so acquire never hard-errors on a
-    // git status hiccup.
-    let clean = match is_clean(runner, repo_path) {
-        Ok(value) => value,
-        Err(error) => {
-            warnings.push(format!(
-                "dirty probe failed ({}); falling back to lease-based decisions",
-                error.message
-            ));
-            true
-        }
-    };
-    let dirty = !clean;
+    // Dirty probe. The result is a three-state value so a `git status`
+    // failure is `Unknown` instead of being silently folded into
+    // `clean` (issue 305 Task 4). A probe failure is still best-effort:
+    // it never hard-errors the acquire.
+    let (dirty_state, probe_failure) = probe_dirty_state(runner, repo_path);
+    let dirty = dirty_state == DirtyState::Dirty;
 
-    // The branch binding is only resolved when the checkout is dirty:
-    // a clean tree cannot be "contaminated", so rules 2/3 never apply
-    // and the extra git calls are skipped.
+    // Unknown checkout state (`git status` failed): the tree may hold
+    // work we cannot see, so it must not be reused silently. With
+    // isolation enabled a fresh worktree is created; with isolation
+    // disabled the current checkout is reused with an explicit warning.
+    if dirty_state == DirtyState::Unknown {
+        let detail = probe_failure.unwrap_or_else(|| "git status failed".to_owned());
+        if creation_allowed {
+            warnings.push(format!(
+                "{detail}; worktree auto-isolation is enabled, creating an isolated worktree \
+                 because the checkout state is unknown"
+            ));
+            return with_warnings(
+                acquire_new_worktree(
+                    runner, &storage, &identity, repo_path, issue, session, cache_base,
+                ),
+                warnings,
+            );
+        }
+        warnings.push(format!(
+            "{detail}; worktree auto-isolation is disabled (no --isolate, worktree-auto=false); \
+             reusing the current checkout despite the unknown dirty state"
+        ));
+    }
+
+    // The branch binding is only resolved for a confirmed dirty
+    // checkout: a clean tree cannot be "contaminated", and an unknown
+    // probe must not infer a binding from an untrusted status result.
     let (bound, binding_failure) = if dirty {
         resolve_bound_issue(runner, repo_path)
     } else {
@@ -287,6 +309,42 @@ pub fn acquire_lease(
         acquire_reuse_current(runner, &storage, &identity, repo_path, issue, session),
         warnings,
     )
+}
+
+/// Three-state result of the checkout dirty probe.
+///
+/// `Unknown` represents a `git status` failure: the checkout state
+/// cannot be trusted, so acquire must not treat it as `Clean` or
+/// `Dirty`. This replaces the old `bool` fallback that folded probe
+/// errors into `clean` (issue 305 Task 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyState {
+    Clean,
+    Dirty,
+    Unknown,
+}
+
+/// Map the provider-free [`is_clean`] probe onto [`DirtyState`].
+///
+/// A probe error becomes `Unknown` plus a bounded warning string; it is
+/// never an acquire error, because a git hiccup must not block reuse
+/// when isolation is off, and must not silently reuse a possibly-dirty
+/// tree when isolation is on.
+fn probe_dirty_state(
+    runner: &dyn WorktreeRunner,
+    repo_path: &Path,
+) -> (DirtyState, Option<String>) {
+    match is_clean(runner, repo_path) {
+        Ok(true) => (DirtyState::Clean, None),
+        Ok(false) => (DirtyState::Dirty, None),
+        Err(error) => (
+            DirtyState::Unknown,
+            Some(format!(
+                "dirty probe failed ({}); git status could not determine the checkout state",
+                error.message
+            )),
+        ),
+    }
 }
 
 /// Resolve the issue the current branch is bound to, following the
@@ -527,6 +585,137 @@ fn release_lease_inner(
         forced: reason.is_some(),
         reason: reason.map(str::to_owned),
     })
+}
+
+/// Refresh the heartbeat of an `active` lease the caller owns.
+///
+/// The update is gated on `status = 'active' AND session = <session>` in
+/// one SQL statement, so a non-owner session can never extend a lease and
+/// a stale recovery that already flipped the row makes the heartbeat fail
+/// with a structured `state` conflict instead of resurrecting it (issue
+/// 305 Task 2).
+pub fn heartbeat_lease(lease_id: &str, session: &str, now: i64) -> Result<LeaseRow, WorktreeError> {
+    if session.trim().is_empty() {
+        return Err(WorktreeError::new("argument", "session must not be empty"));
+    }
+    if session.chars().count() > MAX_SESSION_CHARS {
+        return Err(WorktreeError::new(
+            "argument",
+            format!("session must be <= {MAX_SESSION_CHARS} chars"),
+        ));
+    }
+    let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
+    if heartbeat_active_lease(&storage, lease_id, session, now)? {
+        return load_lease(&storage, lease_id)?
+            .ok_or_else(|| WorktreeError::new("state", "lease disappeared during heartbeat"));
+    }
+    match load_lease(&storage, lease_id)? {
+        None => Err(WorktreeError::new("state", "lease not found")),
+        Some(row) if row.status != LEASE_STATUS_ACTIVE => Err(WorktreeError::new(
+            "state",
+            format!("lease is not active (status '{}')", row.status),
+        )),
+        Some(row) => Err(WorktreeError::new(
+            "state",
+            format!(
+                "lease is owned by session '{}', not '{}'",
+                row.session, session
+            ),
+        )),
+    }
+}
+
+/// List (dry-run) or apply (`reason = Some`) stale recovery for
+/// `repo_identity`.
+///
+/// With `reason = None` the function is read-only and returns the active
+/// leases whose heartbeat is older than `stale_before` as `active`
+/// outcomes. With a non-empty `reason` it flips exactly those rows to
+/// `retained`, records the reason, and returns them as `retained`
+/// outcomes in one write transaction. The worktree directory and branch
+/// are never touched in either mode (issue 305 Task 2).
+pub fn release_stale_leases(
+    repo_identity: &str,
+    stale_before: i64,
+    reason: Option<&str>,
+) -> Result<Vec<ReleaseOutcome>, WorktreeError> {
+    let mut storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
+    match reason {
+        None => Ok(stale_active_leases(&storage, repo_identity, stale_before)?
+            .into_iter()
+            .map(|row| ReleaseOutcome {
+                lease_id: row.lease_id,
+                status: row.status,
+                forced: false,
+                reason: None,
+            })
+            .collect()),
+        Some(raw) => {
+            let reason = raw.trim();
+            if reason.is_empty() {
+                return Err(WorktreeError::new(
+                    "argument",
+                    "stale recovery requires a non-empty reason",
+                ));
+            }
+            Ok(recover_stale_active_leases(
+                &mut storage,
+                repo_identity,
+                stale_before,
+                reason,
+                now_unix_secs(),
+            )?
+            .into_iter()
+            .map(|row| ReleaseOutcome {
+                lease_id: row.lease_id,
+                status: row.status,
+                forced: true,
+                reason: Some(reason.to_owned()),
+            })
+            .collect())
+        }
+    }
+}
+
+/// Release every `active` lease for `(repo_identity, issue, session)` to
+/// `retained`, recording `reason`, and return the flipped row count.
+///
+/// This is the issue-close lifecycle hook (issue 305 Task 3). The caller
+/// invokes it only after the remote provider confirmed the close, so a
+/// failed remote close never mutates local lease state. Leases owned by
+/// another session, issue, or repository are untouched, and only `active`
+/// rows transition — terminal rows remain as audit records. The worktree
+/// directory and branch are never deleted.
+pub fn release_active_leases_for_issue_session(
+    repo_identity: &str,
+    issue: u64,
+    session: &str,
+    reason: &str,
+) -> Result<u64, WorktreeError> {
+    if issue == 0 {
+        return Err(WorktreeError::new("argument", "issue must be > 0"));
+    }
+    if session.trim().is_empty() {
+        return Err(WorktreeError::new("argument", "session must not be empty"));
+    }
+    if session.chars().count() > MAX_SESSION_CHARS {
+        return Err(WorktreeError::new(
+            "argument",
+            format!("session must be <= {MAX_SESSION_CHARS} chars"),
+        ));
+    }
+    let mut storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
+    retain_active_leases_for_issue_session(
+        &mut storage,
+        repo_identity,
+        issue,
+        session,
+        reason,
+        now_unix_secs(),
+    )
 }
 
 // `params!` is re-exported here so a future Phase 2 query helper

@@ -20,7 +20,7 @@ token; agent permission rules deny that single prefix.
 | `doctor` | none (read-only self-check) | any (no `--role` required) | credential presence (fingerprint, never values), index backend state, masked PG URL; approved replacement for schema dumps and raw setting reads |
 | `issue search` | IssueSearch | orchestrator only | provider-fresh; auto-bootstraps project on no match; scoped local-index fallback on failure |
 | `issue create` | IssueCreate | orchestrator only | planning flags Redmine/GitLab; Forgejo rejects every planning flag |
-| `issue update-body` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
+| `issue update` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
 | `issue close` | IssueClose | orchestrator only | — |
 | `issue upload-attachment` | IssueAttachmentUpload | orchestrator, tester | Uniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects with `not_supported` (exit 1) before any file, network, or credential access |
 | `issue bind` / `issue unbind` / `issue status` | IssueRead | orchestrator, executor, reviewer, tester | local branch–issue binding; no provider/network |
@@ -39,7 +39,7 @@ token; agent permission rules deny that single prefix.
 | `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject; Phase 3 lifecycle helper auto-creates a `relates` link on `issue create --parent-issue <ID>` (idempotent, bounded warning on failure) |
 | `relation delete` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject |
 | `timer start/finish/list/get/recover` | role == orchestrator | orchestrator only | local ledger; finish/recover project to Redmine/GitLab (Forgejo rejects); list/get never reach a provider |
-| `worktree acquire/release/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; prune only clean + expired + retained, never deletes a branch or a dirty worktree; `release --force` requires non-empty `--reason`, persisted on the row and visible in status/list (rows are never deleted) |
+| `worktree acquire/release/heartbeat/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; `prune` is read-only unless `--release-stale --reason TEXT` or `--remove` is given, removes only clean + expired + retained worktrees, and never deletes a branch or a dirty worktree; `release --force` requires non-empty `--reason`, persisted on the row and visible in status/list (rows are never deleted) |
 | `worktree status/list` | command-level read gate | orchestrator, executor, reviewer | read-only lease inspection; tester denied |
 | `plugin install/status/uninstall` | no role gate | any | local OpenCode adapter file; managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
 | `admin workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |

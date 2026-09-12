@@ -235,13 +235,13 @@ pub(crate) fn resolve_for_issue(command: &IssueCommand) -> Option<BodyResolution
             body_file.as_deref(),
             *keep_body_file,
         ),
-        IssueCommand::UpdateBody {
+        IssueCommand::Update {
             body,
             body_file,
             keep_body_file,
             ..
         } => (
-            "issue update-body",
+            "issue update",
             Some(body.as_str()),
             body_file.as_deref(),
             *keep_body_file,

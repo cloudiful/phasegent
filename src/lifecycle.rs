@@ -289,6 +289,85 @@ pub fn unbind_closed_issue(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Issue close: best-effort release of the closed session's worktree leases.
+// ---------------------------------------------------------------------------
+
+/// Outcome of the issue-close worktree-lease release hook.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AutoReleaseLeaseOutcome {
+    /// No explicit `--worktree-session` and no `PHASEGENT_SESSION_ID`:
+    /// the lease owner is unknown, so nothing is released. The operator
+    /// gets a warning instead of a guessed release.
+    NoSession { reason: String },
+    /// `released` active lease(s) were flipped to `retained`.
+    Released { released: u64 },
+    /// The current repository identity or the lease store could not be
+    /// reached. The remote close already succeeded, so this is a
+    /// bounded warning only.
+    Warning { reason: String },
+}
+
+impl AutoReleaseLeaseOutcome {
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Self::NoSession { reason } | Self::Warning { reason } => Some(bounded(reason)),
+            Self::Released { .. } => None,
+        }
+    }
+}
+
+/// Release every active worktree lease that `(current repo, issue,
+/// session)` owns after a successful remote close (issue 305 Task 3).
+///
+/// Only an explicit `--worktree-session` or an environment
+/// `PHASEGENT_SESSION_ID` counts as a session; the legacy fallback is
+/// passed as `None` so the helper never guesses an owner. The canonical
+/// repository identity is resolved here and the atomic flip is delegated
+/// to [`crate::worktree::release_active_leases_for_issue_session`], so a
+/// different session, issue, or repository is never touched. Every
+/// failure degrades to a bounded warning because the remote close has
+/// already succeeded.
+pub fn release_closed_issue_leases(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    repo_path: &Path,
+    issue: u64,
+    session: Option<&str>,
+) -> AutoReleaseLeaseOutcome {
+    let Some(session) = session.map(str::trim).filter(|value| !value.is_empty()) else {
+        return AutoReleaseLeaseOutcome::NoSession {
+            reason: format!(
+                "issue {issue} closed; no --worktree-session or PHASEGENT_SESSION_ID \
+                 supplied, so active worktree leases were left untouched"
+            ),
+        };
+    };
+    let identity = match crate::worktree::repo_identity(runner, repo_path) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return AutoReleaseLeaseOutcome::Warning {
+                reason: format!(
+                    "issue {issue} closed; could not resolve repository identity for \
+                     lease release: {}",
+                    bounded(&error.message)
+                ),
+            };
+        }
+    };
+    let reason = format!("issue closed: {session}");
+    match crate::worktree::release_active_leases_for_issue_session(
+        &identity, issue, session, &reason,
+    ) {
+        Ok(released) => AutoReleaseLeaseOutcome::Released { released },
+        Err(error) => AutoReleaseLeaseOutcome::Warning {
+            reason: format!(
+                "issue {issue} closed; worktree lease release failed: {}",
+                bounded(&error.message)
+            ),
+        },
+    }
+}
+
 fn local_failure(operation: &str, error: &BranchContextError) -> AutoBindOutcome {
     AutoBindOutcome::Warning {
         reason: format!("local {operation} failed: {}", bounded(&error.message)),

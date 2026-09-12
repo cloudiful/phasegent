@@ -7,10 +7,12 @@
 //! All queries pass parameters through `rusqlite::params!` so a
 //! caller-supplied string can never reach the SQL parser unsanitised.
 
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 
 use crate::infra::storage::Storage;
-use crate::worktree::{LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, now_unix_secs};
+use crate::worktree::{
+    LEASE_STATUS_ACTIVE, LEASE_STATUS_RETAINED, LeaseRow, WorktreeError, now_unix_secs,
+};
 
 /// Hard cap on `list()` / `status()` results so a runaway query never
 /// floods the response. Mirrors the timer-ledger 64-row ceiling.
@@ -267,6 +269,175 @@ pub(crate) fn update_status(
         )
         .map_err(|error| WorktreeError::new("storage", format!("release: {error}")))?;
     Ok(())
+}
+
+/// Refresh `heartbeat_at` for an active lease owned by `session`.
+///
+/// The update is one conditional SQLite statement (`WHERE lease_id = ?
+/// AND status = 'active' AND session = ?`), so a foreign session can
+/// never extend the row and a heartbeat racing a stale recovery resolves
+/// to at most one winner. Returns `true` iff exactly one row was
+/// updated (issue 305 Task 2).
+pub(crate) fn heartbeat_active_lease(
+    storage: &Storage,
+    lease_id: &str,
+    session: &str,
+    now: i64,
+) -> Result<bool, WorktreeError> {
+    let updated = storage
+        .connection
+        .execute(
+            "UPDATE worktree_leases SET heartbeat_at = ?4 \
+             WHERE lease_id = ?1 AND status = ?2 AND session = ?3",
+            rusqlite::params![lease_id, LEASE_STATUS_ACTIVE, session, now],
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("heartbeat lease: {error}")))?;
+    Ok(updated == 1)
+}
+
+/// Active leases for `identity` whose heartbeat is older than
+/// `stale_before`, oldest first. Read-only; the apply path re-checks the
+/// predicate inside its write transaction (issue 305 Task 2).
+pub(crate) fn stale_active_leases(
+    storage: &Storage,
+    identity: &str,
+    stale_before: i64,
+) -> Result<Vec<LeaseRow>, WorktreeError> {
+    select_stale_active_leases(&storage.connection, identity, stale_before)
+}
+
+fn select_stale_active_leases(
+    connection: &rusqlite::Connection,
+    identity: &str,
+    stale_before: i64,
+) -> Result<Vec<LeaseRow>, WorktreeError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+                    branch, status, created_at, heartbeat_at, release_reason \
+             FROM worktree_leases \
+             WHERE repo_identity = ?1 AND status = ?2 AND heartbeat_at < ?3 \
+             ORDER BY heartbeat_at ASC LIMIT ?4",
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("prepare stale list: {error}")))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                identity,
+                LEASE_STATUS_ACTIVE,
+                stale_before,
+                MAX_LEASES_PER_QUERY
+            ],
+            decode_lease_row,
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("stale list: {error}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|error| WorktreeError::new("storage", format!("stale row: {error}")))?,
+        );
+    }
+    Ok(out)
+}
+
+/// Atomically flip every active lease for `identity` whose heartbeat is
+/// older than `stale_before` to `retained`, record `reason`, and return
+/// the flipped rows. All updates run in one `BEGIN IMMEDIATE` write
+/// transaction and each re-checks `status = 'active' AND heartbeat_at <
+/// stale_before`, so a heartbeat that refreshed the row first is never
+/// clobbered and a lease flips at most once under concurrent racers. The
+/// worktree directory and branch are never touched (issue 305 Task 2).
+pub(crate) fn recover_stale_active_leases(
+    storage: &mut Storage,
+    identity: &str,
+    stale_before: i64,
+    reason: &str,
+    now: i64,
+) -> Result<Vec<LeaseRow>, WorktreeError> {
+    storage
+        .connection
+        .set_transaction_behavior(TransactionBehavior::Immediate);
+    let transaction = storage
+        .connection
+        .unchecked_transaction()
+        .map_err(|error| WorktreeError::new("storage", format!("begin stale recovery: {error}")))?;
+    let candidates = select_stale_active_leases(&transaction, identity, stale_before)?;
+    let mut flipped = Vec::with_capacity(candidates.len());
+    for row in candidates {
+        let updated = transaction
+            .execute(
+                "UPDATE worktree_leases SET status = ?4, heartbeat_at = ?5, release_reason = ?6 \
+                 WHERE lease_id = ?1 AND status = ?2 AND heartbeat_at < ?3",
+                rusqlite::params![
+                    row.lease_id,
+                    LEASE_STATUS_ACTIVE,
+                    stale_before,
+                    LEASE_STATUS_RETAINED,
+                    now,
+                    reason
+                ],
+            )
+            .map_err(|error| WorktreeError::new("storage", format!("flip stale lease: {error}")))?;
+        if updated == 1 {
+            flipped.push(LeaseRow {
+                status: LEASE_STATUS_RETAINED.to_owned(),
+                heartbeat_at: now,
+                release_reason: Some(reason.to_owned()),
+                ..row
+            });
+        }
+    }
+    transaction.commit().map_err(|error| {
+        WorktreeError::new("storage", format!("commit stale recovery: {error}"))
+    })?;
+    Ok(flipped)
+}
+
+/// Atomically flip every `active` lease matching
+/// `(repo_identity, issue, session)` to `retained`, record `reason`, and
+/// return the flipped row count.
+///
+/// The flip runs in one `BEGIN IMMEDIATE` transaction with a single
+/// conditional `UPDATE` on `status = 'active'`, so a lease owned by
+/// another session, issue, or repository is never touched and a lease
+/// flips at most once under a concurrent racer. Terminal rows are left
+/// untouched as audit records; the worktree directory and branch are
+/// never modified (issue 305 Task 3).
+pub(crate) fn retain_active_leases_for_issue_session(
+    storage: &mut Storage,
+    identity: &str,
+    issue: u64,
+    session: &str,
+    reason: &str,
+    now: i64,
+) -> Result<u64, WorktreeError> {
+    storage
+        .connection
+        .set_transaction_behavior(TransactionBehavior::Immediate);
+    let transaction = storage
+        .connection
+        .unchecked_transaction()
+        .map_err(|error| WorktreeError::new("storage", format!("begin lease release: {error}")))?;
+    let updated = transaction
+        .execute(
+            "UPDATE worktree_leases \
+             SET status = ?5, heartbeat_at = ?6, release_reason = ?7 \
+             WHERE repo_identity = ?1 AND issue = ?2 AND session = ?3 AND status = ?4",
+            rusqlite::params![
+                identity,
+                issue as i64,
+                session,
+                LEASE_STATUS_ACTIVE,
+                LEASE_STATUS_RETAINED,
+                now,
+                reason
+            ],
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("release issue leases: {error}")))?;
+    transaction
+        .commit()
+        .map_err(|error| WorktreeError::new("storage", format!("commit lease release: {error}")))?;
+    Ok(updated as u64)
 }
 
 #[allow(dead_code)]

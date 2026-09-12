@@ -47,7 +47,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 planning: planning_options(args),
             }))
         }
-        "update-body" => {
+        "update" => {
             validate_options(
                 args,
                 1,
@@ -63,12 +63,12 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                     "--done-ratio",
                 ],
                 &["--keep-body-file"],
-                "issue update-body",
+                "issue update",
             )?;
             let (body, body_file, keep_body_file) =
-                crate::body_file::parse_body_flags(args, "issue update-body", true)?;
-            Ok(Command::Issue(IssueCommand::UpdateBody {
-                number: positional_number(args, 1, "issue update-body")?,
+                crate::body_file::parse_body_flags(args, "issue update", true)?;
+            Ok(Command::Issue(IssueCommand::Update {
+                number: positional_number(args, 1, "issue update")?,
                 body,
                 body_file,
                 keep_body_file,
@@ -77,9 +77,14 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             }))
         }
         "close" => {
-            require_exact_positionals(args, 2, "issue close")?;
+            validate_options(args, 1, &["--worktree-session"], &[], "issue close")?;
+            let worktree_session = match optional_option(args, "--worktree-session") {
+                Some(raw) => Some(super::worktree::validate_session_id(&raw, "issue close")?),
+                None => None,
+            };
             Ok(Command::Issue(IssueCommand::Close {
                 number: positional_number(args, 1, "issue close")?,
+                worktree_session,
             }))
         }
         "upload-attachment" => {
