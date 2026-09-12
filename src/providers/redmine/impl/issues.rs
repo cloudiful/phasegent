@@ -164,7 +164,7 @@ impl RedmineProvider {
 
     pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ForgejoError> {
         let payload = RedmineUpdateIssue::description(body);
-        self.put_issue_update(number, payload, "issue update-body")
+        self.put_issue_update(number, payload, "issue update")
     }
 
     /// Update the body and re-target the tracker in a single PUT. The
@@ -177,7 +177,7 @@ impl RedmineProvider {
         tracker_id: u64,
     ) -> Result<IssueSummary, ForgejoError> {
         let payload = RedmineUpdateIssue::description_with_tracker(body, tracker_id);
-        self.put_issue_update(number, payload, "issue update-body")
+        self.put_issue_update(number, payload, "issue update")
     }
 
     /// Update the body with an optional tracker re-target plus native
@@ -196,7 +196,7 @@ impl RedmineProvider {
             None => RedmineUpdateIssue::description(body),
         }
         .with_planning(planning);
-        self.put_issue_update(number, payload, "issue update-body")
+        self.put_issue_update(number, payload, "issue update")
     }
 
     fn put_issue_update(

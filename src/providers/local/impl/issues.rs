@@ -158,7 +158,7 @@ impl LocalProvider {
         }
         let now = now_epoch_seconds();
         let body_owned = body.to_owned();
-        let changed = self.with_conn("issue update-body", |conn| {
+        let changed = self.with_conn("issue update", |conn| {
             let changed = conn.execute(
                 local_sql("update_issue_body"),
                 rusqlite::params![body_owned, now, number as i64],
@@ -170,7 +170,7 @@ impl LocalProvider {
         });
         match changed {
             Err(error) if is_no_rows(&error) => Err(ForgejoError::not_found(
-                "issue update-body",
+                "issue update",
                 &format!("issue {number} was not found"),
             )),
             Err(error) => Err(error),

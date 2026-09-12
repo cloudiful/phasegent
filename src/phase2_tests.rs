@@ -245,7 +245,7 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
         other => panic!("unexpected command: {other:?}"),
     }
 
-    // issue body (`---` separator) via issue update-body
+    // issue body (`---` separator) via issue update
     let args = [
         "--role",
         "orchestrator",
@@ -915,7 +915,7 @@ fn status_set_parses_number_and_validated_status_value() {
 }
 
 #[test]
-fn issue_create_and_update_body_accept_optional_tracker_selection() {
+fn issue_create_and_update_accept_optional_tracker_selection() {
     let create = [
         "--role",
         "orchestrator",
@@ -986,6 +986,59 @@ fn issue_create_and_update_body_accept_optional_tracker_selection() {
     .map(str::to_owned)
     .collect::<Vec<_>>();
     assert!(command::parse(&unknown_tracker_option).is_err());
+}
+
+#[test]
+fn issue_update_is_the_write_entry_and_update_body_token_is_rejected() {
+    // `issue update` is the canonical orchestrator write entry (issue 337):
+    // it carries the body plus tracker/planning fields in one command.
+    let update = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "update",
+        "9",
+        "--body",
+        "Updated",
+        "--tracker",
+        "Bug",
+        "--due-date",
+        "2026-09-15",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    match command::parse(&update).unwrap().command {
+        command::Command::Issue(command::IssueCommand::Update {
+            number,
+            body,
+            tracker,
+            planning,
+            ..
+        }) => {
+            assert_eq!(number, 9);
+            assert_eq!(body, "Updated");
+            assert_eq!(tracker.as_deref(), Some("Bug"));
+            assert_eq!(planning.due_date.as_deref(), Some("2026-09-15"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // The removed `update-body` token must never resolve as an entry point.
+    let removed = [
+        "--role",
+        "orchestrator",
+        "issue",
+        "update-body",
+        "9",
+        "--body",
+        "x",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let error = command::parse(&removed).expect_err("removed update-body must be rejected");
+    assert!(error.contains("unknown issue command"), "got: {error}");
 }
 
 #[test]
@@ -1374,7 +1427,7 @@ fn redmine_new_project_includes_repository_module_for_mirror_enablement() {
 }
 
 #[test]
-fn issue_planning_flags_parse_on_create_and_update_body() {
+fn issue_planning_flags_parse_on_create_and_update() {
     let create = [
         "--role",
         "orchestrator",
@@ -1430,7 +1483,7 @@ fn issue_planning_flags_parse_on_create_and_update_body() {
         other => panic!("unexpected command: {other:?}"),
     }
 
-    // Planning flags belong only to create/update-body; other issue
+    // Planning flags belong only to create/update; other issue
     // subcommands must keep rejecting them.
     let misplaced = [
         "--role",

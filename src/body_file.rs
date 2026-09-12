@@ -1,5 +1,5 @@
 //! One-shot `--body-file` input for the provider write commands
-//! (`issue create`, `issue update-body`, `comment create`).
+//! (`issue create`, `issue update`, `comment create`).
 //!
 //! Contract (issue 298): the file is read and validated here — regular
 //! file, bounded size, valid UTF-8 — before any provider resolution or

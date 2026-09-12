@@ -276,7 +276,7 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         1
     );
 
-    // Tracker selection on create/update-body is Redmine-only. A stored
+    // Tracker selection on create/update is Redmine-only. A stored
     // forgejo token lets the dispatcher build so the rejection comes from
     // tracker resolution, not from missing credentials; no request is made.
     let _environment_lock = lock_workflow_tests();

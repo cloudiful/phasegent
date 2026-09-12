@@ -100,6 +100,45 @@ fn update_body_with_tracker_keeps_single_put_shape() {
 }
 
 #[test]
+fn update_error_labels_use_issue_update() {
+    // The plain body, tracker re-target, and planning-aware update paths
+    // all funnel through one PUT. Every failure must report the
+    // `issue update` operation so the CLI JSON contract is uniform.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::error(403, ""),
+        MockResponse::error(403, ""),
+        MockResponse::error(403, ""),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let planning = crate::providers::redmine::model::IssuePlanning {
+        due_date: Some("2026-09-15".to_owned()),
+        ..Default::default()
+    };
+    for label in [
+        redmine.update_body(19, "Updated").unwrap_err().json()["operation"].clone(),
+        redmine
+            .update_body_with_tracker(19, "Updated", 1)
+            .unwrap_err()
+            .json()["operation"]
+            .clone(),
+        redmine
+            .update_body_with_planning(19, "Updated", None, &planning)
+            .unwrap_err()
+            .json()["operation"]
+            .clone(),
+    ] {
+        assert_eq!(label, serde_json::json!("issue update"), "got: {label}");
+    }
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 3);
+    for request in &seen {
+        support::assert_request(request, "PUT", "/issues/19.json", None);
+    }
+    server.join().unwrap();
+}
+
+#[test]
 fn set_issue_status_puts_any_validated_status_id() {
     let (base, requests, server) = sequence(vec![MockResponse::ok(issue_response(
         24,

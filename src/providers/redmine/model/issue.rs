@@ -222,7 +222,7 @@ impl<'a> RedmineUpdateIssue<'a> {
     }
 
     /// Update the body and optionally re-target the tracker in one PUT so
-    /// `issue update-body --tracker ...` stays a single atomic request.
+    /// `issue update --tracker ...` stays a single atomic request.
     pub(crate) fn description_with_tracker(description: &'a str, tracker_id: u64) -> Self {
         Self {
             issue: RedmineUpdateIssueFields::empty(Some(description), None, Some(tracker_id)),

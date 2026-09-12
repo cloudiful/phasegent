@@ -162,7 +162,7 @@ pub(crate) fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|value| value == flag)
 }
 
-/// Extract every native planning flag from an issue create/update-body
+/// Extract every native planning flag from an issue create/update
 /// invocation. Values stay raw; semantic validation happens at execution
 /// time so error messages can reference the exact operation context.
 pub(crate) fn planning_options(args: &[String]) -> PlanningOptions {

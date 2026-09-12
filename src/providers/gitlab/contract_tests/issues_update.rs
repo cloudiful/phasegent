@@ -146,6 +146,44 @@ fn update_body_with_tracker_keeps_same_tracker_idempotent() {
 }
 
 #[test]
+fn update_body_error_reports_issue_update_operation() {
+    // The plain body PUT must carry the `issue update` operation on a
+    // non-success response so the CLI JSON error stays uniform.
+    let (base, requests, server) =
+        sequence(vec![MockResponse::status(403, r#"{"message":"denied"}"#)]);
+    let provider = provider(base);
+    let error = provider.update_body(70, "Updated").unwrap_err();
+    assert_eq!(error.json()["kind"], "http");
+    assert_eq!(error.json()["operation"], "issue update");
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("PUT /api/v4/projects/42/issues/70"));
+    server.join().unwrap();
+}
+
+#[test]
+fn update_body_with_labels_error_reports_issue_update_operation() {
+    // The tracker-aware path first GETs the issue to inspect its label
+    // set and then PUTs; the PUT failure must still report
+    // `issue update`, not the read operation.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(issue_payload(71, "Title", "opened", &[])),
+        MockResponse::status(403, r#"{"message":"denied"}"#),
+    ]);
+    let provider = provider(base);
+    let error = provider
+        .update_body_with_labels(71, "Updated", &[])
+        .unwrap_err();
+    assert_eq!(error.json()["kind"], "http");
+    assert_eq!(error.json()["operation"], "issue update");
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /api/v4/projects/42/issues/71"));
+    assert!(requests[1].starts_with("PUT /api/v4/projects/42/issues/71"));
+    server.join().unwrap();
+}
+
+#[test]
 fn close_issue_pairs_state_event_close_with_workflow_closed_label() {
     let (base, requests, server) = sequence(vec![
         // First: ensure workflow::closed label exists. The label

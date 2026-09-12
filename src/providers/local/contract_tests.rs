@@ -61,6 +61,17 @@ fn crud_round_trip_keeps_redmine_envelope() {
 }
 
 #[test]
+fn update_body_missing_issue_reports_issue_update_operation() {
+    // The SQLite update path labels a missing row with the
+    // `issue update` operation so the CLI and provider errors agree.
+    let (provider, dir) = tmp_provider("update-missing");
+    let error = provider.update_body(999_999, "New body").unwrap_err();
+    assert_eq!(error.json()["kind"], "not_found");
+    assert_eq!(error.json()["operation"], "issue update");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn search_filters_state_and_paginates() {
     let (provider, dir) = tmp_provider("search");
     for title in ["alpha one", "alpha two", "beta one"] {

@@ -236,8 +236,8 @@ impl GitlabProvider {
         };
         let response: Option<ApiIssue> =
             self.http
-                .put(&self.issue_path(iid), &payload, "issue update-body")?;
-        parse_optional_issue(response, "issue update-body").map(|issue| issue.into_summary(self))
+                .put(&self.issue_path(iid), &payload, "issue update")?;
+        parse_optional_issue(response, "issue update").map(|issue| issue.into_summary(self))
     }
 
     /// Plain body update; no label delta. Used when a caller only
@@ -252,8 +252,8 @@ impl GitlabProvider {
         };
         let response: Option<ApiIssue> =
             self.http
-                .put(&self.issue_path(iid), &payload, "issue update-body")?;
-        parse_optional_issue(response, "issue update-body").map(|issue| issue.into_summary(self))
+                .put(&self.issue_path(iid), &payload, "issue update")?;
+        parse_optional_issue(response, "issue update").map(|issue| issue.into_summary(self))
     }
 
     /// Close an issue via the native `state_event=close` field plus

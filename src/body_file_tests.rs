@@ -135,7 +135,7 @@ fn body_flags_are_mutually_exclusive_and_keep_requires_body_file() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let error = command::parse(&update_missing_body)
-        .expect_err("update-body without body flags must error");
+        .expect_err("issue update without body flags must error");
     assert!(
         error.contains("requires --body or --body-file"),
         "unexpected error: {error}"

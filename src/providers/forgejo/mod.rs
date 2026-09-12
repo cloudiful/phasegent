@@ -250,7 +250,7 @@ impl ForgejoProvider {
                 body: Some(body),
                 state: None,
             },
-            "issue update-body",
+            "issue update",
         )?;
         Ok(issue.into())
     }

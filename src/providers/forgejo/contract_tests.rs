@@ -150,6 +150,28 @@ fn issue_create_update_and_close_contracts() {
 }
 
 #[test]
+fn update_body_error_carries_issue_update_operation() {
+    // The `issue update` CLI entry point labels every provider failure
+    // with the operation `issue update`; assert the Forgejo PATCH path
+    // surfaces it on a non-success response.
+    let response = MockResponse {
+        status: 403,
+        headers: Vec::new(),
+        body: r#"{"message":"denied"}"#.to_owned(),
+    };
+    let (result, request) = one(response, |provider| provider.update_body(7, "Updated"));
+    let error = result.unwrap_err();
+    assert_eq!(error.json()["kind"], "http");
+    assert_eq!(error.json()["operation"], "issue update");
+    assert_request(
+        &request,
+        "PATCH",
+        "/api/v1/repos/owner/repo/issues/7",
+        Some("\"body\":\"Updated\""),
+    );
+}
+
+#[test]
 fn comment_create_get_and_find_contracts() {
     let (result, request) = one(MockResponse::ok(comment_json()), |provider| {
         provider.create_comment(7, "<!-- marker --> body", "<!-- marker -->")
