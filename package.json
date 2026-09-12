@@ -26,7 +26,7 @@
     "@eslint/js": "10.0.1",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.11.4",
-    "@types/node": "26.4.1",
+    "@types/node": "26.5.1",
     "@vitejs/plugin-vue": "6.0.8",
     "bun-types": "1.4.2",
     "eslint": "10.10.0",
