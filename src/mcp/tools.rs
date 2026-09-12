@@ -6,9 +6,10 @@
 //! as the CLI; they do not reimplement HTTP or delivery.
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
+    model::{CallToolResult, ContentBlock, InitializeRequestParams, InitializeResult},
+    service::RequestContext,
     tool, tool_handler, tool_router,
 };
 
@@ -370,7 +371,16 @@ impl PhasegentMcpServer {
 }
 
 #[tool_handler]
-impl ServerHandler for PhasegentMcpServer {}
+impl ServerHandler for PhasegentMcpServer {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+}
 
 /// Tools allowed for a role. Mirrors CLI policy without exposing
 /// `status_advance`, timers, or role elevation.
