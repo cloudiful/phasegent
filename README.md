@@ -8,7 +8,8 @@ comments, and workflow automation.
 
 ## Features
 
-- Forgejo (default), Redmine, and GitLab providers.
+- Forgejo, Redmine, and GitLab providers; the provider is resolved from
+  configuration and falls back to Forgejo when none is configured.
 - Local provider (`--provider local`) that runs offline with no credential
   and no network.
 - Roles for `admin`, `orchestrator`, `executor`, `reviewer`, and `tester`.
@@ -52,15 +53,16 @@ cp -r skills/phasegent-workflow ~/.config/opencode/skills/
 ```
 
 The skill then loads by its `name: phasegent-workflow` frontmatter. Tracking
-lives as a Redmine issue (multi-phase `REDMINE_ISSUE`), a local provider issue
+lives as a `TRACKED_ISSUE` on the configured provider, as a local provider issue
 (`--provider local`, which replaces `.opencode/plans/*.md` markdown), or inline
 for trivial read-only work.
 
 ## Quick Start
 
-Forgejo is the default provider. Configure a credential for each role that
-will use the CLI. Credentials are read through a secure prompt or stdin and
-are never accepted as command-line values.
+The provider is resolved from configuration (`--provider` > environment >
+`phasegent.toml` > SQLite > Forgejo fallback). Configure a credential for each
+role that will use the CLI. Credentials are read through a secure prompt or
+stdin and are never accepted as command-line values.
 
 ```sh
 # Secure prompt
@@ -329,9 +331,10 @@ phasegent --role orchestrator worktree release --lease LEASE
 
 `heartbeat` refreshes only an active lease whose stored session matches the
 caller; a foreign session or terminal lease returns a structured conflict and
-is left untouched. `prune` is a read-only report by default: it lists every
-active lease whose heartbeat is older than `--stale-days` (default 14) and every
-removable worktree, and changes nothing. `--release-stale` requires
+is left untouched. `worktree prune` is the single pruning entry point, and it
+is a read-only report by default: it lists every active lease whose heartbeat
+is older than `--stale-days` (default 14) and every removable worktree, and
+changes nothing. `--release-stale` requires
 `--reason TEXT` and flips exactly those stale active leases to `retained` with
 the reason recorded; `--remove` deletes only worktrees that are `retained`,
 expired, and clean, after any requested recovery runs first. Either action is

@@ -7,7 +7,8 @@
 
 ## 功能
 
-- 支持 Forgejo（默认）、Redmine 和 GitLab。
+- 支持 Forgejo、Redmine 和 GitLab；provider 由配置解析，未配置时回退为
+  Forgejo。
 - 支持本地 provider（`--provider local`），离线使用，无需凭证与网络。
 - 支持 `admin`、`orchestrator`、`executor`、`reviewer`、`tester` 角色。
 - 按 provider 支持 issue 搜索、创建、更新、关闭，以及评论、状态、关系、
@@ -48,13 +49,14 @@ cp -r skills/phasegent-workflow ~/.config/opencode/skills/
 ```
 
 之后 skill 会依据其 `name: phasegent-workflow` 的 frontmatter 加载。tracking
-可以落在 Redmine issue（多阶段 `REDMINE_ISSUE`）、本地 provider issue
+可以落在已配置 provider 上的 `TRACKED_ISSUE`、本地 provider issue
 （`--provider local`，它替代 `.opencode/plans/*.md` markdown），或用于
 琐碎只读工作的 inline。
 
 ## 快速开始
 
-Forgejo 是默认 provider。为需要使用 CLI 的每个 role 配置 credential。credential
+provider 由配置解析（`--provider` > 环境变量 > `phasegent.toml` > SQLite >
+Forgejo 回退）。为需要使用 CLI 的每个 role 配置 credential。credential
 通过安全提示或 stdin 读取，不接受命令行明文参数。
 
 ```sh
@@ -93,9 +95,10 @@ phasegent --role orchestrator issue close 123
 phasegent doctor
 ```
 
-默认使用 Forgejo；需要时在命令上添加 `--provider redmine` 或
-`--provider gitlab`。可以使用 `--repository OWNER/REPOSITORY` 和
-`--project-id ID` 覆盖仓库或 project 的自动发现。
+未显式传入 `--provider` 时由配置解析 provider；需要时在命令上添加
+`--provider redmine` 或 `--provider gitlab`。可以使用
+`--repository OWNER/REPOSITORY` 和 `--project-id ID` 覆盖仓库或 project 的
+自动发现。
 
 Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。
@@ -305,8 +308,9 @@ phasegent --role orchestrator worktree release --lease LEASE
 
 `heartbeat` 只会刷新 stored session 与调用方一致、且仍为 active 的 lease；
 session 不匹配或已终结的 lease 会返回结构化冲突且行内容保持不变。
-`prune` 默认是只读报告：列出 heartbeat 早于 `--stale-days`（默认 14）的
-active lease 以及所有可删除的 worktree，不做任何修改。`--release-stale` 必须
+`worktree prune` 是唯一的清理入口，默认是只读报告：列出 heartbeat 早于
+`--stale-days`（默认 14）的 active lease 以及所有可删除的 worktree，不做任何
+修改。`--release-stale` 必须
 同时给出 `--reason TEXT`，把恰好这些 stale active lease 转为 `retained` 并
 记录原因；`--remove` 只删除同时满足 `retained`、已过期、且干净的 worktree
 （若同时请求恢复，则先执行恢复）。两个动作都需显式开启；没有

@@ -68,32 +68,20 @@ Detail matrix (from `src/policy.rs`) is in
 - Capability is how-much-can-it-do, not who; credentials stay role-scoped and
   least-privilege, and a role never invokes another role's `--role`.
 
-## Session identity and worktree leases
+## Worktree leases
 
-Worktree leases are keyed by `(repo, issue, session)`. The tracking session is
-what keeps two concurrent AI sessions on the same issue from colliding on one
-lease, so the workflow owns it:
+Worktree leases are keyed by `(repo, issue, session)`, and the workflow owns the
+session identity so two concurrent sessions never collide on one issue.
 
-- At the start of every OpenCode session, generate one stable session id and
-  export it as `PHASEGENT_SESSION_ID`; reuse that exact value for every
-  `worktree acquire`, `worktree heartbeat`, and `issue close` call in the
-  session. Never derive a fresh id per command or per phase.
-- Resolution order is the explicit flag (`--session`, or
-  `issue close --worktree-session`) first, then `PHASEGENT_SESSION_ID`, then the
-  legacy `phasegent` fallback. The legacy fallback only warns on stderr and may
-  let concurrent sessions share a lease; do not rely on it.
-- Keep a long-running session alive with `worktree heartbeat`; an update only
-  matches the owning session's active lease, so never heartbeat another
-  session's lease.
-- Stale recovery is read-only by default. `worktree prune` reports aged active
+- Keep one stable session id per OpenCode session, exported as
+  `PHASEGENT_SESSION_ID`, and reuse it for every worktree call in that session;
+  never derive a fresh id per command or per phase.
+- Stale recovery is read-only by default. `worktree prune` reports stale active
   leases and removable worktrees; `worktree prune --release-stale --reason TEXT`
   flips exactly those stale active leases to `retained`, and
   `worktree prune --remove` deletes only clean, expired, retained worktrees.
   Neither action is implied by the other; never guess an owner.
-- Clean up on session exit: release the current session's lease explicitly (or
-  close the issue, which releases only the current repo/issue/session lease
-  after the remote close succeeds). Never delete lease rows, worktree
-  directories, or branches to force cleanup, and never remove a dirty worktree.
+- Never delete lease rows, branches, or a dirty worktree to force cleanup.
 
 `phasegent --help worktree` owns the exact flags for these commands.
 
@@ -113,15 +101,12 @@ Rules:
 - The JSON top-level `status` (executor/tester) or `verdict` (reviewer) must
   match the note's labelled line verbatim.
 - Publish with the child's own role key: `phasegent --role <child>
-  [--provider <p>] comment create <ISSUE> --body-file <PATH> --marker <MARKER>
-  --authorized` (children require `--authorized`; orchestrator does not). Omit
-  `--provider` on the configured default; `--provider local` is always explicit.
-- Default note flow: write the note to a temporary Markdown file and pass it with
-  `--body-file`, so long Markdown never goes through the shell; `--body-file` and
-  `--body` are mutually exclusive. After a successful publish the CLI deletes the
-  file; any read, validation, marker, authorization, or provider failure keeps it
-  for diagnosis. Use `--keep-body-file` only when the file must survive success,
-  and never rely on it to clean up permanent files.
+  [--provider <p>] comment create <ISSUE> --marker <MARKER> --authorized`
+  (children require `--authorized`; orchestrator does not). Pass the note body
+  with `--body` or a one-shot `--body-file` (mutually exclusive); omit
+  `--provider` on the configured default, and always pass `--provider local`
+  for the local provider. `phasegent --help comment create` owns the body-file
+  lifecycle and cleanup flags.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
   clean finish.
 
@@ -197,6 +182,10 @@ Rules:
 - `phasegent --role <role> --help <topic> [<command>]` owns syntax; this SKILL
   owns boundaries (what may be published, note shape, verdict vocabulary, who
   owns timer/status/closure).
+- Recommended commands: `issue update` (issue body/planning writes) and
+  `worktree prune` (stale-lease recovery and worktree cleanup), each with its
+  current flags; `phasegent --help` carries the flag tables this SKILL never
+  reproduces.
 - Each child uses its own `--role` only. Omit `--provider` on the configured
   default; pass it only to override (and always for `local`).
 - The `admin` group (`admin auth setup`, `admin config set/clear`,

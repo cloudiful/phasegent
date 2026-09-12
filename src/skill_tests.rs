@@ -245,6 +245,36 @@ fn docs_and_skill_do_not_advertise_removed_issue_337_surface() {
     }
 }
 
+/// Issue 337 Phase 4 synced the shipped READMEs with the provider-neutral
+/// tracking vocabulary and the config-resolved provider default. The READMEs
+/// must name the current tracking mode and the current `issue update` /
+/// `worktree prune` surface, and must not hard-code the legacy tracking alias
+/// or a single default provider.
+#[test]
+fn readmes_carry_provider_neutral_tracking_and_current_surface() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for relative in ["README.md", "README.zh-CN.md"] {
+        let text = fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|err| panic!("expected {relative} to be readable: {err}"));
+        assert!(
+            text.contains("TRACKED_ISSUE"),
+            "{relative} must name the current TRACKED_ISSUE tracking mode"
+        );
+        assert!(
+            !text.contains("REDMINE_ISSUE"),
+            "{relative} must not advertise the legacy REDMINE_ISSUE alias"
+        );
+        assert!(
+            text.contains("issue update") && text.contains("worktree prune"),
+            "{relative} must document the current issue update and worktree prune surface"
+        );
+        assert!(
+            text.contains("--provider") && text.contains("Forgejo"),
+            "{relative} must document that the provider is resolved from configuration with a Forgejo fallback"
+        );
+    }
+}
+
 #[test]
 fn reference_chain_files_exist_and_are_linked() {
     let skill = read_skill("SKILL.md");

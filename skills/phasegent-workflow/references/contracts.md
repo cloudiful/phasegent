@@ -2,10 +2,12 @@
 
 Source of truth: `src/cli/help/` role-filter plus `src/policy.rs`.
 `phasegent --role <role> --help <topic> [<command>]` is the authoritative
-syntax for every command below; no command here is invented. Provider defaults:
-Forgejo is the default; `--provider redmine|gitlab|local` selects another.
-Credentials are never accepted as CLI values (`admin auth setup` reads a secure
-prompt or `--stdin`).
+syntax for every command below; no command here is invented. The provider is
+resolved from configuration: an explicit `--provider` wins, otherwise the
+configured default (role or global setting, `phasegent.toml`, or environment)
+applies, and Forgejo is the final fallback. This file records role gates, not
+flag tables. Credentials are never accepted as CLI values (`admin auth setup`
+reads a secure prompt or `--stdin`).
 
 Provisioning lives under the human-operator `admin` group (`admin auth
 setup`, `admin config set/clear`, `admin config provider set/clear`,
