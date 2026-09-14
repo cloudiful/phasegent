@@ -34,6 +34,8 @@ impl From<ApiIssue> for IssueSummary {
             body: issue.body,
             state: issue.state,
             html_url: issue.html_url,
+            // Forgejo has no Redmine project scope (issue 394 P2).
+            project: None,
         }
     }
 }

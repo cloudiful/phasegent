@@ -16,6 +16,27 @@ pub struct IssueSummary {
     pub body: String,
     pub state: String,
     pub html_url: Option<String>,
+    /// Owning-project passthrough for the Redmine single-number scope
+    /// guard (issue 394 P2). Redmine sets `Some` from the issue DTO's
+    /// `project` ref; Forgejo/GitLab/Local set `None` so their stdout
+    /// JSON stays byte-identical (omitted via `skip_serializing_if`).
+    /// Search items stay `None` (see `from_summary`) so search output
+    /// convergence is unchanged; only single-number `get` documents
+    /// carry the value for the CLI guard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<IssueProjectRef>,
+}
+
+/// Minimal owning-project ref carried by [`IssueSummary::project`]
+/// (issue 394 P2). Only `id` participates in numeric comparison;
+/// `name`/`identifier` support explicit identifier-string
+/// `--project-id` values and actionable mismatch messages.
+#[derive(Debug, Serialize, Clone)]
+pub struct IssueProjectRef {
+    pub id: u64,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
 }
 
 #[derive(Debug, Clone)]

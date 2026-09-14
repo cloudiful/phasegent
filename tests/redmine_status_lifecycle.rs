@@ -34,11 +34,15 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
         ("New", STATUS_NEW, false),
     ];
 
-    // Two mock responses per transition: GET statuses, PUT issue. The
-    // mock returns the issue with the *requested* status id so the new
-    // verification logic accepts the PUT response as authoritative.
-    let mut responses = Vec::with_capacity(transitions.len() * 2);
+    // Three mock responses per transition (issue 394 P3 pre-write): GET
+    // issue (scope guard), GET statuses, PUT issue. The mock returns the
+    // issue with the *requested* status id so the verification logic accepts
+    // the PUT response as authoritative; the guard only checks project.
+    let mut responses = Vec::with_capacity(transitions.len() * 3);
     for (_name, status_id, is_closed) in transitions {
+        responses.push(MockResponse::ok(issue_response_with_status(
+            ISSUE_ID, *status_id, _name, *is_closed,
+        )));
         responses.push(MockResponse::ok(statuses_response()));
         responses.push(MockResponse::ok(issue_response_with_status(
             ISSUE_ID, *status_id, _name, *is_closed,
@@ -80,19 +84,28 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
     }
 
     // The lifecycle ran through every status and each transition
-    // produced exactly two requests (status list + status update PUT)
-    // because the close path runs through `status set` rather than
-    // `issue close` here.
+    // produced exactly three requests (pre-write GET issue scope guard +
+    // status list + status update PUT) because the close path runs through
+    // `status set` rather than `issue close` here.
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        transitions.len() * 2,
+        transitions.len() * 3,
         "expected {} requests, got {}",
-        transitions.len() * 2,
+        transitions.len() * 3,
         requests.len()
     );
     for (i, request) in requests.iter().enumerate() {
-        if i % 2 == 0 {
+        if i % 3 == 0 {
+            assert!(
+                request.starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+                "request {i} should be a pre-write scope-guard GET, got: {request}"
+            );
+            assert!(
+                request.contains(&format!("x-redmine-api-key: {ORCHESTRATOR_KEY}")),
+                "scope guard must use the orchestrator key (request {i}): {request}"
+            );
+        } else if i % 3 == 1 {
             assert!(
                 request.starts_with("GET /issue_statuses.json"),
                 "request {i} should be a status list GET, got: {request}"
@@ -124,12 +137,21 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
 /// response as authoritative.
 #[test]
 fn issue_close_verifies_remote_state_through_subprocess() {
-    let server = start_mock_server(vec![MockResponse::ok(issue_response_with_status(
-        ISSUE_ID,
-        CLOSE_STATUS_ID,
-        "Closed",
-        true,
-    ))]);
+    // P3 pre-write: GET issue (scope guard) + PUT issue.
+    let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            CLOSE_STATUS_ID,
+            "Closed",
+            true,
+        )),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            CLOSE_STATUS_ID,
+            "Closed",
+            true,
+        )),
+    ]);
     let db = make_test_db(&server.base_url);
 
     let output = run_cli(
@@ -160,8 +182,17 @@ fn issue_close_verifies_remote_state_through_subprocess() {
     assert_eq!(json["state"], "closed");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1, "close should produce exactly one PUT");
-    let request = &requests[0];
+    assert_eq!(
+        requests.len(),
+        2,
+        "close should produce pre-write GET + PUT: {requests:?}"
+    );
+    assert!(
+        requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+        "first request must be the scope-guard GET: {}",
+        requests[0]
+    );
+    let request = &requests[1];
     assert!(
         request.starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
         "close request: {request}"
@@ -185,7 +216,12 @@ fn issue_close_verifies_remote_state_through_subprocess() {
 fn status_set_fails_when_remote_state_remains_stale() {
     // PUT response carries the issue in the *old* status (id=1, New)
     // even though the caller requested status_id=2 (In Progress).
+    // P3 pre-write adds a leading GET issue (scope guard) with a passing
+    // project so the flow still reaches the stale PUT.
     let stale_responses = vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID, STATUS_NEW, "New", false,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID, STATUS_NEW, "New", false,
@@ -234,13 +270,18 @@ fn status_set_fails_when_remote_state_remains_stale() {
         message.contains(&STATUS_NEW.to_string()),
         "error message must mention the observed (stale) status id: {message}"
     );
-    // The mock should not have received a third request: a follow-up GET
+    // The mock should not have received a fourth request: a follow-up GET
     // would defeat the purpose of trusting the verified response.
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        2,
-        "only the status list + PUT should fire; no follow-up GET expected when the PUT response already carries the mismatch id: {requests:?}"
+        3,
+        "only the scope-guard GET + status list + PUT should fire; no follow-up GET expected when the PUT response already carries the mismatch id: {requests:?}"
+    );
+    assert!(
+        requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+        "first request must be the scope-guard GET: {}",
+        requests[0]
     );
 }
 
@@ -249,9 +290,15 @@ fn status_set_fails_when_remote_state_remains_stale() {
 /// close verification rejects the PUT response with a structured error.
 #[test]
 fn issue_close_fails_when_remote_state_remains_open() {
-    let server = start_mock_server(vec![MockResponse::ok(issue_response_with_status(
-        ISSUE_ID, STATUS_NEW, "New", false,
-    ))]);
+    // P3 pre-write: leading GET passes the guard, PUT returns stale open.
+    let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID, STATUS_NEW, "New", false,
+        )),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID, STATUS_NEW, "New", false,
+        )),
+    ]);
     let db = make_test_db(&server.base_url);
 
     let output = run_cli(
@@ -292,8 +339,13 @@ fn issue_close_fails_when_remote_state_remains_open() {
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        1,
-        "close should still produce exactly one request"
+        2,
+        "close should produce scope-guard GET + PUT: {requests:?}"
+    );
+    assert!(
+        requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+        "first request must be the scope-guard GET: {}",
+        requests[0]
     );
 }
 
@@ -305,7 +357,14 @@ fn issue_close_fails_when_remote_state_remains_open() {
 fn issue_close_fails_when_follow_up_get_shows_open_status() {
     // The binary will re-read on an empty PUT body; the follow-up GET
     // returns the issue still in an open state, so close fails.
+    // P3 pre-write adds a leading GET (scope guard) before the PUT.
     let responses = vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_IN_PROGRESS,
+            "In Progress",
+            false,
+        )),
         MockResponse::ok(""),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -340,7 +399,8 @@ fn issue_close_fails_when_follow_up_get_shows_open_status() {
     assert_eq!(envelope["error"]["operation"], "issue close");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 2, "PUT + follow-up GET");
-    assert!(requests[0].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")));
-    assert!(requests[1].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert_eq!(requests.len(), 3, "scope-guard GET + PUT + follow-up GET");
+    assert!(requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(requests[1].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")));
+    assert!(requests[2].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
 }

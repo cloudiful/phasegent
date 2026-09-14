@@ -192,40 +192,22 @@ pub(crate) fn execute_search_transparent(
         }
     };
     // Redmine discovery/bootstrap errors are fallback-eligible.
+    // Shared with issue create (issue 394 P2) so the two branches stay
+    // identical; single-number paths never call this helper.
     let mut effective_project = project_id.map(str::to_owned);
     let mut effective_close = close_status_id.map(str::to_owned);
     if resolved_kind == ProviderKind::Redmine && effective_project.is_none() {
-        match crate::cli::project_resolution::resolve_redmine_project(
+        match crate::cli::project_resolution::resolve_redmine_project_for_search_or_create(
             role,
             api_base,
             repository,
             project_id,
             close_status_id,
         ) {
-            Ok(Some(discovered)) => {
-                effective_project = Some(discovered);
+            Ok((project, close)) => {
+                effective_project = project;
+                effective_close = close;
             }
-            Ok(None) => match crate::workflow::ensure_issue_workflow(
-                role,
-                api_base,
-                repository,
-                close_status_id,
-            ) {
-                Ok(state) => {
-                    effective_project = Some(state.project_id);
-                    effective_close = Some(state.close_status_id.to_string());
-                }
-                Err(error) => {
-                    return fallback_or_provider_error(
-                        &error,
-                        &options,
-                        None,
-                        explicit_kind,
-                        repository,
-                        project_id,
-                    );
-                }
-            },
             Err(error) => {
                 return fallback_or_provider_error(
                     &error,

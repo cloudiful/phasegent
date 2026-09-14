@@ -55,6 +55,8 @@ impl LocalIssueRow {
             body: self.body,
             state: state_for_status(&self.status).to_owned(),
             html_url: Some(local_issue_url(number)),
+            // Local has no Redmine project scope (issue 394 P2).
+            project: None,
         }
     }
 }

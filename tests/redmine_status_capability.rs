@@ -41,7 +41,14 @@ fn put_requests(requests: &[String]) -> usize {
 /// server caveat, and a concrete recovery command.
 #[test]
 fn status_next_reports_current_and_allowed_next_with_installation_ids() {
+    // P3 pre-read: leading GET (scope guard) + statuses + issue.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_IN_PROGRESS,
+            "In Progress",
+            false,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -110,7 +117,14 @@ fn status_next_reports_current_and_allowed_next_with_installation_ids() {
 /// to `In Progress` and the task-final `Closed` edge.
 #[test]
 fn status_next_reports_resolved_continuation_and_final_close() {
+    // P3 pre-read: leading GET (scope guard) + statuses + issue.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            true,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -172,7 +186,9 @@ fn status_next_reports_resolved_continuation_and_final_close() {
 /// pretending a transition is available.
 #[test]
 fn status_next_reports_terminal_status_with_no_allowed_next() {
+    // P3 pre-read: leading GET (scope guard) + statuses + issue.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(ISSUE_ID, 7, "Closed", true)),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(ISSUE_ID, 7, "Closed", true)),
     ]);
@@ -203,7 +219,9 @@ fn status_next_marks_custom_status_as_advisory() {
         ]
     })
     .to_string();
+    // P3 pre-read: leading GET (scope guard) + statuses + issue.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(ISSUE_ID, 91, "Triaged", false)),
         MockResponse::ok(statuses),
         MockResponse::ok(issue_response_with_status(ISSUE_ID, 91, "Triaged", false)),
     ]);
@@ -234,7 +252,9 @@ fn status_next_resolves_installation_specific_ids_and_reports_missing_names() {
         ]
     })
     .to_string();
+    // P3 pre-read: leading GET (scope guard) + statuses + issue.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(ISSUE_ID, 501, "New", false)),
         MockResponse::ok(statuses),
         MockResponse::ok(issue_response_with_status(ISSUE_ID, 501, "New", false)),
     ]);

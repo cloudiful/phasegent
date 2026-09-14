@@ -341,118 +341,22 @@ fn mirror_plugin_failed_status_fails_bootstrap_clearly() {
 
 #[test]
 fn mirror_identifier_lowercases_owner_and_repo() {
+    // Re-export removed in issue 394 P2; use the canonical impl path.
+    use crate::providers::redmine::r#impl::mirror::mirror_identifier;
     assert_eq!(
-        crate::providers::redmine::mirror_identifier(44, "Owner", "Repo"),
+        mirror_identifier(44, "Owner", "Repo"),
         "mirror_44_owner_repo"
     );
     assert_eq!(
-        crate::providers::redmine::mirror_identifier(44, "Mixed.Case", "Repo+One"),
+        mirror_identifier(44, "Mixed.Case", "Repo+One"),
         "mirror_44_mixed.case_repo+one"
     );
 }
 
-#[test]
-fn mirror_lookup_found_missing_and_error_are_distinguished() {
-    let _lock = lock_workflow_tests();
-    let (_key, _url) = mirror_env();
-    // Found: 200 with remote_url
-    let (base, requests, server) = sequence(vec![MockResponse::ok(git_mirror_response(
-        901,
-        44,
-        "mirror_44_owner_repo",
-        "ready",
-        Some("https://git.example.com/owner/repo.git"),
-        Some("/path"),
-        None,
-    ))]);
-    let redmine = support::provider(base);
-    let found = redmine
-        .lookup_mirror_for_project(44, "owner", "repo")
-        .unwrap();
-    assert!(found.is_some());
-    assert_eq!(
-        found.unwrap().remote_url.unwrap(),
-        "https://git.example.com/owner/repo.git"
-    );
-    let req = requests.recv().unwrap().remove(0);
-    assert!(
-        req.starts_with("GET /sys/redmine_git_mirror/projects/44/repository/mirror_44_owner_repo")
-    );
-    server.join().unwrap();
-
-    // Missing: 404 -> None (normal non-match, no error)
-    let (base2, requests2, server2) = sequence(vec![MockResponse::error(
-        404,
-        r#"{"errors":["not found"]}"#,
-    )]);
-    let redmine2 = support::provider(base2);
-    let missing = redmine2
-        .lookup_mirror_for_project(44, "owner", "repo")
-        .unwrap();
-    assert!(missing.is_none());
-    let req2 = requests2.recv().unwrap().remove(0);
-    assert!(
-        req2.starts_with("GET /sys/redmine_git_mirror/projects/44/repository/mirror_44_owner_repo")
-    );
-    server2.join().unwrap();
-
-    // Error: 500 must propagate as actionable error and redact bearer
-    let (base3, requests3, server3) = sequence(vec![MockResponse::error(
-        500,
-        r#"{"errors":["server error: mirror-bearer-key"]}"#,
-    )]);
-    let redmine3 = support::provider(base3);
-    let error = redmine3
-        .lookup_mirror_for_project(44, "owner", "repo")
-        .unwrap_err();
-    assert_eq!(error.json()["kind"], "http");
-    assert_eq!(error.json()["status"], 500);
-    assert!(!error.to_string().contains("mirror-bearer-key"));
-    assert!(error.to_string().contains("[redacted]"));
-    let _ = requests3.recv().unwrap();
-    server3.join().unwrap();
-
-    // Empty remote_url is treated as non-match (None) even when 200
-    let (base4, requests4, server4) = sequence(vec![MockResponse::ok(git_mirror_response(
-        901,
-        44,
-        "mirror_44_owner_repo",
-        "ready",
-        Some(""),
-        Some("/path"),
-        None,
-    ))]);
-    let redmine4 = support::provider(base4);
-    let empty = redmine4
-        .lookup_mirror_for_project(44, "owner", "repo")
-        .unwrap();
-    assert!(
-        empty.is_none(),
-        "empty remote_url must be treated as non-match"
-    );
-    let _ = requests4.recv().unwrap();
-    server4.join().unwrap();
-
-    let (base5, requests5, server5) = sequence(vec![MockResponse::ok(git_mirror_response(
-        901,
-        44,
-        "mirror_44_owner_repo",
-        "ready",
-        None,
-        Some("/path"),
-        None,
-    ))]);
-    let redmine5 = support::provider(base5);
-    let none_url = redmine5
-        .lookup_mirror_for_project(44, "owner", "repo")
-        .unwrap();
-    assert!(
-        none_url.is_none(),
-        "missing remote_url must be treated as non-match"
-    );
-    let _ = requests5.recv().unwrap();
-    server5.join().unwrap();
-}
+// `lookup_mirror_for_project` (test-only single-project lookup) was deleted
+// in issue 394 P2 as dead code: discovery (`discover_matching_projects`)
+// is the single mirror read path, and the GET/Missing/error semantics stay
+// covered by the discovery tests below.
 
 #[test]
 fn discovery_returns_no_match_when_no_projects_or_no_mirror_matches() {

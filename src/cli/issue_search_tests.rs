@@ -42,6 +42,7 @@ fn remote_page_warms_full_body_while_output_stays_compact() {
         body: long_body.clone(),
         state: "open".to_owned(),
         html_url: Some("https://forgejo.example/issues/7".to_owned()),
+        project: None,
     };
     // Compact output omits body.
     let compact = IssueSearchItem::from_summary(summary.clone(), false);
@@ -96,6 +97,7 @@ fn index_failure_is_warning_only_and_never_fails_remote() {
         body: "body".to_owned(),
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     // Must not panic and must not touch stdout JSON shape.
     warm_single_summary(&dispatcher, &bad, "issue search");
@@ -107,6 +109,7 @@ fn index_failure_is_warning_only_and_never_fails_remote() {
         body: "body".to_owned(),
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     warm_single_summary(&dispatcher, &good, "issue search");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
@@ -360,6 +363,7 @@ fn mutation_write_through_covers_get_create_update_close() {
             body: format!("body {num}"),
             state: state.to_owned(),
             html_url: None,
+            project: None,
         };
         warm_single_summary(&dispatcher, &summary, "issue mutation");
     }
@@ -406,6 +410,7 @@ fn fallback_items_retain_scope_without_invented_ids() {
             body: "b".to_owned(),
             state: "open".to_owned(),
             html_url: None,
+            project: None,
         },
         false,
     );

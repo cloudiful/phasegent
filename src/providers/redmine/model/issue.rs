@@ -1,4 +1,4 @@
-use crate::providers::api::{CommentOutput, IssueSummary};
+use crate::providers::api::{CommentOutput, IssueProjectRef, IssueSummary};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -24,6 +24,24 @@ pub(crate) struct RedmineIssue {
     pub(crate) status: Option<RedmineStatus>,
     #[serde(default)]
     pub(crate) journals: Vec<RedmineJournal>,
+    /// Owning Redmine project carried by `GET /issues/<id>.json`.
+    /// `None` only for legacy/mock payloads that omit the key; the
+    /// issue-394 guard treats it as unverifiable, never as a match.
+    #[serde(default)]
+    pub(crate) project: Option<RedmineIssueProject>,
+}
+
+/// Minimal owning-project ref for single-number scope guard (issue 394).
+/// Only `id` participates in numeric comparison; `name` and
+/// `identifier` support explicit identifier-string `--project-id` values
+/// and actionable mismatch messages.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RedmineIssueProject {
+    pub(crate) id: u64,
+    #[serde(default)]
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) identifier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +279,11 @@ pub(crate) struct RedmineNotesFields<'a> {
 impl RedmineIssue {
     pub(crate) fn into_summary(self, html_url: String) -> IssueSummary {
         let state = self.state();
+        let project = self.project.map(|project| IssueProjectRef {
+            id: project.id,
+            name: project.name,
+            identifier: project.identifier,
+        });
         IssueSummary {
             id: self.id,
             number: self.id,
@@ -268,6 +291,7 @@ impl RedmineIssue {
             body: self.description,
             state,
             html_url: Some(html_url),
+            project,
         }
     }
 

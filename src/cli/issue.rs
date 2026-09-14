@@ -115,40 +115,19 @@ pub(crate) fn execute_issue(
         && project_id.is_none()
         && matches!(&command, IssueCommand::Create { .. });
     let (project_id, close_status_id) = if automatic_workflow {
-        // Try repository-aware discovery first. An explicit project id
-        // already won and is not inside this branch. When discovery
-        // finds exactly one match we use it directly and bypass bootstrap
-        // (no project creation, membership writes, or mirror POST).
-        // Multiple matches fail before any issue write with a bounded
-        // listing. Any other discovery HTTP/auth/decode error is
-        // propagated, not treated as NoMatch. Only NoMatch keeps the
-        // existing automatic bootstrap fallback.
-        let discovered = match super::project_resolution::resolve_redmine_project(
+        // Repository-aware discovery with bootstrap fallback (issue 394
+        // P2): shared with search so the two branches stay identical.
+        // Discovery finds exactly one match we use directly and bypass
+        // bootstrap; only NoMatch keeps the automatic bootstrap fallback.
+        match super::project_resolution::resolve_redmine_project_for_search_or_create(
             role,
             api_base,
             repository,
             project_id,
             close_status_id,
         ) {
-            Ok(value) => value,
+            Ok((project, close)) => (project, close),
             Err(error) => return super::provider_error(error),
-        };
-        if let Some(discovered_id) = discovered {
-            (Some(discovered_id), close_status_id.map(str::to_owned))
-        } else {
-            let state = match crate::workflow::ensure_issue_workflow(
-                role,
-                api_base,
-                repository,
-                close_status_id,
-            ) {
-                Ok(state) => state,
-                Err(error) => return super::provider_error(error),
-            };
-            (
-                Some(state.project_id),
-                Some(state.close_status_id.to_string()),
-            )
         }
     } else {
         (
@@ -180,6 +159,13 @@ pub(crate) fn execute_issue(
             description,
         } => match &provider {
             crate::providers::ProviderDispatcher::Redmine(redmine) => {
+                // No single-number scope guard (issue 394 P3 decision):
+                // upload-attachment is uniformly not_supported (see the
+                // supports gate above) and never reaches the network, so no
+                // GET/PUT can write cross-project. If the capability is ever
+                // re-enabled, guard with verify_redmine_scope_before_write
+                // before the upload.
+                let _ = number;
                 match redmine.upload_attachment(number, &path, description.as_deref()) {
                     Ok(output) => super::print_json(&output),
                     Err(error) => super::provider_error(error),
@@ -192,18 +178,77 @@ pub(crate) fn execute_issue(
         },
         IssueCommand::Get { number } => match provider.get_issue(number) {
             Ok(summary) => {
+                // Single-number scope guard (issue 394): Redmine verifies
+                // the fetched project before returning data; other
+                // providers no-op inside the helper.
+                if let Err(error) = super::project_resolution::enforce_redmine_single_number_scope(
+                    role,
+                    api_base,
+                    repository,
+                    project_id.as_deref(),
+                    close_status_id.as_deref(),
+                    provider_kind,
+                    &summary,
+                    number,
+                ) {
+                    return super::provider_error(error);
+                }
                 issue_search::warm_single_summary(&provider, &summary, "issue get");
                 super::print_json(&summary)
             }
             Err(error) => super::provider_error(error),
         },
         IssueCommand::GetBatch { numbers } => {
-            let (issues, errors) = batch_fetch_issues(&provider, &numbers);
-            for summary in &issues {
+            let (issues, mut errors) = batch_fetch_issues(&provider, &numbers);
+            // Single-number scope guard per item (issue 394): Redmine
+            // partitions guard failures into the per-number `errors`
+            // envelope instead of failing the whole batch; other
+            // providers no-op. Only passing summaries are warmed.
+            let mut guarded = Vec::with_capacity(issues.len());
+            if provider_kind == ProviderKind::Redmine {
+                let expected = match super::project_resolution::resolve_expected_redmine_project(
+                    role,
+                    api_base,
+                    repository,
+                    project_id.as_deref(),
+                    close_status_id.as_deref(),
+                ) {
+                    Ok(expected) => Some(expected),
+                    Err(error) => {
+                        for summary in &issues {
+                            errors.push(serde_json::json!({
+                                "number": summary.number,
+                                "error": error.json(),
+                            }));
+                        }
+                        return super::print_json(
+                            &serde_json::json!({"issues": Vec::<IssueSummary>::new(), "errors": errors}),
+                        );
+                    }
+                };
+                if let Some(expected) = expected {
+                    for summary in issues {
+                        match super::project_resolution::guard_issue_summary_project(
+                            &summary,
+                            &expected,
+                            summary.number,
+                        ) {
+                            Ok(()) => guarded.push(summary),
+                            Err(error) => errors.push(serde_json::json!({
+                                "number": summary.number,
+                                "error": error.json(),
+                            })),
+                        }
+                    }
+                }
+            } else {
+                guarded = issues;
+            }
+            for summary in &guarded {
                 issue_search::warm_single_summary(&provider, summary, "issue get");
             }
             let failed = !errors.is_empty();
-            let code = super::print_json(&serde_json::json!({"issues": issues, "errors": errors}));
+            let code = super::print_json(&serde_json::json!({"issues": guarded, "errors": errors}));
             if code != 0 {
                 code
             } else if failed {
@@ -334,6 +379,21 @@ pub(crate) fn execute_issue(
                     );
                 }
             };
+            // Single-number scope guard (issue 394 P3 pre-write): resolve +
+            // GET-check before the PUT so a cross-project number never
+            // writes. Other providers no-op inside the helper.
+            if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                role,
+                api_base,
+                repository,
+                project_id.as_deref(),
+                close_status_id.as_deref(),
+                provider_kind,
+                &provider,
+                number,
+            ) {
+                return super::provider_error(error);
+            }
             match crate::providers::redmine::planning::update_body(
                 &provider,
                 number,
@@ -377,6 +437,21 @@ pub(crate) fn execute_issue(
                     );
                 }
             };
+            // Single-number scope guard (issue 394 P3 pre-write): fails
+            // before the PUT so a cross-project number never closes
+            // remotely and never triggers local side-effects.
+            if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                role,
+                api_base,
+                repository,
+                project_id.as_deref(),
+                close_status_id.as_deref(),
+                provider_kind,
+                &provider,
+                number,
+            ) {
+                return super::provider_error(error);
+            }
             match provider.close_issue(number) {
                 Ok(summary) => {
                     // Legacy fallback is never silent: warn on stderr only

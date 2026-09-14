@@ -65,6 +65,10 @@ pub(crate) fn execute_comment(
             capability.operation(),
         ));
     }
+    // Single-number scope guard (issue 394 P3 pre-write): comment outputs
+    // carry no project ref, so every arm does a read-only GET-check via the
+    // shared helper before any PUT/GET. Reuses the enforce path; no new
+    // discovery chains.
     match command {
         CommentCommand::Create { issue, marker, .. } => {
             if marker.is_empty() {
@@ -100,6 +104,18 @@ pub(crate) fn execute_comment(
                     2,
                 );
             }
+            if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                role,
+                api_base,
+                repository,
+                project_id,
+                close_status_id,
+                provider.kind(),
+                &provider,
+                issue,
+            ) {
+                return super::provider_error(error);
+            }
             let result = provider.create_comment(issue, body, &marker);
             let exit = super::print_result(result);
             // Default cleanup runs only on success; any failure above
@@ -113,15 +129,53 @@ pub(crate) fn execute_comment(
             exit
         }
         CommentCommand::Get { issue, comment } => {
+            if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                role,
+                api_base,
+                repository,
+                project_id,
+                close_status_id,
+                provider.kind(),
+                &provider,
+                issue,
+            ) {
+                return super::provider_error(error);
+            }
             super::print_result(provider.get_comment(issue, comment))
         }
-        CommentCommand::List { issue } => match provider.list_comments(issue) {
-            Ok(comments) => {
-                super::print_json(&serde_json::json!({"issue": issue, "comments": comments}))
+        CommentCommand::List { issue } => {
+            if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                role,
+                api_base,
+                repository,
+                project_id,
+                close_status_id,
+                provider.kind(),
+                &provider,
+                issue,
+            ) {
+                return super::provider_error(error);
             }
-            Err(error) => super::provider_error(error),
-        },
+            match provider.list_comments(issue) {
+                Ok(comments) => {
+                    super::print_json(&serde_json::json!({"issue": issue, "comments": comments}))
+                }
+                Err(error) => super::provider_error(error),
+            }
+        }
         CommentCommand::FindMarker { issue, marker } => {
+            if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                role,
+                api_base,
+                repository,
+                project_id,
+                close_status_id,
+                provider.kind(),
+                &provider,
+                issue,
+            ) {
+                return super::provider_error(error);
+            }
             super::print_result(provider.find_marker(issue, &marker))
         }
     }

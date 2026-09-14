@@ -88,6 +88,21 @@ pub(crate) fn execute_status(
         // installation catalogue (Redmine) or the static local catalogue.
         StatusCommand::Next { number } => match provider {
             ProviderDispatcher::Redmine(redmine) => {
+                // Single-number scope guard (issue 394 P3 pre-read): GET-check
+                // before the catalogue + issue reads so cross-project numbers
+                // fail with a --project-id hint and never disclose status.
+                if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                    role,
+                    api_base,
+                    repository,
+                    project_id,
+                    close_status_id,
+                    crate::providers::ProviderKind::Redmine,
+                    &redmine,
+                    number,
+                ) {
+                    return super::provider_error(error);
+                }
                 super::print_result(redmine.status_next(number))
             }
             ProviderDispatcher::Local(local) => super::print_result(local.status_next(number)),
@@ -98,6 +113,20 @@ pub(crate) fn execute_status(
         },
         StatusCommand::Advance { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
+                // Single-number scope guard (issue 394 P3 pre-write): fails
+                // before any PUT, including the NoOp path which still reads.
+                if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                    role,
+                    api_base,
+                    repository,
+                    project_id,
+                    close_status_id,
+                    provider.kind(),
+                    redmine,
+                    number,
+                ) {
+                    return super::provider_error(error);
+                }
                 let result = redmine.advance_issue_status(number, &status);
                 if result.is_ok() {
                     // Phase 3 write-side relation auto (issue 257):
@@ -171,6 +200,20 @@ pub(crate) fn execute_status(
                 super::print_result(result)
             }
             ProviderDispatcher::Redmine(redmine) => {
+                // Single-number scope guard (issue 394 P3 pre-write): fails
+                // before the catalogue reads and the status PUT.
+                if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                    role,
+                    api_base,
+                    repository,
+                    project_id,
+                    close_status_id,
+                    provider.kind(),
+                    redmine,
+                    number,
+                ) {
+                    return super::provider_error(error);
+                }
                 let statuses = match redmine.list_issue_statuses() {
                     Ok(statuses) => statuses,
                     Err(error) => return super::provider_error(error),

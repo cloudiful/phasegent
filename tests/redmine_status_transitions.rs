@@ -48,7 +48,11 @@ fn put_requests(requests: &[String]) -> usize {
 /// from/to statuses.
 #[test]
 fn status_advance_performs_policy_allowed_transition() {
+    // P3 pre-write: leading GET (scope guard) + statuses + current + PUT.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID, STATUS_NEW, "New", false,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID, STATUS_NEW, "New", false,
@@ -88,7 +92,14 @@ fn status_advance_performs_policy_allowed_transition() {
 /// no PUT is issued and the outcome reports `changed=false`.
 #[test]
 fn status_advance_same_status_is_idempotent_no_op() {
+    // P3 pre-write: leading GET (scope guard) still runs for NoOp reads.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_IN_PROGRESS,
+            "In Progress",
+            false,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -128,7 +139,14 @@ fn status_advance_same_status_is_idempotent_no_op() {
 /// rejected by policy.
 #[test]
 fn status_advance_performs_resolved_to_in_progress_phase_continuation() {
+    // P3 pre-write: leading GET (scope guard) + statuses + current + PUT.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            true,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -174,7 +192,14 @@ fn status_advance_performs_resolved_to_in_progress_phase_continuation() {
 /// with bounded transition context instead of being masked.
 #[test]
 fn status_advance_preserves_server_rejection_of_phase_continuation() {
+    // P3 pre-write: leading GET (scope guard) + statuses + current + 422.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            true,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -218,7 +243,14 @@ fn status_advance_preserves_server_rejection_of_phase_continuation() {
 /// the recovery command.
 #[test]
 fn status_advance_rejects_illegal_transition_before_any_write() {
+    // P3 pre-write: leading GET (scope guard) + statuses + current.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            true,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -260,7 +292,9 @@ fn status_advance_rejects_illegal_transition_before_any_write() {
 /// A terminal status rejects every transition and says so explicitly.
 #[test]
 fn status_advance_rejects_transition_out_of_terminal_status() {
+    // P3 pre-write: leading GET (scope guard) + statuses + current.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(ISSUE_ID, 8, "Cancelled", true)),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(ISSUE_ID, 8, "Cancelled", true)),
     ]);
@@ -292,7 +326,9 @@ fn status_advance_forwards_custom_status_as_advisory() {
         ]
     })
     .to_string();
+    // P3 pre-write: leading GET (scope guard) + statuses + current + PUT.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(ISSUE_ID, 91, "Triaged", false)),
         MockResponse::ok(statuses),
         MockResponse::ok(issue_response_with_status(ISSUE_ID, 91, "Triaged", false)),
         MockResponse::ok(issue_response_with_status(
@@ -328,7 +364,11 @@ fn status_advance_forwards_custom_status_as_advisory() {
 /// context instead of replacing it with generic policy text.
 #[test]
 fn status_advance_preserves_server_rejection_with_added_context() {
+    // P3 pre-write: leading GET (scope guard) + statuses + current + 422.
     let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID, STATUS_NEW, "New", false,
+        )),
         MockResponse::ok(statuses_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID, STATUS_NEW, "New", false,

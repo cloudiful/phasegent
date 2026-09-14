@@ -327,7 +327,9 @@ fn seed_role(conn: &Connection, role: &str, api_base: &str, api_key: &str) {
 }
 
 /// JSON body a mock Redmine returns for one issue. `is_closed` mirrors
-/// the source `issue_statuses.json` row.
+/// the source `issue_statuses.json` row. Includes the owning `project`
+/// ref (issue 394 P2) so the CLI single-number scope guard can verify the
+/// mocked issue belongs to the expected project (`PROJECT_ID`).
 pub fn issue_response_with_status(
     issue_id: u64,
     status_id: u64,
@@ -343,6 +345,11 @@ pub fn issue_response_with_status(
                 "id": status_id,
                 "name": status_name,
                 "is_closed": is_closed,
+            },
+            "project": {
+                "id": 4242,
+                "name": "Test Project",
+                "identifier": "test-project",
             },
             "journals": []
         }

@@ -2914,6 +2914,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         body: long.clone(),
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item = crate::providers::api::IssueSearchItem::from_summary(summary, false);
     assert!(item.body.is_none());
@@ -2926,6 +2927,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         body: long.clone(),
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item2 = crate::providers::api::IssueSearchItem::from_summary(summary2, true);
     assert_eq!(item2.body_truncated, Some(true));
@@ -2941,6 +2943,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         body: "short".to_owned(),
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item3 = crate::providers::api::IssueSearchItem::from_summary(short, true);
     assert_eq!(item3.body_truncated, Some(false));
@@ -2960,6 +2963,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         body: cjk,
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(true));
@@ -2981,6 +2985,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         body: emoji,
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(true));
@@ -3000,6 +3005,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         body: mixed,
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(true));
@@ -3019,6 +3025,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
         body: exact.clone(),
         state: "open".to_owned(),
         html_url: None,
+        project: None,
     };
     let item = crate::providers::api::IssueSearchItem::from_summary(summary, true);
     assert_eq!(item.body_truncated, Some(false));

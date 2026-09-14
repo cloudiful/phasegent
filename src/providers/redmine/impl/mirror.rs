@@ -35,15 +35,7 @@ pub fn register_git_mirror(
             "git mirror remote URL must not be empty",
         ));
     }
-    let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
-    let bearer_key =
-        crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
-    let Some(bearer_key) = bearer_key else {
-        return Err(ForgejoError::config(
-            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \
-             set the Redmine git mirror plugin key in the environment to queue mirrors",
-        ));
-    };
+    let bearer_key = mirror_bearer_key()?;
     let http = crate::providers::redmine::http::RedmineGitMirrorHttp::new(
         redmine_base_url.to_owned(),
         bearer_key,
@@ -74,6 +66,22 @@ pub(crate) fn mirror_identifier(project_id: u64, owner: &str, repo: &str) -> Str
     let owner = owner.trim().to_ascii_lowercase();
     let repo = repo.trim().to_ascii_lowercase();
     format!("mirror_{project_id}_{owner}_{repo}")
+}
+
+/// Shared bearer-key resolver for mirror plugin reads (issue 394 P2
+/// dedup). Opens [`Storage`] once and maps a missing key to the
+/// actionable config error so the three mirror call sites share one
+/// open instead of three duplicate blocks.
+fn mirror_bearer_key() -> Result<String, ForgejoError> {
+    let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
+    let bearer_key =
+        crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
+    bearer_key.ok_or_else(|| {
+        ForgejoError::config(
+            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \
+             set the Redmine git mirror plugin key in the environment to queue mirrors",
+        )
+    })
 }
 
 /// Derive the plugin base URL from the Redmine `api_base`. The Redmine REST
@@ -158,15 +166,7 @@ impl crate::providers::config::RedmineProvider {
             return Ok(RedmineDiscovery::NoMatch);
         }
 
-        let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
-        let bearer_key =
-            crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
-        let Some(bearer_key) = bearer_key else {
-            return Err(ForgejoError::config(
-                "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \
-                 set the Redmine git mirror plugin key in the environment to queue mirrors",
-            ));
-        };
+        let bearer_key = mirror_bearer_key()?;
         let base_url = mirror_base_url(&self.config.api_base);
         let http =
             crate::providers::redmine::http::RedmineGitMirrorHttp::new(base_url, bearer_key)?;
@@ -209,56 +209,6 @@ impl crate::providers::config::RedmineProvider {
                 matches.into_iter().next().unwrap(),
             )),
             _ => Ok(RedmineDiscovery::Multiple(matches)),
-        }
-    }
-
-    /// Narrowly scoped plugin lookup for a single project. Mirrors the
-    /// discovery helper's `GET` semantics: `404` is `None`, empty/missing
-    /// `remote_url` is `None`, and any other HTTP/auth/decode error is
-    /// propagated. Does not `POST` and does not persist anything.
-    #[cfg(test)]
-    pub(crate) fn lookup_mirror_for_project(
-        &self,
-        project_id: u64,
-        owner: &str,
-        repo: &str,
-    ) -> Result<
-        Option<crate::providers::redmine::model::RedmineGitMirrorResponse>,
-        crate::providers::api::ForgejoError,
-    > {
-        use crate::providers::api::ForgejoError;
-
-        if project_id == 0 {
-            return Err(ForgejoError::config(
-                "Redmine project id must be greater than zero to query a git mirror",
-            ));
-        }
-        let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
-        let bearer_key =
-            crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
-        let Some(bearer_key) = bearer_key else {
-            return Err(ForgejoError::config(
-                "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \
-                 set the Redmine git mirror plugin key in the environment to queue mirrors",
-            ));
-        };
-        let base_url = mirror_base_url(&self.config.api_base);
-        let http =
-            crate::providers::redmine::http::RedmineGitMirrorHttp::new(base_url, bearer_key)?;
-        let identifier = mirror_identifier(project_id, owner, repo);
-        let path = format!("/sys/redmine_git_mirror/projects/{project_id}/repository/{identifier}");
-        let lookup = http.get::<crate::providers::redmine::model::RedmineGitMirrorResponse>(
-            &path,
-            "mirror get",
-        )?;
-        match lookup {
-            crate::providers::redmine::http::RedmineGitMirrorLookup::Missing => Ok(None),
-            crate::providers::redmine::http::RedmineGitMirrorLookup::Found(response) => {
-                match response.remote_url.as_deref().map(str::trim) {
-                    Some(url) if !url.is_empty() => Ok(Some(response)),
-                    _ => Ok(None),
-                }
-            }
         }
     }
 }

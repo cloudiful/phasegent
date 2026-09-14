@@ -274,6 +274,8 @@ impl ApiIssue {
             body: self.description,
             state,
             html_url: self.web_url,
+            // GitLab has no Redmine project scope (issue 394 P2).
+            project: None,
         }
     }
 }
