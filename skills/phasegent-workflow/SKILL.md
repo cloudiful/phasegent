@@ -85,6 +85,31 @@ session identity so two concurrent sessions never collide on one issue.
 
 `phasegent --help worktree` owns the exact flags for these commands.
 
+## Branch binding lifecycle
+
+Branch bindings record which tracking issue the current branch works on. The
+binding lives as the local Git config key `branch.<name>.redmine-issue-id` in
+the checkout's own config: branch-scoped, checkout-local, with no global or
+SQLite fallback, and it follows the branch on switch.
+
+- Commit hooks read the key to append the issue reference (`Refs #<id>`) to the
+  message trailer; an unbound branch produces no trailer.
+- Issue create auto-binds the current named branch when the key is empty.
+  Re-creating for the already-bound id is idempotent; a different existing
+  binding is never overwritten — the create succeeds and warns to switch
+  explicitly with `bind --replace`.
+- Issue close auto-unbinds the current branch only on exact match (bound id
+  equals the closed id); any other binding, missing binding, or detached HEAD
+  is a no-op that leaves the key untouched.
+- Before starting work on an existing issue, check the binding status and bind
+  explicitly, using `--replace` only to move a branch that already points at a
+  different issue.
+- `main` (and other long-lived release branches) stay unbound by convention;
+  detached HEAD never carries a binding.
+
+Exact flags live with the CLI help; this SKILL owns only the lifecycle
+boundaries above.
+
 ## Marker protocol
 
 One HTML-comment marker at the top of the note body; the parent-supplied value
