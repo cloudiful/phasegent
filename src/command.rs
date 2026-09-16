@@ -732,7 +732,59 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
 
     let command = args.get(index).ok_or("a command is required")?;
     let rest = &args[index + 1..];
-    let command = match command.as_str() {
+    let command = parse_command(command, rest).map_err(with_global_option_hint)?;
+    // Local branch context and hooks never touch provider credentials. The
+    // internal `hooks run` forms are also invoked by generated Git scripts
+    // without a role. `config set/clear` is allowed without --role when
+    // the target is a global setting; role-scoped settings still require it.
+    let no_role_allowed = match &command {
+        Command::Help(_)
+        | Command::Gui
+        | Command::Doctor
+        | Command::ConfigShow
+        | Command::ConfigProviderGet
+        | Command::ConfigProviderSet { .. }
+        | Command::ConfigProviderClear
+        | Command::Hooks(_)
+        | Command::Plugin(_)
+        | Command::Issue(
+            IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch,
+        ) => true,
+        Command::ConfigSet { setting, .. } => crate::config_write::is_global_setting(setting),
+        Command::ConfigClear { setting } => crate::config_write::is_global_setting(setting),
+        _ => false,
+    };
+    if role.is_none() && !no_role_allowed {
+        return Err("--role is required for operations".to_owned());
+    }
+    if close_status_name.is_some() && !matches!(&command, Command::Workflow(_)) {
+        return Err("--close-status-name is only supported by workflow bootstrap".to_owned());
+    }
+    Ok(Invocation {
+        role,
+        provider,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        close_status_name,
+        command,
+    })
+}
+
+/// Global options recognized before the command, paired with a concrete
+/// example value used when explaining a misplaced option.
+const GLOBAL_OPTIONS: &[(&str, &str)] = &[
+    ("--role", "executor"),
+    ("--provider", "redmine"),
+    ("--api-base", "https://redmine.example.com"),
+    ("--repository", "owner/repo"),
+    ("--project-id", "23"),
+    ("--close-status-id", "5"),
+];
+
+fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
+    Ok(match command {
         "gui" => {
             if !rest.is_empty() {
                 return Err("gui takes no arguments".to_owned());
@@ -787,42 +839,156 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "notify" => notify::parse_notify(rest)?,
         "mcp" => mcp::parse_mcp(rest)?,
         value => return Err(format!("unknown command '{value}'")),
-    };
-    // Local branch context and hooks never touch provider credentials. The
-    // internal `hooks run` forms are also invoked by generated Git scripts
-    // without a role. `config set/clear` is allowed without --role when
-    // the target is a global setting; role-scoped settings still require it.
-    let no_role_allowed = match &command {
-        Command::Help(_)
-        | Command::Gui
-        | Command::Doctor
-        | Command::ConfigShow
-        | Command::ConfigProviderGet
-        | Command::ConfigProviderSet { .. }
-        | Command::ConfigProviderClear
-        | Command::Hooks(_)
-        | Command::Plugin(_)
-        | Command::Issue(
-            IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch,
-        ) => true,
-        Command::ConfigSet { setting, .. } => crate::config_write::is_global_setting(setting),
-        Command::ConfigClear { setting } => crate::config_write::is_global_setting(setting),
-        _ => false,
-    };
-    if role.is_none() && !no_role_allowed {
-        return Err("--role is required for operations".to_owned());
-    }
-    if close_status_name.is_some() && !matches!(&command, Command::Workflow(_)) {
-        return Err("--close-status-name is only supported by workflow bootstrap".to_owned());
-    }
-    Ok(Invocation {
-        role,
-        provider,
-        api_base,
-        repository,
-        project_id,
-        close_status_id,
-        close_status_name,
-        command,
     })
+}
+
+/// Explain option placement when a subcommand parser rejected a token that is
+/// a global option, since global options only parse before the command. Every
+/// other unknown option keeps its original message.
+fn with_global_option_hint(error: String) -> String {
+    let Some(token) = error
+        .strip_prefix("unknown option '")
+        .and_then(|rest| rest.strip_suffix('\''))
+    else {
+        return error;
+    };
+    let Some((flag, value)) = matching_global_option(token) else {
+        return error;
+    };
+    format!(
+        "{error} (global option '{flag}' must come before the subcommand, e.g. `{}`)",
+        global_option_example(flag, value)
+    )
+}
+
+/// Match a rejected token against the global options, tolerating the inline
+/// `--flag=value` form and separator/case variants such as `--project_id`.
+fn matching_global_option(token: &str) -> Option<(&'static str, &'static str)> {
+    let name = token.split('=').next().unwrap_or(token);
+    let normalized = normalize_option_name(name);
+    GLOBAL_OPTIONS
+        .iter()
+        .copied()
+        .find(|(flag, _)| normalize_option_name(flag) == normalized)
+}
+
+fn normalize_option_name(name: &str) -> String {
+    name.trim_start_matches('-')
+        .chars()
+        .filter(|character| *character != '-' && *character != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn global_option_example(flag: &str, value: &str) -> String {
+    if flag == "--role" {
+        format!("phasegent --role {value} issue create --title TITLE --body BODY")
+    } else {
+        format!("phasegent --role executor {flag} {value} issue create --title TITLE --body BODY")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn misplaced_global_option_after_subcommand_hints_at_position() {
+        // The reported flow: `--project-id` after `issue create` failed with a
+        // bare "unknown option". The error must now state that global options
+        // come before the subcommand and show a correct example.
+        let error = parse(&args(&[
+            "--role",
+            "orchestrator",
+            "issue",
+            "create",
+            "--title",
+            "T",
+            "--body",
+            "B",
+            "--project-id",
+            "23",
+        ]))
+        .expect_err("a misplaced global option must be rejected");
+        assert!(
+            error.starts_with("unknown option '--project-id'"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("must come before the subcommand"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("--project-id 23 issue create"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn global_option_hint_covers_inline_and_separator_variants() {
+        for token in ["--project-id=23", "--project_id"] {
+            let error = parse(&args(&[
+                "--role",
+                "orchestrator",
+                "issue",
+                "close",
+                "42",
+                token,
+            ]))
+            .expect_err("a misplaced global option must be rejected");
+            assert!(
+                error.contains("must come before the subcommand"),
+                "token {token}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_unknown_option_keeps_its_plain_message() {
+        let error = parse(&args(&[
+            "--role",
+            "orchestrator",
+            "issue",
+            "create",
+            "--title",
+            "T",
+            "--body",
+            "B",
+            "--session",
+            "alpha",
+        ]))
+        .expect_err("an unknown option must be rejected");
+        assert_eq!(error, "unknown option '--session'");
+    }
+
+    #[test]
+    fn global_option_hint_only_matches_global_options() {
+        for token in [
+            "--role",
+            "--provider",
+            "--api-base",
+            "--repository",
+            "--project-id",
+            "--close-status-id",
+        ] {
+            let error = parse(&args(&[
+                "--role",
+                "orchestrator",
+                "issue",
+                "bind",
+                "42",
+                token,
+                "value",
+            ]))
+            .expect_err("a misplaced global option must be rejected");
+            assert!(
+                error.contains("must come before the subcommand"),
+                "token {token}: {error}"
+            );
+        }
+    }
 }

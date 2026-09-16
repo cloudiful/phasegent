@@ -3,10 +3,16 @@ use crate::providers::ProviderKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Global options are parsed only before the command, so a `--project-id`
+/// placed after the subcommand is rejected as an unknown option. Shared with
+/// the `issue` subcommand help so the rule stays discoverable from either
+/// entry point.
+pub(crate) const GLOBAL_OPTIONS_POSITION_NOTE: &str = "Global options (--role, --provider, --api-base, --repository, --project-id, --close-status-id) must come before <COMMAND>, e.g. `phasegent --role executor --project-id 23 issue create --title TITLE --body BODY`.";
+
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\nUsage:\n  phasegent --role <ROLE> [--provider forgejo|redmine|gitlab|local] <COMMAND> [OPTIONS]\n  phasegent gui\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, reviewer, or tester\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)\n  config                 Local configuration (read-only show/get; writes live under admin)\n  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no --role needed)\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\nUsage:\n  phasegent --role <ROLE> [--provider forgejo|redmine|gitlab|local] <COMMAND> [OPTIONS]\n  phasegent gui\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, reviewer, or tester\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\n{GLOBAL_OPTIONS_POSITION_NOTE}\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)\n  config                 Local configuration (read-only show/get; writes live under admin)\n  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no --role needed)\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
   plugin                 Managed OpenCode plugin installation (issue #239 Phase 3)"
     );
     if provider != Some(ProviderKind::Redmine)
@@ -73,5 +79,35 @@ pub(crate) fn print_mcp_command_help(role: Option<Role>, command: &str) {
             );
         }
         _ => print_mcp_help(role),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_options_position_note_lists_every_global_flag_with_an_example() {
+        for flag in [
+            "--role",
+            "--provider",
+            "--api-base",
+            "--repository",
+            "--project-id",
+            "--close-status-id",
+        ] {
+            assert!(
+                GLOBAL_OPTIONS_POSITION_NOTE.contains(flag),
+                "note must list {flag}: {GLOBAL_OPTIONS_POSITION_NOTE}"
+            );
+        }
+        assert!(
+            GLOBAL_OPTIONS_POSITION_NOTE.contains("must come before <COMMAND>"),
+            "note must state the position rule: {GLOBAL_OPTIONS_POSITION_NOTE}"
+        );
+        assert!(
+            GLOBAL_OPTIONS_POSITION_NOTE.contains("--project-id 23 issue create"),
+            "note must show a global option before the subcommand: {GLOBAL_OPTIONS_POSITION_NOTE}"
+        );
     }
 }
