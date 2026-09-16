@@ -173,6 +173,33 @@ mod tests {
     }
 
     #[test]
+    fn help_routes_branch_context_commands_through_outer_dispatch() {
+        for topic in ["bind", "unbind", "status"] {
+            let invocation = crate::command::parse(&[
+                "--role".to_owned(),
+                "executor".to_owned(),
+                "--help".to_owned(),
+                "issue".to_owned(),
+                topic.to_owned(),
+            ])
+            .unwrap_or_else(|error| panic!("help issue {topic} must route; got: {error}"));
+            match invocation.command {
+                crate::command::Command::Help(crate::command::HelpTopic::IssueCommand(value)) => {
+                    assert_eq!(value, topic);
+                }
+                other => panic!("unexpected command {other:?}"),
+            }
+            let (capability, text) = issue_command_help_entry(topic)
+                .unwrap_or_else(|| panic!("issue {topic} must have a help entry"));
+            assert_eq!(capability, Capability::IssueRead);
+            assert!(
+                text.contains(&format!("Usage: issue {topic}")),
+                "issue {topic} help must document its own usage; got: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn help_routes_update_and_rejects_removed_update_body() {
         let invocation = crate::command::parse(&[
             "--role".to_owned(),
