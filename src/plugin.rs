@@ -16,6 +16,14 @@
 //! directory on any failure. No network, no `.env` access, no
 //! branch deletion (deletion stays with `phasegent worktree prune`).
 //!
+//! The V1 plugin function additionally returns a
+//! `tool.execute.before` hook (issue #440): once a session has
+//! acquired a worktree, relative file paths and a bare or relative
+//! bash `workdir` are redirected into it, while absolute paths and
+//! sessions without a worktree pass through untouched. Redirecting
+//! never disables the `external_directory` permission check because
+//! absolute paths are returned verbatim.
+//!
 //! This module reuses the `hooks.rs` install pattern (marker check,
 //! idempotent update, foreign-file backup, atomic temp+rename) so the
 //! Phase 3 surface reads the same as Phase 1 / 2 for an operator

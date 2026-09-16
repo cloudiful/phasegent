@@ -20,6 +20,9 @@ pub(crate) fn help_topic(
                     "update",
                     "close",
                     "upload-attachment",
+                    "bind",
+                    "unbind",
+                    "status",
                 ]
                 .contains(&value) =>
             {
