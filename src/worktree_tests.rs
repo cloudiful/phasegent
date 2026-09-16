@@ -162,6 +162,28 @@ impl TempRepo {
             head_branch: branch,
         })
     }
+
+    /// Configure an `origin` remote so `lifecycle::origin_identity`
+    /// resolves an OWNER/REPO slug (the managed-hook install gate).
+    fn set_origin(&self, url: &str) {
+        let runner = ProcessWorktreeRunner::new();
+        let output = runner
+            .run(&["remote", "add", "origin", url], self.dir.path())
+            .expect("git remote add runs");
+        assert_eq!(output.status, 0, "origin must be configured");
+    }
+}
+
+/// Hook path as Git resolves it *inside* `checkout`, so the assertion
+/// covers the exact hooks directory the acquire lifecycle installed into
+/// (linked worktrees share the common hooks dir).
+fn hook_path_in(checkout: &Path, name: &str) -> PathBuf {
+    let runner = ProcessWorktreeRunner::new();
+    let output = runner
+        .run(&["rev-parse", "--git-path", "hooks"], checkout)
+        .expect("git rev-parse runs");
+    assert_eq!(output.status, 0, "git rev-parse --git-path hooks");
+    checkout.join(output.stdout.trim()).join(name)
 }
 
 fn open_temp_db(label: &str) -> (TempDir, Storage, EnvGuard) {
@@ -524,11 +546,12 @@ fn unique_index_blocks_duplicate_repo_path_rows() {
 }
 
 #[test]
-fn acquire_second_reuse_current_reports_actionable_guidance() {
-    // Issue 437 symptom: with isolation off, two acquires for different
-    // sessions both reuse the same checkout, so the second lease insert
-    // hits the `(repo_identity, worktree_path)` unique index. The
-    // operator must get the guidance, not the raw SQLite text.
+fn acquire_second_session_isolates_instead_of_colliding_on_reuse() {
+    // Issue 437 symptom: with the old default, two acquires for different
+    // sessions both reused the same checkout, so the second lease insert
+    // hit the `(repo_identity, worktree_path)` unique index. Issue #436
+    // flips the default: the second session now gets its own isolated
+    // worktree, so the collision (and any raw SQLite text) never happens.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("reuse-conflict") else {
         return;
@@ -547,7 +570,7 @@ fn acquire_second_reuse_current_reports_actionable_guidance() {
     )
     .expect("first acquire reuses the current checkout");
     assert_eq!(first.reason, "no_conflict");
-    let error = acquire_lease(
+    let second = acquire_lease(
         &runner,
         repo.dir.path(),
         239,
@@ -556,15 +579,22 @@ fn acquire_second_reuse_current_reports_actionable_guidance() {
         false,
         false,
     )
-    .expect_err("a second lease on the same checkout must fail");
-    assert_eq!(error.kind, "storage");
+    .expect("a second session must isolate, not collide on the checkout lease");
     assert!(
-        error.message.contains("--isolate")
-            && error.message.contains("worktree status")
-            && error.message.contains("worktree list"),
-        "guidance must reach the reuse-current path: {error}"
+        second.created,
+        "the second session must get a fresh worktree"
     );
-    assert!(!error.message.contains("UNIQUE constraint failed"));
+    assert_eq!(second.reason, "new_worktree");
+    assert_ne!(second.path, first.path);
+    assert!(second.branch.starts_with("phasegent/239-"));
+    assert!(
+        second
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("UNIQUE constraint failed")),
+        "raw SQLite text must never reach the operator: {:?}",
+        second.warnings
+    );
     drop(cache);
     drop(db_temp);
 }
@@ -862,9 +892,127 @@ fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
 }
 
 #[test]
-fn acquire_clean_foreign_bound_reuses_current_checkout() {
-    // A clean checkout bound to another issue is not contaminated, so
-    // the existing no_conflict reuse behaviour is unchanged.
+fn acquire_dirty_foreign_bound_isolates_by_default_without_isolate_flag() {
+    // Issue #436 behavior change: a dirty checkout bound to another issue
+    // isolates even when neither `--isolate` nor `worktree-auto` is set.
+    // The warning must name the new default and the retained flag.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("dirty-default-isolate") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-dirty-default-isolate");
+    let cache = unique_cache("dirty-default-isolate");
+    let runner = ProcessWorktreeRunner::new();
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("dirty + foreign-bound must isolate by default, not reuse");
+    assert!(
+        outcome.created,
+        "a dirty foreign-bound checkout must not be reused by default"
+    );
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(
+        outcome
+            .path
+            .starts_with(cache.path().to_string_lossy().as_ref()),
+        "the isolated worktree must live under the cache base"
+    );
+    assert!(Path::new(&outcome.path).exists(), "worktree dir must exist");
+    let joined = outcome.warnings.join(" ");
+    assert!(
+        joined.contains("241")
+            && joined.contains("auto-isolation now defaults on")
+            && joined.contains("--isolate"),
+        "the warning must document the new default and the retained flag: {joined}"
+    );
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_auto_binds_new_worktree_branch_and_installs_hooks() {
+    // Issue #436 single-command closure: after an isolated acquire the
+    // fresh branch is bound to the requested issue and the managed commit
+    // hooks are installed, while the main checkout's branch stays
+    // untouched. The origin gate of `lifecycle::auto_install_hooks` is
+    // satisfied by giving the temp repo an origin.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("auto-bind-hooks") else {
+        return;
+    };
+    repo.set_origin("https://git.example/acme/widgets.git");
+    let (db_temp, _storage, _env) = open_temp_db("acquire-auto-bind-hooks");
+    let cache = unique_cache("auto-bind-hooks");
+    let runner = ProcessWorktreeRunner::new();
+    let scratch = repo.dir.path().join("scratch.txt");
+    std::fs::write(&scratch, "scratch\n").expect("write scratch");
+    bind_current_branch(&repo, 241);
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        245,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("dirty checkout must acquire an isolated worktree");
+    assert!(outcome.created);
+    assert!(outcome.branch.starts_with("phasegent/245-"));
+    let checkout = Path::new(&outcome.path);
+    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(checkout);
+    let bound = crate::branch_context::read_issue_id(&git_runner, &outcome.branch)
+        .expect("binding read in the new worktree");
+    assert_eq!(
+        bound,
+        Some(245),
+        "the fresh branch must be auto-bound to the acquired issue"
+    );
+    let main_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
+    let main_bound = crate::branch_context::read_issue_id(&main_runner, &repo.head_branch)
+        .expect("binding read in the main checkout");
+    assert_eq!(
+        main_bound,
+        Some(241),
+        "auto-bind must target the new checkout, not the origin checkout"
+    );
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("not bound") && !warning.contains("hook")),
+        "a clean bind + hook install must stay quiet: {:?}",
+        outcome.warnings
+    );
+    #[cfg(unix)]
+    for name in ["prepare-commit-msg", "commit-msg"] {
+        assert!(
+            hook_path_in(checkout, name).is_file(),
+            "{name} must be installed in the acquired checkout"
+        );
+    }
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_clean_foreign_bound_reuses_current_checkout_without_overwriting_binding() {
+    // A clean checkout bound to another issue is not contaminated, so it
+    // is still reused (no_conflict). The post-acquire auto-bind must not
+    // overwrite that foreign binding: `branch_context::bind` reports its
+    // usual conflict, which acquire degrades to a warning.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("clean-foreign-bound") else {
         return;
@@ -886,10 +1034,18 @@ fn acquire_clean_foreign_bound_reuses_current_checkout() {
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
     assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
+    let joined = outcome.warnings.join(" ");
     assert!(
-        outcome.warnings.is_empty(),
-        "clean + bound-other must stay silent: {:?}",
-        outcome.warnings
+        joined.contains("issue 241") && joined.contains("--replace"),
+        "auto-bind must surface the foreign-binding conflict instead of overwriting: {joined}"
+    );
+    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
+    let bound =
+        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
+    assert_eq!(
+        bound,
+        Some(241),
+        "the foreign binding must survive auto-bind"
     );
     drop(cache);
     drop(db_temp);

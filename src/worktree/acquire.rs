@@ -5,7 +5,7 @@
 //! main [`crate::worktree`] module focused on types, error
 //! vocabulary, and the public surface.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
@@ -79,39 +79,41 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
 /// error is returned; partial state is never left behind because the
 /// `git worktree add` runs before the lease row is inserted.
 ///
-/// The decision table (issue #246, gated by issue #247) is evaluated in
-/// order. Rules 2, 3, and 4 only create a new worktree when isolation is
-/// enabled (`isolate || auto`, i.e. `--isolate` or `worktree-auto` true);
-/// when it is disabled they reuse the current checkout with
-/// `reason == "no_conflict"` and a conflict warning naming the trigger,
-/// while still recording the lease for bookkeeping. The default is
-/// disabled, so acquire never implicitly creates a branch or directory.
+/// The decision table (issue #246, default flipped by issue #436) is
+/// evaluated in order. Rules 2, 3, and 4 create a new worktree **by
+/// default**: a dirty checkout or any other active lease for the repo
+/// means the current checkout must not be reused, so the incoming task
+/// gets an isolated `phasegent/<issue>-<short6hex>` branch and a
+/// worktree under
+/// `~/.cache/phasegent/worktrees/<fingerprint>/<slug>` instead of
+/// colliding with a foreign tree or the `(repo, worktree_path)` lease
+/// index. `--isolate` is still accepted as the explicit opt-in for the
+/// same outcome, and `isolate || auto` (`--isolate` or the resolved
+/// `worktree-auto` switch) is what decides the remaining `Unknown`
+/// probe state below; there is deliberately no reuse fallback for a
+/// confirmed conflict trigger.
 ///
 /// The dirty probe feeding rules 2/3/5 is a three-state value
 /// (`Clean` / `Dirty` / `Unknown`, issue 305 Task 4). A failed
 /// `git status` yields `Unknown` and never counts as `Clean`: with
-/// isolation enabled a fresh worktree is created, and with isolation
-/// disabled the current checkout is reused with an explicit warning.
+/// `--isolate` or `worktree-auto` enabled a fresh worktree is created,
+/// and otherwise the current checkout is reused with an explicit
+/// warning — the one case where the switches still change the outcome.
 ///
 /// 1. An active lease exists for `(repo, issue, session)` — the same
 ///    `lease_id`, `path`, and `branch` are returned and `heartbeat_at`
 ///    is updated. `created` is `false` and `reason == "idempotent"`.
 /// 2. The checkout is dirty (`is_clean` probe on `repo_path`) and its
-///    branch is bound to a *different* issue — when isolation is enabled
-///    a fresh `phasegent/<issue>-<short6hex>` branch and worktree are
+///    branch is bound to a *different* issue — a fresh worktree is
 ///    created so the new task never lands in a dirty tree that belongs
 ///    to another task. `created` is `true`, `reason == "new_worktree"`.
 /// 3. The checkout is dirty and bound to *this* issue, but another
-///    active session already holds a lease for `(repo, issue)` — when
-///    isolation is enabled a new worktree is created because parallel
-///    sessions must not share a dirty tree. If no such lease exists (the
-///    dirty tree is likely a crashed predecessor's own work) the
-///    decision falls through.
-/// 4. Any other active lease exists for the repo — when isolation is
-///    enabled a fresh `phasegent/<issue>-<short6hex>` branch is created
-///    and a new worktree is added under
-///    `~/.cache/phasegent/worktrees/<fingerprint>/<slug>`. `created`
-///    is `true` and `reason == "new_worktree"`.
+///    active session already holds a lease for `(repo, issue)` — a new
+///    worktree is created because parallel sessions must not share a
+///    dirty tree. If no such lease exists (the dirty tree is likely a
+///    crashed predecessor's own work) the decision falls through.
+/// 4. Any other active lease exists for the repo — a fresh worktree is
+///    created. `created` is `true` and `reason == "new_worktree"`.
 /// 5. Otherwise the current checkout is reused (no new worktree, no
 ///    new branch), but an `active` lease is still recorded so the
 ///    release path can flip it later. `created` is `false` and
@@ -122,6 +124,14 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
 /// The binding read mirrors `hooks.rs` `bound_issue_id`: a detached
 /// HEAD or any lookup failure is treated as *unbound* and never
 /// errors the acquire — it falls through with a warning instead.
+///
+/// On every successful outcome (including the idempotent and reuse
+/// paths) [`finalize_checkout`] best-effort binds `issue` to the
+/// acquired checkout's branch and installs the managed commit hooks,
+/// so one acquire command leaves the operator ready to work. Both
+/// steps reuse the canonical helpers unchanged and degrade to
+/// warnings: the lease is already durable, so a local binding or hook
+/// failure must never turn a successful acquire into an error.
 ///
 /// .env / secrets: this function never reads or copies `.env` files
 /// or credential material. The AI / user is expected to copy
@@ -152,30 +162,36 @@ pub fn acquire_lease(
             format!("session must be <= {MAX_REF_CHARS} chars"),
         ));
     }
-    // Effective creation gate (issue #247): isolation happens only when
-    // the per-call `--isolate` flag or the resolved `worktree-auto`
-    // switch asks for it. The default is off, so a conflict reuses the
-    // current checkout and warns instead of silently creating a branch
-    // and directory.
-    let creation_allowed = isolate || auto;
+    // Explicit isolation request (issue #247): `--isolate` or the
+    // resolved `worktree-auto` switch. Rules 2, 3, and 4 isolate by
+    // default now (issue #436), so this gate only decides the `Unknown`
+    // probe state; it stays OR-ed so the flag and the setting keep
+    // working unchanged.
+    let explicit_isolation = isolate || auto;
     let identity = repo_identity(runner, repo_path)?;
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
 
     // Rule 1: idempotent home-coming for the same triple. The dirty
     // probe is deliberately skipped here so a re-entering session is
-    // never misjudged against its own tree.
+    // never misjudged against its own tree. The post-acquire lifecycle
+    // still runs so a re-entering session converges on a bound branch
+    // and installed hooks.
     if let Some(existing) = find_active_lease(&storage, &identity, issue, session)? {
         refresh_heartbeat(&storage, &existing.lease_id)?;
-        return Ok(AcquireOutcome {
-            lease_id: existing.lease_id,
-            path: existing.worktree_path,
-            branch: existing.branch,
-            repo_identity: existing.repo_identity,
-            created: false,
-            reason: "idempotent".to_owned(),
-            warnings: Vec::new(),
-        });
+        return with_warnings(
+            Ok(AcquireOutcome {
+                lease_id: existing.lease_id,
+                path: existing.worktree_path,
+                branch: existing.branch,
+                repo_identity: existing.repo_identity,
+                created: false,
+                reason: "idempotent".to_owned(),
+                warnings: Vec::new(),
+            }),
+            issue,
+            Vec::new(),
+        );
     }
 
     let mut warnings: Vec<String> = Vec::new();
@@ -189,11 +205,11 @@ pub fn acquire_lease(
 
     // Unknown checkout state (`git status` failed): the tree may hold
     // work we cannot see, so it must not be reused silently. With
-    // isolation enabled a fresh worktree is created; with isolation
-    // disabled the current checkout is reused with an explicit warning.
+    // `--isolate`/`worktree-auto` a fresh worktree is created; otherwise
+    // the current checkout is reused with an explicit warning.
     if dirty_state == DirtyState::Unknown {
         let detail = probe_failure.unwrap_or_else(|| "git status failed".to_owned());
-        if creation_allowed {
+        if explicit_isolation {
             warnings.push(format!(
                 "{detail}; worktree auto-isolation is enabled, creating an isolated worktree \
                  because the checkout state is unknown"
@@ -202,6 +218,7 @@ pub fn acquire_lease(
                 acquire_new_worktree(
                     runner, &storage, &identity, repo_path, issue, session, cache_base,
                 ),
+                issue,
                 warnings,
             );
         }
@@ -220,50 +237,39 @@ pub fn acquire_lease(
         (None, None)
     };
 
-    // Rules 2 and 3: dirty-tree triggers. Each trigger creates an
-    // isolated worktree only when isolation is enabled; otherwise it
-    // records a conflict warning and falls through to the reuse path so
-    // the caller stays in the current checkout (default-off behaviour).
+    // Rules 2 and 3: dirty-tree triggers. Both isolate by default
+    // (issue #436): reusing a dirty tree would mix two tasks' work, so
+    // the incoming task gets its own worktree instead. `--isolate`
+    // remains accepted as the explicit opt-in for the same outcome.
     if dirty {
         match bound {
             Some(bound_issue) if bound_issue != issue => {
-                if creation_allowed {
+                warnings.push(format!(
+                    "checkout is dirty and bound to issue {bound_issue}; acquiring issue \
+                     {issue} in an isolated worktree ({AUTO_ISOLATION_DEFAULT_NOTE})"
+                ));
+                return with_warnings(
+                    acquire_new_worktree(
+                        runner, &storage, &identity, repo_path, issue, session, cache_base,
+                    ),
+                    issue,
+                    warnings,
+                );
+            }
+            Some(_) => {
+                if active_lease_for_issue_other_session(&storage, &identity, issue, session)? {
                     warnings.push(format!(
-                        "checkout is dirty and bound to issue {bound_issue}; \
-                         acquiring issue {issue} in an isolated worktree"
+                        "checkout is dirty and another active session holds a lease for issue \
+                         {issue}; acquiring issue {issue} in an isolated worktree \
+                         ({AUTO_ISOLATION_DEFAULT_NOTE})"
                     ));
                     return with_warnings(
                         acquire_new_worktree(
                             runner, &storage, &identity, repo_path, issue, session, cache_base,
                         ),
+                        issue,
                         warnings,
                     );
-                }
-                warnings.push(format!(
-                    "checkout is dirty and bound to issue {bound_issue}; worktree \
-                     auto-isolation is disabled (no --isolate, worktree-auto=false); \
-                     reusing the current checkout"
-                ));
-            }
-            Some(_) => {
-                if active_lease_for_issue_other_session(&storage, &identity, issue, session)? {
-                    if creation_allowed {
-                        warnings.push(format!(
-                            "checkout is dirty and another active session holds a lease for issue \
-                             {issue}; parallel sessions must not share a dirty tree"
-                        ));
-                        return with_warnings(
-                            acquire_new_worktree(
-                                runner, &storage, &identity, repo_path, issue, session, cache_base,
-                            ),
-                            warnings,
-                        );
-                    }
-                    warnings.push(format!(
-                        "checkout is dirty and another active session holds a lease for issue \
-                         {issue}; worktree auto-isolation is disabled (no --isolate, \
-                         worktree-auto=false); reusing the current checkout"
-                    ));
                 }
             }
             None => {
@@ -274,23 +280,21 @@ pub fn acquire_lease(
         }
     }
 
-    // Rule 4: any other active lease for the repo would create a new
-    // worktree when isolation is enabled. With isolation disabled the
-    // current checkout is reused and the trigger is named in a warning.
+    // Rule 4: any other active lease for the repo isolates by default
+    // (issue #436) so two sessions never race for one checkout path (the
+    // `(repo_identity, worktree_path)` lease index rejects that reuse).
     let other_active = count_other_active_leases(&storage, &identity, issue, session)?;
     if other_active > 0 {
-        if creation_allowed {
-            return with_warnings(
-                acquire_new_worktree(
-                    runner, &storage, &identity, repo_path, issue, session, cache_base,
-                ),
-                warnings,
-            );
-        }
-        warnings.push(
-            "another active lease exists for this repository; worktree auto-isolation is \
-             disabled (no --isolate, worktree-auto=false); reusing the current checkout"
-                .to_owned(),
+        warnings.push(format!(
+            "another active lease exists for this repository; acquiring issue {issue} in an \
+             isolated worktree ({AUTO_ISOLATION_DEFAULT_NOTE})"
+        ));
+        return with_warnings(
+            acquire_new_worktree(
+                runner, &storage, &identity, repo_path, issue, session, cache_base,
+            ),
+            issue,
+            warnings,
         );
     }
 
@@ -307,9 +311,16 @@ pub fn acquire_lease(
     }
     with_warnings(
         acquire_reuse_current(runner, &storage, &identity, repo_path, issue, session),
+        issue,
         warnings,
     )
 }
+
+/// Warning suffix shared by every conflict trigger that isolates by
+/// default (issue #436). Kept short so the stderr payload stays readable
+/// and the wording names both the new default and the retained flag.
+const AUTO_ISOLATION_DEFAULT_NOTE: &str = "auto-isolation now defaults on for a dirty checkout or an active lease; \
+     --isolate remains accepted as the explicit opt-in";
 
 /// Three-state result of the checkout dirty probe.
 ///
@@ -396,14 +407,19 @@ fn active_lease_for_issue_other_session(
     }))
 }
 
-/// Attach best-effort warnings to a successful outcome and forward each
-/// one to stderr so stdout (and the CLI JSON envelope) stays clean for
-/// consumers that key on `created`. Errors pass through untouched.
+/// Attach best-effort warnings to a successful outcome, run the
+/// post-acquire local lifecycle, and forward every warning to stderr so
+/// stdout (and the CLI JSON envelope) stays clean for consumers that key
+/// on `created`. Errors pass through untouched — the lifecycle never
+/// runs when acquire itself failed.
 fn with_warnings(
     result: Result<AcquireOutcome, WorktreeError>,
+    issue: u64,
     warnings: Vec<String>,
 ) -> Result<AcquireOutcome, WorktreeError> {
     let outcome = result?;
+    let mut warnings = warnings;
+    warnings.extend(finalize_checkout(issue, &outcome.path));
     for warning in &warnings {
         crate::cli::report_local_warnings("worktree acquire", Some(warning.clone()));
     }
@@ -411,6 +427,39 @@ fn with_warnings(
         warnings,
         ..outcome
     })
+}
+
+/// Post-acquire local lifecycle (issue #436): bind `issue` to the
+/// acquired checkout's branch and install the managed commit hooks, so a
+/// single `worktree acquire` leaves the operator ready to work.
+///
+/// Both steps reuse the canonical helpers unchanged
+/// ([`crate::branch_context::bind`] and
+/// [`crate::lifecycle::auto_install_hooks`]), so their semantics are
+/// preserved exactly: an existing binding to a different issue is never
+/// overwritten (the conflict message is surfaced as a warning and names
+/// `--replace`), a detached HEAD or a local git failure degrades to a
+/// warning, and hooks are installed only when the checkout has a
+/// resolvable origin. The lease row is already durable when this runs,
+/// so nothing here may turn a successful acquire into a failure, and no
+/// branch, lease row, or checkout is ever deleted.
+fn finalize_checkout(issue: u64, checkout: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let workdir = PathBuf::from(checkout);
+    let runner = ProcessGitRunner::in_directory(workdir.clone());
+    if let Err(error) = crate::branch_context::bind(&runner, issue, false) {
+        warnings.push(format!(
+            "issue {issue} was not bound to the acquired checkout: {}",
+            error.message
+        ));
+    }
+    if let Some(origin) = crate::lifecycle::origin_identity(&runner) {
+        let outcome = crate::lifecycle::auto_install_hooks(&runner, &workdir, &origin);
+        if let Some(warning) = outcome.warning() {
+            warnings.push(warning);
+        }
+    }
+    warnings
 }
 
 fn acquire_reuse_current(

@@ -1165,22 +1165,24 @@ fn cli_acquire_dirty_foreign_bound_recorded_in_temp_db_only() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #247: worktree-auto switch + `--isolate` gating
+// Issue #247: worktree-auto switch + `--isolate` gating, updated by
+// issue #436
 // ---------------------------------------------------------------------------
 //
-// The default is off: a dirty checkout bound to another issue (or any
-// other active lease) must be reused with a warning and must not create
-// a worktree directory. `--isolate` or the resolved `worktree-auto`
-// switch (env over SQLite, default false) restores the issue #246
-// isolation behaviour. All tests pin their DB and cache to temp dirs.
+// Issue #436 flips the acquire default: a dirty checkout (or any other
+// active lease) isolates even when `--isolate`/`worktree-auto` are off,
+// while `--isolate` and the resolved switch stay accepted and keep
+// working. The switch itself still decides the `Unknown` `git status`
+// probe state, and its env-over-SQLite resolution is unchanged. All
+// tests pin their DB and cache to temp dirs.
 
 #[test]
-fn acquire_default_off_reuses_dirty_foreign_bound_with_warning_and_no_new_dir() {
+fn acquire_dirty_foreign_bound_isolates_by_default_with_warning() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p1-default-off") else {
+    let Some(repo) = TempRepo::init("p1-default-isolate") else {
         return;
     };
-    let (_db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-default-off");
+    let (_db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p1-default-isolate");
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 241);
@@ -1194,18 +1196,22 @@ fn acquire_default_off_reuses_dirty_foreign_bound_with_warning_and_no_new_dir() 
         false,
         false,
     )
-    .expect("default-off acquire must reuse, not error");
-    assert!(!outcome.created, "default-off must not create a worktree");
-    assert_eq!(outcome.reason, "no_conflict");
-    assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
+    .expect("dirty + foreign-bound must isolate by default, not reuse");
     assert!(
-        outcome.warnings.iter().any(|w| w.contains("241")),
-        "conflict warning must name the bound trigger: {:?}",
-        outcome.warnings
+        outcome.created,
+        "the issue #436 default must create a worktree without --isolate"
     );
+    assert_eq!(outcome.reason, "new_worktree");
     assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "default-off must not create any worktree directory"
+        outcome
+            .path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "default isolation must land under the temp cache"
+    );
+    let joined = outcome.warnings.join(" ");
+    assert!(
+        joined.contains("241") && joined.contains("auto-isolation now defaults on"),
+        "conflict warning must name the trigger and the new default: {joined}"
     );
     let _ = std::fs::remove_file(&scratch);
 }
@@ -1331,7 +1337,11 @@ fn resolve_worktree_auto_defaults_false_and_env_false_overrides_sqlite_true() {
 }
 
 #[test]
-fn acquire_precedence_env_false_over_sqlite_true_reuses_current_checkout() {
+fn acquire_env_false_over_sqlite_true_still_isolates_dirty_conflict() {
+    // The env-over-SQLite precedence is asserted on the resolver itself
+    // (`resolve_worktree_auto_defaults_false_and_env_false_overrides_sqlite_true`).
+    // Since issue #436 a resolved `false` no longer restores reuse for a
+    // confirmed conflict trigger, so the dirty checkout still isolates.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("p1-precedence-reuse") else {
         return;
@@ -1356,12 +1366,17 @@ fn acquire_precedence_env_false_over_sqlite_true_reuses_current_checkout() {
         false,
         auto,
     )
-    .expect("env-false precedence acquire must reuse, not error");
-    assert!(!outcome.created);
-    assert_eq!(outcome.reason, "no_conflict");
+    .expect("a dirty conflict must isolate regardless of the resolved switch");
     assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "env-false precedence must not create a worktree directory"
+        outcome.created,
+        "the conflict trigger must isolate even when worktree-auto resolves false"
+    );
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(
+        outcome
+            .path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "the isolated worktree must land under the temp cache"
     );
     let _ = std::fs::remove_file(&scratch);
 }
@@ -1379,8 +1394,9 @@ fn acquire_precedence_env_false_over_sqlite_true_reuses_current_checkout() {
 // + presence/absence of the worktree dir under the temp cache).
 //
 // The three states covered:
-//   1. Default off: dirty + foreign-bound + no `--isolate` + no env +
-//      no SQLite setting -> exit 0, lease row inserted, NO worktree dir.
+//   1. Default (issue #436): dirty + foreign-bound + no `--isolate` + no
+//      env + no SQLite setting -> exit 0, lease row inserted, worktree
+//      dir under the temp cache.
 //   2. `--isolate`: dirty + foreign-bound + `--isolate=true` -> exit 0,
 //      lease row inserted, worktree dir under the temp cache.
 //   3. Env true: dirty + foreign-bound + `PHASEGENT_WORKTREE_AUTO=true` ->
@@ -1408,12 +1424,13 @@ fn run_cli_acquire_with_session(repo: &TempRepo, isolate: bool, session: Option<
 }
 
 #[test]
-fn cli_surface_acquire_default_off_reuses_dirty_foreign_bound_with_no_worktree_dir() {
+fn cli_surface_acquire_dirty_foreign_bound_isolates_by_default() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-default-off") else {
+    let Some(repo) = TempRepo::init("p2-cli-default-isolate") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-default-off");
+    let (db_temp, cache_temp, _db_env, _cache_env) =
+        open_temp_db_and_cache("p2-cli-default-isolate");
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 241);
@@ -1423,24 +1440,29 @@ fn cli_surface_acquire_default_off_reuses_dirty_foreign_bound_with_no_worktree_d
         run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
     assert_eq!(
         exit, 0,
-        "default-off acquire through CLI surface must succeed"
+        "the issue #436 default acquire through the CLI surface must succeed"
     );
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     let rows = list_for_repo(&storage, &identity).expect("list temp db");
     assert_eq!(
         rows.len(),
         1,
-        "default-off CLI acquire must still record one lease"
+        "the default CLI acquire must record one lease"
     );
     assert_eq!(rows[0].issue, 245);
-    assert_eq!(
-        rows[0].worktree_path,
-        repo.dir.path().to_string_lossy().to_string(),
-        "default-off CLI acquire must reuse the current checkout as the worktree_path"
+    assert!(
+        rows[0].branch.starts_with("phasegent/245-"),
+        "a dirty foreign-bound checkout must isolate without --isolate"
     );
     assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "default-off CLI acquire must not create a worktree directory"
+        rows[0]
+            .worktree_path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "the isolated worktree must land under the temp cache"
+    );
+    assert!(
+        std::path::Path::new(&rows[0].worktree_path).exists(),
+        "the default CLI acquire must create the worktree directory on disk"
     );
     let _ = std::fs::remove_file(&scratch);
 }
@@ -1561,22 +1583,38 @@ fn cli_acquire_uses_environment_session_when_flag_absent() {
 }
 
 #[test]
-fn cli_acquire_duplicate_reuse_current_keeps_exit_code_one() {
-    // Issue 437: the rewritten message must not change the error kind,
-    // so the CLI must keep returning exit 1 (structured storage error)
-    // rather than exit 3 (permission) or a panic.
+fn cli_acquire_second_session_isolates_and_avoids_the_duplicate_lease() {
+    // Issue 437 surfaced the raw `(repo_identity, worktree_path)` unique
+    // violation when two sessions reused one checkout. Issue #436 removes
+    // the scenario: the second session now isolates and exits 0, so the
+    // CLI never reports a storage error for a legitimate parallel
+    // acquire. The guidance translation itself stays covered by the
+    // storage-level regression tests.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("p2-cli-dup-reuse") else {
         return;
     };
-    let (_db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-dup-reuse");
+    let (db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-dup-reuse");
     let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
     let first = run_cli_acquire_with_session(&repo, false, Some("session-A"));
     assert_eq!(first, 0, "the first reuse-current acquire must succeed");
     let second = run_cli_acquire_with_session(&repo, false, Some("session-B"));
     assert_eq!(
-        second, 1,
-        "the duplicate checkout lease must stay a structured storage error"
+        second, 0,
+        "the second session must isolate by default instead of colliding"
+    );
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(
+        rows.len(),
+        2,
+        "both sessions must hold their own lease row: {rows:?}"
+    );
+    assert_ne!(
+        rows[0].worktree_path, rows[1].worktree_path,
+        "the two leases must not share one checkout path"
     );
 }
 

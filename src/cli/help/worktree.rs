@@ -18,7 +18,7 @@
 
 use crate::policy::Role;
 
-const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--base REF] [--isolate] [--format json]\n\nAcquire (or refresh) a per-(repo, issue, session) worktree lease. Idempotent: re-running with the same triple returns the same lease_id and updates the heartbeat (reason=\"idempotent\"). When no other lease is active for the repo, the current checkout is reused (reason=\"no_conflict\"); otherwise a fresh `phasegent/<issue>-<short6hex>` branch and a new worktree under ~/.cache/phasegent/worktrees/<fingerprint>/<slug> are created (reason=\"new_worktree\"). A checkout that is dirty and bound to a different issue also forces a fresh worktree (reason=\"new_worktree\") so an incoming task never lands in another task's dirty tree, with the trigger explained by warnings on stderr. When the `git status` probe itself fails, the dirty state is unknown: auto-isolation on creates a fresh worktree, auto-isolation off reuses the current checkout, and both emit a stderr warning — an unknown status is never silently treated as clean. Auto-isolation defaults off (issue #247): with neither `--isolate` nor `PHASEGENT_WORKTREE_AUTO`/`worktree-auto` true, conflict triggers reuse the current checkout and warn instead of creating a branch or directory; pass `--isolate` (one-shot) or set the global boolean on (env over SQLite, default false) to restore the creating path. Returns compact JSON on stdout. --session resolves from the explicit flag, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback (legacy only warns on stderr); --base is accepted for forward compatibility and the implementation always bases on HEAD. --format is json (the only accepted value). Orchestrator-only. The branch is never deleted, .env / secret material is never read or copied, and the lease table is created lazily through `CREATE TABLE IF NOT EXISTS` so pre-Phase-1 databases still open.";
+const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--base REF] [--isolate] [--format json]\n\nAcquire (or refresh) a per-(repo, issue, session) worktree lease and finish the local setup in one command. Idempotent: re-running with the same triple returns the same lease_id and updates the heartbeat (reason=\"idempotent\"). When the current checkout is clean and no other lease is active for the repo it is reused (reason=\"no_conflict\"); when it is dirty or any other active lease exists for the repo a fresh `phasegent/<issue>-<short6hex>` branch and a new worktree under ~/.cache/phasegent/worktrees/<fingerprint>/<slug> are created by default (reason=\"new_worktree\"), with the trigger explained by a stderr warning. That new default is the issue #436 behavior change: a dirty checkout or an existing lease no longer reuses the shared checkout, so a second session cannot collide with the `(repo, worktree_path)` lease index; `--isolate` remains accepted as the explicit opt-in for the same outcome. When the `git status` probe itself fails the dirty state is unknown: `--isolate` or the resolved `worktree-auto` switch creates a fresh worktree, otherwise the current checkout is reused, and both emit a stderr warning — an unknown status is never silently treated as clean, and this is the only case where the switches still change the outcome. On every successful acquire the issue is bound to the acquired checkout's branch and the managed commit hooks are installed when that checkout has a git origin, so one command leaves the checkout ready; both steps reuse the standard bind/hook helpers, never overwrite an existing binding to a different issue (the conflict is a warning naming `--replace`), and degrade to warnings that never fail the acquire. Returns compact JSON on stdout. --session resolves from the explicit flag, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback (legacy only warns on stderr); --base is accepted for forward compatibility and the implementation always bases on HEAD. --format is json (the only accepted value). Orchestrator-only. No branch, lease row, or dirty worktree is ever deleted, .env / secret material is never read or copied, and the lease table is created lazily through `CREATE TABLE IF NOT EXISTS` so pre-Phase-1 databases still open.";
 
 const RELEASE_HELP: &str = "Usage: worktree release --lease ID [--retain=true|false] [--force --reason TEXT]\n\nFlip an active lease to retained (default) or released. --retain defaults to true; the boolean accepts true|1|yes|on and false|0|no|off. The release is a no-op when the lease is already in the requested terminal state. The directory and the branch are never deleted by `release`; that is `prune`'s job. --force requires a non-empty --reason and persists it on the lease row (visible in status/list) so forced overrides stay attributable; --reason without --force is rejected. Lease rows are audit records and are never deleted — use force+reason instead of deleting rows. Orchestrator-only.";
 
@@ -33,7 +33,7 @@ const HEARTBEAT_HELP: &str = "Usage: worktree heartbeat --lease ID [--session SE
 /// Top-level `worktree` help body (no trailing newline).
 pub(crate) fn worktree_help_text(role: Option<Role>) -> String {
     if role.is_none_or(|role| role == Role::Orchestrator) {
-        "Worktree commands for orchestrators (issue #239 Phase 2; mutating subcommands are orchestrator-only; status/list mirror the issue-status read surface):\n\n  acquire --issue N [--session S] [--base REF] [--isolate] [--format json]    Acquire or reuse a per-(repo, issue, session) worktree lease; auto-isolation defaults off (issue #247), use --isolate or PHASEGENT_WORKTREE_AUTO/worktree-auto=true to enable; session resolves from --session, PHASEGENT_SESSION_ID, or the legacy \"phasegent\" fallback; returns lease_id/path/branch/created/reason JSON\n  release --lease ID [--retain=true|false] [--force --reason TEXT]  Flip an active lease to retained (default) or released; never deletes the directory or the branch; --force records --reason on the row so the override stays attributable (lease rows are never deleted)\n  heartbeat --lease ID [--session SESSION]                         Refresh an active lease's heartbeat; only the owning session may update it; a foreign session or terminal lease returns a structured conflict\n  prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove]  Single pruning entry point; default dry-run reports stale active leases and prunable worktrees, --release-stale flips stale active leases to retained (requires --reason), --remove deletes clean + expired + retained worktrees (combined runs recovery first); never deletes a branch and never removes a dirty worktree\n  status --issue N                                                 List active leases for an issue (read-only; available to orchestrator, executor, and reviewer)\n  list [--repo PATH]                                               List every lease for the resolved repo identity (read-only; --repo defaults to the current directory)"
+        "Worktree commands for orchestrators (issue #239 Phase 2; mutating subcommands are orchestrator-only; status/list mirror the issue-status read surface):\n\n  acquire --issue N [--session S] [--base REF] [--isolate] [--format json]    Acquire or reuse a per-(repo, issue, session) worktree lease; a dirty checkout or an active lease now isolates by default (issue #436) and --isolate stays accepted as the explicit opt-in, while PHASEGENT_WORKTREE_AUTO/worktree-auto gates the unknown-probe state; on success the issue is auto-bound to the acquired checkout's branch and managed hooks are installed when the checkout has an origin; session resolves from --session, PHASEGENT_SESSION_ID, or the legacy \"phasegent\" fallback; returns lease_id/path/branch/created/reason JSON\n  release --lease ID [--retain=true|false] [--force --reason TEXT]  Flip an active lease to retained (default) or released; never deletes the directory or the branch; --force records --reason on the row so the override stays attributable (lease rows are never deleted)\n  heartbeat --lease ID [--session SESSION]                         Refresh an active lease's heartbeat; only the owning session may update it; a foreign session or terminal lease returns a structured conflict\n  prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove]  Single pruning entry point; default dry-run reports stale active leases and prunable worktrees, --release-stale flips stale active leases to retained (requires --reason), --remove deletes clean + expired + retained worktrees (combined runs recovery first); never deletes a branch and never removes a dirty worktree\n  status --issue N                                                 List active leases for an issue (read-only; available to orchestrator, executor, and reviewer)\n  list [--repo PATH]                                               List every lease for the resolved repo identity (read-only; --repo defaults to the current directory)"
             .to_owned()
     } else if role.is_some_and(is_read_role) {
         format!(
@@ -107,7 +107,33 @@ mod tests {
             text.contains("unknown status is never silently treated as clean"),
             "got: {text}"
         );
-        assert!(text.contains("Auto-isolation defaults off"), "got: {text}");
+        assert!(
+            text.contains("new default is the issue #436 behavior change"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("--isolate` remains accepted as the explicit opt-in"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("bound to the acquired checkout's branch")
+                && text.contains("managed commit hooks are installed"),
+            "acquire help must advertise the one-command bind + hooks closure: {text}"
+        );
+    }
+
+    #[test]
+    fn top_level_help_marks_acquire_isolation_as_the_default() {
+        let text = worktree_help_text(Some(Role::Orchestrator));
+        assert!(
+            text.contains("isolates by default (issue #436)")
+                && text.contains("--isolate stays accepted"),
+            "top-level acquire line must document the new default: {text}"
+        );
+        assert!(
+            !text.contains("auto-isolation defaults off"),
+            "the old default must not remain in help: {text}"
+        );
     }
 
     #[test]
