@@ -220,6 +220,9 @@ pub enum IssueCommand {
         /// Optional native Redmine planning fields; raw values are
         /// validated and version-resolved at execution time.
         planning: PlanningOptions,
+        /// Optional GitLab assignee selector (`--assignee` / `--no-assign`);
+        /// raw values are resolved at execution time.
+        assignee: AssigneeOption,
     },
     /// `issue update <NUMBER>` — single update entry point (folds the
     /// former `update-body`). The body plus optional tracker/planning
@@ -353,6 +356,22 @@ impl PlanningOptions {
             && self.estimated_hours.is_none()
             && self.done_ratio.is_none()
     }
+}
+
+/// Raw GitLab assignee selector for `issue create`.
+///
+/// * `Unset` — no `--assignee`/`--no-assign` flag. GitLab self-assigns the
+///   authenticated user; every other provider keeps the legacy payload with
+///   no assignee field.
+/// * `Unassigned` — `--no-assign`; never attach an assignee.
+/// * `Explicit` — `--assignee` value, either a numeric user id or a username
+///   resolved against `GET /users?username=` at execution time.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum AssigneeOption {
+    #[default]
+    Unset,
+    Unassigned,
+    Explicit(String),
 }
 
 #[derive(Debug)]

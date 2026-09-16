@@ -267,6 +267,7 @@ pub(crate) fn execute_issue(
             keep_body_file: _,
             tracker,
             planning,
+            assignee,
         } => {
             // Phase 3 write-side relation auto (issue 257): the
             // auto-relation fires ONLY on the parent-child split
@@ -309,8 +310,14 @@ pub(crate) fn execute_issue(
                 body,
                 tracker.as_deref(),
                 &planning,
+                &assignee,
             ) {
-                Ok(summary) => {
+                Ok((summary, assignee_warning)) => {
+                    // GitLab-only: a failing `GET /user` degrades the
+                    // default self-assignment to an unassigned create and
+                    // surfaces a bounded stderr warning; stdout stays the
+                    // normal issue JSON.
+                    super::report_local_warnings("issue create", assignee_warning);
                     // Redmine-only local side effect: bind the new issue to the
                     // current branch when the checkout matches. Never fails the
                     // created issue; warnings go to stderr.

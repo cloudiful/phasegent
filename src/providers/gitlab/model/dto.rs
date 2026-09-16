@@ -139,6 +139,14 @@ pub(crate) struct ApiIssueAssignee {
     pub name: Option<String>,
 }
 
+/// JSON payload returned by `GET /users?username=…`. Used to resolve an
+/// `--assignee USERNAME` value to the numeric GitLab user id that
+/// `POST /projects/:id/issues` expects in `assignee_ids`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ApiUser {
+    pub id: u64,
+}
+
 /// Request payload for `POST /projects/:id/issues`.
 #[derive(Debug, Serialize)]
 pub(crate) struct NewIssue<'a> {
@@ -147,6 +155,11 @@ pub(crate) struct NewIssue<'a> {
     pub description: &'a str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+    /// GitLab `assignee_ids`. The default and `--no-assign` paths leave it
+    /// empty, so the skipped field keeps the legacy create payload
+    /// byte-identical.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assignee_ids: Vec<u64>,
 }
 
 /// Request payload for `PUT /projects/:id/issues/:iid`. Every field

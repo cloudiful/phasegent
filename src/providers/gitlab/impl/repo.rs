@@ -67,12 +67,16 @@ impl GitlabProvider {
     /// (no `OWNER/` prefix), this method fetches the current user via
     /// `/user` and returns its numeric id so the project lands in the
     /// caller's personal namespace, matching the Forgejo behaviour.
-    pub(crate) fn current_user_id(&self) -> Result<u64, ForgejoError> {
+    ///
+    /// `operation` labels the request so `issue create` self-assignment and
+    /// `repo create` namespace resolution report the right operation in
+    /// their structured errors.
+    pub(crate) fn current_user_id(&self, operation: &'static str) -> Result<u64, ForgejoError> {
         #[derive(serde::Deserialize)]
         struct CurrentUser {
             id: u64,
         }
-        let user: CurrentUser = self.http.get("user", &[], "repo create")?;
+        let user: CurrentUser = self.http.get("user", &[], operation)?;
         Ok(user.id)
     }
 
@@ -208,7 +212,7 @@ impl GitlabProvider {
                 "repo create requires a private repository",
             ));
         }
-        let current_user_id = self.current_user_id()?;
+        let current_user_id = self.current_user_id("repo create")?;
         let mut resolved = Self::resolve_namespace_target(target, None, current_user_id)?;
         if resolved.namespace_id.is_none() {
             // The caller passed OWNER/REPO without an explicit

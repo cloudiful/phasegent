@@ -1,8 +1,10 @@
 //! Issue CRUD / search and IssueSummary conversion.
 
+use crate::command::AssigneeOption;
 use crate::providers::api::{
     ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
 };
+use crate::providers::gitlab::model::dto::ApiUser;
 use crate::providers::gitlab::model::{
     ApiIssue, NewIssue, UpdateIssue, state_from_gitlab, state_query_filter,
 };
@@ -169,16 +171,66 @@ impl GitlabProvider {
         title: &str,
         description: &str,
         labels: &[String],
+        assignee_ids: &[u64],
     ) -> Result<IssueSummary, ForgejoError> {
         let payload = NewIssue {
             title,
             description,
             labels: labels.to_vec(),
+            assignee_ids: assignee_ids.to_vec(),
         };
         let issue: ApiIssue = self
             .http
             .post(&self.issues_path(), &payload, "issue create")?;
         Ok(issue.into_summary(self))
+    }
+
+    /// Resolve the GitLab `assignee_ids` payload for an issue create.
+    ///
+    /// * `Unset` — self-assign the authenticated user via `GET /user`. A
+    ///   failing lookup never blocks creation: the issue is created
+    ///   unassigned and a bounded stderr warning is returned so the stdout
+    ///   issue JSON stays unchanged.
+    /// * `Unassigned` — no assignee at all (legacy payload, no request).
+    /// * `Explicit` — a positive numeric user id is used verbatim; any other
+    ///   value is resolved through `GET /users?username=`, and an unknown
+    ///   username is a structured config error before any write.
+    pub(crate) fn resolve_assignee_ids(
+        &self,
+        assignee: &AssigneeOption,
+    ) -> Result<(Option<Vec<u64>>, Option<String>), ForgejoError> {
+        match assignee {
+            AssigneeOption::Unassigned => Ok((None, None)),
+            AssigneeOption::Unset => match self.current_user_id("issue create") {
+                Ok(id) => Ok((Some(vec![id]), None)),
+                Err(error) => Ok((
+                    None,
+                    Some(format!(
+                        "could not resolve the current GitLab user for default self-assignment \
+                         ({error}); the issue was created unassigned"
+                    )),
+                )),
+            },
+            AssigneeOption::Explicit(raw) => {
+                if let Ok(id) = raw.parse::<u64>() {
+                    if id == 0 {
+                        return Err(ForgejoError::config(
+                            "issue create --assignee must be a positive user id or a username",
+                        ));
+                    }
+                    return Ok((Some(vec![id]), None));
+                }
+                let users: Vec<ApiUser> =
+                    self.http
+                        .get("users", &[("username", raw.clone())], "issue create")?;
+                let user = users.first().ok_or_else(|| {
+                    ForgejoError::config(format!(
+                        "GitLab user '{raw}' was not found; pass a numeric user id or a valid username"
+                    ))
+                })?;
+                Ok((Some(vec![user.id]), None))
+            }
+        }
     }
 
     /// Plain create without label manipulation. Mirrors the shared
@@ -191,7 +243,7 @@ impl GitlabProvider {
         title: &str,
         body: &str,
     ) -> Result<IssueSummary, ForgejoError> {
-        self.create_issue_with_labels(title, body, &[])
+        self.create_issue_with_labels(title, body, &[], &[])
     }
 
     /// `PUT /projects/:id/issues/:iid` with an optional description

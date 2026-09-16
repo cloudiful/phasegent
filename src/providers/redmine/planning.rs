@@ -8,7 +8,7 @@
 //! without any planning or tracker flag keep the plain shared provider
 //! path so legacy payloads stay byte-identical.
 
-use crate::command::PlanningOptions;
+use crate::command::{AssigneeOption, PlanningOptions};
 use crate::providers::api::{ForgejoError, IssueSummary};
 use crate::providers::redmine::model::IssuePlanning;
 use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
@@ -132,36 +132,25 @@ pub(crate) fn resolve_planning(
 /// `--estimated-hours` (forwarded through the native `time_estimate`
 /// endpoint) but rejects every other Redmine planning flag with a
 /// structured not-supported error.
+///
+/// `assignee` is the GitLab-only assignee selector: GitLab self-assigns the
+/// authenticated user by default, `--no-assign` skips assignment, and
+/// `--assignee` overrides it. Every other provider rejects an explicit
+/// `--assignee` before any write so the legacy payload stays byte-identical
+/// for the default and `--no-assign` forms. The returned `Option<String>` is
+/// a bounded stderr warning (currently only the GitLab self-assign
+/// degradation when `GET /user` fails); stdout JSON is never affected.
 pub(crate) fn create_issue(
     provider: &ProviderDispatcher,
     title: &str,
     body: &str,
     tracker: Option<&str>,
     planning_options: &PlanningOptions,
-) -> Result<IssueSummary, ForgejoError> {
+    assignee: &AssigneeOption,
+) -> Result<(IssueSummary, Option<String>), ForgejoError> {
     let planning = resolve_planning(provider, planning_options)?;
     let needs_provider_specific = tracker.is_some() || !planning.is_empty();
-    if !needs_provider_specific {
-        return provider.create_issue(title, body);
-    }
     match provider {
-        ProviderDispatcher::Redmine(redmine) => {
-            let tracker_id = match tracker {
-                None => None,
-                Some(value) => {
-                    let trackers = redmine.list_trackers()?;
-                    Some(RedmineProvider::select_tracker(&trackers, value)?.id)
-                }
-            };
-            if planning.is_empty() {
-                match tracker_id {
-                    Some(tracker_id) => redmine.create_issue_with_tracker(title, body, tracker_id),
-                    None => redmine.create_issue(title, body),
-                }
-            } else {
-                redmine.create_issue_with_planning(title, body, tracker_id, &planning)
-            }
-        }
         ProviderDispatcher::Gitlab(gitlab) => {
             // GitLab accepts the tracker label and the
             // `--estimated-hours` flag (forwarded through the native
@@ -173,22 +162,77 @@ pub(crate) fn create_issue(
                 None => Vec::new(),
                 Some(value) => gitlab.tracker_label_list(value)?,
             };
-            let summary = gitlab.create_issue_with_labels(title, body, &labels)?;
+            let (assignee_ids, warning) = gitlab.resolve_assignee_ids(assignee)?;
+            let summary = gitlab.create_issue_with_labels(
+                title,
+                body,
+                &labels,
+                assignee_ids.as_deref().unwrap_or(&[]),
+            )?;
             if let Some(hours) = planning.estimated_hours {
                 let seconds = (hours * 3600.0).round() as i64;
                 if seconds > 0 {
                     gitlab.set_time_estimate(summary.number, seconds)?;
                 }
             }
-            Ok(summary)
+            Ok((summary, warning))
         }
-        ProviderDispatcher::Forgejo(_) => Err(ForgejoError::not_supported(
-            "forgejo",
-            "issue tracker / planning fields",
-        )),
-        // Local ignores tracker/planning and uses the plain path.
-        ProviderDispatcher::Local(_) => provider.create_issue(title, body),
+        ProviderDispatcher::Redmine(redmine) => {
+            reject_explicit_assignee(provider, assignee)?;
+            if !needs_provider_specific {
+                return Ok((provider.create_issue(title, body)?, None));
+            }
+            let tracker_id = match tracker {
+                None => None,
+                Some(value) => {
+                    let trackers = redmine.list_trackers()?;
+                    Some(RedmineProvider::select_tracker(&trackers, value)?.id)
+                }
+            };
+            let summary = if planning.is_empty() {
+                match tracker_id {
+                    Some(tracker_id) => {
+                        redmine.create_issue_with_tracker(title, body, tracker_id)?
+                    }
+                    None => redmine.create_issue(title, body)?,
+                }
+            } else {
+                redmine.create_issue_with_planning(title, body, tracker_id, &planning)?
+            };
+            Ok((summary, None))
+        }
+        ProviderDispatcher::Forgejo(_) => {
+            reject_explicit_assignee(provider, assignee)?;
+            if !needs_provider_specific {
+                return Ok((provider.create_issue(title, body)?, None));
+            }
+            Err(ForgejoError::not_supported(
+                "forgejo",
+                "issue tracker / planning fields",
+            ))
+        }
+        // Local ignores tracker/planning/assignee and uses the plain path.
+        ProviderDispatcher::Local(_) => {
+            reject_explicit_assignee(provider, assignee)?;
+            Ok((provider.create_issue(title, body)?, None))
+        }
     }
+}
+
+/// An explicit `--assignee` is a GitLab-only surface; every other provider
+/// rejects it before any write so the legacy payload stays byte-identical
+/// for default and `--no-assign` invocations.
+fn reject_explicit_assignee(
+    provider: &ProviderDispatcher,
+    assignee: &AssigneeOption,
+) -> Result<(), ForgejoError> {
+    if matches!(assignee, AssigneeOption::Explicit(_)) {
+        return Err(ForgejoError::not_supported(
+            provider.kind().as_str(),
+            "--assignee",
+        ));
+    }
+    Ok(())
 }
 
 /// Update an issue body with optional tracker re-target plus native
