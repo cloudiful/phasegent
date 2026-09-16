@@ -36,8 +36,11 @@ function runValidator(distDir: string): { status: number; output: string } {
 
 function healthyFixture(): Record<string, string> {
   return {
+    // Mirrors the real emitted bundle: module scripts keep crossorigin (they
+    // require CORS), stylesheet links must not carry it (CORS-mode fetch fails
+    // under Tauri's custom scheme).
     'index.html':
-      '<!doctype html><html><head><script type="module" src="./assets/app-abc.js"></script>' +
+      '<!doctype html><html><head><script type="module" crossorigin src="./assets/app-abc.js"></script>' +
       '<link rel="stylesheet" href="./assets/app-abc.css"></head><body><div id="app"></div></body></html>',
     'assets/app-abc.js': 'console.log("app");',
     // Minimal stylesheet carrying the shell-critical markers the validator requires.
@@ -91,6 +94,10 @@ describe('validate-dist Windows path regression', () => {
     expect(source).toContain('aggregatedCss')
     expect(source).toContain('without rel=stylesheet')
     expect(source).toContain('is not a CSS file')
+    // Tauri/WebKit regression: the emitted stylesheet link must stay free of
+    // crossorigin so the no-cors stylesheet fetch applies under the custom scheme.
+    expect(source).toContain('stylesheet link carries crossorigin')
+    expect(source).toContain('CORS-mode stylesheet fetch fails')
   })
 })
 
@@ -208,6 +215,25 @@ describe('validate-dist regression fixtures', () => {
     const result = runValidator(dir)
     expect(result.status).not.toBe(0)
     expect(result.output).toContain('is not a CSS file')
+  })
+
+  test('stylesheet link with crossorigin fails as unstyled', () => {
+    const files = healthyFixture()
+    files['index.html'] = files['index.html'].replace(
+      '<link rel="stylesheet" href="./assets/app-abc.css">',
+      '<link rel="stylesheet" crossorigin href="./assets/app-abc.css">',
+    )
+    const dir = writeFixture(files)
+    const result = runValidator(dir)
+    expect(result.status).not.toBe(0)
+    expect(result.output).toContain('stylesheet link carries crossorigin')
+  })
+
+  test('module script with crossorigin alongside a clean stylesheet passes', () => {
+    const dir = writeFixture(healthyFixture())
+    const result = runValidator(dir)
+    expect(result.status).toBe(0)
+    expect(result.output).toContain('validate-dist: PASS')
   })
 
   test('CSS href without rel=stylesheet fails as unstyled', () => {

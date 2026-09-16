@@ -77,9 +77,19 @@ for (const ref of referenced) {
 // of requiring every emitted CSS file to contain every marker.
 const linkTags = [...index.matchAll(/<link\b[^>]*>/gi)].map(match => match[0])
 const stylesheetRefs = []
+// Tauri/WebKit regression (issue 192): Vite tags generated assets with
+// `crossorigin`, but Tauri's custom scheme serves the bundle without CORS
+// headers, so a CORS-mode stylesheet fetch fails and the installed GUI renders
+// unstyled. The build strips the attribute from rel=stylesheet links only
+// (module scripts require CORS and keep it), and the emitted shape is latched
+// here so a Vite/plugin regression cannot silently reintroduce it.
+const crossoriginAttr = /\bcrossorigin\b/i
 for (const tag of linkTags) {
   const rel = tag.match(/\brel\s*=\s*["']([^"']*)["']/i)
   if (!rel || !rel[1].toLowerCase().split(/\s+/).includes('stylesheet')) continue
+  if (crossoriginAttr.test(tag)) {
+    fail(`index.html stylesheet link carries crossorigin: ${tag.trim()}; the CORS-mode stylesheet fetch fails under Tauri's custom scheme and the GUI renders unstyled.`)
+  }
   const href = tag.match(/\bhref\s*=\s*["']([^"']+)["']/i)
   if (!href) {
     fail('index.html contains a stylesheet link without href; the installed GUI would render unstyled.')
