@@ -1560,6 +1560,26 @@ fn cli_acquire_uses_environment_session_when_flag_absent() {
     );
 }
 
+#[test]
+fn cli_acquire_duplicate_reuse_current_keeps_exit_code_one() {
+    // Issue 437: the rewritten message must not change the error kind,
+    // so the CLI must keep returning exit 1 (structured storage error)
+    // rather than exit 3 (permission) or a panic.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p2-cli-dup-reuse") else {
+        return;
+    };
+    let (_db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-dup-reuse");
+    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
+    let first = run_cli_acquire_with_session(&repo, false, Some("session-A"));
+    assert_eq!(first, 0, "the first reuse-current acquire must succeed");
+    let second = run_cli_acquire_with_session(&repo, false, Some("session-B"));
+    assert_eq!(
+        second, 1,
+        "the duplicate checkout lease must stay a structured storage error"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Issue 305 Task 4: unknown `git status` through the CLI surface
 // ---------------------------------------------------------------------------

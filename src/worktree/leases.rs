@@ -49,6 +49,15 @@ pub(super) const MAX_LEASES_PER_QUERY: i64 = 256;
 #[allow(dead_code)]
 pub(super) const MAX_ACTIVE_LEASES_PER_REPO: i64 = 256;
 
+/// Operator-facing guidance for a `(repo_identity, worktree_path)`
+/// collision. SQLite reports the raw index name (`insert lease: UNIQUE
+/// constraint failed: worktree_leases.worktree_leases_repo_path_idx`),
+/// which names neither the cause nor the fix. Every lease-insert caller
+/// (the reuse-current path and the new-worktree compensation path) gets
+/// this wording instead; the `storage` kind, and therefore the CLI exit
+/// code, is unchanged.
+const REPO_PATH_CONFLICT_GUIDANCE: &str = "current directory already has a worktree lease for this repository; add --isolate to acquire a separate worktree, or review existing leases with `worktree status` / `worktree list`";
+
 /// Inline `CREATE TABLE IF NOT EXISTS` for the worktree lease table.
 /// The DDL stays self-contained in this module (per Phase 1 scope) so
 /// opening the database before Phase 1 still succeeds: there is no
@@ -224,8 +233,37 @@ pub fn insert_lease(storage: &Storage, lease: NewLease<'_>) -> Result<(), Worktr
                 lease.heartbeat_at,
             ],
         )
-        .map_err(|error| WorktreeError::new("storage", format!("insert lease: {error}")))?;
+        .map_err(insert_lease_error)?;
     Ok(())
+}
+
+/// Map a failed lease insert onto a structured error. The only
+/// expected collision is the `(repo_identity, worktree_path)` unique
+/// index rejecting a second lease for one checkout; it is rewritten to
+/// actionable guidance while every other SQLite failure keeps the
+/// `insert lease:` prefix and the raw detail.
+fn insert_lease_error(error: rusqlite::Error) -> WorktreeError {
+    if is_repo_path_conflict(&error) {
+        return WorktreeError::new("storage", REPO_PATH_CONFLICT_GUIDANCE);
+    }
+    WorktreeError::new("storage", format!("insert lease: {error}"))
+}
+
+/// True when `error` is the `(repo_identity, worktree_path)` unique
+/// index rejecting a duplicate checkout. SQLite reports this either
+/// with the index name or with the two column names depending on the
+/// linked SQLite version, so both shapes are recognised.
+fn is_repo_path_conflict(error: &rusqlite::Error) -> bool {
+    let rusqlite::Error::SqliteFailure(code, message) = error else {
+        return false;
+    };
+    if code.code != rusqlite::ErrorCode::ConstraintViolation {
+        return false;
+    }
+    message.as_deref().is_some_and(|text| {
+        text.contains("worktree_leases_repo_path_idx")
+            || (text.contains("repo_identity") && text.contains("worktree_path"))
+    })
 }
 
 /// Borrowed view of every field the `worktree_leases` table stores.

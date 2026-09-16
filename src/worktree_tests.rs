@@ -504,11 +504,159 @@ fn unique_index_blocks_duplicate_repo_path_rows() {
             heartbeat_at: now,
         },
     );
+    let error = result.expect_err("duplicate (repo_identity, worktree_path) must error");
+    assert_eq!(
+        error.kind, "storage",
+        "the rewrite must not change the error kind (the CLI exit code keys on it)"
+    );
     assert!(
-        result.is_err(),
-        "duplicate (repo_identity, worktree_path) must error"
+        error.message.contains("--isolate")
+            && error.message.contains("worktree status")
+            && error.message.contains("worktree list"),
+        "a repo/path collision must name --isolate and the status/list surfaces: {error}"
+    );
+    assert!(
+        !error.message.contains("UNIQUE constraint failed")
+            && !error.message.contains("worktree_leases_repo_path_idx"),
+        "raw SQLite index text must never reach the operator: {error}"
     );
     drop(temp);
+}
+
+#[test]
+fn acquire_second_reuse_current_reports_actionable_guidance() {
+    // Issue 437 symptom: with isolation off, two acquires for different
+    // sessions both reuse the same checkout, so the second lease insert
+    // hits the `(repo_identity, worktree_path)` unique index. The
+    // operator must get the guidance, not the raw SQLite text.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("reuse-conflict") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-reuse-conflict");
+    let cache = unique_cache("reuse-conflict");
+    let runner = ProcessWorktreeRunner::new();
+    let first = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        239,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect("first acquire reuses the current checkout");
+    assert_eq!(first.reason, "no_conflict");
+    let error = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        239,
+        "session-B",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect_err("a second lease on the same checkout must fail");
+    assert_eq!(error.kind, "storage");
+    assert!(
+        error.message.contains("--isolate")
+            && error.message.contains("worktree status")
+            && error.message.contains("worktree list"),
+        "guidance must reach the reuse-current path: {error}"
+    );
+    assert!(!error.message.contains("UNIQUE constraint failed"));
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_new_worktree_conflict_reports_guidance_and_compensates() {
+    // When the freshly added worktree's lease insert fails, the
+    // compensation block removes the orphan directory and must return
+    // the same guidance. The generated branch slug is random, so a
+    // BEFORE INSERT trigger reproduces the unique-index failure
+    // deterministically in the temp database.
+    let _lock = lock_workflow_tests();
+    let (db_temp, storage, _env) = open_temp_db("acquire-new-wt-conflict");
+    crate::worktree::ensure_schema(&storage).expect("ensure_schema");
+    let identity = "/tmp/phasegent-437-new-wt-repo/.git";
+    let now = now_unix_secs();
+    insert_lease(
+        &storage,
+        NewLease {
+            lease_id: "lease-seed",
+            identity,
+            issue: 7,
+            session: "seed",
+            checkout_path: "/tmp/phasegent-437-new-wt-repo",
+            worktree_path: "/tmp/phasegent-437-other",
+            branch: "phasegent/7-seed",
+            status: LEASE_STATUS_ACTIVE,
+            created_at: now,
+            heartbeat_at: now,
+        },
+    )
+    .expect("seed lease");
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER force_repo_path_conflict BEFORE INSERT ON worktree_leases \
+             WHEN NEW.lease_id != 'lease-seed' \
+             BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: \
+             worktree_leases.worktree_leases_repo_path_idx'); END;",
+        )
+        .expect("conflict trigger");
+    let repo_path = PathBuf::from("/tmp/phasegent-437-new-wt-repo");
+    let cache = unique_cache("new-wt-conflict");
+    let runner = FakeWorktreeRunner::new(vec![
+        FakeResponse {
+            args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
+            status: 0,
+            stdout: ".git".to_string(),
+        },
+        FakeResponse {
+            args: vec!["status".to_string(), "--porcelain".to_string()],
+            status: 0,
+            stdout: String::new(),
+        },
+        FakeResponse {
+            args: vec!["worktree".to_string(), "add".to_string()],
+            status: 0,
+            stdout: String::new(),
+        },
+        FakeResponse {
+            args: vec!["worktree".to_string(), "remove".to_string()],
+            status: 0,
+            stdout: String::new(),
+        },
+    ]);
+    let error = acquire_lease(
+        &runner,
+        &repo_path,
+        245,
+        "session-A",
+        Some(cache.path()),
+        true,
+        false,
+    )
+    .expect_err("the forced insert conflict must surface as an error");
+    assert_eq!(error.kind, "storage");
+    assert!(
+        error.message.contains("--isolate")
+            && error.message.contains("worktree status")
+            && error.message.contains("worktree list"),
+        "guidance must reach the new-worktree path: {error}"
+    );
+    let calls = runner.recorded();
+    assert!(
+        calls.iter().any(|(args, _)| {
+            args.first().map(String::as_str) == Some("worktree")
+                && args.get(1).map(String::as_str) == Some("remove")
+        }),
+        "the orphan worktree must be compensated: {calls:?}"
+    );
+    drop(cache);
+    drop(db_temp);
 }
 
 // ---------------------------------------------------------------------------
