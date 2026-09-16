@@ -15,8 +15,9 @@
 //!   refused; missing files report a warning instead of an error.
 //! * **Adapter template** — the embedded JS contains the
 //!   `// phasegent:managed` marker, the
-//!   `experimental_workspace.register` shape, and the
-//!   `phasegent --role orchestrator worktree acquire` call.
+//!   `experimental_workspace.register` shape, the
+//!   `phasegent --role orchestrator worktree acquire` call, and the
+//!   issue #440 `tool.execute.before` redirect helpers.
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -205,6 +206,9 @@ fn install_at_writes_managed_file_with_marker_and_register_call() {
     assert!(text.contains("worktree acquire"));
     assert!(text.contains("--format"));
     assert!(text.contains("\"json\""));
+    assert!(text.contains("PhasegentWorktreePlugin"));
+    assert!(text.contains("tool.execute.before"));
+    assert!(text.contains("redirectArgs"));
 }
 
 #[test]
@@ -493,6 +497,32 @@ fn adapter_template_is_well_formed_for_opencode_experimental_api() {
     assert!(source.contains("mkdir -p"));
     // Git detection.
     assert!(source.contains("git rev-parse --git-common-dir"));
+}
+
+#[test]
+fn adapter_template_documents_v1_redirect_contract() {
+    let _lock = lock_workflow_tests();
+    let source = adapter_source();
+    // V1 entry point returns the redirect hook and keeps the adapter registered.
+    assert!(source.contains("export const PhasegentWorktreePlugin"));
+    assert!(source.contains("export default PhasegentWorktreePlugin"));
+    assert!(source.contains("createRedirectHook"));
+    assert!(source.contains("tool.execute.before"));
+    // Pure helpers live on the exported plugin so the legacy loader never treats
+    // them as plugin factories of their own.
+    assert!(source.contains("PhasegentWorktreePlugin.redirect"));
+    assert!(source.contains("isAbsolutePath"));
+    assert!(source.contains("redirectPathValue"));
+    assert!(source.contains("redirectArgs"));
+    assert!(source.contains("read: [\"filePath\"]"));
+    assert!(source.contains("glob: [\"path\"]"));
+    // Bash gets a bare/relative workdir; the command is never rewritten.
+    assert!(source.contains("redirected.workdir = workdir"));
+    // Absolute paths pass through and no-worktree sessions short-circuit.
+    assert!(source.contains("if (isAbsolutePath(value)) return value"));
+    assert!(source.contains("if (!workdir || !output || !output.args) return"));
+    // The worktree is remembered when acquire succeeds.
+    assert!(source.contains("rememberWorktree(sessionID, workdir)"));
 }
 
 #[test]
