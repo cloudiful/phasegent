@@ -1,4 +1,4 @@
-use crate::providers::api::IssueSummary;
+use crate::providers::api::{ForgejoError, IssueSummary};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -229,4 +229,133 @@ pub struct StatusTransitionOutcome {
     pub caveat: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_summary: Option<IssueSummary>,
+}
+
+/// Policy-allowed next status names for a transition the canonical policy
+/// forbids, or `None` when the verdict is anything else. Phase 1
+/// (issue 443) structured-`Forbidden` support: the CLI attaches this to
+/// the advance error JSON instead of leaving the guidance in the message
+/// text only. Pure policy lookup: no provider or network access.
+pub fn forbidden_allowed_next_names(current: &str, target: &str) -> Option<Vec<String>> {
+    match evaluate_transition(current, target) {
+        TransitionVerdict::Forbidden { allowed_next } => {
+            Some(allowed_next.iter().map(|name| (*name).to_owned()).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Extract `(current, target)` status names from a policy-preflight
+/// rejection message. Both the Redmine
+/// (`current status 'C' -> target status 'T' ...`) and the Local
+/// (`current status 'C' -> 'T' ...`) wordings are accepted: the current
+/// name is the first quoted segment after `current status`, the target
+/// is the next quoted segment. Returns `None` for any other message so
+/// server-side rejections keep their legacy shape.
+pub fn parse_forbidden_transition(message: &str) -> Option<(String, String)> {
+    const MARKER: &str = "current status '";
+    let start = message.find(MARKER)? + MARKER.len();
+    let rest = &message[start..];
+    let end = rest.find('\'')?;
+    let current = rest[..end].to_owned();
+    let after = &rest[end + 1..];
+    let target_start = after.find('\'')? + 1;
+    let target_rest = &after[target_start..];
+    let target_end = target_rest.find('\'')?;
+    let target = target_rest[..target_end].to_owned();
+    if current.trim().is_empty() || target.trim().is_empty() {
+        return None;
+    }
+    Some((current, target))
+}
+
+/// Build the Phase 1 structured `Forbidden` error JSON for a
+/// policy-preflight rejection: the legacy `kind`/`operation`/`message`
+/// triple plus machine-readable `current`, `target`, `allowed_next`,
+/// and `policy_source`. Returns `None` when the error is not a canonical
+/// policy rejection so every other failure keeps its legacy shape. The
+/// fields are additive, so existing `kind`-based assertions keep passing.
+pub fn structured_forbidden_json(error: &ForgejoError) -> Option<serde_json::Value> {
+    let (operation, message) = match error {
+        ForgejoError::Request { operation, message } => (operation, message),
+        _ => return None,
+    };
+    if !message.contains("transition rejected before any write") {
+        return None;
+    }
+    let (current, target) = parse_forbidden_transition(message)?;
+    let allowed_next = forbidden_allowed_next_names(&current, &target)?;
+    Some(serde_json::json!({
+        "kind": "request",
+        "operation": operation,
+        "message": message,
+        "current": current,
+        "target": target,
+        "allowed_next": allowed_next,
+        "policy_source": STATUS_POLICY_SOURCE,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forbidden_lookup_returns_names_only_for_illegal_canonical_edges() {
+        assert_eq!(
+            forbidden_allowed_next_names("Resolved", "In Review"),
+            Some(vec!["In Progress".to_owned(), "Closed".to_owned()])
+        );
+        assert_eq!(
+            forbidden_allowed_next_names("Closed", "In Progress"),
+            Some(vec![])
+        );
+        assert_eq!(forbidden_allowed_next_names("New", "In Progress"), None);
+        assert_eq!(forbidden_allowed_next_names("New", "New"), None);
+        assert_eq!(forbidden_allowed_next_names("Triaged", "In Progress"), None);
+    }
+
+    #[test]
+    fn forbidden_parser_accepts_both_provider_wordings() {
+        let redmine = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[In Progress, Closed]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
+        assert_eq!(
+            parse_forbidden_transition(redmine),
+            Some(("Resolved".to_owned(), "In Review".to_owned()))
+        );
+        let local = "transition rejected before any write: current status 'New' -> 'Closed' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[In Progress, Cancelled]";
+        assert_eq!(
+            parse_forbidden_transition(local),
+            Some(("New".to_owned(), "Closed".to_owned()))
+        );
+        assert_eq!(parse_forbidden_transition("Redmine did not confirm"), None);
+        assert_eq!(parse_forbidden_transition("current status '' -> 'X'"), None);
+    }
+
+    #[test]
+    fn structured_forbidden_json_round_trips_a_preflight_rejection() {
+        let message = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[In Progress, Closed]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
+        let error = ForgejoError::request("issue status advance", message.to_owned());
+        let json = structured_forbidden_json(&error).expect("preflight rejection must map");
+        assert_eq!(json["kind"], "request");
+        assert_eq!(json["operation"], "issue status advance");
+        assert_eq!(json["message"], message);
+        assert_eq!(json["current"], "Resolved");
+        assert_eq!(json["target"], "In Review");
+        assert_eq!(
+            json["allowed_next"],
+            serde_json::json!(["In Progress", "Closed"])
+        );
+        assert_eq!(json["policy_source"], STATUS_POLICY_SOURCE);
+    }
+
+    #[test]
+    fn structured_forbidden_json_rejects_server_side_and_non_request_errors() {
+        let server = ForgejoError::request(
+            "issue status advance",
+            "boom; current status 'In Progress' -> target status 'In Review'; server rejected a policy-allowed or custom transition, so the Redmine workflow is authoritative; recovery: phasegent --role orchestrator --provider redmine status next 7".to_owned(),
+        );
+        assert!(structured_forbidden_json(&server).is_none());
+        let config = ForgejoError::config("issue number must be greater than zero");
+        assert!(structured_forbidden_json(&config).is_none());
+    }
 }

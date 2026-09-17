@@ -2,9 +2,24 @@ use crate::command::StatusCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
 use crate::providers::forgejo::ForgejoError;
+use crate::providers::redmine::model::status::structured_forbidden_json;
 use crate::providers::{
     IssueProvider, ProviderDispatcher, ProviderKind, RedmineMetadataProvider, RedmineProvider,
 };
+
+/// Print an advance result, attaching the structured Phase 1 `Forbidden`
+/// context (`current`/`target`/`allowed_next`/`policy_source`) when the
+/// policy preflight rejects the transition. Every other outcome keeps
+/// its legacy shape, so success JSON and non-policy errors stay
+/// byte-compatible.
+fn print_advance_result<T: serde::Serialize>(result: Result<T, ForgejoError>) -> i32 {
+    if let Err(error) = &result
+        && let Some(payload) = structured_forbidden_json(error)
+    {
+        return super::structured_error(payload, 1);
+    }
+    super::print_result(result)
+}
 
 pub(crate) fn execute_status(
     role_value: Option<Role>,
@@ -25,6 +40,8 @@ pub(crate) fn execute_status(
     // and the admin bootstrap identity may not move an issue's status.
     // The check runs before any provider or network access so a denied
     // role fails fast with a structured permission error.
+    // Phase 1 (issue 443): `status transition --to` parses to `Advance`,
+    // so this guard covers the new entry with no extra arm.
     if matches!(
         command,
         StatusCommand::Set { .. } | StatusCommand::Advance { .. }
@@ -159,11 +176,10 @@ pub(crate) fn execute_status(
                         .warning(),
                     );
                 }
-                super::print_result(result)
+                print_advance_result(result)
             }
             ProviderDispatcher::Local(local) => {
-                let result = local.advance_issue_status(number, &status);
-                super::print_result(result)
+                print_advance_result(local.advance_issue_status(number, &status))
             }
             other => super::provider_error(ForgejoError::not_supported(
                 other.kind().as_str(),

@@ -154,6 +154,14 @@ impl RedmineProvider {
     /// edges fail before the PUT with structured guidance, and unknown
     /// or custom statuses are forwarded to the server as advisory so a
     /// custom workflow keeps working.
+    ///
+    /// Phase 1 (issue 443): `status transition <N> --to <status>` is a
+    /// parser-level compat alias that lands here, so `transition --to`
+    /// and `advance --status` share this exact preflight plus PUT path.
+    /// The `Forbidden` message text is the stable contract parsed by
+    /// `parse_forbidden_transition` for the structured `allowed_next`
+    /// error JSON; keep its `current status 'C' -> target status 'T'`
+    /// shape intact.
     pub fn advance_issue_status(
         &self,
         number: u64,
@@ -181,9 +189,12 @@ impl RedmineProvider {
                 });
             }
             TransitionVerdict::Forbidden { allowed_next } => {
-                return Err(ForgejoError::request(
+                return Err(forbidden_error(
                     operation,
-                    forbidden_message(number, &current.name, &target.name, allowed_next),
+                    number,
+                    &current.name,
+                    &target.name,
+                    allowed_next,
                 ));
             }
             TransitionVerdict::Allowed | TransitionVerdict::Advisory { .. } => {}
@@ -295,6 +306,19 @@ fn recovery_hint(number: u64) -> String {
 /// transition. It names the current status, the target status, the
 /// allowed next statuses, the policy identifier, and the recovery
 /// command so the caller never has to guess the workflow.
+fn forbidden_error(
+    operation: &str,
+    number: u64,
+    current: &str,
+    target: &str,
+    allowed_next: &[&'static str],
+) -> ForgejoError {
+    ForgejoError::request(
+        operation,
+        forbidden_message(number, current, target, allowed_next),
+    )
+}
+
 fn forbidden_message(
     number: u64,
     current: &str,
