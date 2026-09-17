@@ -1,6 +1,6 @@
 [package]
 name = "phasegent"
-version = "2.12.15"
+version = "2.12.16"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
