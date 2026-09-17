@@ -1,3 +1,6 @@
+#[cfg(test)]
+use super::common::render_group_help;
+use super::common::{HelpRow, print_group_help};
 use crate::policy::{Capability, Role};
 
 /// Issue commands listed in `issue` help.
@@ -12,21 +15,66 @@ pub(crate) fn normal_issue_commands() -> Vec<(&'static str, Capability)> {
     ]
 }
 
-pub(crate) fn print_issue_help(role: Option<Role>) {
-    println!(
-        "Issue commands for {}:\n",
+fn issue_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>, Vec<HelpRow<'static>>) {
+    let header = format!(
+        "Issue commands for {}:",
         role.map_or("all roles", Role::as_str)
     );
-    for (name, capability) in normal_issue_commands() {
-        if role.is_none_or(|role| role.allows(capability)) {
-            println!("  {name:<14} {}", capability.description());
-        }
-    }
-    println!("\nLocal branch context (no provider or network access):");
-    println!("  bind             Bind the current branch to a Redmine issue in local Git config");
-    println!("  unbind           Remove the current branch's Redmine issue binding");
-    println!("  status           Show the current branch and its bound Redmine issue, if any");
-    println!("\nUse 'phasegent --help issue <command>' for options.");
+    let main: Vec<HelpRow<'static>> = normal_issue_commands()
+        .into_iter()
+        .map(|(name, capability)| (name, capability.description(), capability))
+        .collect();
+    let local: Vec<HelpRow<'static>> = vec![
+        (
+            "bind",
+            "Bind the current branch to a Redmine issue in local Git config",
+            Capability::IssueRead,
+        ),
+        (
+            "unbind",
+            "Remove the current branch's Redmine issue binding",
+            Capability::IssueRead,
+        ),
+        (
+            "status",
+            "Show the current branch and its bound Redmine issue, if any",
+            Capability::IssueRead,
+        ),
+    ];
+    (header, main, local)
+}
+
+#[cfg(test)]
+pub(crate) fn render_issue_help(role: Option<Role>) -> String {
+    let (header, main, local) = issue_help_parts(role);
+    render_group_help(
+        role,
+        &header,
+        &[
+            (None, &main),
+            (
+                Some("Local branch context (no provider or network access)"),
+                &local,
+            ),
+        ],
+        "Use 'phasegent --help issue <command>' for options.",
+    )
+}
+
+pub(crate) fn print_issue_help(role: Option<Role>) {
+    let (header, main, local) = issue_help_parts(role);
+    print_group_help(
+        role,
+        &header,
+        &[
+            (None, &main),
+            (
+                Some("Local branch context (no provider or network access)"),
+                &local,
+            ),
+        ],
+        "Use 'phasegent --help issue <command>' for options.",
+    )
 }
 
 /// Resolve the help entry for one `issue` subcommand, or `None` when the
@@ -283,6 +331,61 @@ mod tests {
         assert!(
             error.contains("unknown issue help topic 'update-body'"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn overview_keeps_local_branch_context_table() {
+        let text = render_issue_help(None);
+        assert!(
+            text.contains("Issue commands for all roles:"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("Local branch context (no provider or network access):"),
+            "Local section must stay; got: {text}"
+        );
+        for command in ["bind", "unbind", "status"] {
+            assert!(text.contains(command), "got: {text}");
+        }
+        assert!(
+            text.contains("Use 'phasegent --help issue <command>' for options."),
+            "got: {text}"
+        );
+        for (name, desc) in [
+            ("get", Capability::IssueRead.description()),
+            ("search", Capability::IssueSearch.description()),
+        ] {
+            assert!(
+                text.contains(&format!("  {name:<14} {desc}")),
+                "main rows stay one-command-per-line; got: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn overview_filters_by_role_without_touching_detail_pages() {
+        let text = render_issue_help(Some(Role::Executor));
+        assert!(text.contains("  get"), "executor keeps get; got: {text}");
+        assert!(
+            !text.contains("create"),
+            "executor denies create; got: {text}"
+        );
+        assert!(
+            text.contains("bind"),
+            "executor keeps local rows; got: {text}"
+        );
+        let full = render_issue_help(Some(Role::Orchestrator));
+        for command in ["get", "search", "create", "update", "close", "bind"] {
+            assert!(
+                full.contains(command),
+                "orchestrator sees {command}; got: {full}"
+            );
+        }
+        let (_, bind_text) = issue_command_help_text("bind").expect("bind detail stays");
+        assert!(
+            bind_text.contains("Usage: issue bind <ID>"),
+            "got: {bind_text}"
         );
     }
 }
