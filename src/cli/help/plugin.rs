@@ -9,23 +9,132 @@
 //! * Per-subcommand help is plain prose, focused on the contract
 //!   rather than the underlying `Bun.$` shell calls.
 
+use super::common::{HelpRow, print_group_help, render_group_help};
+
+/// Split the top-level `plugin` overview into header plus rows so the shape
+/// is testable without capturing stdout. The group needs no role gate (no
+/// role or provider is required), so the caller always renders with
+/// `role=None` and every row stays visible.
+fn plugin_help_parts() -> (String, Vec<HelpRow<'static>>) {
+    let header = "Managed OpenCode plugin commands:".to_owned();
+    let rows: Vec<HelpRow<'static>> = vec![
+        (
+            "install",
+            "Install or update the worktree adapter (default: both scopes; idempotent)",
+            crate::policy::Capability::IssueRead,
+        ),
+        (
+            "status",
+            "Report global and project file presence, managed-flag match, size, and mtime (read-only)",
+            crate::policy::Capability::IssueRead,
+        ),
+        (
+            "uninstall",
+            "Remove managed adapter files; refuses files without the managed marker",
+            crate::policy::Capability::IssueRead,
+        ),
+    ];
+    (header, rows)
+}
+
+/// Top-level `plugin` help body rendered through the shared group helper.
+/// Contract prose (managed-marker ownership, scope defaults, adapter
+/// redirect rules) lives on the per-subcommand detail pages and stays out
+/// of this one-line-per-command overview.
+pub(crate) fn plugin_help_text() -> String {
+    let (header, rows) = plugin_help_parts();
+    render_group_help(
+        None,
+        &header,
+        &[(None, &rows)],
+        "Use 'phasegent --help plugin <command>' for options.",
+    )
+}
+
 pub(crate) fn print_plugin_help() {
-    println!(
-        "Managed OpenCode plugin commands (issue #239 Phase 3):\n\n  install [--global] [--project] [--force]   Install or update the worktree adapter in the OpenCode plugin directory (default: both scopes); idempotent; foreign files are refused unless --force; redirects relative tool paths and bash workdir into the acquired worktree\n  status                                       Report global and project file presence, managed-flag match, size, and mtime (read-only)\n  uninstall [--global] [--project]            Remove managed adapter files; refuses files without the managed marker\n\nUse 'phasegent --help plugin <command>' for options."
-    );
+    let (header, rows) = plugin_help_parts();
+    print_group_help(
+        None,
+        &header,
+        &[(None, &rows)],
+        "Use 'phasegent --help plugin <command>' for options.",
+    )
 }
 
 pub(crate) fn print_plugin_command_help(command: &str) {
+    println!("{}", plugin_command_help_text(command));
+}
+
+/// Per-subcommand `plugin` help body (no trailing newline).
+pub(crate) fn plugin_command_help_text(command: &str) -> String {
     match command {
-        "install" => println!(
-            "Usage: plugin install [--global] [--project] [--force]\n\nInstalls or updates the phasegent worktree adapter in the OpenCode plugin directory. The global target is $XDG_CONFIG_HOME/opencode/plugins/phasegent-worktree.js (falling back to $HOME/.config/opencode/plugins/phasegent-worktree.js); the project target is .opencode/plugins/phasegent-worktree.js in the current working directory. When neither --global nor --project is supplied, both slots are written. Existing managed files (those that contain the `// phasegent:managed` marker) are updated in place when the embedded template changes; otherwise they are reported as skipped. Foreign files (no marker) are refused unless --force is supplied, in which case the foreign file is renamed to phasegent-worktree.js.phasegent-orig before the managed file is written. Adapter contract: experimental_workspace.register with name/description/configure/create/remove/target; target falls back to the original directory on any failure (no branch or directory is ever deleted by the adapter). After a session acquires a worktree, the tool.execute.before hook redirects relative file paths and a bare or relative bash workdir into that worktree; absolute paths and sessions without a worktree pass through unchanged, and the external_directory permission check is never bypassed. No role or provider is required."
-        ),
-        "status" => println!(
-            "Usage: plugin status\n\nReports the global and project slots of the OpenCode worktree adapter. Each slot reports path, exists, managed (whether the file contains the `// phasegent:managed` marker), size, and mtime. The file contents are never printed. No role or provider is required."
-        ),
-        "uninstall" => println!(
-            "Usage: plugin uninstall [--global] [--project]\n\nRemoves the managed worktree adapter from the OpenCode plugin directory. Files without the `// phasegent:managed` marker are refused (remove them manually if needed); missing files are reported as warnings. When neither --global nor --project is supplied, both slots are processed. No role or provider is required. The adapter contract does not delete worktrees or branches; use `phasegent worktree prune` for that."
-        ),
-        _ => print_plugin_help(),
+        "install" => "Usage: plugin install [--global] [--project] [--force]\n\nInstalls or updates the phasegent worktree adapter in the OpenCode plugin directory. The global target is $XDG_CONFIG_HOME/opencode/plugins/phasegent-worktree.js (falling back to $HOME/.config/opencode/plugins/phasegent-worktree.js); the project target is .opencode/plugins/phasegent-worktree.js in the current working directory. When neither --global nor --project is supplied, both slots are written. Existing managed files (those that contain the `// phasegent:managed` marker) are updated in place when the embedded template changes; otherwise they are reported as skipped. Foreign files (no marker) are refused unless --force is supplied, in which case the foreign file is renamed to phasegent-worktree.js.phasegent-orig before the managed file is written. Adapter contract: experimental_workspace.register with name/description/configure/create/remove/target; target falls back to the original directory on any failure (no branch or directory is ever deleted by the adapter). After a session acquires a worktree, the tool.execute.before hook redirects relative file paths and a bare or relative bash workdir into that worktree; absolute paths and sessions without a worktree pass through unchanged, and the external_directory permission check is never bypassed. No role or provider is required.".to_owned(),
+        "status" => "Usage: plugin status\n\nReports the global and project slots of the OpenCode worktree adapter. Each slot reports path, exists, managed (whether the file contains the `// phasegent:managed` marker), size, and mtime. The file contents are never printed. No role or provider is required.".to_owned(),
+        "uninstall" => "Usage: plugin uninstall [--global] [--project]\n\nRemoves the managed worktree adapter from the OpenCode plugin directory. Files without the `// phasegent:managed` marker are refused (remove them manually if needed); missing files are reported as warnings. When neither --global nor --project is supplied, both slots are processed. No role or provider is required. The adapter contract does not delete worktrees or branches; use `phasegent worktree prune` for that.".to_owned(),
+        _ => plugin_help_text(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overview_is_tabular_with_one_row_per_command() {
+        let text = plugin_help_text();
+        assert!(
+            text.contains("Managed OpenCode plugin commands:"),
+            "header must use the grouped shape; got: {text}"
+        );
+        for (name, desc) in [
+            (
+                "install",
+                "Install or update the worktree adapter (default: both scopes; idempotent)",
+            ),
+            (
+                "status",
+                "Report global and project file presence, managed-flag match, size, and mtime (read-only)",
+            ),
+            (
+                "uninstall",
+                "Remove managed adapter files; refuses files without the managed marker",
+            ),
+        ] {
+            assert!(
+                text.contains(&format!("  {name:<14} {desc}")),
+                "rows stay one-command-per-line; missing {name}; got: {text}"
+            );
+        }
+        assert!(
+            text.contains("Use 'phasegent --help plugin <command>' for options."),
+            "footer must point to detail pages; got: {text}"
+        );
+    }
+
+    #[test]
+    fn overview_carries_no_issue_refs_or_flag_signatures() {
+        let overview = plugin_help_text();
+        for sunk in ["issue #", "#239", "[--global]", "[--project]", "[--force]"] {
+            assert!(
+                !overview.contains(sunk),
+                "overview must not repeat contract prose ({sunk}); got: {overview}"
+            );
+        }
+        let install = plugin_command_help_text("install");
+        assert!(
+            install.contains("Usage: plugin install [--global] [--project] [--force]")
+                && install.contains("// phasegent:managed"),
+            "install detail keeps flags + marker contract; got: {install}"
+        );
+        let uninstall = plugin_command_help_text("uninstall");
+        assert!(
+            uninstall.contains("phasegent worktree prune"),
+            "uninstall detail keeps the prune pointer; got: {uninstall}"
+        );
+    }
+
+    #[test]
+    fn unknown_command_falls_back_to_top_level_help() {
+        assert_eq!(plugin_command_help_text("fly"), plugin_help_text());
     }
 }
