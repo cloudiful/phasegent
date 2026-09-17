@@ -2,7 +2,8 @@ use crate::command::StatusCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
 use crate::providers::forgejo::ForgejoError;
-use crate::providers::redmine::model::status::structured_forbidden_json;
+use crate::providers::redmine::model::StatusNextReport;
+use crate::providers::redmine::model::status::{STATUS_POLICY_SOURCE, structured_forbidden_json};
 use crate::providers::{
     IssueProvider, ProviderDispatcher, ProviderKind, RedmineMetadataProvider, RedmineProvider,
 };
@@ -19,6 +20,36 @@ fn print_advance_result<T: serde::Serialize>(result: Result<T, ForgejoError>) ->
         return super::structured_error(payload, 1);
     }
     super::print_result(result)
+}
+
+/// Resolve a bare `status transition N` (empty-target sentinel from the
+/// parser) to the policy first-allowed target. Returns the target name
+/// or the terminal/advisory report when no route exists; the caller
+/// turns the latter into a structured request error without any PUT.
+fn auto_target_from_report(report: &StatusNextReport) -> Result<String, ()> {
+    report
+        .allowed_next
+        .first()
+        .map(|next| next.name.clone())
+        .ok_or(())
+}
+
+/// Structured request error for a bare auto with no route (terminal or
+/// advisory-custom status). No PUT is issued; exit 1 matches the
+/// `Forbidden` preflight shape (additive `current`/`allowed_next` /
+/// `policy_source`, no `target` because none was derived).
+fn auto_no_route_error(report: &StatusNextReport) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "request",
+        "operation": "issue status advance",
+        "message": format!(
+            "no automatic transition: current status '{}' has no policy-allowed next; recovery: {}",
+            report.current.name, report.recovery,
+        ),
+        "current": report.current.name,
+        "allowed_next": Vec::<String>::new(),
+        "policy_source": STATUS_POLICY_SOURCE,
+    })
 }
 
 pub(crate) fn execute_status(
@@ -40,8 +71,10 @@ pub(crate) fn execute_status(
     // and the admin bootstrap identity may not move an issue's status.
     // The check runs before any provider or network access so a denied
     // role fails fast with a structured permission error.
-    // Phase 1 (issue 443): `status transition --to` parses to `Advance`,
-    // so this guard covers the new entry with no extra arm.
+    // Phase 1-2 (issue 443): `status transition --to` and bare
+    // `status transition` both parse to `Advance` (bare uses the
+    // empty-target auto sentinel), so this guard covers the new
+    // entry with no extra arm.
     if matches!(
         command,
         StatusCommand::Set { .. } | StatusCommand::Advance { .. }
@@ -144,7 +177,25 @@ pub(crate) fn execute_status(
                 ) {
                     return super::provider_error(error);
                 }
-                let result = redmine.advance_issue_status(number, &status);
+                let effective = if status.is_empty() {
+                    // Phase 2 (issue 443) bare auto: policy first-allowed
+                    // via `status_next`. Scope guard above already ran,
+                    // so this read-then-PUT reuses the exact advance
+                    // path with the derived target; stdout shape is
+                    // identical to `advance --status <derived>`.
+                    match redmine.status_next(number) {
+                        Ok(report) => match auto_target_from_report(&report) {
+                            Ok(target) => target,
+                            Err(()) => {
+                                return super::structured_error(auto_no_route_error(&report), 1);
+                            }
+                        },
+                        Err(error) => return super::provider_error(error),
+                    }
+                } else {
+                    status.clone()
+                };
+                let result = redmine.advance_issue_status(number, &effective);
                 if result.is_ok() {
                     // Phase 3 write-side relation auto (issue 257):
                     // the trigger point for the parent-child
@@ -171,7 +222,7 @@ pub(crate) fn execute_status(
                         crate::lifecycle_auto::auto_transition_timer(
                             number,
                             ProviderKind::Redmine,
-                            &status,
+                            &effective,
                         )
                         .warning(),
                     );
@@ -179,7 +230,35 @@ pub(crate) fn execute_status(
                 print_advance_result(result)
             }
             ProviderDispatcher::Local(local) => {
-                print_advance_result(local.advance_issue_status(number, &status))
+                // Phase 2 bare auto on the static local catalogue plus
+                // the timer hook for Local parity (stderr-only, stdout
+                // unchanged; Forgejo/GitLab arms below are untouched).
+                let effective = if status.is_empty() {
+                    match local.status_next(number) {
+                        Ok(report) => match auto_target_from_report(&report) {
+                            Ok(target) => target,
+                            Err(()) => {
+                                return super::structured_error(auto_no_route_error(&report), 1);
+                            }
+                        },
+                        Err(error) => return super::provider_error(error),
+                    }
+                } else {
+                    status.clone()
+                };
+                let result = local.advance_issue_status(number, &effective);
+                if result.is_ok() {
+                    super::report_local_warnings(
+                        "status advance",
+                        crate::lifecycle_auto::auto_transition_timer(
+                            number,
+                            ProviderKind::Local,
+                            &effective,
+                        )
+                        .warning(),
+                    );
+                }
+                print_advance_result(result)
             }
             other => super::provider_error(ForgejoError::not_supported(
                 other.kind().as_str(),
@@ -271,6 +350,18 @@ pub(crate) fn execute_status(
                     Err(error) => return super::provider_error(error),
                 };
                 let result = local.set_issue_status(number, target.id);
+                if result.is_ok() {
+                    // Phase 2 timer parity for Local (stderr-only).
+                    super::report_local_warnings(
+                        "status set",
+                        crate::lifecycle_auto::auto_transition_timer(
+                            number,
+                            ProviderKind::Local,
+                            &status,
+                        )
+                        .warning(),
+                    );
+                }
                 super::print_result(result)
             }
             other => super::provider_error(ForgejoError::not_supported(
@@ -306,6 +397,10 @@ mod tests {
         let _lock = lock_workflow_tests();
         let (dir, db) = tmp_db("local-dispatch");
         let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        // Phase 2 timer hooks write to the shared ledger; isolate it
+        // so Local status moves never touch the operator's real DB.
+        let ledger = dir.join("phasegent-ledger.sqlite3");
+        let _ledger_guard = EnvGuard::set("PHASEGENT_DB_PATH", ledger.to_str().unwrap());
         // Seed one local issue so each status arm resolves a real row
         // instead of the not-found fallback.
         let provider = LocalProvider::open().unwrap();
@@ -362,6 +457,7 @@ mod tests {
             "status set must route through the ProviderDispatcher::Local arm"
         );
 
+        drop(_ledger_guard);
         drop(_guard);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -379,6 +475,8 @@ mod tests {
         let _lock = lock_workflow_tests();
         let (dir, db) = tmp_db("rel-auto-silent");
         let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        let ledger = dir.join("phasegent-ledger.sqlite3");
+        let _ledger_guard = EnvGuard::set("PHASEGENT_DB_PATH", ledger.to_str().unwrap());
         let provider = LocalProvider::open().unwrap();
         let number = provider.create_issue("Phase3", "body").unwrap().number;
         let exit = execute_status(
@@ -398,6 +496,132 @@ mod tests {
             "status advance must remain successful even when relation auto is a silent skip"
         );
 
+        drop(_ledger_guard);
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bare_transition_auto_routes_via_policy_first_allowed() {
+        // Phase 2 (issue 443): bare `status transition N` (empty-target
+        // sentinel) resolves via `status_next` first-allowed and reuses
+        // the exact advance PUT path, so AI can move
+        // `New -> In Progress -> In Review` without `set`/`advance`.
+        // stdout shape matches `advance --status <derived>` by
+        // construction; the timer hook stays stderr-only.
+        let _lock = lock_workflow_tests();
+        let (dir, db) = tmp_db("bare-auto");
+        let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        let ledger = dir.join("phasegent-ledger.sqlite3");
+        let _ledger_guard = EnvGuard::set("PHASEGENT_DB_PATH", ledger.to_str().unwrap());
+        let provider = LocalProvider::open().unwrap();
+        let number = provider.create_issue("BareAuto", "body").unwrap().number;
+
+        let first = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Advance {
+                number,
+                status: String::new(),
+            },
+        );
+        assert_eq!(first, 0, "bare auto New -> In Progress must succeed");
+        let current = provider.status_next(number).unwrap().current.name;
+        assert_eq!(current, "In Progress", "bare auto must take first-allowed");
+
+        let second = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Advance {
+                number,
+                status: String::new(),
+            },
+        );
+        assert_eq!(second, 0, "bare auto In Progress -> In Review must succeed");
+        let current = provider.status_next(number).unwrap().current.name;
+        assert_eq!(current, "In Review");
+
+        // Orchestrator-only guard covers the sentinel path too.
+        let denied = execute_status(
+            Some(Role::Executor),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Advance {
+                number,
+                status: String::new(),
+            },
+        );
+        assert_eq!(denied, 3, "bare auto must stay orchestrator-only");
+
+        drop(_ledger_guard);
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bare_transition_on_terminal_status_fails_without_write() {
+        // A bare auto on a terminal status (Closed) has no
+        // first-allowed target: it must fail with exit 1 and leave
+        // the remote status untouched (no PUT, no close climb).
+        let _lock = lock_workflow_tests();
+        let (dir, db) = tmp_db("bare-terminal");
+        let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        let ledger = dir.join("phasegent-ledger.sqlite3");
+        let _ledger_guard = EnvGuard::set("PHASEGENT_DB_PATH", ledger.to_str().unwrap());
+        let provider = LocalProvider::open().unwrap();
+        let number = provider
+            .create_issue("BareTerminal", "body")
+            .unwrap()
+            .number;
+        // Walk the canonical path to Closed: New -> In Progress ->
+        // In Review -> Resolved -> Closed (direct New -> Closed is a
+        // policy Forbidden, so the setup must follow allowed edges).
+        for target in ["In Progress", "In Review", "Resolved", "Closed"] {
+            assert_eq!(
+                execute_status(
+                    Some(Role::Orchestrator),
+                    Some(ProviderKind::Local),
+                    None,
+                    None,
+                    None,
+                    None,
+                    StatusCommand::Advance {
+                        number,
+                        status: target.to_owned(),
+                    },
+                ),
+                0,
+                "setup advance to {target} must succeed"
+            );
+        }
+        let exit = execute_status(
+            Some(Role::Orchestrator),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            StatusCommand::Advance {
+                number,
+                status: String::new(),
+            },
+        );
+        assert_eq!(exit, 1, "bare auto on Closed must fail without a route");
+        let current = provider.status_next(number).unwrap().current.name;
+        assert_eq!(current, "Closed", "terminal bare must not write");
+
+        drop(_ledger_guard);
         drop(_guard);
         let _ = std::fs::remove_dir_all(dir);
     }

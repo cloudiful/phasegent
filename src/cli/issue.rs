@@ -350,6 +350,25 @@ pub(crate) fn execute_issue(
                         )
                         .warning(),
                     );
+                    // Phase 2 tool-driven auto (issue 443): a successful
+                    // create implies `In Progress` via `auto_route_next`.
+                    // Best-effort timer only; failures stay on stderr so
+                    // the stdout issue JSON is byte-identical. Forgejo
+                    // stays a silent `Skipped` inside the helper.
+                    if let Some(target) = crate::lifecycle_auto::auto_route_next(
+                        summary.number,
+                        crate::lifecycle_auto::ToolSignal::IssueCreated,
+                    ) {
+                        super::report_local_warnings(
+                            "issue create",
+                            crate::lifecycle_auto::auto_transition_timer(
+                                summary.number,
+                                provider_kind,
+                                target,
+                            )
+                            .warning(),
+                        );
+                    }
                     issue_search::warm_single_summary(&provider, &summary, "issue create");
                     let exit = super::print_json(&summary);
                     // One-shot `--body-file` cleanup (issue 298): delete

@@ -117,6 +117,27 @@ pub(crate) fn execute_comment(
                 return super::provider_error(error);
             }
             let result = provider.create_comment(issue, body, &marker);
+            if result.is_ok() {
+                // Phase 2 tool-driven auto (issue 443): a successful
+                // comment implies `In Review` via `auto_route_next`.
+                // Best-effort timer only; failures stay on stderr so
+                // the stdout comment JSON is byte-identical. Forgejo
+                // stays a silent `Skipped` inside the helper.
+                if let Some(target) = crate::lifecycle_auto::auto_route_next(
+                    issue,
+                    crate::lifecycle_auto::ToolSignal::CommentCreated,
+                ) {
+                    super::report_local_warnings(
+                        "comment create",
+                        crate::lifecycle_auto::auto_transition_timer(
+                            issue,
+                            provider.kind(),
+                            target,
+                        )
+                        .warning(),
+                    );
+                }
+            }
             let exit = super::print_result(result);
             // Default cleanup runs only on success; any failure above
             // kept the file (the deletion helper is a no-op there).

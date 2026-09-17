@@ -110,6 +110,41 @@ pub fn status_to_agent_role(status_name: &str) -> (&'static str, bool) {
     }
 }
 
+/// Tool-driven auto-route signal (issue 443 Phase 2).
+///
+/// Maps the most recent successful tool to its canonical target status
+/// so the timer ledger follows the tool without a manual
+/// `status set` / `status advance`. The table mirrors the issue
+/// examples and is intentionally signal-only: `number` is reserved
+/// for future per-issue routing and is unused today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSignal {
+    /// `issue create` succeeded; work has started.
+    IssueCreated,
+    /// `comment create` succeeded; review has started.
+    CommentCreated,
+    /// `issue close` succeeded; the task is done. Reserved for the
+    /// Phase 3 close-climb target derivation; the Phase 2 close path
+    /// finishes runs via `auto_close_issue_timer` instead of opening
+    /// a new segment, so this variant is mapping-only today.
+    #[allow(dead_code)]
+    IssueClosed,
+}
+
+/// Map a tool signal to its canonical target status name.
+///
+/// Returns `None` only when a future signal has no canonical target;
+/// all three Phase 2 signals map today. Callers feed the name into
+/// [`auto_transition_timer`] for the timer ledger (stderr-only
+/// warnings, stdout untouched) and treat `None` as silent skip.
+pub fn auto_route_next(_issue: u64, signal: ToolSignal) -> Option<&'static str> {
+    match signal {
+        ToolSignal::IssueCreated => Some("In Progress"),
+        ToolSignal::CommentCreated => Some("In Review"),
+        ToolSignal::IssueClosed => Some("Closed"),
+    }
+}
+
 /// Outcome of a lifecycle auto-accounting call. Callers translate
 /// `Skipped` into silence (no warning), and either `Started` (when
 /// its `warning` field is `Some`) or `Warning` into a bounded
@@ -762,7 +797,7 @@ mod relation_auto_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::status_to_agent_role;
+    use super::{ToolSignal, auto_route_next, status_to_agent_role};
 
     #[test]
     fn status_to_agent_role_matches_documented_buckets() {
@@ -807,6 +842,32 @@ mod tests {
             let (role, fallback) = status_to_agent_role(input);
             assert_eq!(role, "executor", "input: {input}");
             assert!(fallback, "input: {input} must report fallback");
+        }
+    }
+
+    #[test]
+    fn auto_route_next_matches_issue_443_tool_table() {
+        assert_eq!(
+            auto_route_next(1, ToolSignal::IssueCreated),
+            Some("In Progress")
+        );
+        assert_eq!(
+            auto_route_next(1, ToolSignal::CommentCreated),
+            Some("In Review")
+        );
+        assert_eq!(auto_route_next(1, ToolSignal::IssueClosed), Some("Closed"));
+    }
+
+    #[test]
+    fn auto_route_targets_resolve_to_expected_agent_roles() {
+        for (signal, expected_role) in [
+            (ToolSignal::IssueCreated, "executor"),
+            (ToolSignal::CommentCreated, "reviewer"),
+        ] {
+            let target = auto_route_next(7, signal).expect("mapped signal must route");
+            let (role, fallback) = status_to_agent_role(target);
+            assert_eq!(role, expected_role, "signal {signal:?}");
+            assert!(!fallback, "signal {signal:?} target must be canonical");
         }
     }
 }

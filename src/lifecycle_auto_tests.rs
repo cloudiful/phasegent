@@ -1102,3 +1102,40 @@ fn close_release_warns_when_repo_identity_is_unavailable() {
     let _ = fs::remove_dir_all(dir);
     let _ = fs::remove_dir_all(temp);
 }
+
+// ---------------------------------------------------------------------------
+// Issue 443 Phase 2: tool-signal auto-route table.
+//
+// Pins the `auto_route_next` mapping from the issue examples so the
+// timer hooks in `cli/issue.rs` (create -> In Progress) and
+// `cli/comment.rs` (create -> In Review) stay stable. The timer role
+// for each mapped target must match `status_to_agent_role` without a
+// fallback warning, except the close target which intentionally
+// falls back (Closed has no canonical role) and is finished via
+// `auto_close_issue_timer` rather than a new segment.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn auto_route_tool_table_matches_timer_roles() {
+    use crate::lifecycle_auto::{ToolSignal, auto_route_next, status_to_agent_role};
+
+    assert_eq!(
+        auto_route_next(1, ToolSignal::IssueCreated),
+        Some("In Progress")
+    );
+    assert_eq!(
+        auto_route_next(1, ToolSignal::CommentCreated),
+        Some("In Review")
+    );
+    assert_eq!(auto_route_next(1, ToolSignal::IssueClosed), Some("Closed"));
+
+    for (signal, expected_role) in [
+        (ToolSignal::IssueCreated, "executor"),
+        (ToolSignal::CommentCreated, "reviewer"),
+    ] {
+        let target = auto_route_next(42, signal).expect("mapped signal must route");
+        let (role, fallback) = status_to_agent_role(target);
+        assert_eq!(role, expected_role, "signal {signal:?}");
+        assert!(!fallback, "signal {signal:?} target must be canonical");
+    }
+}
