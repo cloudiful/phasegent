@@ -1,3 +1,4 @@
+use super::AssigneeOption;
 use super::prelude::*;
 
 pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
@@ -32,8 +33,9 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                     "--due-date",
                     "--estimated-hours",
                     "--done-ratio",
+                    "--assignee",
                 ],
-                &["--keep-body-file"],
+                &["--keep-body-file", "--no-assign"],
                 "issue create",
             )?;
             let (body, body_file, keep_body_file) =
@@ -45,6 +47,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 keep_body_file,
                 tracker: optional_option(args, "--tracker"),
                 planning: planning_options(args),
+                assignee: parse_assignee(args)?,
             }))
         }
         "update" => {
@@ -131,6 +134,29 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             Ok(Command::Issue(IssueCommand::StatusBranch))
         }
         value => Err(format!("unknown issue command '{value}'")),
+    }
+}
+
+/// Parse the GitLab assignee selector for `issue create`. `--assignee`
+/// (numeric id or username) and `--no-assign` are mutually exclusive; the
+/// raw value is resolved against the provider at execution time.
+fn parse_assignee(args: &[String]) -> Result<AssigneeOption, String> {
+    let explicit = optional_option(args, "--assignee");
+    let no_assign = has_flag(args, "--no-assign");
+    match (explicit, no_assign) {
+        (Some(_), true) => Err(
+            "issue create rejects --assignee together with --no-assign (they are mutually exclusive)"
+                .to_owned(),
+        ),
+        (Some(value), false) => {
+            let value = value.trim().to_owned();
+            if value.is_empty() {
+                return Err("issue create requires a non-empty --assignee".to_owned());
+            }
+            Ok(AssigneeOption::Explicit(value))
+        }
+        (None, true) => Ok(AssigneeOption::Unassigned),
+        (None, false) => Ok(AssigneeOption::Unset),
     }
 }
 

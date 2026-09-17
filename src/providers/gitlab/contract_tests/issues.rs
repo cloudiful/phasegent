@@ -1,7 +1,9 @@
 #![allow(unused_imports)]
 use super::support::*;
+use crate::command::AssigneeOption;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::GitlabProvider;
+use crate::providers::redmine::planning;
 use crate::providers::{IssueProvider, ProviderDispatcher, RepoProvider};
 
 #[test]
@@ -251,7 +253,7 @@ fn create_issue_posts_to_issues_with_labels() {
     let provider = provider(base);
     let labels = vec!["type::bug".to_owned()];
     let issue = provider
-        .create_issue_with_labels("Created", "Body", &labels)
+        .create_issue_with_labels("Created", "Body", &labels, &[])
         .unwrap();
     assert_eq!(issue.number, 11);
     let request = requests.recv().unwrap().remove(0);
@@ -263,6 +265,8 @@ fn create_issue_posts_to_issues_with_labels() {
     );
     assert!(request.contains(r#""description":"Body""#));
     assert!(request.contains(r#""labels":["type::bug"]"#));
+    // No assignee intent keeps the legacy payload free of `assignee_ids`.
+    assert!(!request.contains("assignee"));
     server.join().unwrap();
 }
 
@@ -339,4 +343,202 @@ fn dispatcher_routes_gitlab_get_issue_to_gitlab_provider() {
     assert_eq!(issue.number, 33);
     assert_eq!(issue.title, "Routed");
     assert_request(&request, "GET", "/api/v4/projects/42/issues/33", None);
+}
+
+#[test]
+fn planning_create_default_self_assigns_current_user() {
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(r#"{"id":9,"username":"owner"}"#),
+        MockResponse::ok(issue_payload(21, "Assigned", "opened", &[])),
+    ]);
+    let dispatcher = dispatcher(base);
+    let (summary, warning) = planning::create_issue(
+        &dispatcher,
+        "Assigned",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Unset,
+    )
+    .unwrap();
+    assert_eq!(summary.number, 21);
+    assert!(warning.is_none(), "self-assign must not warn: {warning:?}");
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /api/v4/user"));
+    assert_request(
+        &requests[1],
+        "POST",
+        "/api/v4/projects/42/issues",
+        Some(r#""assignee_ids":[9]"#),
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn planning_create_no_assign_keeps_legacy_payload() {
+    let (base, requests, server) = sequence(vec![MockResponse::ok(issue_payload(
+        22,
+        "Plain",
+        "opened",
+        &[],
+    ))]);
+    let dispatcher = dispatcher(base);
+    let (summary, warning) = planning::create_issue(
+        &dispatcher,
+        "Plain",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Unassigned,
+    )
+    .unwrap();
+    assert_eq!(summary.number, 22);
+    assert!(warning.is_none());
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_request(
+        &requests[0],
+        "POST",
+        "/api/v4/projects/42/issues",
+        Some(r#""title":"Plain""#),
+    );
+    assert!(
+        !requests[0].contains("assignee"),
+        "--no-assign must omit assignee fields: {}",
+        requests[0]
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn planning_create_explicit_numeric_assignee_skips_user_lookup() {
+    let (base, requests, server) = sequence(vec![MockResponse::ok(issue_payload(
+        23,
+        "For 55",
+        "opened",
+        &[],
+    ))]);
+    let dispatcher = dispatcher(base);
+    let (summary, _warning) = planning::create_issue(
+        &dispatcher,
+        "For 55",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Explicit("55".to_owned()),
+    )
+    .unwrap();
+    assert_eq!(summary.number, 23);
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains(r#""assignee_ids":[55]"#));
+    server.join().unwrap();
+}
+
+#[test]
+fn planning_create_explicit_username_resolves_via_users_search() {
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(r#"[{"id":77,"username":"alice","name":"Alice"}]"#),
+        MockResponse::ok(issue_payload(24, "For alice", "opened", &[])),
+    ]);
+    let dispatcher = dispatcher(base);
+    let (summary, _warning) = planning::create_issue(
+        &dispatcher,
+        "For alice",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Explicit("alice".to_owned()),
+    )
+    .unwrap();
+    assert_eq!(summary.number, 24);
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /api/v4/users?"));
+    assert!(requests[0].contains("username=alice"));
+    assert!(requests[1].contains(r#""assignee_ids":[77]"#));
+    server.join().unwrap();
+}
+
+#[test]
+fn planning_create_degrades_to_unassigned_when_current_user_lookup_fails() {
+    let (base, requests, server) = sequence(vec![
+        MockResponse::status(
+            403,
+            format!(r#"{{"message":"denied for token {TEST_TOKEN}"}}"#),
+        ),
+        MockResponse::ok(issue_payload(25, "Degraded", "opened", &[])),
+    ]);
+    let dispatcher = dispatcher(base);
+    let (summary, warning) = planning::create_issue(
+        &dispatcher,
+        "Degraded",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Unset,
+    )
+    .unwrap();
+    assert_eq!(summary.number, 25);
+    let warning = warning.expect("degrade must surface a stderr warning");
+    assert!(
+        warning.contains("unassigned"),
+        "warning must explain the degradation: {warning}"
+    );
+    assert!(
+        !warning.contains(TEST_TOKEN),
+        "warning leaked the private token: {warning}"
+    );
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /api/v4/user"));
+    assert!(
+        !requests[1].contains("assignee_ids"),
+        "degraded create must stay unassigned: {}",
+        requests[1]
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn planning_create_unknown_username_errors_before_any_post() {
+    let (base, requests, server) = sequence(vec![MockResponse::ok("[]")]);
+    let dispatcher = dispatcher(base);
+    let error = planning::create_issue(
+        &dispatcher,
+        "Nope",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Explicit("nobody".to_owned()),
+    )
+    .unwrap_err();
+    assert_eq!(error.json()["kind"], "config");
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("GET /api/v4/users?"));
+    server.join().unwrap();
+}
+
+#[test]
+fn planning_create_rejects_explicit_assignee_on_non_gitlab_provider() {
+    let forgejo = ProviderDispatcher::Forgejo(
+        crate::providers::forgejo::ForgejoProvider::new(
+            crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
+            "token".to_owned(),
+        )
+        .unwrap(),
+    );
+    let error = planning::create_issue(
+        &forgejo,
+        "Title",
+        "Body",
+        None,
+        &Default::default(),
+        &AssigneeOption::Explicit("42".to_owned()),
+    )
+    .unwrap_err();
+    assert_eq!(error.json()["kind"], "not_supported");
+    assert_eq!(error.json()["operation"], "--assignee");
 }

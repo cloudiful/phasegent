@@ -5,10 +5,83 @@
 //! envelope behaviour lives in the Redmine contract suite, which can
 //! drive `batch_fetch_issues` against a mock server.
 
-use crate::command::{self, Command, IssueCommand};
+use crate::command::{self, AssigneeOption, Command, IssueCommand};
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
+}
+
+fn create_assignee(argv: &[&str]) -> AssigneeOption {
+    let mut args = vec![
+        "--role", "executor", "issue", "create", "--title", "T", "--body", "B",
+    ];
+    args.extend_from_slice(argv);
+    let invocation = command::parse(&strings(&args)).expect("create must parse");
+    match invocation.command {
+        Command::Issue(IssueCommand::Create { assignee, .. }) => assignee,
+        other => panic!("expected Create, got {other:?}"),
+    }
+}
+
+#[test]
+fn issue_create_assignee_defaults_to_unset() {
+    assert_eq!(create_assignee(&[]), AssigneeOption::Unset);
+}
+
+#[test]
+fn issue_create_assignee_parses_explicit_value_and_no_assign() {
+    assert_eq!(
+        create_assignee(&["--assignee", "alice"]),
+        AssigneeOption::Explicit("alice".to_owned())
+    );
+    assert_eq!(
+        create_assignee(&["--assignee=42"]),
+        AssigneeOption::Explicit("42".to_owned())
+    );
+    assert_eq!(
+        create_assignee(&["--no-assign"]),
+        AssigneeOption::Unassigned
+    );
+}
+
+#[test]
+fn issue_create_rejects_assignee_with_no_assign_and_empty_value() {
+    let conflict = command::parse(&strings(&[
+        "--role",
+        "executor",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+        "--assignee",
+        "alice",
+        "--no-assign",
+    ]))
+    .expect_err("--assignee with --no-assign must error");
+    assert!(
+        conflict.contains("mutually exclusive"),
+        "unexpected error: {conflict}"
+    );
+
+    let empty = command::parse(&strings(&[
+        "--role",
+        "executor",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+        "--assignee",
+        "",
+    ]))
+    .expect_err("empty --assignee must error");
+    assert!(
+        empty.contains("non-empty --assignee"),
+        "unexpected error: {empty}"
+    );
 }
 
 #[test]
