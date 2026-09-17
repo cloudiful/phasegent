@@ -16,14 +16,32 @@ pub enum RedmineErrorKind {
 }
 
 /// Classify an already-surfaced provider error.
+///
+/// A silent-200 close mismatch (`issue close` request error `Redmine did
+/// not confirm close ...`, e.g. dogfood `issue close 443` observing `New`
+/// after a `200 OK`) is a server workflow refusal without an HTTP error
+/// status, so it classifies as `WorkflowNotAllowed` and drives the same
+/// stepwise close climb as a 403/422 workflow rejection.
 pub fn classify_redmine_error(error: &ForgejoError) -> RedmineErrorKind {
     match error {
         ForgejoError::Auth(_) => RedmineErrorKind::Auth,
         ForgejoError::Http {
             status, message, ..
         } => classify_http(*status, message),
+        ForgejoError::Request { operation, message } if is_close_mismatch(operation, message) => {
+            RedmineErrorKind::WorkflowNotAllowed
+        }
         _ => RedmineErrorKind::Other,
     }
+}
+
+/// True for the provider's own close-verification mismatch: a `200 OK`
+/// PUT/GET pair whose observed status contradicts the requested close.
+fn is_close_mismatch(operation: &str, message: &str) -> bool {
+    operation == "issue close"
+        && message
+            .to_ascii_lowercase()
+            .contains("did not confirm close")
 }
 
 /// Classify a raw HTTP status plus redacted message body.
@@ -112,6 +130,20 @@ mod tests {
         );
         assert_eq!(classify_http(403, ""), RedmineErrorKind::Other);
         assert_eq!(classify_http(500, "boom"), RedmineErrorKind::Other);
+    }
+
+    #[test]
+    fn silent_200_close_mismatch_classifies_as_workflow() {
+        let mismatch = ForgejoError::request(
+            "issue close",
+            "Redmine did not confirm close (status_id=5); observed status_id=Some(1) ('New', is_closed=Some(false))".to_owned(),
+        );
+        assert_eq!(
+            classify_redmine_error(&mismatch),
+            RedmineErrorKind::WorkflowNotAllowed
+        );
+        let unrelated = ForgejoError::request("issue close", "boom".to_owned());
+        assert_eq!(classify_redmine_error(&unrelated), RedmineErrorKind::Other);
     }
 
     #[test]

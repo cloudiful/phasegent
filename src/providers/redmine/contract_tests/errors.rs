@@ -169,6 +169,59 @@ fn close_climb_failure_returns_structured_forbidden_with_recovery() {
     server.join().unwrap();
 }
 
+fn issue_with_status_id(id: u64, status_id: u64, name: &str) -> String {
+    serde_json::json!({
+        "issue": {
+            "id": id,
+            "subject": "Title",
+            "description": "Body",
+            "status": {"id": status_id, "name": name},
+            "journals": []
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn silent_200_close_mismatch_climbs_to_success() {
+    // Dogfood `issue close 443`: the direct PUT returns 200 but the
+    // observed status stays New. The mismatch classifies as
+    // WorkflowNotAllowed, so close climbs New -> In Progress ->
+    // In Review -> Resolved and retries the close PUT.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(issue_with_status_id(20, 1, "New")),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "New", false)),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "New", false)),
+        MockResponse::ok(issue_with_named_status(20, "In Progress", false)),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "In Progress", false)),
+        MockResponse::ok(issue_with_named_status(20, "In Review", false)),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "In Review", false)),
+        MockResponse::ok(issue_with_named_status(20, "Resolved", false)),
+        MockResponse::ok(issue_with_named_status(20, "Closed", true)),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let summary = redmine.close_issue(20).expect("mismatch must climb");
+    assert_eq!(summary.state, "closed");
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 13, "mismatch PUT + climb reads + steps + retry");
+    support::assert_request(&seen[0], "PUT", "/issues/20.json", None);
+    assert!(seen[0].contains(r#""issue":{"status_id":37}"#));
+    support::assert_request(&seen[5], "PUT", "/issues/20.json", None);
+    assert!(seen[5].contains(r#""issue":{"status_id":2}"#));
+    support::assert_request(&seen[8], "PUT", "/issues/20.json", None);
+    assert!(seen[8].contains(r#""issue":{"status_id":3}"#));
+    support::assert_request(&seen[11], "PUT", "/issues/20.json", None);
+    assert!(seen[11].contains(r#""issue":{"status_id":4}"#));
+    support::assert_request(&seen[12], "PUT", "/issues/20.json", None);
+    assert!(seen[12].contains(r#""issue":{"status_id":37}"#));
+    server.join().unwrap();
+}
+
 #[test]
 fn close_preserves_non_workflow_refusal_without_climb() {
     // Empty 403 has no workflow marker: single PUT, legacy shape.

@@ -287,7 +287,10 @@ fn status_set_fails_when_remote_state_remains_stale() {
 
 /// `issue close` must also fail when the remote state does not match the
 /// configured close status. The mock echoes an open status, so the new
-/// close verification rejects the PUT response with a structured error.
+/// close verification rejects the PUT response; the silent-200 mismatch
+/// classifies as a workflow refusal and attempts the close climb, but the
+/// exhausted mock returns no usable status list/issue so the climb falls
+/// back to the legacy mismatch error instead of reporting success.
 #[test]
 fn issue_close_fails_when_remote_state_remains_open() {
     // P3 pre-write: leading GET passes the guard, PUT returns stale open.
@@ -339,20 +342,36 @@ fn issue_close_fails_when_remote_state_remains_open() {
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        2,
-        "close should produce scope-guard GET + PUT: {requests:?}"
+        4,
+        "close should produce scope-guard GET + PUT + climb status list + climb current-issue GET: {requests:?}"
     );
     assert!(
         requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
         "first request must be the scope-guard GET: {}",
         requests[0]
     );
+    assert!(
+        requests[1].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
+        "second request must be the direct close PUT: {}",
+        requests[1]
+    );
+    assert!(
+        requests[2].starts_with("GET /issue_statuses.json"),
+        "third request must be the climb status list: {}",
+        requests[2]
+    );
+    assert!(
+        requests[3].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+        "fourth request must be the climb current-issue read: {}",
+        requests[3]
+    );
 }
 
 /// `issue close` follows the same follow-up `GET` rule as `status set`:
 /// when the PUT body is missing or empty the binary must re-read the
 /// issue and confirm the close status. The mock returns no PUT body and
-/// then an open follow-up GET; the close must fail.
+/// then an open follow-up GET; the mismatch climbs (exhausted mock, so
+/// the climb falls back to the legacy error) and the close must fail.
 #[test]
 fn issue_close_fails_when_follow_up_get_shows_open_status() {
     // The binary will re-read on an empty PUT body; the follow-up GET
@@ -399,8 +418,14 @@ fn issue_close_fails_when_follow_up_get_shows_open_status() {
     assert_eq!(envelope["error"]["operation"], "issue close");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3, "scope-guard GET + PUT + follow-up GET");
+    assert_eq!(
+        requests.len(),
+        5,
+        "scope-guard GET + PUT + follow-up GET + climb status list + climb current-issue GET"
+    );
     assert!(requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
     assert!(requests[1].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")));
     assert!(requests[2].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(requests[3].starts_with("GET /issue_statuses.json"));
+    assert!(requests[4].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
 }

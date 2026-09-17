@@ -225,10 +225,13 @@ impl RedmineProvider {
     /// server rejects with a workflow refusal (`RedmineErrorKind::
     /// WorkflowNotAllowed`, e.g. `New -> Closed` on issue 441) is
     /// retried stepwise — `advance` along the canonical policy to
-    /// `Resolved`, then a final `PUT close_id`. Any other failure keeps
-    /// its legacy shape; a failed climb returns a structured
-    /// `Forbidden`-style `issue close` error with `allowed_next` and a
-    /// `status next` recovery hint.
+    /// `Resolved`, then a final `PUT close_id`. A silent-200 mismatch
+    /// (`Redmine did not confirm close ... observed New`, e.g. dogfood
+    /// `issue close 443`) classifies as the same workflow refusal and
+    /// climbs the same path. Any other failure keeps its legacy shape;
+    /// a failed climb returns a structured `Forbidden`-style `issue
+    /// close` error with `allowed_next` and a `status next` recovery
+    /// hint.
     pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
         let status_id = self.config.require_close_status_id()?;
         match self.try_direct_close(number, status_id) {
