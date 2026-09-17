@@ -16,7 +16,8 @@
 //! advertised contract (session precedence, dry-run recovery, prune
 //! boundaries) can be asserted directly in tests.
 
-use crate::policy::Role;
+use super::common::{HelpRow, print_group_help, render_group_help};
+use crate::policy::{Capability, Role};
 
 const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--base REF] [--isolate] [--format json]\n\nAcquire (or refresh) a per-(repo, issue, session) worktree lease and finish the local setup in one command. Idempotent: re-running with the same triple returns the same lease_id and updates the heartbeat (reason=\"idempotent\"). When the current checkout is clean and no other lease is active for the repo it is reused (reason=\"no_conflict\"); when it is dirty or any other active lease exists for the repo a fresh `phasegent/<issue>-<short6hex>` branch and a new worktree under ~/.cache/phasegent/worktrees/<fingerprint>/<slug> are created by default (reason=\"new_worktree\"), with the trigger explained by a stderr warning. That new default is the issue #436 behavior change: a dirty checkout or an existing lease no longer reuses the shared checkout, so a second session cannot collide with the `(repo, worktree_path)` lease index; `--isolate` remains accepted as the explicit opt-in for the same outcome. When the `git status` probe itself fails the dirty state is unknown: `--isolate` or the resolved `worktree-auto` switch creates a fresh worktree, otherwise the current checkout is reused, and both emit a stderr warning — an unknown status is never silently treated as clean, and this is the only case where the switches still change the outcome. On every successful acquire the issue is bound to the acquired checkout's branch and the managed commit hooks are installed when that checkout has a git origin, so one command leaves the checkout ready; both steps reuse the standard bind/hook helpers, never overwrite an existing binding to a different issue (the conflict is a warning naming `--replace`), and degrade to warnings that never fail the acquire. Returns compact JSON on stdout. --session resolves from the explicit flag, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback (legacy only warns on stderr); --base is accepted for forward compatibility and the implementation always bases on HEAD. --format is json (the only accepted value). Orchestrator-only. No branch, lease row, or dirty worktree is ever deleted, .env / secret material is never read or copied, and the lease table is created lazily through `CREATE TABLE IF NOT EXISTS` so pre-Phase-1 databases still open.";
 
@@ -30,26 +31,94 @@ const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [
 
 const HEARTBEAT_HELP: &str = "Usage: worktree heartbeat --lease ID [--session SESSION]\n\nRefresh heartbeat_at on an active lease so a long-running session is not mistaken for stale. The update only matches when the lease is still `active` AND its stored session equals the caller's resolved session (--session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback with a stderr warning). A foreign session, a terminal lease, or an unknown lease id returns a structured `state` conflict and leaves the row untouched; the conditional update also guarantees a heartbeat and a concurrent stale recovery cannot both win. Returns a JSON envelope with lease_id/issue/session/status/heartbeat_at. Never deletes a worktree or branch. Orchestrator-only.";
 
-/// Top-level `worktree` help body (no trailing newline).
+/// Split the top-level `worktree` overview into header plus mutating and
+/// read-only row groups so the shape is testable without capturing stdout.
+/// Mutating rows use an orchestrator-only capability purely as a `role.allows`
+/// gate (the executor in `src/cli/worktree.rs` checks `Role::Orchestrator`
+/// directly); read-only rows use `RelationRead` because it matches the
+/// `status`/`list` surface exactly (orchestrator, executor, reviewer).
+fn worktree_help_parts(
+    role: Option<Role>,
+) -> (String, Vec<HelpRow<'static>>, Vec<HelpRow<'static>>) {
+    let header = format!(
+        "Worktree commands for {}:",
+        role.map_or("all roles", Role::as_str)
+    );
+    let mutating: Vec<HelpRow<'static>> = vec![
+        (
+            "acquire",
+            "Acquire or reuse a per-(repo, issue, session) lease",
+            Capability::IssueCreate,
+        ),
+        (
+            "release",
+            "Flip an active lease to retained or released",
+            Capability::IssueCreate,
+        ),
+        (
+            "heartbeat",
+            "Refresh an active lease heartbeat",
+            Capability::IssueCreate,
+        ),
+        (
+            "prune",
+            "Prune stale leases and clean worktrees",
+            Capability::IssueCreate,
+        ),
+    ];
+    let readonly: Vec<HelpRow<'static>> = vec![
+        (
+            "status",
+            "List active leases for an issue",
+            Capability::RelationRead,
+        ),
+        (
+            "list",
+            "List every lease for the resolved repo identity",
+            Capability::RelationRead,
+        ),
+    ];
+    (header, mutating, readonly)
+}
+
+/// Top-level `worktree` help body rendered through the shared group helper.
+/// Contract prose (#436 isolation default, #239 Phase 2, session precedence,
+/// worktree-auto) lives on the per-subcommand detail pages and stays out of
+/// this one-line-per-command overview.
 pub(crate) fn worktree_help_text(role: Option<Role>) -> String {
-    if role.is_none_or(|role| role == Role::Orchestrator) {
-        "Worktree commands for orchestrators (issue #239 Phase 2; mutating subcommands are orchestrator-only; status/list mirror the issue-status read surface):\n\n  acquire --issue N [--session S] [--base REF] [--isolate] [--format json]    Acquire or reuse a per-(repo, issue, session) worktree lease; a dirty checkout or an active lease now isolates by default (issue #436) and --isolate stays accepted as the explicit opt-in, while PHASEGENT_WORKTREE_AUTO/worktree-auto gates the unknown-probe state; on success the issue is auto-bound to the acquired checkout's branch and managed hooks are installed when the checkout has an origin; session resolves from --session, PHASEGENT_SESSION_ID, or the legacy \"phasegent\" fallback; returns lease_id/path/branch/created/reason JSON\n  release --lease ID [--retain=true|false] [--force --reason TEXT]  Flip an active lease to retained (default) or released; never deletes the directory or the branch; --force records --reason on the row so the override stays attributable (lease rows are never deleted)\n  heartbeat --lease ID [--session SESSION]                         Refresh an active lease's heartbeat; only the owning session may update it; a foreign session or terminal lease returns a structured conflict\n  prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove]  Single pruning entry point; default dry-run reports stale active leases and prunable worktrees, --release-stale flips stale active leases to retained (requires --reason), --remove deletes clean + expired + retained worktrees (combined runs recovery first); never deletes a branch and never removes a dirty worktree\n  status --issue N                                                 List active leases for an issue (read-only; available to orchestrator, executor, and reviewer)\n  list [--repo PATH]                                               List every lease for the resolved repo identity (read-only; --repo defaults to the current directory)"
-            .to_owned()
-    } else if role.is_some_and(is_read_role) {
-        format!(
-            "Worktree commands for {} (read-only surface):\n\n  status --issue N                                                 List active leases for an issue (read-only)\n  list [--repo PATH]                                               List every lease for the resolved repo identity (read-only; --repo defaults to the current directory)\n\nMutating subcommands (acquire, release, heartbeat, prune) are orchestrator-only.",
-            role.unwrap().as_str()
-        )
-    } else {
-        format!(
+    if role.is_some_and(|role| !is_read_role(role) && role != Role::Orchestrator) {
+        return format!(
             "No worktree commands available for {}.",
             role.map_or("this role", Role::as_str)
-        )
+        );
     }
+    let (header, mutating, readonly) = worktree_help_parts(role);
+    render_group_help(
+        role,
+        &header,
+        &[
+            (None, &mutating),
+            (Some("Read-only (status/list)"), &readonly),
+        ],
+        "Use 'phasegent --help worktree <command>' for options.",
+    )
 }
 
 pub(crate) fn print_worktree_help(role: Option<Role>) {
-    println!("{}", worktree_help_text(role));
+    if role.is_some_and(|role| !is_read_role(role) && role != Role::Orchestrator) {
+        println!("{}", worktree_help_text(role));
+        return;
+    }
+    let (header, mutating, readonly) = worktree_help_parts(role);
+    print_group_help(
+        role,
+        &header,
+        &[
+            (None, &mutating),
+            (Some("Read-only (status/list)"), &readonly),
+        ],
+        "Use 'phasegent --help worktree <command>' for options.",
+    )
 }
 
 /// Per-subcommand `worktree` help body (no trailing newline).
@@ -123,16 +192,71 @@ mod tests {
     }
 
     #[test]
-    fn top_level_help_marks_acquire_isolation_as_the_default() {
+    fn overview_is_tabular_with_read_only_section() {
         let text = worktree_help_text(Some(Role::Orchestrator));
         assert!(
-            text.contains("isolates by default (issue #436)")
-                && text.contains("--isolate stays accepted"),
-            "top-level acquire line must document the new default: {text}"
+            text.contains("Worktree commands for orchestrator:"),
+            "header must use the grouped shape; got: {text}"
         );
         assert!(
-            !text.contains("auto-isolation defaults off"),
-            "the old default must not remain in help: {text}"
+            text.contains("Read-only (status/list):"),
+            "status/list need their own section; got: {text}"
+        );
+        for (name, desc) in [
+            (
+                "acquire",
+                "Acquire or reuse a per-(repo, issue, session) lease",
+            ),
+            ("release", "Flip an active lease to retained or released"),
+            ("heartbeat", "Refresh an active lease heartbeat"),
+            ("prune", "Prune stale leases and clean worktrees"),
+            ("status", "List active leases for an issue"),
+            ("list", "List every lease for the resolved repo identity"),
+        ] {
+            assert!(
+                text.contains(&format!("  {name:<14} {desc}")),
+                "rows stay one-command-per-line; missing {name}; got: {text}"
+            );
+        }
+        assert!(
+            text.contains("Use 'phasegent --help worktree <command>' for options."),
+            "footer must point to detail pages; got: {text}"
+        );
+    }
+
+    #[test]
+    fn overview_sinks_contract_prose_to_detail_pages_without_loss() {
+        let overview = worktree_help_text(Some(Role::Orchestrator));
+        for sunk in [
+            "issue #436",
+            "issue #239",
+            "PHASEGENT_SESSION_ID",
+            "worktree-auto",
+            "phasegent/<issue>-",
+        ] {
+            assert!(
+                !overview.contains(sunk),
+                "overview must not repeat contract prose ({sunk}); got: {overview}"
+            );
+        }
+        let acquire = worktree_command_help_text(Some(Role::Orchestrator), "acquire");
+        assert!(
+            acquire.contains("issue #436") && acquire.contains("PHASEGENT_SESSION_ID"),
+            "acquire detail keeps isolation + session prose; got: {acquire}"
+        );
+        assert!(
+            acquire.contains("worktree-auto"),
+            "acquire detail keeps the unknown-probe switch; got: {acquire}"
+        );
+        let heartbeat = worktree_command_help_text(Some(Role::Orchestrator), "heartbeat");
+        assert!(
+            heartbeat.contains("PHASEGENT_SESSION_ID"),
+            "heartbeat detail keeps session prose; got: {heartbeat}"
+        );
+        let status = worktree_command_help_text(Some(Role::Orchestrator), "status");
+        assert!(
+            status.contains("orchestrator, executor, and reviewer"),
+            "status detail keeps the read-surface prose; got: {status}"
         );
     }
 
@@ -178,18 +302,47 @@ mod tests {
     }
 
     #[test]
-    fn top_level_help_lists_every_mutating_subcommand_as_orchestrator_only() {
-        let text = worktree_help_text(Some(Role::Orchestrator));
-        for command in ["acquire", "release", "heartbeat", "prune"] {
+    fn overview_lists_every_command_and_filters_by_role() {
+        let full = worktree_help_text(Some(Role::Orchestrator));
+        for command in ["acquire", "release", "heartbeat", "prune", "status", "list"] {
             assert!(
-                text.contains(command),
-                "top-level help missing {command}; got: {text}"
+                full.contains(command),
+                "orchestrator overview missing {command}; got: {full}"
             );
         }
+        let all_roles = worktree_help_text(None);
+        for command in ["acquire", "release", "heartbeat", "prune", "status", "list"] {
+            assert!(
+                all_roles.contains(command),
+                "all-roles overview missing {command}; got: {all_roles}"
+            );
+        }
+        let read_only = worktree_help_text(Some(Role::Executor));
         assert!(
-            text.contains("mutating subcommands are orchestrator-only"),
-            "got: {text}"
+            read_only.contains("  status") && read_only.contains("  list"),
+            "executor keeps the read-only section; got: {read_only}"
         );
+        for command in ["acquire", "release", "heartbeat", "prune"] {
+            assert!(
+                !read_only.contains(&format!("  {command:<14}")),
+                "executor overview must hide mutating row {command}; got: {read_only}"
+            );
+        }
+        let reviewer = worktree_help_text(Some(Role::Reviewer));
+        assert!(
+            reviewer.contains("  status") && !reviewer.contains("  acquire"),
+            "reviewer keeps status and hides acquire; got: {reviewer}"
+        );
+        for role in [Role::Tester, Role::Admin] {
+            let denied = worktree_help_text(Some(role));
+            assert!(
+                denied.contains(&format!(
+                    "No worktree commands available for {}",
+                    role.as_str()
+                )),
+                "{role:?} must stay denied without a table; got: {denied}"
+            );
+        }
     }
 
     #[test]
