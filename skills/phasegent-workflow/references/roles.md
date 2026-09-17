@@ -31,17 +31,18 @@ Legend: `✓` allowed, `—` denied.
 
 - **orchestrator** allows every capability, and is the only role with issue
   write/search/close, repo create, relation write, and the only non-admin
-  status `set`/`advance` and `timer` role (those last gates are command-level,
-  not capability-level — see `references/contracts.md`).
+  status-transition and `timer` role (status flow is automatic; command-level
+  gates live in `references/contracts.md`).
 - **admin** is bootstrap-only: project list/create, status list/next, version
   list, and `workflow bootstrap`.
 - **executor** and **reviewer** share the read/comment/project/status/version/
   relation-read surface; executor alone can write to its own audit note, but
   both are barred from issue write/close/search, relation write, repo create,
-  timer, and status transition.
+  and timer; status flows automatically (command-level gates in
+  `references/contracts.md`).
 - **tester** is comment + attachment read/write surface only: issue read,
   comment read/find/create, and attachment upload. It never sees project,
   status, version, or relation data.
 - Capability-level entries above are authoritative; command-level gates such as
-  `status set`, `status advance`, `timer *`, and `workflow bootstrap` are keyed
+  `status transition`, `timer *`, and `workflow bootstrap` are keyed
   to the role, not a capability, so they are listed in `references/contracts.md`.

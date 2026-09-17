@@ -60,8 +60,10 @@ Detail matrix (from `src/policy.rs`) is in
 [`references/contracts.md`](references/contracts.md). Summary:
 
 - `orchestrator` owns issue write/search/close, repo create, relation write,
-  `status set`/`advance`, `timer`, `worktree` leases, phase ordering,
-  delegation, review, and final closure.
+  `status transition`, `timer`, `worktree` leases, phase ordering,
+  delegation, review, and final closure. Status follows the tools
+  automatically — child roles never call status; the orchestrator closes the
+  issue at finish.
 - `executor`/`reviewer` are read/comment plus project/status/version/
   relation-read; `tester` is issue-read plus comment read/find/create plus
   attachment upload; `admin` is bootstrap-only.
@@ -189,8 +191,10 @@ Rules:
 
 ## Primitives (who may call what)
 
-- Orchestrator-only writes: issue body/search/create/close, `status set`/
-  `advance`, `timer`, `worktree` leases, repo/relation write. Children never
+- Orchestrator-only writes: issue body/search/create/close, `status transition`,
+  `timer`, `worktree` leases, repo/relation write. Status follows the tools
+  automatically — children never call status; the orchestrator closes the
+  issue at finish (cross-project close needs `--project-id`). Children never
   edit the body, label, close, commit, push, or mutate refs.
 - `status list`/`next` are read-only for IssueStatusRead roles.
 - `comment create`/`get`/`find-marker` per the role matrix; non-orchestrator
@@ -200,7 +204,8 @@ Rules:
   tester allowed, admin denied.
 - `mcp serve` exposes only the startup role's toolset (`capabilities`,
   `issue_get`, `issue_search`, `status_next`, `comment_create`, `notify_send`);
-  `status_advance`, timer start/finish, and role elevation are never exposed.
+  `status transition`, timer start/finish, and role elevation stay CLI-only
+  and are never exposed.
 
 ## Syntax vs boundaries
 

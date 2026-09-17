@@ -23,7 +23,7 @@ token; agent permission rules deny that single prefix.
 | `issue search` | IssueSearch | orchestrator only | provider-fresh; auto-bootstraps project on no match; scoped local-index fallback on failure |
 | `issue create` | IssueCreate | orchestrator only | planning flags Redmine/GitLab; Forgejo rejects every planning flag |
 | `issue update` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
-| `issue close` | IssueClose | orchestrator only | — |
+| `issue close` | IssueClose | orchestrator only | orchestrator closes at finish; auto-climbs to the closed status; cross-project close needs `--project-id` |
 | `issue upload-attachment` | IssueAttachmentUpload | orchestrator, tester | Uniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects with `not_supported` (exit 1) before any file, network, or credential access |
 | `issue bind` / `issue unbind` / `issue status` | IssueRead | orchestrator, executor, reviewer, tester | local branch–issue binding; no provider/network |
 | `comment create` | CommentCreate | orchestrator, executor, reviewer, tester | `--authorized` required unless orchestrator (CLI) |
@@ -34,8 +34,7 @@ token; agent permission rules deny that single prefix.
 | `project create` | ProjectCreate | orchestrator, admin | Redmine and local; GitLab/Forgejo use `repo create` (single entry point to `POST /projects`); requires `--confirm` |
 | `status list` | IssueStatusRead | orchestrator, admin, executor, reviewer | Redmine, GitLab (static `WORKFLOW_LABELS` catalogue), and local; Forgejo returns not-supported |
 | `status next` | IssueStatusRead | orchestrator, admin, executor, reviewer | read-only; current + policy-allowed next + recovery command; Redmine and local |
-| `status set` | role == orchestrator | orchestrator only | validated name/id; Redmine, GitLab (workflow label), and local |
-| `status advance` | role == orchestrator | orchestrator only | policy preflight; idempotent no-op; Redmine and local |
+| `status transition` | role == orchestrator | orchestrator only | preferred status write; `--to` names the target, bare auto-routes; Redmine and local |
 | `version list` | VersionRead | orchestrator, admin, executor, reviewer | Redmine (native) and GitLab (GET /projects/:id/milestones); local returns an empty catalogue (no versions table); Forgejo returns not-supported; never auto-bootstraps |
 | `relation list` | RelationRead | orchestrator, executor, reviewer | Redmine/GitLab; Forgejo and local reject (no relation surface) |
 | `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject; Phase 3 lifecycle helper auto-creates a `relates` link on `issue create --parent-issue <ID>` (idempotent, bounded warning on failure) |
@@ -47,7 +46,7 @@ token; agent permission rules deny that single prefix.
 | `admin workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |
 | `repo create` | RepoCreate | orchestrator only | Forgejo/GitLab; `--private` required; Redmine/local reject as not-supported |
 | `notify send` | role gate | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |
-| `mcp serve` | startup `--role` | role-scoped toolset | tools: `capabilities`, `issue_get`, `issue_search`, `status_next`, `comment_create` (needs server-side `--authorized` unless orchestrator), `notify_send`; excludes `status_advance`, timer start/finish, role elevation |
+| `mcp serve` | startup `--role` | role-scoped toolset | tools: `capabilities`, `issue_get`, `issue_search`, `status_next`, `comment_create` (needs server-side `--authorized` unless orchestrator), `notify_send`; excludes status writes (`status transition` is CLI-only), timer start/finish, role elevation |
 | `admin auth setup` | all roles | admin, orchestrator, executor, reviewer, tester | credentials never a CLI value |
 | `config show` / `config provider get` | machine-wide | any (no `--role` required) | redacted snapshot; secrets as presence/length/fingerprint, never values |
 | `admin config set` / `admin config clear` | global or role-scoped | any; role-scoped settings need `--role` | SQLite only; secret settings require `--stdin` |
@@ -57,11 +56,10 @@ token; agent permission rules deny that single prefix.
 
 ## Orchestrator-owned primitives (never client roles)
 
-`timer start` / `timer finish` / `timer recover` and `status set` /
-`status advance` are orchestrator-only via manual CLI. Children (executor,
-reviewer, tester) never start timers, advance statuses, edit the issue body, or
-label/close the issue. `status_advance` and timer operations are never exposed
-over MCP.
+`timer start` / `timer finish` / `timer recover` and `status transition` are
+orchestrator-only via manual CLI. Children (executor, reviewer, tester) never
+touch timers or status, edit the issue body, or label/close the issue.
+`status transition` and timer operations are never exposed over MCP.
 
 ## Admin group (never AI roles)
 
@@ -80,5 +78,6 @@ attributed override).
 
 The MCP toolset depends on the startup role. `comment_create` is rejected with
 an authorization error unless the server was started with `--authorized` (or
-the server role is orchestrator). Timers, `status_advance`, and role elevation
-are never exposed regardless of role.
+the server role is orchestrator). Status writes stay CLI-only (`status transition`
+has no MCP tool), as do timers and role elevation — never exposed regardless
+of role.
