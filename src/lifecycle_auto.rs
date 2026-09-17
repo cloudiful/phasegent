@@ -606,7 +606,7 @@ mod relation_auto_tests {
         // drop so the host shell is never left pointing at a
         // synthetic DB.
         let _lock = lock_workflow_tests();
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-auto-rel-forgejo-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

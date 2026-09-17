@@ -270,6 +270,7 @@ pub(crate) fn execute_issue(
             assignee,
             branch,
             base,
+            session,
         } => {
             // Phase 3 write-side relation auto (issue 257): the
             // auto-relation fires ONLY on the parent-child split
@@ -380,6 +381,20 @@ pub(crate) fn execute_issue(
                             ),
                         );
                     }
+                    // Issue 18: after a successful create and its bind step,
+                    // let the shared conflict table decide whether the current
+                    // checkout can be reused or a conflict needs an isolated
+                    // worktree. Best-effort: the helper never fails the create,
+                    // never deletes a branch or worktree, and reports a created
+                    // worktree as a bounded stderr warning so the stdout issue
+                    // JSON stays byte-identical.
+                    super::report_local_warnings(
+                        "issue create",
+                        crate::worktree::auto_acquire_after_bind(
+                            summary.number,
+                            session.as_deref(),
+                        ),
+                    );
                     // Phase 3 relation auto: fire the helper
                     // after a successful create when the parent
                     // linkage was supplied. The helper is

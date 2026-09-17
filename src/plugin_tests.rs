@@ -37,7 +37,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-plugin-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

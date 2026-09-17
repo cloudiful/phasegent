@@ -37,8 +37,8 @@ use crate::policy::Role;
 use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
-    ProcessWorktreeRunner, WorktreeRunner, acquire_lease, ensure_schema, list_for_repo,
-    now_unix_secs, repo_identity, resolve_worktree_auto, worktree_add,
+    ProcessWorktreeRunner, WorktreeRunner, acquire_lease, auto_acquire_after_bind, ensure_schema,
+    list_for_repo, now_unix_secs, repo_identity, resolve_worktree_auto, worktree_add,
 };
 use std::path::PathBuf;
 
@@ -85,7 +85,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-wt-cli-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -2512,4 +2512,106 @@ fn cli_prune_release_stale_and_remove_act_on_separate_candidate_sets() {
         !retained_target.exists(),
         "the retained + aged + clean candidate is removed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue 18: shared auto-acquire hook after `issue create` / `issue bind`
+// ---------------------------------------------------------------------------//
+// `auto_acquire_after_bind` reuses `resolve_session` + `acquire_lease`, so the
+// focused tests drive it against a temp repo + temp DB + temp cache exactly
+// like the CLI executor does. They assert the three contracts the parent
+// prompt fixes: stdout JSON is never involved (the helper only returns the
+// stderr warning string), a created worktree surfaces the bounded
+// `reason=new_worktree` warning, and no branch/worktree is ever deleted.
+
+#[test]
+fn auto_acquire_after_bind_reuses_current_checkout_silently() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("auto-bind-reuse") else {
+        return;
+    };
+    let (_db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("auto-bind-reuse");
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(repo.dir.path()).expect("chdir temp repo");
+    let warning = auto_acquire_after_bind(310, Some("session-a"));
+    let _ = std::env::set_current_dir(&previous_cwd);
+
+    assert_eq!(
+        warning, None,
+        "a clean repo with no competing lease must reuse the checkout silently"
+    );
+    let storage = Storage::open().expect("storage");
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let rows = list_for_repo(&storage, &identity).expect("list");
+    assert_eq!(rows.len(), 1, "the reuse path records one active lease");
+    assert_eq!(rows[0].session, "session-a");
+    assert!(
+        std::path::Path::new(&rows[0].worktree_path).exists(),
+        "reuse must never delete the checkout"
+    );
+}
+
+#[test]
+fn auto_acquire_after_bind_creates_isolated_worktree_with_warning() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("auto-bind-isolate") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("auto-bind-isolate");
+    // Seed a foreign active lease for the repo so rule 4 isolates.
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    ensure_schema(&storage).expect("schema");
+    let mut foreign = fresh_lease_row(
+        "lease-foreign",
+        999,
+        "other-session",
+        "/tmp/phasegent-foreign",
+        "main",
+        LEASE_STATUS_ACTIVE,
+        now_unix_secs(),
+    );
+    foreign.repo_identity = identity.clone();
+    insert_row(&storage, &foreign);
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(repo.dir.path()).expect("chdir temp repo");
+    let warning = auto_acquire_after_bind(311, Some("session-b"));
+    let _ = std::env::set_current_dir(&previous_cwd);
+
+    let warning = warning.expect("a created worktree must surface a bounded warning");
+    assert!(
+        warning.contains("phasegent: acquired worktree")
+            && warning.contains("issue 311")
+            && warning.contains("reason=new_worktree"),
+        "unexpected warning: {warning}"
+    );
+    let rows = list_for_repo(&storage, &identity).expect("list");
+    let created = rows
+        .iter()
+        .find(|row| row.session == "session-b")
+        .expect("created lease");
+    assert!(
+        created
+            .worktree_path
+            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
+        "the isolated worktree must land under the temp cache"
+    );
+    assert!(
+        std::path::Path::new(&created.worktree_path).exists(),
+        "the helper must create the worktree directory on disk"
+    );
+    assert!(
+        repo.dir.path().exists(),
+        "isolation must never delete the current checkout"
+    );
+}
+
+#[test]
+fn auto_acquire_after_bind_is_silent_for_zero_issue_and_unknown_session() {
+    let _lock = lock_workflow_tests();
+    // `issue == 0` short-circuits before any session/storage work.
+    assert_eq!(auto_acquire_after_bind(0, Some("session-a")), None);
+    // A blank explicit session is rejected by `resolve_session` and the
+    // helper degrades to silence rather than failing the caller.
+    assert_eq!(auto_acquire_after_bind(312, Some("   ")), None);
 }

@@ -169,7 +169,7 @@ fn mirror_plugin_missing_key_fails_bootstrap_with_actionable_error() {
     // fallback. A throwaway database with an empty schema ensures
     // the only way to satisfy the lookup is via the environment
     // variable we explicitly clear below.
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-redmine-missing-key-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -640,7 +640,7 @@ fn discovery_propagates_non404_errors_as_actionable() {
 fn discovery_never_posts_and_never_writes_sqlite() {
     let _lock = lock_workflow_tests();
     let (_key, _url) = mirror_env();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-discovery-no-write-{}-{}",
         std::process::id(),
         time::SystemTime::now()

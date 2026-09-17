@@ -71,6 +71,9 @@ mod doctor_tests;
 #[cfg(test)]
 mod issue_tests;
 
+#[cfg(test)]
+mod test_scratch;
+
 fn main() {
     // Single-binary dispatch: the conservative no-argument desktop
     // heuristic lives here so `cli::run` keeps its exact existing

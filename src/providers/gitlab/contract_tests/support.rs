@@ -201,7 +201,7 @@ pub(super) fn user_payload(id: u64) -> String {
 }
 
 pub(super) fn open_temp_storage() -> crate::infra::storage::Storage {
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

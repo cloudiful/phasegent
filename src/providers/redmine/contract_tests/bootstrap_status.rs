@@ -97,7 +97,7 @@ fn bootstrap_persists_role_scoped_ids_with_private_permissions() {
     // round-trip behaviour the legacy test used to pin, with
     // `Storage::open_at` against an isolated temp database so the
     // operator's real config is never touched.
-    let temp_dir = std::env::temp_dir().join(format!(
+    let temp_dir = crate::test_scratch::root().join(format!(
         "phasegent-redmine-bootstrap-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -181,7 +181,7 @@ fn role_redmine_user_table_is_additive_and_round_trips() {
     // Phase 2 adds `role_redmine_user` additively. A database created
     // without the table (legacy install) must gain it on open with no
     // data loss, and the new mapping must round-trip per role.
-    let temp_dir = std::env::temp_dir().join(format!(
+    let temp_dir = crate::test_scratch::root().join(format!(
         "phasegent-redmine-user-migration-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -261,7 +261,7 @@ fn role_redmine_user_table_is_additive_and_round_trips() {
 #[test]
 fn bootstrap_output_and_errors_redact_provisioned_keys() {
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-redmine-redacted-{}-{}",
         std::process::id(),
         time::SystemTime::now()

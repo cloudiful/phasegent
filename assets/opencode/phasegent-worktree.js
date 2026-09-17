@@ -55,6 +55,75 @@ async function acquireWorktree(issueId, sessionId) {
 }
 
 // ---------------------------------------------------------------------------
+// Session injection + lazy mid-session discovery (issue #18, Task 2).
+//
+// `issue create`/`issue bind` auto-acquire a worktree on conflict when they
+// carry `--session`; the plugin owns the session id (OpenCode `sessionID`) so
+// the model never mints one by hand. `injectSessionIntoPhasegentCommand` is
+// pure and idempotent; `discoverWorktreeForSession` is best-effort and every
+// failure falls through silently so the hook degrades to passthrough.
+// ---------------------------------------------------------------------------
+
+function injectSessionIntoPhasegentCommand(command, sessionId) {
+  if (typeof command !== "string" || !sessionId) return command;
+  if (!/phasegent\b.*\bissue\s+(create|bind)\b/.test(command)) return command;
+  if (/(^|\s)--session(\s|=)/.test(command)) return command;
+  return `${command} --session ${sessionId}`;
+}
+
+function pickActiveWorktreePath(leases) {
+  if (!Array.isArray(leases)) return null;
+  let best = null;
+  for (const lease of leases) {
+    if (!lease || typeof lease !== "object") continue;
+    if (lease.status !== "active") continue;
+    if (typeof lease.worktree_path !== "string" || lease.worktree_path.length === 0) {
+      continue;
+    }
+    if (!best) {
+      best = lease;
+      continue;
+    }
+    const heartbeat = lease.heartbeat_at ?? "";
+    const bestHeartbeat = best.heartbeat_at ?? "";
+    if (String(heartbeat) > String(bestHeartbeat)) {
+      best = lease;
+    }
+  }
+  return best ? best.worktree_path : null;
+}
+
+async function discoverWorktreeForSession(sessionId) {
+  try {
+    if (!sessionId) return null;
+    const known = worktreeForSession(sessionId);
+    if (known) return known;
+    const issueId = await readBranchBinding();
+    if (!issueId) return null;
+    const args = [
+      "--role", "executor",
+      "worktree", "status",
+      "--issue", String(issueId),
+    ];
+    const result = await safeText(Bun.$`phasegent ${args}`.quiet());
+    if (!result.ok || !result.value) return null;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(result.value);
+    } catch (_) {
+      return null;
+    }
+    const leases = parsed && Array.isArray(parsed.leases) ? parsed.leases : null;
+    if (!leases) return null;
+    const path = pickActiveWorktreePath(leases);
+    if (path) rememberWorktree(sessionId, path);
+    return path;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Acquired-worktree registry (issue #440).
 //
 // `target` resolves the worktree for a workspace, but there is no per-session
@@ -122,7 +191,7 @@ const PATH_ARG_KEYS = {
   grep: ["path"],
 };
 
-function redirectArgs(tool, workdir, args) {
+function redirectArgs(tool, workdir, args, sessionId) {
   if (!args || typeof args !== "object") return args;
   // No acquired worktree: pass the call through byte-for-byte.
   if (typeof workdir !== "string" || workdir.length === 0) return args;
@@ -144,6 +213,17 @@ function redirectArgs(tool, workdir, args) {
       // Bare bash: the shell would otherwise default to the stale session cwd.
       redirected.workdir = workdir;
     }
+    if (
+      typeof redirected.command === "string" &&
+      sessionId !== undefined &&
+      sessionId !== null &&
+      String(sessionId).length > 0
+    ) {
+      redirected.command = injectSessionIntoPhasegentCommand(
+        redirected.command,
+        sessionId,
+      );
+    }
   }
   return redirected;
 }
@@ -151,9 +231,42 @@ function redirectArgs(tool, workdir, args) {
 function createRedirectHook() {
   return {
     "tool.execute.before": async (input, output) => {
-      const workdir = worktreeForSession(input && input.sessionID);
+      const sessionId = input && input.sessionID;
+      // Lazy mid-session discovery: the registry may be empty when the
+      // session started before `target()` ran or when a Task-spawned
+      // sub-agent arrives with a fresh session id. Best-effort only.
+      try {
+        if (sessionId && !worktreeForSession(sessionId)) {
+          await discoverWorktreeForSession(sessionId);
+        }
+      } catch (_) {
+        // silent passthrough: a failed lookup must not block the tool call
+      }
+      // Session injection for `issue create|bind` runs even without a
+      // worktree so the CLI can auto-acquire on conflict (Task 1 helper).
+      try {
+        if (
+          input &&
+          input.tool === "bash" &&
+          output &&
+          output.args &&
+          typeof output.args.command === "string" &&
+          sessionId
+        ) {
+          const injected = injectSessionIntoPhasegentCommand(
+            output.args.command,
+            sessionId,
+          );
+          if (injected !== output.args.command) {
+            output.args.command = injected;
+          }
+        }
+      } catch (_) {
+        // silent passthrough
+      }
+      const workdir = worktreeForSession(sessionId);
       if (!workdir || !output || !output.args) return;
-      const redirected = redirectArgs(input.tool, workdir, output.args);
+      const redirected = redirectArgs(input.tool, workdir, output.args, sessionId);
       if (redirected === output.args) return;
       for (const key of Object.keys(redirected)) output.args[key] = redirected[key];
     },
@@ -263,6 +376,9 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
+  injectSessionIntoPhasegentCommand,
+  pickActiveWorktreePath,
+  discoverWorktreeForSession,
 });
 
 export default PhasegentWorktreePlugin;

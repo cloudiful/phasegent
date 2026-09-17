@@ -109,9 +109,14 @@ fn issue_bind_parses_positive_id_and_optional_replace() {
     let invocation =
         parse_args(&["--role", "orchestrator", "issue", "bind", "23"]).expect("bind parses");
     match invocation.command {
-        Command::Issue(IssueCommand::Bind { issue_id, replace }) => {
+        Command::Issue(IssueCommand::Bind {
+            issue_id,
+            replace,
+            session,
+        }) => {
             assert_eq!(issue_id, 23);
             assert!(!replace);
+            assert_eq!(session, None, "--session is optional");
         }
         other => panic!("unexpected command: {other:?}"),
     }
@@ -119,12 +124,71 @@ fn issue_bind_parses_positive_id_and_optional_replace() {
     let invocation = parse_args(&["--role", "orchestrator", "issue", "bind", "24", "--replace"])
         .expect("bind --replace parses");
     match invocation.command {
-        Command::Issue(IssueCommand::Bind { issue_id, replace }) => {
+        Command::Issue(IssueCommand::Bind {
+            issue_id,
+            replace,
+            session,
+        }) => {
             assert_eq!(issue_id, 24);
             assert!(replace);
+            assert_eq!(session, None);
         }
         other => panic!("unexpected command: {other:?}"),
     }
+}
+
+#[test]
+fn issue_bind_accepts_optional_session() {
+    let invocation = parse_args(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "bind",
+        "23",
+        "--session",
+        "s1",
+    ])
+    .expect("bind --session parses");
+    match invocation.command {
+        Command::Issue(IssueCommand::Bind { session, .. }) => {
+            assert_eq!(session.as_deref(), Some("s1"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn issue_bind_rejects_blank_and_overlong_session() {
+    for raw in ["", "   "] {
+        assert!(
+            parse_args(&[
+                "--role",
+                "orchestrator",
+                "issue",
+                "bind",
+                "23",
+                "--session",
+                raw
+            ])
+            .is_err(),
+            "issue bind accepted blank session {raw:?}"
+        );
+    }
+    let overlong = "s".repeat(129);
+    let error = parse_args(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "bind",
+        "23",
+        "--session",
+        &overlong,
+    ])
+    .unwrap_err();
+    assert!(
+        error.contains("session") && error.contains("128"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -448,7 +512,7 @@ struct TempRepo(PathBuf);
 
 impl TempRepo {
     fn new(tag: &str) -> Option<Self> {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-bctx-{}-{}-{}",
             tag,
             std::process::id(),

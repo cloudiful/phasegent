@@ -6,6 +6,8 @@
 
 use std::process::{Command, Output, Stdio};
 
+mod support;
+
 fn scratch_db() -> ScratchDir {
     ScratchDir::new()
 }
@@ -20,8 +22,8 @@ impl ScratchDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("phasegent-it-mcp-{}-{nanos}", std::process::id()));
+        let dir = support::scratch_root()
+            .join(format!("phasegent-it-mcp-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         Self { dir }
     }

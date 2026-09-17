@@ -53,6 +53,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::infra::storage::Storage;
 
 mod acquire;
+mod create_hook;
 pub(crate) mod git;
 pub(crate) mod leases;
 mod naming;
@@ -81,6 +82,11 @@ pub(crate) use session::{
     LEGACY_SESSION_ID, MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource,
     resolve_session, resolve_session_with,
 };
+
+/// Best-effort worktree acquisition after `issue create` / `issue bind`
+/// (issue 18). Exposed crate-internally so both call sites share one hook.
+#[allow(unused_imports)]
+pub(crate) use create_hook::auto_acquire_after_bind;
 
 /// Status of a single lease row. `active` rows are the ones
 /// `acquire_lease` returns; `retained` / `released` are terminal

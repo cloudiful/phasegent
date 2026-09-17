@@ -67,7 +67,10 @@ the human-operator `admin` group (`phasegent admin ...`) and is never invoked
 by AI roles.
 
 Run `phasegent --help` (or `phasegent --help <topic>`) for the full command
-reference, and see `skills/phasegent-workflow` for the OpenCode skill.
+reference, and see `skills/phasegent-workflow` for the OpenCode skill: it picks
+the tracking mode (`INLINE` / `TRACKED_ISSUE` / `LOCAL_ISSUE`), resolves the
+provider from configuration through `--provider` with a Forgejo fallback, and
+covers the current `issue update` and `worktree prune` surfaces.
 
 ## License
 

@@ -12,7 +12,7 @@ use crate::providers::index_store::{
 use crate::providers::{ProviderDispatcher, ProviderKind};
 
 fn tmp_index_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-transparent-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

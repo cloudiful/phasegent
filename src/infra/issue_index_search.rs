@@ -282,7 +282,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp_index(label: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-index-search-test-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

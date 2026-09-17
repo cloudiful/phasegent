@@ -19,7 +19,7 @@ struct TempRepo(PathBuf);
 
 impl TempRepo {
     fn new(tag: &str) -> Option<Self> {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-hooks-{}-{}-{}",
             tag,
             std::process::id(),

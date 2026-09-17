@@ -150,6 +150,73 @@ fn issue_get_rejects_empty_non_numeric_zero_duplicate_and_oversize() {
     );
 }
 
+fn create_session(argv: &[&str]) -> Option<Box<str>> {
+    let mut args = vec![
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+    ];
+    args.extend_from_slice(argv);
+    let invocation = command::parse(&strings(&args)).expect("create must parse");
+    match invocation.command {
+        Command::Issue(IssueCommand::Create { session, .. }) => session,
+        other => panic!("expected Create, got {other:?}"),
+    }
+}
+
+#[test]
+fn issue_create_session_defaults_to_none_and_round_trips() {
+    assert_eq!(create_session(&[]), None);
+    assert_eq!(create_session(&["--session", "s1"]).as_deref(), Some("s1"));
+    assert_eq!(
+        create_session(&["--session=env-session"]).as_deref(),
+        Some("env-session")
+    );
+}
+
+#[test]
+fn issue_create_rejects_blank_and_overlong_session() {
+    for raw in ["", "   "] {
+        let error = command::parse(&strings(&[
+            "--role",
+            "executor",
+            "issue",
+            "create",
+            "--title",
+            "T",
+            "--body",
+            "B",
+            "--session",
+            raw,
+        ]))
+        .expect_err("blank session must error");
+        assert!(error.contains("session"), "unexpected error: {error}");
+    }
+    let overlong = "s".repeat(129);
+    let error = command::parse(&strings(&[
+        "--role",
+        "executor",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+        "--session",
+        &overlong,
+    ]))
+    .expect_err("overlong session must error");
+    assert!(
+        error.contains("session") && error.contains("128"),
+        "unexpected error: {error}"
+    );
+}
+
 fn create_branch(argv: &[&str]) -> (BranchOption, Option<String>) {
     let mut args = vec![
         "--role",

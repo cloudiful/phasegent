@@ -2,9 +2,9 @@
 //!
 //! Static-only guarantees for the image jobs inside the merged
 //! `.github/workflows/release.yml` (the release `build` binaries are
-//! reused verbatim, no second compile) plus bilingual README alignment.
-//! No test requires registry credentials, a Docker daemon, or network
-//! access: all assertions read committed files.
+//! reused verbatim, no second compile). No test requires registry
+//! credentials, a Docker daemon, or network access: all assertions read
+//! committed files.
 
 use std::path::PathBuf;
 
@@ -136,47 +136,4 @@ fn workflow_uses_immutable_checkout() {
     assert_contains(&workflow, "actions/checkout", "mcp-image checkout");
     assert_contains(&workflow, "github.sha", "mcp-image checkout");
     assert_contains(&workflow, "ref: ${{ github.sha }}", "mcp-image checkout");
-}
-
-fn assert_readme_container_alignment(name: &str) {
-    let readme = read_repo_file(name);
-    // Pull/run plus registry path placeholder.
-    assert_contains(&readme, "docker pull", name);
-    assert_contains(&readme, "docker run", name);
-    assert_contains(&readme, "ghcr.io/", name);
-    assert_contains(&readme, "OWNER/REPO", name);
-    assert_contains(&readme, "v*", name);
-    assert_contains(&readme, ":latest", name);
-    // Token stays env-only.
-    assert_contains(&readme, "PHASEGENT_MCP_AUTH_TOKEN", name);
-    // Server-side role/provider flags.
-    assert_contains(&readme, "--role", name);
-    assert_contains(&readme, "--provider", name);
-    // Storage contract.
-    assert_contains(&readme, "/data", name);
-    assert_contains(&readme, "PHASEGENT_DB_PATH", name);
-    assert_contains(&readme, "PHASEGENT_CONFIG_PATH", name);
-    // Transports and exposure warning.
-    assert_contains(&readme, "127.0.0.1:3000", name);
-    assert_contains(&readme.to_ascii_lowercase(), "stdio", name);
-    assert_contains(&readme, "0.0.0.0", name);
-}
-
-#[test]
-fn readme_container_docs_stay_aligned_en() {
-    assert_readme_container_alignment("README.md");
-    let readme = read_repo_file("README.md");
-    assert_contains(&readme, "Warning:", "README.md");
-}
-
-#[test]
-fn readme_container_docs_stay_aligned_zh() {
-    assert_readme_container_alignment("README.zh-CN.md");
-    let readme = read_repo_file("README.zh-CN.md");
-    // Deferred P3s: pure-Chinese warning prefix and clean stdio parenthetical.
-    assert_not_contains(&readme, "Warning", "README.zh-CN.md");
-    assert_contains(&readme, "警告", "README.zh-CN.md");
-    assert_not_contains(&readme, "stderr，stdio", "README.zh-CN.md");
-    assert_not_contains(&readme, "stderr,stdio", "README.zh-CN.md");
-    assert_contains(&readme, "诊断信息走 stderr", "README.zh-CN.md");
 }

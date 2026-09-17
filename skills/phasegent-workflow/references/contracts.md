@@ -34,7 +34,9 @@ token; agent permission rules deny that single prefix.
 | `project create` | ProjectCreate | orchestrator, admin | Redmine and local; GitLab/Forgejo use `repo create` (single entry point to `POST /projects`); requires `--confirm` |
 | `status list` | IssueStatusRead | orchestrator, admin, executor, reviewer | Redmine, GitLab (static `WORKFLOW_LABELS` catalogue), and local; Forgejo returns not-supported |
 | `status next` | IssueStatusRead | orchestrator, admin, executor, reviewer | read-only; current + policy-allowed next + recovery command; Redmine and local |
-| `status transition` | role == orchestrator | orchestrator only | preferred status write; `--to` names the target, bare auto-routes; Redmine and local |
+| `status set` | role == orchestrator | orchestrator only | validated name/id; Redmine, GitLab (managed workflow label), and local |
+| `status advance` | role == orchestrator | orchestrator only | policy preflight; idempotent no-op on the same status; Redmine and local |
+| `status transition` | role == orchestrator | orchestrator only | preferred status write; `--to`/`--status` names the target, bare auto-routes to the first allowed next; Redmine and local |
 | `version list` | VersionRead | orchestrator, admin, executor, reviewer | Redmine (native) and GitLab (GET /projects/:id/milestones); local returns an empty catalogue (no versions table); Forgejo returns not-supported; never auto-bootstraps |
 | `relation list` | RelationRead | orchestrator, executor, reviewer | Redmine/GitLab; Forgejo and local reject (no relation surface) |
 | `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject; Phase 3 lifecycle helper auto-creates a `relates` link on `issue create --parent-issue <ID>` (idempotent, bounded warning on failure) |
@@ -42,7 +44,7 @@ token; agent permission rules deny that single prefix.
 | `timer start/finish/list/get/recover` | role == orchestrator | orchestrator only | local ledger; finish/recover project to Redmine/GitLab (Forgejo rejects); list/get never reach a provider |
 | `worktree acquire/release/heartbeat/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; `prune` is read-only unless `--release-stale --reason TEXT` or `--remove` is given, removes only clean + expired + retained worktrees, and never deletes a branch or a dirty worktree; `release --force` requires non-empty `--reason`, persisted on the row and visible in status/list (rows are never deleted) |
 | `worktree status/list` | command-level read gate | orchestrator, executor, reviewer | read-only lease inspection; tester denied |
-| `plugin install/status/uninstall` | no role gate | any | local OpenCode adapter file; managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
+| `plugin install/status/uninstall` | no role gate | any | worktree adapter for the OpenCode host (`$XDG_CONFIG_HOME/opencode/plugins/`, project slot `.opencode/plugins/`); managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
 | `admin workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |
 | `repo create` | RepoCreate | orchestrator only | Forgejo/GitLab; `--private` required; Redmine/local reject as not-supported |
 | `notify send` | role gate | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |

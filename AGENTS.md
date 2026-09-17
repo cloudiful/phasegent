@@ -1,8 +1,8 @@
 # phasegent Agent Guide
 
 This file is for AI coding agents and human contributors working in this
-repository. It only covers the versioning policy and the one lock-file
-exception — other conventions live in `README.md` and the docs under `docs/`.
+repository. It covers the versioning policy, the one lock-file exception,
+and the README documentation rule.
 
 ## Versioning
 
@@ -64,3 +64,11 @@ stripped tag. Any mismatch fails fast with a clear error message and the
   After that one commit the lock returns to its git-ignored state.
 - `bun.lock` is git-ignored and never committed. The repository's
   no-lock policy is unchanged.
+
+## Documentation
+
+- `README.md` and `README.zh-CN.md` stay a slim backbone: overview,
+  install, and usage, plus `--help` and OpenCode-skill pointers. Do not
+  move the container/deploy runbook into the README; that contract lives
+  in `Dockerfile` and `.github/workflows/release.yml`, covered by
+  `tests/container_contract.rs` and `tests/mcp_image_workflow.rs`.

@@ -63,8 +63,10 @@ phasegent doctor
 Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。
 
-完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`），
-OpenCode skill 见 `skills/phasegent-workflow`。
+完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`），OpenCode
+skill 见 `skills/phasegent-workflow`：它选择 tracking 模式（`INLINE` /
+`TRACKED_ISSUE` / `LOCAL_ISSUE`），通过 `--provider` 从配置解析 provider
+（最终回退 Forgejo），并记录当前的 `issue update` 与 `worktree prune` 用法。
 
 ## 许可证
 

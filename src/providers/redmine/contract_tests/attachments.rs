@@ -14,7 +14,8 @@ fn temp_dir() -> PathBuf {
         .duration_since(time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("phasegent-attach-{}-{n}", std::process::id()));
+    let dir =
+        crate::test_scratch::root().join(format!("phasegent-attach-{}-{n}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -207,7 +208,7 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
     let _ = fs::remove_file(missing);
     for prov in ["forgejo", "gitlab"] {
         let _lock = lock_workflow_tests();
-        let tmp = std::env::temp_dir().join(format!(
+        let tmp = crate::test_scratch::root().join(format!(
             "phasegent-not-supported-{prov}-{}",
             time::SystemTime::now()
                 .duration_since(time::UNIX_EPOCH)

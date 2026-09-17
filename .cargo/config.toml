@@ -1,0 +1,21 @@
+# Test scratch is contained inside the repository's gitignored target/ so a
+# test run never writes into the system temp directory, no matter what the
+# caller's environment already exports: `force = true` makes these values win
+# over an ambient TMPDIR/TMP/TEMP, and `relative = true` resolves "target/tmp"
+# against this config's directory so every test binary receives the absolute
+# scratch root it requires. TMPDIR covers Unix, TMP/TEMP cover Windows, where
+# `std::env::temp_dir()` ignores TMPDIR.
+#
+# GIT_CEILING_DIRECTORIES declares that same scratch root as a repository
+# discovery boundary, so scratch trees stay outside the checkout's repository
+# exactly as the old system temp root did. It is deliberate that this is a
+# process-global, forced config value rather than a per-test EnvGuard: env
+# mutation is process-global and would race under parallel tests, while the
+# boundary belongs to the scratch root itself. Tests that build a plain
+# directory assert git identity discovery finds no enclosing repo; without
+# this, discovery walks up into the phasegent work tree and breaks them.
+[env]
+TMPDIR = { value = "target/tmp", relative = true, force = true }
+TMP = { value = "target/tmp", relative = true, force = true }
+TEMP = { value = "target/tmp", relative = true, force = true }
+GIT_CEILING_DIRECTORIES = { value = "target/tmp", relative = true, force = true }

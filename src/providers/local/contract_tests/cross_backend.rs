@@ -14,7 +14,7 @@ use crate::providers::local::LocalProvider;
 use std::path::PathBuf;
 
 fn tmp_provider(label: &str) -> (LocalProvider, PathBuf) {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-local-cross-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

@@ -270,7 +270,7 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
 #[test]
 fn relation_create_denies_delay_for_non_precedes_types() {
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-redmine-relation-delay-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -311,7 +311,7 @@ fn relation_create_denies_delay_for_non_precedes_types() {
 #[test]
 fn relation_create_and_list_hit_redmine_endpoints_end_to_end() {
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-redmine-relation-e2e-{}-{}",
         std::process::id(),
         time::SystemTime::now()

@@ -411,7 +411,7 @@ fn auto_prefixed_run_from_lifecycle_projects_to_gitlab_and_idempotent_retry() {
     // the sole idempotency marker for GitLab (no per-entry id is
     // returned by the API), so the retry must short-circuit before
     // any HTTP call.
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-auto-proj-gitlab-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

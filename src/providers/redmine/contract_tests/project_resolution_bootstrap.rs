@@ -12,7 +12,7 @@ fn real_origin() -> crate::remote::RemoteRepository {
 }
 
 fn temp_storage() -> (Storage, EnvGuard, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-projres-{}-{}",
         std::process::id(),
         time::SystemTime::now()
