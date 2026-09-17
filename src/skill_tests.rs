@@ -46,6 +46,20 @@ fn skill_file_exists_with_phasegent_workflow_frontmatter() {
             .any(|line| line.trim() == "name: phasegent-workflow"),
         "frontmatter must carry name: phasegent-workflow\n---\n{frontmatter}\n---"
     );
+    // opencode parses the frontmatter as YAML and drops the skill when it
+    // fails: an unquoted plain scalar must not contain a bare `: ` sequence.
+    let description_line = frontmatter
+        .lines()
+        .find(|line| line.trim_start().starts_with("description:"))
+        .unwrap_or_else(|| panic!("frontmatter must carry a description\n---\n{frontmatter}\n---"));
+    let value = description_line
+        .trim_start()
+        .strip_prefix("description:")
+        .unwrap_or_default();
+    assert!(
+        !value.contains(": "),
+        "description must stay a valid YAML plain scalar (no bare `: `)\n{description_line}"
+    );
 }
 
 #[test]
@@ -312,6 +326,10 @@ fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
     assert!(
         section.contains("bind") && section.contains("fallback"),
         "lifecycle one-liner must keep bind as a background fallback; got: {section}"
+    );
+    assert!(
+        section.contains("issue create") && section.contains("auto-acquires a worktree"),
+        "lifecycle one-liner must state that create/bind auto-acquires a worktree; got: {section}"
     );
     assert!(
         !section.contains("- "),

@@ -64,7 +64,7 @@ fn timer_rounding_and_marker_helpers_have_exact_summary_semantics() {
 
 #[test]
 fn timer_projection_retry_is_local_only_after_a_synced_201_create() {
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-retry-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -129,7 +129,7 @@ fn timer_projection_retry_is_local_only_after_a_synced_201_create() {
 
 #[test]
 fn timer_projection_reconciles_a_204_before_creating_another_entry() {
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-unconfirmed-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -199,7 +199,7 @@ fn auto_prefixed_run_from_lifecycle_projects_to_redmine_with_id_and_idempotent_r
     // into the Time Entry comments so the operator can see the
     // auto-opened origin in the Redmine UI.
     let _lock = lock_workflow_tests();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-auto-proj-redmine-{}-{}",
         std::process::id(),
         time::SystemTime::now()

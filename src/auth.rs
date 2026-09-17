@@ -519,7 +519,7 @@ mod tests {
         // role-scoped provider preference so `config show` / `resolve_kind`
         // report `local`.
         let _lock = lock_workflow_tests();
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-auth-local-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

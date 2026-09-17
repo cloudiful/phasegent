@@ -26,7 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn unique_temp_dir(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    crate::test_scratch::root().join(format!(
         "phasegent-config-{label}-{}-{}",
         std::process::id(),
         system_time_nanos()

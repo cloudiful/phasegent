@@ -14,7 +14,7 @@ fn strings(values: &[&str]) -> Vec<String> {
 }
 
 fn scratch_db(label: &str) -> (std::path::PathBuf, EnvGuard) {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-doctor-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

@@ -14,7 +14,7 @@ use crate::policy::Role;
 use std::{fs, time};
 
 fn temp_db(label: &str) -> (std::path::PathBuf, EnvGuard, Storage) {
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-redmine-distinct-{label}-{}-{}",
         std::process::id(),
         time::SystemTime::now()

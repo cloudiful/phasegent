@@ -1646,7 +1646,7 @@ fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
 
 #[test]
 fn timer_execution_is_orchestrator_and_redmine_only() {
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-boundary-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -1843,7 +1843,7 @@ fn resolve_kind_prefers_role_scoped_gitlab_when_env_var_unset() {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-resolve-kind-gitlab-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -1983,7 +1983,7 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
 
     let _lock = lock_workflow_tests();
     let _provider_env = DefaultProviderEnvGuard::neutralise();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-resolve-precedence-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -2116,7 +2116,7 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
 
     let _lock = lock_workflow_tests();
     let _provider_env = DefaultProviderEnvGuard::neutralise();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-resolve-stale-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -2175,7 +2175,7 @@ fn resolve_kind_does_not_persist_anything() {
 
     let _lock = lock_workflow_tests();
     let _provider_env = DefaultProviderEnvGuard::neutralise();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-resolve-readonly-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -2418,7 +2418,7 @@ fn timer_recovery_marks_orphan_failed_and_is_idempotent_for_terminal_rows() {
     use crate::infra::storage::test_support::lock_workflow_tests;
     use crate::infra::storage::{Storage, TIMER_SYNC_FAILED};
     let _lock = lock_workflow_tests();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-recover-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -2530,7 +2530,7 @@ fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() 
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
     use crate::infra::storage::{Storage, TIMER_SYNC_FAILED};
     let _lock = lock_workflow_tests();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-recover-forgejo-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -2581,7 +2581,7 @@ fn timer_list_and_get_return_local_only_payloads_without_network() {
     use crate::infra::storage::Storage;
     use crate::infra::storage::test_support::lock_workflow_tests;
     let _lock = lock_workflow_tests();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-listget-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -3046,7 +3046,7 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
 // ---------------------------------------------------------------------------
 
 fn close_cli_root(label: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_scratch::root().join(format!(
         "phasegent-close-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

@@ -1,15 +1,14 @@
 ---
 name: phasegent-workflow
-description: Role-aware, provider-backed workflow protocol for phasegent issue/plan work — pick a tracking mode (INLINE/TRACKED_ISSUE/LOCAL_ISSUE), delegate to executor/reviewer/tester, and enforce the marker, VERDICT, note-pointer, and orchestrator-owned timer/status contracts. Provider-neutral: the tracking provider comes from user config or --provider, never assumed by this skill. Load when starting or interpreting a multi-phase task, delegating to a child role, or reading/publishing a phase-terminal audit note.
+description: Role-aware, provider-backed workflow protocol for phasegent issue/plan work — pick a tracking mode (INLINE/TRACKED_ISSUE/LOCAL_ISSUE), delegate to executor/reviewer/tester, and enforce the marker, VERDICT, note-pointer, and orchestrator-owned timer/status contracts. Provider-neutral — the tracking provider comes from user config and is never assumed by this skill. Load when starting or interpreting a multi-phase task, delegating to a child role, or reading/publishing a phase-terminal audit note.
 ---
 
 # Phasegent Workflow
 
 `phasegent` is a role-aware CLI for provider-backed workflow. `--role` selects the
-capability/routing policy; `--provider` selects the tracking provider
-(`forgejo|redmine|gitlab|local`, default from user config). This SKILL defines
-**protocol boundaries** only. `phasegent --help` is the authoritative **syntax**
-reference and is never duplicated here.
+capability/routing policy; the tracking provider comes from user config. This
+SKILL defines **protocol boundaries** only. `phasegent --help` is the
+authoritative **syntax** reference and is never duplicated here.
 
 ## When to use this skill
 
@@ -30,7 +29,7 @@ Pick exactly one before work starts; the artifact owns goal, constraints,
 acceptance criteria, phases, and decisions. A delegation parent prompt overrides
 only safety boundaries, the exact allowlist, the `git restore` allowlist, the
 attempt/round, and comment authorization. The provider always comes from user
-config or an explicit `--provider`; this skill never picks one.
+config; this skill never picks one.
 
 1. **`INLINE`** — trivial or read-only work, no plan and no issue. The parent
    prompt carries the full context; no artifact read and no audit comment.
@@ -44,13 +43,12 @@ config or an explicit `--provider`; this skill never picks one.
 3. **`LOCAL_ISSUE`** — tracking when the remote provider is unavailable or you
    want an offline, credential-free plan. The plan lives as a **local provider
    issue** (`--provider local`, explicit, no credential, no network), which
-   replaces `.opencode/plans/*.md` markdown.
+   replaces loose plan markdown files.
    Result shape: always the complete result object; when an audit comment is
    authorized its ids go into `tracking.comment_id`/`comment_url`.
 
-- `.opencode/plans/*.md` markdown is only a fallback when **both** the remote
-  provider and the local provider are unreachable; record that fallback
-  explicitly.
+- A loose plan markdown file is only a fallback when **both** the remote provider
+  and the local provider are unreachable; record that fallback explicitly.
 - Never downgrade to `INLINE` from a qualified tracking mode.
 
 ## Roles
@@ -72,12 +70,16 @@ Detail matrix (from `src/policy.rs`) is in
 
 ## Worktree leases
 
-Worktree leases are keyed by `(repo, issue, session)`, and the workflow owns the
-session identity so two concurrent sessions never collide on one issue.
+Worktree leases are keyed by `(repo, issue, session)`, and the session identity
+must stay stable within one agent session so two concurrent sessions never
+collide on one issue. A host plugin, when installed, owns that identity and
+injects it automatically; on a host without one, export a single
+`PHASEGENT_SESSION_ID` per session and reuse it for every worktree call.
 
-- Keep one stable session id per OpenCode session, exported as
-  `PHASEGENT_SESSION_ID`, and reuse it for every worktree call in that session;
-  never derive a fresh id per command or per phase.
+- Never mint a fresh session id per command or per phase. `issue create` /
+  `issue bind` auto-acquire a worktree (best-effort stderr warning only) when the
+  checkout conflicts with another lease, so later tool calls land there; the
+  session-start hook stays as the idempotent fallback.
 - Stale recovery is read-only by default. `worktree prune` reports stale active
   leases and removable worktrees; `worktree prune --release-stale --reason TEXT`
   flips exactly those stale active leases to `retained`, and
@@ -89,7 +91,7 @@ session identity so two concurrent sessions never collide on one issue.
 
 ## Branch binding lifecycle
 
-`main` is merge-only (never commit directly); work happens on `<type>/<id>` branches (e.g. `feat/452`), and `bind` is only a fallback repair when the name cannot resolve.
+`main` is merge-only (never commit directly); work happens on `<type>/<id>` branches (e.g. `feat/452`), `bind` is only a fallback repair when the name cannot resolve, and a successful `issue create` or `bind` auto-acquires a worktree when the checkout conflicts with another lease (see Worktree leases).
 
 ## Marker protocol
 
@@ -106,11 +108,10 @@ Rules:
   the final JSON. A retry or fresh child uses a **new** marker.
 - The JSON top-level `status` (executor/tester) or `verdict` (reviewer) must
   match the note's labelled line verbatim.
-- Publish with the child's own role key: `phasegent --role <child>
-  [--provider <p>] comment create <ISSUE> --marker <MARKER> --authorized`
-  (children require `--authorized`; orchestrator does not). Pass the note body
-  with `--body` or a one-shot `--body-file` (mutually exclusive); omit
-  `--provider` on the configured default, and always pass `--provider local`
+- Publish with the child's own role key: `phasegent --role <child> comment
+  create <ISSUE> --marker <MARKER> --authorized` (children require
+  `--authorized`; orchestrator does not). Pass the note body with `--body` or a
+  one-shot `--body-file` (mutually exclusive); always pass `--provider local`
   for the local provider. `phasegent --help comment create` owns the body-file
   lifecycle and cleanup flags.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
@@ -195,8 +196,7 @@ Rules:
   `worktree prune` (stale-lease recovery and worktree cleanup), each with its
   current flags; `phasegent --help` carries the flag tables this SKILL never
   reproduces.
-- Each child uses its own `--role` only. Omit `--provider` on the configured
-  default; pass it only to override (and always for `local`).
+- Each child uses its own `--role` only.
 - The `admin` group (`admin auth setup`, `admin config set/clear`,
   `admin config provider set/clear`, `admin workflow bootstrap`) is
   human-operator only — no AI role ever invokes it, and orchestrator

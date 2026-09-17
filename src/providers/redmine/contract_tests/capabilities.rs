@@ -280,7 +280,7 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
     // forgejo token lets the dispatcher build so the rejection comes from
     // tracker resolution, not from missing credentials; no request is made.
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-tracker-boundary-{}-{}",
         std::process::id(),
         time::SystemTime::now()

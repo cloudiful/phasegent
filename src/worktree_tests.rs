@@ -94,7 +94,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-wt-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1151,7 +1151,7 @@ fn acquire_binding_read_failure_falls_through_without_error() {
     let _lock = lock_workflow_tests();
     let (db_temp, _storage, _env) = open_temp_db("acquire-binding-failure");
     let cache = unique_cache("binding-failure");
-    let no_repo = std::env::temp_dir().join(format!(
+    let no_repo = crate::test_scratch::root().join(format!(
         "phasegent-wt-no-repo-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

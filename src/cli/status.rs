@@ -379,7 +379,7 @@ mod tests {
     use crate::providers::local::LocalProvider;
 
     fn tmp_db(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-cli-status-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

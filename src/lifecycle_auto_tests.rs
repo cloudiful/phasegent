@@ -30,7 +30,7 @@ use crate::worktree::WorktreeRunner;
 use std::fs;
 
 fn unique_temp_dir(label: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
+    crate::test_scratch::root().join(format!(
         "phasegent-auto-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -713,7 +713,7 @@ fn auto_prefixed_orphan_recover_projects_to_provider_with_idempotent_retry() {
     use std::thread;
 
     let _lock = lock_workflow_tests();
-    let home = std::env::temp_dir().join(format!(
+    let home = crate::test_scratch::root().join(format!(
         "phasegent-auto-recover-redmine-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

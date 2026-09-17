@@ -46,7 +46,7 @@ pub(crate) fn help_topic(
         },
         "status" => match subcommand {
             None => Ok(HelpTopic::Status),
-            Some("list") | Some("next") | Some("set") | Some("advance") => {
+            Some("list") | Some("next") | Some("set") | Some("advance") | Some("transition") => {
                 Ok(HelpTopic::StatusCommand(subcommand.unwrap().to_owned()))
             }
             Some(value) => Err(format!("unknown status help topic '{value}'")),

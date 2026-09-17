@@ -230,6 +230,13 @@ pub enum IssueCommand {
         /// Optional start point for `--branch` (`--base REF`); `None`
         /// defaults to `HEAD` at execution time.
         base: Option<String>,
+        /// Optional explicit worktree session id (`--session`). `None`
+        /// defers to `PHASEGENT_SESSION_ID` and then the legacy
+        /// `phasegent` fallback at execution time. After a successful
+        /// create (and bind step) the shared auto-acquire hook runs
+        /// best-effort; stdout JSON is unchanged (issue 18). Boxed so the
+        /// `Command` enum stays under the `large_enum_variant` threshold.
+        session: Option<Box<str>>,
     },
     /// `issue update <NUMBER>` — single update entry point (folds the
     /// former `update-body`). The body plus optional tracker/planning
@@ -270,6 +277,12 @@ pub enum IssueCommand {
     Bind {
         issue_id: u64,
         replace: bool,
+        /// Optional explicit worktree session id (`--session`). `None`
+        /// defers to `PHASEGENT_SESSION_ID` and then the legacy
+        /// `phasegent` fallback at execution time. After a successful
+        /// bind the shared auto-acquire hook runs best-effort; the
+        /// stdout bind document is unchanged (issue 18).
+        session: Option<Box<str>>,
     },
     Unbind,
     StatusBranch,
@@ -999,11 +1012,11 @@ mod tests {
             "T",
             "--body",
             "B",
-            "--session",
+            "--nonsense",
             "alpha",
         ]))
         .expect_err("an unknown option must be rejected");
-        assert_eq!(error, "unknown option '--session'");
+        assert_eq!(error, "unknown option '--nonsense'");
     }
 
     #[test]

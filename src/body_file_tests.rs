@@ -12,7 +12,7 @@ use std::fs;
 use std::io::Write;
 
 fn temp_body_path(label: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
+    crate::test_scratch::root().join(format!(
         "phasegent-body-file-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -334,7 +334,7 @@ fn local_issue_create_via_body_file_deletes_after_success() {
     use crate::providers::local::LocalProvider;
 
     let _lock = lock_workflow_tests();
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-body-file-e2e-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -394,7 +394,7 @@ fn local_comment_create_via_body_file_deletes_after_success() {
     use crate::providers::local::LocalProvider;
 
     let _lock = lock_workflow_tests();
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-body-file-comment-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -475,7 +475,7 @@ fn local_issue_update_body_keeps_file_on_provider_failure() {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-body-file-fail-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

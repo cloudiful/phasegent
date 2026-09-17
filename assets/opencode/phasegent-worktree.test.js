@@ -18,6 +18,8 @@ const {
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
+  injectSessionIntoPhasegentCommand,
+  pickActiveWorktreePath,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-440";
@@ -190,5 +192,132 @@ describe("tool.execute.before hook", () => {
     rememberWorktree("session-1", WORKTREE);
     const hook = createRedirectHook();
     await hook["tool.execute.before"]({ tool: "bash", sessionID: "session-1" }, {});
+  });
+});
+
+describe("injectSessionIntoPhasegentCommand (issue #18 Task 2)", () => {
+  test("appends --session once to issue create", () => {
+    const out = injectSessionIntoPhasegentCommand(
+      "phasegent issue create --title t --body b",
+      "session-1",
+    );
+    expect(out).toBe("phasegent issue create --title t --body b --session session-1");
+  });
+
+  test("appends --session once to issue bind", () => {
+    const out = injectSessionIntoPhasegentCommand(
+      "phasegent --role executor --provider local issue bind 18",
+      "abc",
+    );
+    expect(out).toBe(
+      "phasegent --role executor --provider local issue bind 18 --session abc",
+    );
+  });
+
+  test("skips when --session is already present", () => {
+    expect(
+      injectSessionIntoPhasegentCommand(
+        "phasegent issue create --title t --session s1",
+        "s2",
+      ),
+    ).toBe("phasegent issue create --title t --session s1");
+    expect(
+      injectSessionIntoPhasegentCommand(
+        "phasegent issue bind 18 --session=s1",
+        "s2",
+      ),
+    ).toBe("phasegent issue bind 18 --session=s1");
+  });
+
+  test("skips non-create/bind commands", () => {
+    expect(
+      injectSessionIntoPhasegentCommand("phasegent issue status", "s1"),
+    ).toBe("phasegent issue status");
+    expect(injectSessionIntoPhasegentCommand("ls -la", "s1")).toBe("ls -la");
+    expect(
+      injectSessionIntoPhasegentCommand(
+        "phasegent worktree acquire --issue 18",
+        "s1",
+      ),
+    ).toBe("phasegent worktree acquire --issue 18");
+  });
+
+  test("passes through without a session id", () => {
+    const command = "phasegent issue create --title t";
+    expect(injectSessionIntoPhasegentCommand(command, undefined)).toBe(command);
+    expect(injectSessionIntoPhasegentCommand(command, "")).toBe(command);
+    expect(injectSessionIntoPhasegentCommand(undefined, "s1")).toBeUndefined();
+  });
+});
+
+describe("redirectArgs session injection (issue #18 Task 2)", () => {
+  test("injects --session into bash phasegent issue create", () => {
+    const out = redirectArgs(
+      "bash",
+      WORKTREE,
+      { command: "phasegent issue create --title t --body b" },
+      "session-1",
+    );
+    expect(out.command).toBe(
+      "phasegent issue create --title t --body b --session session-1",
+    );
+    expect(out.workdir).toBe(WORKTREE);
+  });
+
+  test("does not duplicate --session and leaves absolute workdir alone", () => {
+    const out = redirectArgs(
+      "bash",
+      WORKTREE,
+      {
+        command: "phasegent issue bind 18 --session s1",
+        workdir: "/tmp",
+      },
+      "s2",
+    );
+    expect(out.command).toBe("phasegent issue bind 18 --session s1");
+    expect(out.workdir).toBe("/tmp");
+  });
+
+  test("leaves non-phasegent bash commands alone", () => {
+    const out = redirectArgs("bash", WORKTREE, { command: "ls" }, "s1");
+    expect(out.command).toBe("ls");
+  });
+});
+
+describe("pickActiveWorktreePath (issue #18 Task 2 lazy discovery)", () => {
+  test("picks the active lease with max heartbeat_at", () => {
+    const leases = [
+      { status: "active", session: "old", worktree_path: "/wt/old", heartbeat_at: "2026-01-01T00:00:00Z" },
+      { status: "active", session: "new", worktree_path: "/wt/new", heartbeat_at: "2026-09-17T00:00:00Z" },
+      { status: "retained", session: "x", worktree_path: "/wt/retained", heartbeat_at: "2026-12-01T00:00:00Z" },
+    ];
+    expect(pickActiveWorktreePath(leases)).toBe("/wt/new");
+  });
+
+  test("returns null when no active lease has a path", () => {
+    expect(pickActiveWorktreePath([])).toBeNull();
+    expect(
+      pickActiveWorktreePath([{ status: "retained", worktree_path: "/wt/x" }]),
+    ).toBeNull();
+    expect(pickActiveWorktreePath(null)).toBeNull();
+    expect(
+      pickActiveWorktreePath([{ status: "active", worktree_path: "" }]),
+    ).toBeNull();
+  });
+});
+
+describe("tool.execute.before session injection without a worktree", () => {
+  test("injects --session even when the registry is empty", async () => {
+    const hook = createRedirectHook();
+    const output = { args: { command: "phasegent issue create --title t" } };
+    await hook["tool.execute.before"](
+      { tool: "bash", sessionID: "fresh-session" },
+      output,
+    );
+    expect(output.args.command).toBe(
+      "phasegent issue create --title t --session fresh-session",
+    );
+    // No worktree was discovered (no git binding in this cwd): no workdir fill.
+    expect(output.args.workdir).toBeUndefined();
   });
 });

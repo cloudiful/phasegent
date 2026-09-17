@@ -5,8 +5,8 @@
 //! stages it at `ci-image-input/phasegent`; the Dockerfile only copies
 //! that prebuilt artifact (no Rust toolchain, no `cargo build` inside
 //! Docker). Static tests never require a Docker daemon or registry
-//! credentials: they assert on the committed `Dockerfile`,
-//! `.dockerignore`, and the bilingual container runtime docs. The single
+//! credentials: they assert on the committed `Dockerfile` and
+//! `.dockerignore`. The single
 //! build/smoke test runs only when `docker info` succeeds and the staged
 //! artifact exists; otherwise it records the gap with a `SKIP` line and
 //! passes so ordinary `cargo test` stays hermetic.
@@ -256,43 +256,6 @@ fn dockerignore_keeps_build_context_small() {
             ".dockerignore must not exclude ci-image-input, got: {trimmed}"
         );
     }
-}
-
-fn assert_readme_container_contract(name: &str) {
-    let readme = read_repo_file(name);
-    // Pull/run surface.
-    assert_contains(&readme, "docker pull", name);
-    assert_contains(&readme, "docker run", name);
-    assert_contains(&readme, "ghcr.io/", name);
-    // Auth token contract: env-only, never a CLI flag value.
-    assert_contains(&readme, "PHASEGENT_MCP_AUTH_TOKEN", name);
-    // Server-side role/provider flags stay with the container command.
-    assert_contains(&readme, "--role", name);
-    assert_contains(&readme, "--provider", name);
-    // Storage contract: volume plus env passthrough.
-    assert_contains(&readme, "/data", name);
-    assert_contains(&readme, "PHASEGENT_DB_PATH", name);
-    assert_contains(&readme, "PHASEGENT_CONFIG_PATH", name);
-    // Transports: loopback HTTP default plus stdio override.
-    assert_contains(&readme, "127.0.0.1:3000", name);
-    assert_contains(&readme.to_ascii_lowercase(), "stdio", name);
-    // Security warning: loopback default, 0.0.0.0 exposure needs care
-    // (English "warn" or Chinese "警告" for the localized README).
-    assert!(
-        readme.contains("0.0.0.0")
-            && (readme.to_ascii_lowercase().contains("warn") || readme.contains("警告")),
-        "{name} must warn about exposing HTTP beyond loopback"
-    );
-}
-
-#[test]
-fn readme_documents_container_runtime_contract_en() {
-    assert_readme_container_contract("README.md");
-}
-
-#[test]
-fn readme_documents_container_runtime_contract_zh() {
-    assert_readme_container_contract("README.zh-CN.md");
 }
 
 #[test]

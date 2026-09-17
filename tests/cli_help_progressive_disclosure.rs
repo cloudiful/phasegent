@@ -41,7 +41,7 @@ impl ScratchDb {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
+        let dir = support::scratch_root().join(format!(
             "phasegent-it-help-{}-{}-{}",
             std::process::id(),
             nanos,
@@ -182,6 +182,69 @@ fn root_help_remains_short_with_provider_filter() {
             "redmine-filtered root help missing {command:?}; got:\n{stdout}",
         );
     }
+}
+
+/// Issue 443 added `status transition` as the preferred status write (a
+/// `--to`/`--status` target, or a bare call that auto-routes to the policy's
+/// first allowed next status). The parser and the skill both treat it as the
+/// primary entry point, so the help surface must advertise it and must not
+/// claim a provider set the dispatcher does not serve: Redmine and local
+/// implement `next`/`advance`/`transition`, while GitLab only serves
+/// `list`/`set` and Forgejo rejects the whole status surface.
+#[test]
+fn status_help_advertises_transition_with_the_real_provider_set() {
+    let output = run_help(&["--help", "status"]);
+    assert!(output.status.success(), "--help status exited non-zero");
+    let stdout = stdout_text(&output);
+    for command in ["list", "next", "set", "advance", "transition"] {
+        assert!(
+            stdout.contains(command),
+            "--help status must list {command:?}; got:\n{stdout}",
+        );
+    }
+
+    let output = run_help(&["--help", "status", "advance"]);
+    assert!(
+        output.status.success(),
+        "--help status advance exited non-zero"
+    );
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("Redmine and local"),
+        "--help status advance must name the real provider set; got:\n{stdout}",
+    );
+    assert!(
+        !stdout.contains("Redmine-only"),
+        "--help status advance must not claim Redmine-only; got:\n{stdout}",
+    );
+
+    let output = run_help(&["--help", "status", "set"]);
+    assert!(output.status.success(), "--help status set exited non-zero");
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("GitLab"),
+        "--help status set must name GitLab (managed workflow label); got:\n{stdout}",
+    );
+
+    // Every command the listing advertises must also resolve as a deep page,
+    // and an unknown topic must still be rejected.
+    let output = run_help(&["--help", "status", "transition"]);
+    assert!(
+        output.status.success(),
+        "--help status transition must resolve; stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("status transition <NUMBER>") && stdout.contains("Redmine and local"),
+        "--help status transition must document the command and its provider set; got:\n{stdout}",
+    );
+
+    let output = run_help(&["--help", "status", "bogus"]);
+    assert!(
+        !output.status.success(),
+        "an unknown status help topic must still be rejected",
+    );
 }
 
 /// The resolver chain must still be reachable, exactly once, through

@@ -23,7 +23,7 @@ impl TempfileLikeDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
+        let dir = support::scratch_root().join(format!(
             "phasegent-it-notify-{}-{nanos}",
             std::process::id()
         ));

@@ -227,7 +227,7 @@ mod tests {
     use crate::infra::local_schema::STATUS_TRANSITION_SEED_LEN;
 
     fn tmp_path(label: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_scratch::root().join(format!(
             "phasegent-local-test-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

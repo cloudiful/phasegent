@@ -148,7 +148,7 @@ fn admin_auth_setup_writes_the_normal_role_scoped_private_key() {
     // (the SQLite database file is 0600) the legacy test used to
     // pin. The temp database is opened via `Storage::open_at` so
     // the operator's real config is never touched.
-    let temp_dir = std::env::temp_dir().join(format!(
+    let temp_dir = crate::test_scratch::root().join(format!(
         "phasegent-redmine-admin-key-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -192,7 +192,7 @@ fn admin_auth_setup_writes_the_normal_role_scoped_private_key() {
 #[test]
 fn admin_provider_requires_admin_key_without_falling_back() {
     let _environment_lock = lock_workflow_tests();
-    let directory = std::env::temp_dir().join(format!(
+    let directory = crate::test_scratch::root().join(format!(
         "phasegent-redmine-missing-admin-{}-{}",
         std::process::id(),
         time::SystemTime::now()
@@ -221,7 +221,7 @@ fn admin_provider_requires_admin_key_without_falling_back() {
 
 #[test]
 fn tester_credential_is_role_scoped_and_isolated() {
-    let temp_dir = std::env::temp_dir().join(format!(
+    let temp_dir = crate::test_scratch::root().join(format!(
         "phasegent-redmine-tester-key-{}-{}",
         std::process::id(),
         time::SystemTime::now()

@@ -23,7 +23,7 @@ fn app_metadata_contains_no_secrets() {
 
 #[test]
 fn config_snapshot_helper_is_redacted() {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = crate::test_scratch::root().join(format!(
         "phasegent-gui-snapshot-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

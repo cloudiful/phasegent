@@ -263,6 +263,20 @@ fn write_response(stream: &mut TcpStream, response: MockResponse) {
     stream.write_all(body.as_bytes()).unwrap();
 }
 
+/// Absolute scratch root shared by every integration test, created if it
+/// is missing.
+///
+/// Tests build scratch *files* at `<root>/<name>` directly, and unlike a
+/// scratch directory such a path has no `create_dir_all` of its own; under
+/// the old `/tmp` root the directory happened to pre-exist, which is exactly
+/// the hidden dependency this removes.
+pub fn scratch_root() -> PathBuf {
+    let root = std::env::temp_dir();
+    fs::create_dir_all(&root)
+        .unwrap_or_else(|error| panic!("create test scratch root {}: {error}", root.display()));
+    root
+}
+
 /// Per-test SQLite database living inside an isolated temp directory;
 /// `Drop` removes the directory so concurrent runs never share a file.
 pub struct TestDb {
@@ -284,7 +298,7 @@ pub fn make_test_db(api_base: &str) -> TestDb {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_dir = std::env::temp_dir().join(format!(
+    let temp_dir = scratch_root().join(format!(
         "phasegent-it-lifecycle-{}-{}-{}",
         std::process::id(),
         nanos,

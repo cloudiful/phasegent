@@ -34,6 +34,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 assignee: parse_assignee(args)?,
                 branch,
                 base,
+                session: parse_session_option(args, "issue create")?,
             }))
         }
         "update" => {
@@ -99,7 +100,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             }))
         }
         "bind" => {
-            validate_options(args, 1, &[], &["--replace"], "issue bind")?;
+            validate_options(args, 1, &["--session"], &["--replace"], "issue bind")?;
             let issue_id = positional_number(args, 1, "issue bind")?;
             if issue_id == 0 {
                 return Err("issue bind requires a positive issue id".to_owned());
@@ -107,6 +108,7 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             Ok(Command::Issue(IssueCommand::Bind {
                 issue_id,
                 replace: has_flag(args, "--replace"),
+                session: parse_session_option(args, "issue bind")?,
             }))
         }
         "unbind" => {
@@ -120,6 +122,19 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             Ok(Command::Issue(IssueCommand::StatusBranch))
         }
         value => Err(format!("unknown issue command '{value}'")),
+    }
+}
+
+/// Validate an explicit `--session` value for `issue create` / `issue bind`
+/// with the shared session rules (non-empty, at most 128 chars) so a blank
+/// or overlong value fails at parse time (exit 2) instead of silently
+/// falling back inside the auto-acquire hook.
+fn parse_session_option(args: &[String], operation: &str) -> Result<Option<Box<str>>, String> {
+    match optional_option(args, "--session") {
+        Some(raw) => Ok(Some(
+            super::worktree::validate_session_id(&raw, operation)?.into_boxed_str(),
+        )),
+        None => Ok(None),
     }
 }
 
@@ -166,6 +181,7 @@ fn validate_create_options(args: &[String]) -> Result<(), String> {
         "--done-ratio",
         "--assignee",
         "--base",
+        "--session",
     ];
     const FLAG_OPTIONS: &[&str] = &["--keep-body-file", "--no-assign"];
     let mut positionals = 0;

@@ -132,20 +132,16 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
     Some(entry)
 }
 
-/// Full rendered text for one `issue` subcommand help entry: the usage body,
-/// the capability description, and — for provider-backed commands — the
-/// shared global-option position note. The local branch-context commands
-/// (`bind`/`unbind`/`status`) never talk to a provider, so they omit it.
-/// Split out from [`print_issue_command_help`] so the rendered text is
-/// testable without capturing stdout.
+/// Full rendered text for one `issue` subcommand help entry: the usage body
+/// plus the capability description. Split out from
+/// [`print_issue_command_help`] so the rendered text is testable without
+/// capturing stdout.
 pub(crate) fn issue_command_help_text(command: &str) -> Option<(Capability, String)> {
     let (capability, entry) = issue_command_help_entry(command)?;
-    let mut text = format!("{entry}\n\n{}", capability.description());
-    if !matches!(command, "bind" | "unbind" | "status") {
-        text.push_str("\n\n");
-        text.push_str(super::root::GLOBAL_OPTIONS_POSITION_NOTE);
-    }
-    Some((capability, text))
+    Some((
+        capability,
+        format!("{entry}\n\n{}", capability.description()),
+    ))
 }
 
 pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
@@ -205,42 +201,30 @@ mod tests {
         assert!(issue_command_help_entry("fly").is_none());
     }
 
+    /// Help text never enumerates `--provider`: it resolves from configuration
+    /// and is named only in the root options list, so no issue page may tag it
+    /// onto a usage line or repeat a global-option position note.
     #[test]
-    fn create_help_documents_global_option_position_with_an_example() {
-        let (capability, text) =
-            issue_command_help_text("create").expect("create help must render");
-        assert_eq!(capability, Capability::IssueCreate);
-        assert!(
-            text.contains(super::super::root::GLOBAL_OPTIONS_POSITION_NOTE),
-            "create help must carry the shared global-option note; got: {text}"
-        );
-        assert!(
-            text.contains("--project-id 23 issue create"),
-            "create help must show a global option before the subcommand; got: {text}"
-        );
-    }
-
-    #[test]
-    fn provider_backed_help_keeps_the_global_option_note() {
-        for command in ["get", "search", "update", "close"] {
-            let (_, text) =
-                issue_command_help_text(command).expect("provider-backed help must render");
-            assert!(
-                text.contains(super::super::root::GLOBAL_OPTIONS_POSITION_NOTE),
-                "{command} help must carry the global-option note; got: {text}"
-            );
-        }
-    }
-
-    #[test]
-    fn local_branch_context_help_omits_the_global_option_note() {
-        for command in ["bind", "unbind", "status"] {
-            let (capability, text) =
-                issue_command_help_text(command).expect("branch-context help must render");
-            assert_eq!(capability, Capability::IssueRead);
+    fn issue_help_omits_the_global_option_note_and_never_advertises_provider() {
+        for command in [
+            "get",
+            "search",
+            "create",
+            "update",
+            "close",
+            "upload-attachment",
+            "bind",
+            "unbind",
+            "status",
+        ] {
+            let (_, text) = issue_command_help_text(command).expect("issue help must render");
             assert!(
                 !text.contains("Global options ("),
-                "{command} never talks to a provider and must not advertise global flags; got: {text}"
+                "{command} help must not carry the global-option position note; got: {text}"
+            );
+            assert!(
+                !text.contains("--provider"),
+                "{command} help must not advertise --provider; got: {text}"
             );
         }
     }

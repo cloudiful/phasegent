@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 #[rustfmt::skip]
 fn tmp_dir(l: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    crate::test_scratch::root().join(format!(
         "phasegent-index-test-{l}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
