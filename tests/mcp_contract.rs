@@ -130,6 +130,31 @@ fn wait_for_port(bind: &str, timeout: std::time::Duration) -> bool {
     false
 }
 
+/// Spawn an HTTP server and return it with the port it actually owns.
+///
+/// `free_loopback_port` releases its probe listener before the child binds, so
+/// a server started by another test in this binary can win the probed port;
+/// the child then exits and the first request lands on the winner while it is
+/// tearing down, which surfaces as `Connection reset by peer`. Requiring a port
+/// that accepts *and* a child that is still running closes that window.
+fn spawn_http_server_on_free_port(
+    scratch: &ScratchDir,
+    token: Option<&str>,
+) -> (std::process::Child, String) {
+    for _ in 0..8 {
+        let bind = format!("127.0.0.1:{}", free_loopback_port());
+        let mut child = spawn_http_server(scratch, &bind, token);
+        if wait_for_port(&bind, std::time::Duration::from_secs(5))
+            && matches!(child.try_wait(), Ok(None))
+        {
+            return (child, bind);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    panic!("mcp http server could not claim a loopback port after 8 attempts");
+}
+
 fn raw_http_get(bind: &str, authorization: Option<&str>) -> (u16, String) {
     use std::io::{Read, Write};
 
@@ -358,40 +383,18 @@ fn mcp_rejects_unknown_subcommand() {
 #[test]
 fn mcp_http_starts_and_reports_bind() {
     let scratch = scratch_db();
-    // Find a free loopback port first so the assertion never collides
-    // with a developer's local service. HTTP now requires a bearer
-    // token, so the probe server starts with a hermetic token.
-    let port = free_loopback_port();
-    let bind = format!("127.0.0.1:{port}");
-    let mut child = spawn_http_server(&scratch, &bind, Some("hermetic-bind-probe-token"));
-    // Wait for the bind report on stderr (up to ~5s), then kill.
-    let mut stderr = String::new();
-    let started = std::time::Instant::now();
-    let reported = loop {
-        if started.elapsed() > std::time::Duration::from_secs(5) {
-            break false;
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                panic!("mcp http exited early with {status}");
-            }
-            Ok(None) => {}
-            Err(error) => panic!("try_wait failed: {error}"),
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        // Non-blocking peek: try to read available stderr via try? Use
-        // a short timeout read by checking if the TCP port accepts.
-        if std::net::TcpStream::connect(&bind).is_ok() {
-            stderr.push_str(&bind);
-            break true;
-        }
-    };
+    // The helper retries until the port really belongs to our child, so the
+    // assertion never collides with another test's server or with a
+    // developer's local service. HTTP requires a bearer token, so the probe
+    // server starts with a hermetic one.
+    let (mut child, bind) =
+        spawn_http_server_on_free_port(&scratch, Some("hermetic-bind-probe-token"));
+    assert!(
+        std::net::TcpStream::connect(&bind).is_ok(),
+        "mcp http did not bind {bind} in time"
+    );
     child.kill().ok();
     let _ = child.wait();
-    assert!(
-        reported,
-        "mcp http did not bind {bind} in time; stderr={stderr}"
-    );
 }
 
 #[test]
@@ -439,12 +442,7 @@ fn mcp_http_fails_closed_without_token() {
 fn mcp_http_rejects_missing_and_wrong_bearer() {
     let scratch = scratch_db();
     let token = "hermetic-http-auth-token-401";
-    let bind = format!("127.0.0.1:{}", free_loopback_port());
-    let mut child = spawn_http_server(&scratch, &bind, Some(token));
-    assert!(
-        wait_for_port(&bind, std::time::Duration::from_secs(5)),
-        "mcp http did not bind {bind} in time"
-    );
+    let (mut child, bind) = spawn_http_server_on_free_port(&scratch, Some(token));
     // No header.
     let (status, body) = raw_http_get(&bind, None);
     assert_eq!(status, 401, "missing bearer must be 401; body={body}");
@@ -491,12 +489,7 @@ fn mcp_http_rejects_missing_and_wrong_bearer() {
 fn mcp_http_accepts_valid_bearer() {
     let scratch = scratch_db();
     let token = "hermetic-http-auth-token-valid";
-    let bind = format!("127.0.0.1:{}", free_loopback_port());
-    let mut child = spawn_http_server(&scratch, &bind, Some(token));
-    assert!(
-        wait_for_port(&bind, std::time::Duration::from_secs(5)),
-        "mcp http did not bind {bind} in time"
-    );
+    let (mut child, bind) = spawn_http_server_on_free_port(&scratch, Some(token));
     let valid = format!("Bearer {token}");
     // Plain GET reaches the rmcp handler past auth (406 demands
     // text/event-stream), proving the bearer was accepted.
