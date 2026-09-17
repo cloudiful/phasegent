@@ -296,6 +296,26 @@ pub fn structured_forbidden_json(error: &ForgejoError) -> Option<serde_json::Val
     }))
 }
 
+/// Ordered `advance` steps that walk the canonical policy from
+/// `current` to `Resolved`, the staging state before the final close
+/// PUT. Phase 3 (issue 443) close-climb support: `close` retries a
+/// workflow-rejected direct `PUT close_id` by stepping through these
+/// names with `advance_issue_status` and then retrying the close PUT.
+/// Empty means no climb is possible (already `Resolved`, terminal, or
+/// custom): the caller must surface a structured `Forbidden` with
+/// `status next` recovery instead. Pure policy lookup.
+pub fn close_climb_steps(current: &str) -> Vec<&'static str> {
+    match canonical_status_name(current) {
+        Some("New") => vec!["In Progress", "In Review", "Resolved"],
+        Some("In Progress") => vec!["In Review", "Resolved"],
+        Some("In Review") => vec!["Resolved"],
+        Some("Changes Requested") => vec!["In Progress", "In Review", "Resolved"],
+        Some("Blocked") => vec!["In Progress", "In Review", "Resolved"],
+        Some("Resolved") | Some("Closed") | Some("Cancelled") => vec![],
+        _ => vec!["Resolved"],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +377,26 @@ mod tests {
         assert!(structured_forbidden_json(&server).is_none());
         let config = ForgejoError::config("issue number must be greater than zero");
         assert!(structured_forbidden_json(&config).is_none());
+    }
+
+    #[test]
+    fn close_climb_steps_follow_policy_to_resolved() {
+        assert_eq!(
+            close_climb_steps("New"),
+            vec!["In Progress", "In Review", "Resolved"]
+        );
+        assert_eq!(
+            close_climb_steps("In Progress"),
+            vec!["In Review", "Resolved"]
+        );
+        assert_eq!(close_climb_steps("In Review"), vec!["Resolved"]);
+        assert_eq!(
+            close_climb_steps("Blocked"),
+            vec!["In Progress", "In Review", "Resolved"]
+        );
+        assert!(close_climb_steps("Resolved").is_empty());
+        assert!(close_climb_steps("Closed").is_empty());
+        assert!(close_climb_steps("Cancelled").is_empty());
+        assert_eq!(close_climb_steps("Triaged"), vec!["Resolved"]);
     }
 }

@@ -74,3 +74,113 @@ fn empty_redmine_http_errors_include_operation_and_status() {
     assert!(!message.contains("Redmine returned an error"));
     support::assert_request(&request, "GET", "/issues/23.json?include=journals", None);
 }
+
+fn climb_statuses() -> String {
+    serde_json::json!({
+        "issue_statuses": [
+            {"id": 1, "name": "New", "is_closed": false},
+            {"id": 2, "name": "In Progress", "is_closed": false},
+            {"id": 3, "name": "In Review", "is_closed": false},
+            {"id": 4, "name": "Resolved", "is_closed": false},
+            {"id": 37, "name": "Closed", "is_closed": true}
+        ]
+    })
+    .to_string()
+}
+
+fn issue_with_named_status(id: u64, name: &str, closed: bool) -> String {
+    serde_json::json!({
+        "issue": {
+            "id": id,
+            "subject": "Title",
+            "description": "Body",
+            "status": {"name": name, "is_closed": closed},
+            "journals": []
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn workflow_classification_drives_close_climb_to_success() {
+    use crate::providers::redmine::model::{RedmineErrorKind, classify_redmine_error};
+    let workflow = crate::providers::api::ForgejoError::Http {
+        operation: "issue close".to_owned(),
+        status: 422,
+        message: "Status is invalid".to_owned(),
+    };
+    assert_eq!(
+        classify_redmine_error(&workflow),
+        RedmineErrorKind::WorkflowNotAllowed
+    );
+    // In Review climbs one step to Resolved, then the close PUT succeeds.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::error(422, r#"{"errors":["Status is invalid"]}"#),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "In Review", false)),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "In Review", false)),
+        MockResponse::ok(issue_with_named_status(20, "Resolved", false)),
+        MockResponse::ok(issue_with_named_status(20, "Closed", true)),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let summary = redmine.close_issue(20).expect("climb must close");
+    assert_eq!(summary.state, "closed");
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 7, "direct + climb reads + step PUT + retry");
+    support::assert_request(&seen[0], "PUT", "/issues/20.json", None);
+    assert!(seen[0].contains(r#""issue":{"status_id":37}"#));
+    support::assert_request(&seen[5], "PUT", "/issues/20.json", None);
+    assert!(seen[5].contains(r#""issue":{"status_id":4}"#));
+    support::assert_request(&seen[6], "PUT", "/issues/20.json", None);
+    assert!(seen[6].contains(r#""issue":{"status_id":37}"#));
+    server.join().unwrap();
+}
+
+#[test]
+fn close_climb_failure_returns_structured_forbidden_with_recovery() {
+    // Direct close rejected, climb step rejected: structured Forbidden.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::error(422, r#"{"errors":["Status is invalid"]}"#),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "New", false)),
+        MockResponse::ok(climb_statuses()),
+        MockResponse::ok(issue_with_named_status(20, "New", false)),
+        MockResponse::error(422, r#"{"errors":["Status is invalid"]}"#),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let error = redmine.close_issue(20).unwrap_err();
+    let json = error.json();
+    assert_eq!(json["operation"], "issue close");
+    let message = json["message"].as_str().unwrap();
+    for expected in [
+        "'New'",
+        "'Closed'",
+        "allowed_next=[In Progress, Cancelled]",
+        "phasegent/canonical-phase-workflow@v1",
+        "status next 20",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 6, "direct + climb reads + failed step");
+    server.join().unwrap();
+}
+
+#[test]
+fn close_preserves_non_workflow_refusal_without_climb() {
+    // Empty 403 has no workflow marker: single PUT, legacy shape.
+    let (base, requests, server) = sequence(vec![MockResponse::error(403, "")]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let error = redmine.close_issue(20).unwrap_err();
+    let json = error.json();
+    assert_eq!(json["kind"], "http");
+    assert_eq!(json["status"], 403);
+    assert!(!json["message"].as_str().unwrap().contains("allowed_next"));
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 1, "non-workflow refusal must not climb");
+    server.join().unwrap();
+}

@@ -1,10 +1,11 @@
 use crate::providers::api::{ForgejoError, IssueSummary};
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
-    RedmineIssue, RedmineIssueResponse, RedmineIssueStatus, RedmineIssueStatusCollection,
-    RedmineStatus, RedmineTracker, RedmineTrackerCollection, STATUS_POLICY_CAVEAT,
-    STATUS_POLICY_SOURCE, StatusNextReport, StatusRef, StatusTransitionOutcome, TransitionVerdict,
-    canonical_allowed_next, evaluate_transition,
+    RedmineErrorKind, RedmineIssue, RedmineIssueResponse, RedmineIssueStatus,
+    RedmineIssueStatusCollection, RedmineStatus, RedmineTracker, RedmineTrackerCollection,
+    STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, StatusNextReport, StatusRef,
+    StatusTransitionOutcome, TransitionVerdict, canonical_allowed_next, classify_redmine_error,
+    close_climb_steps, evaluate_transition,
 };
 
 /// Outcome of a close-status verification step. The provider turns an
@@ -219,8 +220,31 @@ impl RedmineProvider {
     /// a closed state — either by matching the configured close status
     /// id or by reporting `is_closed=true` so an operator who renames
     /// the close status id still sees a correct close verification.
+    ///
+    /// Phase 3 (issue 443) close climb: a direct `PUT close_id` that the
+    /// server rejects with a workflow refusal (`RedmineErrorKind::
+    /// WorkflowNotAllowed`, e.g. `New -> Closed` on issue 441) is
+    /// retried stepwise — `advance` along the canonical policy to
+    /// `Resolved`, then a final `PUT close_id`. Any other failure keeps
+    /// its legacy shape; a failed climb returns a structured
+    /// `Forbidden`-style `issue close` error with `allowed_next` and a
+    /// `status next` recovery hint.
     pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
         let status_id = self.config.require_close_status_id()?;
+        match self.try_direct_close(number, status_id) {
+            Ok(summary) => Ok(summary),
+            Err(error) => {
+                if classify_redmine_error(&error) != RedmineErrorKind::WorkflowNotAllowed {
+                    return Err(error);
+                }
+                self.climb_close(number, status_id, error)
+            }
+        }
+    }
+
+    /// Single direct `PUT close_id` plus the shared close verification.
+    /// Used by both the fast path and the final retry after a climb.
+    fn try_direct_close(&self, number: u64, status_id: u64) -> Result<IssueSummary, ForgejoError> {
         let payload = crate::providers::redmine::model::RedmineUpdateIssue::status(status_id);
         let response: Option<RedmineIssueResponse> =
             self.http
@@ -256,6 +280,72 @@ impl RedmineProvider {
             }
         }
         Ok(self.issue_summary(issue))
+    }
+
+    /// Stepwise retry after a workflow-rejected direct close: walk the
+    /// canonical policy to `Resolved` via `advance_issue_status`, then
+    /// retry the direct `PUT close_id`. Any climb or retry failure
+    /// returns a structured `issue close` error carrying the current
+    /// status, the close target, the policy `allowed_next` shape, and a
+    /// `status next` recovery hint. Read failures before the climb fall
+    /// back to the original direct error so a broken read never masks
+    /// the authoritative write refusal.
+    fn climb_close(
+        &self,
+        number: u64,
+        status_id: u64,
+        direct_error: ForgejoError,
+    ) -> Result<IssueSummary, ForgejoError> {
+        let statuses = match self.list_issue_statuses() {
+            Ok(statuses) => statuses,
+            Err(_) => return Err(direct_error),
+        };
+        let current = match self.current_status(number, "issue close") {
+            Ok(current) => current,
+            Err(_) => return Err(direct_error),
+        };
+        if matches!(
+            Self::verify_close_status(&current, status_id),
+            CloseVerification::Confirmed
+        ) {
+            match self.issue_with_journals(number, "issue close") {
+                Ok(issue) => return Ok(self.issue_summary(issue)),
+                Err(_) => return Err(direct_error),
+            }
+        }
+        let close_name = statuses
+            .iter()
+            .find(|status| status.id == status_id)
+            .map(|status| status.name.clone())
+            .unwrap_or_else(|| "Closed".to_owned());
+        let steps = close_climb_steps(&current.name);
+        if steps.is_empty() {
+            return Err(close_workflow_forbidden(
+                number,
+                &current.name,
+                &close_name,
+                &direct_error,
+            ));
+        }
+        for step in &steps {
+            if self.advance_issue_status(number, step).is_err() {
+                return Err(close_workflow_forbidden(
+                    number,
+                    &current.name,
+                    &close_name,
+                    &direct_error,
+                ));
+            }
+        }
+        match self.try_direct_close(number, status_id) {
+            Ok(summary) => Ok(summary),
+            Err(retry) => Err(close_workflow_forbidden(
+                number,
+                &current.name,
+                &close_name,
+                &retry,
+            )),
+        }
     }
 
     /// Evaluate a single PUT response against the configured close
@@ -333,6 +423,32 @@ fn forbidden_message(
     format!(
         "transition rejected before any write: current status '{current}' -> target status '{target}' is not allowed by policy {STATUS_POLICY_SOURCE}; allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}",
         recovery_hint(number)
+    )
+}
+
+/// Structured close failure after a workflow refusal: the legacy
+/// `issue close` operation plus the policy `allowed_next` shape
+/// (`canonical_allowed_next`) and a `status next` recovery hint. The
+/// `current status 'C' -> target status 'T'` wording matches the
+/// advance contract so guidance stays greppable.
+fn close_workflow_forbidden(
+    number: u64,
+    current: &str,
+    target: &str,
+    cause: &ForgejoError,
+) -> ForgejoError {
+    let allowed = match canonical_allowed_next(current) {
+        Some([]) => "<none: terminal status>".to_owned(),
+        Some(next) => next.join(", "),
+        None => "<unknown: server decides>".to_owned(),
+    };
+    let cause_text = bounded(&cause.to_string());
+    ForgejoError::request(
+        "issue close",
+        format!(
+            "close rejected by server workflow: current status '{current}' -> target status '{target}' is not allowed by the Redmine server workflow (policy {STATUS_POLICY_SOURCE}); allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}; server: {cause_text}",
+            recovery_hint(number)
+        ),
     )
 }
 
