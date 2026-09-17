@@ -331,10 +331,104 @@ fn status_reports_branch_with_optional_issue() {
     let status = branch_context::status(&runner).unwrap();
     assert_eq!(status.branch, "main");
     assert_eq!(status.issue_id, None);
+    assert_eq!(status.source, branch_context::BranchIssueSource::None);
 
     let runner = branch_runner("feature/x", Some("44"));
     let status = branch_context::status(&runner).unwrap();
     assert_eq!(status.issue_id, Some(44));
+    assert_eq!(status.source, branch_context::BranchIssueSource::Bound);
+}
+
+#[test]
+fn branch_name_fallback_prefers_type_id_then_trailing_then_bare() {
+    // Rule 1: type/id[-slug] first.
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feat/452"),
+        Some(452)
+    );
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feat/452-slug"),
+        Some(452)
+    );
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("fix/452_extra"),
+        Some(452)
+    );
+    // Rule 2: legacy trailing -/_id.
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feat/help-unify-447"),
+        Some(447)
+    );
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feat/help-unify_447"),
+        Some(447)
+    );
+    // Rule 3: bare digits.
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("452"),
+        Some(452)
+    );
+    // Rule 1 wins over rule 2 when both match.
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feat/452-help-447"),
+        Some(452)
+    );
+    // Non-positive and non-numeric names have no fallback.
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("main"),
+        None
+    );
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feature/x"),
+        None
+    );
+    assert_eq!(branch_context::parse_issue_id_from_branch_name("0"), None);
+    assert_eq!(
+        branch_context::parse_issue_id_from_branch_name("feat/0"),
+        None
+    );
+}
+
+#[test]
+fn status_marks_key_over_name_fallback_source() {
+    // Key wins over a parseable branch name.
+    let runner = branch_runner("feat/452", Some("99"));
+    let status = branch_context::status(&runner).unwrap();
+    assert_eq!(status.issue_id, Some(99));
+    assert_eq!(status.source, branch_context::BranchIssueSource::Bound);
+
+    // No key: type/id fallback is named.
+    let runner = branch_runner("feat/452", None);
+    let status = branch_context::status(&runner).unwrap();
+    assert_eq!(status.issue_id, Some(452));
+    assert_eq!(status.source, branch_context::BranchIssueSource::Named);
+
+    // No key: legacy trailing fallback is named.
+    let runner = branch_runner("feat/help-unify-447", None);
+    let status = branch_context::status(&runner).unwrap();
+    assert_eq!(status.issue_id, Some(447));
+    assert_eq!(status.source, branch_context::BranchIssueSource::Named);
+
+    // No key and no fallback: none.
+    let runner = branch_runner("main", None);
+    let status = branch_context::status(&runner).unwrap();
+    assert_eq!(status.issue_id, None);
+    assert_eq!(status.source, branch_context::BranchIssueSource::None);
+}
+
+#[test]
+fn execute_status_keeps_branch_and_issue_id_and_adds_source() {
+    let runner = branch_runner("feat/452", None);
+    let value = branch_context::execute_status(&runner).unwrap();
+    assert_eq!(value["branch"], serde_json::json!("feat/452"));
+    assert_eq!(value["issue_id"], serde_json::json!(452));
+    assert_eq!(value["source"], serde_json::json!("named"));
+
+    let runner = branch_runner("main", None);
+    let value = branch_context::execute_status(&runner).unwrap();
+    assert_eq!(value["branch"], serde_json::json!("main"));
+    assert!(value["issue_id"].is_null());
+    assert_eq!(value["source"], serde_json::json!("none"));
 }
 
 #[test]

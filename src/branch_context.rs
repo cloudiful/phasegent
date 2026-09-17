@@ -264,16 +264,94 @@ pub fn unbind(runner: &dyn GitRunner) -> Result<UnbindOutcome, BranchContextErro
     Ok(UnbindOutcome::Unbound { branch })
 }
 
+/// Parses an issue id back from a branch name when no config key is bound.
+///
+/// Precedence (first match wins, strictly positive ids only):
+/// 1. `type/id[-slug]` — the segment after `/` starts with digits
+///    (e.g. `feat/452` -> 452, `feat/452-slug` -> 452).
+/// 2. Legacy trailing `-`/`_` id (e.g. `feat/help-unify-447` -> 447).
+/// 3. Bare digits (e.g. `452` -> 452).
+pub fn parse_issue_id_from_branch_name(branch: &str) -> Option<u64> {
+    // Rule 1: first `/` directly followed by a positive integer prefix.
+    for (index, _) in branch.match_indices('/') {
+        let rest = &branch[index + 1..];
+        let digit_prefix: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digit_prefix.is_empty()
+            && let Ok(id) = digit_prefix.parse::<u64>()
+            && id > 0
+        {
+            return Some(id);
+        }
+    }
+    // Rule 2: legacy trailing `-id` / `_id` at the very end.
+    if let Some(pos) = branch.rfind(['-', '_'])
+        && pos + 1 < branch.len()
+    {
+        let tail = &branch[pos + 1..];
+        if !tail.is_empty()
+            && tail.chars().all(|c| c.is_ascii_digit())
+            && let Ok(id) = tail.parse::<u64>()
+            && id > 0
+        {
+            return Some(id);
+        }
+    }
+    // Rule 3: the whole branch name is bare digits.
+    if !branch.is_empty()
+        && branch.chars().all(|c| c.is_ascii_digit())
+        && let Ok(id) = branch.parse::<u64>()
+        && id > 0
+    {
+        return Some(id);
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchIssueSource {
+    Bound,
+    Named,
+    None,
+}
+
+impl BranchIssueSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bound => "bound",
+            Self::Named => "named",
+            Self::None => "none",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct BranchStatus {
     pub branch: String,
     pub issue_id: Option<u64>,
+    pub source: BranchIssueSource,
 }
 
 pub fn status(runner: &dyn GitRunner) -> Result<BranchStatus, BranchContextError> {
     let branch = current_branch(runner)?;
-    let issue_id = read_issue_id(runner, &branch)?;
-    Ok(BranchStatus { branch, issue_id })
+    if let Some(id) = read_issue_id(runner, &branch)? {
+        return Ok(BranchStatus {
+            branch,
+            issue_id: Some(id),
+            source: BranchIssueSource::Bound,
+        });
+    }
+    if let Some(id) = parse_issue_id_from_branch_name(&branch) {
+        return Ok(BranchStatus {
+            branch,
+            issue_id: Some(id),
+            source: BranchIssueSource::Named,
+        });
+    }
+    Ok(BranchStatus {
+        branch,
+        issue_id: None,
+        source: BranchIssueSource::None,
+    })
 }
 
 pub fn execute_bind(
@@ -305,5 +383,6 @@ pub fn execute_status(runner: &dyn GitRunner) -> Result<serde_json::Value, Branc
     Ok(serde_json::json!({
         "branch": status.branch,
         "issue_id": status.issue_id,
+        "source": status.source.as_str(),
     }))
 }

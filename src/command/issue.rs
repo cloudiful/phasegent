@@ -1,4 +1,5 @@
 use super::AssigneeOption;
+use super::BranchOption;
 use super::prelude::*;
 
 pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
@@ -19,27 +20,10 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
         "get" => parse_issue_get(args),
         "search" => parse_issue_search(args),
         "create" => {
-            validate_options(
-                args,
-                0,
-                &[
-                    "--title",
-                    "--body",
-                    "--body-file",
-                    "--tracker",
-                    "--parent-issue",
-                    "--fixed-version",
-                    "--start-date",
-                    "--due-date",
-                    "--estimated-hours",
-                    "--done-ratio",
-                    "--assignee",
-                ],
-                &["--keep-body-file", "--no-assign"],
-                "issue create",
-            )?;
+            validate_create_options(args)?;
             let (body, body_file, keep_body_file) =
                 crate::body_file::parse_body_flags(args, "issue create", false)?;
+            let (branch, base) = parse_branch_options(args)?;
             Ok(Command::Issue(IssueCommand::Create {
                 title: required_option(args, "--title", "issue create")?,
                 body,
@@ -48,6 +32,8 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
                 tracker: optional_option(args, "--tracker"),
                 planning: planning_options(args),
                 assignee: parse_assignee(args)?,
+                branch,
+                base,
             }))
         }
         "update" => {
@@ -158,6 +144,171 @@ fn parse_assignee(args: &[String]) -> Result<AssigneeOption, String> {
         (None, true) => Ok(AssigneeOption::Unassigned),
         (None, false) => Ok(AssigneeOption::Unset),
     }
+}
+
+/// Validate `issue create` options with `--branch` as an optional-value flag.
+///
+/// Bare `--branch` (no value, or next token is another flag) means
+/// auto-generate `<type>/<id>`; `--branch NAME` / `--branch=NAME` uses
+/// `NAME`. `--base` always requires a value and requires `--branch`.
+fn validate_create_options(args: &[String]) -> Result<(), String> {
+    const OPERATION: &str = "issue create";
+    const VALUE_OPTIONS: &[&str] = &[
+        "--title",
+        "--body",
+        "--body-file",
+        "--tracker",
+        "--parent-issue",
+        "--fixed-version",
+        "--start-date",
+        "--due-date",
+        "--estimated-hours",
+        "--done-ratio",
+        "--assignee",
+        "--base",
+    ];
+    const FLAG_OPTIONS: &[&str] = &["--keep-body-file", "--no-assign"];
+    let mut positionals = 0;
+    let mut index = 1;
+    while index < args.len() {
+        let value = &args[index];
+        if value == "--branch" {
+            match args.get(index + 1) {
+                None => {
+                    index += 1;
+                    continue;
+                }
+                Some(next) if next.starts_with('-') => {
+                    // Inline `--branch=NAME` already handled below; a bare
+                    // `--branch` followed by another flag is the auto form.
+                    // `--branch=-slug` must use the inline form.
+                    index += 1;
+                    continue;
+                }
+                Some(_) => {
+                    index += 2;
+                    continue;
+                }
+            }
+        }
+        if value.starts_with('-') {
+            if FLAG_OPTIONS.contains(&value.as_str()) {
+                index += 1;
+                continue;
+            }
+            if VALUE_OPTIONS
+                .iter()
+                .any(|option| super::parse_helpers::split_inline(value, option).is_some())
+                || super::parse_helpers::split_inline(value, "--branch").is_some()
+            {
+                index += 1;
+                continue;
+            }
+            if VALUE_OPTIONS.contains(&value.as_str()) {
+                match args.get(index + 1) {
+                    None => return Err(format!("{value} requires a value")),
+                    Some(next) if next.starts_with('-') => {
+                        return Err(format!(
+                            "{value} requires a value (use {value}=VALUE when VALUE starts with `-`)"
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                index += 2;
+                continue;
+            }
+            return Err(format!("unknown option '{value}'"));
+        }
+        positionals += 1;
+        if positionals > 0 {
+            return Err(format!("{OPERATION} has unexpected arguments"));
+        }
+        index += 1;
+    }
+    if positionals != 0 {
+        return Err(format!("{OPERATION} has missing arguments"));
+    }
+    Ok(())
+}
+
+/// Parse `--branch [NAME]` / `--branch=NAME` plus `--base REF`.
+///
+/// Returns `(BranchOption, base)`. `--base` without `--branch` is rejected;
+/// empty branch/base values are rejected; surrounding whitespace is trimmed.
+fn parse_branch_options(args: &[String]) -> Result<(BranchOption, Option<String>), String> {
+    const OPERATION: &str = "issue create";
+    let mut branch: BranchOption = BranchOption::Unset;
+    let mut branch_seen = false;
+    for (index, arg) in args.iter().enumerate() {
+        if let Some(inline) = super::parse_helpers::split_inline(arg, "--branch") {
+            if branch_seen {
+                return Err(format!("{OPERATION} accepts --branch only once"));
+            }
+            branch_seen = true;
+            let name = inline.trim().to_owned();
+            if name.is_empty() {
+                branch = BranchOption::Auto;
+            } else {
+                branch = BranchOption::Named(validate_branch_name(&name, OPERATION)?);
+            }
+        } else if arg == "--branch" {
+            if branch_seen {
+                return Err(format!("{OPERATION} accepts --branch only once"));
+            }
+            branch_seen = true;
+            match args.get(index + 1) {
+                None => branch = BranchOption::Auto,
+                Some(next) if next.starts_with('-') => branch = BranchOption::Auto,
+                Some(next) => {
+                    branch = BranchOption::Named(validate_branch_name(next, OPERATION)?);
+                }
+            }
+        }
+    }
+    let base = match optional_option(args, "--base") {
+        Some(raw) => {
+            let value = raw.trim().to_owned();
+            if value.is_empty() {
+                return Err(format!("{OPERATION} requires a non-empty --base"));
+            }
+            if value.chars().any(char::is_whitespace) {
+                return Err(format!("{OPERATION} --base must not contain whitespace"));
+            }
+            Some(value)
+        }
+        None => None,
+    };
+    if base.is_some() && !branch_seen {
+        return Err(format!("{OPERATION} --base requires --branch"));
+    }
+    Ok((branch, base))
+}
+
+/// Validate an explicit `--branch NAME` value with Git ref-safe rules.
+fn validate_branch_name(raw: &str, operation: &str) -> Result<String, String> {
+    let name = raw.trim().to_owned();
+    if name.is_empty() {
+        return Err(format!("{operation} requires a non-empty --branch"));
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Err(format!("{operation} --branch must not contain whitespace"));
+    }
+    if name.contains("..") || name.contains('\0') {
+        return Err(format!(
+            "{operation} --branch {name:?} is not a valid branch name"
+        ));
+    }
+    if name.starts_with('-') || name.starts_with('/') || name.ends_with('/') {
+        return Err(format!(
+            "{operation} --branch {name:?} is not a valid branch name"
+        ));
+    }
+    if name.ends_with(".lock") || name.contains("//") {
+        return Err(format!(
+            "{operation} --branch {name:?} is not a valid branch name"
+        ));
+    }
+    Ok(name)
 }
 
 fn parse_issue_search(args: &[String]) -> Result<Command, String> {

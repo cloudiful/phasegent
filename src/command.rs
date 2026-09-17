@@ -223,6 +223,13 @@ pub enum IssueCommand {
         /// Optional GitLab assignee selector (`--assignee` / `--no-assign`);
         /// raw values are resolved at execution time.
         assignee: AssigneeOption,
+        /// Explicit local branch request (`--branch [NAME]`); `Unset` keeps
+        /// the legacy current-branch auto-bind, `Auto` generates
+        /// `<type>/<id>` from the tracker, `Named` uses the supplied name.
+        branch: BranchOption,
+        /// Optional start point for `--branch` (`--base REF`); `None`
+        /// defaults to `HEAD` at execution time.
+        base: Option<String>,
     },
     /// `issue update <NUMBER>` — single update entry point (folds the
     /// former `update-body`). The body plus optional tracker/planning
@@ -372,6 +379,21 @@ pub enum AssigneeOption {
     Unset,
     Unassigned,
     Explicit(String),
+}
+
+/// Explicit local branch request for `issue create` (`--branch [NAME]`).
+///
+/// * `Unset` — no `--branch` flag. Legacy path: auto-bind the current
+///   named branch only, never create a branch.
+/// * `Auto` — bare `--branch`. Generate `<type>/<id>` from the tracker
+///   (`Bug` -> `fix`, everything else -> `feat`, e.g. `feat/452`).
+/// * `Named` — `--branch NAME` (or `--branch=NAME`). Use `NAME` verbatim.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum BranchOption {
+    #[default]
+    Unset,
+    Auto,
+    Named(String),
 }
 
 #[derive(Debug)]

@@ -291,3 +291,30 @@ fn reference_chain_files_exist_and_are_linked() {
         assert!(skill.contains(link), "SKILL.md must link to {link}");
     }
 }
+
+#[test]
+fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
+    let skill = read_skill("SKILL.md");
+    let marker = "## Branch binding lifecycle";
+    let start = skill
+        .find(marker)
+        .expect("SKILL.md must keep the Branch binding lifecycle section");
+    let body = &skill[start + marker.len()..];
+    let section = body.find("## ").map(|end| &body[..end]).unwrap_or(body);
+    assert!(
+        section.contains("merge-only") && section.contains("main"),
+        "lifecycle one-liner must state main is merge-only; got: {section}"
+    );
+    assert!(
+        section.contains("feat/452") && section.contains("<type>/<id>"),
+        "lifecycle one-liner must name the <type>/<id> branch convention; got: {section}"
+    );
+    assert!(
+        section.contains("bind") && section.contains("fallback"),
+        "lifecycle one-liner must keep bind as a background fallback; got: {section}"
+    );
+    assert!(
+        !section.contains("- "),
+        "lifecycle must stay a one-liner without a bullet list; got: {section}"
+    );
+}

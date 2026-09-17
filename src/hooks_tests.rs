@@ -544,3 +544,64 @@ fn commit_nops_without_binding() {
     assert_eq!(value["action"], "noop");
     assert_eq!(read_file(&file), b"Anything goes\n\nRefs #77\n");
 }
+
+fn checkout_main(repo: &TempRepo) {
+    repo.runner()
+        .run(&["checkout", "-q", "-B", "main"])
+        .expect("checkout main works");
+}
+
+#[test]
+fn commit_rejects_hand_commit_on_main_with_escape() {
+    let Some(repo) = TempRepo::new("main-guard") else {
+        return;
+    };
+    checkout_main(&repo);
+    let file = repo.0.join("COMMIT_MSG");
+    write_file(&file, "Direct work on main\n");
+    let error = run_commit(&repo, &file).expect_err("hand commit on main rejected");
+    assert_eq!(error.kind, "conflict");
+    assert!(
+        error.message.contains("git checkout -b feat/"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("issue create --branch"),
+        "{}",
+        error.message
+    );
+    assert_eq!(read_file(&file), b"Direct work on main\n");
+}
+
+#[test]
+fn commit_allows_release_and_merge_on_main() {
+    let Some(repo) = TempRepo::new("main-exceptions") else {
+        return;
+    };
+    checkout_main(&repo);
+    let file = repo.0.join("COMMIT_MSG");
+
+    write_file(&file, "chore(release): 1.2.3\n");
+    let value = run_commit(&repo, &file).unwrap();
+    assert_eq!(value["action"], "valid");
+
+    write_file(&file, "Merge branch 'feat/452' into main\n");
+    let value = run_commit(&repo, &file).unwrap();
+    assert_eq!(value["action"], "valid");
+}
+
+#[test]
+fn commit_guard_is_main_only() {
+    let Some(repo) = TempRepo::new("main-only") else {
+        return;
+    };
+    repo.runner()
+        .run(&["checkout", "-q", "-B", "feat/452"])
+        .expect("checkout feature works");
+    let file = repo.0.join("COMMIT_MSG");
+    write_file(&file, "Direct work on feature\n");
+    let value = run_commit(&repo, &file).unwrap();
+    assert_eq!(value["action"], "noop");
+    assert_eq!(read_file(&file), b"Direct work on feature\n");
+}

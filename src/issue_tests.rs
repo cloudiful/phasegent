@@ -5,7 +5,7 @@
 //! envelope behaviour lives in the Redmine contract suite, which can
 //! drive `batch_fetch_issues` against a mock server.
 
-use crate::command::{self, AssigneeOption, Command, IssueCommand};
+use crate::command::{self, AssigneeOption, BranchOption, Command, IssueCommand};
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
@@ -147,5 +147,129 @@ fn issue_get_rejects_empty_non_numeric_zero_duplicate_and_oversize() {
     assert!(
         oversize.contains("at most 20"),
         "unexpected error: {oversize}"
+    );
+}
+
+fn create_branch(argv: &[&str]) -> (BranchOption, Option<String>) {
+    let mut args = vec![
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+    ];
+    args.extend_from_slice(argv);
+    let invocation = command::parse(&strings(&args)).expect("create must parse");
+    match invocation.command {
+        Command::Issue(IssueCommand::Create { branch, base, .. }) => (branch, base),
+        other => panic!("expected Create, got {other:?}"),
+    }
+}
+
+#[test]
+fn issue_create_branch_defaults_to_unset_and_base_defaults_to_none() {
+    assert_eq!(create_branch(&[]), (BranchOption::Unset, None));
+}
+
+#[test]
+fn issue_create_branch_bare_means_auto_and_named_forms_use_name() {
+    assert_eq!(create_branch(&["--branch"]), (BranchOption::Auto, None));
+    assert_eq!(
+        create_branch(&["--branch", "feat/452"]),
+        (BranchOption::Named("feat/452".to_owned()), None)
+    );
+    assert_eq!(
+        create_branch(&["--branch=fix/452"]),
+        (BranchOption::Named("fix/452".to_owned()), None)
+    );
+    assert_eq!(
+        create_branch(&["--branch", "--tracker", "Bug"]),
+        (BranchOption::Auto, None)
+    );
+}
+
+#[test]
+fn issue_create_branch_with_base_round_trips() {
+    assert_eq!(
+        create_branch(&["--branch", "--base", "main"]),
+        (BranchOption::Auto, Some("main".to_owned()))
+    );
+    assert_eq!(
+        create_branch(&["--branch", "feat/452", "--base", "main"]),
+        (
+            BranchOption::Named("feat/452".to_owned()),
+            Some("main".to_owned())
+        )
+    );
+    assert_eq!(
+        create_branch(&["--branch=feat/452", "--base=main"]),
+        (
+            BranchOption::Named("feat/452".to_owned()),
+            Some("main".to_owned())
+        )
+    );
+}
+
+#[test]
+fn issue_create_branch_rejects_base_without_branch_and_bad_names() {
+    let dangling = command::parse(&strings(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+        "--base",
+        "main",
+    ]))
+    .expect_err("--base without --branch must error");
+    assert!(
+        dangling.contains("--base requires --branch"),
+        "unexpected error: {dangling}"
+    );
+
+    let empty = command::parse(&strings(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+        "--branch=",
+    ]));
+    // Empty inline `--branch=` is the bare auto form, not an error.
+    match empty {
+        Ok(invocation) => match invocation.command {
+            Command::Issue(IssueCommand::Create { branch, .. }) => {
+                assert_eq!(branch, BranchOption::Auto);
+            }
+            other => panic!("expected Create, got {other:?}"),
+        },
+        Err(error) => panic!("empty --branch= must mean auto, got: {error}"),
+    }
+
+    let whitespace = command::parse(&strings(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "create",
+        "--title",
+        "T",
+        "--body",
+        "B",
+        "--branch",
+        "bad name",
+    ]))
+    .expect_err("whitespace branch name must error");
+    assert!(
+        whitespace.contains("--branch"),
+        "unexpected error: {whitespace}"
     );
 }

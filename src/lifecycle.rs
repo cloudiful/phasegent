@@ -204,6 +204,174 @@ pub fn bind_created_issue(
 }
 
 // ---------------------------------------------------------------------------
+// Redmine issue create --branch: explicit branch creation + target binding.
+// ---------------------------------------------------------------------------
+
+/// Prefix for auto-generated `<type>/<id>` branch names. `Bug` (any case)
+/// maps to `fix`; every other tracker (including `Feature`, numeric ids,
+/// and `None`) maps to `feat` so a missing tracker still yields `feat/<id>`.
+pub fn branch_prefix_for_tracker(tracker: Option<&str>) -> &'static str {
+    match tracker.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("bug") => "fix",
+        _ => "feat",
+    }
+}
+
+/// Auto-generate `<type>/<id>` for bare `--branch` (e.g. `feat/452`).
+pub fn branch_name_for_issue(tracker: Option<&str>, issue_id: u64) -> String {
+    format!("{}/{issue_id}", branch_prefix_for_tracker(tracker))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExplicitBranchOutcome {
+    /// Branch was created from `base` and bound to the new issue.
+    CreatedAndBound {
+        branch: String,
+        base: String,
+        issue_id: u64,
+    },
+    /// Branch already existed and is now bound to the new issue.
+    ExistedAndBound { branch: String, issue_id: u64 },
+    /// Target branch already binds exactly this issue; nothing changed.
+    Idempotent { branch: String, issue_id: u64 },
+    /// Deliberately skipped (non-Git checkout, repository mismatch);
+    /// stays silent like the legacy auto-bind skip.
+    Skipped { reason: String },
+    /// Local failure; the remote create still succeeded.
+    Warning { reason: String },
+}
+
+impl ExplicitBranchOutcome {
+    /// Only genuine local failures warn; deliberate skips stay silent.
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Self::Warning { reason } => Some(bounded(reason)),
+            _ => None,
+        }
+    }
+}
+
+fn bind_target_branch(
+    runner: &dyn GitRunner,
+    branch: &str,
+    issue_id: u64,
+) -> ExplicitBranchOutcome {
+    match branch_context::read_issue_id(runner, branch) {
+        Err(error) => ExplicitBranchOutcome::Warning {
+            reason: format!("local bind failed: {}", bounded(&error.message)),
+        },
+        Ok(Some(existing)) if existing == issue_id => ExplicitBranchOutcome::Idempotent {
+            branch: branch.to_owned(),
+            issue_id,
+        },
+        Ok(Some(existing)) => ExplicitBranchOutcome::Warning {
+            reason: format!(
+                "issue {issue_id} created; branch '{branch}' remains bound to \
+                 issue {existing}; use 'phasegent issue bind {issue_id} --replace' \
+                 to switch bindings"
+            ),
+        },
+        Ok(None) => {
+            let output = runner.run(&[
+                "config",
+                "--local",
+                &branch_context::config_key(branch),
+                &issue_id.to_string(),
+            ]);
+            match output {
+                Ok(result) if result.status == 0 => ExplicitBranchOutcome::ExistedAndBound {
+                    branch: branch.to_owned(),
+                    issue_id,
+                },
+                Ok(result) => ExplicitBranchOutcome::Warning {
+                    reason: format!(
+                        "issue {issue_id} created; git config write failed with exit \
+                         status {}",
+                        result.status
+                    ),
+                },
+                Err(error) => ExplicitBranchOutcome::Warning {
+                    reason: format!("local bind failed: {}", bounded(&error.message)),
+                },
+            }
+        }
+    }
+}
+
+/// Create `branch` from `base` when missing, then bind the target branch
+/// (not the current checkout) to `issue_id`.
+///
+/// Explicit `--branch` only: the caller resolves the branch name (bare
+/// `--branch` via [`branch_name_for_issue`], named via the CLI value) and
+/// passes `base` (`None` defaults to `HEAD`). An existing branch is reused
+/// without moving it; an existing different binding is never overwritten.
+/// Every failure degrades to [`ExplicitBranchOutcome::Warning`] (or silent
+/// [`ExplicitBranchOutcome::Skipped`]) so the remote create keeps its
+/// success result and stdout JSON stays byte-identical.
+pub fn ensure_branch_and_bind(
+    runner: &dyn GitRunner,
+    issue_id: u64,
+    branch: &str,
+    base: Option<&str>,
+    explicit_repository: Option<&str>,
+) -> ExplicitBranchOutcome {
+    if let Err(reason) = current_checkout_matches(runner, explicit_repository) {
+        return ExplicitBranchOutcome::Skipped { reason };
+    }
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return ExplicitBranchOutcome::Warning {
+            reason: format!("issue {issue_id} created; empty branch name, skipping branch binding"),
+        };
+    }
+    let base = base
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("HEAD");
+    let branch_ref = format!("refs/heads/{branch}");
+    match runner.run(&["show-ref", "--verify", "--quiet", &branch_ref]) {
+        Ok(result) if result.status == 0 => return bind_target_branch(runner, branch, issue_id),
+        Ok(result) if result.status != 1 => {
+            return ExplicitBranchOutcome::Warning {
+                reason: format!(
+                    "issue {issue_id} created; could not check branch '{branch}' \
+                     (exit status {}); run 'phasegent issue bind {issue_id}' by hand",
+                    result.status
+                ),
+            };
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return ExplicitBranchOutcome::Warning {
+                reason: format!("local branch check failed: {}", bounded(&error.message)),
+            };
+        }
+    }
+    match runner.run(&["branch", branch, base]) {
+        Ok(result) if result.status == 0 => match bind_target_branch(runner, branch, issue_id) {
+            ExplicitBranchOutcome::ExistedAndBound { branch, issue_id } => {
+                ExplicitBranchOutcome::CreatedAndBound {
+                    branch,
+                    base: base.to_owned(),
+                    issue_id,
+                }
+            }
+            other => other,
+        },
+        Ok(result) => ExplicitBranchOutcome::Warning {
+            reason: format!(
+                "issue {issue_id} created; git branch '{branch}' from '{base}' failed \
+                 with exit status {}; run 'phasegent issue bind {issue_id}' by hand",
+                result.status
+            ),
+        },
+        Err(error) => ExplicitBranchOutcome::Warning {
+            reason: format!("local branch creation failed: {}", bounded(&error.message)),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Redmine issue close: best-effort unbind of the exact closed issue.
 // ---------------------------------------------------------------------------
 

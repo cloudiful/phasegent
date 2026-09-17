@@ -268,6 +268,8 @@ pub(crate) fn execute_issue(
             tracker,
             planning,
             assignee,
+            branch,
+            base,
         } => {
             // Phase 3 write-side relation auto (issue 257): the
             // auto-relation fires ONLY on the parent-child split
@@ -318,18 +320,64 @@ pub(crate) fn execute_issue(
                     // surfaces a bounded stderr warning; stdout stays the
                     // normal issue JSON.
                     super::report_local_warnings("issue create", assignee_warning);
-                    // Redmine-only local side effect: bind the new issue to the
-                    // current branch when the checkout matches. Never fails the
-                    // created issue; warnings go to stderr.
+                    // Explicit `--branch` (issue 452 P2) is Redmine-only like
+                    // the legacy auto-bind. Without `--branch` the legacy
+                    // current-branch auto-bind runs; with `--branch` the
+                    // target branch is created when missing (from `--base`,
+                    // default `HEAD`) and bound instead of the current
+                    // branch. Never fails the created issue; warnings go to
+                    // stderr so stdout JSON stays byte-identical.
                     if provider_kind == ProviderKind::Redmine {
+                        match &branch {
+                            crate::command::BranchOption::Unset => {
+                                super::report_local_warnings(
+                                    "issue create",
+                                    crate::lifecycle::bind_created_issue(
+                                        &crate::branch_context::ProcessGitRunner::new(),
+                                        summary.number,
+                                        repository,
+                                    )
+                                    .warning(),
+                                );
+                            }
+                            crate::command::BranchOption::Auto => {
+                                let name = crate::lifecycle::branch_name_for_issue(
+                                    tracker.as_deref(),
+                                    summary.number,
+                                );
+                                super::report_local_warnings(
+                                    "issue create",
+                                    crate::lifecycle::ensure_branch_and_bind(
+                                        &crate::branch_context::ProcessGitRunner::new(),
+                                        summary.number,
+                                        &name,
+                                        base.as_deref(),
+                                        repository,
+                                    )
+                                    .warning(),
+                                );
+                            }
+                            crate::command::BranchOption::Named(name) => {
+                                super::report_local_warnings(
+                                    "issue create",
+                                    crate::lifecycle::ensure_branch_and_bind(
+                                        &crate::branch_context::ProcessGitRunner::new(),
+                                        summary.number,
+                                        name,
+                                        base.as_deref(),
+                                        repository,
+                                    )
+                                    .warning(),
+                                );
+                            }
+                        }
+                    } else if !matches!(&branch, crate::command::BranchOption::Unset) {
                         super::report_local_warnings(
                             "issue create",
-                            crate::lifecycle::bind_created_issue(
-                                &crate::branch_context::ProcessGitRunner::new(),
-                                summary.number,
-                                repository,
-                            )
-                            .warning(),
+                            Some(
+                                "issue create --branch is Redmine-only; skipping branch creation"
+                                    .to_owned(),
+                            ),
                         );
                     }
                     // Phase 3 relation auto: fire the helper

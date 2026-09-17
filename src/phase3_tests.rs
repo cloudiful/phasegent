@@ -8,7 +8,8 @@
 
 use crate::branch_context::{GitOutput, GitRunner};
 use crate::lifecycle::{
-    self, AutoBindOutcome, AutoUnbindOutcome, HookAutoInstall, MAX_WARNING_CHARS,
+    self, AutoBindOutcome, AutoUnbindOutcome, ExplicitBranchOutcome, HookAutoInstall,
+    MAX_WARNING_CHARS,
 };
 use std::cell::RefCell;
 
@@ -468,4 +469,147 @@ fn close_local_unbind_failure_warns_but_preserves_close_result() {
     let outcome = lifecycle::unbind_closed_issue(&runner, 55, None);
     let warning = outcome.warning().expect("unbind failure warns");
     assert!(warning.contains("closed"), "{warning}");
+}
+
+fn explicit_branch_runner(branch: &str, stored: Option<u64>, exists: bool) -> ScriptedRunner {
+    let runner = ScriptedRunner::new();
+    runner.with_origin("acme/widgets");
+    let branch_ref = format!("refs/heads/{branch}");
+    runner.expect(
+        &["show-ref", "--verify", "--quiet", &branch_ref],
+        if exists { 0 } else { 1 },
+        "",
+    );
+    let key = format!("branch.{branch}.redmine-issue-id");
+    match stored {
+        Some(id) => runner.expect(&["config", "--local", "--get", &key], 0, &id.to_string()),
+        None => runner.expect(&["config", "--local", "--get", &key], 1, ""),
+    };
+    runner
+}
+
+#[test]
+fn branch_prefix_maps_bug_to_fix_and_defaults_to_feat() {
+    assert_eq!(lifecycle::branch_prefix_for_tracker(Some("Bug")), "fix");
+    assert_eq!(lifecycle::branch_prefix_for_tracker(Some("bug")), "fix");
+    assert_eq!(
+        lifecycle::branch_prefix_for_tracker(Some("Feature")),
+        "feat"
+    );
+    assert_eq!(lifecycle::branch_prefix_for_tracker(None), "feat");
+    assert_eq!(lifecycle::branch_prefix_for_tracker(Some("1")), "feat");
+    assert_eq!(
+        lifecycle::branch_name_for_issue(Some("Bug"), 452),
+        "fix/452"
+    );
+    assert_eq!(
+        lifecycle::branch_name_for_issue(Some("Feature"), 452),
+        "feat/452"
+    );
+    assert_eq!(lifecycle::branch_name_for_issue(None, 452), "feat/452");
+}
+
+#[test]
+fn explicit_branch_creates_missing_branch_from_head_and_binds() {
+    let runner = explicit_branch_runner("feat/452", None, false);
+    runner.expect(&["branch", "feat/452", "HEAD"], 0, "");
+    runner.expect(
+        &[
+            "config",
+            "--local",
+            "branch.feat/452.redmine-issue-id",
+            "452",
+        ],
+        0,
+        "",
+    );
+
+    let outcome = lifecycle::ensure_branch_and_bind(&runner, 452, "feat/452", None, None);
+    assert_eq!(
+        outcome,
+        ExplicitBranchOutcome::CreatedAndBound {
+            branch: "feat/452".to_owned(),
+            base: "HEAD".to_owned(),
+            issue_id: 452,
+        }
+    );
+    assert!(outcome.warning().is_none());
+}
+
+#[test]
+fn explicit_branch_uses_explicit_base_and_reuses_existing_branch() {
+    let runner = explicit_branch_runner("fix/9", None, true);
+    runner.expect(
+        &["config", "--local", "branch.fix/9.redmine-issue-id", "9"],
+        0,
+        "",
+    );
+
+    let outcome = lifecycle::ensure_branch_and_bind(&runner, 9, "fix/9", Some("main"), None);
+    assert_eq!(
+        outcome,
+        ExplicitBranchOutcome::ExistedAndBound {
+            branch: "fix/9".to_owned(),
+            issue_id: 9,
+        }
+    );
+    assert!(outcome.warning().is_none());
+}
+
+#[test]
+fn explicit_branch_same_issue_is_idempotent_without_rewrite() {
+    let runner = explicit_branch_runner("feat/77", Some(77), true);
+
+    let outcome = lifecycle::ensure_branch_and_bind(&runner, 77, "feat/77", None, None);
+    assert_eq!(
+        outcome,
+        ExplicitBranchOutcome::Idempotent {
+            branch: "feat/77".to_owned(),
+            issue_id: 77,
+        }
+    );
+    assert!(outcome.warning().is_none());
+    assert!(
+        runner
+            .recorded_writes_to("branch.feat/77.redmine-issue-id")
+            .is_empty(),
+        "idempotent re-bind must not rewrite the key"
+    );
+}
+
+#[test]
+fn explicit_branch_never_overwrites_different_binding() {
+    let runner = explicit_branch_runner("feat/6", Some(5), true);
+
+    let outcome = lifecycle::ensure_branch_and_bind(&runner, 6, "feat/6", None, None);
+    let warning = outcome.warning().expect("conflict warns");
+    assert!(
+        warning.contains("issue 5") && warning.contains("issue 6"),
+        "{warning}"
+    );
+    assert!(
+        runner
+            .recorded_writes_to("branch.feat/6.redmine-issue-id")
+            .is_empty(),
+        "existing binding must not be rewritten"
+    );
+}
+
+#[test]
+fn explicit_branch_creation_failure_warns_but_preserves_remote_result() {
+    let runner = explicit_branch_runner("feat/8", None, false);
+    runner.expect(&["branch", "feat/8", "HEAD"], 128, "");
+
+    let outcome = lifecycle::ensure_branch_and_bind(&runner, 8, "feat/8", None, None);
+    let warning = outcome.warning().expect("creation failure warns");
+    assert!(warning.contains("issue 8 created"), "{warning}");
+}
+
+#[test]
+fn explicit_branch_skips_silently_on_repository_mismatch() {
+    let runner = explicit_branch_runner("feat/9", None, true);
+    let outcome =
+        lifecycle::ensure_branch_and_bind(&runner, 9, "feat/9", None, Some("other/tools"));
+    assert!(matches!(outcome, ExplicitBranchOutcome::Skipped { .. }));
+    assert!(outcome.warning().is_none());
 }
