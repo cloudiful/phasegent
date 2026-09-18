@@ -1,0 +1,137 @@
+name: Bump homebrew tap
+
+# Keeps cloudiful/homebrew-tap/Formula/phasegent.rb in sync with GitHub
+# releases. Fires when a release is published (or on manual dispatch with
+# an explicit tag), reads the release SHA256SUMS, rewrites the three download
+# URLs and hashes in the tap formula, and pushes to the tap repo main branch.
+#
+# Required secret (create manually in the phasegent repo settings):
+# HOMEBREW_TAP_TOKEN — a fine-grained PAT with contents:write on
+# cloudiful/homebrew-tap. The workflow fails fast with a clear error when
+# the secret is missing instead of silently skipping the bump.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag like v2.12.16"
+        required: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require HOMEBREW_TAP_TOKEN
+        run: |
+          if [ -z "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
+            echo "::error::Missing secret HOMEBREW_TAP_TOKEN. Create a fine-grained PAT with contents:write on cloudiful/homebrew-tap and add it as a repository secret named HOMEBREW_TAP_TOKEN in the phasegent repo settings."
+            exit 1
+          fi
+
+      - name: Checkout tap
+        uses: actions/checkout@v7
+        with:
+          repository: cloudiful/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Bump formula from SHA256SUMS
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' must look like v2.12.16."
+            exit 1
+          fi
+          curl -sSL "https://github.com/cloudiful/phasegent/releases/download/${TAG}/SHA256SUMS" -o /tmp/SHA256SUMS
+          python3 - tap "$TAG" /tmp/SHA256SUMS <<'EOF'
+          import re
+          import sys
+
+          tap_dir, tag, sums_path = sys.argv[1:4]
+          formula_path = f"{tap_dir}/Formula/phasegent.rb"
+          targets = [
+              "aarch64-apple-darwin",
+              "aarch64-unknown-linux-gnu",
+              "x86_64-unknown-linux-gnu",
+          ]
+
+          sums = {}
+          for line in open(sums_path).read().splitlines():
+              parts = line.split()
+              if len(parts) == 2:
+                  sums[parts[1]] = parts[0]
+          expect = {t: sums.get(f"phasegent-{tag}-{t}") for t in targets}
+          missing = [t for t, h in expect.items() if not h]
+          if missing:
+              print(f"SHA256SUMS has no entry for targets: {missing}", file=sys.stderr)
+              sys.exit(1)
+
+          text = open(formula_path).read()
+          text = re.sub(r"releases/download/v[\d.]+", f"releases/download/{tag}", text)
+          text = re.sub(r"phasegent-v[\d.]+-", f"phasegent-{tag}-", text)
+
+          lines = text.splitlines(keepends=True)
+          current, replaced = None, set()
+          urls = {}
+          for i, line in enumerate(lines):
+              m = re.search(
+                  r'url\s+"(.*phasegent-.*-(aarch64-apple-darwin|aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu))"',
+                  line,
+              )
+              if m:
+                  current = m.group(2)
+                  urls[current] = m.group(1)
+                  continue
+              m = re.match(r'(\s*sha256\s+")[0-9a-f]{64}(")', line)
+              if m and current in expect:
+                  lines[i] = f"{m.group(1)}{expect[current]}{m.group(2)}\n"
+                  replaced.add(current)
+                  current = None
+          if set(targets) != set(urls):
+              print(
+                  f"expected download URLs for {targets}, got {sorted(urls)}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if any(tag not in u for u in urls.values()):
+              print(
+                  f"not all download URLs point at {tag}: {sorted(urls.values())}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if set(targets) != replaced:
+              print(
+                  f"expected sha256 updates for {targets}, got {sorted(replaced)}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          open(formula_path, "w").write("".join(lines))
+          print(f"bumped {formula_path} to {tag}")
+          EOF
+          git -C tap diff -- Formula/phasegent.rb
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.value }}"
+          git -C tap config user.name "phasegent-bot"
+          git -C tap config user.email "phasegent-bot@users.noreply.github.com"
+          git -C tap add Formula/phasegent.rb
+          git -C tap commit -m "chore: bump phasegent to ${TAG}" || exit 0
+          git -C tap push origin main
