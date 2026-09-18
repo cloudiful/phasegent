@@ -13,11 +13,18 @@ name: Bump homebrew tap
 on:
   release:
     types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag like v2.12.16"
+        description: "Release tag like v2.13.1"
         required: true
+
+concurrency:
+  group: homebrew-bump-${{ github.event.release.tag_name || github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   bump:
@@ -30,11 +37,42 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+              echo "workflow_run conclusion is '${{ github.event.workflow_run.conclusion }}', skipping quietly."
+              exit 0
+            fi
+            BRANCH="${{ github.event.workflow_run.head_branch }}"
+            if ! echo "$BRANCH" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "workflow_run head_branch '$BRANCH' is not a release tag, skipping quietly."
+              exit 0
+            fi
+            echo "value=$BRANCH" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unsupported event '${{ github.event_name }}'."
+            exit 1
+          fi
+
+      - name: Assert tag shape
+        run: |
+          TAG="${{ steps.tag.outputs.value }}"
+          if [ -z "$TAG" ]; then
+            if [ "${{ github.event_name }}" = "workflow_run" ]; then
+              echo "No tag resolved for this workflow_run (non-success conclusion or non-release branch), skipping quietly."
+              exit 0
+            fi
+            echo "::error::Resolved tag is empty."
+            exit 1
+          fi
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$TAG' must look like vX.Y.Z."
+            exit 1
           fi
 
       - name: Require HOMEBREW_TAP_TOKEN
+        if: steps.tag.outputs.value != ''
         run: |
           if [ -z "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
             echo "::error::Missing secret HOMEBREW_TAP_TOKEN. Create a fine-grained PAT with contents:write on cloudiful/homebrew-tap and add it as a repository secret named HOMEBREW_TAP_TOKEN in the phasegent repo settings."
@@ -42,6 +80,7 @@ jobs:
           fi
 
       - name: Checkout tap
+        if: steps.tag.outputs.value != ''
         uses: actions/checkout@v7
         with:
           repository: cloudiful/homebrew-tap
@@ -49,6 +88,7 @@ jobs:
           path: tap
 
       - name: Bump formula from SHA256SUMS
+        if: steps.tag.outputs.value != ''
         env:
           TAG: ${{ steps.tag.outputs.value }}
         run: |
@@ -127,6 +167,7 @@ jobs:
           git -C tap diff -- Formula/phasegent.rb
 
       - name: Commit and push
+        if: steps.tag.outputs.value != ''
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.value }}"
