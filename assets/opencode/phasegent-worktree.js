@@ -197,7 +197,14 @@ function redirectArgs(tool, workdir, args, sessionId) {
   if (typeof workdir !== "string" || workdir.length === 0) return args;
   const redirected = { ...args };
   const keys = PATH_ARG_KEYS[tool];
-  if (keys) {
+  if (tool === "glob" || tool === "grep") {
+    const current = redirected.path;
+    if (typeof current !== "string" || current.length === 0) {
+      redirected.path = workdir;
+    } else {
+      redirected.path = redirectPathValue(workdir, current);
+    }
+  } else if (keys) {
     for (const key of keys) {
       if (typeof redirected[key] === "string") {
         redirected[key] = redirectPathValue(workdir, redirected[key]);

@@ -95,9 +95,44 @@ describe("redirectArgs file tools", () => {
     }
   });
 
-  test("leaves an omitted glob/grep path omitted", () => {
-    const out = redirectArgs("glob", WORKTREE, { pattern: "*.rs" });
-    expect(out.path).toBeUndefined();
+  test("defaults a missing glob/grep path to the worktree", () => {
+    for (const tool of ["glob", "grep"]) {
+      expect(redirectArgs(tool, WORKTREE, {}, "session-1").path).toBe(WORKTREE);
+      expect(redirectArgs(tool, WORKTREE, { pattern: "*.rs" }, "session-1").path).toBe(
+        WORKTREE,
+      );
+    }
+  });
+
+  test("defaults an empty or non-string glob/grep path to the worktree", () => {
+    expect(redirectArgs("glob", WORKTREE, { path: "" }, "session-1").path).toBe(
+      WORKTREE,
+    );
+    expect(redirectArgs("grep", WORKTREE, { path: "" }, "session-1").path).toBe(
+      WORKTREE,
+    );
+    expect(redirectArgs("glob", WORKTREE, { path: 42 }, "session-1").path).toBe(
+      WORKTREE,
+    );
+    expect(redirectArgs("grep", WORKTREE, { path: null }, "session-1").path).toBe(
+      WORKTREE,
+    );
+  });
+
+  test("joins relative glob/grep paths and passes absolute paths through", () => {
+    for (const tool of ["glob", "grep"]) {
+      expect(redirectArgs(tool, WORKTREE, { path: "src" }, "session-1").path).toBe(
+        `${WORKTREE}/src`,
+      );
+      expect(
+        redirectArgs(
+          tool,
+          WORKTREE,
+          { path: "/home/dev/codes/tools/phasegent/src" },
+          "session-1",
+        ).path,
+      ).toBe("/home/dev/codes/tools/phasegent/src");
+    }
   });
 
   test("passes absolute file paths through unchanged", () => {
