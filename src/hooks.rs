@@ -25,10 +25,6 @@ const KNOWN_SOURCES: [&str; 6] = ["", "message", "template", "merge", "squash", 
 const SKIP_SOURCES: [&str; 3] = ["merge", "squash", "commit"];
 /// Keywords recognized as Redmine reference tokens (checked case-insensitively).
 const REF_KEYWORDS: [&str; 6] = ["refs", "references", "ref", "fixes", "closes", "closed"];
-/// Long-lived branch that stays merge-only: hand commits are rejected there.
-const MAIN_BRANCH: &str = "main";
-/// Release automation prefix exempted from the main guard.
-const RELEASE_PREFIX: &str = "chore(release):";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookKind {
@@ -403,22 +399,6 @@ fn noop(hook: HookKind, reason: &str) -> serde_json::Value {
     serde_json::json!({ "hook": hook.name(), "action": "noop", "reason": reason })
 }
 
-/// Release automation messages start with `chore(release):` after leading
-/// whitespace; they keep the publish flow unchanged on `main`.
-fn is_release_message(text: &str) -> bool {
-    text.trim_start().starts_with(RELEASE_PREFIX)
-}
-
-/// Git's default merge messages start with `Merge ` (e.g. `Merge branch ...`,
-/// `Merge pull request ...`); they are the merge-only path onto `main`.
-fn is_merge_message(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    trimmed == "Merge"
-        || trimmed.starts_with("Merge ")
-        || trimmed.starts_with("Merge\n")
-        || trimmed.starts_with("Merge\r")
-}
-
 fn prepare_commit_msg(
     runner: &dyn GitRunner,
     path: &Path,
@@ -453,30 +433,6 @@ fn commit_msg(
     _path: &Path,
     bytes: &[u8],
 ) -> Result<serde_json::Value, BranchContextError> {
-    // Main guard first: `main` is merge-only. Detached HEAD stays silent like
-    // the other hooks so rebases and cherry-picks are never blocked.
-    let branch = match branch_context::current_branch(runner) {
-        Ok(branch) => branch,
-        Err(error) if error.kind == "branch" => {
-            return Ok(noop(HookKind::CommitMsg, "no branch binding"));
-        }
-        Err(error) => return Err(error),
-    };
-    if branch == MAIN_BRANCH {
-        let text = String::from_utf8_lossy(bytes);
-        if is_release_message(&text) || is_merge_message(&text) {
-            return Ok(serde_json::json!({
-                "hook": HookKind::CommitMsg.name(),
-                "action": "valid",
-            }));
-        }
-        return Err(BranchContextError::new(
-            "conflict",
-            "direct commits to 'main' are rejected (main is merge-only); \
-             create a branch with `git checkout -b feat/<ID>` or `phasegent issue create --branch` and commit there; \
-             `chore(release):` and `Merge ...` messages are allowed; bypass with --no-verify only in emergencies",
-        ));
-    }
     let Some(issue_id) = bound_issue_id(runner)? else {
         return Ok(noop(HookKind::CommitMsg, "no branch binding"));
     };
