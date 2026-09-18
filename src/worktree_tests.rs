@@ -796,13 +796,16 @@ fn acquire_creates_a_new_worktree_for_a_second_session() {
     let (db_temp, _storage, _env) = open_temp_db("acquire-new");
     let cache = unique_cache("acquire-new");
     let runner = ProcessWorktreeRunner::new();
+    // Issue #509: explicit `--isolate` now forces a fresh worktree even on
+    // a clean empty table, so the first acquire uses the default path to
+    // keep covering `no_conflict` reuse; the second/third still isolate.
     let first = acquire_lease(
         &runner,
         repo.dir.path(),
         239,
         "session-A",
         Some(cache.path()),
-        true,
+        false,
         false,
     )
     .expect("first acquire");
@@ -1101,13 +1104,16 @@ fn acquire_dirty_same_issue_other_session_lease_creates_new_worktree() {
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 245);
+    // Issue #509: explicit `--isolate` now forces a fresh worktree on every
+    // path, so this Rule 3 fall-through/reuse coverage uses the default
+    // path (no flag).
     let first = acquire_lease(
         &runner,
         repo.dir.path(),
         245,
         "session-A",
         Some(cache.path()),
-        true,
+        false,
         false,
     )
     .expect("first session acquire");
@@ -1121,7 +1127,7 @@ fn acquire_dirty_same_issue_other_session_lease_creates_new_worktree() {
         245,
         "session-B",
         Some(cache.path()),
-        true,
+        false,
         false,
     )
     .expect("second session acquire");
@@ -1334,13 +1340,15 @@ fn acquire_dirty_bound_same_issue_keeps_stale_branch_binding() {
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 245);
+    // Issue #509: explicit `--isolate` now forces a fresh worktree, so this
+    // crashed-predecessor reuse coverage uses the default path (no flag).
     let outcome = acquire_lease(
         &runner,
         repo.dir.path(),
         245,
         "session-A",
         Some(cache.path()),
-        true,
+        false,
         false,
     )
     .expect("dirty + same-issue with no other lease must fall through to reuse");
@@ -1355,6 +1363,140 @@ fn acquire_dirty_bound_same_issue_keeps_stale_branch_binding() {
         "stale branch binding must survive acquire"
     );
     let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_isolate_flag_wins_over_clean_checkout_with_retained_row() {
+    // Issue #509 replica: clean checkout + one RETAINED row occupying the
+    // current directory + `--isolate` must create a fresh worktree instead
+    // of colliding on the `(repo_identity, worktree_path)` unique index.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("isolate-retained-row") else {
+        return;
+    };
+    let (db_temp, storage, _env) = open_temp_db("acquire-isolate-retained-row");
+    let cache = unique_cache("isolate-retained-row");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("repo identity");
+    let checkout = repo.dir.path().to_string_lossy().to_string();
+    let now = now_unix_secs();
+    crate::worktree::ensure_schema(&storage).expect("ensure_schema");
+    insert_lease(
+        &storage,
+        NewLease {
+            lease_id: "lease-retained-occupant",
+            identity: &identity,
+            issue: 1,
+            session: "old-session",
+            checkout_path: &checkout,
+            worktree_path: &checkout,
+            branch: &repo.head_branch,
+            status: LEASE_STATUS_RETAINED,
+            created_at: now,
+            heartbeat_at: now,
+        },
+    )
+    .expect("seed retained row on the current checkout");
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        508,
+        "session-A",
+        Some(cache.path()),
+        true,
+        false,
+    )
+    .expect("explicit --isolate must win over the retained occupant");
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(outcome.created);
+    assert!(outcome.branch.starts_with("phasegent/508-"));
+    assert!(Path::new(&outcome.path).exists(), "worktree dir must exist");
+    assert_ne!(outcome.path, checkout);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_isolate_flag_forces_new_worktree_on_empty_table() {
+    // Issue #509 document lock: `--isolate` forces a fresh branch/worktree
+    // even when the checkout is clean and no lease exists.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("isolate-empty") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-isolate-empty");
+    let cache = unique_cache("isolate-empty");
+    let runner = ProcessWorktreeRunner::new();
+    let outcome = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        509,
+        "session-A",
+        Some(cache.path()),
+        true,
+        false,
+    )
+    .expect("explicit --isolate on a clean empty table must isolate");
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(outcome.created);
+    assert!(outcome.branch.starts_with("phasegent/509-"));
+    assert!(Path::new(&outcome.path).exists(), "worktree dir must exist");
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn acquire_without_isolate_still_collides_on_retained_row() {
+    // Reverse lock for issue #509: retained rows deliberately do NOT
+    // trigger default auto-isolation, so without any flag the clean reuse
+    // path still collides on the unique index and reports the guidance
+    // (which is now true: adding the flag really helps).
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("no-isolate-retained-row") else {
+        return;
+    };
+    let (db_temp, storage, _env) = open_temp_db("acquire-no-isolate-retained-row");
+    let cache = unique_cache("no-isolate-retained-row");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("repo identity");
+    let checkout = repo.dir.path().to_string_lossy().to_string();
+    let now = now_unix_secs();
+    crate::worktree::ensure_schema(&storage).expect("ensure_schema");
+    insert_lease(
+        &storage,
+        NewLease {
+            lease_id: "lease-retained-occupant",
+            identity: &identity,
+            issue: 1,
+            session: "old-session",
+            checkout_path: &checkout,
+            worktree_path: &checkout,
+            branch: &repo.head_branch,
+            status: LEASE_STATUS_RETAINED,
+            created_at: now,
+            heartbeat_at: now,
+        },
+    )
+    .expect("seed retained row on the current checkout");
+    let error = acquire_lease(
+        &runner,
+        repo.dir.path(),
+        508,
+        "session-A",
+        Some(cache.path()),
+        false,
+        false,
+    )
+    .expect_err("no flag + retained occupant must still hit the repo/path conflict");
+    assert_eq!(error.kind, "storage");
+    assert!(
+        error.message.contains("--isolate")
+            && error.message.contains("worktree status")
+            && error.message.contains("worktree list"),
+        "default collision must keep the original guidance: {error}"
+    );
     drop(cache);
     drop(db_temp);
 }

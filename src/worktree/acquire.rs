@@ -87,22 +87,25 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
 /// worktree under
 /// `~/.cache/phasegent/worktrees/<fingerprint>/<slug>` instead of
 /// colliding with a foreign tree or the `(repo, worktree_path)` lease
-/// index. `--isolate` is still accepted as the explicit opt-in for the
-/// same outcome, and `isolate || auto` (`--isolate` or the resolved
-/// `worktree-auto` switch) is what decides the remaining `Unknown`
-/// probe state below; there is deliberately no reuse fallback for a
-/// confirmed conflict trigger.
+/// index. `--isolate` forces a fresh branch/worktree (issue #509):
+/// `isolate || auto` (`--isolate` or the resolved `worktree-auto`
+/// switch) skips every reuse path and acquires an isolated worktree
+/// directly; there is deliberately no reuse fallback for a confirmed
+/// conflict trigger or an explicit isolation request.
 ///
 /// The dirty probe feeding rules 2/3/5 is a three-state value
 /// (`Clean` / `Dirty` / `Unknown`, issue 305 Task 4). A failed
 /// `git status` yields `Unknown` and never counts as `Clean`: with
 /// `--isolate` or `worktree-auto` enabled a fresh worktree is created,
 /// and otherwise the current checkout is reused with an explicit
-/// warning — the one case where the switches still change the outcome.
+/// warning. Explicit isolation additionally covers the `Clean` path,
+/// so the switches force a fresh worktree on every checkout state.
 ///
 /// 1. An active lease exists for `(repo, issue, session)` — the same
 ///    `lease_id`, `path`, and `branch` are returned and `heartbeat_at`
 ///    is updated. `created` is `false` and `reason == "idempotent"`.
+///    This home-coming is checked before the explicit `--isolate` /
+///    `worktree-auto` gate below, so it is unaffected by isolation.
 /// 2. The checkout is dirty (`is_clean` probe on `repo_path`) and its
 ///    branch is bound to a *different* issue — a fresh worktree is
 ///    created so the new task never lands in a dirty tree that belongs
@@ -162,11 +165,10 @@ pub fn acquire_lease(
             format!("session must be <= {MAX_REF_CHARS} chars"),
         ));
     }
-    // Explicit isolation request (issue #247): `--isolate` or the
-    // resolved `worktree-auto` switch. Rules 2, 3, and 4 isolate by
-    // default now (issue #436), so this gate only decides the `Unknown`
-    // probe state; it stays OR-ed so the flag and the setting keep
-    // working unchanged.
+    // Explicit isolation request (issues #247, #509): `--isolate` or the
+    // resolved `worktree-auto` switch forces a fresh branch/worktree on
+    // every checkout state. Rules 2, 3, and 4 already isolate by default
+    // (issue #436); this gate additionally skips every reuse path below.
     let explicit_isolation = isolate || auto;
     let identity = repo_identity(runner, repo_path)?;
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
@@ -288,6 +290,27 @@ pub fn acquire_lease(
         warnings.push(format!(
             "another active lease exists for this repository; acquiring issue {issue} in an \
              isolated worktree ({AUTO_ISOLATION_DEFAULT_NOTE})"
+        ));
+        return with_warnings(
+            acquire_new_worktree(
+                runner, &storage, &identity, repo_path, issue, session, cache_base,
+            ),
+            issue,
+            warnings,
+        );
+    }
+
+    // Explicit isolation request (--isolate / worktree-auto, issue #509):
+    // the operator asked for a separate worktree, so never reuse the
+    // current checkout. Rule 1 idempotent home-coming above is unaffected.
+    // Placed after the conflict triggers (Unknown/dirty Rules 2-4) so those
+    // paths keep their specific warnings; the clean reuse path below is the
+    // one this gate fixes. Every path with the flag still ends in a fresh
+    // worktree.
+    if explicit_isolation {
+        warnings.push(format!(
+            "explicit isolation requested (--isolate or worktree-auto); acquiring issue \
+             {issue} in an isolated worktree"
         ));
         return with_warnings(
             acquire_new_worktree(
