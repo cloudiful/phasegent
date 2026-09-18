@@ -91,7 +91,7 @@ injects it automatically; on a host without one, export a single
 
 ## Branch binding lifecycle
 
-`main` is merge-only (never commit directly); work happens on `<type>/<id>` branches (e.g. `feat/452`), `bind` is only a fallback repair when the name cannot resolve, and a successful `issue create` or `bind` auto-acquires a worktree when the checkout conflicts with another lease (see Worktree leases).
+Work happens on `<type>/<id>` branches (e.g. `feat/452`), `bind` is only a fallback repair when the name cannot resolve, and a successful `issue create` or `bind` auto-acquires a worktree when the checkout conflicts with another lease (see Worktree leases).
 
 ## Marker protocol
 

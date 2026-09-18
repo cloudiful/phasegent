@@ -552,48 +552,37 @@ fn checkout_main(repo: &TempRepo) {
 }
 
 #[test]
-fn commit_rejects_hand_commit_on_main_with_escape() {
-    let Some(repo) = TempRepo::new("main-guard") else {
+fn commit_accepts_plain_commit_on_main_like_other_branches() {
+    let Some(repo) = TempRepo::new("main-plain") else {
         return;
     };
     checkout_main(&repo);
     let file = repo.0.join("COMMIT_MSG");
     write_file(&file, "Direct work on main\n");
-    let error = run_commit(&repo, &file).expect_err("hand commit on main rejected");
-    assert_eq!(error.kind, "conflict");
-    assert!(
-        error.message.contains("git checkout -b feat/"),
-        "{}",
-        error.message
-    );
-    assert!(
-        error.message.contains("issue create --branch"),
-        "{}",
-        error.message
-    );
+    let value = run_commit(&repo, &file).unwrap();
+    assert_eq!(value["action"], "noop");
     assert_eq!(read_file(&file), b"Direct work on main\n");
 }
 
 #[test]
-fn commit_allows_release_and_merge_on_main() {
-    let Some(repo) = TempRepo::new("main-exceptions") else {
+fn commit_enforces_binding_consistency_on_main() {
+    let Some(repo) = TempRepo::new("main-bound") else {
         return;
     };
     checkout_main(&repo);
+    branch_context::bind(&repo.runner(), 23, false).unwrap();
     let file = repo.0.join("COMMIT_MSG");
-
-    write_file(&file, "chore(release): 1.2.3\n");
-    let value = run_commit(&repo, &file).unwrap();
-    assert_eq!(value["action"], "valid");
-
-    write_file(&file, "Merge branch 'feat/452' into main\n");
+    write_file(&file, "Wrong branch\n\nRefs #24\n");
+    let error = run_commit(&repo, &file).expect_err("conflicting reference on main rejected");
+    assert_eq!(error.kind, "conflict");
+    write_file(&file, "Work on main\n\nRefs #23\n");
     let value = run_commit(&repo, &file).unwrap();
     assert_eq!(value["action"], "valid");
 }
 
 #[test]
-fn commit_guard_is_main_only() {
-    let Some(repo) = TempRepo::new("main-only") else {
+fn commit_nops_on_unbound_feature_branch() {
+    let Some(repo) = TempRepo::new("feature-plain") else {
         return;
     };
     repo.runner()

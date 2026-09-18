@@ -316,8 +316,9 @@ fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
     let body = &skill[start + marker.len()..];
     let section = body.find("## ").map(|end| &body[..end]).unwrap_or(body);
     assert!(
-        section.contains("merge-only") && section.contains("main"),
-        "lifecycle one-liner must state main is merge-only; got: {section}"
+        !section.contains("merge-only")
+            && !section.to_lowercase().contains("never commit directly"),
+        "lifecycle one-liner must not state a main merge-only restriction; got: {section}"
     );
     assert!(
         section.contains("feat/452") && section.contains("<type>/<id>"),
