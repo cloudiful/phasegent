@@ -331,6 +331,7 @@ fn install_at_handles_dir_at_target_path() {
 
 #[test]
 fn status_at_reports_both_slots_when_nothing_is_installed() {
+    let _lock = lock_workflow_tests();
     let (_temp, _home, _xdg) = override_home("status-empty");
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let report = status_at(&cwd);
@@ -344,6 +345,7 @@ fn status_at_reports_both_slots_when_nothing_is_installed() {
 
 #[test]
 fn status_at_reflects_installed_marker_and_size() {
+    let _lock = lock_workflow_tests();
     let (_temp, _home, _xdg) = override_home("status-installed");
     let dir = TempDir::new("status-installed-target");
     // install_at writes <dir>/<PLUGIN_FILENAME>; status_at(cwd) reads

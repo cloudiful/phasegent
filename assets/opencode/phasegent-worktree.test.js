@@ -5,7 +5,7 @@
 // attached `redirect` helpers are touched. The workspace adapter / acquire chain
 // is covered by the Rust asset assertions in `src/plugin_tests.rs`.
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import PhasegentWorktreePlugin, {
   PhasegentWorktreePlugin as namedPlugin,
 } from "./phasegent-worktree.js";
@@ -195,6 +195,18 @@ describe("worktree registry", () => {
 });
 
 describe("tool.execute.before hook", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+  });
+  afterEach(() => {
+    if (savedNoDiscover === undefined) {
+      delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    } else {
+      process.env.PHASEGENT_WORKTREE_NO_DISCOVER = savedNoDiscover;
+    }
+  });
   test("redirects a relative read into the acquired worktree", async () => {
     rememberWorktree("session-1", WORKTREE);
     const hook = createRedirectHook();
@@ -342,6 +354,18 @@ describe("pickActiveWorktreePath (issue #18 Task 2 lazy discovery)", () => {
 });
 
 describe("tool.execute.before session injection without a worktree", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+  });
+  afterEach(() => {
+    if (savedNoDiscover === undefined) {
+      delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    } else {
+      process.env.PHASEGENT_WORKTREE_NO_DISCOVER = savedNoDiscover;
+    }
+  });
   test("injects --session even when the registry is empty", async () => {
     const hook = createRedirectHook();
     const output = { args: { command: "phasegent issue create --title t" } };

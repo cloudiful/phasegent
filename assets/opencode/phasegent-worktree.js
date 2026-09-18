@@ -95,6 +95,17 @@ function pickActiveWorktreePath(leases) {
 
 async function discoverWorktreeForSession(sessionId) {
   try {
+    if (
+      typeof process !== "undefined" &&
+      process.env &&
+      process.env.PHASEGENT_WORKTREE_NO_DISCOVER === "1"
+    ) {
+      return null;
+    }
+  } catch (_) {
+    // fall through to normal discovery
+  }
+  try {
     if (!sessionId) return null;
     const known = worktreeForSession(sessionId);
     if (known) return known;
