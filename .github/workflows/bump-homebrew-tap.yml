@@ -2,8 +2,8 @@ name: Bump homebrew tap
 
 # Keeps cloudiful/homebrew-tap/Formula/phasegent.rb in sync with GitHub
 # releases. Fires when a release is published (or on manual dispatch with
-# an explicit tag), reads the release SHA256SUMS, rewrites version/URLs/
-# hashes in the tap formula, and pushes to the tap repo main branch.
+# an explicit tag), reads the release SHA256SUMS, rewrites the three download
+# URLs and hashes in the tap formula, and pushes to the tap repo main branch.
 #
 # Required secret (create manually in the phasegent repo settings):
 # HOMEBREW_TAP_TOKEN — a fine-grained PAT with contents:write on
@@ -57,13 +57,12 @@ jobs:
             echo "::error::Tag '$TAG' must look like v2.12.16."
             exit 1
           fi
-          VER="${TAG#v}"
           curl -sSL "https://github.com/cloudiful/phasegent/releases/download/${TAG}/SHA256SUMS" -o /tmp/SHA256SUMS
-          python3 - tap "$TAG" "$VER" /tmp/SHA256SUMS <<'EOF'
+          python3 - tap "$TAG" /tmp/SHA256SUMS <<'EOF'
           import re
           import sys
 
-          tap_dir, tag, ver, sums_path = sys.argv[1:5]
+          tap_dir, tag, sums_path = sys.argv[1:4]
           formula_path = f"{tap_dir}/Formula/phasegent.rb"
           targets = [
               "aarch64-apple-darwin",
@@ -83,28 +82,38 @@ jobs:
               sys.exit(1)
 
           text = open(formula_path).read()
-          text, n = re.subn(r'(?m)^(\s*version\s+")[0-9.]+(")', rf"\g<1>{ver}\g<2>", text)
-          if n != 1:
-              print(f"expected 1 version line, found {n}", file=sys.stderr)
-              sys.exit(1)
           text = re.sub(r"releases/download/v[\d.]+", f"releases/download/{tag}", text)
           text = re.sub(r"phasegent-v[\d.]+-", f"phasegent-{tag}-", text)
 
           lines = text.splitlines(keepends=True)
           current, replaced = None, set()
+          urls = {}
           for i, line in enumerate(lines):
               m = re.search(
-                  r'url\s+".*phasegent-.*-(aarch64-apple-darwin|aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu)"',
+                  r'url\s+"(.*phasegent-.*-(aarch64-apple-darwin|aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu))"',
                   line,
               )
               if m:
-                  current = m.group(1)
+                  current = m.group(2)
+                  urls[current] = m.group(1)
                   continue
               m = re.match(r'(\s*sha256\s+")[0-9a-f]{64}(")', line)
               if m and current in expect:
                   lines[i] = f"{m.group(1)}{expect[current]}{m.group(2)}\n"
                   replaced.add(current)
                   current = None
+          if set(targets) != set(urls):
+              print(
+                  f"expected download URLs for {targets}, got {sorted(urls)}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if any(tag not in u for u in urls.values()):
+              print(
+                  f"not all download URLs point at {tag}: {sorted(urls.values())}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
           if set(targets) != replaced:
               print(
                   f"expected sha256 updates for {targets}, got {sorted(replaced)}",
