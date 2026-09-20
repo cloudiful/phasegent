@@ -94,15 +94,13 @@ pub(crate) fn execute_issue(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
-    // Uniform upload-attachment fast path (Phase 1 parity + Phase 4
-    // sink): every provider's inherent `supports` reports
-    // `IssueAttachmentUpload = false`, so we reject non-Redmine early
-    // — before any file, network, or credential access — with the
-    // structured not-supported result. The Redmine arm still falls
-    // through to `provider.supports(...)` below and short-circuits
-    // there, but the early branch keeps the message tight and avoids
-    // resolving `provider_for` for a command we already know to
-    // reject.
+    // Uniform upload-attachment fast path: every provider's inherent `supports`
+    // reports `IssueAttachmentUpload = false`, so non-Redmine is rejected early
+    // — before any file, network, or credential access — with the structured
+    // not-supported result. The Redmine arm still falls through to
+    // `provider.supports(...)` below and short-circuits there, but the early
+    // branch keeps the message tight and avoids resolving `provider_for` for a
+    // command we already know to reject.
     if let IssueCommand::UploadAttachment { .. } = &command
         && provider_kind != ProviderKind::Redmine
     {

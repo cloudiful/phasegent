@@ -249,8 +249,7 @@ fn global_setting_to_json(
         match storage.load_global_setting(summary.name)? {
             Some(raw) => {
                 let lower = raw.trim().to_ascii_lowercase();
-                // Return static str for known valid values by leaking? Instead use owned but we need 'static lifetime.
-                // The GlobalSettingJson value field is Option<&'static str>, so we must return static literals.
+                // The JSON value slot is `Option<&'static str>`, so only static literals can be returned.
                 if lower == "postgres" {
                     Some("postgres")
                 } else if lower == "sqlite" {

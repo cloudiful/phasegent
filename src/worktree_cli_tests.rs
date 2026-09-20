@@ -1819,6 +1819,9 @@ fn parse_prune_defaults_to_read_only_scan_and_14_days() {
 
 #[test]
 fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale() {
+    // `--release-stale` is only accepted together with a non-empty `--reason`,
+    // and a bare `--reason` is rejected because it would record a dry-run
+    // reason; the combined invocation stays parseable.
     let missing_reason = crate::command::parse(&strings([
         "--role",
         "orchestrator",
@@ -1828,7 +1831,7 @@ fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale()
     ]))
     .unwrap_err();
     assert!(
-        missing_reason.contains("--reason"),
+        missing_reason.contains("--release-stale requires a non-empty --reason"),
         "unexpected error: {missing_reason}"
     );
     let dangling_reason = crate::command::parse(&strings([
@@ -1841,7 +1844,7 @@ fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale()
     ]))
     .unwrap_err();
     assert!(
-        dangling_reason.contains("--release-stale"),
+        dangling_reason.contains("--reason requires --release-stale"),
         "unexpected error: {dangling_reason}"
     );
     let invocation = crate::command::parse(&strings([

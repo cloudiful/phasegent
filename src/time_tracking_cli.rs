@@ -1,7 +1,3 @@
-// Compatibility facade: re-exports the `crate::time_tracking` surface so
-// existing callers keep compiling. New code should import from
-// `crate::time_tracking` directly.
-
 #[allow(unused_imports)]
 pub(crate) use crate::time_tracking::{
     TIMER_GITLAB_MARKER_PREFIX, TimerListOutput, TimerOutput, auto_finish_run, auto_start_run,

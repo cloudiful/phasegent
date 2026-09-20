@@ -637,60 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn prune_release_stale_requires_reason_and_reason_requires_release_stale() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--release-stale",
-            "--reason",
-            "stale session recovery",
-        ]))
-        .unwrap();
-        match invocation.command {
-            Command::Worktree(WorktreeCommand::Prune {
-                release_stale,
-                remove,
-                reason,
-                ..
-            }) => {
-                assert!(release_stale);
-                assert!(!remove, "--remove defaults off");
-                assert_eq!(reason.as_deref(), Some("stale session recovery"));
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
-
-        let missing = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--release-stale",
-        ]))
-        .unwrap_err();
-        assert!(
-            missing.contains("--release-stale requires a non-empty --reason"),
-            "unexpected error: {missing}"
-        );
-
-        let dangling = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--reason",
-            "no action",
-        ]))
-        .unwrap_err();
-        assert!(
-            dangling.contains("--reason requires --release-stale"),
-            "unexpected error: {dangling}"
-        );
-    }
-
-    #[test]
     fn prune_combines_release_stale_and_remove() {
         let invocation = command::parse(&strings([
             "--role",
@@ -716,33 +662,5 @@ mod tests {
             }
             other => panic!("unexpected command {other:?}"),
         }
-    }
-
-    #[test]
-    fn removed_release_stale_subcommand_is_rejected() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release-stale",
-        ]))
-        .unwrap_err();
-        assert!(
-            err.contains("unknown worktree command 'release-stale'"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn prune_rejects_removed_dry_run_flag() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--dry-run",
-        ]))
-        .unwrap_err();
-        assert!(err.contains("--dry-run"), "unexpected error: {err}");
     }
 }

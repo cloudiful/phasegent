@@ -7,8 +7,6 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::params;
-
 use crate::branch_context::{ProcessGitRunner, read_issue_id};
 use crate::infra::storage::Storage;
 use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_remove};
@@ -736,10 +734,3 @@ pub fn release_active_leases_for_issue_session(
         now_unix_secs(),
     )
 }
-
-// `params!` is re-exported here so a future Phase 2 query helper
-// (e.g. prune candidate selection) can live in this file without
-// re-importing rusqlite. The alias also documents that this file
-// owns the lease-write surface.
-#[allow(unused_imports)]
-use params as _params_marker;

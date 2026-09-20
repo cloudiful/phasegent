@@ -15,20 +15,80 @@ use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
+/// `remote::parse_remote` normalisation contract, parameterised over the
+/// HTTPS, URL-form SSH, and scp-style SSH remotes that reach it: HTTPS keeps
+/// its non-default port in `api_base` and drops embedded credentials, SSH
+/// keeps the transport user (required to clone) and its non-default port, an
+/// SSH port never leaks into `api_base`, and query/fragment are always
+/// stripped without ever leaking a credential.
 #[test]
-fn remote_resolution_keeps_https_port_and_drops_ssh_port() {
-    let https = remote::parse_remote("https://forgejo.example:8443/owner/widgets.git").unwrap();
-    assert_eq!(https.api_base, "https://forgejo.example:8443/api/v1");
-    assert_eq!(https.repository, "owner/widgets");
-
-    let ssh = remote::parse_remote("ssh://git@forgejo.example:2222/owner/widgets.git").unwrap();
-    assert_eq!(ssh.api_base, "https://forgejo.example/api/v1");
-    assert_eq!(ssh.repository, "owner/widgets");
-
-    let prefixed =
-        remote::parse_remote("https://forgejo.example/forgejo/owner/widgets.git").unwrap();
-    assert_eq!(prefixed.api_base, "https://forgejo.example/forgejo/api/v1");
-    assert_eq!(prefixed.repository, "owner/widgets");
+fn remote_resolution_normalises_https_and_ssh_forms_without_credentials() {
+    let cases = [
+        (
+            "https://forgejo.example:8443/owner/widgets.git",
+            "owner/widgets",
+            "https://forgejo.example:8443/api/v1",
+            "https://forgejo.example:8443/owner/widgets.git",
+        ),
+        (
+            "ssh://git@forgejo.example:2222/owner/widgets.git",
+            "owner/widgets",
+            "https://forgejo.example/api/v1",
+            "ssh://git@forgejo.example:2222/owner/widgets.git",
+        ),
+        (
+            "https://forgejo.example/forgejo/owner/widgets.git",
+            "owner/widgets",
+            "https://forgejo.example/forgejo/api/v1",
+            "https://forgejo.example/forgejo/owner/widgets.git",
+        ),
+        (
+            "git@forgejo.example:owner/widgets.git",
+            "owner/widgets",
+            "https://forgejo.example/api/v1",
+            "ssh://git@forgejo.example/owner/widgets.git",
+        ),
+        (
+            "https://deploy:supersecret@forgejo.example/owner/widgets.git",
+            "owner/widgets",
+            "https://forgejo.example/api/v1",
+            "https://forgejo.example/owner/widgets.git",
+        ),
+        (
+            "ssh://git@forgejo.example.com:2222/owner/repo.git",
+            "owner/repo",
+            "https://forgejo.example.com/api/v1",
+            "ssh://git@forgejo.example.com:2222/owner/repo.git",
+        ),
+        (
+            "ssh://deploy@git.example.com/owner/repo.git",
+            "owner/repo",
+            "https://git.example.com/api/v1",
+            "ssh://deploy@git.example.com/owner/repo.git",
+        ),
+        (
+            "ssh://git@git.example.com/owner/repo.git?ref=main#frag",
+            "owner/repo",
+            "https://git.example.com/api/v1",
+            "ssh://git@git.example.com/owner/repo.git",
+        ),
+        (
+            "https://deploy:supersecret@forgejo.example/owner/repo.git",
+            "owner/repo",
+            "https://forgejo.example/api/v1",
+            "https://forgejo.example/owner/repo.git",
+        ),
+    ];
+    for (input, repository, api_base, repository_url) in cases {
+        let parsed = remote::parse_remote(input).unwrap_or_else(|error| panic!("{input}: {error}"));
+        assert_eq!(parsed.repository, repository, "{input}");
+        assert_eq!(parsed.api_base, api_base, "{input}");
+        assert_eq!(parsed.repository_url, repository_url, "{input}");
+        assert!(
+            !parsed.repository_url.contains("supersecret"),
+            "credentials must never survive normalisation: {input}"
+        );
+    }
 }
 
 #[test]
@@ -514,17 +574,6 @@ fn empty_marker_is_rejected_by_parser_and_provider() {
 }
 
 #[test]
-fn phase2_persisted_provider_config_paths_have_been_removed() {
-    // The legacy `<role>.config.json` layout was retired when the
-    // project migrated to a single SQLite database under the
-    // platform-standard config directory. `auth::config_path_for`
-    // and friends used to expose the on-disk layout to tests; with
-    // the migration they are gone and this regression guard pins the
-    // absence. The test body only documents the contract so future
-    // contributors do not reintroduce a parallel file layout.
-}
-
-#[test]
 fn redmine_stored_config_round_trips_group_selection_and_legacy_defaults() {
     // Backward-compatible decode: old configs that still carry
     // `group_name`/`group_role` from the legacy `AI Agents` workflow keep
@@ -989,59 +1038,6 @@ fn issue_create_and_update_accept_optional_tracker_selection() {
 }
 
 #[test]
-fn issue_update_is_the_write_entry_and_update_body_token_is_rejected() {
-    // `issue update` is the canonical orchestrator write entry (issue 337):
-    // it carries the body plus tracker/planning fields in one command.
-    let update = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "update",
-        "9",
-        "--body",
-        "Updated",
-        "--tracker",
-        "Bug",
-        "--due-date",
-        "2026-09-15",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    match command::parse(&update).unwrap().command {
-        command::Command::Issue(command::IssueCommand::Update {
-            number,
-            body,
-            tracker,
-            planning,
-            ..
-        }) => {
-            assert_eq!(number, 9);
-            assert_eq!(body, "Updated");
-            assert_eq!(tracker.as_deref(), Some("Bug"));
-            assert_eq!(planning.due_date.as_deref(), Some("2026-09-15"));
-        }
-        other => panic!("unexpected command: {other:?}"),
-    }
-
-    // The removed `update-body` token must never resolve as an entry point.
-    let removed = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "update-body",
-        "9",
-        "--body",
-        "x",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let error = command::parse(&removed).expect_err("removed update-body must be rejected");
-    assert!(error.contains("unknown issue command"), "got: {error}");
-}
-
-#[test]
 fn comment_get_uses_the_requested_issue_scope() {
     let (base, requests, server) = mock_server_with_headers(
         r#"[{"id":42,"body":"<!-- marker --> comment","html_url":"https://forgejo.example/comment/42"}]"#,
@@ -1135,268 +1131,139 @@ fn mock_server_with_headers(
     (format!("http://{address}/api/v1"), receiver, server)
 }
 
+/// The CLI JSON contract for `workflow bootstrap` is parameterised over the
+/// success and membership-warning shapes: both expose `user_memberships` per
+/// agent identity and the credential-free `git_mirror` outcome, must never
+/// re-introduce the legacy `membership`/`group_name`/`group_role` keys, and
+/// must never leak a bearer key or embedded origin credential. The detailed
+/// bootstrap flow is exercised end-to-end by
+/// `redmine_contract_tests::issue_create_automatically_bootstraps_once_before_returning_issue`;
+/// this test pins the surface contract for both shapes.
 #[test]
-fn workflow_bootstrap_outputs_user_memberships_and_no_legacy_fields() {
-    // The CLI JSON contract for `workflow bootstrap` exposes
-    // `user_memberships` per agent identity and must never re-introduce the
-    // legacy `membership`/`group_name`/`group_role` keys. The detailed
-    // bootstrap flow is exercised end-to-end by
-    // `redmine_contract_tests::issue_create_automatically_bootstraps_once_before_returning_issue`;
-    // this test pins the surface contract.
-    let output = serde_json::json!({
-        "bootstrapped": true,
-        "created": true,
-        "repository": "owner/repo",
-        "identifier": "owner-repo",
-        "project_id": 44_u64,
-        "close_status_id": 5_u64,
-        "close_status_name": "Closed",
-        "user_memberships": [
-            {
-                "role": "Maintainer",
-                "user_id": 11_u64,
-                "user_login": "orchestrator",
-                "status": "added",
-            },
-            {
-                "role": "Developer",
-                "user_id": 22_u64,
-                "user_login": "executor",
-                "status": "added",
-            },
-            {
-                "role": "Reporter",
-                "user_id": 33_u64,
-                "user_login": "reviewer",
-                "status": "added",
-            },
-        ],
-    });
-    assert!(output["bootstrapped"].as_bool().unwrap());
-    assert_eq!(output["user_memberships"].as_array().unwrap().len(), 3);
-    assert!(output.get("membership").is_none());
-    assert!(output.get("group_name").is_none());
-    assert!(output.get("group_role").is_none());
-
-    let warning_output = serde_json::json!({
-        "bootstrapped": false,
-        "created": false,
-        "repository": "owner/repo",
-        "identifier": "owner-repo",
-        "project_id": 44_u64,
-        "close_status_id": 5_u64,
-        "close_status_name": "Closed",
-        "user_memberships": [
-            {
-                "role": "Developer",
-                "user_id": 22_u64,
-                "user_login": "executor",
-                "status": "warning",
-                "warning": "Redmine role was not found: user 'executor', role 'Developer'",
-            },
-        ],
-        "warning": "Redmine role was not found: user 'executor', role 'Developer'",
-    });
-    assert!(!warning_output["bootstrapped"].as_bool().unwrap());
-    assert!(warning_output.get("membership").is_none());
-    assert!(warning_output.get("group_name").is_none());
-    assert!(warning_output.get("group_role").is_none());
-    let warning_user_membership = &warning_output["user_memberships"][0];
-    assert_eq!(warning_user_membership["status"], "warning");
-    assert!(warning_user_membership["warning"].is_string());
-}
-
-#[test]
-fn remote_resolution_normalizes_ssh_and_strips_https_credentials() {
-    // SSH scp-style remotes must produce a credential-free ssh:// URL that
-    // keeps the `.git` suffix and exposes no username or password.
-    let ssh = remote::parse_remote("git@forgejo.example:owner/widgets.git").unwrap();
-    assert_eq!(ssh.repository, "owner/widgets");
-    assert_eq!(
-        ssh.repository_url, "ssh://git@forgejo.example/owner/widgets.git",
-        "SSH origin must normalise to a credential-free ssh:// URL: {}",
-        ssh.repository_url
-    );
-    assert!(
-        ssh.repository_url.starts_with("ssh://git@") && !ssh.repository_url[10..].contains('@'),
-        "SSH URL must keep only the canonical git user: {}",
-        ssh.repository_url
-    );
-
-    // HTTPS remotes with embedded credentials must drop them but keep the
-    // full URL otherwise identical so the mirror plugin can clone without a
-    // secret.
-    let creds =
-        remote::parse_remote("https://deploy:supersecret@forgejo.example/owner/widgets.git")
-            .unwrap();
-    assert_eq!(creds.repository, "owner/widgets");
-    assert_eq!(
-        creds.repository_url, "https://forgejo.example/owner/widgets.git",
-        "HTTPS origin must strip embedded credentials: {}",
-        creds.repository_url
-    );
-    assert!(
-        !creds.repository_url.contains("supersecret"),
-        "credential stripping must remove the password: {}",
-        creds.repository_url
-    );
-    assert!(
-        !creds.repository_url.contains("deploy"),
-        "credential stripping must remove the username: {}",
-        creds.repository_url
-    );
-}
-
-#[test]
-fn remote_resolution_preserves_ssh_username_for_url_form_remotes() {
-    // URL-form SSH remotes (`ssh://user@host:port/path/repo.git`) must keep
-    // their `git@` user — SSH requires a user, and stripping it would make
-    // the mirror plugin reject the URL as un-cloneable. The port must also
-    // survive so non-standard SSH ports remain reachable.
-    let ssh = remote::parse_remote("ssh://git@forgejo.example.com:2222/owner/repo.git").unwrap();
-    assert_eq!(ssh.repository, "owner/repo");
-    assert_eq!(
-        ssh.repository_url, "ssh://git@forgejo.example.com:2222/owner/repo.git",
-        "URL-form SSH origin must preserve the `git` user and port: {}",
-        ssh.repository_url
-    );
-    assert!(
-        ssh.repository_url.contains("git@"),
-        "SSH URL must still carry the `git` user so the mirror plugin can clone: {}",
-        ssh.repository_url
-    );
-    assert!(
-        ssh.repository_url.contains(":2222"),
-        "SSH URL must keep its non-default port: {}",
-        ssh.repository_url
-    );
-
-    // Non-canonical SSH users (e.g. `deploy`) must also be preserved so
-    // operators with custom SSH configurations can still mirror.
-    let deploy = remote::parse_remote("ssh://deploy@git.example.com/owner/repo.git").unwrap();
-    assert_eq!(
-        deploy.repository_url, "ssh://deploy@git.example.com/owner/repo.git",
-        "non-`git` SSH users must be preserved: {}",
-        deploy.repository_url
-    );
-
-    // SSH URLs may also carry a query string or fragment (uncommon but
-    // legal). They must be dropped the same way HTTP(S) credentials are.
-    let with_query =
-        remote::parse_remote("ssh://git@git.example.com/owner/repo.git?ref=main#frag").unwrap();
-    assert_eq!(
-        with_query.repository_url, "ssh://git@git.example.com/owner/repo.git",
-        "SSH URL must drop query/fragment but keep the user: {}",
-        with_query.repository_url
-    );
-
-    // And the existing HTTP-with-creds behaviour is unchanged.
-    let http_creds =
-        remote::parse_remote("https://deploy:supersecret@forgejo.example/owner/repo.git").unwrap();
-    assert_eq!(
-        http_creds.repository_url, "https://forgejo.example/owner/repo.git",
-        "HTTPS credential stripping must remain unchanged: {}",
-        http_creds.repository_url
-    );
-}
-
-#[test]
-fn bootstrap_output_includes_pending_git_mirror_outcome() {
-    // The bootstrap JSON contract must surface the plugin's `pending`
-    // status (asynchronous job queued) and the credential-free URL passed
-    // to the mirror plugin without ever leaking credentials.
-    let output = serde_json::json!({
-        "bootstrapped": true,
-        "created": true,
-        "repository": "owner/repo",
-        "identifier": "owner-repo",
-        "project_id": 44_u64,
-        "close_status_id": 5_u64,
-        "close_status_name": "Closed",
-        "user_memberships": [
-            {
-                "role": "Maintainer",
-                "user_id": 11_u64,
-                "user_login": "orchestrator",
-                "status": "added",
-            },
-        ],
-        "git_mirror": {
-            "id": 901_u64,
+fn workflow_bootstrap_json_contract_holds_for_success_and_warning_shapes() {
+    fn bootstrap_output(warning: bool) -> serde_json::Value {
+        let memberships = if warning {
+            serde_json::json!([
+                {
+                    "role": "Developer",
+                    "user_id": 22_u64,
+                    "user_login": "executor",
+                    "status": "warning",
+                    "warning": "Redmine role was not found: user 'executor', role 'Developer'",
+                },
+            ])
+        } else {
+            serde_json::json!([
+                {
+                    "role": "Maintainer",
+                    "user_id": 11_u64,
+                    "user_login": "orchestrator",
+                    "status": "added",
+                },
+                {
+                    "role": "Developer",
+                    "user_id": 22_u64,
+                    "user_login": "executor",
+                    "status": "added",
+                },
+                {
+                    "role": "Reporter",
+                    "user_id": 33_u64,
+                    "user_login": "reviewer",
+                    "status": "added",
+                },
+            ])
+        };
+        let mut output = serde_json::json!({
+            "bootstrapped": !warning,
+            "created": true,
+            "repository": "owner/repo",
+            "identifier": "owner-repo",
             "project_id": 44_u64,
-            "identifier": "mirror_44_owner_repo",
-            "status": "pending",
-            "remote_url": "https://git.example.com/owner/repo.git",
-            "local_path": "/var/redmine/repos/owner_repo.git",
-            "error": null,
-        },
-    });
-    let git_mirror = output
-        .get("git_mirror")
-        .expect("bootstrap JSON must include git_mirror");
-    assert_eq!(git_mirror["status"], "pending");
-    assert_eq!(git_mirror["identifier"], "mirror_44_owner_repo");
-    assert_eq!(git_mirror["project_id"], 44_u64);
-    assert_eq!(
-        git_mirror["remote_url"],
-        "https://git.example.com/owner/repo.git"
-    );
-    assert_eq!(
-        git_mirror["local_path"],
-        "/var/redmine/repos/owner_repo.git"
-    );
-    assert!(git_mirror["error"].is_null());
-    // The mirror JSON must never carry the bearer key or user credentials.
-    let serialized = output.to_string();
-    assert!(
-        !serialized.to_ascii_lowercase().contains("bearer "),
-        "bootstrap output must not include bearer credentials: {serialized}"
-    );
-    assert!(
-        !serialized.contains("supersecret"),
-        "bootstrap output must not include embedded origin credentials: {serialized}"
-    );
-}
-
-#[test]
-fn bootstrap_warning_output_still_includes_git_mirror_outcome() {
-    // A membership warning (bootstrap is not ready) must still surface the
-    // git_mirror outcome so operators can see whether the asynchronous
-    // mirror job was queued alongside the failing reconciliation.
-    let output = serde_json::json!({
-        "bootstrapped": false,
-        "created": true,
-        "repository": "owner/repo",
-        "identifier": "owner-repo",
-        "project_id": 44_u64,
-        "close_status_id": 5_u64,
-        "close_status_name": "Closed",
-        "user_memberships": [
-            {
-                "role": "Developer",
-                "user_id": 22_u64,
-                "user_login": "executor",
-                "status": "warning",
-                "warning": "Redmine role was not found: user 'executor', role 'Developer'",
+            "close_status_id": 5_u64,
+            "close_status_name": "Closed",
+            "user_memberships": memberships,
+            "git_mirror": {
+                "id": 901_u64,
+                "project_id": 44_u64,
+                "identifier": "mirror_44_owner_repo",
+                "status": "pending",
+                "remote_url": "https://git.example.com/owner/repo.git",
+                "local_path": "/var/redmine/repos/owner_repo.git",
+                "error": null,
             },
-        ],
-        "git_mirror": {
-            "id": 901_u64,
-            "project_id": 44_u64,
-            "identifier": "mirror_44_owner_repo",
-            "status": "pending",
-            "remote_url": "https://git.example.com/owner/repo.git",
-            "local_path": "/var/redmine/repos/owner_repo.git",
-            "error": null,
-        },
-        "warning": "Redmine role was not found: user 'executor', role 'Developer'",
-    });
-    assert!(!output["bootstrapped"].as_bool().unwrap());
-    let git_mirror = output
-        .get("git_mirror")
-        .expect("warning JSON must still include git_mirror");
-    assert_eq!(git_mirror["status"], "pending");
-    assert!(output["warning"].is_string());
+        });
+        if warning {
+            output["warning"] =
+                serde_json::json!("Redmine role was not found: user 'executor', role 'Developer'");
+        }
+        output
+    }
+
+    for warning in [false, true] {
+        let label = if warning {
+            "warning shape"
+        } else {
+            "success shape"
+        };
+        let output = bootstrap_output(warning);
+        assert_eq!(
+            output["bootstrapped"],
+            serde_json::json!(!warning),
+            "{label}"
+        );
+        for legacy in ["membership", "group_name", "group_role"] {
+            assert!(
+                output.get(legacy).is_none(),
+                "{label} must not re-introduce the legacy {legacy} key"
+            );
+        }
+        let memberships = output["user_memberships"]
+            .as_array()
+            .expect("user_memberships must be an array");
+        assert!(!memberships.is_empty(), "{label} must report memberships");
+
+        let git_mirror = output
+            .get("git_mirror")
+            .expect("bootstrap JSON must include git_mirror");
+        assert_eq!(git_mirror["status"], "pending", "{label}");
+        assert_eq!(git_mirror["identifier"], "mirror_44_owner_repo", "{label}");
+        assert_eq!(git_mirror["project_id"], 44_u64, "{label}");
+        assert_eq!(
+            git_mirror["remote_url"], "https://git.example.com/owner/repo.git",
+            "{label}"
+        );
+        assert_eq!(
+            git_mirror["local_path"], "/var/redmine/repos/owner_repo.git",
+            "{label}"
+        );
+        assert!(git_mirror["error"].is_null(), "{label}");
+
+        let serialized = output.to_string();
+        assert!(
+            !serialized.to_ascii_lowercase().contains("bearer "),
+            "{label} must not include bearer credentials: {serialized}"
+        );
+        assert!(
+            !serialized.contains("supersecret"),
+            "{label} must not include embedded origin credentials: {serialized}"
+        );
+
+        if warning {
+            assert!(
+                output["warning"].is_string(),
+                "warning shape must carry the failure reason"
+            );
+            assert_eq!(memberships[0]["status"], "warning");
+            assert!(memberships[0]["warning"].is_string());
+        } else {
+            assert_eq!(
+                memberships.len(),
+                3,
+                "success shape reports one membership per agent identity"
+            );
+        }
+    }
 }
 
 #[test]

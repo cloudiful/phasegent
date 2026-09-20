@@ -75,10 +75,6 @@ use crate::providers::redmine::model::RedmineRelationType;
 use crate::providers::{ProviderDispatcher, ProviderKind, RedmineProvider};
 use crate::time_tracking::{finish, start};
 
-/// Upper bound for any warning text derived from local ledger state.
-/// Matches the `MAX_WARNING_CHARS` bound used by the bind/unbind
-/// helpers so JSON output stays well-bounded regardless of the
-/// underlying storage error.
 const MAX_AUTO_WARNING_CHARS: usize = 200;
 
 fn bounded(text: &str) -> String {

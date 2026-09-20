@@ -329,31 +329,24 @@ fn config_show_command_parses_with_role() {
 }
 
 #[test]
-fn config_unknown_subcommand_is_rejected() {
-    let args = ["config", "purge"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let error = command::parse(&args).expect_err("unknown config subcommand must error");
-    assert!(error.contains("purge"), "got: {error}");
-}
-
-#[test]
-fn config_import_env_is_rejected() {
-    // `config import-env` was removed; any attempt must be rejected as unknown command.
-    for with_role in [true, false] {
-        let mut args = Vec::new();
-        if with_role {
-            args.push("--role".to_owned());
-            args.push("admin".to_owned());
+fn config_unknown_and_removed_subcommands_are_rejected() {
+    // `config import-env` was removed; like any unknown subcommand it must be
+    // rejected as an unknown config command, with and without --role.
+    for literal in ["purge", "import-env"] {
+        for with_role in [true, false] {
+            let mut args = Vec::new();
+            if with_role {
+                args.push("--role".to_owned());
+                args.push("admin".to_owned());
+            }
+            args.push("config".to_owned());
+            args.push(literal.to_owned());
+            let error = command::parse(&args).expect_err("unknown config command must error");
+            assert!(
+                error.contains("unknown config command") && error.contains(literal),
+                "got: {error}"
+            );
         }
-        args.push("config".to_owned());
-        args.push("import-env".to_owned());
-        let error = command::parse(&args).expect_err("import-env must be rejected");
-        assert!(
-            error.contains("unknown config command") && error.contains("import-env"),
-            "got: {error}"
-        );
     }
 }
 
@@ -579,7 +572,6 @@ fn config_set_rejects_empty_value() {
         )
         .unwrap_err();
         assert!(err.contains("cannot be empty"), "got: {err}");
-        // Secret empty via stdin helper
         let err = config_write::set_setting_stdin_content(
             None,
             "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
@@ -588,7 +580,6 @@ fn config_set_rejects_empty_value() {
         )
         .unwrap_err();
         assert!(err.contains("cannot be empty"), "got: {err}");
-        // Ensure no secret leaked (empty is not secret, but check)
         assert!(!err.contains("shhh"), "secret leaked");
     });
 }
@@ -616,7 +607,6 @@ fn config_set_secret_via_stdin_persists_and_show_redacted() {
             .unwrap()
             .expect("stored");
         assert_eq!(stored, secret);
-        // config show must redact
         let snapshot = config::show(None, storage).unwrap();
         let snap_text = serde_json::to_string(&snapshot).unwrap();
         assert!(
@@ -644,7 +634,6 @@ fn config_set_role_scoped_persists_and_output_canonical() {
         )
         .unwrap();
         let text = serde_json::to_string(&outcome).unwrap();
-        // Output must use canonical name
         assert!(text.contains("PHASEGENT_API_BASE"));
         assert!(
             !text.contains("https://forgejo.example"),
@@ -681,7 +670,6 @@ fn config_set_default_provider_reuses_validation() {
             .unwrap();
             let text = serde_json::to_string(&outcome).unwrap();
             assert!(text.contains("PHASEGENT_DEFAULT_PROVIDER"));
-            // Value not echoed? The outcome only contains setting, so can't leak.
             assert!(!text.contains(literal));
             let stored = storage
                 .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
@@ -689,7 +677,6 @@ fn config_set_default_provider_reuses_validation() {
                 .unwrap();
             assert_eq!(stored, literal);
         }
-        // Invalid value
         let err =
             config_write::set_setting_value(None, "PHASEGENT_DEFAULT_PROVIDER", "wrong", storage)
                 .unwrap_err();
@@ -701,7 +688,6 @@ fn config_set_default_provider_reuses_validation() {
 #[test]
 fn config_clear_global_without_role_and_role_scoped() {
     with_isolated_storage("clear", |_db_path, storage| {
-        // Global without role
         storage
             .save_global_setting("PHASEGENT_REDMINE_REPOSITORY_URL", "https://example.com")
             .unwrap();
@@ -716,7 +702,6 @@ fn config_clear_global_without_role_and_role_scoped() {
                 .unwrap()
                 .is_none()
         );
-        // Second clear should be false
         let outcome2 =
             config_write::clear_setting(None, "PHASEGENT_REDMINE_REPOSITORY_URL", storage).unwrap();
         assert!(
@@ -725,11 +710,9 @@ fn config_clear_global_without_role_and_role_scoped() {
                 .contains("\"cleared\":false")
         );
 
-        // Role-scoped clear requires role
         let err = config_write::clear_setting(None, "PHASEGENT_API_BASE", storage).unwrap_err();
         assert!(err.contains("--role is required"), "got: {err}");
 
-        // Role-scoped clear via --role
         config_write::set_setting_value(
             Some(Role::Executor),
             "PHASEGENT_API_BASE",
@@ -745,7 +728,6 @@ fn config_clear_global_without_role_and_role_scoped() {
                 .unwrap()
                 .contains("\"cleared\":true")
         );
-        // Verify cleared
         assert!(
             storage
                 .load_role_config(Role::Executor)
@@ -939,9 +921,51 @@ fn config_provider_unknown_subcommand_is_rejected() {
     );
 }
 
+/// The `config show` snapshot contract after project-id removal: the snapshot
+/// names `gitlab_api_base`/`gitlab_credential` and reports credential
+/// presence/length only (never a secret), an unset credential omits the length
+/// slot entirely, no `gitlab_project_id`/`redmine_project_id` slot may come
+/// back, legacy persisted project ids stay inert in storage, and provider
+/// resolution ignores both the legacy rows and the legacy environment
+/// variables while an explicit project id keeps winning.
 #[test]
-fn config_show_includes_gitlab_fields_without_leaking_token() {
-    with_isolated_storage("show-gitlab", |_db_path, storage| {
+fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
+    with_isolated_storage("show-project-id-contract", |db_path, storage| {
+        // Fresh storage: unset fields stay absent and no credential slot is
+        // rendered with a length.
+        let empty = config::show(Some(Role::Executor), storage).unwrap();
+        let empty_text = serde_json::to_string(&empty).unwrap();
+        let empty_roles = empty["roles"].as_array().expect("roles array");
+        assert_eq!(empty_roles.len(), 1);
+        let empty_executor = &empty_roles[0];
+        assert!(empty_executor["gitlab_api_base"].is_null());
+        for removed in ["gitlab_project_id", "redmine_project_id"] {
+            assert!(
+                empty_executor.get(removed).is_none(),
+                "snapshot must not expose {removed}: {empty_executor:?}"
+            );
+            assert!(
+                !empty_text.contains(removed),
+                "snapshot must not contain {removed}: {empty_text}"
+            );
+        }
+        assert_eq!(
+            empty_executor["gitlab_credential"]["present"],
+            Value::Bool(false)
+        );
+        assert!(
+            empty_executor["gitlab_credential"]["length"].is_null(),
+            "zero-length credential summary must omit the length slot: {empty_executor:?}"
+        );
+        assert!(
+            empty_text.contains("gitlab_api_base"),
+            "snapshot must name gitlab_api_base: {empty_text}"
+        );
+        assert!(
+            empty_text.contains("gitlab_credential"),
+            "snapshot must name gitlab_credential: {empty_text}"
+        );
+
         storage
             .save_credential(Role::Executor, PROVIDER_GITLAB, "gitlab-private-token-shhh")
             .unwrap();
@@ -1006,55 +1030,9 @@ fn config_show_includes_gitlab_fields_without_leaking_token() {
             stored.project_id, None,
             "legacy gitlab project_id must be inert (load returns None)"
         );
-    });
-}
 
-#[test]
-fn gitlab_config_snapshot_omits_unset_fields() {
-    with_isolated_storage("show-gitlab-empty", |_db_path, storage| {
-        let snapshot = config::show(Some(Role::Executor), storage).unwrap();
-        let text = serde_json::to_string(&snapshot).unwrap();
-        let roles = snapshot["roles"].as_array().expect("roles array");
-        assert_eq!(roles.len(), 1);
-        let executor = &roles[0];
-        assert!(executor["gitlab_api_base"].is_null());
-        assert!(
-            executor.get("gitlab_project_id").is_none(),
-            "gitlab_project_id must be absent after Phase 1: {executor:?}"
-        );
-        assert!(
-            executor.get("redmine_project_id").is_none(),
-            "redmine_project_id must be absent after Phase 1: {executor:?}"
-        );
-        assert_eq!(executor["gitlab_credential"]["present"], Value::Bool(false));
-        assert!(
-            executor["gitlab_credential"]["length"].is_null(),
-            "zero-length credential summary must omit the length slot: {executor:?}"
-        );
-        assert!(
-            text.contains("gitlab_api_base"),
-            "snapshot must name gitlab_api_base: {text}"
-        );
-        assert!(
-            !text.contains("gitlab_project_id"),
-            "snapshot must not contain gitlab_project_id after Phase 1: {text}"
-        );
-        assert!(
-            !text.contains("redmine_project_id"),
-            "snapshot must not contain redmine_project_id after Phase 1: {text}"
-        );
-        assert!(
-            text.contains("gitlab_credential"),
-            "snapshot must name gitlab_credential: {text}"
-        );
-    });
-}
-
-#[test]
-fn legacy_project_id_values_are_inert_and_not_resolved() {
-    with_isolated_storage("legacy-project-id-inert", |db_path, storage| {
-        // Simulate a legacy database where project ids were persisted
-        // by writing directly via SQL before the migration runs.
+        // Simulate a legacy database where project ids were persisted by
+        // writing directly via SQL before the migration runs.
         storage
             .connection
             .execute(
@@ -1916,9 +1894,11 @@ fn postgres_backend_without_feature_returns_not_enabled() {
 }
 
 #[test]
-fn removed_index_commands_are_rejected() {
+fn removed_index_commands_and_help_topics_are_rejected() {
     // `issue index sync/search` were removed; ordinary `issue search` is the
-    // only documented workflow with automatic warm/fallback.
+    // only documented workflow with automatic warm/fallback. The removed
+    // command surface must fail at the CLI and under `--help`, and the
+    // overview must not advertise a topic whose name starts with `index`.
     for args in [
         vec![
             "--role", "executor", "issue", "index", "sync", "--query", "bug",
@@ -1933,6 +1913,22 @@ fn removed_index_commands_are_rejected() {
         assert!(
             error.contains("unknown issue command") && error.contains("index"),
             "got: {error}"
+        );
+    }
+    for topic in ["index", "index sync", "index search"] {
+        let mut parts = vec![
+            "--role".to_owned(),
+            "executor".to_owned(),
+            "--help".to_owned(),
+            "issue".to_owned(),
+        ];
+        parts.extend(topic.split_whitespace().map(str::to_owned));
+        let error = command::parse(&parts)
+            .err()
+            .unwrap_or_else(|| panic!("help {topic} must be rejected"));
+        assert!(
+            error.contains("unknown issue help topic"),
+            "help {topic} must be rejected as unknown help topic, got: {error}"
         );
     }
     // Ordinary search still parses with the transparent flags.

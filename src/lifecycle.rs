@@ -53,10 +53,6 @@ pub fn current_checkout_matches(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap: managed hook installation for the matching checkout only.
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub enum HookAutoInstall {
     /// Hooks were installed/updated in this checkout.
@@ -119,10 +115,6 @@ pub fn auto_install_hooks(
         },
     }
 }
-
-// ---------------------------------------------------------------------------
-// Redmine issue create: best-effort auto-bind of the new issue.
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoBindOutcome {
@@ -202,10 +194,6 @@ pub fn bind_created_issue(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Redmine issue create --branch: explicit branch creation + target binding.
-// ---------------------------------------------------------------------------
 
 /// Prefix for auto-generated `<type>/<id>` branch names. `Bug` (any case)
 /// maps to `fix`; every other tracker (including `Feature`, numeric ids,
@@ -371,10 +359,6 @@ pub fn ensure_branch_and_bind(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Redmine issue close: best-effort unbind of the exact closed issue.
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoUnbindOutcome {
     Unbound { branch: String, issue_id: u64 },
@@ -456,10 +440,6 @@ pub fn unbind_closed_issue(
         },
     }
 }
-
-// ---------------------------------------------------------------------------
-// Issue close: best-effort release of the closed session's worktree leases.
-// ---------------------------------------------------------------------------
 
 /// Outcome of the issue-close worktree-lease release hook.
 #[derive(Debug, PartialEq, Eq)]

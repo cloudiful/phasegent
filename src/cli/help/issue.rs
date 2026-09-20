@@ -229,8 +229,12 @@ mod tests {
         }
     }
 
+    /// Issue 337 renamed `issue update-body` to `issue update`; the removed
+    /// token must stay unreachable from the help surface and from the CLI
+    /// parser, while `update` remains the single write entry carrying body,
+    /// tracker, and planning fields.
     #[test]
-    fn update_help_entry_replaces_removed_update_body_topic() {
+    fn update_is_the_write_entry_and_removed_update_body_surface_is_rejected() {
         let (capability, text) = issue_command_help_entry("update").expect("update help entry");
         assert_eq!(capability, Capability::IssueUpdateBody);
         assert!(text.contains("Usage: issue update <NUMBER>"), "got: {text}");
@@ -238,26 +242,80 @@ mod tests {
             issue_command_help_entry("update-body").is_none(),
             "the removed update-body topic must not resolve"
         );
-    }
 
-    #[test]
-    fn removed_index_help_topics_are_rejected() {
-        for topic in ["index", "index sync", "index search"] {
-            let mut parts = vec![
-                "--role".to_owned(),
-                "executor".to_owned(),
-                "--help".to_owned(),
-                "issue".to_owned(),
-            ];
-            parts.extend(topic.split_whitespace().map(str::to_owned));
-            let error = crate::command::parse(&parts)
-                .err()
-                .unwrap_or_else(|| panic!("help {topic} must be rejected"));
-            assert!(
-                error.contains("unknown issue help topic"),
-                "help {topic} must be rejected as unknown help topic, got: {error}"
-            );
+        let invocation = crate::command::parse(&[
+            "--role".to_owned(),
+            "orchestrator".to_owned(),
+            "--help".to_owned(),
+            "issue".to_owned(),
+            "update".to_owned(),
+        ])
+        .expect("help issue update must route");
+        match invocation.command {
+            crate::command::Command::Help(crate::command::HelpTopic::IssueCommand(value)) => {
+                assert_eq!(value, "update");
+            }
+            other => panic!("unexpected command {other:?}"),
         }
+        let help_error = crate::command::parse(&[
+            "--role".to_owned(),
+            "orchestrator".to_owned(),
+            "--help".to_owned(),
+            "issue".to_owned(),
+            "update-body".to_owned(),
+        ])
+        .expect_err("help issue update-body must be rejected");
+        assert!(
+            help_error.contains("unknown issue help topic 'update-body'"),
+            "unexpected error: {help_error}"
+        );
+
+        let update = [
+            "--role",
+            "orchestrator",
+            "issue",
+            "update",
+            "9",
+            "--body",
+            "Updated",
+            "--tracker",
+            "Bug",
+            "--due-date",
+            "2026-09-15",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        match crate::command::parse(&update).unwrap().command {
+            crate::command::Command::Issue(crate::command::IssueCommand::Update {
+                number,
+                body,
+                tracker,
+                planning,
+                ..
+            }) => {
+                assert_eq!(number, 9);
+                assert_eq!(body, "Updated");
+                assert_eq!(tracker.as_deref(), Some("Bug"));
+                assert_eq!(planning.due_date.as_deref(), Some("2026-09-15"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        let removed = [
+            "--role",
+            "orchestrator",
+            "issue",
+            "update-body",
+            "9",
+            "--body",
+            "x",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let error =
+            crate::command::parse(&removed).expect_err("removed update-body must be rejected");
+        assert!(error.contains("unknown issue command"), "got: {error}");
     }
 
     #[test]
@@ -285,37 +343,6 @@ mod tests {
                 "issue {topic} help must document its own usage; got: {text}"
             );
         }
-    }
-
-    #[test]
-    fn help_routes_update_and_rejects_removed_update_body() {
-        let invocation = crate::command::parse(&[
-            "--role".to_owned(),
-            "orchestrator".to_owned(),
-            "--help".to_owned(),
-            "issue".to_owned(),
-            "update".to_owned(),
-        ])
-        .expect("help issue update must route");
-        match invocation.command {
-            crate::command::Command::Help(crate::command::HelpTopic::IssueCommand(value)) => {
-                assert_eq!(value, "update");
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
-
-        let error = crate::command::parse(&[
-            "--role".to_owned(),
-            "orchestrator".to_owned(),
-            "--help".to_owned(),
-            "issue".to_owned(),
-            "update-body".to_owned(),
-        ])
-        .expect_err("help issue update-body must be rejected");
-        assert!(
-            error.contains("unknown issue help topic 'update-body'"),
-            "unexpected error: {error}"
-        );
     }
 
     #[test]

@@ -623,11 +623,6 @@ function createRedirectHook(context) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// v2 plugin entry point (`export default { id, setup }`). Registrations are
-// disposed by the cleanup `setup` returns.
-// ---------------------------------------------------------------------------
-
 const PhasegentWorktreePlugin = {
   id: "phasegent-worktree",
   async setup(context) {
@@ -668,9 +663,6 @@ const PhasegentWorktreePlugin = {
   },
 };
 
-// Helpers are attached to the plugin object rather than exported as their own
-// bindings so the loader only ever sees one `default` export (extra keys are
-// ignored by the module schema).
 PhasegentWorktreePlugin.redirect = Object.freeze({
   isAbsolutePath,
   redirectPathValue,

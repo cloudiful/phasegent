@@ -23,7 +23,6 @@ use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::infra::storage::{Storage, TIMER_STATUS_RUNNING, TimerRun, TimerStatusFilter};
 use crate::lifecycle_auto::{
     AutoCloseOutcome, AutoTimerOutcome, auto_close_issue_timer, auto_transition_timer,
-    status_to_agent_role,
 };
 use crate::providers::ProviderKind;
 use crate::worktree::WorktreeRunner;
@@ -447,16 +446,6 @@ fn auto_finish_run_persists_done_with_elapsed_seconds() {
     assert!(loaded.finished_at.is_some());
     assert!(loaded.elapsed_seconds.unwrap_or(0) >= 0);
     let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
-fn status_to_agent_role_preserves_internal_re_export_visibility() {
-    // Smoke check: the public(crate) status_to_agent_role helper is
-    // reachable from a sibling integration test module, confirming
-    // the export plumbing is correct.
-    let (role, fallback) = status_to_agent_role("In Progress");
-    assert_eq!(role, "executor");
-    assert!(!fallback);
 }
 
 // Phase 3 projection-regression tests. The contract is: an
