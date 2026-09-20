@@ -17,8 +17,10 @@
 //!   `// phasegent:managed` marker, the OpenCode v2
 //!   `export default { id, setup }` shape, the
 //!   `phasegent --role orchestrator worktree acquire` call, the v2
-//!   `worktree.transform` strategy, and the issue #440
-//!   `tool.execute.before` redirect helpers.
+//!   `worktree.transform` strategy, the issue #440
+//!   `tool.execute.before` redirect helpers, and the issue #533
+//!   `command.transform` acquire command plus `skill.transform`
+//!   embedded skill registrations.
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -537,6 +539,28 @@ fn adapter_template_documents_redirect_contract() {
     assert!(source.contains("if (typeof workdir !== \"string\" || workdir.length === 0) return;"));
     // The worktree is remembered when acquire succeeds.
     assert!(source.contains("rememberWorktree(sessionId, acquired.path)"));
+}
+
+#[test]
+fn adapter_template_registers_acquire_command_and_embedded_skill() {
+    let _lock = lock_workflow_tests();
+    let source = adapter_source();
+    // issue #533: one key acquire command via the v2 command domain.
+    assert!(source.contains("command.transform"));
+    assert!(source.contains("draft.update("));
+    assert!(source.contains("\"phasegent-worktree-acquire\""));
+    assert!(source.contains("phasegent --role executor issue status"));
+    assert!(source.contains("$ARGUMENTS"));
+    // issue #533: the worktree skill travels with the plugin as an embedded source.
+    assert!(source.contains("skill.transform"));
+    assert!(source.contains("type: \"embedded\""));
+    assert!(source.contains("\"phasegent-worktree-v2\""));
+    assert!(source.contains("/builtin/phasegent-worktree-v2.md"));
+    assert!(source.contains("PHASEGENT_SESSION_ID"));
+    assert!(source.contains("PHASEGENT_WORKTREE_NO_DISCOVER"));
+    // Both registrations degrade to a warning instead of failing setup.
+    assert!(source.contains("the acquire command stays unavailable"));
+    assert!(source.contains("the worktree skill stays unregistered"));
 }
 
 #[test]

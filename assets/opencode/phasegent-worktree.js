@@ -20,6 +20,16 @@
 //     `context.session.move` (packages/core/src/session/move.ts:41-49). The strategy
 //     is only claimed when the checkout already carries a phasegent issue binding,
 //     so a non-phasegent project keeps the host git strategy.
+//   * `context.command.transform(draft => draft.update(name, mutate))` registers
+//     the `/phasegent-worktree-acquire` slash command
+//     (packages/plugin/src/promise/command.ts, packages/core/src/command.ts:37-43).
+//   * `context.skill.transform(draft => draft.source({ type: "embedded", skill }))`
+//     registers the embedded `phasegent-worktree-v2` skill
+//     (packages/plugin/src/promise/skill.ts, packages/core/src/skill.ts:44-45).
+//
+// The npm `@opencode-ai/plugin` type package can lag the binary it ships with
+// (`tool`, `worktree`, `session` and `location` are absent from 1.18.25 while
+// the binary exposes them); the adapter targets the binary's runtime context.
 //
 // Session identity is `event.sessionID`. Degradation is deliberate: no binding or a
 // failed acquire keeps the original directory and warns on the console (v2 has no
@@ -452,6 +462,169 @@ async function registerWorktreeStrategy(context, deps) {
 }
 
 // ---------------------------------------------------------------------------
+// v2 command.transform: the `/phasegent-worktree-acquire` slash command.
+//
+// `CommandDraft.update(name, mutate)` creates the entry when it is absent
+// (packages/core/src/command.ts:37-43), so one `update` is a complete
+// registration. The template asks the host shell to run the acquire itself
+// (opencode executes `!`...`` before the model sees the prompt,
+// packages/opencode/src/session/prompt.ts:1397-1407) and resolves the bound
+// issue with `phasegent issue status`; `worktree acquire --session` then falls
+// back to `PHASEGENT_SESSION_ID`, so the command needs no session id from the
+// model.
+// ---------------------------------------------------------------------------
+
+const ACQUIRE_COMMAND_NAME = "phasegent-worktree-acquire";
+const ACQUIRE_COMMAND_DESCRIPTION =
+  "Acquire this session's phasegent worktree lease for the bound issue";
+
+// `phasegent issue status` prints one compact JSON object
+// (`{"branch":...,"issue_id":...,"source":...}`), so the id is extracted with
+// the host's own shell. The `$ARGUMENTS` placeholder is consumed by the prompt,
+// not by the shell, so no user input reaches the command string.
+function worktreeAcquireCommandTemplate() {
+  return [
+    "Acquire this session's phasegent worktree lease and continue inside it.",
+    "",
+    'Requested issue (empty means "use this branch\'s bound issue"): $ARGUMENTS',
+    "",
+    "!`phasegent --role orchestrator worktree acquire --issue \"$(phasegent --role executor issue status | sed -n 's/.*\"issue_id\"[\": ]*\\([0-9][0-9]*\\).*/\\1/p')\" --format json`",
+    "",
+    "The JSON above is the acquire result, and `--session` resolves from",
+    "`PHASEGENT_SESSION_ID`. When it carries a `path`, the managed adapter has",
+    "already moved this session there: do all further work inside that directory",
+    "and do not acquire another worktree.",
+    "When the requested issue above is a number and differs from the acquired one,",
+    "run `phasegent --role orchestrator worktree acquire --issue <requested>",
+    "--format json` once and work in the returned path instead.",
+    "When the acquire failed, or the branch carries no binding, report the failure",
+    "verbatim and continue in the current directory. Never delete a worktree, lease",
+    "row, or branch: release and removal stay with `phasegent worktree prune`.",
+  ].join("\n");
+}
+
+async function registerWorktreeCommand(context) {
+  const command = context && context.command;
+  const transform = command && command.transform;
+  if (typeof transform !== "function") {
+    warn("phasegent: host exposes no command.transform; the acquire command stays unavailable");
+    return null;
+  }
+  return await transform((draft) => {
+    draft.update(ACQUIRE_COMMAND_NAME, (entry) => {
+      entry.template = worktreeAcquireCommandTemplate();
+      entry.description = ACQUIRE_COMMAND_DESCRIPTION;
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// v2 skill.transform: the embedded `phasegent-worktree-v2` skill.
+//
+// An embedded source is delivered with the plugin, so the skill is visible on
+// any host the adapter is installed on; `skills/phasegent-worktree-v2/SKILL.md`
+// in the phasegent checkout carries the same bytes and a bun test keeps the two
+// copies honest. `location` is the synthetic built-in path core uses for
+// embedded skills (packages/core/src/plugin/skill.ts:24).
+// ---------------------------------------------------------------------------
+
+const WORKTREE_SKILL_NAME = "phasegent-worktree-v2";
+const WORKTREE_SKILL_LOCATION = "/builtin/phasegent-worktree-v2.md";
+const WORKTREE_SKILL_DESCRIPTION =
+  "phasegent worktree adapter for OpenCode v2 — the PHASEGENT_SESSION_ID and PHASEGENT_WORKTREE_NO_DISCOVER escape hatches, the one-key /phasegent-worktree-acquire command, and the phasegent worktree prune recovery flow. Load when a session needs its (repo, issue, session) worktree lease, when the adapter is not redirecting tool calls, or when leases must be inspected or released.";
+
+const WORKTREE_SKILL_CONTENT = `---
+name: phasegent-worktree-v2
+description: phasegent worktree adapter for OpenCode v2 — the PHASEGENT_SESSION_ID and PHASEGENT_WORKTREE_NO_DISCOVER escape hatches, the one-key /phasegent-worktree-acquire command, and the phasegent worktree prune recovery flow. Load when a session needs its (repo, issue, session) worktree lease, when the adapter is not redirecting tool calls, or when leases must be inspected or released.
+---
+
+# phasegent worktree (OpenCode v2 adapter)
+
+The managed adapter installed by \`phasegent plugin install\` owns the session's
+\`(repo, issue, session)\` worktree lease. It requires **OpenCode >= 2.0** and the
+v2 plugin shape \`export default { id, setup }\`; the v1 plugin contract is
+rejected by the v2 module loader.
+
+## What the adapter does
+
+- Registers \`tool.execute.before\`: relative file paths and a bare or relative
+  shell \`workdir\` are rewritten into the acquired worktree. Absolute paths pass
+  through untouched, so the \`external_directory\` permission check still applies.
+- Claims the \`worktree.transform\` strategy only when the checkout already
+  carries a phasegent issue binding; otherwise the host git strategy stays in
+  place.
+- Moves the session into the acquired worktree with \`session.move\`, and
+  registers the \`/phasegent-worktree-acquire\` command plus this skill.
+- Degrades gracefully: a missing binding, a failed acquire, or a failed
+  \`session.move\` keeps the original directory, warns, and never blocks a tool
+  call.
+
+The npm \`@opencode-ai/plugin\` type package can lag the binary it ships with:
+\`tool\`, \`worktree\`, \`session\` and \`location\` are missing from 1.18.25 even
+though the binary exposes them. The adapter relies on the binary's runtime
+context, not on the type package, so a missing registration surface only warns.
+
+## Environment
+
+- \`PHASEGENT_SESSION_ID\` — the only hard session guarantee on a host without the
+  adapter. Export one value per session and reuse it for every worktree call;
+  \`worktree acquire --session\` resolves the flag, then this variable, then the
+  legacy \`phasegent\` fallback.
+- \`PHASEGENT_WORKTREE_NO_DISCOVER=1\` — keeps the adapter from running the CLI at
+  all: no discovery, no acquire, no strategy claim. The command and skill
+  registrations stay inert metadata, and \`/phasegent-worktree-acquire\` still
+  runs the CLI when it is invoked explicitly. Paths then stay relative to the
+  session directory.
+
+## Acquire
+
+- \`/phasegent-worktree-acquire [issue]\` — one key in the OpenCode prompt. The
+  command runs \`phasegent --role orchestrator worktree acquire\` for the branch
+  binding and reports the JSON result; the managed adapter then moves the session
+  into the returned path.
+- Manual: \`phasegent --role orchestrator worktree acquire --issue N [--session S]
+  --format json\`. Idempotent per \`(repo, issue, session)\`; re-running refreshes
+  the heartbeat instead of creating a second lease.
+- Failure is a warning, never a delete: no branch, lease row, or dirty worktree
+  is removed by the adapter.
+
+## Prune and release
+
+- \`phasegent worktree prune\` reports stale active leases and removable
+  worktrees (read-only).
+- \`phasegent worktree prune --release-stale --reason TEXT\` flips exactly the
+  stale active leases to \`retained\`; \`--remove\` deletes only clean, expired,
+  retained worktrees. Neither action implies the other, and an owner is never
+  guessed.
+- \`phasegent --help worktree\` owns the exact flags.
+`;
+
+function worktreeSkillDefinition() {
+  return {
+    type: "embedded",
+    skill: {
+      name: WORKTREE_SKILL_NAME,
+      description: WORKTREE_SKILL_DESCRIPTION,
+      location: WORKTREE_SKILL_LOCATION,
+      content: WORKTREE_SKILL_CONTENT,
+    },
+  };
+}
+
+async function registerWorktreeSkill(context) {
+  const skill = context && context.skill;
+  const transform = skill && skill.transform;
+  if (typeof transform !== "function") {
+    warn("phasegent: host exposes no skill.transform; the worktree skill stays unregistered");
+    return null;
+  }
+  const definition = worktreeSkillDefinition();
+  return await transform((draft) => {
+    draft.source(definition);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // v2 tool hook: one mutable event per call.
 // ---------------------------------------------------------------------------
 
@@ -513,6 +686,18 @@ const PhasegentWorktreePlugin = {
     } catch (error) {
       warn(`phasegent: tool.execute.before registration failed (${errorText(error)})`);
     }
+    try {
+      const command = await registerWorktreeCommand(context);
+      if (command) registrations.push(command);
+    } catch (error) {
+      warn(`phasegent: command.transform registration failed (${errorText(error)})`);
+    }
+    try {
+      const skill = await registerWorktreeSkill(context);
+      if (skill) registrations.push(skill);
+    } catch (error) {
+      warn(`phasegent: skill.transform registration failed (${errorText(error)})`);
+    }
     return async () => {
       for (const registration of registrations) {
         try {
@@ -549,6 +734,10 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   gitWorktreeAdd,
+  registerWorktreeCommand,
+  worktreeAcquireCommandTemplate,
+  registerWorktreeSkill,
+  worktreeSkillDefinition,
 });
 
 export default PhasegentWorktreePlugin;
