@@ -21,8 +21,6 @@ const {
   pickActiveWorktreePath,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
-  registerWorktreeCommand,
-  worktreeAcquireCommandTemplate,
   registerWorktreeSkill,
   worktreeSkillDefinition,
 } = PhasegentWorktreePlugin.redirect;
@@ -49,7 +47,7 @@ describe("plugin module shape (v2)", () => {
     expect(PhasegentWorktreePlugin.redirect).toBeObject();
   });
 
-  test("setup registers the tool hook, command and skill, and returns a cleanup", async () => {
+  test("setup registers the tool hook and skill, and returns a cleanup", async () => {
     const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
     try {
@@ -66,12 +64,6 @@ describe("plugin module shape (v2)", () => {
             return { dispose: async () => {} };
           },
         },
-        command: {
-          transform: async () => {
-            registered.push({ name: "command.transform" });
-            return { dispose: async () => {} };
-          },
-        },
         skill: {
           transform: async () => {
             registered.push({ name: "skill.transform" });
@@ -80,11 +72,7 @@ describe("plugin module shape (v2)", () => {
         },
       };
       const cleanup = await PhasegentWorktreePlugin.setup(context);
-      expect(registered.map((item) => item.name)).toEqual([
-        "execute.before",
-        "command.transform",
-        "skill.transform",
-      ]);
+      expect(registered.map((item) => item.name)).toEqual(["execute.before", "skill.transform"]);
       expect(typeof registered[0].callback).toBe("function");
       expect(typeof cleanup).toBe("function");
       await cleanup();
@@ -103,11 +91,6 @@ describe("plugin module shape (v2)", () => {
       tool: {
         hook: async () => {
           throw new Error("hook unavailable");
-        },
-      },
-      command: {
-        transform: async () => {
-          throw new Error("command transform unavailable");
         },
       },
       skill: {
@@ -615,89 +598,42 @@ describe("v2 worktree strategy registration", () => {
   });
 });
 
-describe("v2 command.transform (/phasegent-worktree-acquire)", () => {
-  test("template runs the bound-issue acquire through the host shell", () => {
-    const template = worktreeAcquireCommandTemplate();
-    expect(template).toContain("phasegent --role orchestrator worktree acquire");
-    expect(template).toContain("--format json");
-    expect(template).toContain("phasegent --role executor issue status");
-    expect(template).toContain("$ARGUMENTS");
-    expect(template).toContain("phasegent worktree prune");
-  });
-
-  test("template keeps user input out of the shell command", () => {
-    const template = worktreeAcquireCommandTemplate();
-    const shell = template.match(/!`([^`]+)`/);
-    expect(shell).not.toBeNull();
-    expect(shell[1]).not.toContain("$ARGUMENTS");
-    expect(shell[1]).not.toContain("$1");
-    expect(shell[1]).not.toContain("${");
-  });
-
-  test("registerWorktreeCommand updates an absent command in place", async () => {
-    const commands = new Map();
-    const draft = {
-      list: () => [...commands.values()],
-      get: (name) => commands.get(name),
-      update: (name, mutate) => {
-        const current = commands.get(name) ?? { name, template: "" };
-        commands.set(name, current);
-        mutate(current);
-        current.name = name;
-      },
-      remove: (name) => commands.delete(name),
-    };
-    const context = {
-      command: {
-        transform: async (callback) => {
-          // create-when-absent semantics of packages/core/src/command.ts
-          await callback(draft);
-          return { dispose: async () => {} };
-        },
-      },
-    };
-    const registration = await registerWorktreeCommand(context);
-    expect(registration).toBeObject();
-    const command = commands.get("phasegent-worktree-acquire");
-    expect(command).toBeDefined();
-    expect(command.name).toBe("phasegent-worktree-acquire");
-    expect(command.template).toContain("worktree acquire");
-    expect(command.description).toContain("worktree");
-  });
-
-  test("returns null when the host exposes no command.transform", async () => {
-    expect(await registerWorktreeCommand({})).toBeNull();
-    expect(await registerWorktreeCommand(undefined)).toBeNull();
-  });
-});
-
 describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
-  test("definition is an embedded source with name, location and content", () => {
+  test("definition is the flat Skill.Info the v2.0.11 host draft accepts", () => {
     const definition = worktreeSkillDefinition();
-    expect(definition.type).toBe("embedded");
-    expect(definition.skill.name).toBe("phasegent-worktree-v2");
-    expect(definition.skill.location).toBe("/builtin/phasegent-worktree-v2.md");
-    expect(definition.skill.description).toContain("PHASEGENT_SESSION_ID");
-    expect(definition.skill.content).toContain("phasegent worktree prune");
-    expect(definition.skill.content.startsWith("---\nname: phasegent-worktree-v2\n")).toBe(
-      true,
-    );
+    expect(definition.id).toBe("phasegent-worktree-v2");
+    expect(definition.name).toBe("phasegent-worktree-v2");
+    expect(definition.path).toBe("/builtin/phasegent-worktree-v2.md");
+    expect(definition.description).toContain("PHASEGENT_SESSION_ID");
+    expect(definition.content).toContain("phasegent worktree prune");
+    expect(definition.content.startsWith("---\nname: phasegent-worktree-v2\n")).toBe(true);
+    // The removed SDK draft shape must not come back: the runtime `add` takes
+    // the flat info, not a `{ type: "embedded", skill }` source.
+    expect(definition.type).toBeUndefined();
+    expect(definition.skill).toBeUndefined();
   });
 
   test("embedded content matches skills/phasegent-worktree-v2/SKILL.md", async () => {
     const path = new URL("../../skills/phasegent-worktree-v2/SKILL.md", import.meta.url);
     const disk = await Bun.file(path).text();
-    expect(worktreeSkillDefinition().skill.content).toBe(disk);
+    expect(worktreeSkillDefinition().content).toBe(disk);
   });
 
-  test("registerWorktreeSkill registers the embedded source", async () => {
-    const sources = [];
+  test("registerWorktreeSkill adds the info through the runtime draft", async () => {
+    const skills = new Map();
     const context = {
       skill: {
         transform: async (callback) => {
+          // v2.0.11 draft surface: { list, get, add, update, remove }.
           await callback({
-            source: (source) => sources.push(source),
-            list: () => sources,
+            list: () => [...skills.values()],
+            get: (id) => skills.get(id),
+            add: (info) => skills.set(info.id, info),
+            update: (id, mutate) => {
+              const current = skills.get(id);
+              if (current) mutate(current);
+            },
+            remove: (id) => skills.delete(id),
           });
           return { dispose: async () => {} };
         },
@@ -705,8 +641,33 @@ describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
     };
     const registration = await registerWorktreeSkill(context);
     expect(registration).toBeObject();
-    expect(sources).toHaveLength(1);
-    expect(sources[0].skill.name).toBe("phasegent-worktree-v2");
+    expect(skills.size).toBe(1);
+    const skill = skills.get("phasegent-worktree-v2");
+    expect(skill.path).toBe("/builtin/phasegent-worktree-v2.md");
+    expect(skill.content).toContain("# phasegent worktree (OpenCode v2 adapter)");
+  });
+
+  test("a draft without add never throws into the transform", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const context = {
+        skill: {
+          // The typed SDK 1.18.25 draft shape: no `add`, and no `source`
+          // either once the host moved on.
+          transform: async (callback) => {
+            await callback({ list: () => [] });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      const registration = await registerWorktreeSkill(context);
+      expect(registration).toBeObject();
+      expect(warnings.some((line) => line.includes("exposes no add"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
   });
 
   test("returns null when the host exposes no skill.transform", async () => {

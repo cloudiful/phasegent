@@ -1,6 +1,6 @@
 ---
 name: phasegent-worktree-v2
-description: phasegent worktree adapter for OpenCode v2 — the PHASEGENT_SESSION_ID and PHASEGENT_WORKTREE_NO_DISCOVER escape hatches, the one-key /phasegent-worktree-acquire command, and the phasegent worktree prune recovery flow. Load when a session needs its (repo, issue, session) worktree lease, when the adapter is not redirecting tool calls, or when leases must be inspected or released.
+description: phasegent worktree adapter for OpenCode v2 — the PHASEGENT_SESSION_ID and PHASEGENT_WORKTREE_NO_DISCOVER escape hatches, the worktree acquire flow, and the phasegent worktree prune recovery. Load when a session needs its (repo, issue, session) worktree lease, when the adapter is not redirecting tool calls, or when leases must be inspected or released.
 ---
 
 # phasegent worktree (OpenCode v2 adapter)
@@ -19,10 +19,15 @@ rejected by the v2 module loader.
   carries a phasegent issue binding; otherwise the host git strategy stays in
   place.
 - Moves the session into the acquired worktree with `session.move`, and
-  registers the `/phasegent-worktree-acquire` command plus this skill.
+  registers this skill through `skill.transform`.
 - Degrades gracefully: a missing binding, a failed acquire, or a failed
   `session.move` keeps the original directory, warns, and never blocks a tool
   call.
+
+The adapter registers no slash command. The OpenCode v2 command draft only
+accepts `execute` callbacks that return an Effect, which a promise plugin cannot
+build, so there is no `/phasegent-worktree-acquire`: use `phasegent worktree
+acquire` directly.
 
 The npm `@opencode-ai/plugin` type package can lag the binary it ships with:
 `tool`, `worktree`, `session` and `location` are missing from 1.18.25 even
@@ -36,20 +41,15 @@ context, not on the type package, so a missing registration surface only warns.
   `worktree acquire --session` resolves the flag, then this variable, then the
   legacy `phasegent` fallback.
 - `PHASEGENT_WORKTREE_NO_DISCOVER=1` — keeps the adapter from running the CLI at
-  all: no discovery, no acquire, no strategy claim. The command and skill
-  registrations stay inert metadata, and `/phasegent-worktree-acquire` still
-  runs the CLI when it is invoked explicitly. Paths then stay relative to the
-  session directory.
+  all: no discovery, no acquire, no strategy claim. The skill registration stays
+  inert metadata. Paths then stay relative to the session directory.
 
 ## Acquire
 
-- `/phasegent-worktree-acquire [issue]` — one key in the OpenCode prompt. The
-  command runs `phasegent --role orchestrator worktree acquire` for the branch
-  binding and reports the JSON result; the managed adapter then moves the session
-  into the returned path.
 - Manual: `phasegent --role orchestrator worktree acquire --issue N [--session S]
   --format json`. Idempotent per `(repo, issue, session)`; re-running refreshes
-  the heartbeat instead of creating a second lease.
+  the heartbeat instead of creating a second lease, and the managed adapter then
+  moves the session into the returned path.
 - Failure is a warning, never a delete: no branch, lease row, or dirty worktree
   is removed by the adapter.
 

@@ -19,8 +19,10 @@
 //!   `phasegent --role orchestrator worktree acquire` call, the v2
 //!   `worktree.transform` strategy, the issue #440
 //!   `tool.execute.before` redirect helpers, and the issue #533
-//!   `command.transform` acquire command plus `skill.transform`
-//!   embedded skill registrations.
+//!   `skill.transform` embedded skill registration. It must not
+//!   register a slash command: the live v2.0.11 command draft only
+//!   accepts an Effect-returning `execute`, which a promise plugin
+//!   cannot build.
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -542,25 +544,34 @@ fn adapter_template_documents_redirect_contract() {
 }
 
 #[test]
-fn adapter_template_registers_acquire_command_and_embedded_skill() {
+fn adapter_template_registers_embedded_skill_without_a_command() {
     let _lock = lock_workflow_tests();
     let source = adapter_source();
-    // issue #533: one key acquire command via the v2 command domain.
-    assert!(source.contains("command.transform"));
-    assert!(source.contains("draft.update("));
-    assert!(source.contains("\"phasegent-worktree-acquire\""));
-    assert!(source.contains("phasegent --role executor issue status"));
-    assert!(source.contains("$ARGUMENTS"));
-    // issue #533: the worktree skill travels with the plugin as an embedded source.
+    // issue #533: the live v2.0.11 command draft only accepts an
+    // Effect-returning `execute`, which a promise plugin cannot build, so the
+    // adapter must not touch the command domain at all. The previous
+    // `update(name, mutate)` template raised a TypeError in the host and the
+    // host then disabled the whole plugin, redirect hook included.
+    assert!(!source.contains("context.command"));
+    assert!(!source.contains("draft.update("));
+    assert!(!source.contains("ACQUIRE_COMMAND_NAME"));
+    assert!(!source.contains("worktreeAcquireCommandTemplate"));
+    // issue #533: the worktree skill travels with the plugin as an embedded
+    // `Skill.Info` added through the runtime skill draft.
     assert!(source.contains("skill.transform"));
-    assert!(source.contains("type: \"embedded\""));
+    assert!(source.contains("draft.add(definition)"));
     assert!(source.contains("\"phasegent-worktree-v2\""));
     assert!(source.contains("/builtin/phasegent-worktree-v2.md"));
     assert!(source.contains("PHASEGENT_SESSION_ID"));
     assert!(source.contains("PHASEGENT_WORKTREE_NO_DISCOVER"));
-    // Both registrations degrade to a warning instead of failing setup.
-    assert!(source.contains("the acquire command stays unavailable"));
+    // The old SDK source shape is gone; the definition is the flat info with
+    // the runtime field names.
+    assert!(!source.contains("draft.source("));
+    assert!(source.contains("path: WORKTREE_SKILL_PATH"));
+    // A missing registration surface degrades to a warning instead of failing
+    // setup.
     assert!(source.contains("the worktree skill stays unregistered"));
+    assert!(source.contains("host skill draft exposes no add"));
 }
 
 #[test]

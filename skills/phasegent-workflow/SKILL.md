@@ -76,17 +76,18 @@ collide on one issue. The OpenCode host plugin (`phasegent plugin install`)
 requires **OpenCode >= 2.0** and loads as a v2 `export default { id, setup }`
 module: `tool.execute.before` redirects relative tool paths, `worktree.transform`
 claims the phasegent strategy, `session.move` relocates the session, and
-`command.transform` / `skill.transform` register `/phasegent-worktree-acquire`
-and the `phasegent-worktree-v2` skill. The v1 plugin contract is no longer
-supported.
+`skill.transform` registers the `phasegent-worktree-v2` skill. No slash command
+is registered — the v2 command draft only accepts an Effect-returning `execute`
+callback, which a promise plugin cannot build, so `phasegent worktree acquire`
+stays the manual path. The v1 plugin contract is no longer supported.
 
 That adapter owns the session identity and injects it automatically, so nothing
 has to mint a session id by hand. Two environment variables are the only hard
 guarantees, on any host: export a single `PHASEGENT_SESSION_ID` per session and
 reuse it for every worktree call on a host without the adapter, and set
 `PHASEGENT_WORKTREE_NO_DISCOVER=1` to keep the adapter from running the CLI at
-all (no discovery, no acquire, no strategy claim; the command and skill
-registrations stay inert metadata). The adapter targets the OpenCode binary's
+all (no discovery, no acquire, no strategy claim; the skill registration stays
+inert metadata). The adapter targets the OpenCode binary's
 runtime plugin context, not the npm `@opencode-ai/plugin` type package, which
 can lag it (1.18.25 exposes no `tool`, `worktree`, `session`, or `location`); a
 missing registration surface degrades to a console warning.
