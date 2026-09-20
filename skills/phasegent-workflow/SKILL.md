@@ -72,9 +72,14 @@ Detail matrix (from `src/policy.rs`) is in
 
 Worktree leases are keyed by `(repo, issue, session)`, and the session identity
 must stay stable within one agent session so two concurrent sessions never
-collide on one issue. A host plugin, when installed, owns that identity and
-injects it automatically; on a host without one, export a single
-`PHASEGENT_SESSION_ID` per session and reuse it for every worktree call.
+collide on one issue. The OpenCode host plugin (`phasegent plugin install`)
+requires **OpenCode >= 2.0** and loads as a v2 `export default { id, setup }`
+module (`tool.execute.before` plus `worktree.transform`); the v1 plugin contract
+is no longer supported. That adapter owns the session identity and injects it
+automatically, so nothing has to mint a session id by hand. On a host without the
+adapter, export a single `PHASEGENT_SESSION_ID` per session and reuse it for every
+worktree call. Set `PHASEGENT_WORKTREE_NO_DISCOVER=1` to keep the adapter from
+running the CLI at all (no discovery, no acquire, no worktree strategy claim).
 
 - Never mint a fresh session id per command or per phase. `issue create` /
   `issue bind` auto-acquire a worktree (best-effort stderr warning only) when the

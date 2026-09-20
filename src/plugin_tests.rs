@@ -14,10 +14,11 @@
 //! * **Uninstall** — managed files are removed; foreign files are
 //!   refused; missing files report a warning instead of an error.
 //! * **Adapter template** — the embedded JS contains the
-//!   `// phasegent:managed` marker, the
-//!   `experimental_workspace.register` shape, the
-//!   `phasegent --role orchestrator worktree acquire` call, and the
-//!   issue #440 `tool.execute.before` redirect helpers.
+//!   `// phasegent:managed` marker, the OpenCode v2
+//!   `export default { id, setup }` shape, the
+//!   `phasegent --role orchestrator worktree acquire` call, the v2
+//!   `worktree.transform` strategy, and the issue #440
+//!   `tool.execute.before` redirect helpers.
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -183,7 +184,7 @@ fn unknown_plugin_subcommand_is_rejected() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn install_at_writes_managed_file_with_marker_and_register_call() {
+fn install_at_writes_managed_file_with_marker_and_v2_plugin_definition() {
     let _lock = lock_workflow_tests();
     let dir = TempDir::new("install-fresh");
     let outcome = install_at(dir.path(), false).expect("install succeeds");
@@ -198,17 +199,24 @@ fn install_at_writes_managed_file_with_marker_and_register_call() {
         "missing marker: {:?}",
         &text[..40]
     );
-    assert!(text.contains("experimental_workspace.register"));
-    assert!(text.contains("\"phasegent\""));
-    assert!(text.contains("phasegent issue status"));
+    assert!(text.contains("id: \"phasegent-worktree\""));
+    assert!(text.contains("async setup(context)"));
+    assert!(text.contains("export default PhasegentWorktreePlugin"));
+    assert!(text.contains("PhasegentWorktreePlugin.redirect"));
+    assert!(text.contains("\"execute.before\""));
+    assert!(text.contains("worktree.transform"));
+    assert!(text.contains("session.move"));
+    assert!(text.contains("[\"issue\", \"status\"]"));
     assert!(text.contains("--role"));
     assert!(text.contains("orchestrator"));
     assert!(text.contains("worktree acquire"));
     assert!(text.contains("--format"));
     assert!(text.contains("\"json\""));
-    assert!(text.contains("PhasegentWorktreePlugin"));
-    assert!(text.contains("tool.execute.before"));
     assert!(text.contains("redirectArgs"));
+    assert!(
+        !text.contains("experimental_workspace.register"),
+        "the v1 workspace adapter contract must be gone from the template"
+    );
 }
 
 #[test]
@@ -474,57 +482,61 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn adapter_template_is_well_formed_for_opencode_experimental_api() {
+fn adapter_template_is_well_formed_for_opencode_v2_api() {
     let _lock = lock_workflow_tests();
     let source = adapter_source();
     assert!(source.starts_with(MANAGED_MARKER));
-    assert!(source.contains("experimental_workspace.register"));
-    assert!(source.contains("\"phasegent\""));
-    assert!(source.contains("async configure"));
-    assert!(source.contains("async create"));
-    assert!(source.contains("async remove"));
-    assert!(source.contains("async target"));
-    // Branch binding detection (local-only path).
-    assert!(source.contains("phasegent issue status"));
+    assert!(source.contains("export default PhasegentWorktreePlugin"));
+    assert!(source.contains("id: \"phasegent-worktree\""));
+    assert!(source.contains("async setup(context)"));
+    // v2 hook + strategy registrations replace the v1 workspace adapter.
+    assert!(source.contains("\"execute.before\""));
+    assert!(source.contains("worktree.transform"));
+    assert!(source.contains("editor.add("));
+    assert!(!source.contains("experimental_workspace.register"));
+    // Branch binding detection (local-only path): `phasegent issue status`, run
+    // with the project directory as cwd.
+    assert!(source.contains("[\"issue\", \"status\"]"));
     // Worktree acquire uses --role orchestrator and --format json.
     assert!(source.contains("--role"));
     assert!(source.contains("orchestrator"));
     assert!(source.contains("worktree acquire"));
     assert!(source.contains("--format"));
     assert!(source.contains("json"));
-    // Target returns the documented shape.
-    assert!(source.contains("type: \"local\""));
-    assert!(source.contains("directory:"));
-    // create performs the best-effort mkdir -p.
-    assert!(source.contains("mkdir -p"));
-    // Git detection.
-    assert!(source.contains("git rev-parse --git-common-dir"));
+    // The acquired worktree becomes the session directory (v2 session.move).
+    assert!(source.contains("session.move"));
+    // Graceful degradation keeps the original directory on any failure.
+    assert!(source.contains("reusing original directory"));
+    // Removal is never performed by the adapter.
+    assert!(source.contains("phasegent worktree prune"));
 }
 
 #[test]
-fn adapter_template_documents_v1_redirect_contract() {
+fn adapter_template_documents_redirect_contract() {
     let _lock = lock_workflow_tests();
     let source = adapter_source();
-    // V1 entry point returns the redirect hook and keeps the adapter registered.
-    assert!(source.contains("export const PhasegentWorktreePlugin"));
+    // v2 entry point registers the redirect hook and returns a cleanup.
     assert!(source.contains("export default PhasegentWorktreePlugin"));
+    assert!(source.contains("async setup(context)"));
     assert!(source.contains("createRedirectHook"));
-    assert!(source.contains("tool.execute.before"));
-    // Pure helpers live on the exported plugin so the legacy loader never treats
-    // them as plugin factories of their own.
+    assert!(source.contains("\"execute.before\""));
+    // Pure helpers live on the exported plugin so the module has a single
+    // `default` export for the v2 module schema.
     assert!(source.contains("PhasegentWorktreePlugin.redirect"));
     assert!(source.contains("isAbsolutePath"));
     assert!(source.contains("redirectPathValue"));
     assert!(source.contains("redirectArgs"));
-    assert!(source.contains("read: [\"filePath\"]"));
+    // v2 argument names: file tools use `path`, the shell tool is `shell`.
+    assert!(source.contains("read: [\"path\"]"));
     assert!(source.contains("glob: [\"path\"]"));
-    // Bash gets a bare/relative workdir; the command is never rewritten.
+    assert!(source.contains("SHELL_TOOLS = [\"shell\", \"bash\"]"));
+    // The shell gets a bare/relative workdir; the command is never rewritten.
     assert!(source.contains("redirected.workdir = workdir"));
     // Absolute paths pass through and no-worktree sessions short-circuit.
     assert!(source.contains("if (isAbsolutePath(value)) return value"));
-    assert!(source.contains("if (!workdir || !output || !output.args) return"));
+    assert!(source.contains("if (typeof workdir !== \"string\" || workdir.length === 0) return;"));
     // The worktree is remembered when acquire succeeds.
-    assert!(source.contains("rememberWorktree(sessionID, workdir)"));
+    assert!(source.contains("rememberWorktree(sessionId, acquired.path)"));
 }
 
 #[test]

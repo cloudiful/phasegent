@@ -1,14 +1,13 @@
-// Focused tests for the phasegent worktree plugin redirect helpers (issue #440).
+// Focused tests for the phasegent worktree plugin (issue #532, v2 contract).
 //
-// The helpers are pure so they run under `bun test` without OpenCode: the
-// plugin module is imported directly and only its exported entry point plus the
-// attached `redirect` helpers are touched. The workspace adapter / acquire chain
-// is covered by the Rust asset assertions in `src/plugin_tests.rs`.
+// The helpers are pure or dependency-injected so they run under `bun test`
+// without OpenCode and without the phasegent CLI: the plugin module is imported
+// directly and only its default export plus the attached `redirect` helpers are
+// touched. The install/status/uninstall marker behaviour is covered by the Rust
+// asset assertions in `src/plugin_tests.rs`.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import PhasegentWorktreePlugin, {
-  PhasegentWorktreePlugin as namedPlugin,
-} from "./phasegent-worktree.js";
+import PhasegentWorktreePlugin from "./phasegent-worktree.js";
 
 const {
   isAbsolutePath,
@@ -20,19 +19,76 @@ const {
   createRedirectHook,
   injectSessionIntoPhasegentCommand,
   pickActiveWorktreePath,
+  registerWorktreeStrategy,
+  worktreeStrategyDefinition,
 } = PhasegentWorktreePlugin.redirect;
 
-const WORKTREE = "/repo/.worktrees/issue-440";
+const WORKTREE = "/repo/.worktrees/issue-532";
+
+function restoreNoDiscover(saved) {
+  if (saved === undefined) {
+    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+  } else {
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = saved;
+  }
+}
 
 beforeEach(() => {
   resetWorktrees();
 });
 
-describe("plugin module shape", () => {
-  test("named and default exports are the same plugin function", () => {
-    expect(typeof PhasegentWorktreePlugin).toBe("function");
-    expect(namedPlugin).toBe(PhasegentWorktreePlugin);
+describe("plugin module shape (v2)", () => {
+  test("default export is a plugin definition with id and setup", () => {
+    expect(PhasegentWorktreePlugin).toBeObject();
+    expect(PhasegentWorktreePlugin.id).toBe("phasegent-worktree");
+    expect(typeof PhasegentWorktreePlugin.setup).toBe("function");
     expect(PhasegentWorktreePlugin.redirect).toBeObject();
+  });
+
+  test("setup registers the tool hook and returns a cleanup", async () => {
+    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    try {
+      const registered = [];
+      const context = {
+        location: { directory: "/repo" },
+        session: { move: async () => {} },
+        worktree: {
+          transform: async () => ({ dispose: async () => {} }),
+        },
+        tool: {
+          hook: async (name, callback) => {
+            registered.push({ name, callback });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      const cleanup = await PhasegentWorktreePlugin.setup(context);
+      expect(registered.map((item) => item.name)).toEqual(["execute.before"]);
+      expect(typeof registered[0].callback).toBe("function");
+      expect(typeof cleanup).toBe("function");
+      await cleanup();
+    } finally {
+      restoreNoDiscover(saved);
+    }
+  });
+
+  test("setup still returns a cleanup when every registration fails", async () => {
+    const context = {
+      worktree: {
+        transform: async () => {
+          throw new Error("transform unavailable");
+        },
+      },
+      tool: {
+        hook: async () => {
+          throw new Error("hook unavailable");
+        },
+      },
+    };
+    const cleanup = await PhasegentWorktreePlugin.setup(context);
+    expect(typeof cleanup).toBe("function");
+    await cleanup();
   });
 });
 
@@ -78,11 +134,11 @@ describe("redirectPathValue", () => {
   });
 });
 
-describe("redirectArgs file tools", () => {
-  test("redirects a relative filePath for read/write/edit", () => {
+describe("redirectArgs file tools (v2 `path` argument)", () => {
+  test("redirects a relative path for read/write/edit", () => {
     for (const tool of ["read", "write", "edit"]) {
-      const args = { filePath: "src/a.rs" };
-      expect(redirectArgs(tool, WORKTREE, args).filePath).toBe(`${WORKTREE}/src/a.rs`);
+      const args = { path: "src/a.rs" };
+      expect(redirectArgs(tool, WORKTREE, args).path).toBe(`${WORKTREE}/src/a.rs`);
     }
   });
 
@@ -136,8 +192,8 @@ describe("redirectArgs file tools", () => {
   });
 
   test("passes absolute file paths through unchanged", () => {
-    const out = redirectArgs("read", WORKTREE, { filePath: "/etc/hosts" });
-    expect(out.filePath).toBe("/etc/hosts");
+    const out = redirectArgs("read", WORKTREE, { path: "/etc/hosts" });
+    expect(out.path).toBe("/etc/hosts");
   });
 
   test("does not touch other tools or non-string fields", () => {
@@ -146,20 +202,25 @@ describe("redirectArgs file tools", () => {
   });
 });
 
-describe("redirectArgs bash workdir", () => {
-  test("fills a bare bash workdir with the worktree", () => {
-    const out = redirectArgs("bash", WORKTREE, { command: "ls" });
+describe("redirectArgs shell workdir (v2 `shell` tool)", () => {
+  test("fills a bare shell workdir with the worktree", () => {
+    const out = redirectArgs("shell", WORKTREE, { command: "ls" });
     expect(out.workdir).toBe(WORKTREE);
     expect(out.command).toBe("ls");
   });
 
-  test("resolves a relative bash workdir against the worktree", () => {
-    const out = redirectArgs("bash", WORKTREE, { command: "ls", workdir: "sub" });
+  test("keeps the v1 `bash` tool name as an alias", () => {
+    const out = redirectArgs("bash", WORKTREE, { command: "ls" });
+    expect(out.workdir).toBe(WORKTREE);
+  });
+
+  test("resolves a relative shell workdir against the worktree", () => {
+    const out = redirectArgs("shell", WORKTREE, { command: "ls", workdir: "sub" });
     expect(out.workdir).toBe(`${WORKTREE}/sub`);
   });
 
-  test("keeps an absolute bash workdir and never rewrites the command", () => {
-    const out = redirectArgs("bash", WORKTREE, { command: "cd /tmp && ls", workdir: "/tmp" });
+  test("keeps an absolute shell workdir and never rewrites the command", () => {
+    const out = redirectArgs("shell", WORKTREE, { command: "cd /tmp && ls", workdir: "/tmp" });
     expect(out.workdir).toBe("/tmp");
     expect(out.command).toBe("cd /tmp && ls");
   });
@@ -167,9 +228,9 @@ describe("redirectArgs bash workdir", () => {
 
 describe("redirectArgs pass-through", () => {
   test("returns the same object when no worktree is known", () => {
-    const args = { filePath: "src/a.rs" };
+    const args = { path: "src/a.rs" };
     expect(redirectArgs("read", null, args)).toBe(args);
-    expect(redirectArgs("bash", "", args)).toBe(args);
+    expect(redirectArgs("shell", "", args)).toBe(args);
   });
 
   test("returns non-object args untouched", () => {
@@ -194,51 +255,78 @@ describe("worktree registry", () => {
   });
 });
 
-describe("tool.execute.before hook", () => {
+describe("tool.execute.before hook (v2 single event)", () => {
   let savedNoDiscover;
   beforeEach(() => {
     savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
   });
   afterEach(() => {
-    if (savedNoDiscover === undefined) {
-      delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    } else {
-      process.env.PHASEGENT_WORKTREE_NO_DISCOVER = savedNoDiscover;
-    }
-  });
-  test("redirects a relative read into the acquired worktree", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const hook = createRedirectHook();
-    const output = { args: { filePath: "src/a.rs" } };
-    await hook["tool.execute.before"]({ tool: "read", sessionID: "session-1" }, output);
-    expect(output.args.filePath).toBe(`${WORKTREE}/src/a.rs`);
+    restoreNoDiscover(savedNoDiscover);
   });
 
-  test("redirects a bare bash cwd for a sub-agent session", async () => {
+  test("mutates event.input for a relative read", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const hook = createRedirectHook();
+    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(event);
+    expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
+    expect(event.tool).toBe("read");
+  });
+
+  test("redirects a bare shell cwd for a sub-agent session", async () => {
     rememberWorktree("parent-session", WORKTREE);
     const hook = createRedirectHook();
-    const output = { args: { command: "pwd" } };
-    await hook["tool.execute.before"]({ tool: "bash", sessionID: "child-session" }, output);
-    expect(output.args.workdir).toBe(WORKTREE);
+    const event = { tool: "shell", sessionID: "child-session", input: { command: "pwd" } };
+    await hook(event);
+    expect(event.input.workdir).toBe(WORKTREE);
   });
 
   test("leaves absolute paths and no-worktree sessions unchanged", async () => {
     const hook = createRedirectHook();
-    const noWorktree = { args: { filePath: "src/a.rs" } };
-    await hook["tool.execute.before"]({ tool: "read", sessionID: "session-1" }, noWorktree);
-    expect(noWorktree.args.filePath).toBe("src/a.rs");
+    const noWorktree = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(noWorktree);
+    expect(noWorktree.input.path).toBe("src/a.rs");
 
     rememberWorktree("session-1", WORKTREE);
-    const absolute = { args: { filePath: "/etc/hosts", workdir: "/tmp" } };
-    await hook["tool.execute.before"]({ tool: "read", sessionID: "session-1" }, absolute);
-    expect(absolute.args.filePath).toBe("/etc/hosts");
+    const absolute = { tool: "read", sessionID: "session-1", input: { path: "/etc/hosts" } };
+    await hook(absolute);
+    expect(absolute.input.path).toBe("/etc/hosts");
   });
 
-  test("ignores calls without args", async () => {
+  test("ignores calls without input", async () => {
     rememberWorktree("session-1", WORKTREE);
     const hook = createRedirectHook();
-    await hook["tool.execute.before"]({ tool: "bash", sessionID: "session-1" }, {});
+    await hook({ tool: "shell", sessionID: "session-1" });
+  });
+
+  test("moves the session to the acquired worktree once", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: { move: async (input) => moves.push(input) },
+    };
+    const hook = createRedirectHook(context);
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
+    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
+  });
+
+  test("survives a failing session move", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async () => {
+          throw new Error("destination unavailable");
+        },
+      },
+    };
+    const hook = createRedirectHook(context);
+    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(event);
+    expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
   });
 });
 
@@ -298,9 +386,9 @@ describe("injectSessionIntoPhasegentCommand (issue #18 Task 2)", () => {
 });
 
 describe("redirectArgs session injection (issue #18 Task 2)", () => {
-  test("injects --session into bash phasegent issue create", () => {
+  test("injects --session into a shell phasegent issue create", () => {
     const out = redirectArgs(
-      "bash",
+      "shell",
       WORKTREE,
       { command: "phasegent issue create --title t --body b" },
       "session-1",
@@ -313,7 +401,7 @@ describe("redirectArgs session injection (issue #18 Task 2)", () => {
 
   test("does not duplicate --session and leaves absolute workdir alone", () => {
     const out = redirectArgs(
-      "bash",
+      "shell",
       WORKTREE,
       {
         command: "phasegent issue bind 18 --session s1",
@@ -325,9 +413,35 @@ describe("redirectArgs session injection (issue #18 Task 2)", () => {
     expect(out.workdir).toBe("/tmp");
   });
 
-  test("leaves non-phasegent bash commands alone", () => {
-    const out = redirectArgs("bash", WORKTREE, { command: "ls" }, "s1");
+  test("leaves non-phasegent shell commands alone", () => {
+    const out = redirectArgs("shell", WORKTREE, { command: "ls" }, "s1");
     expect(out.command).toBe("ls");
+  });
+});
+
+describe("tool.execute.before session injection without a worktree", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  test("injects --session even when the registry is empty", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "shell",
+      sessionID: "fresh-session",
+      input: { command: "phasegent issue create --title t" },
+    };
+    await hook(event);
+    expect(event.input.command).toBe(
+      "phasegent issue create --title t --session fresh-session",
+    );
+    // No worktree was discovered (no git binding in this cwd): no workdir fill.
+    expect(event.input.workdir).toBeUndefined();
   });
 });
 
@@ -353,30 +467,120 @@ describe("pickActiveWorktreePath (issue #18 Task 2 lazy discovery)", () => {
   });
 });
 
-describe("tool.execute.before session injection without a worktree", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+describe("v2 worktree strategy registration", () => {
+  test("stays out of the way when the host has no worktree transform", async () => {
+    expect(await registerWorktreeStrategy({}, { readBinding: async () => 532 })).toBeNull();
   });
-  afterEach(() => {
-    if (savedNoDiscover === undefined) {
-      delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    } else {
-      process.env.PHASEGENT_WORKTREE_NO_DISCOVER = savedNoDiscover;
-    }
+
+  test("keeps the host git strategy when the checkout has no binding", async () => {
+    let transforms = 0;
+    const context = {
+      location: { directory: "/repo" },
+      worktree: {
+        transform: async () => {
+          transforms += 1;
+          return { dispose: async () => {} };
+        },
+      },
+    };
+    const registration = await registerWorktreeStrategy(context, {
+      readBinding: async () => null,
+    });
+    expect(registration).toBeNull();
+    expect(transforms).toBe(0);
   });
-  test("injects --session even when the registry is empty", async () => {
-    const hook = createRedirectHook();
-    const output = { args: { command: "phasegent issue create --title t" } };
-    await hook["tool.execute.before"](
-      { tool: "bash", sessionID: "fresh-session" },
-      output,
-    );
-    expect(output.args.command).toBe(
-      "phasegent issue create --title t --session fresh-session",
-    );
-    // No worktree was discovered (no git binding in this cwd): no workdir fill.
-    expect(output.args.workdir).toBeUndefined();
+
+  test("registers the phasegent strategy when the checkout is bound", async () => {
+    const editors = [];
+    const context = {
+      location: { directory: "/repo" },
+      worktree: {
+        transform: async (callback) => {
+          callback({ add: (definition) => editors.push(definition) });
+          return { dispose: async () => {} };
+        },
+      },
+    };
+    const registration = await registerWorktreeStrategy(context, {
+      readBinding: async () => 532,
+    });
+    expect(registration).toBeObject();
+    expect(editors).toHaveLength(1);
+    expect(editors[0].id).toBe("phasegent");
+    expect(typeof editors[0].create).toBe("function");
+    expect(typeof editors[0].remove).toBe("function");
+    expect(typeof editors[0].list).toBe("function");
+  });
+
+  test("create returns the acquired lease path", async () => {
+    const definition = worktreeStrategyDefinition({
+      issueId: 532,
+      directory: "/repo",
+      acquire: async (issueId, sessionId, cwd) => {
+        expect(issueId).toBe(532);
+        expect(sessionId).toBeNull();
+        expect(cwd).toBe("/repo");
+        return { path: WORKTREE };
+      },
+      gitAdd: async () => {
+        throw new Error("git fallback must not run");
+      },
+      readLeases: async () => [],
+    });
+    expect(await definition.create({ sourceDirectory: "/repo", directory: "/wt/new" })).toEqual({
+      directory: WORKTREE,
+    });
+  });
+
+  test("create falls back to a plain git worktree when acquire fails", async () => {
+    const fallbacks = [];
+    const definition = worktreeStrategyDefinition({
+      issueId: 532,
+      directory: "/repo",
+      acquire: async () => null,
+      gitAdd: async (input) => {
+        fallbacks.push(input);
+        return { directory: input.directory };
+      },
+      readLeases: async () => [],
+    });
+    const input = { sourceDirectory: "/repo", directory: "/wt/new", branch: "main" };
+    expect(await definition.create(input)).toEqual({ directory: "/wt/new" });
+    expect(fallbacks).toEqual([input]);
+  });
+
+  test("remove never deletes a worktree or branch", async () => {
+    const definition = worktreeStrategyDefinition({
+      issueId: 532,
+      directory: "/repo",
+      acquire: async () => null,
+      gitAdd: async () => ({ directory: "/wt/new" }),
+      readLeases: async () => [],
+    });
+    expect(await definition.remove({ directory: WORKTREE, force: true })).toBeUndefined();
+  });
+
+  test("list reports the root plus the bound issue's leases", async () => {
+    const definition = worktreeStrategyDefinition({
+      issueId: 532,
+      directory: "/repo",
+      acquire: async () => null,
+      gitAdd: async () => ({ directory: "/wt/new" }),
+      readLeases: async (issueId, cwd) => {
+        expect(issueId).toBe(532);
+        expect(cwd).toBe("/repo");
+        return [
+          { status: "active", worktree_path: WORKTREE },
+          { status: "retained", worktree_path: "/wt/old" },
+          { status: "active", worktree_path: WORKTREE },
+          null,
+        ];
+      },
+    });
+    expect(await definition.list("/repo")).toEqual([
+      { directory: "/repo", type: "root" },
+      { directory: WORKTREE, type: "worktree" },
+      { directory: "/wt/old", type: "worktree" },
+    ]);
   });
 });

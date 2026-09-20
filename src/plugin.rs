@@ -9,20 +9,27 @@
 //! case the foreign file is moved to
 //! `phasegent-worktree.js.phasegent-orig`.
 //!
-//! The installed adapter is `experimental_workspace.register(...)`
-//! with the canonical `configure` / `create` / `remove` / `target`
-//! shape. `target` runs `phasegent --role orchestrator worktree
-//! acquire --issue N --format json` and falls back to the original
-//! directory on any failure. No network, no `.env` access, no
-//! branch deletion (deletion stays with `phasegent worktree prune`).
+//! The installed adapter is the OpenCode v2 plugin shape
+//! `export default { id, setup }` (opencode v2.0.11
+//! `packages/core/src/plugin/module.ts`), replacing the v1 workspace
+//! adapter that the v2 loader rejects; OpenCode >= 2.0 is required.
+//! `setup` registers the issue #440 `tool.execute.before` redirect hook
+//! and claims the v2 worktree strategy (`context.worktree.transform`)
+//! only when the checkout already carries a phasegent issue binding, so
+//! a non-phasegent project keeps the host git strategy. The strategy
+//! runs `phasegent --role orchestrator worktree acquire --issue N
+//! --format json` and falls back to a plain git worktree when acquire
+//! fails. The acquired worktree becomes the session directory through
+//! `context.session.move`, because the v2 worktree domain has no v1
+//! `target` callback.
 //!
-//! The V1 plugin function additionally returns a
-//! `tool.execute.before` hook (issue #440): once a session has
-//! acquired a worktree, relative file paths and a bare or relative
-//! bash `workdir` are redirected into it, while absolute paths and
-//! sessions without a worktree pass through untouched. Redirecting
-//! never disables the `external_directory` permission check because
-//! absolute paths are returned verbatim.
+//! Once a session has acquired a worktree, relative file paths and a
+//! bare or relative shell `workdir` are redirected into it, while
+//! absolute paths and sessions without a worktree pass through
+//! untouched. Redirecting never disables the `external_directory`
+//! permission check because absolute paths are returned verbatim. No
+//! branch or directory is ever deleted by the adapter; deletion stays
+//! with `phasegent worktree prune`.
 //!
 //! This module reuses the `hooks.rs` install pattern (marker check,
 //! idempotent update, foreign-file backup, atomic temp+rename) so the
