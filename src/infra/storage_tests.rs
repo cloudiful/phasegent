@@ -461,7 +461,6 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
         Some((22, "phasegent-executor".to_owned()))
     );
     assert!(storage.load_redmine_user(Role::Reviewer).unwrap().is_none());
-    // Overwrite replaces.
     storage
         .save_redmine_user(Role::Orchestrator, 12, "phasegent-orchestrator")
         .unwrap();
@@ -469,7 +468,6 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
         storage.load_redmine_user(Role::Orchestrator).unwrap(),
         Some((12, "phasegent-orchestrator".to_owned()))
     );
-    // Validation.
     assert!(storage.save_redmine_user(Role::Reviewer, 0, "x").is_err());
     assert!(storage.save_redmine_user(Role::Reviewer, 7, "   ").is_err());
     assert!(
@@ -858,14 +856,11 @@ fn additive_owner_migration_is_idempotent_across_reopens() {
         )
         .unwrap();
 
-    // Re-open the same database path: the migration must run, see the
-    // columns already present, and succeed without error.
     let reopened = Storage::open_at(&temp_dir.join(DB_FILENAME)).unwrap();
     let pre = reopened.load_timer_run("pre-migration").unwrap().unwrap();
     assert!(pre.owner_session_id.is_none());
     assert!(pre.owner_call_id.is_none());
 
-    // New rows written after the migration carry owner metadata.
     reopened
         .start_timer_run_with_owner(
             "post-migration",
@@ -991,7 +986,6 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
     storage
         .finish_timer_run("owner-run", "DONE", 1_700_000_060)
         .unwrap();
-    // First caller claims with token A and holds the lease.
     let token_a = "tok-owner-A";
     assert!(
         storage
@@ -1004,14 +998,12 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
         claimed.sync_status,
         crate::infra::storage::TIMER_SYNC_PROJECTING
     );
-    // Second caller with token B attempts to claim the same run: must fail.
     let token_b = "tok-owner-B";
     assert!(
         !storage
             .try_claim_timer_projection("owner-run", token_b)
             .unwrap()
     );
-    // Second caller must not be able to finalize with its own token.
     let marked_b = storage
         .mark_timer_sync_with_token(
             "owner-run",
@@ -1026,7 +1018,6 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
         !marked_b,
         "second caller must not finalize with wrong token"
     );
-    // First caller (holder) can finalize.
     let marked_a = storage
         .mark_timer_sync_with_token(
             "owner-run",
@@ -1067,7 +1058,6 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
             .try_claim_timer_projection("stale-run", live_token)
             .unwrap()
     );
-    // Immediate stale reset should NOT succeed while lease is fresh.
     let stale_reset = storage
         .reset_stale_projection_to_failed("stale-run", "stale")
         .unwrap();
@@ -1075,7 +1065,6 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
         !stale_reset,
         "live lease must not be reset as stale within window"
     );
-    // Holder can still finalize after failed stale reset.
     let marked_live = storage
         .mark_timer_sync_with_token(
             "stale-run",
@@ -1096,7 +1085,6 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
     storage
         .finish_timer_run(stale_id, "DONE", 1_700_000_260)
         .unwrap();
-    // Manually claim with old claimed_at (legacy NULL or expired)
     storage
         .connection
         .execute(
@@ -1104,7 +1092,6 @@ fn projection_lease_token_binds_finalization_and_prevents_second_post() {
             rusqlite::params![1_000_000_i64, stale_id],
         )
         .unwrap();
-    // Now stale reset should succeed.
     let stale_ok = storage
         .reset_stale_projection_to_failed(stale_id, "recovering hard crash")
         .unwrap();
@@ -1151,10 +1138,8 @@ fn legacy_owner_migration_tolerates_concurrent_opens() {
         let storage = h.join().unwrap().unwrap();
         let row = storage.load_timer_run("legacy-1").unwrap().unwrap();
         assert_eq!(row.run_id, "legacy-1");
-        // Columns must exist after concurrent migration.
         assert!(row.owner_session_id.is_none());
     }
-    // Third open after both should also see the column.
     let storage = Storage::open_at(&db_path).unwrap();
     storage
         .start_timer_run_with_owner(
@@ -1197,7 +1182,6 @@ fn concurrent_activity_initialization_is_token_bound() {
     storage
         .finish_timer_run("activity-token-run", "DONE", 1_700_000_060)
         .unwrap();
-    // Caller A claims and persists its activity_id with token A.
     let token_a = "tok-activity-A";
     assert!(
         storage
@@ -1208,9 +1192,6 @@ fn concurrent_activity_initialization_is_token_bound() {
         .update_activity_with_token("activity-token-run", token_a, 9)
         .unwrap();
     assert!(persisted_a, "token-A holder must persist activity_id");
-    // Caller B with token B cannot finalize with its own token, and its
-    // activity persist with token B is rejected because the row carries
-    // token A.
     let token_b = "tok-activity-B";
     let persisted_b = storage
         .update_activity_with_token("activity-token-run", token_b, 11)
@@ -1319,7 +1300,6 @@ fn stale_reset_blocks_against_live_immediate_holder() {
             )
             .unwrap();
     }
-    // Holder opens its own connection and holds an IMMEDIATE.
     let holder_db = db_path.clone();
     let holder = std::thread::spawn(move || {
         let storage = Storage::open_at(&holder_db).unwrap();
@@ -1328,7 +1308,6 @@ fn stale_reset_blocks_against_live_immediate_holder() {
         // back off. While held the reset must observe `false` (no row
         // mutated).
         std::thread::sleep(std::time::Duration::from_millis(500));
-        // Roll back so the lock is released.
         storage.rollback_projection().unwrap();
     });
     // Give the holder time to acquire BEGIN IMMEDIATE.
@@ -1481,14 +1460,12 @@ fn finalize_without_lease_does_not_mutate_projection_state() {
     storage
         .finish_timer_run("no-lease", "DONE", 1_700_000_060)
         .unwrap();
-    // Holder A claims.
     let token_a = "tok-finalize-A";
     assert!(
         storage
             .try_claim_timer_projection("no-lease", token_a)
             .unwrap()
     );
-    // Stray finalize attempt with token B returns false (no rows match).
     let stray_finalize = storage
         .mark_timer_sync_with_token(
             "no-lease",
@@ -1515,7 +1492,6 @@ fn finalize_without_lease_does_not_mutate_projection_state() {
         "projection_token must remain the holder's"
     );
     assert!(row.time_entry_id.is_none(), "no time entry yet");
-    // Holder A can finalize successfully.
     let ok = storage
         .mark_timer_sync_with_token(
             "no-lease",
@@ -1588,7 +1564,6 @@ fn credential_summary_reports_fingerprint_and_store_time() {
     assert!(short.present);
     assert_eq!(short.fingerprint, None);
 
-    // Missing rows stay fully absent.
     let missing = storage
         .credential_summary(Role::Reviewer, PROVIDER_REDMINE)
         .unwrap();
@@ -1628,7 +1603,6 @@ fn credential_summary_backfills_legacy_rows_without_fingerprint() {
     assert!(summary.present);
     assert_eq!(summary.fingerprint.as_deref(), Some("n-99"));
 
-    // The backfill persisted: a second read finds the stored value.
     let stored: Option<String> = storage
         .connection
         .query_row(

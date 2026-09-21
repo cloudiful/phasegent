@@ -32,8 +32,6 @@ fn forgejo_dispatcher(owner: &str, repo: &str) -> ProviderDispatcher {
 
 #[test]
 fn remote_page_warms_full_body_while_output_stays_compact() {
-    // One provider page returns full bodies; warming must store the
-    // full body while the stdout envelope stays compact.
     let long_body = "b".repeat(crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES + 50);
     let summary = IssueSummary {
         id: 7,
@@ -44,7 +42,6 @@ fn remote_page_warms_full_body_while_output_stays_compact() {
         html_url: Some("https://forgejo.example/issues/7".to_owned()),
         project: None,
     };
-    // Compact output omits body.
     let compact = IssueSearchItem::from_summary(summary.clone(), false);
     assert!(compact.body.is_none());
     assert!(compact.source.is_none());
@@ -72,7 +69,6 @@ fn remote_page_warms_full_body_while_output_stays_compact() {
         res.items[0].body.as_ref().unwrap().len(),
         crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES
     );
-    // Scoped search also finds the warmed document.
     let scoped = block_on(idx.lexical_search_scoped("Title", 10, 0, false, &scope)).unwrap();
     assert_eq!(scoped.total_count, 1);
     let _ = std::fs::remove_dir_all(dir);
@@ -129,7 +125,6 @@ fn provider_failure_returns_local_item_with_markers_scoped() {
     let _guard_pg = EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    // Two scopes, only one matches the explicit provider/project.
     for (source, project, num, title) in [
         ("forgejo", "owner/repo", 1u64, "alpha scoped"),
         ("forgejo", "other/repo", 2u64, "alpha unrelated"),
@@ -168,7 +163,6 @@ fn provider_failure_returns_local_item_with_markers_scoped() {
         None,
     );
     assert_eq!(code, 0, "scoped fallback with match must succeed");
-    // Verify scoping at the storage layer directly (bounded/paged).
     let idx2 = SqliteIssueIndex::open_at(&path).unwrap();
     let explicit = explicit_scope(Some(ProviderKind::Forgejo), Some("owner/repo"), None);
     let scope = lexical_scope_for_state(explicit.as_ref(), "all");
@@ -187,7 +181,6 @@ fn provider_failure_with_no_local_match_preserves_error() {
     let _guard_db = EnvGuard::set("PHASEGENT_DB_PATH", storage_path.to_str().unwrap());
     let _guard_pg = EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
-    // Empty index: no docs match.
     let _idx = SqliteIssueIndex::open_at(&path).unwrap();
     let options = crate::providers::IssueSearchOptions {
         query: Some("missing-term-xyz".to_owned()),
@@ -368,10 +361,8 @@ fn mutation_write_through_covers_get_create_update_close() {
         warm_single_summary(&dispatcher, &summary, "issue mutation");
     }
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    // All four warmed summaries are visible via lexical search.
     let res = block_on(idx.lexical_search("title", 10, 0, false)).unwrap();
     assert_eq!(res.total_count, 4);
-    // Close is the closed document.
     let closed = block_on(idx.lexical_search("close", 10, 0, false)).unwrap();
     assert_eq!(closed.total_count, 1);
     assert_eq!(closed.items[0].external_id, "14");

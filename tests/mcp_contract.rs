@@ -443,7 +443,6 @@ fn mcp_http_rejects_missing_and_wrong_bearer() {
     let scratch = scratch_db();
     let token = "hermetic-http-auth-token-401";
     let (mut child, bind) = spawn_http_server_on_free_port(&scratch, Some(token));
-    // No header.
     let (status, body) = raw_http_get(&bind, None);
     assert_eq!(status, 401, "missing bearer must be 401; body={body}");
     assert!(
@@ -474,7 +473,6 @@ fn mcp_http_rejects_missing_and_wrong_bearer() {
             "401 body must not leak token for {bad:?}; body={body}"
         );
     }
-    // POST without auth must also be 401.
     let (status, body) = raw_http_post_initialize(&bind, None);
     assert_eq!(status, 401, "unauthenticated POST must be 401; body={body}");
     assert!(
@@ -499,7 +497,6 @@ fn mcp_http_accepts_valid_bearer() {
         !body.contains(token),
         "valid GET response must not leak token; body={body}"
     );
-    // Full MCP initialize over POST succeeds with a session.
     let (status, body) = raw_http_post_initialize(&bind, Some(&valid));
     assert_eq!(status, 200, "valid initialize must be 200; body={body}");
     assert!(

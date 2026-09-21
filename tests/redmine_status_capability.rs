@@ -1,9 +1,3 @@
-//! Black-box CLI integration tests for the `status next` read-only
-//! capability: current status, policy-allowed next statuses resolved to
-//! this installation's ids, policy source, server caveat, and recovery
-//! command. Shared scaffolding (mock server, SQLite fixture, binary
-//! runner) lives in `tests/support`.
-
 #[path = "support/mod.rs"]
 mod support;
 

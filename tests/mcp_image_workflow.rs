@@ -115,9 +115,7 @@ fn workflow_builds_native_per_arch_with_artifact_reuse_and_manifest() {
     assert_contains(&workflow, "download-artifact", "mcp-image artifacts");
     assert_contains(&workflow, "ci-image-input/phasegent", "mcp-image artifacts");
     assert_not_contains(&workflow, "phasegent-image-input-", "mcp-image artifacts");
-    // Multi-arch manifest merge.
     assert_contains(&workflow, "imagetools create", "mcp-image manifest");
-    // Pinned checkout, concurrency, and minimal permissions.
     assert_contains(&workflow, "ref: ${{ github.sha }}", "mcp-image checkout");
     assert_contains(
         &workflow,

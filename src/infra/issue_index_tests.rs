@@ -49,7 +49,6 @@ fn schema_open_is_idempotent_and_private() {
         assert_eq!(fm, 0o600);
     }
     let idx2 = SqliteIssueIndex::open_at(&path).unwrap();
-    // Empty index has no lexical matches.
     assert_eq!(
         block_on(idx2.lexical_search("anything", 10, 0, false))
             .unwrap()
@@ -212,7 +211,6 @@ fn upsert_replacement_and_round_trip() {
         block_on(idx.lexical_search("v2", 10, 0, false)).unwrap().total_count,
         1
     );
-    // Unknown term has no matches.
     assert_eq!(
         block_on(idx.lexical_search("missing-term-xyz-999", 10, 0, false))
             .unwrap()
@@ -228,7 +226,6 @@ fn scoped_lexical_search_filters_by_source_project_and_state() {
     use crate::providers::index::LexicalScope;
     let (dir, path) = tmp_index("scoped");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    // Same term in three scopes plus a closed variant.
     for (source, project, ext, num, title, state) in [
         ("forgejo", "owner/repo", "1", 1u64, "alpha scoped open", "open"),
         ("forgejo", "other/repo", "2", 2u64, "alpha other open", "open"),
@@ -239,20 +236,16 @@ fn scoped_lexical_search_filters_by_source_project_and_state() {
         let doc = IssueIndexDocument::new(key, num, title.into(), "alpha body".into(), state.into(), None, None, 1_700_000_000 + num as i64).unwrap();
         block_on(idx.upsert(&doc)).unwrap();
     }
-    // Global finds all four.
     let global = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &LexicalScope::global())).unwrap();
     assert_eq!(global.total_count, 4);
-    // Scoped to forgejo/owner/repo finds two (open+closed).
     let scoped = LexicalScope::scoped("forgejo", "owner/repo", "all").unwrap();
     let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &scoped)).unwrap();
     assert_eq!(res.total_count, 2);
     assert!(res.items.iter().all(|item| item.project == "owner/repo"));
-    // Scoped + state open finds one.
     let open_only = LexicalScope::scoped("forgejo", "owner/repo", "open").unwrap();
     let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &open_only)).unwrap();
     assert_eq!(res.total_count, 1);
     assert_eq!(res.items[0].external_id, "1");
-    // Scoped + state closed finds the other.
     let closed_only = LexicalScope::scoped("forgejo", "owner/repo", "closed").unwrap();
     let res = block_on(idx.lexical_search_scoped("alpha", 10, 0, false, &closed_only)).unwrap();
     assert_eq!(res.total_count, 1);

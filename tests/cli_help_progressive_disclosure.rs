@@ -122,8 +122,6 @@ fn root_help_is_short_and_points_at_deep_pages() {
         );
     }
 
-    // Canonical next-help pointers to the deep pages that now own the
-    // detail previously duplicated at root.
     assert!(
         stdout.contains("phasegent --help config provider"),
         "root help must point operators at the resolver chain page; got:\n{stdout}",

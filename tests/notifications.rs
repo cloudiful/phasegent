@@ -221,7 +221,6 @@ fn notify_channel_config_round_trips_and_snapshot_redacts_secrets() {
         stdout.contains("https://hooks.example.com/notify"),
         "snapshot missing sanitised webhook url; stdout={stdout}"
     );
-    // Clear works for notify fields.
     let clear = run_phasegent(
         &scratch,
         &["admin", "config", "clear", "notify-channel"],

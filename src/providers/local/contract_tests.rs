@@ -1,5 +1,3 @@
-//! Local provider contract tests (SQLite).
-
 pub(crate) mod cross_backend;
 
 use super::LocalProvider;
@@ -311,7 +309,6 @@ fn set_issue_status_rejects_unknown_id() {
 fn advance_issue_status_respects_policy_with_advisory_and_noop_branches() {
     let (provider, dir) = tmp_provider("advance-policy");
     let issue = provider.create_issue("Advance", "body").unwrap();
-    // Allowed canonical edge: New -> In Progress.
     let allowed = provider
         .advance_issue_status(issue.number, "In Progress")
         .unwrap();

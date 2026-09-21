@@ -59,7 +59,6 @@ fn issue_search_contract() {
     assert_eq!(output.limit, 50);
     assert_eq!(output.total_count, Some(1));
     assert!(!output.has_more);
-    // compact output omits bodies
     assert!(output.items[0].body.is_none());
     assert_request(&request, "GET", "/api/v1/repos/owner/repo/issues?", None);
     assert!(request.contains("state=open"));
@@ -352,7 +351,6 @@ fn repeated_non_empty_page_returns_without_looping() {
 
 #[test]
 fn issue_search_reports_has_more_from_link_and_compact_truncation() {
-    // has_more via X-Total-Count and default compact output without bodies.
     let options_compact = crate::providers::IssueSearchOptions {
         query: Some("q".to_owned()),
         state: "open".to_owned(),

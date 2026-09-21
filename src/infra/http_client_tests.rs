@@ -231,7 +231,6 @@ fn timeout_with_short_deadline_is_bounded() {
 
 #[test]
 fn gzip_json_and_text_are_transparently_decoded() {
-    // JSON via Forgejo GET with gzip.
     let (base, requests, server) = sequence(vec![MockResponse::gzip_json()]);
     let provider = ForgejoProvider::new(
         ForgejoConfig::new(base.clone(), "owner", "repo"),
@@ -253,7 +252,6 @@ fn gzip_json_and_text_are_transparently_decoded() {
     );
     server.join().unwrap();
 
-    // Text via the shared retry/decompression helper with gzip.
     let (base, requests, server) = sequence(vec![MockResponse::gzip_text()]);
     let client = http_client::build_client().unwrap();
     let (_status, _headers, text) = http_client::fetch_with_retry(
