@@ -1,5 +1,3 @@
-//! GitLab note CRUD, find-marker and comment conversions.
-
 use crate::providers::api::{CommentOutput, ForgejoError};
 use crate::providers::gitlab::model::{ApiNote, NewNote};
 

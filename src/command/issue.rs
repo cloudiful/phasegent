@@ -315,7 +315,6 @@ fn parse_branch_options(args: &[String]) -> Result<(BranchOption, Option<String>
     Ok((branch, base))
 }
 
-/// Validate an explicit `--branch NAME` value with Git ref-safe rules.
 fn validate_branch_name(raw: &str, operation: &str) -> Result<String, String> {
     let name = raw.trim().to_owned();
     if name.is_empty() {

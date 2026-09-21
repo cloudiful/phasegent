@@ -316,8 +316,6 @@ pub fn persist_redmine_bootstrap(
     storage.persist_redmine_bootstrap(role, api_base, project_id, close_status_id)
 }
 
-/// Load the admin-provisioned Redmine identity (`user_id`, `login`) for
-/// `role`. Returns `None` when never provisioned.
 pub fn load_redmine_user(role: Role, storage: &Storage) -> Result<Option<(u64, String)>, String> {
     storage.load_redmine_user(role)
 }

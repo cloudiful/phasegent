@@ -1,5 +1,3 @@
-//! Labels, tracker labels, workflow status.
-
 use crate::providers::api::{ForgejoError, IssueSummary};
 use crate::providers::gitlab::model::{
     ApiLabel, NewLabel, TRACKER_LABEL_BUG, TRACKER_LABEL_FEATURE, UpdateIssue, WORKFLOW_LABELS,

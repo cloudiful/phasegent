@@ -60,7 +60,6 @@ impl From<(InstallOutcome, InstallOutcome, String, String)> for InstallEnvelope 
     }
 }
 
-/// JSON envelope returned by `plugin uninstall`.
 #[derive(Debug, Serialize)]
 pub struct UninstallEnvelope {
     pub removed: Vec<String>,

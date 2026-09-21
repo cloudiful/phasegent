@@ -20,23 +20,16 @@ use crate::providers::config::ProviderKind;
 use serde::Serialize;
 use serde_json::Value;
 
-/// Build a redacted snapshot of the local SQLite database. `role`
-/// restricts the `roles` array when supplied; passing `None` returns
-/// every known role.
 pub fn show(role: Option<Role>, storage: &Storage) -> Result<Value, String> {
     let snapshot = config_snapshot::render(storage, role)?;
     serde_json::to_value(snapshot)
         .map_err(|error| format!("could not encode config snapshot: {error}"))
 }
 
-/// Helper used by the CLI layer to render `ConfigSnapshot` as JSON.
 pub fn show_json(role: Option<Role>, storage: &Storage) -> Result<Value, String> {
     show(role, storage)
 }
 
-/// Dispatch `config set` with the already-resolved canonical setting.
-/// `value` is the optional positional value; `use_stdin` is the
-/// `--stdin` flag. Secret settings reject direct values.
 pub fn set_json(
     role: Option<Role>,
     canonical: &str,
@@ -47,7 +40,6 @@ pub fn set_json(
     crate::config_write::dispatch_set(role, canonical, value, use_stdin, storage)
 }
 
-/// Dispatch `config clear` for the canonical setting.
 pub fn clear_json(role: Option<Role>, canonical: &str, storage: &Storage) -> Result<Value, String> {
     crate::config_write::clear_setting(role, canonical, storage)
 }
@@ -59,7 +51,6 @@ pub struct ProviderGetOutcome {
     pub provider: Option<&'static str>,
 }
 
-/// Read the persisted `PHASEGENT_DEFAULT_PROVIDER` row.
 pub fn provider_get(storage: &Storage) -> Result<ProviderGetOutcome, String> {
     match storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")? {
         Some(value) => {
@@ -74,7 +65,6 @@ pub fn provider_get(storage: &Storage) -> Result<ProviderGetOutcome, String> {
     }
 }
 
-/// Validate and persist `PHASEGENT_DEFAULT_PROVIDER`.
 pub fn provider_set(value: &str, storage: &Storage) -> Result<ProviderGetOutcome, String> {
     let kind: ProviderKind = value
         .parse()
@@ -85,7 +75,6 @@ pub fn provider_set(value: &str, storage: &Storage) -> Result<ProviderGetOutcome
     })
 }
 
-/// Remove the persisted `PHASEGENT_DEFAULT_PROVIDER` row.
 #[derive(Debug, Serialize)]
 pub struct ProviderClearOutcome {
     pub cleared: bool,

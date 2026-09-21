@@ -405,11 +405,6 @@ pub fn normalize_gitlab_api_base(value: &str) -> Result<String, String> {
     Ok(url.to_string().trim_end_matches('/').to_owned())
 }
 
-/// Re-export the real GitLab provider implementation. The implementation
-/// moved to [`crate::providers::gitlab`] so the HTTP plumbing and the provider
-/// logic share a single file. Keeping the old name here means every
-/// existing `crate::providers::config::GitlabProvider` reference continues
-/// to compile without churn.
 pub use crate::providers::gitlab::GitlabProvider;
 
 #[cfg(test)]

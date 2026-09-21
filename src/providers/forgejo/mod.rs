@@ -447,9 +447,6 @@ impl ForgejoProvider {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<Page<T>, ForgejoError> {
-        // Pagination reads are safe GETs; route through the shared retry
-        // helper that handles 429/502/503/504 and transport timeouts.
-        // `send` stays non-retrying for mutations.
         let (status, headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")

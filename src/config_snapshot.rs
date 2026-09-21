@@ -15,9 +15,6 @@ use serde::Serialize;
 
 /// Per-role snapshot consumed by `config show`. The structure is
 /// flat so the JSON output stays compact and operator-friendly.
-/// Project-id fields were removed in Phase 1 (remove-project-id);
-/// snapshots no longer expose `redmine_project_id` or
-/// `gitlab_project_id` and legacy stored values are ignored.
 #[derive(Debug, Serialize)]
 pub struct RoleSnapshot {
     pub role: &'static str,
@@ -101,9 +98,6 @@ pub struct ConfigSnapshot {
     pub global_default_provider: Option<&'static str>,
 }
 
-/// Render a redacted snapshot of `storage`. `role` restricts the
-/// `roles` array when supplied; passing `None` returns every known
-/// role.
 pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, String> {
     let roles_iter: Box<dyn Iterator<Item = Role>> = match role {
         Some(single) => Box::new(std::iter::once(single)),

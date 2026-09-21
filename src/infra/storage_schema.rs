@@ -7,7 +7,6 @@
 //! not support compile-time-checked query macros, and a few short
 //! statements do not justify the indirection of file-based loading.
 
-/// Filename of the SQLite database inside the phasegent config directory.
 pub(crate) const DB_FILENAME: &str = "phasegent.sqlite3";
 
 /// Role provider kinds we persist. Mirrors `provider_config::ProviderKind`

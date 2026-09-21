@@ -97,9 +97,7 @@ impl RedmineProvider {
                 ),
             ));
         }
-        // Step 1: raw upload.
         let token = self.http.post_upload(filename, &bytes, OPERATION)?;
-        // Step 2: attach token to issue.
         let notes = description
             .map(|value| value.trim())
             .filter(|value| !value.is_empty());

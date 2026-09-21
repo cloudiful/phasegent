@@ -16,7 +16,6 @@ use super::validate::{
     parse_role_required, validate_credential_value, validate_setting_value,
 };
 
-/// Non-secret setting write through the existing config facade.
 #[allow(dead_code)]
 pub fn write_setting_blocking(request: SetSettingRequest) -> Result<SetSettingResponse, String> {
     let canonical = canonical_non_secret_setting(&request.setting)?;
@@ -39,7 +38,6 @@ pub fn write_setting_blocking(request: SetSettingRequest) -> Result<SetSettingRe
     })
 }
 
-/// Non-secret setting clear through the existing facade.
 #[allow(dead_code)]
 pub fn clear_setting_blocking(
     request: ClearSettingRequest,
@@ -93,7 +91,6 @@ pub fn write_credential_blocking(
     })
 }
 
-/// Secure credential clear.
 #[allow(dead_code)]
 pub fn clear_credential_blocking(
     request: ClearCredentialRequest,

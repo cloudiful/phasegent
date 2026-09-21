@@ -1,5 +1,3 @@
-//! Local comment lifecycle.
-
 use super::LocalProvider;
 use super::model::{LocalCommentRow, is_unique_violation, local_sql, now_epoch_seconds};
 use crate::providers::api::{CommentOutput, ForgejoError};

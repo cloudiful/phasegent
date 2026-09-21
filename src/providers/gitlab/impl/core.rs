@@ -1,5 +1,3 @@
-//! GitLab provider core: struct, factory, path builders, capabilities.
-
 use crate::infra::storage::Storage;
 use crate::policy::Capability;
 use crate::providers::api::ForgejoError;
@@ -50,12 +48,9 @@ impl GitlabProvider {
         Ok(Self { config, http })
     }
 
-    /// Numeric project id used in every per-project URL.
     pub(crate) const fn project_id(&self) -> u64 {
         self.config.project_id
     }
-
-    // -- HTTP path builders --------------------------------------------------
 
     pub(crate) fn issues_path(&self) -> String {
         format!("projects/{}/issues", self.project_id())
@@ -107,20 +102,13 @@ impl GitlabProvider {
         format!("projects/{}/milestones", self.project_id())
     }
 
-    // -- Not-supported helpers ------------------------------------------------
-
     #[allow(dead_code)]
     pub(crate) fn unsupported<T>(&self, operation: &str) -> Result<T, ForgejoError> {
         Err(ForgejoError::not_supported("gitlab", operation))
     }
 }
 
-// -- Capability surface ----------------------------------------------------
-
 impl GitlabProvider {
-    /// Capability table for GitLab. Repository creation and issue
-    /// relations are native so the shared CLI can dispatch `repo
-    /// create` and `relation list/create/delete` to the GitLab provider.
     pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
         crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
@@ -130,26 +118,6 @@ impl GitlabProvider {
     }
 
     pub(crate) fn supports(&self, capability: Capability) -> bool {
-        // Phase 2 parity matrix (issue 257): the read-side parity
-        // rows that Phase 1 documented as `false` now flip to `true`
-        // because the dispatcher arm forwards to equivalent reads:
-        //
-        // * `ProjectRead` → `GET /projects` (paginated list).
-        // * `IssueStatusRead` → static `WORKFLOW_LABELS` catalogue
-        //   (no native GitLab status enum; the workflow is encoded as
-        //   project labels and the orchestrator surfaces the same
-        //   catalogue the `status set`/`status next` flows already
-        //   consume).
-        // * `VersionRead` → `GET /projects/:id/milestones` (GitLab
-        //   milestones map onto Redmine versions).
-        //
-        // `ProjectCreate` stays `false`: the equivalent is `repo
-        // create` (already wired via `RepoProvider::create_repo`), so
-        // the `project create` CLI command keeps its not-supported
-        // result for GitLab. `IssueAttachmentUpload` stays `false`
-        // (Phase 1 uniform not-supported row). Repository creation
-        // and relation rows stay `true` because GitLab exposes the
-        // native endpoint family.
         match capability {
             Capability::IssueRead
             | Capability::IssueSearch
@@ -164,7 +132,6 @@ impl GitlabProvider {
             Capability::RelationRead | Capability::RelationCreate | Capability::RelationDelete => {
                 true
             }
-            // Phase 2 read-side parity rows.
             Capability::ProjectRead | Capability::IssueStatusRead | Capability::VersionRead => true,
             // ProjectCreate stays `false`: the equivalent is `repo
             // create`, which lives on the RepoProvider surface.

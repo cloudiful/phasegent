@@ -36,12 +36,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Filename of the TOML overlay inside the ProjectDirs config dir.
 pub const CONFIG_FILENAME: &str = "phasegent.toml";
 /// Absolute-path override for test isolation.
 pub const CONFIG_PATH_ENV: &str = "PHASEGENT_CONFIG_PATH";
 
-/// Typed overlay for stable non-secret settings.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigOverlay {
@@ -55,7 +53,6 @@ pub struct ConfigOverlay {
     pub roles: HashMap<String, RoleOverlay>,
 }
 
-/// Per-role non-secret endpoint/repository settings.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleOverlay {
@@ -73,7 +70,6 @@ pub struct RoleOverlay {
     pub gitlab_api_base: Option<String>,
 }
 
-/// Default overlay path under the ProjectDirs config directory.
 pub fn default_config_path() -> Result<PathBuf, String> {
     let dirs = ProjectDirs::from("com", "Cloud1ful", "phasegent")
         .ok_or_else(|| "could not resolve phasegent config directory".to_owned())?;
@@ -110,7 +106,6 @@ pub fn load_overlay() -> Result<Option<ConfigOverlay>, String> {
     load_overlay_from_path(&path)
 }
 
-/// Load from an explicit path. Used by tests for path isolation.
 pub fn load_overlay_from_path(path: &Path) -> Result<Option<ConfigOverlay>, String> {
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(Some(parse_overlay_str(
@@ -139,12 +134,10 @@ pub fn parse_overlay_str(content: &str, origin: &str) -> Result<ConfigOverlay, S
 }
 
 impl ConfigOverlay {
-    /// Validated global default provider literal, if present.
     pub fn default_provider_value(&self) -> Option<&str> {
         self.default_provider.as_deref()
     }
 
-    /// Validated repository URL override, if present.
     pub fn redmine_repository_url_value(&self) -> Option<&str> {
         self.redmine_repository_url.as_deref()
     }
@@ -156,7 +149,6 @@ impl ConfigOverlay {
         self.index_backend.as_deref()
     }
 
-    /// Role overlay for `role`, if the file defines `[roles.<role>]`.
     pub fn role_overlay(&self, role: crate::policy::Role) -> Option<&RoleOverlay> {
         self.roles.get(role.as_str())
     }

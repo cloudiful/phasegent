@@ -1,6 +1,3 @@
-// Provider-neutral index search and scope helpers.
-// Extracted to keep `providers::index` cohesive and below size thresholds.
-
 use serde::Serialize;
 
 use crate::providers::api::ISSUE_SEARCH_MAX_BODY_BYTES;

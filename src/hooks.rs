@@ -16,7 +16,6 @@ pub const COMMIT_MSG_HOOK: &str = "commit-msg";
 /// Marker comment embedded in managed hook files so later installs can
 /// recognize and update their own scripts without touching foreign ones.
 pub const MANAGED_MARKER: &str = "# phasegent:managed";
-/// Directory inside the hooks directory that preserves displaced foreign hooks.
 pub const ORIGINAL_BACKUP_DIR: &str = "phasegent-original";
 
 /// Message sources Git passes to `prepare-commit-msg`.

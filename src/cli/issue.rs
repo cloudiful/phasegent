@@ -658,7 +658,6 @@ pub(crate) fn execute_issue(
                         )
                         .warning(),
                     );
-                    // Close upserts the returned closed document.
                     issue_search::warm_single_summary(&provider, &summary, "issue close");
                     super::print_json(&summary)
                 }

@@ -40,7 +40,6 @@ pub struct TaskEntry {
     pub url: Option<String>,
 }
 
-/// Bounded task list with branch context for stale-friendly UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TasksPayload {
     pub branch: Option<String>,
@@ -56,7 +55,6 @@ pub struct TasksPayload {
     pub warning: Option<String>,
 }
 
-/// Status request (role/provider optional, resolved via existing chain).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StatusRequest {
     #[serde(default)]
@@ -78,7 +76,6 @@ pub struct TimerDto {
     pub finished_at: Option<i64>,
 }
 
-/// Status payload: branch, bound issue, sanitised endpoint, timers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusPayload {
     pub branch: Option<String>,
@@ -124,7 +121,6 @@ pub struct SetSettingResponse {
     pub updated: bool,
 }
 
-/// Non-secret setting clear.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClearSettingRequest {
     #[serde(default)]
@@ -148,7 +144,6 @@ pub struct SetCredentialRequest {
     pub credential: String,
 }
 
-/// Redacted credential presence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialPresence {
     pub role: String,
@@ -176,7 +171,6 @@ pub struct ProvisioningQuery {
     pub role: String,
 }
 
-/// Admin-provisioned Redmine identity (non-secret only).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvisioningStatus {
     pub role: String,

@@ -1,6 +1,3 @@
-//! Lexical search over the independent SQLite FTS5 index.
-//! Extracted to keep `issue_index.rs` cohesive and below thresholds.
-
 use rusqlite::{Connection, params};
 
 use crate::providers::index::{IssueIndexDocument, IssueIndexKey};

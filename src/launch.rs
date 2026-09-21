@@ -34,14 +34,9 @@ use std::io::IsTerminal;
 /// decision table without touching the real terminal or environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoArgContext {
-    /// True when stdin is attached to a terminal.
     pub stdin_is_tty: bool,
-    /// True when stdout is attached to a terminal.
     pub stdout_is_tty: bool,
-    /// True when stderr is attached to a terminal.
     pub stderr_is_tty: bool,
-    /// True when a desktop session indicator was observed in the
-    /// environment (see [`has_desktop_indicator`]).
     pub desktop_indicator_present: bool,
 }
 

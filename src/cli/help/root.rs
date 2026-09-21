@@ -68,7 +68,6 @@ pub(crate) fn print_mcp_help(role: Option<Role>) {
     );
 }
 
-/// Help for `mcp serve`.
 pub(crate) fn print_mcp_command_help(role: Option<Role>, command: &str) {
     match command {
         "serve" => {

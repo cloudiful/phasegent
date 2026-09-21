@@ -79,9 +79,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 pub struct AppMetadata {
-    /// Binary/product name (`phasegent`).
     pub name: &'static str,
-    /// Crate version (`CARGO_PKG_VERSION`).
     pub version: &'static str,
     /// Tauri application identifier (matches `tauri.conf.json`).
     pub identifier: &'static str,

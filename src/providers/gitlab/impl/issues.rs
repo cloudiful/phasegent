@@ -1,5 +1,3 @@
-//! Issue CRUD / search and IssueSummary conversion.
-
 use crate::command::AssigneeOption;
 use crate::providers::api::{
     ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
@@ -10,8 +8,6 @@ use crate::providers::gitlab::model::{
 };
 
 use super::core::GitlabProvider;
-
-// -- Bridge helper ---------------------------------------------------------
 
 /// Some GitLab endpoints return the updated resource as the response
 /// body, others return `200 OK` with no body. Decode the optional

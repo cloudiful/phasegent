@@ -39,7 +39,6 @@ pub(crate) const PAGE_SIZE: usize = 50;
 /// not turn into an infinite loop).
 pub(crate) const MAX_PAGES: usize = 10_000;
 
-/// HTTP client for the GitLab REST v4 provider.
 pub(crate) struct GitlabHttp {
     pub(crate) client: Client,
     api_base: String,
@@ -84,7 +83,6 @@ impl GitlabHttp {
         })
     }
 
-    /// Issue a `GET` against the GitLab API and decode the JSON body.
     pub(crate) fn get<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -135,7 +133,6 @@ impl GitlabHttp {
             })
     }
 
-    /// Issue a `POST` against the GitLab API and decode the response.
     pub(crate) fn post<T: DeserializeOwned, B: Serialize>(
         &self,
         path: &str,
@@ -338,7 +335,6 @@ impl GitlabHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
-        // Safe GET path: retry on transient failures.
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
@@ -384,7 +380,6 @@ impl GitlabHttp {
         extra_query: &[(&str, String)],
         operation: &str,
     ) -> Result<(Vec<T>, HeaderMap, String), ForgejoError> {
-        // Safe GET with pagination: retry on transient failures.
         let mut params: Vec<(&str, String)> = extra_query.to_vec();
         if !params.iter().any(|(key, _)| *key == "per_page") {
             params.push(("per_page", PAGE_SIZE.to_string()));

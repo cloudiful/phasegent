@@ -1,5 +1,3 @@
-//! Relation / issue-link DTOs and mapping helpers.
-
 use crate::providers::api::ForgejoError;
 use serde::Deserialize;
 

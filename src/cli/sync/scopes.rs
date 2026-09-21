@@ -15,7 +15,6 @@ use crate::worktree::{LeaseRow, WorktreeError, WorktreeRunner};
 
 use super::SyncSkippedRepo;
 
-/// One repository the pass scans, with the lease rows it holds.
 pub(super) struct RepoScope {
     pub(super) repo_identity: String,
     pub(super) repo_path: PathBuf,

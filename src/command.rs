@@ -52,16 +52,7 @@ pub enum Command {
         repository: Option<String>,
         close_status_id: Option<String>,
     },
-    /// `config show` — redacted snapshot of the local SQLite
-    /// database. The role filter (when supplied) comes from
-    /// `Invocation::role`; the command is intentionally usable
-    /// without `--role` so an operator can inspect the global view
-    /// of configuration state.
     ConfigShow,
-    /// `config set <SETTING> [VALUE|--stdin]` — persist a single
-    /// setting. Global settings (mirror key, repository URL,
-    /// default provider) are machine-wide and usable without
-    /// `--role`; role-scoped settings require `--role`. The mirror
     /// bearer key is never accepted as a direct value; it must be
     /// supplied via `--stdin` or the secure interactive prompt.
     /// Output uses canonical names and never echoes values.
@@ -70,27 +61,13 @@ pub enum Command {
         value: Option<String>,
         stdin: bool,
     },
-    /// `config clear <SETTING>` — remove a persisted setting.
-    /// Global settings are machine-wide; role-scoped settings
-    /// require `--role`.
     ConfigClear {
         setting: String,
     },
-    /// `config provider get` — print the persisted
-    /// `PHASEGENT_DEFAULT_PROVIDER` (machine-wide default) as
-    /// JSON; `null` when unset. Usable without `--role` because
-    /// the default is global, not role-scoped.
     ConfigProviderGet,
-    /// `config provider set <forgejo|redmine|gitlab>` — validate
-    /// the value through `ProviderKind::from_str` and persist it
-    /// as the machine-wide default. Usable without `--role` for
-    /// the same reason as `get`.
     ConfigProviderSet {
         value: ProviderKind,
     },
-    /// `config provider clear` — remove the persisted
-    /// `PHASEGENT_DEFAULT_PROVIDER` row so the resolver falls
-    /// back to the role-scoped provider. Usable without `--role`.
     ConfigProviderClear,
     Issue(IssueCommand),
     Comment(CommentCommand),
@@ -102,15 +79,7 @@ pub enum Command {
     Workflow(WorkflowCommand),
     Repo(RepoCommand),
     Hooks(HooksCommand),
-    /// Local OpenCode plugin installation (issue #239 Phase 3).
-    /// `install` writes the worktree adapter into the OpenCode plugin
-    /// directory (global and/or project scope); `status` reports the
-    /// per-slot managed-flag match; `uninstall` removes managed
-    /// files. Operator-local: no role or provider required (mirrors
-    /// the `hooks` family).
     Plugin(PluginCommand),
-    /// Redmine issue relations. List, create, and delete by id; the create
-    /// direction is `issue` -> `to` with a canonical `--type`.
     Relation(RelationCommand),
     /// Orchestrator-owned local phase timer and Redmine Time Entry
     /// projection. The child executor/reviewer roles do not call this CLI.
@@ -146,9 +115,7 @@ pub enum Command {
 #[derive(Debug)]
 pub enum HelpTopic {
     Root,
-    /// Human-operator provisioning group (`admin auth/config/workflow`).
     Admin,
-    /// Read-only self-check.
     Doctor,
     Gui,
     Issue,
@@ -217,15 +184,8 @@ pub enum IssueCommand {
         /// Optional Redmine tracker selector (validated name or id) resolved
         /// against `/trackers.json` at execution time.
         tracker: Option<String>,
-        /// Optional native Redmine planning fields; raw values are
-        /// validated and version-resolved at execution time.
         planning: PlanningOptions,
-        /// Optional GitLab assignee selector (`--assignee` / `--no-assign`);
-        /// raw values are resolved at execution time.
         assignee: AssigneeOption,
-        /// Explicit local branch request (`--branch [NAME]`); `Unset` keeps
-        /// the legacy current-branch auto-bind, `Auto` generates
-        /// `<type>/<id>` from the tracker, `Named` uses the supplied name.
         branch: BranchOption,
         /// Optional start point for `--branch` (`--base REF`); `None`
         /// defaults to `HEAD` at execution time.
@@ -238,7 +198,6 @@ pub enum IssueCommand {
         /// `Command` enum stays under the `large_enum_variant` threshold.
         session: Option<Box<str>>,
     },
-    /// `issue update <NUMBER>` — single update entry point (folds the
     /// former `update-body`). The body plus optional tracker/planning
     /// fields are applied in one PUT.
     Update {
@@ -249,9 +208,7 @@ pub enum IssueCommand {
         /// `--keep-body-file` was supplied.
         body_file: Option<String>,
         keep_body_file: bool,
-        /// Optional Redmine tracker re-selection applied in the same PUT.
         tracker: Option<String>,
-        /// Optional native Redmine planning fields applied in the same PUT.
         planning: PlanningOptions,
     },
     Close {
@@ -343,13 +300,9 @@ pub enum ProjectCommand {
 #[derive(Debug)]
 pub enum StatusCommand {
     List,
-    /// Redmine-only read of the current status plus the policy-allowed
-    /// next statuses. Available to every role that can read statuses.
     Next {
         number: u64,
     },
-    /// Redmine-only status transition by validated status name or id.
-    /// Orchestrator-only at execution time.
     Set {
         number: u64,
         status: String,
@@ -463,8 +416,6 @@ pub enum TimerCommand {
         run_id: String,
         result: String,
     },
-    /// Read-only listing of execution-ledger rows. `status_filter` selects
-    /// the row subset (running, finished, or all); defaults to `all`.
     List {
         status: String,
         limit: u32,
@@ -493,23 +444,6 @@ pub enum WorkflowCommand {
     },
 }
 
-/// OpenCode plugin management (issue #239 Phase 3).
-///
-/// * `install [--global] [--project] [--force]` writes the managed
-///   worktree adapter (`phasegent-worktree.js`) into the OpenCode
-///   plugin directory. When neither `--global` nor `--project` is
-///   supplied, both slots are written. Existing managed files are
-///   updated in place; foreign files (no `// phasegent:managed`
-///   marker) are refused unless `--force` is supplied, in which case
-///   the foreign file is renamed to `phasegent-worktree.js.phasegent-orig`.
-///   Operator-local; no role or provider required.
-/// * `status` reports the global + project slots: path, exists,
-///   managed-flag match, size, and mtime. Read-only.
-/// * `uninstall [--global] [--project]` removes managed adapter
-///   files only; foreign files are refused; missing files report a
-///   warning rather than an error. The worktree itself (and its
-///   branch) is never touched; `phasegent worktree prune` handles
-///   that.
 #[derive(Debug)]
 pub enum PluginCommand {
     Install {
@@ -582,7 +516,6 @@ pub enum WorktreeCommand {
         /// `worktree-auto` switch is OR-ed with it, so the default
         /// (both off) reuses the current checkout with a warning.
         isolate: bool,
-        /// `--no-sync` opt-out for the pre-subcommand reconciliation.
         no_sync: bool,
     },
     Release {
@@ -598,23 +531,16 @@ pub enum WorktreeCommand {
     },
     List {
         repo: Option<String>,
-        /// `--no-sync` opt-out for the pre-subcommand reconciliation.
         no_sync: bool,
     },
     Prune {
-        /// Optional `--repo`; `None` resolves the current directory.
         repo: Option<String>,
         stale_days: u32,
-        /// `--release-stale`: explicitly flip stale active leases to
-        /// `retained`. Defaults off (read-only dry-run).
         release_stale: bool,
-        /// `--remove`: explicitly delete clean + expired + retained
-        /// worktrees. Defaults off (read-only dry-run).
         remove: bool,
         /// Required (non-empty) when `release_stale` is true so the
         /// recovery stays attributable; rejected on its own.
         reason: Option<String>,
-        /// `--no-sync` opt-out for the pre-subcommand reconciliation.
         no_sync: bool,
     },
     Heartbeat {

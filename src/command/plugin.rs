@@ -14,23 +14,6 @@
 //! * No role / provider / network is touched here; the role gate is
 //!   not applied because plugin management is operator-local and
 //!   mirrors the hooks install surface (no `--role` required).
-//!
-//! ## Subcommands
-//!
-//! * `plugin install [--global] [--project] [--force]`
-//!   Writes the managed adapter into the global
-//!   `~/.config/opencode/plugins/phasegent-worktree.js` and/or the
-//!   project `.opencode/plugins/phasegent-worktree.js`. When neither
-//!   `--global` nor `--project` is supplied, both slots are written.
-//!   `--force` allows displacing an existing foreign file by renaming
-//!   it to `phasegent-worktree.js.phasegent-orig`; without `--force`
-//!   the foreign file is refused.
-//! * `plugin status`
-//!   Read-only: reports global + project file presence, managed-flag
-//!   match, and file size / mtime. No content is echoed.
-//! * `plugin uninstall [--global] [--project]`
-//!   Removes managed files only. Files without the marker are
-//!   refused; missing files are reported as a warning.
 
 use super::parse_helpers::{has_flag, validate_options};
 use super::{Command as RootCommand, HelpTopic, PluginCommand};

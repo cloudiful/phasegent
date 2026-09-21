@@ -1,5 +1,3 @@
-//! Spent-time / time-estimate DTOs and confirmation logic.
-
 use serde::{Deserialize, Serialize};
 
 /// Request payload for `POST /projects/:id/issues/:iid/add_spent_time`.

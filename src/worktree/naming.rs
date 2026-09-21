@@ -157,9 +157,6 @@ pub fn cache_root(fingerprint: &str) -> Result<PathBuf, WorktreeError> {
     cache_root_in(&base, fingerprint)
 }
 
-/// Test / Phase-2 helper that lets a caller pick the cache base
-/// explicitly without relying on the `PHASEGENT_WORKTREE_CACHE_DIR`
-/// env var. Same layout as [`cache_root`]: `<base>/worktrees/<fingerprint>`.
 #[allow(dead_code)]
 pub fn cache_root_in(base: &Path, fingerprint: &str) -> Result<PathBuf, WorktreeError> {
     let cache = base.join("worktrees").join(fingerprint);

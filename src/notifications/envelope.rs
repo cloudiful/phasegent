@@ -20,15 +20,10 @@ pub const NOTIFICATION_BODY_LIMIT: usize = 2000;
 /// persistence and delivery stay explicit about why a message exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationEvent {
-    /// Manual completion notice.
     Completion,
-    /// Manual blocked-attention notice.
     BlockedAttention,
-    /// Manual failure notice.
     Failure,
-    /// Manual interruption-suspected notice.
     InterruptionSuspected,
-    /// Manual publish-failure notice.
     PublishFailed,
 }
 
@@ -95,7 +90,6 @@ impl NotificationIntent {
         }
     }
 
-    /// Attach optional issue context.
     pub fn with_issue(mut self, issue_id: u64) -> Self {
         if issue_id > 0 {
             self.issue_id = Some(issue_id);

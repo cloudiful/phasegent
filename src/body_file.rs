@@ -18,8 +18,6 @@ use std::time::SystemTime;
 /// note and bounded so one invocation cannot read an unbounded file.
 pub(crate) const MAX_BODY_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Upper bound for cleanup warning text, matching the bounded-warning
-/// convention of the local lifecycle helpers.
 const MAX_CLEANUP_WARNING_CHARS: usize = 300;
 
 /// Identity signals captured right after the read so the pre-delete
@@ -47,7 +45,6 @@ impl FileIdentity {
     }
 }
 
-/// A validated body file awaiting provider success.
 #[derive(Debug, Clone)]
 pub(crate) struct BodyFile {
     path: PathBuf,
@@ -171,7 +168,6 @@ impl BodyFile {
     }
 }
 
-/// A resolved body plus the cleanup handle that owns a `--body-file`.
 pub(crate) type ResolvedBody = (String, Option<BodyFile>);
 
 /// Per-command body resolution: `None` when the command takes no body;
@@ -220,8 +216,6 @@ pub(crate) fn parse_body_flags(
     Ok((body.unwrap_or_default(), body_file, keep_body_file))
 }
 
-/// Extract the body inputs of an issue write command. `None` for every
-/// command that takes no body.
 pub(crate) fn resolve_for_issue(command: &IssueCommand) -> Option<BodyResolution> {
     let (operation, body, body_file, keep) = match command {
         IssueCommand::Create {
@@ -251,7 +245,6 @@ pub(crate) fn resolve_for_issue(command: &IssueCommand) -> Option<BodyResolution
     Some(resolve(body, body_file, keep).map_err(|error| (operation, error)))
 }
 
-/// Extract the body inputs of a comment write command.
 pub(crate) fn resolve_for_comment(command: &CommentCommand) -> Option<BodyResolution> {
     let (body, body_file, keep) = match command {
         CommentCommand::Create {

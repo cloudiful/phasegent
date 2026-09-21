@@ -9,8 +9,6 @@
 use crate::command::IssueCommand;
 use crate::policy::Role;
 
-/// The write operation a branch-context command performs, or `None` for the
-/// read-only `issue status`.
 fn restricted_operation(command: &IssueCommand) -> Option<&'static str> {
     match command {
         IssueCommand::Bind { .. } => Some("issue bind"),

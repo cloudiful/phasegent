@@ -98,15 +98,7 @@ pub(crate) fn execute_status(
             ));
         }
         Ok(ProviderKind::Redmine) => {}
-        // GitLab: Phase 2 surfaces the static `WORKFLOW_LABELS`
-        // catalogue through `list_issue_statuses`, so the shared
-        // `status list` command now resolves the same eight
-        // statuses the Redmine catalogue does. `set` still maps to a
-        // managed workflow label update; the orchestrator-only guard
-        // above already protects it.
         Ok(ProviderKind::Gitlab) => {}
-        // Local flows through to the LocalProvider status catalogue;
-        // forgejo stays not-supported, redmine/gitlab unchanged.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
@@ -121,11 +113,6 @@ pub(crate) fn execute_status(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
-    // Phase 2 parity matrix (issue 257): the dispatcher now reports
-    // `IssueStatusRead = true` for GitLab because the static
-    // `WORKFLOW_LABELS` catalogue fills the parity row. Redmine and
-    // Local remain native; Forgejo stays not-supported via the
-    // explicit reject above.
     if !provider.supports(capability) {
         return super::provider_error(ForgejoError::not_supported(
             provider.kind().as_str(),
@@ -134,8 +121,6 @@ pub(crate) fn execute_status(
     }
     match command {
         StatusCommand::List => super::print_result(provider.list_issue_statuses()),
-        // `next` and `advance` run the canonical policy against the
-        // installation catalogue (Redmine) or the static local catalogue.
         StatusCommand::Next { number } => match provider {
             ProviderDispatcher::Redmine(redmine) => {
                 // Single-number scope guard (issue 394 P3 pre-read): GET-check

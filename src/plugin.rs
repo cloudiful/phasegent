@@ -64,12 +64,8 @@ pub const MANAGED_MARKER: &str = "// phasegent:managed";
 /// `$HOME/.config/`. Matches the OpenCode convention.
 pub const OPENCODE_PLUGIN_DIR: &str = "opencode/plugins";
 
-/// File name of the managed worktree adapter.
 pub const PLUGIN_FILENAME: &str = "phasegent-worktree.js";
 
-/// Backup suffix appended to a foreign file that is being displaced
-/// under `--force`. Matches the `*.phasegent-orig` shape the parent
-/// task requested.
 pub const FOREIGN_BACKUP_SUFFIX: &str = ".phasegent-orig";
 
 /// Embedded adapter source. The file lives in `assets/opencode/` so it
@@ -83,13 +79,8 @@ const ADAPTER_JS: &str = include_str!("../assets/opencode/phasegent-worktree.js"
 /// sees the full picture even when both scopes install at once.
 #[derive(Debug, Default, Clone)]
 pub struct InstallOutcome {
-    /// New files written by this run.
     pub installed: Vec<String>,
-    /// Pre-existing managed files whose bytes were rewritten because
-    /// the embedded template changed.
     pub updated: Vec<String>,
-    /// Pre-existing managed files whose bytes already matched the
-    /// embedded template (no rewrite was necessary).
     pub skipped: Vec<String>,
     /// Human-readable notes (e.g. foreign-file backup path).
     pub warnings: Vec<String>,
@@ -99,12 +90,9 @@ pub struct InstallOutcome {
     pub errors: Vec<String>,
 }
 
-/// One slot of the `plugin status` JSON envelope.
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct PluginTargetStatus {
-    /// Resolved absolute path for this scope.
     pub path: String,
-    /// True when the file exists on disk.
     pub exists: bool,
     /// True when the file exists AND its bytes contain [`MANAGED_MARKER`].
     pub managed: bool,
@@ -114,17 +102,14 @@ pub struct PluginTargetStatus {
     pub mtime: Option<i64>,
 }
 
-/// Read-only status report covering both scopes.
 #[derive(Debug, Default, Clone)]
 pub struct StatusReport {
     pub global: PluginTargetStatus,
     pub project: PluginTargetStatus,
 }
 
-/// Outcome of a single-scope uninstall.
 #[derive(Debug, Default, Clone)]
 pub struct UninstallOutcome {
-    /// Files that were removed because the marker matched.
     pub removed: Vec<String>,
     /// Notes (e.g. file was not managed and was refused).
     pub warnings: Vec<String>,

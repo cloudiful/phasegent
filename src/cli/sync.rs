@@ -54,7 +54,6 @@ use scopes::{default_provider, open_lease_storage, resolve_scopes};
 /// issue the provider already closed.
 const SYNC_RELEASE_REASON: &str = "issue closed on the remote (issue sync)";
 
-/// Whether the pass writes its verdicts or only reports them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SyncMode {
     /// Flip the closed issue's active leases and run the guarded cleanup.
@@ -82,8 +81,6 @@ pub(crate) struct SyncDirectoryReport {
     pub reason: Option<String>,
 }
 
-/// One remotely closed issue and what the pass did (or would do) to its
-/// local residue.
 #[derive(Debug, Serialize)]
 pub(crate) struct SyncIssueReport {
     pub repo_identity: String,
@@ -99,19 +96,16 @@ pub(crate) struct SyncIssueReport {
     pub warnings: Vec<String>,
 }
 
-/// A repository the `--all` scan could not use.
 #[derive(Debug, Serialize)]
 pub(crate) struct SyncSkippedRepo {
     pub repo_identity: String,
     pub reason: String,
 }
 
-/// Stable stdout envelope of `issue sync`.
 #[derive(Debug, Serialize)]
 pub(crate) struct SyncReport {
     pub mode: &'static str,
     pub all: bool,
-    /// Candidate issues whose remote state was read.
     pub checked: usize,
     pub not_closed: usize,
     pub not_found: usize,
@@ -171,15 +165,12 @@ impl SyncReport {
     }
 }
 
-/// Resolved invocation input for [`run_sync`].
 pub(crate) struct SyncRequest<'a> {
     pub all: bool,
     pub mode: SyncMode,
     pub cwd: &'a Path,
 }
 
-/// `issue sync`: orchestrator-only, resolves the provider once, then runs
-/// the pass and prints its envelope.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_sync(
     role: Role,

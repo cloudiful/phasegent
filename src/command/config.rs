@@ -76,7 +76,6 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
         .ok_or_else(|| format!("unknown config setting '{setting_raw}'"))?
         .to_owned();
 
-    // Remaining tokens after setting: optional value and optional --stdin.
     let mut value: Option<String> = None;
     let mut stdin = false;
     for token in &args[1..] {
@@ -129,7 +128,6 @@ fn parse_config_clear(args: &[String]) -> Result<Command, String> {
         return Err(format!("unknown option '{}' for config clear", args[0]));
     }
     if args.len() != 1 {
-        // Check for flags
         if args.iter().skip(1).any(|v| v.starts_with('-')) {
             for token in &args[1..] {
                 if token.starts_with('-') {
@@ -143,7 +141,6 @@ fn parse_config_clear(args: &[String]) -> Result<Command, String> {
     let canonical = crate::config_write::canonical_setting_name(setting_raw)
         .ok_or_else(|| format!("unknown config setting '{setting_raw}'"))?
         .to_owned();
-    // Reject --stdin for clear? Not supported.
     Ok(Command::ConfigClear { setting: canonical })
 }
 

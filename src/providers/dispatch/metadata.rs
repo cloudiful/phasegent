@@ -65,24 +65,10 @@ impl RedmineMetadataProvider for RedmineProvider {
     }
 }
 
-// ============================================================================
-// Phase-2 GitLab issue / note / label foundation. The dispatch wiring
-// forwards every IssueProvider / RedmineMetadataProvider / RepoProvider
-// trait call straight to the real
-// [`crate::providers::gitlab::GitlabProvider`] implementation. Capability flags
-// for not-supported operations stay false so the shared CLI surfaces a
-// structured not-supported error before any HTTP traffic.
-// ============================================================================
-
 impl RedmineMetadataProvider for GitlabProvider {
     type Error = ForgejoError;
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
-        // Phase 2 parity (issue 257): GitLab's `GET /projects` is the
-        // equivalent read for `ProjectRead`. The mapping from the
-        // GitLab `ApiProject` payload onto the shared `RedmineProject`
-        // shape lives in
-        // `crate::providers::gitlab::impl::repo`.
         GitlabProvider::list_projects(self)
     }
 
@@ -92,28 +78,14 @@ impl RedmineMetadataProvider for GitlabProvider {
         _identifier: &str,
         _description: Option<&str>,
     ) -> Result<RedmineProject, Self::Error> {
-        // Phase 2 parity (issue 257): GitLab's project-create equivalent
-        // lives on the `repo create` path (POST `/projects` via
-        // `RepoProvider::create_repo`). The `project create` CLI command
-        // stays not-supported for GitLab so there is one and only one
-        // entry point for the underlying endpoint.
         Err(ForgejoError::not_supported("gitlab", "project create"))
     }
 
     fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error> {
-        // Phase 2 parity (issue 257): GitLab has no native status enum;
-        // the workflow is encoded as project labels. The orchestrator
-        // surfaces the canonical catalogue
-        // (`workflow::*` → status entries) so the shared `status list`
-        // CLI command and any downstream planning flow see the same
-        // eight statuses the Redmine catalogue does.
         GitlabProvider::list_workflow_statuses(self)
     }
 
     fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error> {
-        // Phase 2 parity (issue 257): GitLab milestones map onto the
-        // shared `RedmineVersion` shape; `GET /projects/:id/milestones`
-        // is the equivalent read for `VersionRead`.
         GitlabProvider::list_milestones(self)
     }
 }

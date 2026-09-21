@@ -58,11 +58,6 @@ pub(super) const MAX_ACTIVE_LEASES_PER_REPO: i64 = 256;
 /// code, is unchanged.
 const REPO_PATH_CONFLICT_GUIDANCE: &str = "current directory already has a worktree lease for this repository; add --isolate to acquire a separate worktree, or review existing leases with `worktree status` / `worktree list`";
 
-/// Inline `CREATE TABLE IF NOT EXISTS` for the worktree lease table.
-/// The DDL stays self-contained in this module (per Phase 1 scope) so
-/// opening the database before Phase 1 still succeeds: there is no
-/// migration row in the central `MIGRATIONS` block, and the table is
-/// created lazily the first time a worktree helper runs.
 #[allow(dead_code)]
 pub fn ensure_schema(storage: &Storage) -> Result<(), String> {
     storage

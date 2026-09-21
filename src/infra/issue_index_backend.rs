@@ -101,7 +101,6 @@ impl IssueIndexBackend {
         block_on(Self::open())
     }
 
-    /// Synchronous testable opener.
     #[allow(dead_code)]
     pub fn open_blocking_with_storage(storage: &Storage) -> Result<Self, String> {
         block_on(Self::open_with_storage(storage))

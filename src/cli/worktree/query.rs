@@ -12,7 +12,6 @@ use crate::worktree::{LeaseRow, leases_for_issue};
 
 use super::{config_error, open_storage, resolve_list_identity, storage_error};
 
-/// One row of the JSON envelope returned by `status` and `list`.
 #[derive(Debug, Serialize)]
 pub(crate) struct LeaseJson {
     pub lease_id: String,

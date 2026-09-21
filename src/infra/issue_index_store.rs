@@ -1,6 +1,3 @@
-//! FTS backfill and private-path helpers for the SQLite issue index.
-//! Extracted to keep `issue_index.rs` below size thresholds.
-
 use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};

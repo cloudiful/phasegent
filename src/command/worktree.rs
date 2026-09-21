@@ -15,41 +15,6 @@
 //!   for values that begin with `-`.
 //! * No provider / network is touched here; the role gate lives in
 //!   `cli::worktree::execute_worktree`.
-//!
-//! ## Subcommands
-//!
-//! * `acquire --issue N [--session S] [--base REF] [--isolate] [--format json] [--no-sync]`
-//!   Idempotent. Returns `AcquireOutcome` JSON. The optional `--base`
-//!   flag is accepted for future Phase 2 follow-up; the current
-//!   implementation always bases on `HEAD` (matching the Phase 1
-//!   contract). `--isolate` forces a fresh branch/worktree on a
-//!   conflict; without it (and with `worktree-auto` off) acquire reuses
-//!   the current checkout and warns. `--no-sync` skips the
-//!   pre-subcommand reconciliation pass (issue 552 Phase 2).
-//! * `release --lease ID [--retain=true] [--force --reason TEXT]`
-//!   Default `--retain` is `true`. `--retain=false` flips the lease to
-//!   `released`; `--retain=true` (or omitted) flips to `retained`.
-//!   `--force` requires a non-empty `--reason` and persists it on the
-//!   row; lease rows are never deleted.
-//! * `status --issue N`
-//!   Lists active leases for the issue. Read-only.
-//! * `list [--repo PATH] [--no-sync]`
-//!   Lists every lease for the resolved repo identity. `--repo` defaults
-//!   to the current working directory.
-//! * `prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove] [--no-sync]`
-//!   The single pruning entry point (folds the former `release-stale`).
-//!   Default `--stale-days 7`. With neither action flag it is a
-//!   read-only dry-run. `--release-stale` requires a non-empty
-//!   `--reason` and flips stale active leases to `retained`; `--remove`
-//!   deletes clean + expired + retained worktrees. `--reason` without
-//!   `--release-stale` is rejected. Branches are never deleted; the only
-//!   `git` invocation is `git worktree remove` (no `--force`).
-//!   `--no-sync` skips the pre-subcommand reconciliation pass (issue 552
-//!   Phase 2).
-//! * `heartbeat --lease ID [--session SESSION]`
-//!   Refreshes the heartbeat of an active lease the resolved session
-//!   owns; a foreign session, terminal lease, or unknown id is a
-//!   conflict. Orchestrator-only.
 
 use super::parse_helpers::{has_flag, optional_option, required_nonempty_option, validate_options};
 use super::{Command, HelpTopic, WorktreeCommand};

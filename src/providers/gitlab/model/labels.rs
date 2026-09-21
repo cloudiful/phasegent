@@ -1,5 +1,3 @@
-//! Workflow / tracker label mappings and state helpers.
-
 use crate::providers::api::ForgejoError;
 
 /// Workflow labels that map orchestrator workflow statuses to GitLab

@@ -7,7 +7,6 @@
 //! stays reviewable. Status edges mirror
 //! `providers::redmine::model::status::STATUS_TRANSITIONS`.
 
-/// Filename of the independent local SQLite inside the config dir.
 pub(crate) const DB_FILENAME_LOCAL: &str = "phasegent-local.sqlite3";
 
 /// PRAGMAs for the local connection. Copied from

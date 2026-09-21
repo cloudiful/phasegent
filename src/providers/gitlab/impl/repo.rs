@@ -1,7 +1,3 @@
-//! Namespace resolution and private repository creation, plus the
-//! Phase 2 read-only `GET /projects` enumeration that maps onto the
-//! shared `RedmineProject` shape.
-
 use crate::providers::api::{ForgejoError, RepoSummary};
 use crate::providers::gitlab::model::{ApiNamespace, ApiProject, NewProject};
 use crate::providers::redmine::model::RedmineProject;

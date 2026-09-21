@@ -1,5 +1,3 @@
-//! Spent-time / time-estimate projection.
-
 use crate::providers::api::ForgejoError;
 use crate::providers::gitlab::model::{
     ApiSpentTimeSummary, NewSpentTime, NewTimeEstimate, format_gitlab_duration,

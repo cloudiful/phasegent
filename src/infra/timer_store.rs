@@ -6,7 +6,6 @@ use crate::infra::timer_ledger::{
 use rusqlite::{OptionalExtension, params};
 
 impl Storage {
-    /// Load one execution-ledger row by its caller-supplied run id.
     pub fn load_timer_run(&self, run_id: &str) -> Result<Option<TimerRun>, String> {
         let mut statement = self
             .connection

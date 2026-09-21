@@ -18,7 +18,6 @@ use super::{Command, HelpTopic};
 pub(crate) const ADMIN_ONLY: &str =
     "human-operator only; AI roles must never invoke the admin group";
 
-/// Error for a provisioning command invoked outside the admin group.
 pub(crate) fn moved_error(old: &str, new: &str) -> String {
     format!("`{old}` has moved to `{new}` ({ADMIN_ONLY})")
 }

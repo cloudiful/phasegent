@@ -611,8 +611,6 @@ impl RedmineHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
-        // Safe GET path: retry on transient transport failures and
-        // 429/502/503/504 with bounded backoff.
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
@@ -738,7 +736,6 @@ impl RedmineGitMirrorHttp {
         path: &str,
         operation: &str,
     ) -> Result<RedmineGitMirrorLookup<T>, ForgejoError> {
-        // Safe GET: retry on transient failures.
         let request = self
             .client
             .get(self.endpoint(path)?)
@@ -821,7 +818,6 @@ impl RedmineGitMirrorHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<(StatusCode, String), ForgejoError> {
-        // Safe GET: retry on transient failures.
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request.header(ACCEPT, "application/json"),
             operation,

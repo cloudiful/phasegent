@@ -1,5 +1,3 @@
-//! Issue links list/create/delete and conversions.
-
 use crate::providers::api::ForgejoError;
 use crate::providers::gitlab::model::{
     ApiIssueLink, gitlab_create_supports_relation_type, gitlab_link_type_from_relation_type,

@@ -115,9 +115,7 @@ pub fn status_to_agent_role(status_name: &str) -> (&'static str, bool) {
 /// for future per-issue routing and is unused today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSignal {
-    /// `issue create` succeeded; work has started.
     IssueCreated,
-    /// `comment create` succeeded; review has started.
     CommentCreated,
     /// `issue close` succeeded; the task is done. Reserved for the
     /// Phase 3 close-climb target derivation; the Phase 2 close path
@@ -357,9 +355,6 @@ fn close_issue_runs(issue: u64) -> Result<Vec<String>, String> {
     Ok(finished)
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3 write-side relation auto (issue 257).
-//
 // The auto-relation fires ONLY on the parent-child split path: when an
 // issue is created with `--parent-issue <PARENT>`, the CLI hands the
 // freshly resolved `parent_issue_id` to this helper so it can
@@ -372,16 +367,6 @@ fn close_issue_runs(issue: u64) -> Result<Vec<String>, String> {
 // only after the upstream status change has succeeded, never before,
 // and any failure degrades to a bounded `Warning` so stdout JSON
 // stays byte-compatible with the plain provider output.
-//
-// Read-side discovery (i.e. looking up the parent linkage at status
-// transition time without a server fetch) is intentionally out of
-// scope for this phase: the shared `RedmineIssue` / `ApiIssue` DTOs
-// are deliberately narrow so Phase 3 does not touch the read side.
-// Callers that already hold a parent linkage at trigger time (the
-// create path) pass it explicitly; callers that don't (the status
-// path) get a silent `NoOp`. See Remaining in the Phase 3 audit note
-// for the deferred lookup shape.
-// ---------------------------------------------------------------------------
 
 /// Outcome of the parent-child relation auto-create call. The hook
 /// call sites translate `Skipped` into silence, `Created` and

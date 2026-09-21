@@ -1,5 +1,3 @@
-//! Local status catalogue + transition policy.
-
 use super::LocalProvider;
 use super::model::{is_closed_status, local_sql, local_statuses, now_epoch_seconds};
 use crate::providers::RedmineIssueStatus;

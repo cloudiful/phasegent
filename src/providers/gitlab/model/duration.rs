@@ -1,5 +1,3 @@
-//! GitLab human-duration formatter.
-
 /// Format a positive second count as a GitLab human duration string.
 /// GitLab's documented format is the concatenation of any subset of
 /// `Nd`, `Nh`, `Nm`, `Ns` (for example `1h30m`, `45m`, `2d4h`). The

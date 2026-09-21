@@ -43,7 +43,6 @@ impl From<AcquireOutcome> for AcquireJson {
     }
 }
 
-/// One row of the JSON envelope returned by `release`.
 #[derive(Debug, Serialize)]
 pub(crate) struct ReleaseJson {
     pub lease_id: String,

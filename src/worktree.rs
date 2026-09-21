@@ -99,8 +99,6 @@ pub const LEASE_STATUS_RELEASED: &str = "released";
 /// back to callers. Bounded so a misbehaving `git` invocation cannot
 /// flood logs with arbitrary content.
 const MAX_ECHO_CHARS: usize = 200;
-/// Cap on `git` output echoed back into structured messages. Matches
-/// the `MAX_ECHO_CHARS` bound used elsewhere in the codebase.
 #[allow(dead_code)]
 const ECHO_LIMIT: usize = 200;
 
@@ -319,8 +317,6 @@ pub fn repo_identity(
     Ok(bounded(&identity))
 }
 
-/// Read every active lease row for the given `issue`. Empty when
-/// none; bounded by the storage layer.
 #[allow(dead_code)]
 pub fn leases_for_issue(issue: u64) -> Result<Vec<LeaseRow>, WorktreeError> {
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
@@ -328,8 +324,6 @@ pub fn leases_for_issue(issue: u64) -> Result<Vec<LeaseRow>, WorktreeError> {
     list_for_issue(&storage, issue)
 }
 
-/// Read every lease row (active + terminal) for the given
-/// `repo_identity`. Empty when none; bounded by the storage layer.
 #[allow(dead_code)]
 pub fn leases_for_repo(repo_identity: &str) -> Result<Vec<LeaseRow>, WorktreeError> {
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;

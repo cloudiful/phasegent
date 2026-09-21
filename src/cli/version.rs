@@ -36,8 +36,6 @@ pub(crate) fn execute_version(
         // renders the shared `RedmineVersion` shape (milestones map
         // onto Redmine versions). Forgejo stays not-supported.
         Ok(ProviderKind::Gitlab) => {}
-        // Local returns the empty version catalogue via LocalProvider;
-        // forgejo stays not-supported.
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
