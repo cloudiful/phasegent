@@ -10,6 +10,24 @@ capability/routing policy; the tracking provider comes from user config. This
 SKILL defines **protocol boundaries** only. `phasegent --help` is the
 authoritative **syntax** reference and is never duplicated here.
 
+## OpenCode adaptation
+
+- The `orchestrator` agent is `mode: primary` and loads this skill with
+  `use_skill phasegent-workflow`; it dispatches `explore`, `executor`,
+  `reviewer`, and `tester` as subagents, and repeatable prompts run via
+  `/orchestrate`, `/review`, and `/test`. Agent, skill, command, and plugin
+  files load once at startup, so editing any of them needs a new session.
+- `phasegent plugin install` writes the worktree adapter to
+  `$XDG_CONFIG_HOME/opencode/plugins/phasegent-worktree.js` (project slot:
+  `.opencode/plugins/`). That adapter owns the session identity, so nothing has
+  to mint or pass a session id by hand. After a session acquires a worktree its
+  `tool.execute.before` hook redirects relative file paths and a bare or
+  relative shell workdir into it; absolute paths pass through unchanged and the
+  `external_directory` permission check is never bypassed.
+- The loose plan-markdown fallback lives in `.opencode/plans/*.md`.
+- This file in the phasegent repository is the source of truth; chezmoi mirrors
+  it to `~/.config/opencode/skills/phasegent-workflow/`.
+
 ## When to use this skill
 
 Load it when one of these is true:
@@ -92,11 +110,24 @@ runtime plugin context, not the npm `@opencode-ai/plugin` type package, which
 can lag it (1.18.25 exposes no `tool`, `worktree`, `session`, or `location`); a
 missing registration surface degrades to a console warning.
 
-- Never mint a fresh session id per command or per phase. `issue create` /
-  `issue bind` auto-acquire a worktree (best-effort stderr warning only) when the
-  checkout conflicts with another lease, so later tool calls land there; the
-  adapter's lazy discovery in `tool.execute.before` stays as the idempotent
-  fallback.
+- Never mint a fresh session id per command or per phase. A successful
+  `issue create` and an `issue bind` that changes the binding auto-acquire a
+  worktree (best-effort stderr warning only) when the checkout conflicts with
+  another lease, so later tool calls land there; a repeated bind reports
+  `already_bound` and does not acquire again. The adapter's lazy discovery in
+  `tool.execute.before` stays as the idempotent fallback.
+- `issue bind` and `issue unbind` are orchestrator-only writes: an explicit
+  non-orchestrator `--role` is refused with a structured `permission` error,
+  while a role-less call (Git hooks, manual repair, legacy scripts) keeps the
+  historical passthrough. The read-only `issue status` stays unrestricted.
+- Role resolution at the CLI is `--role` first, then the `PHASEGENT_ROLE`
+  environment variable: an explicit flag always wins, a blank value means "no
+  role", and a non-empty invalid value is an error rather than a silent
+  role-less run. The managed adapter resolves the role from the session's agent
+  name (`explore` counts as `reviewer`), injects it into every shell `phasegent`
+  invocation, injects nothing for an unknown agent, and downgrades a sub-agent
+  that claims `orchestrator`/`admin` by flag or by `PHASEGENT_ROLE=` back to its
+  own role. Sub-agent sessions cannot run `issue create`/`issue bind` at all.
 - Stale recovery is read-only by default. `worktree prune` reports stale active
   leases and removable worktrees; `worktree prune --release-stale --reason TEXT`
   flips exactly those stale active leases to `retained`, and
@@ -108,7 +139,11 @@ missing registration surface degrades to a console warning.
 
 ## Branch binding lifecycle
 
-Work happens on `<type>/<id>` branches (e.g. `feat/452`), `bind` is only a fallback repair when the name cannot resolve, and a successful `issue create` or `bind` auto-acquires a worktree when the checkout conflicts with another lease (see Worktree leases).
+Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a
+fallback repair when the name cannot resolve. A successful `issue create`
+auto-acquires a worktree when the checkout conflicts with another lease; a `bind`
+that changes the binding does the same, and an `already_bound` repeat is an
+idempotent no-op (see Worktree leases).
 
 ## Marker protocol
 

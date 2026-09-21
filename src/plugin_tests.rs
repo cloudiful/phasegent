@@ -22,7 +22,9 @@
 //!   `skill.transform` embedded skill registration. It must not
 //!   register a slash command: the live v2.0.11 command draft only
 //!   accepts an Effect-returning `execute`, which a promise plugin
-//!   cannot build.
+//!   cannot build. The embedded skill body must also match
+//!   `skills/phasegent-worktree-v2/SKILL.md` byte-for-byte
+//!   (issue #544).
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -579,6 +581,78 @@ fn adapter_template_registers_embedded_skill_without_a_command() {
     // setup.
     assert!(source.contains("the worktree skill stays unregistered"));
     assert!(source.contains("host skill draft exposes no add"));
+}
+
+/// Extract the JS template literal assigned to `WORKTREE_SKILL_CONTENT` and
+/// resolve its escapes back to the bytes the adapter hands the host, so the
+/// embedded skill can be compared with the repository copy (issue #544).
+///
+/// Only the escapes the skill text actually needs are resolved: `` \` ``,
+/// `\\` and `\$`. Any other backslash pair keeps both characters, so an
+/// unsupported escape shows up as a difference instead of being dropped.
+fn embedded_worktree_skill() -> String {
+    const DECLARATION: &str = "const WORKTREE_SKILL_CONTENT = `";
+    let source = adapter_source();
+    let start = source
+        .find(DECLARATION)
+        .expect("the adapter must declare WORKTREE_SKILL_CONTENT")
+        + DECLARATION.len();
+    let body = &source[start..];
+    let mut resolved = String::new();
+    let mut chars = body.char_indices();
+    let mut end = None;
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '`' => {
+                end = Some(index);
+                break;
+            }
+            '\\' => {
+                let escaped = chars
+                    .next()
+                    .expect("WORKTREE_SKILL_CONTENT must not end inside an escape")
+                    .1;
+                match escaped {
+                    '`' => resolved.push('`'),
+                    '\\' => resolved.push('\\'),
+                    '$' => resolved.push('$'),
+                    other => {
+                        resolved.push('\\');
+                        resolved.push(other);
+                    }
+                }
+            }
+            other => resolved.push(other),
+        }
+    }
+    let end = end.expect("WORKTREE_SKILL_CONTENT must close its template literal");
+    assert!(
+        body[end..].starts_with("`;"),
+        "WORKTREE_SKILL_CONTENT must be terminated by a lone backtick + semicolon"
+    );
+    assert!(
+        resolved.contains("# phasegent worktree (OpenCode v2 adapter)"),
+        "the extracted WORKTREE_SKILL_CONTENT must carry the skill body"
+    );
+    resolved
+}
+
+#[test]
+fn embedded_worktree_skill_matches_the_repository_copy() {
+    let _lock = lock_workflow_tests();
+    // src/plugin.rs declares the embedded skill ships "same bytes" as
+    // `skills/phasegent-worktree-v2/SKILL.md`; this is the assertion behind
+    // that contract. It reads the JS source rather than importing Bun, so the
+    // mirror stays enforced even where Bun is unavailable.
+    let embedded = embedded_worktree_skill();
+    let on_disk = include_str!("../skills/phasegent-worktree-v2/SKILL.md");
+    assert_eq!(
+        embedded, on_disk,
+        "the adapter's embedded WORKTREE_SKILL_CONTENT and \
+         skills/phasegent-worktree-v2/SKILL.md must stay byte-for-byte identical; \
+         editing one means re-escaping the other in the same change \
+         (改一份必须同步另一份)"
+    );
 }
 
 #[test]
