@@ -846,10 +846,10 @@ type \`--role\` by hand.
 
 ## Acquire
 
-- Manual: \`phasegent --role orchestrator worktree acquire --issue N [--session S]
-  --format json\`. Idempotent per \`(repo, issue, session)\`; re-running refreshes
-  the heartbeat instead of creating a second lease, and the managed adapter then
-  moves the session into the returned path.
+- Manual: \`phasegent worktree acquire --issue N [--session S] --format json\`
+  (orchestrator-only). Idempotent per \`(repo, issue, session)\`; re-running
+  refreshes the heartbeat instead of creating a second lease, and the managed
+  adapter then moves the session into the returned path.
 - Failure is a warning, never a delete: no branch, lease row, or dirty worktree
   is removed by the adapter.
 

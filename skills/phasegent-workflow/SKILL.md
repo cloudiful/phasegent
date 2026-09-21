@@ -84,7 +84,7 @@ Detail matrix (from `src/policy.rs`) is in
   relation-read; `tester` is issue-read plus comment read/find/create plus
   attachment upload; `admin` is bootstrap-only.
 - Capability is how-much-can-it-do, not who; credentials stay role-scoped and
-  least-privilege, and a role never invokes another role's `--role`.
+  least-privilege, and a role never claims another's.
 
 ## Worktree leases
 
@@ -160,12 +160,13 @@ Rules:
   the final JSON. A retry or fresh child uses a **new** marker.
 - The JSON top-level `status` (executor/tester) or `verdict` (reviewer) must
   match the note's labelled line verbatim.
-- Publish with the child's own role key: `phasegent --role <child> comment
-  create <ISSUE> --marker <MARKER> --authorized` (children require
-  `--authorized`; orchestrator does not). Pass the note body with `--body` or a
-  one-shot `--body-file` (mutually exclusive); always pass `--provider local`
-  for the local provider. `phasegent --help comment create` owns the body-file
-  lifecycle and cleanup flags.
+- Publish under the child's own role: `phasegent comment create <ISSUE>
+  --marker <MARKER> --authorized` (children require `--authorized`; orchestrator
+  does not). The role is implicit — a managed session supplies it, and any other
+  host exports `PHASEGENT_ROLE` once per session. Pass the note body with
+  `--body` or a one-shot `--body-file` (mutually exclusive); always pass
+  `--provider local` for the local provider. `phasegent --help comment create`
+  owns the body-file lifecycle and cleanup flags.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
   clean finish.
 
@@ -241,14 +242,14 @@ Rules:
 
 ## Syntax vs boundaries
 
-- `phasegent --role <role> --help <topic> [<command>]` owns syntax; this SKILL
-  owns boundaries (what may be published, note shape, verdict vocabulary, who
-  owns timer/status/closure).
+- `phasegent --help <topic> [<command>]` owns syntax, and its output reflects
+  the session's role; this SKILL owns boundaries (what may be published, note
+  shape, verdict vocabulary, who owns timer/status/closure).
 - Recommended commands: `issue update` (issue body/planning writes) and
   `worktree prune` (stale-lease recovery and worktree cleanup), each with its
   current flags; `phasegent --help` carries the flag tables this SKILL never
   reproduces.
-- Each child uses its own `--role` only.
+- A child acts only under its own role and never claims another.
 - The `admin` group (`admin auth setup`, `admin config set/clear`,
   `admin config provider set/clear`, `admin workflow bootstrap`) is
   human-operator only — no AI role ever invokes it, and orchestrator

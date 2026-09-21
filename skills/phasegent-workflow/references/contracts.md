@@ -1,8 +1,8 @@
 # Command contract
 
 Source of truth: `src/cli/help/` role-filter plus `src/policy.rs`.
-`phasegent --role <role> --help <topic> [<command>]` is the authoritative
-syntax for every command below; no command here is invented. The provider is
+`phasegent --help <topic> [<command>]` is the authoritative syntax for every
+command below, filtered by the session's role; no command here is invented. The provider is
 resolved from configuration: an explicit `--provider` wins, otherwise the
 configured default (role or global setting, `phasegent.toml`, or environment)
 applies, and Forgejo is the final fallback. This file records role gates, not
