@@ -1,0 +1,73 @@
+# Local-only fuzz harness for the argv walker (`src/command/argv.rs`).
+#
+# The harness library compiles the shipped binary source (`include!` from
+# `../src/main.rs`) so the fuzzed parser is the released parser, and exposes a
+# frozen `&[u8] -> parser` entry point. Dependency versions mirror the root
+# package's non-optional set because every module of the binary must resolve;
+# the feature list mirrors the root package only to keep `cfg(feature = ...)`
+# checks well-formed (no feature here adds dependencies).
+#
+# Targets and run commands: fuzz/README.md. Nothing in this package builds as
+# part of `cargo build` / `cargo test` at the repository root.
+
+[package]
+name = "phasegent-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[lib]
+name = "phasegent_fuzz"
+path = "src/lib.rs"
+# The library is a fuzz entry, not a test home: in test mode the included
+# `src/main.rs` would pull in the root `cfg(test)` modules and the root's
+# dev-dependencies. The entry's behaviour is covered by `argv_walk --selftest`
+# and by the seed corpus.
+test = false
+
+[[bin]]
+name = "argv_walk"
+path = "src/main.rs"
+
+# `libfuzzer-sys` only links under the sanitizer flags cargo-fuzz supplies, so
+# it is feature-gated: the stable `argv_walk` driver builds without it, and the
+# libFuzzer target is built with `cargo fuzz run argv_bytes --features
+# fuzz-target`.
+[[bin]]
+name = "argv_bytes"
+path = "fuzz_targets/argv_bytes.rs"
+required-features = ["fuzz-target"]
+
+[features]
+default = []
+fuzz-target = ["dep:libfuzzer-sys"]
+# Mirrors of the root package's features: declared so `cfg(feature = ...)`
+# checks in the included binary sources stay well-formed. None adds a
+# dependency here.
+gui = []
+postgres = []
+notify-dingtalk = []
+notify-email = []
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", optional = true }
+async-trait = "0.1.92"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+cloudiful-notifier = { version = "0.3.1", default-features = false, features = ["ntfy", "webhook"] }
+directories = "6.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "query", "rustls", "gzip"] }
+rmcp = { version = "3.3.0", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server", "transport-worker", "base64"] }
+rpassword = "7.5.4"
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "fallible_uint"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "io-std", "io-util", "time"] }
+url = "2.5.8"
+
+[profile.release]
+debug = true

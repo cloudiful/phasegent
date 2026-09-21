@@ -1,0 +1,7 @@
+# cargo-fuzz working directories, keyed off the parent .gitignore rather than a
+# path pattern: new units, crash reproducers and coverage data never enter the
+# tree.
+target
+corpus
+artifacts
+coverage
