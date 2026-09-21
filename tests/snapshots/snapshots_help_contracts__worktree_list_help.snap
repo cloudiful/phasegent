@@ -1,0 +1,7 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, &[\"--help\", \"worktree\", \"list\"])"
+---
+Usage: worktree list [--repo PATH] [--no-sync]
+
+List every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ "repo_identity": "...", "leases": [...] }`. Available to orchestrator, executor, and reviewer; tester is denied. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.

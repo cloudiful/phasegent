@@ -1,0 +1,5 @@
+---
+source: tests/snapshots_json_contracts.rs
+expression: stdout.trim_end()
+---
+{"mode":"report","all":false,"checked":2,"not_closed":1,"not_found":0,"released_leases":0,"cleaned":0,"kept":1,"issues":[{"repo_identity":"[SCRATCH]/repo/.git","issue":1,"remote_state":"closed","active_leases":2,"released_leases":0,"cleaned":0,"directories":[{"path":"[SCRATCH]/wt-clean","action":"would_clean"},{"path":"[SCRATCH]/wt-dirty","action":"would_keep","reason":"issue 1 closed; kept worktree (uncommitted or untracked files): [SCRATCH]/wt-dirty"}]}]}

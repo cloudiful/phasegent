@@ -1,0 +1,5 @@
+---
+source: tests/snapshots_json_contracts.rs
+expression: stdout.trim_end()
+---
+{"id":1,"number":1,"title":"Snapshot close target","body":"Close target body","state":"closed","html_url":"local:///issues/1"}

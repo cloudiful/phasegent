@@ -38,3 +38,6 @@ tauri = { version = "2", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2", optional = true }
+
+[dev-dependencies]
+insta = { version = "1.48.0", features = ["filters"] }

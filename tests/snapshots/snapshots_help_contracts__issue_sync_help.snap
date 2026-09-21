@@ -1,0 +1,13 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, &[\"--help\", \"issue\", \"sync\"])"
+---
+Usage: issue sync [--all] [--no-clean]
+
+Reconcile the local worktree leases and directories with the provider state (orchestrator-only). Candidates are the issues in the lease table whose worktree directory still exists; each candidate's remote state is read, and one the provider already closed converges exactly the way `issue close` converges it locally: the issue's active leases in the scanned repository flip to `retained` with release_reason "issue closed on the remote (issue sync)", and its directories run the same three close guards (clean, no active lease of another session pointing at it, never the main checkout). Branches are never deleted, lease rows are never deleted, and a directory a guard keeps stays on disk with the guard's reason in the report.
+
+Default scope is the repository of the current working directory. --all scans every repository identity recorded in the lease table through its main checkout; a checkout that is missing or resolves to a different identity is reported under skipped_repos instead of being guessed. --no-clean is the report mode: the same candidates and the same guard verdicts with per-directory would_clean/would_keep actions, and no write at all.
+
+stdout is one JSON envelope {mode, all, checked, not_closed, not_found, released_leases, cleaned, kept, skipped_repos?, issues:[...]}. A remote read failure is a structured error with a non-zero exit that deletes nothing, while a remote 404 counts into not_found and the pass continues. `worktree acquire`, `worktree list`, and `worktree prune` run the same pass for their repository before doing their own work and append its warnings to stderr; --no-sync skips that pass.
+
+Close an issue
