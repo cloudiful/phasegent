@@ -133,21 +133,273 @@ async function readIssueLeases(issueId, cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Session injection + lazy mid-session discovery (issue #18, Task 2).
+// Shell command rewriting (issue #541, Phase 1).
+//
+// The hook owns every shell `phasegent` invocation:
+//   * a sub-agent session (agent resolves to a non-orchestrator role) cannot run
+//     `issue create|bind`; the whole command becomes a refusal that prints a
+//     hint on stderr and exits non-zero;
+//   * a claimed `--role orchestrator|admin` (flag or `PHASEGENT_ROLE=`) is
+//     downgraded to the session's own role;
+//   * a resolvable agent role is injected right after the `phasegent` token so
+//     the model never types `--role` by hand;
+//   * `--session` is appended at the end of an `issue create|bind` segment only,
+//     before `;`/`&`/`|`/newline, so pipes stay untouched.
+//
+// Only a token at segment start (optionally behind env assignments or a `path/`
+// prefix) counts as an invocation: `grep -rn phasegent src` and
+// `echo phasegent ...` are never rewritten.
+//
+// Segmentation and flag detection are quote-aware (issue #541 P1): a `|`, `&&`,
+// `;`, newline or paren inside `'…'`/`"…"` is data, flag detection only looks at
+// text outside quotes, and a segment with an unterminated quote is left
+// byte-for-byte rather than injected into.
+// ---------------------------------------------------------------------------
+
+// Agent name -> phasegent role; an unknown agent injects nothing (never guess).
+const AGENT_ROLE_HINTS = [
+  ["orchestrator", "orchestrator"],
+  ["executor", "executor"],
+  ["reviewer", "reviewer"],
+  ["tester", "tester"],
+  ["explore", "reviewer"],
+];
+
+function agentRole(event) {
+  const agent = event && typeof event.agent === "string" ? event.agent.toLowerCase() : "";
+  if (!agent) return null;
+  for (const [hint, role] of AGENT_ROLE_HINTS) {
+    if (agent.includes(hint)) return role;
+  }
+  return null;
+}
+
+function isSubagentSession(event) {
+  const role = agentRole(event);
+  return role !== null && role !== "orchestrator";
+}
+
+// Quote-aware scanning (issue #541 P1). Inside `'…'` or `"…"` a separator is
+// data, not syntax, and outside single quotes a backslash escapes the next
+// character. An unterminated quote owns the rest of the text.
+function skipQuoted(text, start) {
+  const quote = text[start];
+  let index = start + 1;
+  while (index < text.length) {
+    const char = text[index];
+    if (quote === '"' && char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === quote) return index + 1;
+    index += 1;
+  }
+  return -1;
+}
+
+// Replace every quoted run (and escaped character) with spaces of the same
+// length: offsets still line up with the original command, and a quoted value
+// can never be read as a flag. `balanced` is false when a quote is never closed.
+function maskQuoted(text) {
+  let masked = "";
+  let index = 0;
+  let balanced = true;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === "'" || char === '"') {
+      const end = skipQuoted(text, index);
+      if (end < 0) {
+        masked += " ".repeat(text.length - index);
+        balanced = false;
+        break;
+      }
+      masked += " ".repeat(end - index);
+      index = end;
+      continue;
+    }
+    if (char === "\\") {
+      const width = index + 1 < text.length ? 2 : 1;
+      masked += " ".repeat(width);
+      index += width;
+      continue;
+    }
+    masked += char;
+    index += 1;
+  }
+  return { masked, balanced };
+}
+
+// Apply `transform` to the code spans only; quoted runs and escaped characters
+// stay byte-for-byte, so a rewrite never lands inside a value.
+function transformCodeOnly(text, transform) {
+  let result = "";
+  let cursor = 0;
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === "'" || char === '"') {
+      const end = skipQuoted(text, index);
+      if (end < 0) {
+        result += transform(text.slice(cursor, index)) + text.slice(index);
+        cursor = text.length;
+        break;
+      }
+      result += transform(text.slice(cursor, index)) + text.slice(index, end);
+      cursor = end;
+      index = end;
+      continue;
+    }
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return result + transform(text.slice(cursor));
+}
+
+function separatorAt(command, index) {
+  const pair = command.slice(index, index + 2);
+  if (pair === "&&" || pair === "||") return pair;
+  const char = command[index];
+  if (
+    char === ";" ||
+    char === "&" ||
+    char === "|" ||
+    char === "(" ||
+    char === ")" ||
+    char === "\n"
+  ) {
+    return char;
+  }
+  return null;
+}
+
+// Split on shell separators that sit outside quotes; each segment is then
+// tested for a phasegent invocation at its start.
+function shellSegments(command) {
+  const segments = [];
+  let cursor = 0;
+  let index = 0;
+  while (index < command.length) {
+    const char = command[index];
+    if (char === "'" || char === '"') {
+      const end = skipQuoted(command, index);
+      if (end < 0) break; // unterminated quote: the rest belongs to this segment
+      index = end;
+      continue;
+    }
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    const separator = separatorAt(command, index);
+    if (separator === null) {
+      index += 1;
+      continue;
+    }
+    if (index > cursor) {
+      segments.push({ start: cursor, end: index, text: command.slice(cursor, index) });
+    }
+    cursor = index + separator.length;
+    index = cursor;
+  }
+  if (cursor < command.length) {
+    segments.push({ start: cursor, end: command.length, text: command.slice(cursor) });
+  }
+  return segments;
+}
+
+// A segment counts as an invocation only when, after leading whitespace, env
+// assignments and an optional `path/` prefix, the first token is `phasegent`.
+// `tail` is the masked remainder, so `issue create|bind` and an existing
+// `--role`/`--session` are only recognised outside quoted values, and
+// `balanced` gates injection for a segment with an unterminated quote.
+function phasegentInvocation(segment) {
+  const { masked, balanced } = maskQuoted(segment.text);
+  let text = segment.text;
+  let offset = segment.start;
+  const leading = text.match(/^\s+/);
+  if (leading) {
+    offset += leading[0].length;
+    text = text.slice(leading[0].length);
+  }
+  const env = text.match(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/);
+  if (env) {
+    offset += env[0].length;
+    text = text.slice(env[0].length);
+  }
+  const token = text.match(/^(?:[^\s;&|()]*\/)?phasegent\b/);
+  if (!token) return null;
+  const trailing = text.length - text.trimEnd().length;
+  return {
+    tokenEnd: offset + token[0].length,
+    segmentEnd: segment.end - trailing,
+    tail: masked.slice(offset - segment.start + token[0].length),
+    balanced,
+  };
+}
+
+const PHASEGENT_ISSUE_WRITE = /\bissue\s+(create|bind)\b/;
+const ROLE_FLAG = /(^|\s)--role(\s|=)/;
+const SESSION_FLAG = /(^|\s)--session(\s|=)/;
+const SUBAGENT_REFUSAL =
+  "echo \"phasegent: sub-agent sessions cannot run 'issue create|bind'; ask the orchestrator\" >&2; false";
+
+function rewritePhasegentCommand(command, sessionId, event) {
+  if (typeof command !== "string" || !command.includes("phasegent")) return command;
+  const role = agentRole(event);
+  const subagent = isSubagentSession(event);
+  let source = command;
+  if (subagent) {
+    // Only code spans are rewritten: a quoted value that merely spells a role
+    // claim stays byte-for-byte.
+    source = transformCodeOnly(source, (span) =>
+      span
+        .replace(/(^|\s)--role(\s+|=)(orchestrator|admin)\b/g, (_m, lead, sep) => `${lead}--role${sep}${role}`)
+        .replace(/(^|[;&|()\s])(PHASEGENT_ROLE=)(orchestrator|admin)\b/g, (_m, lead, env) => `${lead}${env}${role}`),
+    );
+    if (source !== command) {
+      warn(`phasegent: sub-agent session cannot claim an orchestrator/admin role; using '${role}'`);
+    }
+  }
+  const invocations = shellSegments(source).map(phasegentInvocation).filter(Boolean);
+  if (invocations.length === 0) return source;
+  if (subagent && invocations.some((invocation) => PHASEGENT_ISSUE_WRITE.test(invocation.tail))) {
+    warn("phasegent: sub-agent session refused 'issue create|bind' (orchestrator-only)");
+    return SUBAGENT_REFUSAL;
+  }
+  let result = source;
+  // Insert from the last invocation backwards so earlier offsets stay valid.
+  for (let index = invocations.length - 1; index >= 0; index -= 1) {
+    const invocation = invocations[index];
+    // An unterminated quote leaves no injection point that is provably outside
+    // the value: that segment stays byte-for-byte.
+    if (!invocation.balanced) continue;
+    const tailFlags = [];
+    const headFlags = [];
+    if (role && !ROLE_FLAG.test(invocation.tail)) headFlags.push(`--role ${role}`);
+    if (sessionId && PHASEGENT_ISSUE_WRITE.test(invocation.tail) && !SESSION_FLAG.test(invocation.tail)) {
+      tailFlags.push(`--session ${sessionId}`);
+    }
+    if (tailFlags.length > 0) {
+      result = `${result.slice(0, invocation.segmentEnd)} ${tailFlags.join(" ")}${result.slice(invocation.segmentEnd)}`;
+    }
+    if (headFlags.length > 0) {
+      result = `${result.slice(0, invocation.tokenEnd)} ${headFlags.join(" ")}${result.slice(invocation.tokenEnd)}`;
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Lazy mid-session discovery (issue #18, Task 2).
 //
 // `issue create`/`issue bind` auto-acquire a worktree on conflict when they
 // carry `--session`; the plugin owns the session id (`event.sessionID`) so the
-// model never mints one by hand. `injectSessionIntoPhasegentCommand` is pure and
-// idempotent; `discoverWorktreeForSession` is best-effort and every failure falls
-// through silently so the hook degrades to passthrough.
+// model never mints one by hand. `discoverWorktreeForSession` is best-effort and
+// every failure falls through silently so the hook degrades to passthrough.
 // ---------------------------------------------------------------------------
-
-function injectSessionIntoPhasegentCommand(command, sessionId) {
-  if (typeof command !== "string" || !sessionId) return command;
-  if (!/phasegent\b.*\bissue\s+(create|bind)\b/.test(command)) return command;
-  if (/(^|\s)--session(\s|=)/.test(command)) return command;
-  return `${command} --session ${sessionId}`;
-}
 
 function pickActiveWorktreePath(leases) {
   if (!Array.isArray(leases)) return null;
@@ -202,7 +454,15 @@ async function discoverWorktreeForSession(sessionId, cwd) {
 
 const sessionWorktrees = new Map();
 let activeWorktree = null;
+// Move attempts vs confirmed placements (issue #541): `moveAttempts` bounds a
+// session to one move try, `movedSessions` records a confirmed placement that
+// lets the hook skip per-tool path rewriting.
+const moveAttempts = new Set();
 const movedSessions = new Set();
+
+function sessionPlaced(sessionId) {
+  return sessionId !== undefined && sessionId !== null && movedSessions.has(String(sessionId));
+}
 
 function rememberWorktree(sessionId, directory) {
   if (typeof directory !== "string" || directory.length === 0) return;
@@ -222,22 +482,27 @@ function worktreeForSession(sessionId) {
 
 function resetWorktrees() {
   sessionWorktrees.clear();
+  moveAttempts.clear();
   movedSessions.clear();
   activeWorktree = null;
 }
 
 // `context.session.move` hands an active runner the placement at its next step
 // boundary (packages/core/src/session/move.ts:114-155). It is attempted once per
-// session: repeated calls would enqueue repeated inbox items.
+// session: repeated calls would enqueue repeated inbox items. A confirmed
+// placement (`sessionPlaced`) is what lets the hook skip path rewriting.
 async function moveSessionToWorktree(context, sessionId, directory) {
   if (!context) return;
   if (typeof directory !== "string" || directory.length === 0) return;
   if (sessionId === undefined || sessionId === null) return;
   const key = String(sessionId);
-  if (movedSessions.has(key)) return;
-  movedSessions.add(key);
+  if (movedSessions.has(key) || moveAttempts.has(key)) return;
+  moveAttempts.add(key);
   const current = locationDirectory(context);
-  if (current === directory) return;
+  if (current === directory) {
+    movedSessions.add(key); // the session already sits in the worktree
+    return;
+  }
   const move = context && context.session && context.session.move;
   if (typeof move !== "function") {
     warn("phasegent: host exposes no session.move; redirecting tool arguments only");
@@ -245,6 +510,7 @@ async function moveSessionToWorktree(context, sessionId, directory) {
   }
   try {
     await move({ sessionID: sessionId, directory });
+    movedSessions.add(key);
   } catch (error) {
     warn(
       `phasegent: session move to ${directory} failed; redirecting tool arguments instead (${errorText(error)})`,
@@ -286,14 +552,15 @@ async function ensureSessionWorktree(context, sessionId) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure redirect helpers (issue #440, v2 argument names).
+// Pure path redirect helpers (issue #440; split by issue #541).
 //
 // Only relative values are rewritten; everything absolute (POSIX, Windows drive
 // or UNC) is returned verbatim so an explicit escape is never silently
 // retargeted and the external_directory check still sees the path the model
 // asked for. v2 renamed the file tools' `filePath` to `path` and the shell tool
 // from `bash` to `shell` (packages/core/src/tool/plugin/{read,write,edit}.ts,
-// tool/shell.ts:22).
+// tool/shell.ts:22). Shell command rewriting (issue #541) lives in the hook;
+// these helpers only retarget filesystem paths.
 // ---------------------------------------------------------------------------
 
 function isAbsolutePath(value) {
@@ -323,7 +590,7 @@ const PATH_ARG_KEYS = {
 const SEARCH_TOOLS = ["glob", "grep"];
 const SHELL_TOOLS = ["shell", "bash"];
 
-function redirectArgs(tool, workdir, args, sessionId) {
+function redirectPaths(tool, workdir, args) {
   if (!args || typeof args !== "object") return args;
   // No acquired worktree: pass the call through byte-for-byte.
   if (typeof workdir !== "string" || workdir.length === 0) return args;
@@ -351,17 +618,6 @@ function redirectArgs(tool, workdir, args, sessionId) {
     } else {
       // Bare shell: the shell would otherwise default to the stale session cwd.
       redirected.workdir = workdir;
-    }
-    if (
-      typeof redirected.command === "string" &&
-      sessionId !== undefined &&
-      sessionId !== null &&
-      String(sessionId).length > 0
-    ) {
-      redirected.command = injectSessionIntoPhasegentCommand(
-        redirected.command,
-        sessionId,
-      );
     }
   }
   return redirected;
@@ -594,6 +850,9 @@ function createRedirectHook(context) {
   return async function executeBefore(event) {
     const sessionId = event ? event.sessionID : undefined;
     const input = event ? event.input : undefined;
+    // Whether the session was already confirmed inside the worktree before this
+    // call; only then may the path rewrite be skipped.
+    const placedBefore = sessionPlaced(sessionId);
     // Lazy mid-session discovery: the registry may be empty when the session
     // was created before the first tool call or when a Task-spawned sub-agent
     // arrives with a fresh session id. Best-effort only.
@@ -604,18 +863,22 @@ function createRedirectHook(context) {
       workdir = null; // silent passthrough: a failed lookup must not block the call
     }
     if (!input || typeof input !== "object") return;
-    // Session injection for `issue create|bind` runs even without a worktree so
-    // the CLI can auto-acquire on conflict (issue #18 Task 2 helper).
-    if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string" && sessionId) {
+    // Command rewriting always runs (issue #541): agent-role injection, the
+    // sub-agent refusal, and `--session` injection do not depend on a worktree.
+    if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
       try {
-        const injected = injectSessionIntoPhasegentCommand(input.command, sessionId);
-        if (injected !== input.command) input.command = injected;
+        const rewritten = rewritePhasegentCommand(input.command, sessionId, event);
+        if (rewritten !== input.command) input.command = rewritten;
       } catch (_) {
         // silent passthrough
       }
     }
     if (typeof workdir !== "string" || workdir.length === 0) return;
-    const redirected = redirectArgs(event.tool, workdir, input, sessionId);
+    // A confirmed `session.move` already placed the session cwd in the worktree,
+    // so relative paths resolve there on their own. The call that triggered the
+    // move still runs in the old cwd, hence the `placedBefore` guard.
+    if (placedBefore && sessionPlaced(sessionId)) return;
+    const redirected = redirectPaths(event.tool, workdir, input);
     if (redirected === input) return;
     // Mutate in place: core keeps using `event.input`, and in-place writes keep
     // the object identity the caller already holds.
@@ -666,12 +929,15 @@ const PhasegentWorktreePlugin = {
 PhasegentWorktreePlugin.redirect = Object.freeze({
   isAbsolutePath,
   redirectPathValue,
-  redirectArgs,
+  redirectPaths,
+  agentRole,
+  isSubagentSession,
+  sessionPlaced,
+  rewritePhasegentCommand,
   rememberWorktree,
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
-  injectSessionIntoPhasegentCommand,
   pickActiveWorktreePath,
   discoverWorktreeForSession,
   ensureSessionWorktree,

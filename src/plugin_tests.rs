@@ -216,7 +216,7 @@ fn install_at_writes_managed_file_with_marker_and_v2_plugin_definition() {
     assert!(text.contains("worktree acquire"));
     assert!(text.contains("--format"));
     assert!(text.contains("\"json\""));
-    assert!(text.contains("redirectArgs"));
+    assert!(text.contains("redirectPaths"));
     assert!(
         !text.contains("experimental_workspace.register"),
         "the v1 workspace adapter contract must be gone from the template"
@@ -529,18 +529,25 @@ fn adapter_template_documents_redirect_contract() {
     assert!(source.contains("PhasegentWorktreePlugin.redirect"));
     assert!(source.contains("isAbsolutePath"));
     assert!(source.contains("redirectPathValue"));
-    assert!(source.contains("redirectArgs"));
+    assert!(source.contains("redirectPaths"));
     // v2 argument names: file tools use `path`, the shell tool is `shell`.
     assert!(source.contains("read: [\"path\"]"));
     assert!(source.contains("glob: [\"path\"]"));
     assert!(source.contains("SHELL_TOOLS = [\"shell\", \"bash\"]"));
-    // The shell gets a bare/relative workdir; the command is never rewritten.
+    // The shell gets a bare/relative workdir; command rewriting (issue #541)
+    // lives in the hook, not in the pure path redirect.
     assert!(source.contains("redirected.workdir = workdir"));
     // Absolute paths pass through and no-worktree sessions short-circuit.
     assert!(source.contains("if (isAbsolutePath(value)) return value"));
     assert!(source.contains("if (typeof workdir !== \"string\" || workdir.length === 0) return;"));
     // The worktree is remembered when acquire succeeds.
     assert!(source.contains("rememberWorktree(sessionId, acquired.path)"));
+    // issue #541: shell command rewriting (agent-role injection, sub-agent
+    // refusal, segment-scoped `--session`) replaced the append-only session
+    // injection helper; the pure path redirect no longer touches commands.
+    assert!(source.contains("rewritePhasegentCommand"));
+    assert!(source.contains("agentRole"));
+    assert!(source.contains("sessionPlaced"));
 }
 
 #[test]

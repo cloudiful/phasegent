@@ -12,12 +12,15 @@ import PhasegentWorktreePlugin from "./phasegent-worktree.js";
 const {
   isAbsolutePath,
   redirectPathValue,
-  redirectArgs,
+  redirectPaths,
+  agentRole,
+  isSubagentSession,
+  sessionPlaced,
+  rewritePhasegentCommand,
   rememberWorktree,
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
-  injectSessionIntoPhasegentCommand,
   pickActiveWorktreePath,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
@@ -147,18 +150,18 @@ describe("redirectPathValue", () => {
   });
 });
 
-describe("redirectArgs file tools (v2 `path` argument)", () => {
+describe("redirectPaths file tools (v2 `path` argument)", () => {
   test("redirects a relative path for read/write/edit", () => {
     for (const tool of ["read", "write", "edit"]) {
       const args = { path: "src/a.rs" };
-      expect(redirectArgs(tool, WORKTREE, args).path).toBe(`${WORKTREE}/src/a.rs`);
+      expect(redirectPaths(tool, WORKTREE, args).path).toBe(`${WORKTREE}/src/a.rs`);
     }
   });
 
   test("redirects a relative path for glob/grep and leaves the pattern", () => {
     for (const tool of ["glob", "grep"]) {
       const args = { pattern: "*.rs", path: "src" };
-      const out = redirectArgs(tool, WORKTREE, args);
+      const out = redirectPaths(tool, WORKTREE, args);
       expect(out.path).toBe(`${WORKTREE}/src`);
       expect(out.pattern).toBe("*.rs");
     }
@@ -166,89 +169,80 @@ describe("redirectArgs file tools (v2 `path` argument)", () => {
 
   test("defaults a missing glob/grep path to the worktree", () => {
     for (const tool of ["glob", "grep"]) {
-      expect(redirectArgs(tool, WORKTREE, {}, "session-1").path).toBe(WORKTREE);
-      expect(redirectArgs(tool, WORKTREE, { pattern: "*.rs" }, "session-1").path).toBe(
-        WORKTREE,
-      );
+      expect(redirectPaths(tool, WORKTREE, {}).path).toBe(WORKTREE);
+      expect(redirectPaths(tool, WORKTREE, { pattern: "*.rs" }).path).toBe(WORKTREE);
     }
   });
 
   test("defaults an empty or non-string glob/grep path to the worktree", () => {
-    expect(redirectArgs("glob", WORKTREE, { path: "" }, "session-1").path).toBe(
-      WORKTREE,
-    );
-    expect(redirectArgs("grep", WORKTREE, { path: "" }, "session-1").path).toBe(
-      WORKTREE,
-    );
-    expect(redirectArgs("glob", WORKTREE, { path: 42 }, "session-1").path).toBe(
-      WORKTREE,
-    );
-    expect(redirectArgs("grep", WORKTREE, { path: null }, "session-1").path).toBe(
-      WORKTREE,
-    );
+    expect(redirectPaths("glob", WORKTREE, { path: "" }).path).toBe(WORKTREE);
+    expect(redirectPaths("grep", WORKTREE, { path: "" }).path).toBe(WORKTREE);
+    expect(redirectPaths("glob", WORKTREE, { path: 42 }).path).toBe(WORKTREE);
+    expect(redirectPaths("grep", WORKTREE, { path: null }).path).toBe(WORKTREE);
   });
 
   test("joins relative glob/grep paths and passes absolute paths through", () => {
     for (const tool of ["glob", "grep"]) {
-      expect(redirectArgs(tool, WORKTREE, { path: "src" }, "session-1").path).toBe(
-        `${WORKTREE}/src`,
-      );
+      expect(redirectPaths(tool, WORKTREE, { path: "src" }).path).toBe(`${WORKTREE}/src`);
       expect(
-        redirectArgs(
-          tool,
-          WORKTREE,
-          { path: "/home/dev/codes/tools/phasegent/src" },
-          "session-1",
-        ).path,
+        redirectPaths(tool, WORKTREE, { path: "/home/dev/codes/tools/phasegent/src" }).path,
       ).toBe("/home/dev/codes/tools/phasegent/src");
     }
   });
 
   test("passes absolute file paths through unchanged", () => {
-    const out = redirectArgs("read", WORKTREE, { path: "/etc/hosts" });
+    const out = redirectPaths("read", WORKTREE, { path: "/etc/hosts" });
     expect(out.path).toBe("/etc/hosts");
   });
 
   test("does not touch other tools or non-string fields", () => {
-    const out = redirectArgs("webfetch", WORKTREE, { url: "src/a.rs" });
+    const out = redirectPaths("webfetch", WORKTREE, { url: "src/a.rs" });
     expect(out.url).toBe("src/a.rs");
   });
 });
 
-describe("redirectArgs shell workdir (v2 `shell` tool)", () => {
+describe("redirectPaths shell workdir (v2 `shell` tool)", () => {
   test("fills a bare shell workdir with the worktree", () => {
-    const out = redirectArgs("shell", WORKTREE, { command: "ls" });
+    const out = redirectPaths("shell", WORKTREE, { command: "ls" });
     expect(out.workdir).toBe(WORKTREE);
     expect(out.command).toBe("ls");
   });
 
   test("keeps the v1 `bash` tool name as an alias", () => {
-    const out = redirectArgs("bash", WORKTREE, { command: "ls" });
+    const out = redirectPaths("bash", WORKTREE, { command: "ls" });
     expect(out.workdir).toBe(WORKTREE);
   });
 
   test("resolves a relative shell workdir against the worktree", () => {
-    const out = redirectArgs("shell", WORKTREE, { command: "ls", workdir: "sub" });
+    const out = redirectPaths("shell", WORKTREE, { command: "ls", workdir: "sub" });
     expect(out.workdir).toBe(`${WORKTREE}/sub`);
   });
 
   test("keeps an absolute shell workdir and never rewrites the command", () => {
-    const out = redirectArgs("shell", WORKTREE, { command: "cd /tmp && ls", workdir: "/tmp" });
+    const out = redirectPaths("shell", WORKTREE, { command: "cd /tmp && ls", workdir: "/tmp" });
     expect(out.workdir).toBe("/tmp");
     expect(out.command).toBe("cd /tmp && ls");
   });
+
+  test("never rewrites shell commands; rewriting lives in the hook", () => {
+    const out = redirectPaths("shell", WORKTREE, {
+      command: "phasegent issue create --title t --body b",
+    });
+    expect(out.command).toBe("phasegent issue create --title t --body b");
+    expect(out.workdir).toBe(WORKTREE);
+  });
 });
 
-describe("redirectArgs pass-through", () => {
+describe("redirectPaths pass-through", () => {
   test("returns the same object when no worktree is known", () => {
     const args = { path: "src/a.rs" };
-    expect(redirectArgs("read", null, args)).toBe(args);
-    expect(redirectArgs("shell", "", args)).toBe(args);
+    expect(redirectPaths("read", null, args)).toBe(args);
+    expect(redirectPaths("shell", "", args)).toBe(args);
   });
 
   test("returns non-object args untouched", () => {
-    expect(redirectArgs("read", WORKTREE, undefined)).toBeUndefined();
-    expect(redirectArgs("read", WORKTREE, null)).toBeNull();
+    expect(redirectPaths("read", WORKTREE, undefined)).toBeUndefined();
+    expect(redirectPaths("read", WORKTREE, null)).toBeNull();
   });
 });
 
@@ -313,7 +307,7 @@ describe("tool.execute.before hook (v2 single event)", () => {
     await hook({ tool: "shell", sessionID: "session-1" });
   });
 
-  test("moves the session to the acquired worktree once", async () => {
+  test("moves the session once and skips path redirection once placed", async () => {
     rememberWorktree("session-1", WORKTREE);
     const moves = [];
     const context = {
@@ -321,8 +315,16 @@ describe("tool.execute.before hook (v2 single event)", () => {
       session: { move: async (input) => moves.push(input) },
     };
     const hook = createRedirectHook(context);
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
+    const first = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(first);
+    // The call that triggered the move still runs in the old cwd.
+    expect(first.input.path).toBe(`${WORKTREE}/src/a.rs`);
+    expect(sessionPlaced("session-1")).toBe(true);
+
+    const second = { tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } };
+    await hook(second);
+    // The session cwd now is the worktree, so the relative path is left alone.
+    expect(second.input.path).toBe("src/b.rs");
     expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
   });
 
@@ -339,96 +341,494 @@ describe("tool.execute.before hook (v2 single event)", () => {
     const hook = createRedirectHook(context);
     const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
     await hook(event);
+    // A failed move is not a placement: the fallback path rewrite still runs.
     expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
+    expect(sessionPlaced("session-1")).toBe(false);
+  });
+
+  test("rewrites paths when the host has no session.move", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const hook = createRedirectHook({ location: { directory: "/repo" } });
+    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(event);
+    expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
+    expect(sessionPlaced("session-1")).toBe(false);
+  });
+
+  test("still rewrites commands for an already placed session", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const context = {
+      location: { directory: "/repo" },
+      session: { move: async () => {} },
+    };
+    const hook = createRedirectHook(context);
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
+    expect(sessionPlaced("session-1")).toBe(true);
+
+    const event = {
+      tool: "shell",
+      sessionID: "session-1",
+      agent: "orchestrator",
+      input: { command: "phasegent issue get 1" },
+    };
+    await hook(event);
+    // Command rewriting is independent of the placement fast path.
+    expect(event.input.command).toBe("phasegent --role orchestrator issue get 1");
+    expect(event.input.workdir).toBeUndefined();
+  });
+
+  test("refuses issue create for a sub-agent session", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "shell",
+      sessionID: "child-session",
+      agent: "executor",
+      input: { command: "phasegent issue create --title t --body b" },
+    };
+    await hook(event);
+    expect(event.input.command).toContain("cannot run 'issue create|bind'");
+    expect(event.input.command.endsWith("; false")).toBe(true);
+    expect(event.input.command).not.toContain("--title");
+  });
+
+  test("resetWorktrees clears move attempts and placements", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: { move: async (input) => moves.push(input) },
+    };
+    const hook = createRedirectHook(context);
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
+    expect(sessionPlaced("session-1")).toBe(true);
+
+    resetWorktrees();
+    expect(sessionPlaced("session-1")).toBe(false);
+
+    rememberWorktree("session-1", WORKTREE);
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
+    // The attempt set was cleared too, so a fresh move is allowed.
+    expect(moves).toHaveLength(2);
   });
 });
 
-describe("injectSessionIntoPhasegentCommand (issue #18 Task 2)", () => {
-  test("appends --session once to issue create", () => {
-    const out = injectSessionIntoPhasegentCommand(
-      "phasegent issue create --title t --body b",
-      "session-1",
-    );
-    expect(out).toBe("phasegent issue create --title t --body b --session session-1");
+describe("agentRole (issue #541)", () => {
+  test("maps known agent names to phasegent roles", () => {
+    expect(agentRole({ agent: "orchestrator" })).toBe("orchestrator");
+    expect(agentRole({ agent: "executor" })).toBe("executor");
+    expect(agentRole({ agent: "reviewer" })).toBe("reviewer");
+    expect(agentRole({ agent: "tester" })).toBe("tester");
+    // explore is read-only recon and behaves as a reviewer.
+    expect(agentRole({ agent: "explore" })).toBe("reviewer");
   });
 
-  test("appends --session once to issue bind", () => {
-    const out = injectSessionIntoPhasegentCommand(
-      "phasegent --role executor --provider local issue bind 18",
-      "abc",
+  test("is case-insensitive and matches compound agent names", () => {
+    expect(agentRole({ agent: "Executor" })).toBe("executor");
+    expect(agentRole({ agent: "task-executor" })).toBe("executor");
+  });
+
+  test("never guesses for unknown or missing agents", () => {
+    expect(agentRole({ agent: "general" })).toBeNull();
+    expect(agentRole({ agent: "" })).toBeNull();
+    expect(agentRole({})).toBeNull();
+    expect(agentRole(undefined)).toBeNull();
+  });
+});
+
+describe("isSubagentSession (issue #541)", () => {
+  test("is true only for a resolved non-orchestrator role", () => {
+    expect(isSubagentSession({ agent: "orchestrator" })).toBe(false);
+    expect(isSubagentSession({ agent: "executor" })).toBe(true);
+    expect(isSubagentSession({ agent: "explore" })).toBe(true);
+    expect(isSubagentSession({ agent: "general" })).toBe(false);
+    expect(isSubagentSession(undefined)).toBe(false);
+  });
+});
+
+describe("sessionPlaced (issue #541)", () => {
+  test("reports false until a move is confirmed", () => {
+    expect(sessionPlaced(undefined)).toBe(false);
+    expect(sessionPlaced("session-1")).toBe(false);
+  });
+});
+
+describe("rewritePhasegentCommand (issue #541)", () => {
+  test("keeps --session before the pipe of an issue create", () => {
+    const out = rewritePhasegentCommand(
+      "phasegent issue create --title t --body b | tee /tmp/x",
+      "session-1",
+      { agent: "orchestrator" },
     );
     expect(out).toBe(
-      "phasegent --role executor --provider local issue bind 18 --session abc",
+      "phasegent --role orchestrator issue create --title t --body b --session session-1 | tee /tmp/x",
     );
   });
 
-  test("skips when --session is already present", () => {
+  test("keeps an existing --role and appends --session to issue bind", () => {
     expect(
-      injectSessionIntoPhasegentCommand(
+      rewritePhasegentCommand(
+        "phasegent --role executor --provider local issue bind 18",
+        "abc",
+        { agent: "orchestrator" },
+      ),
+    ).toBe("phasegent --role executor --provider local issue bind 18 --session abc");
+  });
+
+  test("skips --session when it is already present", () => {
+    expect(
+      rewritePhasegentCommand(
         "phasegent issue create --title t --session s1",
         "s2",
+        undefined,
       ),
     ).toBe("phasegent issue create --title t --session s1");
     expect(
-      injectSessionIntoPhasegentCommand(
-        "phasegent issue bind 18 --session=s1",
-        "s2",
-      ),
+      rewritePhasegentCommand("phasegent issue bind 18 --session=s1", "s2", undefined),
     ).toBe("phasegent issue bind 18 --session=s1");
   });
 
-  test("skips non-create/bind commands", () => {
+  test("injects --role right after the phasegent token", () => {
     expect(
-      injectSessionIntoPhasegentCommand("phasegent issue status", "s1"),
+      rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" }),
+    ).toBe("phasegent --role executor issue status");
+    expect(
+      rewritePhasegentCommand("phasegent worktree status --issue 1", undefined, {
+        agent: "reviewer",
+      }),
+    ).toBe("phasegent --role reviewer worktree status --issue 1");
+  });
+
+  test("leaves an existing --role flag untouched", () => {
+    expect(
+      rewritePhasegentCommand("phasegent --role reviewer issue get 1", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("phasegent --role reviewer issue get 1");
+    expect(
+      rewritePhasegentCommand("phasegent --role=reviewer issue get 1", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("phasegent --role=reviewer issue get 1");
+  });
+
+  test("does not inject a role for an unknown agent", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue create --title t", "s1", {
+        agent: "general",
+      }),
+    ).toBe("phasegent issue create --title t --session s1");
+    expect(
+      rewritePhasegentCommand("phasegent issue status", "s1", { agent: "general" }),
     ).toBe("phasegent issue status");
-    expect(injectSessionIntoPhasegentCommand("ls -la", "s1")).toBe("ls -la");
+  });
+
+  test("appends --session only to an issue create/bind segment", () => {
     expect(
-      injectSessionIntoPhasegentCommand(
-        "phasegent worktree acquire --issue 18",
-        "s1",
-      ),
+      rewritePhasegentCommand("phasegent issue status", "s1", undefined),
+    ).toBe("phasegent issue status");
+    expect(rewritePhasegentCommand("ls -la", "s1", undefined)).toBe("ls -la");
+    expect(
+      rewritePhasegentCommand("phasegent worktree acquire --issue 18", "s1", undefined),
     ).toBe("phasegent worktree acquire --issue 18");
   });
 
   test("passes through without a session id", () => {
     const command = "phasegent issue create --title t";
-    expect(injectSessionIntoPhasegentCommand(command, undefined)).toBe(command);
-    expect(injectSessionIntoPhasegentCommand(command, "")).toBe(command);
-    expect(injectSessionIntoPhasegentCommand(undefined, "s1")).toBeUndefined();
+    expect(rewritePhasegentCommand(command, undefined, undefined)).toBe(command);
+    expect(rewritePhasegentCommand(command, "", undefined)).toBe(command);
+    expect(rewritePhasegentCommand(undefined, "s1", undefined)).toBeUndefined();
+  });
+
+  test("rewrites every segment of a compound command", () => {
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue get 1 && phasegent issue bind 541",
+        "s9",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      "phasegent --role orchestrator issue get 1 && phasegent --role orchestrator issue bind 541 --session s9",
+    );
+  });
+
+  test("rewrites an invocation behind env assignments or a path prefix", () => {
+    expect(
+      rewritePhasegentCommand(
+        "PHASEGENT_WORKTREE_NO_DISCOVER=1 phasegent issue status",
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe("PHASEGENT_WORKTREE_NO_DISCOVER=1 phasegent --role executor issue status");
+    expect(
+      rewritePhasegentCommand("./phasegent issue status", "s1", { agent: "executor" }),
+    ).toBe("./phasegent --role executor issue status");
+  });
+
+  test("does not rewrite phasegent look-alikes", () => {
+    expect(
+      rewritePhasegentCommand("grep -rn phasegent src", "s1", { agent: "executor" }),
+    ).toBe("grep -rn phasegent src");
+    expect(
+      rewritePhasegentCommand("echo phasegent issue create", "s1", { agent: "executor" }),
+    ).toBe("echo phasegent issue create");
+    expect(
+      rewritePhasegentCommand("git -C repo phasegent issue status", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("git -C repo phasegent issue status");
+  });
+
+  test("refuses issue create|bind for a sub-agent session", () => {
+    for (const command of [
+      "phasegent issue create --title t --body b",
+      "phasegent issue bind 541",
+      // A claimed orchestrator role must not buy a sub-agent an issue write.
+      "phasegent --role orchestrator issue create --title t",
+    ]) {
+      const out = rewritePhasegentCommand(command, "s1", { agent: "executor" });
+      expect(out).toContain("cannot run 'issue create|bind'");
+      expect(out.endsWith("; false")).toBe(true);
+      expect(out).not.toContain("phasegent issue create");
+      expect(out).not.toContain("--title");
+    }
+  });
+
+  test("downgrades a claimed orchestrator/admin role to the session role", () => {
+    expect(
+      rewritePhasegentCommand("phasegent --role orchestrator issue close 1", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("phasegent --role executor issue close 1");
+    expect(
+      rewritePhasegentCommand("phasegent --role=admin issue status", "s1", {
+        agent: "tester",
+      }),
+    ).toBe("phasegent --role=tester issue status");
+  });
+
+  test("downgrades a PHASEGENT_ROLE=orchestrator|admin env claim", () => {
+    expect(
+      rewritePhasegentCommand(
+        "PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 1",
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe(
+      "PHASEGENT_ROLE=executor phasegent --role executor worktree acquire --issue 1",
+    );
+    expect(
+      rewritePhasegentCommand(
+        "FOO=1 PHASEGENT_ROLE=admin phasegent issue get 1",
+        "s1",
+        { agent: "reviewer" },
+      ),
+    ).toBe("FOO=1 PHASEGENT_ROLE=reviewer phasegent --role reviewer issue get 1");
+  });
+
+  test("keeps an orchestrator session's own role claim", () => {
+    expect(
+      rewritePhasegentCommand("phasegent --role orchestrator issue close 1", "s1", {
+        agent: "orchestrator",
+      }),
+    ).toBe("phasegent --role orchestrator issue close 1");
   });
 });
 
-describe("redirectArgs session injection (issue #18 Task 2)", () => {
-  test("injects --session into a shell phasegent issue create", () => {
-    const out = redirectArgs(
-      "shell",
-      WORKTREE,
-      { command: "phasegent issue create --title t --body b" },
-      "session-1",
+describe("quote-aware command rewriting (issue #541 P1)", () => {
+  test("keeps --session outside a quoted pipe in --body", () => {
+    expect(
+      rewritePhasegentCommand('phasegent issue create --title t --body "a | b"', "session-1", {
+        agent: "orchestrator",
+      }),
+    ).toBe(
+      'phasegent --role orchestrator issue create --title t --body "a | b" --session session-1',
     );
-    expect(out.command).toBe(
-      "phasegent issue create --title t --body b --session session-1",
-    );
-    expect(out.workdir).toBe(WORKTREE);
   });
 
-  test("does not duplicate --session and leaves absolute workdir alone", () => {
-    const out = redirectArgs(
-      "shell",
-      WORKTREE,
-      {
-        command: "phasegent issue bind 18 --session s1",
-        workdir: "/tmp",
-      },
-      "s2",
+  test("keeps --session outside a multiline --body", () => {
+    // A real newline inside the value must not split the segment.
+    const command = 'phasegent issue create --title t --body "l1\nl2"';
+    expect(rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" })).toBe(
+      'phasegent --role orchestrator issue create --title t --body "l1\nl2" --session session-1',
     );
-    expect(out.command).toBe("phasegent issue bind 18 --session s1");
-    expect(out.workdir).toBe("/tmp");
   });
 
-  test("leaves non-phasegent shell commands alone", () => {
-    const out = redirectArgs("shell", WORKTREE, { command: "ls" }, "s1");
-    expect(out.command).toBe("ls");
+  test("keeps --session outside a quoted && in --title", () => {
+    expect(
+      rewritePhasegentCommand('phasegent issue create --title "a && b"', "session-1", {
+        agent: "orchestrator",
+      }),
+    ).toBe(
+      'phasegent --role orchestrator issue create --title "a && b" --session session-1',
+    );
+  });
+
+  test("leaves an unterminated quote segment byte-for-byte", () => {
+    for (const command of [
+      'phasegent issue create --body "a | b',
+      "phasegent issue create --title 'a && b",
+      'phasegent issue status --body "a  ',
+    ]) {
+      expect(
+        rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" }),
+      ).toBe(command);
+    }
+  });
+
+  test("refuses issue create for a sub-agent even with an unterminated quote", () => {
+    const out = rewritePhasegentCommand('phasegent issue create --body "a', "s1", {
+      agent: "executor",
+    });
+    expect(out).toContain("cannot run 'issue create|bind'");
+    expect(out.endsWith("; false")).toBe(true);
+  });
+
+  test("does not mistake a quoted --session value for the real flag", () => {
+    expect(
+      rewritePhasegentCommand(
+        'phasegent issue create --title t --body "--session s9"',
+        "session-1",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      'phasegent --role orchestrator issue create --title t --body "--session s9" --session session-1',
+    );
+  });
+
+  test("does not mistake a quoted issue bind for an issue write", () => {
+    expect(
+      rewritePhasegentCommand('phasegent issue get 1 --body "issue bind"', "session-1", {
+        agent: "executor",
+      }),
+    ).toBe('phasegent --role executor issue get 1 --body "issue bind"');
+  });
+
+  test("does not rewrite a quoted --role value for a sub-agent", () => {
+    expect(
+      rewritePhasegentCommand('phasegent issue get 1 --body "--role orchestrator"', "s1", {
+        agent: "executor",
+      }),
+    ).toBe('phasegent --role executor issue get 1 --body "--role orchestrator"');
+  });
+
+  test("does not rewrite a quoted PHASEGENT_ROLE value for a sub-agent", () => {
+    expect(
+      rewritePhasegentCommand(
+        'phasegent issue get 1 --body "PHASEGENT_ROLE=orchestrator"',
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe('phasegent --role executor issue get 1 --body "PHASEGENT_ROLE=orchestrator"');
+  });
+
+  test("handles single-quoted values and escaped quotes", () => {
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue create --title t --body 'a | b'",
+        "s1",
+        { agent: "orchestrator" },
+      ),
+    ).toBe("phasegent --role orchestrator issue create --title t --body 'a | b' --session s1");
+    expect(
+      rewritePhasegentCommand(
+        'phasegent issue create --title t --body "a \\" | b"',
+        "s1",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      'phasegent --role orchestrator issue create --title t --body "a \\" | b" --session s1',
+    );
+  });
+
+  test("still splits a real pipe and leaves tee untouched", () => {
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue create --title t --body b | tee /tmp/x",
+        "session-1",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      "phasegent --role orchestrator issue create --title t --body b --session session-1 | tee /tmp/x",
+    );
+    expect(
+      rewritePhasegentCommand(
+        'phasegent issue bind 541 --note "a && b" | tee /tmp/y',
+        "s9",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      'phasegent --role orchestrator issue bind 541 --note "a && b" --session s9 | tee /tmp/y',
+    );
+  });
+
+  test("still splits segments outside quotes around quoted content", () => {
+    expect(
+      rewritePhasegentCommand(
+        'phasegent issue status; echo "a | b"; phasegent worktree status',
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe(
+      'phasegent --role executor issue status; echo "a | b"; phasegent --role executor worktree status',
+    );
+  });
+
+  test("still recognises a quoted env value before the invocation", () => {
+    expect(
+      rewritePhasegentCommand(
+        'PHASEGENT_WORKTREE_NO_DISCOVER="1" phasegent issue status',
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe('PHASEGENT_WORKTREE_NO_DISCOVER="1" phasegent --role executor issue status');
+  });
+});
+
+describe("shell command rewriting through the hook (issue #541)", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  test("downgrades a claimed role even without a worktree", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "shell",
+      sessionID: "s2",
+      agent: "executor",
+      input: { command: "phasegent --role orchestrator issue status", workdir: "/tmp" },
+    };
+    await hook(event);
+    expect(event.input.command).toBe("phasegent --role executor issue status");
+    expect(event.input.workdir).toBe("/tmp");
+  });
+
+  test("refuses issue bind for a sub-agent session without a worktree", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "shell",
+      sessionID: "s2",
+      agent: "executor",
+      input: { command: "phasegent issue bind 18 --session s1" },
+    };
+    await hook(event);
+    expect(event.input.command).toContain("cannot run 'issue create|bind'");
+  });
+
+  test("leaves non-phasegent shell commands alone", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "shell",
+      sessionID: "s1",
+      agent: "executor",
+      input: { command: "ls" },
+    };
+    await hook(event);
+    expect(event.input.command).toBe("ls");
   });
 });
 
