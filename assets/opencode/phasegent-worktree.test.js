@@ -373,7 +373,7 @@ describe("tool.execute.before hook (v2 single event)", () => {
     };
     await hook(event);
     // Command rewriting is independent of the placement fast path.
-    expect(event.input.command).toBe("phasegent --role orchestrator issue get 1");
+    expect(event.input.command).toBe("PHASEGENT_ROLE=orchestrator phasegent issue get 1");
     expect(event.input.workdir).toBeUndefined();
   });
 
@@ -460,7 +460,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
       { agent: "orchestrator" },
     );
     expect(out).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --session session-1 | tee /tmp/x",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
     );
   });
 
@@ -487,15 +487,34 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     ).toBe("phasegent issue bind 18 --session=s1");
   });
 
-  test("injects --role right after the phasegent token", () => {
+  test("passes the session role through the PHASEGENT_ROLE assignment", () => {
     expect(
       rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("phasegent --role executor issue status");
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
     expect(
       rewritePhasegentCommand("phasegent worktree status --issue 1", undefined, {
         agent: "reviewer",
       }),
-    ).toBe("phasegent --role reviewer worktree status --issue 1");
+    ).toBe("PHASEGENT_ROLE=reviewer phasegent worktree status --issue 1");
+  });
+
+  test("pins the session role over a blank or differing assignment", () => {
+    expect(
+      rewritePhasegentCommand('PHASEGENT_ROLE="" phasegent issue status', "s1", {
+        agent: "executor",
+      }),
+    ).toBe('PHASEGENT_ROLE="" PHASEGENT_ROLE=executor phasegent issue status');
+    expect(
+      rewritePhasegentCommand("PHASEGENT_ROLE=tester phasegent issue status", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("PHASEGENT_ROLE=tester PHASEGENT_ROLE=executor phasegent issue status");
+    // The session's own value needs no second assignment.
+    expect(
+      rewritePhasegentCommand("PHASEGENT_ROLE=executor phasegent issue status", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
   });
 
   test("leaves an existing --role flag untouched", () => {
@@ -547,7 +566,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "phasegent --role orchestrator issue get 1 && phasegent --role orchestrator issue bind 541 --session s9",
+      "PHASEGENT_ROLE=orchestrator phasegent issue get 1 && PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --session s9",
     );
   });
 
@@ -558,10 +577,12 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe("PHASEGENT_WORKTREE_NO_DISCOVER=1 phasegent --role executor issue status");
+    ).toBe(
+      "PHASEGENT_WORKTREE_NO_DISCOVER=1 PHASEGENT_ROLE=executor phasegent issue status",
+    );
     expect(
       rewritePhasegentCommand("./phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("./phasegent --role executor issue status");
+    ).toBe("PHASEGENT_ROLE=executor ./phasegent issue status");
   });
 
   test("does not rewrite phasegent look-alikes", () => {
@@ -606,23 +627,89 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     ).toBe("phasegent --role=tester issue status");
   });
 
-  test("downgrades a PHASEGENT_ROLE=orchestrator|admin env claim", () => {
+  test("downgrades a claimed PHASEGENT_ROLE=orchestrator|admin value in place", () => {
     expect(
       rewritePhasegentCommand(
         "PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 1",
         "s1",
         { agent: "executor" },
       ),
-    ).toBe(
-      "PHASEGENT_ROLE=executor phasegent --role executor worktree acquire --issue 1",
-    );
+    ).toBe("PHASEGENT_ROLE=executor phasegent worktree acquire --issue 1");
     expect(
       rewritePhasegentCommand(
         "FOO=1 PHASEGENT_ROLE=admin phasegent issue get 1",
         "s1",
         { agent: "reviewer" },
       ),
-    ).toBe("FOO=1 PHASEGENT_ROLE=reviewer phasegent --role reviewer issue get 1");
+    ).toBe("FOO=1 PHASEGENT_ROLE=reviewer phasegent issue get 1");
+  });
+
+  test("downgrades quoted or padded env claims in place", () => {
+    // The claim is rewritten where it sits, so neither quoting nor padding has
+    // to survive the session role taking over.
+    const cases = [
+      [
+        'PHASEGENT_ROLE="orchestrator" phasegent issue get 1',
+        'PHASEGENT_ROLE="reviewer" phasegent issue get 1',
+      ],
+      [
+        "PHASEGENT_ROLE='orchestrator' phasegent issue get 1",
+        "PHASEGENT_ROLE='reviewer' phasegent issue get 1",
+      ],
+      [
+        'PHASEGENT_ROLE=" orchestrator" phasegent issue get 1',
+        'PHASEGENT_ROLE="reviewer" phasegent issue get 1',
+      ],
+      [
+        'PHASEGENT_ROLE="admin" phasegent issue get 1',
+        'PHASEGENT_ROLE="reviewer" phasegent issue get 1',
+      ],
+      [
+        "PHASEGENT_ROLE=' admin ' phasegent issue get 1",
+        "PHASEGENT_ROLE='reviewer' phasegent issue get 1",
+      ],
+    ];
+    for (const [command, expected] of cases) {
+      expect(rewritePhasegentCommand(command, "s1", { agent: "reviewer" })).toBe(expected);
+    }
+  });
+
+  test("downgrades a claim behind a wrapper, a continuation or a here-doc", () => {
+    // The claim is neutralised wherever it sits, not only in a segment that
+    // starts at the CLI token (issue #547 F4).
+    const cases = [
+      [
+        "env PHASEGENT_ROLE=orchestrator phasegent issue search --query x",
+        "env PHASEGENT_ROLE=reviewer phasegent issue search --query x",
+      ],
+      [
+        "/usr/bin/env PHASEGENT_ROLE=orchestrator phasegent issue search --query x",
+        "/usr/bin/env PHASEGENT_ROLE=reviewer phasegent issue search --query x",
+      ],
+      [
+        "time PHASEGENT_ROLE=orchestrator phasegent issue search --query x",
+        "time PHASEGENT_ROLE=reviewer phasegent issue search --query x",
+      ],
+      [
+        "env FOO=1 PHASEGENT_ROLE=admin phasegent issue search --query x",
+        "env FOO=1 PHASEGENT_ROLE=reviewer phasegent issue search --query x",
+      ],
+      [
+        'env PHASEGENT_ROLE="orchestrator" phasegent issue search --query x',
+        'env PHASEGENT_ROLE="reviewer" phasegent issue search --query x',
+      ],
+      [
+        "env \\\n  PHASEGENT_ROLE=orchestrator \\\n  phasegent issue get 1",
+        "env \\\n  PHASEGENT_ROLE=reviewer \\\n  phasegent issue get 1",
+      ],
+      [
+        "bash <<'EOF'\nPHASEGENT_ROLE=orchestrator phasegent issue get 1\nEOF",
+        "bash <<'EOF'\nPHASEGENT_ROLE=reviewer phasegent issue get 1\nEOF",
+      ],
+    ];
+    for (const [command, expected] of cases) {
+      expect(rewritePhasegentCommand(command, "s1", { agent: "reviewer" })).toBe(expected);
+    }
   });
 
   test("keeps an orchestrator session's own role claim", () => {
@@ -641,7 +728,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'phasegent --role orchestrator issue create --title t --body "a | b" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "a | b" --session session-1',
     );
   });
 
@@ -649,7 +736,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
     // A real newline inside the value must not split the segment.
     const command = 'phasegent issue create --title t --body "l1\nl2"';
     expect(rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" })).toBe(
-      'phasegent --role orchestrator issue create --title t --body "l1\nl2" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "l1\nl2" --session session-1',
     );
   });
 
@@ -659,7 +746,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'phasegent --role orchestrator issue create --title "a && b" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title "a && b" --session session-1',
     );
   });
 
@@ -691,7 +778,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'phasegent --role orchestrator issue create --title t --body "--session s9" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "--session s9" --session session-1',
     );
   });
 
@@ -700,7 +787,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
       rewritePhasegentCommand('phasegent issue get 1 --body "issue bind"', "session-1", {
         agent: "executor",
       }),
-    ).toBe('phasegent --role executor issue get 1 --body "issue bind"');
+    ).toBe('PHASEGENT_ROLE=executor phasegent issue get 1 --body "issue bind"');
   });
 
   test("does not rewrite a quoted --role value for a sub-agent", () => {
@@ -708,7 +795,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
       rewritePhasegentCommand('phasegent issue get 1 --body "--role orchestrator"', "s1", {
         agent: "executor",
       }),
-    ).toBe('phasegent --role executor issue get 1 --body "--role orchestrator"');
+    ).toBe('PHASEGENT_ROLE=executor phasegent issue get 1 --body "--role orchestrator"');
   });
 
   test("does not rewrite a quoted PHASEGENT_ROLE value for a sub-agent", () => {
@@ -718,7 +805,9 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe('phasegent --role executor issue get 1 --body "PHASEGENT_ROLE=orchestrator"');
+    ).toBe(
+      'PHASEGENT_ROLE=executor phasegent issue get 1 --body "PHASEGENT_ROLE=orchestrator"',
+    );
   });
 
   test("handles single-quoted values and escaped quotes", () => {
@@ -728,7 +817,9 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "orchestrator" },
       ),
-    ).toBe("phasegent --role orchestrator issue create --title t --body 'a | b' --session s1");
+    ).toBe(
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body 'a | b' --session s1",
+    );
     expect(
       rewritePhasegentCommand(
         'phasegent issue create --title t --body "a \\" | b"',
@@ -736,7 +827,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'phasegent --role orchestrator issue create --title t --body "a \\" | b" --session s1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "a \\" | b" --session s1',
     );
   });
 
@@ -748,7 +839,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --session session-1 | tee /tmp/x",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
     );
     expect(
       rewritePhasegentCommand(
@@ -757,7 +848,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'phasegent --role orchestrator issue bind 541 --note "a && b" --session s9 | tee /tmp/y',
+      'PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --note "a && b" --session s9 | tee /tmp/y',
     );
   });
 
@@ -769,7 +860,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      'phasegent --role executor issue status; echo "a | b"; phasegent --role executor worktree status',
+      'PHASEGENT_ROLE=executor phasegent issue status; echo "a | b"; PHASEGENT_ROLE=executor phasegent worktree status',
     );
   });
 
@@ -780,7 +871,9 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe('PHASEGENT_WORKTREE_NO_DISCOVER="1" phasegent --role executor issue status');
+    ).toBe(
+      'PHASEGENT_WORKTREE_NO_DISCOVER="1" PHASEGENT_ROLE=executor phasegent issue status',
+    );
   });
 });
 
@@ -805,6 +898,18 @@ describe("shell command rewriting through the hook (issue #541)", () => {
     await hook(event);
     expect(event.input.command).toBe("phasegent --role executor issue status");
     expect(event.input.workdir).toBe("/tmp");
+  });
+
+  test("prefixes PHASEGENT_ROLE for a shell call without a worktree", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "shell",
+      sessionID: "s2",
+      agent: "reviewer",
+      input: { command: "phasegent issue status" },
+    };
+    await hook(event);
+    expect(event.input.command).toBe("PHASEGENT_ROLE=reviewer phasegent issue status");
   });
 
   test("refuses issue bind for a sub-agent session without a worktree", async () => {
@@ -1101,36 +1206,38 @@ describe("invocation boundary tightening (issue #544 P1-a)", () => {
 
   test("still rewrites real invocations at the boundary", () => {
     expect(rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" })).toBe(
-      "phasegent --role executor issue status",
+      "PHASEGENT_ROLE=executor phasegent issue status",
     );
     // A bare `phasegent` is a whole word at the segment end.
     expect(rewritePhasegentCommand("phasegent", "s1", { agent: "executor" })).toBe(
-      "phasegent --role executor",
+      "PHASEGENT_ROLE=executor phasegent",
     );
     expect(
       rewritePhasegentCommand("./phasegent issue bind 1", "s1", { agent: "orchestrator" }),
-    ).toBe("./phasegent --role orchestrator issue bind 1 --session s1");
+    ).toBe("PHASEGENT_ROLE=orchestrator ./phasegent issue bind 1 --session s1");
     expect(
       rewritePhasegentCommand("/usr/local/bin/phasegent worktree acquire --issue 1", "s1", {
         agent: "reviewer",
       }),
-    ).toBe("/usr/local/bin/phasegent --role reviewer worktree acquire --issue 1");
+    ).toBe(
+      "PHASEGENT_ROLE=reviewer /usr/local/bin/phasegent worktree acquire --issue 1",
+    );
     expect(
       rewritePhasegentCommand("PHASEGENT_ROLE=x phasegent issue status", "s1", {
         agent: "executor",
       }),
-    ).toBe("PHASEGENT_ROLE=x phasegent --role executor issue status");
+    ).toBe("PHASEGENT_ROLE=x PHASEGENT_ROLE=executor phasegent issue status");
     expect(
       rewritePhasegentCommand("(phasegent issue create --title t)", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("(phasegent --role orchestrator issue create --title t --session s1)");
+    ).toBe("(PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session s1)");
     expect(
       rewritePhasegentCommand("phasegent issue status && phasegent issue bind 1", "s1", {
         agent: "orchestrator",
       }),
     ).toBe(
-      "phasegent --role orchestrator issue status && phasegent --role orchestrator issue bind 1 --session s1",
+      "PHASEGENT_ROLE=orchestrator phasegent issue status && PHASEGENT_ROLE=orchestrator phasegent issue bind 1 --session s1",
     );
   });
 });
@@ -1144,7 +1251,7 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
     );
   });
 
@@ -1152,19 +1259,19 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
     const cases = [
       [
         "phasegent issue create --title t --body b > /dev/null 2>&1",
-        "phasegent --role orchestrator issue create --title t --body b > /dev/null 2>&1 --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b > /dev/null 2>&1 --session ses_x",
       ],
       [
         "phasegent issue bind 1 >&2",
-        "phasegent --role orchestrator issue bind 1 >&2 --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue bind 1 >&2 --session ses_x",
       ],
       [
         "phasegent issue create --title t &> log",
-        "phasegent --role orchestrator issue create --title t &> log --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t &> log --session ses_x",
       ],
       [
         "phasegent issue create --title t &>> log",
-        "phasegent --role orchestrator issue create --title t &>> log --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t &>> log --session ses_x",
       ],
     ];
     for (const [command, expected] of cases) {
@@ -1175,13 +1282,13 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
   test("still splits a standalone & and && around redirections", () => {
     expect(
       rewritePhasegentCommand("phasegent issue bind 1 &", "ses_x", { agent: "orchestrator" }),
-    ).toBe("phasegent --role orchestrator issue bind 1 --session ses_x &");
+    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue bind 1 --session ses_x &");
     expect(
       rewritePhasegentCommand("phasegent issue create --title t 2>&1 && echo done", "ses_x", {
         agent: "orchestrator",
       }),
     ).toBe(
-      "phasegent --role orchestrator issue create --title t 2>&1 --session ses_x && echo done",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t 2>&1 --session ses_x && echo done",
     );
   });
 
@@ -1190,6 +1297,8 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
       rewritePhasegentCommand("phasegent issue create --title t |& tail -c 9", "ses_x", {
         agent: "orchestrator",
       }),
-    ).toBe("phasegent --role orchestrator issue create --title t --session ses_x |& tail -c 9");
+    ).toBe(
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session ses_x |& tail -c 9",
+    );
   });
 });

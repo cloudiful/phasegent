@@ -133,16 +133,24 @@ async function readIssueLeases(issueId, cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Shell command rewriting (issue #541, Phase 1).
+// Shell command rewriting (issue #541, issue #547 Phase 1).
 //
 // The hook owns every shell `phasegent` invocation:
 //   * a sub-agent session (agent resolves to a non-orchestrator role) cannot run
 //     `issue create|bind`; the whole command becomes a refusal that prints a
 //     hint on stderr and exits non-zero;
-//   * a claimed `--role orchestrator|admin` (flag or `PHASEGENT_ROLE=`) is
-//     downgraded to the session's own role;
-//   * a resolvable agent role is injected right after the `phasegent` token so
-//     the model never types `--role` by hand;
+//   * a claimed `--role orchestrator|admin` flag is rewritten in place, because a
+//     flag outranks any environment assignment, and every elevated
+//     `PHASEGENT_ROLE=` value is rewritten in place wherever it sits — wrapping
+//     (`env …`, `/usr/bin/env …`, `time …`), a continued line, or a here-doc body
+//     handed to a shell — so no wrapper carries one through; a sub-agent session
+//     warns about every such rewrite;
+//   * a resolvable agent role travels to the CLI as a `PHASEGENT_ROLE=<role>`
+//     assignment prefixed to the invocation, which is the CLI's documented
+//     environment fallback. The prefix is skipped only when the segment already
+//     assigns that same role; an explicit `--role` flag in the segment stays
+//     untouched and wins, while a blank or different assignment still ends up
+//     with the session role;
 //   * `--session` is appended at the end of an `issue create|bind` segment only,
 //     before `;`/`&`/`|`/newline, so pipes stay untouched.
 //
@@ -314,9 +322,10 @@ function shellSegments(command) {
 
 // A segment counts as an invocation only when, after leading whitespace, env
 // assignments and an optional `path/` prefix, the first token is `phasegent`.
-// `tail` is the masked remainder, so `issue create|bind` and an existing
-// `--role`/`--session` are only recognised outside quoted values, and
-// `balanced` gates injection for a segment with an unterminated quote.
+// `prefix` is the raw run before that token and `tail` the masked remainder, so
+// `issue create|bind` and an existing `--role`/`--session` flag are only
+// recognised outside quoted values, and `balanced` gates injection for a segment
+// with an unterminated quote.
 function phasegentInvocation(segment) {
   const { masked, balanced } = maskQuoted(segment.text);
   let text = segment.text;
@@ -340,16 +349,81 @@ function phasegentInvocation(segment) {
   if (!token) return null;
   const trailing = text.length - text.trimEnd().length;
   return {
-    tokenEnd: offset + token[0].length,
+    tokenStart: offset,
     segmentEnd: segment.end - trailing,
+    prefix: segment.text.slice(0, offset - segment.start),
     tail: masked.slice(offset - segment.start + token[0].length),
     balanced,
   };
 }
 
+// Splice `insert` into `text` at `index`; used for the injection points, which
+// are applied back to front so earlier offsets stay valid.
+function insertAt(text, index, insert) {
+  return `${text.slice(0, index)}${insert}${text.slice(index)}`;
+}
+
+// Leading-position `PHASEGENT_ROLE=` assignments in `text`, quote-aware: the
+// masked text locates each assignment, so a claim that only appears inside a
+// quoted value is never read, while the raw text supplies the value itself.
+// `value` is the dequoted, trimmed value; `start`/`end` bound the span that
+// carries it, which is what a rewrite replaces.
+function envRoleClaims(text) {
+  const { masked } = maskQuoted(text);
+  const assignment = /(^|[;&|()\s])PHASEGENT_ROLE=/g;
+  const claims = [];
+  for (const found of masked.matchAll(assignment)) {
+    const valueStart = found.index + found[0].length;
+    const raw = text.slice(valueStart);
+    const quote = raw[0];
+    if (quote === '"' || quote === "'") {
+      const closing = raw.indexOf(quote, 1);
+      if (closing < 0) continue; // unterminated value: no provable rewrite span
+      claims.push({
+        start: valueStart + 1,
+        end: valueStart + closing,
+        value: raw.slice(1, closing).trim(),
+      });
+      continue;
+    }
+    const bare = raw.match(/^[^\s;&|()]+/);
+    if (!bare) continue;
+    claims.push({ start: valueStart, end: valueStart + bare[0].length, value: bare[0] });
+  }
+  return claims;
+}
+
+// Value of the last leading `PHASEGENT_ROLE=` assignment in `text`; `null` when
+// the text carries none.
+function lastEnvRole(text) {
+  const claims = envRoleClaims(text);
+  return claims.length > 0 ? claims[claims.length - 1].value : null;
+}
+
+// Rewrite every elevated `PHASEGENT_ROLE` value in place, independent of
+// invocation recognition: a wrapper (`env …`, `/usr/bin/env …`, `time …`), a
+// continued line, or a here-doc body handed to a shell carries the same claim,
+// so neutralising it cannot depend on the segment starting at the CLI token.
+// Quoting and padding around the value are replaced together with it.
+function downgradeEnvClaims(text, role) {
+  const claims = envRoleClaims(text);
+  let result = text;
+  for (let index = claims.length - 1; index >= 0; index -= 1) {
+    const claim = claims[index];
+    if (!ELEVATED_CLAIMS.has(claim.value)) continue;
+    result = `${result.slice(0, claim.start)}${role}${result.slice(claim.end)}`;
+  }
+  return result;
+}
+
 const PHASEGENT_ISSUE_WRITE = /\bissue\s+(create|bind)\b/;
 const ROLE_FLAG = /(^|\s)--role(\s|=)/;
 const SESSION_FLAG = /(^|\s)--session(\s|=)/;
+// A claimed `--role orchestrator|admin` flag is rewritten in place because a flag
+// outranks any environment assignment. `ELEVATED_CLAIMS` names the same two role
+// values for the `PHASEGENT_ROLE` pass, which rewrites them wherever they sit.
+const FLAG_ROLE_CLAIM = /(^|\s)--role(\s+|=)(orchestrator|admin)\b/g;
+const ELEVATED_CLAIMS = new Set(["orchestrator", "admin"]);
 const SUBAGENT_REFUSAL =
   "echo \"phasegent: sub-agent sessions cannot run 'issue create|bind'; ask the orchestrator\" >&2; false";
 
@@ -359,13 +433,12 @@ function rewritePhasegentCommand(command, sessionId, event) {
   const subagent = isSubagentSession(event);
   let source = command;
   if (subagent) {
-    // Only code spans are rewritten: a quoted value that merely spells a role
-    // claim stays byte-for-byte.
+    // Only code spans are rewritten by the flag pass: a quoted value that merely
+    // spells a role claim stays byte-for-byte.
     source = transformCodeOnly(source, (span) =>
-      span
-        .replace(/(^|\s)--role(\s+|=)(orchestrator|admin)\b/g, (_m, lead, sep) => `${lead}--role${sep}${role}`)
-        .replace(/(^|[;&|()\s])(PHASEGENT_ROLE=)(orchestrator|admin)\b/g, (_m, lead, env) => `${lead}${env}${role}`),
+      span.replace(FLAG_ROLE_CLAIM, (_m, lead, sep) => `${lead}--role${sep}${role}`),
     );
+    source = downgradeEnvClaims(source, role);
     if (source !== command) {
       warn(`phasegent: sub-agent session cannot claim an orchestrator/admin role; using '${role}'`);
     }
@@ -383,17 +456,18 @@ function rewritePhasegentCommand(command, sessionId, event) {
     // An unterminated quote leaves no injection point that is provably outside
     // the value: that segment stays byte-for-byte.
     if (!invocation.balanced) continue;
-    const tailFlags = [];
-    const headFlags = [];
-    if (role && !ROLE_FLAG.test(invocation.tail)) headFlags.push(`--role ${role}`);
-    if (sessionId && PHASEGENT_ISSUE_WRITE.test(invocation.tail) && !SESSION_FLAG.test(invocation.tail)) {
-      tailFlags.push(`--session ${sessionId}`);
+    if (
+      sessionId &&
+      PHASEGENT_ISSUE_WRITE.test(invocation.tail) &&
+      !SESSION_FLAG.test(invocation.tail)
+    ) {
+      result = insertAt(result, invocation.segmentEnd, ` --session ${sessionId}`);
     }
-    if (tailFlags.length > 0) {
-      result = `${result.slice(0, invocation.segmentEnd)} ${tailFlags.join(" ")}${result.slice(invocation.segmentEnd)}`;
-    }
-    if (headFlags.length > 0) {
-      result = `${result.slice(0, invocation.tokenEnd)} ${headFlags.join(" ")}${result.slice(invocation.tokenEnd)}`;
+    // The session role is pinned unless the segment already assigns that very
+    // role or carries an explicit `--role` flag, which wins at the CLI.
+    const claimed = lastEnvRole(invocation.prefix);
+    if (role && !ROLE_FLAG.test(invocation.tail) && claimed !== role) {
+      result = insertAt(result, invocation.tokenStart, `PHASEGENT_ROLE=${role} `);
     }
   }
   return result;
