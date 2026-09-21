@@ -109,7 +109,7 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "close" => (
             Capability::IssueClose,
-            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity, this issue, and the current session flipped to `retained` with release_reason \"issue closed: <session>\". The current session resolves from --worktree-session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback; on the legacy fallback no owner is guessed and no lease is released, and a migration warning is written to stderr. A failed remote close leaves every local lease untouched, and other sessions, issues, and repo identities are never affected. No worktree directory or branch is deleted.",
+            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity and this issue flipped to `retained` across every session, with release_reason \"issue closed: <session>\" naming the closing session. The closing session resolves from --worktree-session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback; on the legacy fallback no owner is guessed and no lease is released, and a migration warning is written to stderr. A failed remote close leaves every local lease untouched, and other issues and repo identities are never affected. No worktree directory or branch is deleted.",
         ),
         "upload-attachment" => (
             Capability::IssueAttachmentUpload,

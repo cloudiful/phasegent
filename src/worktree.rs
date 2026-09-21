@@ -66,7 +66,7 @@ mod session;
 // positive here.
 #[allow(unused_imports)]
 pub use acquire::{
-    WORKTREE_AUTO_SETTING, acquire_lease, heartbeat_lease, release_active_leases_for_issue_session,
+    WORKTREE_AUTO_SETTING, acquire_lease, heartbeat_lease, release_active_leases_for_issue,
     release_lease, release_lease_forced, resolve_worktree_auto,
 };
 #[allow(unused_imports)]

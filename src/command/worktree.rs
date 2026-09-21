@@ -37,7 +37,7 @@
 //!   to the current working directory.
 //! * `prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove]`
 //!   The single pruning entry point (folds the former `release-stale`).
-//!   Default `--stale-days 14`. With neither action flag it is a
+//!   Default `--stale-days 7`. With neither action flag it is a
 //!   read-only dry-run. `--release-stale` requires a non-empty
 //!   `--reason` and flips stale active leases to `retained`; `--remove`
 //!   deletes clean + expired + retained worktrees. `--reason` without
@@ -197,7 +197,7 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         Some(value) => value
             .parse::<u32>()
             .map_err(|_| "worktree prune --stale-days must be a non-negative integer".to_owned())?,
-        None => 14,
+        None => 7,
     };
     let release_stale = has_flag(args, "--release-stale");
     let remove = has_flag(args, "--remove");
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_defaults_to_14_days_and_read_only_dry_run() {
+    fn prune_defaults_to_7_days_and_read_only_dry_run() {
         let invocation =
             command::parse(&strings(["--role", "orchestrator", "worktree", "prune"])).unwrap();
         match invocation.command {
@@ -595,7 +595,7 @@ mod tests {
                 reason,
             }) => {
                 assert_eq!(repo, None);
-                assert_eq!(stale_days, 14);
+                assert_eq!(stale_days, 7);
                 assert!(!release_stale, "--release-stale must default off");
                 assert!(!remove, "--remove must default off");
                 assert_eq!(reason, None);

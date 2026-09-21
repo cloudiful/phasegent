@@ -508,9 +508,11 @@ pub(crate) fn execute_issue(
         } => {
             // Resolve the worktree session before the remote close so a
             // blank or overlong value fails fast without closing the
-            // issue. The resolved context scopes the local lease release
-            // to this session (issue 305 Task 3); Task 1 only resolves
-            // the identity and emits the legacy migration warning.
+            // issue. The resolved context attributes the local lease
+            // release (issue 305 Task 3, widened by issue 537 Phase 2)
+            // and identifies the legacy fallback, which never releases;
+            // Task 1 only resolves the identity and emits the legacy
+            // migration warning.
             let session = match crate::worktree::resolve_session(worktree_session.as_deref()) {
                 Ok(context) => context,
                 Err(error) => {
@@ -572,10 +574,11 @@ pub(crate) fn execute_issue(
                         crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind)
                             .warning(),
                     );
-                    // Release only the worktree leases this session owns
-                    // (issue 305 Task 3). The legacy fallback never guesses
-                    // an owner: it is passed as `None` so no lease is
-                    // released. The hook runs after the remote close
+                    // Release every active worktree lease the closed issue
+                    // holds across all sessions (issue 305 Task 3, widened
+                    // by issue 537 Phase 2). The legacy fallback never
+                    // guesses a closer: it is passed as `None` so no lease
+                    // is released. The hook runs after the remote close
                     // succeeded, so a failed close never mutates local
                     // lease state, and warnings stay on stderr.
                     let release_session = match session.source {

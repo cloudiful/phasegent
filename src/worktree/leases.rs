@@ -465,20 +465,21 @@ pub(crate) fn recover_stale_active_leases(
 }
 
 /// Atomically flip every `active` lease matching
-/// `(repo_identity, issue, session)` to `retained`, record `reason`, and
-/// return the flipped row count.
+/// `(repo_identity, issue)` to `retained`, across every session, record
+/// `reason`, and return the flipped row count.
 ///
 /// The flip runs in one `BEGIN IMMEDIATE` transaction with a single
 /// conditional `UPDATE` on `status = 'active'`, so a lease owned by
-/// another session, issue, or repository is never touched and a lease
-/// flips at most once under a concurrent racer. Terminal rows are left
-/// untouched as audit records; the worktree directory and branch are
-/// never modified (issue 305 Task 3).
-pub(crate) fn retain_active_leases_for_issue_session(
+/// another issue or repository is never touched and a lease flips at
+/// most once under a concurrent racer. Closing an issue converges its
+/// lifecycle, so no session filter is applied here (issue 537 Phase 2);
+/// session-scoped operations (heartbeat, acquire reuse) keep their own
+/// guards. Terminal rows are left untouched as audit records; the
+/// worktree directory and branch are never modified (issue 305 Task 3).
+pub(crate) fn retain_active_leases_for_issue(
     storage: &mut Storage,
     identity: &str,
     issue: u64,
-    session: &str,
     reason: &str,
     now: i64,
 ) -> Result<u64, WorktreeError> {
@@ -492,12 +493,11 @@ pub(crate) fn retain_active_leases_for_issue_session(
     let updated = transaction
         .execute(
             "UPDATE worktree_leases \
-             SET status = ?5, heartbeat_at = ?6, release_reason = ?7 \
-             WHERE repo_identity = ?1 AND issue = ?2 AND session = ?3 AND status = ?4",
+             SET status = ?4, heartbeat_at = ?5, release_reason = ?6 \
+             WHERE repo_identity = ?1 AND issue = ?2 AND status = ?3",
             rusqlite::params![
                 identity,
                 issue as i64,
-                session,
                 LEASE_STATUS_ACTIVE,
                 LEASE_STATUS_RETAINED,
                 now,

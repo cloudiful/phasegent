@@ -890,13 +890,14 @@ fn auto_prefixed_orphan_recover_projects_to_provider_with_idempotent_retry() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue 305 Task 3: issue-close worktree-lease release.
+// Issue 305 Task 3, widened by issue 537 Phase 2: issue-close worktree-lease
+// release.
 //
 // The lifecycle helper resolves the current repo identity and delegates to
-// the worktree domain flip. These tests pin the session isolation contract:
-// only the closed session's active lease for the closed issue/repo becomes
-// `retained`; every other session, issue, and repo is left `active`, and an
-// absent session never guesses an owner.
+// the worktree domain flip. These tests pin the all-session release contract:
+// every active lease for the closed issue/repo becomes `retained` regardless
+// of the session that owns it; every other issue and repo is left `active`,
+// and an absent session never guesses an owner.
 // ---------------------------------------------------------------------------
 
 fn temp_git_repo(label: &str) -> Option<(std::path::PathBuf, String)> {
@@ -964,7 +965,7 @@ fn lease_state(lease_id: &str) -> (String, Option<String>) {
 }
 
 #[test]
-fn close_release_flips_only_current_session_lease_for_issue_and_repo() {
+fn close_release_flips_every_session_lease_for_issue_and_repo() {
     let _lock = lock_workflow_tests();
     let (temp, _storage, _env) = open_temp_storage("close-release");
     let Some((repo_dir, identity)) = temp_git_repo("current") else {
@@ -984,16 +985,51 @@ fn close_release_flips_only_current_session_lease_for_issue_and_repo() {
     );
     assert_eq!(
         outcome,
-        crate::lifecycle::AutoReleaseLeaseOutcome::Released { released: 1 }
+        crate::lifecycle::AutoReleaseLeaseOutcome::Released { released: 2 }
     );
     assert!(outcome.warning().is_none());
 
     let (status_a, reason_a) = lease_state(&lease_a);
     assert_eq!(status_a, "retained");
     assert_eq!(reason_a.as_deref(), Some("issue closed: session-a"));
-    assert_eq!(lease_state(&lease_b).0, "active");
+    // Issue 537 Phase 2: the second session's active lease for the same
+    // issue is converged by the close too, attributed to the closer.
+    let (status_b, reason_b) = lease_state(&lease_b);
+    assert_eq!(status_b, "retained");
+    assert_eq!(reason_b.as_deref(), Some("issue closed: session-a"));
     assert_eq!(lease_state(&same_session_other_issue).0, "active");
     assert_eq!(lease_state(&other_repo).0, "active");
+    let _ = fs::remove_dir_all(repo_dir);
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[test]
+fn close_release_flips_a_foreign_session_lease_without_a_local_lease() {
+    let _lock = lock_workflow_tests();
+    let (temp, _storage, _env) = open_temp_storage("close-foreign-session");
+    let Some((repo_dir, identity)) = temp_git_repo("foreign-session") else {
+        let _ = fs::remove_dir_all(temp);
+        return;
+    };
+    // Only a second session holds a lease for the issue: the closer owns
+    // nothing, but closing still flips the foreign active lease.
+    let foreign = seed_lease(&identity, 538, "session-b", "active");
+
+    let outcome = crate::lifecycle::release_closed_issue_leases(
+        &crate::worktree::ProcessWorktreeRunner::new(),
+        &repo_dir,
+        538,
+        Some("session-a"),
+    );
+    assert_eq!(
+        outcome,
+        crate::lifecycle::AutoReleaseLeaseOutcome::Released { released: 1 }
+    );
+    assert!(outcome.warning().is_none());
+
+    let (status, reason) = lease_state(&foreign);
+    assert_eq!(status, "retained");
+    assert_eq!(reason.as_deref(), Some("issue closed: session-a"));
     let _ = fs::remove_dir_all(repo_dir);
     let _ = fs::remove_dir_all(temp);
 }

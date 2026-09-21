@@ -13,7 +13,7 @@ use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_
 use crate::worktree::leases::{
     NewLease, count_other_active_leases, ensure_schema, find_active_lease, heartbeat_active_lease,
     insert_lease, list_for_repo, load_lease, record_release_reason, refresh_heartbeat,
-    retain_active_leases_for_issue_session, update_status,
+    retain_active_leases_for_issue, update_status,
 };
 use crate::worktree::naming::{
     cache_root, cache_root_in, compute_fingerprint, generate_branch, new_lease_id, slug_from_branch,
@@ -696,41 +696,28 @@ pub fn heartbeat_lease(lease_id: &str, session: &str, now: i64) -> Result<LeaseR
     }
 }
 
-/// Release every `active` lease for `(repo_identity, issue, session)` to
-/// `retained`, recording `reason`, and return the flipped row count.
+/// Release every `active` lease for `(repo_identity, issue)` to
+/// `retained`, across every session, recording `reason`, and return the
+/// flipped row count.
 ///
-/// This is the issue-close lifecycle hook (issue 305 Task 3). The caller
-/// invokes it only after the remote provider confirmed the close, so a
-/// failed remote close never mutates local lease state. Leases owned by
-/// another session, issue, or repository are untouched, and only `active`
-/// rows transition — terminal rows remain as audit records. The worktree
-/// directory and branch are never deleted.
-pub fn release_active_leases_for_issue_session(
+/// This is the issue-close lifecycle hook (issue 305 Task 3, widened to
+/// all sessions by issue 537 Phase 2): closing an issue releases every
+/// active lease it owns so no second session is left waiting for stale
+/// pruning. The caller invokes it only after the remote provider
+/// confirmed the close, so a failed remote close never mutates local
+/// lease state. Leases owned by another issue or repository are
+/// untouched, and only `active` rows transition — terminal rows remain
+/// as audit records. The worktree directory and branch are never
+/// deleted.
+pub fn release_active_leases_for_issue(
     repo_identity: &str,
     issue: u64,
-    session: &str,
     reason: &str,
 ) -> Result<u64, WorktreeError> {
     if issue == 0 {
         return Err(WorktreeError::new("argument", "issue must be > 0"));
     }
-    if session.trim().is_empty() {
-        return Err(WorktreeError::new("argument", "session must not be empty"));
-    }
-    if session.chars().count() > MAX_SESSION_CHARS {
-        return Err(WorktreeError::new(
-            "argument",
-            format!("session must be <= {MAX_SESSION_CHARS} chars"),
-        ));
-    }
     let mut storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
-    retain_active_leases_for_issue_session(
-        &mut storage,
-        repo_identity,
-        issue,
-        session,
-        reason,
-        now_unix_secs(),
-    )
+    retain_active_leases_for_issue(&mut storage, repo_identity, issue, reason, now_unix_secs())
 }

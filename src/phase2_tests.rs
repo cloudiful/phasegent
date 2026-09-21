@@ -2903,13 +2903,14 @@ fn issue_search_body_truncation_is_byte_safe_for_multibyte() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue 305 Task 3: `issue close` releases only the current session's
-// worktree leases, and only after the provider confirmed the close.
+// Issue 305 Task 3, widened by issue 537 Phase 2: `issue close` releases
+// every active worktree lease the closed issue holds across all sessions,
+// and only after the provider confirmed the close.
 //
 // These tests drive `execute_issue` end-to-end against the deterministic
 // local provider (no mock HTTP) with a temp worktree database and a temp
-// git checkout. They prove the provider success/failure split, the current
-// vs. other session isolation, and the no-session no-op.
+// git checkout. They prove the provider success/failure split, the
+// cross-session release, and the no-session no-op.
 // ---------------------------------------------------------------------------
 
 fn close_cli_root(label: &str) -> std::path::PathBuf {
@@ -3031,7 +3032,7 @@ impl Drop for SessionEnvRestore {
 }
 
 #[test]
-fn cli_issue_close_releases_current_session_lease_after_provider_success() {
+fn cli_issue_close_releases_every_session_lease_after_provider_success() {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
@@ -3074,11 +3075,12 @@ fn cli_issue_close_releases_current_session_lease_after_provider_success() {
     let (status_a, reason_a) = close_cli_lease_state(&lease_a);
     assert_eq!(status_a, "retained");
     assert_eq!(reason_a.as_deref(), Some("issue closed: session-a"));
+    let (status_b, reason_b) = close_cli_lease_state(&lease_b);
     assert_eq!(
-        close_cli_lease_state(&lease_b).0,
-        "active",
-        "another session's lease must stay active"
+        status_b, "retained",
+        "a second session's lease for the closed issue must be converged"
     );
+    assert_eq!(reason_b.as_deref(), Some("issue closed: session-a"));
     let _ = fs::remove_dir_all(root);
 }
 

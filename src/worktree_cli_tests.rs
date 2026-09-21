@@ -346,7 +346,7 @@ fn parse_list_repo_optional() {
 }
 
 #[test]
-fn parse_prune_defaults_to_read_only_and_stale_days_14() {
+fn parse_prune_defaults_to_read_only_and_stale_days_7() {
     let invocation =
         crate::command::parse(&strings(["--role", "orchestrator", "worktree", "prune"])).unwrap();
     match invocation.command {
@@ -358,7 +358,7 @@ fn parse_prune_defaults_to_read_only_and_stale_days_14() {
             reason,
         }) => {
             assert_eq!(repo, None);
-            assert_eq!(stale_days, 14);
+            assert_eq!(stale_days, 7);
             assert!(!release_stale);
             assert!(!remove);
             assert_eq!(reason, None);
@@ -1796,7 +1796,7 @@ fn parse_heartbeat_rejects_blank_session() {
 }
 
 #[test]
-fn parse_prune_defaults_to_read_only_scan_and_14_days() {
+fn parse_prune_defaults_to_read_only_scan_and_7_days() {
     let invocation =
         crate::command::parse(&strings(["--role", "orchestrator", "worktree", "prune"])).unwrap();
     match invocation.command {
@@ -1808,7 +1808,7 @@ fn parse_prune_defaults_to_read_only_scan_and_14_days() {
             reason,
         }) => {
             assert_eq!(repo, None);
-            assert_eq!(stale_days, 14);
+            assert_eq!(stale_days, 7);
             assert!(!release_stale);
             assert!(!remove);
             assert_eq!(reason, None);

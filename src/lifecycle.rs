@@ -465,17 +465,21 @@ impl AutoReleaseLeaseOutcome {
     }
 }
 
-/// Release every active worktree lease that `(current repo, issue,
-/// session)` owns after a successful remote close (issue 305 Task 3).
+/// Release every active worktree lease that the current repository
+/// holds for a closed issue, across every session, after a successful
+/// remote close (issue 305 Task 3, widened by issue 537 Phase 2).
 ///
 /// Only an explicit `--worktree-session` or an environment
 /// `PHASEGENT_SESSION_ID` counts as a session; the legacy fallback is
-/// passed as `None` so the helper never guesses an owner. The canonical
-/// repository identity is resolved here and the atomic flip is delegated
-/// to [`crate::worktree::release_active_leases_for_issue_session`], so a
-/// different session, issue, or repository is never touched. Every
-/// failure degrades to a bounded warning because the remote close has
-/// already succeeded.
+/// passed as `None` so the helper never guesses an owner or runs
+/// without an explicit close attribution. When a session is known it
+/// only attributes the `release_reason`; the release itself is not
+/// session-scoped, so closing an issue converges every active lease for
+/// that issue. The canonical repository identity is resolved here and
+/// the atomic flip is delegated to
+/// [`crate::worktree::release_active_leases_for_issue`], so a different
+/// issue or repository is never touched. Every failure degrades to a
+/// bounded warning because the remote close has already succeeded.
 pub fn release_closed_issue_leases(
     runner: &dyn crate::worktree::WorktreeRunner,
     repo_path: &Path,
@@ -503,9 +507,7 @@ pub fn release_closed_issue_leases(
         }
     };
     let reason = format!("issue closed: {session}");
-    match crate::worktree::release_active_leases_for_issue_session(
-        &identity, issue, session, &reason,
-    ) {
+    match crate::worktree::release_active_leases_for_issue(&identity, issue, &reason) {
         Ok(released) => AutoReleaseLeaseOutcome::Released { released },
         Err(error) => AutoReleaseLeaseOutcome::Warning {
             reason: format!(
