@@ -22,5 +22,5 @@ INSERT OR IGNORE INTO status_transitions (from_status, to_status) VALUES
     ('Changes Requested', 'Cancelled'),
     ('Blocked', 'In Progress'),
     ('Blocked', 'Cancelled'),
-    ('Resolved', 'In Progress'),
-    ('Resolved', 'Closed');
+    ('Resolved', 'Closed'),
+    ('Resolved', 'In Progress');

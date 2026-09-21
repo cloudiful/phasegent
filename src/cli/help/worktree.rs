@@ -11,6 +11,9 @@
 //!   the safety guarantees (no branch deletion, no dirty removal,
 //!   `.env` is never touched, `git worktree remove` is invoked
 //!   without `--force`).
+//! * The `acquire` / `list` / `prune` pages and the group footer also
+//!   advertise the pre-subcommand `issue sync` pass and the
+//!   `--no-sync` switch that skips it.
 //!
 //! The text builders are split from the `print_*` wrappers so the
 //! advertised contract (session precedence, dry-run recovery, prune
@@ -19,15 +22,15 @@
 use super::common::{HelpRow, print_group_help, render_group_help};
 use crate::policy::{Capability, Role};
 
-const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--base REF] [--isolate] [--format json]\n\nAcquire (or refresh) a per-(repo, issue, session) worktree lease and finish the local setup in one command. Idempotent: re-running with the same triple returns the same lease_id and updates the heartbeat (reason=\"idempotent\"). When the current checkout is clean and no other lease is active for the repo it is reused (reason=\"no_conflict\"); when it is dirty or any other active lease exists for the repo a fresh `phasegent/<issue>-<short6hex>` branch and a new worktree under ~/.cache/phasegent/worktrees/<fingerprint>/<slug> are created by default (reason=\"new_worktree\"), with the trigger explained by a stderr warning. That new default is the issue #436 behavior change: a dirty checkout or an existing lease no longer reuses the shared checkout, so a second session cannot collide with the `(repo, worktree_path)` lease index; `--isolate` remains accepted as the explicit opt-in for the same outcome. When the `git status` probe itself fails the dirty state is unknown: `--isolate` or the resolved `worktree-auto` switch creates a fresh worktree, otherwise the current checkout is reused, and both emit a stderr warning — an unknown status is never silently treated as clean, and this is the only case where the switches still change the outcome. On every successful acquire the issue is bound to the acquired checkout's branch and the managed commit hooks are installed when that checkout has a git origin, so one command leaves the checkout ready; both steps reuse the standard bind/hook helpers, never overwrite an existing binding to a different issue (the conflict is a warning naming `--replace`), and degrade to warnings that never fail the acquire. Returns compact JSON on stdout. --session resolves from the explicit flag, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback (legacy only warns on stderr); --base is accepted for forward compatibility and the implementation always bases on HEAD. --format is json (the only accepted value). Orchestrator-only. No branch, lease row, or dirty worktree is ever deleted, .env / secret material is never read or copied, and the lease table is created lazily through `CREATE TABLE IF NOT EXISTS` so pre-Phase-1 databases still open.";
+const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--base REF] [--isolate] [--no-sync] [--format json]\n\nAcquire (or refresh) a per-(repo, issue, session) worktree lease and finish the local setup in one command. Idempotent: re-running with the same triple returns the same lease_id and updates the heartbeat (reason=\"idempotent\"). When the current checkout is clean and no other lease is active for the repo it is reused (reason=\"no_conflict\"); when it is dirty or any other active lease exists for the repo a fresh `phasegent/<issue>-<short6hex>` branch and a new worktree under ~/.cache/phasegent/worktrees/<fingerprint>/<slug> are created by default (reason=\"new_worktree\"), with the trigger explained by a stderr warning. That new default is the issue #436 behavior change: a dirty checkout or an existing lease no longer reuses the shared checkout, so a second session cannot collide with the `(repo, worktree_path)` lease index; `--isolate` remains accepted as the explicit opt-in for the same outcome. When the `git status` probe itself fails the dirty state is unknown: `--isolate` or the resolved `worktree-auto` switch creates a fresh worktree, otherwise the current checkout is reused, and both emit a stderr warning — an unknown status is never silently treated as clean, and this is the only case where the switches still change the outcome. On every successful acquire the issue is bound to the acquired checkout's branch and the managed commit hooks are installed when that checkout has a git origin, so one command leaves the checkout ready; both steps reuse the standard bind/hook helpers, never overwrite an existing binding to a different issue (the conflict is a warning naming `--replace`), and degrade to warnings that never fail the acquire. Returns compact JSON on stdout. --session resolves from the explicit flag, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback (legacy only warns on stderr); --base is accepted for forward compatibility and the implementation always bases on HEAD. --format is json (the only accepted value). Orchestrator-only. No branch, lease row, or dirty worktree is ever deleted, .env / secret material is never read or copied, and the lease table is created lazily through `CREATE TABLE IF NOT EXISTS` so pre-Phase-1 databases still open. Before its own work an orchestrator session runs a repository-scoped `issue sync` pass and forwards its warnings to stderr; --no-sync skips that pass.";
 
 const RELEASE_HELP: &str = "Usage: worktree release --lease ID [--retain=true|false] [--force --reason TEXT]\n\nFlip an active lease to retained (default) or released. --retain defaults to true; the boolean accepts true|1|yes|on and false|0|no|off. The release is a no-op when the lease is already in the requested terminal state. The directory and the branch are never deleted by `release`; that is `prune`'s job. --force requires a non-empty --reason and persists it on the lease row (visible in status/list) so forced overrides stay attributable; --reason without --force is rejected. Lease rows are audit records and are never deleted — use force+reason instead of deleting rows. Orchestrator-only.";
 
 const STATUS_HELP: &str = "Usage: worktree status --issue N\n\nList every active lease for the given issue id (read-only). Returns a JSON envelope with `{ \"issue\": N, \"leases\": [...] }`. The result is bounded by the storage layer (256 active rows max per query). Available to orchestrator, executor, and reviewer; tester is denied.";
 
-const LIST_HELP: &str = "Usage: worktree list [--repo PATH]\n\nList every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ \"repo_identity\": \"...\", \"leases\": [...] }`. Available to orchestrator, executor, and reviewer; tester is denied.";
+const LIST_HELP: &str = "Usage: worktree list [--repo PATH] [--no-sync]\n\nList every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ \"repo_identity\": \"...\", \"leases\": [...] }`. Available to orchestrator, executor, and reviewer; tester is denied. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.";
 
-const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove]\n\nSingle pruning entry point (folds the former release-stale). With neither --release-stale nor --remove this is a read-only dry-run that reports stale active leases and prunable worktrees and changes nothing. --release-stale requires a non-empty --reason and flips exactly the active leases whose heartbeat is older than --stale-days (default 7) to `retained` in a single transaction, recording the reason; --reason without --release-stale is rejected. --remove deletes clean + expired + retained worktrees. Supplying both runs the recovery first and then the removal. A worktree is a removal candidate only when all three conditions hold: status is `retained`; heartbeat is older than stale-days days; and `git status --porcelain` reports an empty output. Dirty worktrees are never deleted (prunable=false, skipped_dirty); active and released leases are skipped; recent retained leases are skipped. `git worktree remove` is the only git command invoked, and it is never passed `--force`; branches are never deleted (no `git branch -D`). --repo defaults to the current working directory and is canonicalised through `git rev-parse --git-common-dir`. Returns a JSON envelope that records lease and directory actions separately. Orchestrator-only.";
+const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove] [--no-sync]\n\nSingle pruning entry point (folds the former release-stale). With neither --release-stale nor --remove this is a read-only dry-run that reports stale active leases and prunable worktrees and changes nothing. --release-stale requires a non-empty --reason and flips exactly the active leases whose heartbeat is older than --stale-days (default 7) to `retained` in a single transaction, recording the reason; --reason without --release-stale is rejected. --remove deletes clean + expired + retained worktrees. Supplying both runs the recovery first and then the removal. A worktree is a removal candidate only when all three conditions hold: status is `retained`; heartbeat is older than stale-days days; and `git status --porcelain` reports an empty output. Dirty worktrees are never deleted (prunable=false, skipped_dirty); active and released leases are skipped; recent retained leases are skipped. `git worktree remove` is the only git command invoked, and it is never passed `--force`; branches are never deleted (no `git branch -D`). --repo defaults to the current working directory and is canonicalised through `git rev-parse --git-common-dir`. Returns a JSON envelope that records lease and directory actions separately. Orchestrator-only. Before its own work it runs a repository-scoped `issue sync` pass and forwards its warnings to stderr; --no-sync skips that pass.";
 
 const HEARTBEAT_HELP: &str = "Usage: worktree heartbeat --lease ID [--session SESSION]\n\nRefresh heartbeat_at on an active lease so a long-running session is not mistaken for stale. The update only matches when the lease is still `active` AND its stored session equals the caller's resolved session (--session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback with a stderr warning). A foreign session, a terminal lease, or an unknown lease id returns a structured `state` conflict and leaves the row untouched; the conditional update also guarantees a heartbeat and a concurrent stale recovery cannot both win. Returns a JSON envelope with lease_id/issue/session/status/heartbeat_at. Never deletes a worktree or branch. Orchestrator-only.";
 
@@ -100,7 +103,7 @@ pub(crate) fn worktree_help_text(role: Option<Role>) -> String {
             (None, &mutating),
             (Some("Read-only (status/list)"), &readonly),
         ],
-        "Use 'phasegent --help worktree <command>' for options.",
+        "Use 'phasegent --help worktree <command>' for options. acquire, list, and prune run their repository's sync pass first; --no-sync skips it.",
     )
 }
 
@@ -117,7 +120,7 @@ pub(crate) fn print_worktree_help(role: Option<Role>) {
             (None, &mutating),
             (Some("Read-only (status/list)"), &readonly),
         ],
-        "Use 'phasegent --help worktree <command>' for options.",
+        "Use 'phasegent --help worktree <command>' for options. acquire, list, and prune run their repository's sync pass first; --no-sync skips it.",
     )
 }
 
@@ -299,6 +302,37 @@ mod tests {
         );
         assert!(text.contains("never passed `--force`"), "got: {text}");
         assert!(text.contains("branches are never deleted"), "got: {text}");
+    }
+
+    /// Issue 552 Phase 2 added the repository-scoped reconciliation pass
+    /// that `acquire` / `list` / `prune` run before their own work; every
+    /// page it applies to must advertise the pass and its `--no-sync`
+    /// switch, and the pages it does not touch must stay silent about it.
+    #[test]
+    fn acquire_list_and_prune_advertise_the_sync_pass_and_its_skip_switch() {
+        for command in ["acquire", "list", "prune"] {
+            let text = worktree_command_help_text(Some(Role::Orchestrator), command);
+            assert!(
+                text.contains("--no-sync"),
+                "{command} help must advertise --no-sync; got: {text}"
+            );
+            assert!(
+                text.contains("issue sync"),
+                "{command} help must name the reconciliation pass; got: {text}"
+            );
+        }
+        let overview = worktree_help_text(Some(Role::Orchestrator));
+        assert!(
+            overview.contains("--no-sync"),
+            "the overview footer must advertise the switch; got: {overview}"
+        );
+        for command in ["release", "heartbeat", "status"] {
+            let text = worktree_command_help_text(Some(Role::Orchestrator), command);
+            assert!(
+                !text.contains("--no-sync"),
+                "{command} has no reconciliation pass; got: {text}"
+            );
+        }
     }
 
     #[test]

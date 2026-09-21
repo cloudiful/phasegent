@@ -65,13 +65,13 @@ pub const STATUS_POLICY_CAVEAT: &str = "Policy guidance only: the Redmine server
 /// truth for the workflow; the OpenCode plugin and the orchestrator
 /// prompt must query phasegent instead of restating it.
 ///
-/// `Resolved` is a per-phase state, not a task-final one: it marks one
-/// reviewed phase. It therefore carries two distinct outgoing edges —
-/// `In Progress` is the phase-continuation edge taken after that phase's
-/// checkpoint/push when the plan still has remaining phases, and
-/// `Closed` is the task-final edge taken only after the last
-/// checkpoint/push. Omitting the continuation edge would make a
-/// multi-phase task impossible to advance.
+/// The row order is the auto-route preference: a bare `status transition`
+/// takes the first allowed next status of the current row. `Resolved` is
+/// the non-terminal "AI work finished, awaiting the user's verification"
+/// state, so its first edge is the verified terminal `Closed`; the
+/// `In Progress` edge stays available as an explicitly targeted resume
+/// after a reviewed phase, which keeps multi-phase work reachable
+/// without making it the default.
 const STATUS_TRANSITIONS: &[(&str, &[&str])] = &[
     ("New", &["In Progress", "Cancelled"]),
     ("In Progress", &["In Review", "Blocked", "Cancelled"]),
@@ -84,7 +84,7 @@ const STATUS_TRANSITIONS: &[(&str, &[&str])] = &[
         &["In Progress", "Blocked", "Cancelled"],
     ),
     ("Blocked", &["In Progress", "Cancelled"]),
-    ("Resolved", &["In Progress", "Closed"]),
+    ("Resolved", &["Closed", "In Progress"]),
     ("Closed", &[]),
     ("Cancelled", &[]),
 ];
@@ -324,7 +324,7 @@ mod tests {
     fn forbidden_lookup_returns_names_only_for_illegal_canonical_edges() {
         assert_eq!(
             forbidden_allowed_next_names("Resolved", "In Review"),
-            Some(vec!["In Progress".to_owned(), "Closed".to_owned()])
+            Some(vec!["Closed".to_owned(), "In Progress".to_owned()])
         );
         assert_eq!(
             forbidden_allowed_next_names("Closed", "In Progress"),
@@ -335,9 +335,31 @@ mod tests {
         assert_eq!(forbidden_allowed_next_names("Triaged", "In Progress"), None);
     }
 
+    /// A bare `status transition` takes the first allowed next status of
+    /// the current row, so the canonical auto-route walks
+    /// `In Review -> Resolved -> Closed`; the resume edge back to
+    /// `In Progress` stays allowed behind an explicit target.
+    #[test]
+    fn bare_auto_route_walks_in_review_to_resolved_to_closed() {
+        assert_eq!(
+            canonical_allowed_next("In Review").and_then(|next| next.first()),
+            Some(&"Resolved"),
+            "a bare transition from In Review must land on Resolved"
+        );
+        assert_eq!(
+            canonical_allowed_next("Resolved").and_then(|next| next.first()),
+            Some(&"Closed"),
+            "a bare transition from Resolved must land on the verified terminal status"
+        );
+        assert!(
+            canonical_allowed_next("Resolved").is_some_and(|next| next.contains(&"In Progress")),
+            "the explicitly targeted resume edge must stay allowed"
+        );
+    }
+
     #[test]
     fn forbidden_parser_accepts_both_provider_wordings() {
-        let redmine = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[In Progress, Closed]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
+        let redmine = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
         assert_eq!(
             parse_forbidden_transition(redmine),
             Some(("Resolved".to_owned(), "In Review".to_owned()))
@@ -353,7 +375,7 @@ mod tests {
 
     #[test]
     fn structured_forbidden_json_round_trips_a_preflight_rejection() {
-        let message = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[In Progress, Closed]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
+        let message = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
         let error = ForgejoError::request("issue status advance", message.to_owned());
         let json = structured_forbidden_json(&error).expect("preflight rejection must map");
         assert_eq!(json["kind"], "request");
@@ -363,7 +385,7 @@ mod tests {
         assert_eq!(json["target"], "In Review");
         assert_eq!(
             json["allowed_next"],
-            serde_json::json!(["In Progress", "Closed"])
+            serde_json::json!(["Closed", "In Progress"])
         );
         assert_eq!(json["policy_source"], STATUS_POLICY_SOURCE);
     }

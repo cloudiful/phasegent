@@ -3,15 +3,45 @@ use super::common::render_group_help;
 use super::common::{HelpRow, print_group_help};
 use crate::policy::{Capability, Role};
 
-/// Issue commands listed in `issue` help.
-pub(crate) fn normal_issue_commands() -> Vec<(&'static str, Capability)> {
+/// Issue commands listed in `issue` help: command name, the one-line row
+/// description, and the capability that gates the row for a role.
+pub(crate) fn normal_issue_commands() -> Vec<(&'static str, &'static str, Capability)> {
     vec![
-        ("get", Capability::IssueRead),
-        ("search", Capability::IssueSearch),
-        ("create", Capability::IssueCreate),
-        ("update", Capability::IssueUpdateBody),
-        ("close", Capability::IssueClose),
-        ("upload-attachment", Capability::IssueAttachmentUpload),
+        (
+            "get",
+            Capability::IssueRead.description(),
+            Capability::IssueRead,
+        ),
+        (
+            "search",
+            Capability::IssueSearch.description(),
+            Capability::IssueSearch,
+        ),
+        (
+            "create",
+            Capability::IssueCreate.description(),
+            Capability::IssueCreate,
+        ),
+        (
+            "update",
+            Capability::IssueUpdateBody.description(),
+            Capability::IssueUpdateBody,
+        ),
+        (
+            "close",
+            Capability::IssueClose.description(),
+            Capability::IssueClose,
+        ),
+        (
+            "sync",
+            "Reconcile worktrees of issues the provider already closed",
+            Capability::IssueClose,
+        ),
+        (
+            "upload-attachment",
+            Capability::IssueAttachmentUpload.description(),
+            Capability::IssueAttachmentUpload,
+        ),
     ]
 }
 
@@ -20,10 +50,7 @@ fn issue_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>, Vec<H
         "Issue commands for {}:",
         role.map_or("all roles", Role::as_str)
     );
-    let main: Vec<HelpRow<'static>> = normal_issue_commands()
-        .into_iter()
-        .map(|(name, capability)| (name, capability.description(), capability))
-        .collect();
+    let main: Vec<HelpRow<'static>> = normal_issue_commands();
     let local: Vec<HelpRow<'static>> = vec![
         (
             "bind",
@@ -109,7 +136,11 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "close" => (
             Capability::IssueClose,
-            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity and this issue flipped to `retained` across every session, with release_reason \"issue closed: <session>\" naming the closing session. The closing session resolves from --worktree-session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback; on the legacy fallback no owner is guessed and no lease is released, and a migration warning is written to stderr. A failed remote close leaves every local lease untouched, and other issues and repo identities are never affected. No worktree directory or branch is deleted.",
+            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity and this issue flipped to `retained` across every session, with release_reason \"issue closed: <session>\" naming the closing session. The closing session resolves from --worktree-session, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback; on the legacy fallback no owner is guessed and no lease is released, and a migration warning is written to stderr. A failed remote close leaves every local lease untouched, and other issues and repo identities are never affected. After the flip the close removes this issue's worktree directories in the resolved repo when the directory is clean (uncommitted or untracked files count as dirty), no active lease of another session points at it, and it is not the repository's main checkout; a kept directory emits one stderr warning naming the guard that kept it. Branches and lease rows are never deleted, and the cleanup is best-effort: it never changes the exit code or the stdout document.",
+        ),
+        "sync" => (
+            Capability::IssueClose,
+            "Usage: issue sync [--all] [--no-clean]\n\nReconcile the local worktree leases and directories with the provider state (orchestrator-only). Candidates are the issues in the lease table whose worktree directory still exists; each candidate's remote state is read, and one the provider already closed converges exactly the way `issue close` converges it locally: the issue's active leases in the scanned repository flip to `retained` with release_reason \"issue closed on the remote (issue sync)\", and its directories run the same three close guards (clean, no active lease of another session pointing at it, never the main checkout). Branches are never deleted, lease rows are never deleted, and a directory a guard keeps stays on disk with the guard's reason in the report.\n\nDefault scope is the repository of the current working directory. --all scans every repository identity recorded in the lease table through its main checkout; a checkout that is missing or resolves to a different identity is reported under skipped_repos instead of being guessed. --no-clean is the report mode: the same candidates and the same guard verdicts with per-directory would_clean/would_keep actions, and no write at all.\n\nstdout is one JSON envelope {mode, all, checked, not_closed, not_found, released_leases, cleaned, kept, skipped_repos?, issues:[...]}. A remote read failure is a structured error with a non-zero exit that deletes nothing, while a remote 404 counts into not_found and the pass continues. `worktree acquire`, `worktree list`, and `worktree prune` run the same pass for their repository before doing their own work and append its warnings to stderr; --no-sync skips that pass.",
         ),
         "upload-attachment" => (
             Capability::IssueAttachmentUpload,
@@ -167,15 +198,16 @@ mod tests {
     fn normal_help_lists_only_supported_commands() {
         let names: Vec<&str> = normal_issue_commands()
             .into_iter()
-            .map(|(name, _)| name)
+            .map(|(name, _, _)| name)
             .collect();
         assert!(!names.iter().any(|name| name.starts_with("index")));
         assert!(names.contains(&"get"));
         assert!(names.contains(&"search"));
+        assert!(names.contains(&"sync"));
     }
 
     #[test]
-    fn close_help_documents_worktree_session_and_release_rule() {
+    fn close_help_documents_worktree_session_release_and_cleanup_rules() {
         let (capability, text) = issue_command_help_entry("close").expect("close help entry");
         assert_eq!(capability, Capability::IssueClose);
         assert!(
@@ -193,6 +225,48 @@ mod tests {
         assert!(
             text.contains("failed remote close leaves every local lease untouched"),
             "close help must state the remote-failure boundary; got: {text}"
+        );
+        assert!(
+            text.contains("uncommitted or untracked files count as dirty")
+                && text.contains("main checkout"),
+            "close help must document the worktree cleanup guards; got: {text}"
+        );
+        assert!(
+            text.contains("Branches and lease rows are never deleted"),
+            "close help must state that branches and lease rows survive the cleanup; got: {text}"
+        );
+    }
+
+    /// Issue 552 Phase 2 shipped `issue sync` without a help topic; the
+    /// entry must now advertise the scope switches, the report mode, and
+    /// the `worktree` reconciliation pass it shares.
+    #[test]
+    fn sync_help_documents_scope_report_and_taxi_switches() {
+        let (capability, text) = issue_command_help_entry("sync").expect("sync help entry");
+        assert_eq!(capability, Capability::IssueClose);
+        assert!(
+            text.contains("Usage: issue sync [--all] [--no-clean]"),
+            "sync help must carry the usage line; got: {text}"
+        );
+        assert!(
+            text.contains("would_clean") && text.contains("would_keep"),
+            "sync help must document the report-mode verdicts; got: {text}"
+        );
+        assert!(
+            text.contains("Branches are never deleted"),
+            "sync help must state the deletion boundary; got: {text}"
+        );
+        assert!(
+            text.contains("--no-sync"),
+            "sync help must name the switch that disables the worktree pass; got: {text}"
+        );
+        assert!(
+            render_issue_help(Some(Role::Orchestrator)).contains("sync"),
+            "the orchestrator issue overview must list sync"
+        );
+        assert!(
+            !render_issue_help(Some(Role::Executor)).contains("sync"),
+            "executor must not see the orchestrator-only sync row"
         );
     }
 
@@ -212,6 +286,7 @@ mod tests {
             "create",
             "update",
             "close",
+            "sync",
             "upload-attachment",
             "bind",
             "unbind",

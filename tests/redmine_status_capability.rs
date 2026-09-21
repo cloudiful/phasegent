@@ -112,9 +112,11 @@ fn status_next_reports_current_and_allowed_next_with_installation_ids() {
     assert_eq!(put_requests(&server.requests()), 0);
 }
 
-/// `Resolved` is a per-phase checkpoint, so `status next` must report
-/// both installation-resolved targets: the phase-continuation edge back
-/// to `In Progress` and the task-final `Closed` edge.
+/// `Resolved` is the non-terminal "AI work finished, awaiting the
+/// operator's verification" state, so `status next` must report both
+/// installation-resolved targets — the verified terminal `Closed` edge
+/// first, because it is the bare auto-route default, and the explicitly
+/// targeted resume edge back to `In Progress` after it.
 #[test]
 fn status_next_reports_resolved_continuation_and_final_close() {
     // P3 pre-read: leading GET (scope guard) + statuses + issue.
@@ -163,10 +165,10 @@ fn status_next_reports_resolved_continuation_and_final_close() {
     assert_eq!(
         pairs,
         vec![
-            ("In Progress".to_owned(), STATUS_IN_PROGRESS),
             ("Closed".to_owned(), STATUS_CLOSED),
+            ("In Progress".to_owned(), STATUS_IN_PROGRESS),
         ],
-        "a reviewed phase must be able to continue as well as close"
+        "the verified close must lead, with the resume edge still available"
     );
     assert!(
         json["allowed_next_missing_on_server"].is_null(),
@@ -177,7 +179,7 @@ fn status_next_reports_resolved_continuation_and_final_close() {
             .as_str()
             .unwrap_or_default()
             .contains("authoritative"),
-        "the server workflow stays authoritative for the continuation edge"
+        "the server workflow stays authoritative for both edges"
     );
     assert_eq!(put_requests(&server.requests()), 0);
 }

@@ -44,8 +44,8 @@ pub(crate) const STATUS_TRANSITION_SEED: &[(&str, &str)] = &[
     ("Changes Requested", "Cancelled"),
     ("Blocked", "In Progress"),
     ("Blocked", "Cancelled"),
-    ("Resolved", "In Progress"),
     ("Resolved", "Closed"),
+    ("Resolved", "In Progress"),
 ];
 
 /// Expected seed row count (16 edges; Closed/Cancelled are terminal).

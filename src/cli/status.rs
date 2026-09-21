@@ -569,6 +569,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Issue 552 Phase 3: the canonical auto-route reaches `Closed` from
+    /// `In Review` through `Resolved`. `Resolved` is the non-terminal
+    /// "AI work finished, awaiting the user's verification" state, so its
+    /// first policy-allowed next status is the verified terminal `Closed`;
+    /// the resume edge to `In Progress` stays behind an explicit target.
+    #[test]
+    fn bare_transition_walks_in_review_to_resolved_to_closed() {
+        let _lock = lock_workflow_tests();
+        let (dir, db) = tmp_db("bare-terminal-chain");
+        let _guard = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", db.to_str().unwrap());
+        let ledger = dir.join("phasegent-ledger.sqlite3");
+        let _ledger_guard = EnvGuard::set("PHASEGENT_DB_PATH", ledger.to_str().unwrap());
+        let provider = LocalProvider::open().unwrap();
+        let number = provider.create_issue("BareChain", "body").unwrap().number;
+        let advance = |number: u64, status: &str| {
+            execute_status(
+                Some(Role::Orchestrator),
+                Some(ProviderKind::Local),
+                None,
+                None,
+                None,
+                None,
+                StatusCommand::Advance {
+                    number,
+                    status: status.to_owned(),
+                },
+            )
+        };
+
+        for target in ["In Progress", "In Review"] {
+            assert_eq!(
+                advance(number, target),
+                0,
+                "setup advance to {target} must succeed"
+            );
+        }
+        assert_eq!(
+            advance(number, ""),
+            0,
+            "bare auto In Review -> Resolved must succeed"
+        );
+        assert_eq!(
+            provider.status_next(number).unwrap().current.name,
+            "Resolved",
+            "the reviewed phase must land on the verification state"
+        );
+        assert_eq!(
+            advance(number, ""),
+            0,
+            "bare auto Resolved -> Closed must succeed"
+        );
+        assert_eq!(
+            provider.status_next(number).unwrap().current.name,
+            "Closed",
+            "the verification state must auto-route to the terminal status"
+        );
+        assert_eq!(
+            advance(number, "In Progress"),
+            1,
+            "Closed stays terminal even for an explicit target"
+        );
+
+        drop(_ledger_guard);
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn bare_transition_on_terminal_status_fails_without_write() {
         // A bare auto on a terminal status (Closed) has no

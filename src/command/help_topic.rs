@@ -19,6 +19,7 @@ pub(crate) fn help_topic(
                     "create",
                     "update",
                     "close",
+                    "sync",
                     "upload-attachment",
                     "bind",
                     "unbind",

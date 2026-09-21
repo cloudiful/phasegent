@@ -273,7 +273,7 @@ fn status_advance_rejects_illegal_transition_before_any_write() {
     for expected in [
         "'Resolved'",
         "'In Review'",
-        "allowed_next=[In Progress, Closed]",
+        "allowed_next=[Closed, In Progress]",
         POLICY_SOURCE,
         "status next 4242",
     ] {

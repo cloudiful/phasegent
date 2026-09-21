@@ -256,6 +256,24 @@ fn issue_close_help_routes_to_command_topic() {
     }
 }
 
+/// Issue 552 Phase 2 shipped `issue sync` without a help topic; the
+/// routing table must resolve it to a command page instead of rejecting
+/// the topic as unknown.
+#[test]
+fn issue_sync_help_routes_to_command_topic() {
+    let args = ["--role", "orchestrator", "issue", "sync", "--help"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse(&args).expect("issue sync --help parses");
+    match invocation.command {
+        command::Command::Help(command::HelpTopic::IssueCommand(name)) => {
+            assert_eq!(name, "sync");
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
 #[test]
 fn inline_form_accepts_leading_dash_values_for_required_options() {
     // Markdown list bullets (`- Goal`) and separator lines (`---`) must reach the
@@ -802,7 +820,7 @@ fn canonical_transition_policy_matches_the_documented_phase_graph() {
             &["In Progress", "Blocked", "Cancelled"],
         ),
         ("Blocked", &["In Progress", "Cancelled"]),
-        ("Resolved", &["In Progress", "Closed"]),
+        ("Resolved", &["Closed", "In Progress"]),
         ("Closed", &[]),
         ("Cancelled", &[]),
     ];
@@ -825,7 +843,7 @@ fn canonical_transition_policy_matches_the_documented_phase_graph() {
     // caller can surface concrete guidance.
     match evaluate_transition("Resolved", "In Review") {
         TransitionVerdict::Forbidden { allowed_next } => {
-            assert_eq!(allowed_next, &["In Progress", "Closed"])
+            assert_eq!(allowed_next, &["Closed", "In Progress"])
         }
         other => panic!("expected Forbidden, got {other:?}"),
     }
@@ -835,26 +853,28 @@ fn canonical_transition_policy_matches_the_documented_phase_graph() {
     }
 }
 
-/// `Resolved` is a per-phase checkpoint, so the policy must expose both
-/// the phase-continuation edge back to `In Progress` and the task-final
-/// edge to `Closed`. Losing the continuation edge would strand every
-/// multi-phase task after its first reviewed phase.
+/// `Resolved` is the non-terminal "AI work finished, awaiting the user's
+/// verification" state, so the policy keeps two outgoing edges: the
+/// verified terminal `Closed` as the auto-route default and `In Progress`
+/// as the explicitly targeted resume after a reviewed phase. Losing the
+/// resume edge would strand every multi-phase task after its first
+/// reviewed phase.
 #[test]
-fn resolved_status_allows_phase_continuation_and_final_close() {
+fn resolved_status_allows_final_close_and_phase_continuation() {
     assert_eq!(
         canonical_allowed_next("Resolved").expect("canonical status"),
-        &["In Progress", "Closed"],
-        "Resolved must offer continuation before final close"
+        &["Closed", "In Progress"],
+        "Resolved must offer the final close before the resume edge"
+    );
+    assert_eq!(
+        evaluate_transition("Resolved", "Closed"),
+        TransitionVerdict::Allowed,
+        "the verified terminal close edge must stay allowed"
     );
     assert_eq!(
         evaluate_transition("Resolved", "In Progress"),
         TransitionVerdict::Allowed,
         "a remaining phase must be able to resume implementation"
-    );
-    assert_eq!(
-        evaluate_transition("Resolved", "Closed"),
-        TransitionVerdict::Allowed,
-        "the task-final close edge must be retained"
     );
     // The continuation edge must not turn Resolved into a general
     // re-entry point: every other phase state stays unreachable.

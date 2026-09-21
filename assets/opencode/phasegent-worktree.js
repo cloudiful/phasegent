@@ -914,7 +914,8 @@ token; agent permission rules deny that single prefix.
 | \`issue search\` | IssueSearch | orchestrator only | provider-fresh; auto-bootstraps project on no match; scoped local-index fallback on failure |
 | \`issue create\` | IssueCreate | orchestrator only | planning flags Redmine/GitLab; Forgejo rejects every planning flag |
 | \`issue update\` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
-| \`issue close\` | IssueClose | orchestrator only | orchestrator closes at finish; auto-climbs to the closed status; cross-project close needs \`--project-id\` |
+| \`issue close\` | IssueClose | orchestrator only | orchestrator closes at finish; auto-climbs to the closed status; cross-project close needs \`--project-id\`; a successful close flips this issue's active leases to \`retained\` and runs the guarded worktree cleanup (see *Worktree leases*) |
+| \`issue sync\` | role == orchestrator | orchestrator only | reconciles the local residue of issues the provider already closed; default scope is the current repository, \`--all\` every repository identity in the lease table, \`--no-clean\` reports the verdicts without writing |
 | \`issue upload-attachment\` | IssueAttachmentUpload | orchestrator, tester | Uniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects with \`not_supported\` (exit 1) before any file, network, or credential access |
 | \`issue bind\` / \`issue unbind\` / \`issue status\` | IssueRead | orchestrator, executor, reviewer, tester | local branch–issue binding; no provider/network |
 | \`comment create\` | CommentCreate | orchestrator, executor, reviewer, tester | \`--authorized\` required unless orchestrator (CLI) |
@@ -953,6 +954,14 @@ token; agent permission rules deny that single prefix.
 orchestrator-only via manual CLI. Children (executor, reviewer, tester) never
 touch timers or status, edit the issue body, or label/close the issue.
 \`status transition\` and timer operations are never exposed over MCP.
+
+The canonical status flow is \`New → In Progress → In Review → Resolved →
+Closed\`. \`Resolved\` is the non-terminal "AI work finished, awaiting the
+operator's verification" state; \`Closed\` is the verified terminal state whose
+worktrees the guarded close cleanup may destroy. A bare \`status transition\`
+takes the first policy-allowed next status, so it walks the
+\`In Review → Resolved → Closed\` chain; resuming implementation after a
+reviewed phase is an explicit \`status transition --to "In Progress"\`.
 
 ### Admin group (never AI roles)
 
@@ -1098,6 +1107,24 @@ type \`--role\` by hand.
   retained worktrees. Neither action implies the other, and an owner is never
   guessed.
 - \`phasegent --help worktree\` owns the exact flags.
+
+### Close cleanup and remote reconciliation
+
+- A successful \`issue close\` flips this issue's \`active\` leases in the
+  resolved repository to \`retained\` and then removes its worktree directories
+  only when the directory is clean (uncommitted or untracked files count as
+  dirty), no \`active\` lease of another session points at it, and it is not the
+  repository's main checkout. Branches and lease rows are never deleted, a
+  kept directory emits one reason-first stderr warning, and the cleanup never
+  changes the close exit code or its stdout document.
+- \`phasegent issue sync [--all] [--no-clean]\` runs the same guards against the
+  issues the provider already closed: the default scope is the current
+  repository, \`--all\` every repository identity recorded in the lease table,
+  and \`--no-clean\` reports the per-directory verdicts without writing.
+- An orchestrator session's \`worktree acquire\`, \`worktree list\`, and
+  \`worktree prune\` run that pass for their repository first and append its
+  warnings to stderr; \`--no-sync\` skips it, and the subcommand's own stdout is
+  unchanged either way.
 
 ## Branch binding lifecycle
 

@@ -14,8 +14,19 @@
 # boundary belongs to the scratch root itself. Tests that build a plain
 # directory assert git identity discovery finds no enclosing repo; without
 # this, discovery walks up into the phasegent work tree and breaks them.
+#
+# sccache stays operator-provided instead of a repo-level `rustc-wrapper`:
+# cargo exec's the wrapper on every rustc call, and a machine without that
+# binary fails the whole build ("could not execute process ...", os error 2)
+# because no config value can fall back to the bare compiler. The wrapper
+# therefore comes from the environment (the home cargo config's
+# `[build] rustc-wrapper`, or the release workflow's `RUSTC_WRAPPER`), and the
+# setting below is inert until a wrapper reads it. sccache's default per-user
+# cache directory already serves every worktree of this checkout, so no
+# SCCACHE_DIR is set here; an ambient SCCACHE_CACHE_SIZE overrides this cap.
 [env]
 TMPDIR = { value = "target/tmp", relative = true, force = true }
 TMP = { value = "target/tmp", relative = true, force = true }
 TEMP = { value = "target/tmp", relative = true, force = true }
 GIT_CEILING_DIRECTORIES = { value = "target/tmp", relative = true, force = true }
+SCCACHE_CACHE_SIZE = "30G"
