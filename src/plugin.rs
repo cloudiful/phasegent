@@ -24,8 +24,8 @@
 //! `target` callback.
 //!
 //! `setup` also registers the issue #533 surface: the embedded
-//! `phasegent-worktree-v2` skill (`context.skill.transform`, same bytes
-//! as `skills/phasegent-worktree-v2/SKILL.md`). It registers no slash
+//! `phasegent` skill (`context.skill.transform`, same bytes
+//! as `skills/phasegent/SKILL.md`). It registers no slash
 //! command: the live v2.0.11 command draft only accepts an
 //! Effect-returning `execute` callback, which a promise plugin cannot
 //! build, and registering through the typed SDK's `update(name,

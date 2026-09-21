@@ -24,8 +24,8 @@ const {
   pickActiveWorktreePath,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
-  registerWorktreeSkill,
-  worktreeSkillDefinition,
+  registerSkill,
+  skillDefinition,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
@@ -998,28 +998,33 @@ describe("v2 worktree strategy registration", () => {
   });
 });
 
-describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
+describe("v2 skill.transform (embedded phasegent)", () => {
   test("definition is the flat Skill.Info the v2.0.11 host draft accepts", () => {
-    const definition = worktreeSkillDefinition();
-    expect(definition.id).toBe("phasegent-worktree-v2");
-    expect(definition.name).toBe("phasegent-worktree-v2");
-    expect(definition.path).toBe("/builtin/phasegent-worktree-v2.md");
-    expect(definition.description).toContain("PHASEGENT_SESSION_ID");
+    const definition = skillDefinition();
+    expect(definition.id).toBe("phasegent");
+    expect(definition.name).toBe("phasegent");
+    expect(definition.path).toBe("/builtin/phasegent.md");
+    // The description is derived from the embedded frontmatter, so the listed
+    // skill and the body can never disagree.
+    const frontmatter = definition.content.match(/^description:[ \t]*(.+)$/m);
+    expect(definition.description).toBe(frontmatter[1].trim());
+    expect(definition.description).toContain("worktree lease");
     expect(definition.content).toContain("phasegent worktree prune");
-    expect(definition.content.startsWith("---\nname: phasegent-worktree-v2\n")).toBe(true);
+    expect(definition.content.startsWith("---\nname: phasegent\n")).toBe(true);
+    expect(definition.content).toContain("# Phasegent");
     // The removed SDK draft shape must not come back: the runtime `add` takes
     // the flat info, not a `{ type: "embedded", skill }` source.
     expect(definition.type).toBeUndefined();
     expect(definition.skill).toBeUndefined();
   });
 
-  test("embedded content matches skills/phasegent-worktree-v2/SKILL.md", async () => {
-    const path = new URL("../../skills/phasegent-worktree-v2/SKILL.md", import.meta.url);
+  test("embedded content matches skills/phasegent/SKILL.md", async () => {
+    const path = new URL("../../skills/phasegent/SKILL.md", import.meta.url);
     const disk = await Bun.file(path).text();
-    expect(worktreeSkillDefinition().content).toBe(disk);
+    expect(skillDefinition().content).toBe(disk);
   });
 
-  test("registerWorktreeSkill adds the info through the runtime draft", async () => {
+  test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {
       skill: {
@@ -1039,12 +1044,12 @@ describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
         },
       },
     };
-    const registration = await registerWorktreeSkill(context);
+    const registration = await registerSkill(context);
     expect(registration).toBeObject();
     expect(skills.size).toBe(1);
-    const skill = skills.get("phasegent-worktree-v2");
-    expect(skill.path).toBe("/builtin/phasegent-worktree-v2.md");
-    expect(skill.content).toContain("# phasegent worktree (OpenCode v2 adapter)");
+    const skill = skills.get("phasegent");
+    expect(skill.path).toBe("/builtin/phasegent.md");
+    expect(skill.content).toContain("# Phasegent");
   });
 
   test("a draft without add never throws into the transform", async () => {
@@ -1062,7 +1067,7 @@ describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
           },
         },
       };
-      const registration = await registerWorktreeSkill(context);
+      const registration = await registerSkill(context);
       expect(registration).toBeObject();
       expect(warnings.some((line) => line.includes("exposes no add"))).toBe(true);
     } finally {
@@ -1071,8 +1076,8 @@ describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
   });
 
   test("returns null when the host exposes no skill.transform", async () => {
-    expect(await registerWorktreeSkill({})).toBeNull();
-    expect(await registerWorktreeSkill(undefined)).toBeNull();
+    expect(await registerSkill({})).toBeNull();
+    expect(await registerSkill(undefined)).toBeNull();
   });
 });
 

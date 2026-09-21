@@ -23,8 +23,7 @@
 //!   register a slash command: the live v2.0.11 command draft only
 //!   accepts an Effect-returning `execute`, which a promise plugin
 //!   cannot build. The embedded skill body must also match
-//!   `skills/phasegent-worktree-v2/SKILL.md` byte-for-byte
-//!   (issue #544).
+//!   `skills/phasegent/SKILL.md` byte-for-byte (issue #544).
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -565,37 +564,37 @@ fn adapter_template_registers_embedded_skill_without_a_command() {
     assert!(!source.contains("draft.update("));
     assert!(!source.contains("ACQUIRE_COMMAND_NAME"));
     assert!(!source.contains("worktreeAcquireCommandTemplate"));
-    // issue #533: the worktree skill travels with the plugin as an embedded
+    // issue #533: the phasegent skill travels with the plugin as an embedded
     // `Skill.Info` added through the runtime skill draft.
     assert!(source.contains("skill.transform"));
     assert!(source.contains("draft.add(definition)"));
-    assert!(source.contains("\"phasegent-worktree-v2\""));
-    assert!(source.contains("/builtin/phasegent-worktree-v2.md"));
+    assert!(source.contains("const SKILL_ID = \"phasegent\""));
+    assert!(source.contains("/builtin/phasegent.md"));
     assert!(source.contains("PHASEGENT_SESSION_ID"));
     assert!(source.contains("PHASEGENT_WORKTREE_NO_DISCOVER"));
     // The old SDK source shape is gone; the definition is the flat info with
     // the runtime field names.
     assert!(!source.contains("draft.source("));
-    assert!(source.contains("path: WORKTREE_SKILL_PATH"));
+    assert!(source.contains("path: SKILL_PATH"));
     // A missing registration surface degrades to a warning instead of failing
     // setup.
-    assert!(source.contains("the worktree skill stays unregistered"));
+    assert!(source.contains("the phasegent skill stays unregistered"));
     assert!(source.contains("host skill draft exposes no add"));
 }
 
-/// Extract the JS template literal assigned to `WORKTREE_SKILL_CONTENT` and
-/// resolve its escapes back to the bytes the adapter hands the host, so the
-/// embedded skill can be compared with the repository copy (issue #544).
+/// Extract the JS template literal assigned to `SKILL_CONTENT` and resolve its
+/// escapes back to the bytes the adapter hands the host, so the embedded skill
+/// can be compared with the repository copy (issue #544).
 ///
 /// Only the escapes the skill text actually needs are resolved: `` \` ``,
 /// `\\` and `\$`. Any other backslash pair keeps both characters, so an
 /// unsupported escape shows up as a difference instead of being dropped.
-fn embedded_worktree_skill() -> String {
-    const DECLARATION: &str = "const WORKTREE_SKILL_CONTENT = `";
+fn embedded_skill() -> String {
+    const DECLARATION: &str = "const SKILL_CONTENT = `";
     let source = adapter_source();
     let start = source
         .find(DECLARATION)
-        .expect("the adapter must declare WORKTREE_SKILL_CONTENT")
+        .expect("the adapter must declare SKILL_CONTENT")
         + DECLARATION.len();
     let body = &source[start..];
     let mut resolved = String::new();
@@ -610,7 +609,7 @@ fn embedded_worktree_skill() -> String {
             '\\' => {
                 let escaped = chars
                     .next()
-                    .expect("WORKTREE_SKILL_CONTENT must not end inside an escape")
+                    .expect("SKILL_CONTENT must not end inside an escape")
                     .1;
                 match escaped {
                     '`' => resolved.push('`'),
@@ -625,31 +624,31 @@ fn embedded_worktree_skill() -> String {
             other => resolved.push(other),
         }
     }
-    let end = end.expect("WORKTREE_SKILL_CONTENT must close its template literal");
+    let end = end.expect("SKILL_CONTENT must close its template literal");
     assert!(
         body[end..].starts_with("`;"),
-        "WORKTREE_SKILL_CONTENT must be terminated by a lone backtick + semicolon"
+        "SKILL_CONTENT must be terminated by a lone backtick + semicolon"
     );
     assert!(
-        resolved.contains("# phasegent worktree (OpenCode v2 adapter)"),
-        "the extracted WORKTREE_SKILL_CONTENT must carry the skill body"
+        resolved.contains("# Phasegent") && resolved.contains("## Marker protocol"),
+        "the extracted SKILL_CONTENT must carry the skill body"
     );
     resolved
 }
 
 #[test]
-fn embedded_worktree_skill_matches_the_repository_copy() {
+fn embedded_skill_matches_the_repository_copy() {
     let _lock = lock_workflow_tests();
     // src/plugin.rs declares the embedded skill ships "same bytes" as
-    // `skills/phasegent-worktree-v2/SKILL.md`; this is the assertion behind
-    // that contract. It reads the JS source rather than importing Bun, so the
-    // mirror stays enforced even where Bun is unavailable.
-    let embedded = embedded_worktree_skill();
-    let on_disk = include_str!("../skills/phasegent-worktree-v2/SKILL.md");
+    // `skills/phasegent/SKILL.md`; this is the assertion behind that contract.
+    // It reads the JS source rather than importing Bun, so the mirror stays
+    // enforced even where Bun is unavailable.
+    let embedded = embedded_skill();
+    let on_disk = include_str!("../skills/phasegent/SKILL.md");
     assert_eq!(
         embedded, on_disk,
-        "the adapter's embedded WORKTREE_SKILL_CONTENT and \
-         skills/phasegent-worktree-v2/SKILL.md must stay byte-for-byte identical; \
+        "the adapter's embedded SKILL_CONTENT and \
+         skills/phasegent/SKILL.md must stay byte-for-byte identical; \
          editing one means re-escaping the other in the same change \
          (改一份必须同步另一份)"
     );

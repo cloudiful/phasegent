@@ -1,10 +1,10 @@
 //! Skill consistency tests.
 //!
-//! Pins the shipped `skills/phasegent-workflow` skill against the code and the
-//! protocol contract: the SKILL frontmatter identity, the reviewer VERDICT
-//! vocabulary, the role capability table's agreement with `src/policy.rs`, and
-//! the references-chain files the SKILL links to. Pure filesystem + policy
-//! reads; no network, credentials, HOME, or SQLite access.
+//! Pins the shipped `skills/phasegent` skill against the code and the protocol
+//! contract: the SKILL frontmatter identity, the reviewer VERDICT vocabulary,
+//! the role capability table's agreement with `src/policy.rs`, and the
+//! single-file self-contained shape. Pure filesystem + policy reads; no
+//! network, credentials, HOME, or SQLite access.
 
 use crate::policy::{Capability, Role};
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn skill_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skills/phasegent-workflow")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skills/phasegent")
 }
 
 fn read_skill(relative: &str) -> String {
@@ -26,7 +26,7 @@ fn read_skill(relative: &str) -> String {
 }
 
 #[test]
-fn skill_file_exists_with_phasegent_workflow_frontmatter() {
+fn skill_file_exists_with_phasegent_frontmatter() {
     let skill = read_skill("SKILL.md");
     // The frontmatter is the YAML block wrapped by leading `---` marker lines.
     let frontmatter: String = skill
@@ -43,8 +43,8 @@ fn skill_file_exists_with_phasegent_workflow_frontmatter() {
     assert!(
         frontmatter
             .lines()
-            .any(|line| line.trim() == "name: phasegent-workflow"),
-        "frontmatter must carry name: phasegent-workflow\n---\n{frontmatter}\n---"
+            .any(|line| line.trim() == "name: phasegent"),
+        "frontmatter must carry name: phasegent\n---\n{frontmatter}\n---"
     );
     // opencode parses the frontmatter as YAML and drops the skill when it
     // fails: an unquoted plain scalar must not contain a bare `: ` sequence.
@@ -81,18 +81,18 @@ fn verdict_vocabulary_matches_reviewer_contract() {
     );
 }
 
-/// The role matrix in `references/roles.md` is the human-readable mirror of
+/// The role matrix section in `SKILL.md` is the human-readable mirror of
 /// `src/policy.rs`. Assert every capability row against `Role::allows` so a
 /// drift in either direction surfaces as a test failure, and confirm the
 /// row/operation counts agree between the table and the policy enum.
 #[test]
 fn role_table_agrees_with_policy() {
-    let roles = read_skill("references/roles.md");
+    let roles = read_skill("SKILL.md");
     let lines: Vec<&str> = roles.lines().collect();
     let header_idx = lines
         .iter()
         .position(|line| line.starts_with("| Capability |"))
-        .expect("roles.md must carry the Capability header row");
+        .expect("SKILL.md must carry the Capability header row");
     let header: Vec<String> = lines[header_idx]
         .split('|')
         .map(str::trim)
@@ -102,7 +102,7 @@ fn role_table_agrees_with_policy() {
         header
             .iter()
             .position(|cell| cell == name)
-            .unwrap_or_else(|| panic!("roles.md must include the {name} column"))
+            .unwrap_or_else(|| panic!("SKILL.md must include the {name} column"))
     };
     let admin_col = column("admin");
     let orchestrator_col = column("orchestrator");
@@ -114,7 +114,7 @@ fn role_table_agrees_with_policy() {
     let parse_cell = |cell: &str| match cell.trim() {
         "✓" => true,
         "—" => false,
-        other => panic!("unexpected capability cell {other:?} in roles.md"),
+        other => panic!("unexpected capability cell {other:?} in SKILL.md"),
     };
 
     // (capability, operation, admin, orchestrator, executor, reviewer, tester)
@@ -184,13 +184,13 @@ fn role_table_agrees_with_policy() {
     assert_eq!(
         table.len(),
         all.len(),
-        "roles.md and the policy enum must cover the same capability set"
+        "SKILL.md and the policy enum must cover the same capability set"
     );
 
     for (name, capability) in all {
         let (operation, admin, orchestrator, executor, reviewer, tester) = table
             .get(*name)
-            .unwrap_or_else(|| panic!("roles.md table must contain {name}"))
+            .unwrap_or_else(|| panic!("SKILL.md table must contain {name}"))
             .clone();
         assert_eq!(
             operation,
@@ -234,13 +234,7 @@ fn role_table_agrees_with_policy() {
 fn docs_and_skill_do_not_advertise_removed_issue_337_surface() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut corpus = String::new();
-    for relative in [
-        "README.md",
-        "README.zh-CN.md",
-        "skills/phasegent-workflow/SKILL.md",
-        "skills/phasegent-workflow/references/roles.md",
-        "skills/phasegent-workflow/references/contracts.md",
-    ] {
+    for relative in ["README.md", "README.zh-CN.md", "skills/phasegent/SKILL.md"] {
         let text = fs::read_to_string(root.join(relative))
             .unwrap_or_else(|err| panic!("expected {relative} to be readable: {err}"));
         corpus.push_str(&text);
@@ -289,21 +283,33 @@ fn readmes_carry_provider_neutral_tracking_and_current_surface() {
     }
 }
 
+/// The merged skill ships as one self-contained file: `skills/` holds exactly
+/// the `phasegent` skill directory, and the SKILL must not link to a separate
+/// reference path that would be a dead link.
 #[test]
-fn reference_chain_files_exist_and_are_linked() {
+fn skill_is_a_single_self_contained_file() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut entries: Vec<String> = fs::read_dir(root.join("skills"))
+        .expect("skills/ must be readable")
+        .map(|entry| {
+            entry
+                .expect("skills/ entry")
+                .file_name()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["phasegent".to_owned()],
+        "skills/ must contain exactly the phasegent skill directory"
+    );
     let skill = read_skill("SKILL.md");
-    for (file, link) in [
-        ("references/roles.md", "references/roles.md"),
-        ("references/contracts.md", "references/contracts.md"),
-    ] {
-        let path = skill_root().join(file);
-        assert!(path.is_file(), "reference chain must include {file}");
-        assert!(
-            !fs::read_to_string(&path).unwrap_or_default().is_empty(),
-            "{file} must not be empty"
-        );
-        assert!(skill.contains(link), "SKILL.md must link to {link}");
-    }
+    assert!(
+        !skill.contains("references/"),
+        "SKILL.md must not link to a separate reference file"
+    );
 }
 
 #[test]
