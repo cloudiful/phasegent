@@ -1,5 +1,4 @@
 // phasegent:managed
-// Installed by `phasegent plugin install [--global|--project]`; safe to reinstall or remove.
 //
 // OpenCode v2 worktree adapter. OpenCode >= 2.0 is required: the v1 plugin shape is
 // rejected by the v2 module loader (`PluginModule.LoadError: Plugin must export a
@@ -8,7 +7,6 @@
 // `export default { id, setup }`; `setup(context)` registers hooks imperatively and
 // returns a cleanup (packages/plugin/src/promise/plugin.ts:56-61).
 //
-// v2 registrations replace the v1 workspace adapter:
 //   * `context.tool.hook("execute.before", event)` — one mutable event
 //     `{ tool, sessionID, agent, messageID, id, input }`; core continues with the
 //     returned `event.input` (packages/core/src/tool.ts:103-111, :271-280), so
@@ -94,7 +92,6 @@ async function readBranchBinding(cwd) {
       return parsed.issue_id;
     }
   } catch (_) {
-    // not JSON or partial output; treat as no binding
   }
   return null;
 }
@@ -115,7 +112,6 @@ async function acquireWorktree(issueId, sessionId, cwd) {
       return parsed;
     }
   } catch (_) {
-    // ignore
   }
   return null;
 }
@@ -132,31 +128,6 @@ async function readIssueLeases(issueId, cwd) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shell command rewriting (issue #541, Phase 1).
-//
-// The hook owns every shell `phasegent` invocation:
-//   * a sub-agent session (agent resolves to a non-orchestrator role) cannot run
-//     `issue create|bind`; the whole command becomes a refusal that prints a
-//     hint on stderr and exits non-zero;
-//   * a claimed `--role orchestrator|admin` (flag or `PHASEGENT_ROLE=`) is
-//     downgraded to the session's own role;
-//   * a resolvable agent role is injected right after the `phasegent` token so
-//     the model never types `--role` by hand;
-//   * `--session` is appended at the end of an `issue create|bind` segment only,
-//     before `;`/`&`/`|`/newline, so pipes stay untouched.
-//
-// Only a token at segment start (optionally behind env assignments or a `path/`
-// prefix) counts as an invocation: `grep -rn phasegent src` and
-// `echo phasegent ...` are never rewritten.
-//
-// Segmentation and flag detection are quote-aware (issue #541 P1): a `|`, `&&`,
-// `;`, newline or paren inside `'…'`/`"…"` is data, flag detection only looks at
-// text outside quotes, and a segment with an unterminated quote is left
-// byte-for-byte rather than injected into.
-// ---------------------------------------------------------------------------
-
-// Agent name -> phasegent role; an unknown agent injects nothing (never guess).
 const AGENT_ROLE_HINTS = [
   ["orchestrator", "orchestrator"],
   ["executor", "executor"],
@@ -277,8 +248,6 @@ function separatorAt(command, index) {
   return null;
 }
 
-// Split on shell separators that sit outside quotes; each segment is then
-// tested for a phasegent invocation at its start.
 function shellSegments(command) {
   const segments = [];
   let cursor = 0;
@@ -312,11 +281,6 @@ function shellSegments(command) {
   return segments;
 }
 
-// A segment counts as an invocation only when, after leading whitespace, env
-// assignments and an optional `path/` prefix, the first token is `phasegent`.
-// `tail` is the masked remainder, so `issue create|bind` and an existing
-// `--role`/`--session` are only recognised outside quoted values, and
-// `balanced` gates injection for a segment with an unterminated quote.
 function phasegentInvocation(segment) {
   const { masked, balanced } = maskQuoted(segment.text);
   let text = segment.text;
@@ -359,8 +323,6 @@ function rewritePhasegentCommand(command, sessionId, event) {
   const subagent = isSubagentSession(event);
   let source = command;
   if (subagent) {
-    // Only code spans are rewritten: a quoted value that merely spells a role
-    // claim stays byte-for-byte.
     source = transformCodeOnly(source, (span) =>
       span
         .replace(/(^|\s)--role(\s+|=)(orchestrator|admin)\b/g, (_m, lead, sep) => `${lead}--role${sep}${role}`)
@@ -398,15 +360,6 @@ function rewritePhasegentCommand(command, sessionId, event) {
   }
   return result;
 }
-
-// ---------------------------------------------------------------------------
-// Lazy mid-session discovery (issue #18, Task 2).
-//
-// `issue create`/`issue bind` auto-acquire a worktree on conflict when they
-// carry `--session`; the plugin owns the session id (`event.sessionID`) so the
-// model never mints one by hand. `discoverWorktreeForSession` is best-effort and
-// every failure falls through silently so the hook degrades to passthrough.
-// ---------------------------------------------------------------------------
 
 function pickActiveWorktreePath(leases) {
   if (!Array.isArray(leases)) return null;
@@ -461,9 +414,6 @@ async function discoverWorktreeForSession(sessionId, cwd) {
 
 const sessionWorktrees = new Map();
 let activeWorktree = null;
-// Move attempts vs confirmed placements (issue #541): `moveAttempts` bounds a
-// session to one move try, `movedSessions` records a confirmed placement that
-// lets the hook skip per-tool path rewriting.
 const moveAttempts = new Set();
 const movedSessions = new Set();
 
@@ -525,8 +475,6 @@ async function moveSessionToWorktree(context, sessionId, directory) {
   }
 }
 
-// Resolve (or acquire) the worktree for a session. A missing binding silently
-// keeps the original directory; a failed acquire warns and does the same.
 async function ensureSessionWorktree(context, sessionId) {
   if (!sessionId) return null;
   const known = worktreeForSession(sessionId);
@@ -584,8 +532,6 @@ function redirectPathValue(workdir, value) {
   return `${workdir.replace(/[\\/]+$/, "")}/${value.replace(/^[\\/]+/, "")}`;
 }
 
-// Tool arguments that carry a filesystem path. Tools without an entry are
-// never rewritten. `bash` is kept as a shell alias for older tool registrations.
 const PATH_ARG_KEYS = {
   read: ["path"],
   write: ["path"],
@@ -599,7 +545,6 @@ const SHELL_TOOLS = ["shell", "bash"];
 
 function redirectPaths(tool, workdir, args) {
   if (!args || typeof args !== "object") return args;
-  // No acquired worktree: pass the call through byte-for-byte.
   if (typeof workdir !== "string" || workdir.length === 0) return args;
   const redirected = { ...args };
   const keys = PATH_ARG_KEYS[tool];
@@ -620,7 +565,6 @@ function redirectPaths(tool, workdir, args) {
   if (SHELL_TOOLS.includes(tool)) {
     const current = redirected.workdir;
     if (typeof current === "string" && current.length > 0) {
-      // A relative workdir resolves against the worktree; an absolute one stays.
       redirected.workdir = redirectPathValue(workdir, current);
     } else {
       // Bare shell: the shell would otherwise default to the stale session cwd.
@@ -1288,20 +1232,11 @@ async function registerSkill(context) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// v2 tool hook: one mutable event per call.
-// ---------------------------------------------------------------------------
-
 function createRedirectHook(context) {
   return async function executeBefore(event) {
     const sessionId = event ? event.sessionID : undefined;
     const input = event ? event.input : undefined;
-    // Whether the session was already confirmed inside the worktree before this
-    // call; only then may the path rewrite be skipped.
     const placedBefore = sessionPlaced(sessionId);
-    // Lazy mid-session discovery: the registry may be empty when the session
-    // was created before the first tool call or when a Task-spawned sub-agent
-    // arrives with a fresh session id. Best-effort only.
     let workdir = null;
     try {
       workdir = await ensureSessionWorktree(context, sessionId);
@@ -1309,14 +1244,11 @@ function createRedirectHook(context) {
       workdir = null; // silent passthrough: a failed lookup must not block the call
     }
     if (!input || typeof input !== "object") return;
-    // Command rewriting always runs (issue #541): agent-role injection, the
-    // sub-agent refusal, and `--session` injection do not depend on a worktree.
     if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
       try {
         const rewritten = rewritePhasegentCommand(input.command, sessionId, event);
         if (rewritten !== input.command) input.command = rewritten;
       } catch (_) {
-        // silent passthrough
       }
     }
     if (typeof workdir !== "string" || workdir.length === 0) return;
@@ -1365,7 +1297,6 @@ const PhasegentWorktreePlugin = {
             await registration.dispose();
           }
         } catch (_) {
-          // disposal is best-effort
         }
       }
     };

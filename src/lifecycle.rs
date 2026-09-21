@@ -12,7 +12,6 @@ use crate::hooks::{self, InstallOutcome};
 use crate::remote;
 use std::path::{Path, PathBuf};
 
-/// Upper bound for any warning text derived from local repository state.
 pub const MAX_WARNING_CHARS: usize = 200;
 
 /// Resolves the OWNER/REPOSITORY identity of the current checkout's origin.
@@ -33,8 +32,6 @@ fn bounded(text: &str) -> String {
     text.chars().take(MAX_WARNING_CHARS).collect()
 }
 
-/// Gate used before any auto-bind/auto-unbind: the checkout must have an
-/// origin, and an explicit repository override must match that origin.
 pub fn current_checkout_matches(
     runner: &dyn GitRunner,
     explicit_repository: Option<&str>,
@@ -55,13 +52,15 @@ pub fn current_checkout_matches(
 
 #[derive(Debug)]
 pub enum HookAutoInstall {
-    /// Hooks were installed/updated in this checkout.
     Installed(InstallOutcome),
-    /// Deliberately not installed; `reason` explains why (shown in JSON).
-    Skipped { reason: String },
+    Skipped {
+        reason: String,
+    },
     /// Matching checkout but installation failed locally; bootstrap stays
     /// successful and the bounded reason becomes a warning.
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
 }
 
 impl HookAutoInstall {
@@ -195,9 +194,6 @@ pub fn bind_created_issue(
     }
 }
 
-/// Prefix for auto-generated `<type>/<id>` branch names. `Bug` (any case)
-/// maps to `fix`; every other tracker (including `Feature`, numeric ids,
-/// and `None`) maps to `feat` so a missing tracker still yields `feat/<id>`.
 pub fn branch_prefix_for_tracker(tracker: Option<&str>) -> &'static str {
     match tracker.map(str::trim) {
         Some(value) if value.eq_ignore_ascii_case("bug") => "fix",
@@ -205,28 +201,31 @@ pub fn branch_prefix_for_tracker(tracker: Option<&str>) -> &'static str {
     }
 }
 
-/// Auto-generate `<type>/<id>` for bare `--branch` (e.g. `feat/452`).
 pub fn branch_name_for_issue(tracker: Option<&str>, issue_id: u64) -> String {
     format!("{}/{issue_id}", branch_prefix_for_tracker(tracker))
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExplicitBranchOutcome {
-    /// Branch was created from `base` and bound to the new issue.
     CreatedAndBound {
         branch: String,
         base: String,
         issue_id: u64,
     },
-    /// Branch already existed and is now bound to the new issue.
-    ExistedAndBound { branch: String, issue_id: u64 },
-    /// Target branch already binds exactly this issue; nothing changed.
-    Idempotent { branch: String, issue_id: u64 },
-    /// Deliberately skipped (non-Git checkout, repository mismatch);
-    /// stays silent like the legacy auto-bind skip.
-    Skipped { reason: String },
-    /// Local failure; the remote create still succeeded.
-    Warning { reason: String },
+    ExistedAndBound {
+        branch: String,
+        issue_id: u64,
+    },
+    Idempotent {
+        branch: String,
+        issue_id: u64,
+    },
+    Skipped {
+        reason: String,
+    },
+    Warning {
+        reason: String,
+    },
 }
 
 impl ExplicitBranchOutcome {
@@ -289,10 +288,6 @@ fn bind_target_branch(
 /// Create `branch` from `base` when missing, then bind the target branch
 /// (not the current checkout) to `issue_id`.
 ///
-/// Explicit `--branch` only: the caller resolves the branch name (bare
-/// `--branch` via [`branch_name_for_issue`], named via the CLI value) and
-/// passes `base` (`None` defaults to `HEAD`). An existing branch is reused
-/// without moving it; an existing different binding is never overwritten.
 /// Every failure degrades to [`ExplicitBranchOutcome::Warning`] (or silent
 /// [`ExplicitBranchOutcome::Skipped`]) so the remote create keeps its
 /// success result and stdout JSON stays byte-identical.
@@ -441,19 +436,23 @@ pub fn unbind_closed_issue(
     }
 }
 
-/// Outcome of the issue-close worktree-lease release hook.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoReleaseLeaseOutcome {
     /// No explicit `--worktree-session` and no `PHASEGENT_SESSION_ID`:
     /// the lease owner is unknown, so nothing is released. The operator
     /// gets a warning instead of a guessed release.
-    NoSession { reason: String },
-    /// `released` active lease(s) were flipped to `retained`.
-    Released { released: u64 },
+    NoSession {
+        reason: String,
+    },
+    Released {
+        released: u64,
+    },
     /// The current repository identity or the lease store could not be
     /// reached. The remote close already succeeded, so this is a
     /// bounded warning only.
-    Warning { reason: String },
+    Warning {
+        reason: String,
+    },
 }
 
 impl AutoReleaseLeaseOutcome {
@@ -518,21 +517,19 @@ pub fn release_closed_issue_leases(
     }
 }
 
-/// Outcome of the `issue close` worktree-directory cleanup hook.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoCleanupOutcome {
-    /// No lease row for the issue in this repository pointed at a
-    /// directory, or every candidate directory was already absent:
-    /// nothing was deleted and there is nothing to report.
     Noop,
-    /// The pass ran: `removed` clean directories were deleted and every
-    /// entry in `kept` names a directory a guard preserved, with the
-    /// reason.
-    Cleaned { removed: u64, kept: Vec<String> },
+    Cleaned {
+        removed: u64,
+        kept: Vec<String>,
+    },
     /// The repository identity or the lease store could not be resolved.
     /// Nothing was deleted; the remote close already succeeded, so this
     /// is a bounded warning only.
-    Warning { reason: String },
+    Warning {
+        reason: String,
+    },
 }
 
 impl AutoCleanupOutcome {
@@ -556,8 +553,6 @@ fn canonical_or_self(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// True when both paths name the same directory, resolving symlinks and
-/// relative spellings first.
 fn same_directory(left: &Path, right: &Path) -> bool {
     canonical_or_self(left) == canonical_or_self(right)
 }

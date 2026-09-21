@@ -10,7 +10,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Config key suffix under each `branch.<name>` section.
 pub const CONFIG_KEY_SUFFIX: &str = "redmine-issue-id";
 
 /// Upper bound for echoing Git output back into structured errors so
@@ -61,7 +60,6 @@ pub struct GitOutput {
 /// Abstraction over Git invocation so detached-HEAD and overwrite paths can
 /// be tested without spawning processes.
 pub trait GitRunner {
-    /// Runs `git` with discrete argv entries; never through a shell.
     fn run(&self, args: &[&str]) -> Result<GitOutput, BranchContextError>;
 }
 
@@ -74,8 +72,6 @@ impl ProcessGitRunner {
         Self { workdir: None }
     }
 
-    /// Test/phase-2 helper for running Git inside a specific checkout;
-    /// unused by the CLI itself today.
     #[allow(dead_code)]
     pub fn in_directory(workdir: impl Into<PathBuf>) -> Self {
         Self {
@@ -108,20 +104,16 @@ impl GitRunner for ProcessGitRunner {
     }
 }
 
-/// Strips control characters, trims whitespace, and bounds the echoed
-/// length so Git output embedded in structured messages stays safe.
 pub fn sanitize_output(raw: &[u8]) -> String {
     let lossy = String::from_utf8_lossy(raw);
     let cleaned: String = lossy.chars().filter(|c| !c.is_control()).collect();
     cleaned.trim().chars().take(MAX_ECHO_CHARS).collect()
 }
 
-/// Canonical config key for a branch binding.
 pub fn config_key(branch: &str) -> String {
     format!("branch.{branch}.{CONFIG_KEY_SUFFIX}")
 }
 
-/// Validates an issue ID as a strictly positive integer.
 pub fn parse_issue_id(raw: &str) -> Result<u64, BranchContextError> {
     raw.parse::<u64>().ok().filter(|id| *id > 0).ok_or_else(|| {
         BranchContextError::new(
@@ -131,8 +123,6 @@ pub fn parse_issue_id(raw: &str) -> Result<u64, BranchContextError> {
     })
 }
 
-/// Resolves the current named branch. Detached HEAD is a structured,
-/// actionable error rather than a silent failure.
 pub fn current_branch(runner: &dyn GitRunner) -> Result<String, BranchContextError> {
     let output = runner.run(&["symbolic-ref", "--quiet", "--short", "HEAD"])?;
     let name = output.stdout.trim();
@@ -187,9 +177,6 @@ pub struct BindOutcome {
     pub already_bound: bool,
 }
 
-/// Binds the current branch to an issue. An existing different binding is
-/// rejected unless `replace` is explicit; re-binding the same issue is an
-/// idempotent no-op.
 pub fn bind(
     runner: &dyn GitRunner,
     issue_id: u64,
@@ -242,7 +229,6 @@ pub enum UnbindOutcome {
     NotBound { branch: String },
 }
 
-/// Removes the current branch's binding. Absence is a no-op, not an error.
 pub fn unbind(runner: &dyn GitRunner) -> Result<UnbindOutcome, BranchContextError> {
     let branch = current_branch(runner)?;
     if read_issue_id(runner, &branch)?.is_none() {
@@ -272,7 +258,6 @@ pub fn unbind(runner: &dyn GitRunner) -> Result<UnbindOutcome, BranchContextErro
 /// 2. Legacy trailing `-`/`_` id (e.g. `feat/help-unify-447` -> 447).
 /// 3. Bare digits (e.g. `452` -> 452).
 pub fn parse_issue_id_from_branch_name(branch: &str) -> Option<u64> {
-    // Rule 1: first `/` directly followed by a positive integer prefix.
     for (index, _) in branch.match_indices('/') {
         let rest = &branch[index + 1..];
         let digit_prefix: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -283,7 +268,6 @@ pub fn parse_issue_id_from_branch_name(branch: &str) -> Option<u64> {
             return Some(id);
         }
     }
-    // Rule 2: legacy trailing `-id` / `_id` at the very end.
     if let Some(pos) = branch.rfind(['-', '_'])
         && pos + 1 < branch.len()
     {
@@ -296,7 +280,6 @@ pub fn parse_issue_id_from_branch_name(branch: &str) -> Option<u64> {
             return Some(id);
         }
     }
-    // Rule 3: the whole branch name is bare digits.
     if !branch.is_empty()
         && branch.chars().all(|c| c.is_ascii_digit())
         && let Ok(id) = branch.parse::<u64>()

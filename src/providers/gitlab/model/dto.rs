@@ -1,17 +1,5 @@
-//! GitLab API DTOs and request payloads.
-
 use serde::{Deserialize, Serialize};
 
-/// JSON payload returned by `GET /projects/:id/issues/:iid`.
-///
-/// Phase 2 widens the decoder to accept every documented GitLab issue
-/// field the orchestrator ever inspects in audit comments or future
-/// planning flows. All newly-added fields are `Option`/`default`-skipped
-/// so existing call sites (and older fixture payloads) keep decoding
-/// unchanged. The original narrow shape (`id`, `iid`, `title`,
-/// `description`, `state`, `labels`, `web_url`) stays required because
-/// it is the contract every consumer relied on before Phase 2.
-///
 /// `iid` is the project-scoped issue number that the orchestrator
 /// surfaces as `IssueSummary::number`; the global `id` is recorded but
 /// the CLI only uses it for diagnostic logging in the audit comment
@@ -38,13 +26,6 @@ pub(crate) struct ApiIssue {
     pub labels: Vec<String>,
     #[serde(default)]
     pub web_url: Option<String>,
-    /// Phase 2: milestone the issue belongs to. None when the issue is
-    /// not assigned to a milestone. The shape mirrors GitLab's nested
-    /// `milestone` object (`{id, iid, project_id, title, state,
-    /// due_date, ...}`); only the fields the audit comment and future
-    /// planning readers actually consume are decoded, and unknown
-    /// fields are silently ignored so a future GitLab payload extension
-    /// never breaks the client.
     #[serde(default)]
     pub milestone: Option<ApiMilestone>,
     /// Phase 2: ISO-8601 date (`YYYY-MM-DD`) or `null`. The
@@ -58,20 +39,10 @@ pub(crate) struct ApiIssue {
     /// stays tolerant.
     #[serde(default)]
     pub weight: Option<u64>,
-    /// Phase 2: time stats block carried by the GitLab issue payload.
-    /// Reuses [`crate::providers::gitlab::model::time::ApiIssueTimeStats`]
-    /// so the spent-time / time-estimate decoders keep their
-    /// `is_confirmed` short-circuit on the same struct.
     #[serde(default)]
     pub time_stats: Option<crate::providers::gitlab::model::ApiIssueTimeStats>,
-    /// Phase 2: creation timestamp in GitLab's ISO-8601 format.
-    /// Surfaced in audit comments so the orchestrator can render
-    /// when the issue was filed.
     #[serde(default)]
     pub created_at: Option<String>,
-    /// Phase 2: last-modified timestamp in GitLab's ISO-8601 format.
-    /// Surfaced in audit comments so the orchestrator can render
-    /// when the issue was last touched.
     #[serde(default)]
     pub updated_at: Option<String>,
     /// Phase 2: assignee usernames. The `assignee` and
@@ -85,18 +56,6 @@ pub(crate) struct ApiIssue {
     pub assignees: Option<Vec<ApiIssueAssignee>>,
 }
 
-/// Nested milestone payload carried by `ApiIssue`. Mirrors the
-/// documented GitLab response; unknown fields are silently dropped so
-/// a future GitLab release that adds milestone metadata does not break
-/// the client. `id` is required because `milestone.id` is the
-/// identifier the orchestrator surfaces (mirroring `RedmineVersion`).
-///
-/// `#[allow(dead_code)]` keeps the extra payload fields (`iid`,
-/// `description`, `start_date`, `web_url`) tolerant to call sites
-/// that only consume `id`, `title`, `state`, and `due_date`; the
-/// decoder remains the single source of truth for the wire shape and
-/// a future planning flow can adopt the remaining fields without
-/// changing the model.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiMilestone {
@@ -120,14 +79,6 @@ pub(crate) struct ApiMilestone {
     pub web_url: Option<String>,
 }
 
-/// Nested assignee payload carried by `ApiIssue`. The orchestrator only
-/// surfaces the username and name so audit comments stay readable; the
-/// numeric `id` is kept because future planning flows may resolve
-/// assignees by it.
-///
-/// `#[allow(dead_code)]` keeps the decoder tolerant while no live
-/// consumer reads the fields; future planning flows can adopt them
-/// without changing the model.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiIssueAssignee {
@@ -139,15 +90,11 @@ pub(crate) struct ApiIssueAssignee {
     pub name: Option<String>,
 }
 
-/// JSON payload returned by `GET /users?username=…`. Used to resolve an
-/// `--assignee USERNAME` value to the numeric GitLab user id that
-/// `POST /projects/:id/issues` expects in `assignee_ids`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiUser {
     pub id: u64,
 }
 
-/// Request payload for `POST /projects/:id/issues`.
 #[derive(Debug, Serialize)]
 pub(crate) struct NewIssue<'a> {
     pub title: &'a str,
@@ -155,16 +102,10 @@ pub(crate) struct NewIssue<'a> {
     pub description: &'a str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
-    /// GitLab `assignee_ids`. The default and `--no-assign` paths leave it
-    /// empty, so the skipped field keeps the legacy create payload
-    /// byte-identical.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub assignee_ids: Vec<u64>,
 }
 
-/// Request payload for `PUT /projects/:id/issues/:iid`. Every field
-/// is optional so the caller can target a single aspect of the issue
-/// (body, state, labels) without accidentally clearing the others.
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct UpdateIssue<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,27 +118,22 @@ pub(crate) struct UpdateIssue<'a> {
     pub remove_labels: Vec<String>,
 }
 
-/// JSON payload returned by `POST /projects/:id/issues/:iid/notes`
-/// and `GET /projects/:id/issues/:iid/notes/:note_id`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiNote {
     pub id: u64,
     pub body: String,
 }
 
-/// Request payload for `POST /projects/:id/issues/:iid/notes`.
 #[derive(Debug, Serialize)]
 pub(crate) struct NewNote<'a> {
     pub body: &'a str,
 }
 
-/// JSON payload returned by GitLab label endpoints.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ApiLabel {
     pub name: String,
 }
 
-/// Request payload for `POST /projects/:id/labels`.
 #[derive(Debug, Serialize)]
 pub(crate) struct NewLabel<'a> {
     pub name: &'a str,
@@ -206,25 +142,6 @@ pub(crate) struct NewLabel<'a> {
     pub description: Option<&'a str>,
 }
 
-/// JSON payload returned by `POST /projects`, `GET /projects/:id`,
-/// and `GET /projects` (list).
-///
-/// GitLab echoes the namespace as a nested object (`{ "id": …, "path": …,
-/// "full_path": …, "kind": "user"|"group" }`); only `path` and `full_path`
-/// matter for the orchestrator's repository summary. `name` and `path` are
-/// kept separate because GitLab uses `path` as the URL slug.
-///
-/// Phase 2 widens the decoder so `list_projects` can map a GitLab
-/// project onto the shared `RedmineProject` shape. The original narrow
-/// fields (`path`, `path_with_namespace`, `web_url`, `visibility`,
-/// `namespace`, `http_url_to_repo`, `ssh_url_to_repo`) stay required
-/// for the `repo create` path; the new fields are all `Option`/
-/// `default`-skipped so older fixture payloads still decode cleanly.
-///
-/// `#[allow(dead_code)]` keeps the audit-only fields (`default_branch`,
-/// `archived`) tolerant to call sites that only consume `id`, `name`,
-/// `description`, `path`, and `visibility`; the decoder remains the
-/// single source of truth for the wire shape.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiProject {
@@ -241,35 +158,18 @@ pub(crate) struct ApiProject {
     pub http_url_to_repo: Option<String>,
     #[serde(default)]
     pub ssh_url_to_repo: Option<String>,
-    /// Phase 2: numeric project id (mirrors `RedmineProject::id`).
-    /// Required for the `list_projects` mapping; missing on
-    /// pre-existing fixtures that only used the narrow path. The
-    /// `repo create` POST response always carries it.
     #[serde(default)]
     pub id: Option<u64>,
-    /// Phase 2: human-readable project name (mirrors
-    /// `RedmineProject::name`). GitLab returns both `name` and
-    /// `path`; the orchestrator surfaces `name` for display and
-    /// `path` as the Redmine identifier slug.
     #[serde(default)]
     pub name: Option<String>,
-    /// Phase 2: project description. GitLab returns `null` when
-    /// the project has no description, which decodes to `None`;
-    /// the list mapping substitutes an empty string to mirror the
-    /// Redmine shape.
     #[serde(default)]
     pub description: Option<String>,
-    /// Phase 2: ISO-8601 creation timestamp.
     #[serde(default)]
     pub created_at: Option<String>,
-    /// Phase 2: ISO-8601 last-modified timestamp.
     #[serde(default)]
     pub updated_at: Option<String>,
-    /// Phase 2: default branch name. Audit-only; not surfaced in
-    /// `RedmineProject`.
     #[serde(default)]
     pub default_branch: Option<String>,
-    /// Phase 2: archived flag. Audit-only.
     #[serde(default)]
     pub archived: Option<bool>,
 }
@@ -282,13 +182,6 @@ pub(crate) struct ApiProjectNamespace {
     pub full_path: Option<String>,
 }
 
-/// JSON payload returned by `GET /namespaces?search=…`. The
-/// orchestrator uses this endpoint to resolve an OWNER path to a
-/// numeric `namespace_id` so a `repo create OWNER/REPO` call lands
-/// in the right group rather than the authenticated user's personal
-/// namespace. `kind` distinguishes `user` from `group` namespaces so
-/// the resolver can flag ambiguous matches and prefer group ids
-/// when both share the same path.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiNamespace {
     pub id: u64,
@@ -298,9 +191,6 @@ pub(crate) struct ApiNamespace {
     pub kind: Option<String>,
 }
 
-/// Request payload for `POST /projects`. All optional fields are
-/// skipped during serialization so a private-only call (the only
-/// path the orchestrator exercises today) stays minimal.
 #[derive(Debug, Serialize)]
 pub(crate) struct NewProject<'a> {
     pub name: &'a str,
@@ -325,27 +215,16 @@ pub(crate) struct NewProject<'a> {
     pub visibility: &'a str,
     #[serde(skip_serializing_if = "str::is_empty")]
     pub description: &'a str,
-    /// Maps the Forgejo-style `auto_init` flag onto GitLab's
-    /// `initialize_with_readme`. The orchestrator uses `initialize_with_readme`
-    /// because it is the only documented way to force a `README.md`
-    /// commit on creation.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub initialize_with_readme: bool,
 }
 
-/// JSON error payload returned by GitLab for non-2xx responses.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiError {
     #[serde(default)]
     pub message: Option<String>,
-    /// Some endpoints return `{ "error": "..." }` instead of a
-    /// nested object; capture that too so the rendered error stays
-    /// informative.
     #[serde(default)]
     pub error: Option<String>,
-    /// GitLab occasionally wraps the human-readable error in an
-    /// array (for example `{ "message": { "xxx": ["..."] } }`); the
-    /// structured variant catches that case.
     #[serde(default)]
     pub error_description: Option<String>,
 }
