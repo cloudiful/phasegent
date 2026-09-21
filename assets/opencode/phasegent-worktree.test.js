@@ -26,6 +26,8 @@ const {
   worktreeStrategyDefinition,
   registerWorktreeSkill,
   worktreeSkillDefinition,
+  registerWorktreeCommand,
+  acquireWorktreeCommand,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
@@ -50,7 +52,7 @@ describe("plugin module shape (v2)", () => {
     expect(PhasegentWorktreePlugin.redirect).toBeObject();
   });
 
-  test("setup registers the tool hook and skill, and returns a cleanup", async () => {
+  test("setup registers the tool hook, skill and command, and returns a cleanup", async () => {
     const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
     try {
@@ -73,9 +75,19 @@ describe("plugin module shape (v2)", () => {
             return { dispose: async () => {} };
           },
         },
+        command: {
+          transform: async () => {
+            registered.push({ name: "command.transform" });
+            return { dispose: async () => {} };
+          },
+        },
       };
       const cleanup = await PhasegentWorktreePlugin.setup(context);
-      expect(registered.map((item) => item.name)).toEqual(["execute.before", "skill.transform"]);
+      expect(registered.map((item) => item.name)).toEqual([
+        "execute.before",
+        "skill.transform",
+        "command.transform",
+      ]);
       expect(typeof registered[0].callback).toBe("function");
       expect(typeof cleanup).toBe("function");
       await cleanup();
@@ -1178,6 +1190,185 @@ describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
   test("returns null when the host exposes no skill.transform", async () => {
     expect(await registerWorktreeSkill({})).toBeNull();
     expect(await registerWorktreeSkill(undefined)).toBeNull();
+  });
+});
+
+describe("v2 command.transform (/phasegent-acquire)", () => {
+  test("adds the command through the runtime draft", async () => {
+    const added = [];
+    const context = {
+      command: {
+        transform: async (callback) => {
+          await callback({
+            list: () => [],
+            get: () => undefined,
+            add: (info) => added.push(info),
+            remove: () => {},
+          });
+          return { dispose: async () => {} };
+        },
+      },
+    };
+    const registration = await registerWorktreeCommand(context);
+    expect(registration).toBeObject();
+    expect(added).toHaveLength(1);
+    expect(added[0].name).toBe("phasegent-acquire");
+    expect(added[0].description).toContain("worktree");
+    expect(typeof added[0].execute).toBe("function");
+  });
+
+  test("never touches update or remove, which the promise draft does not offer", async () => {
+    // issue #533: a call into a missing draft method made the host disable the
+    // whole plugin, redirect hook included.
+    const seen = [];
+    const context = {
+      command: {
+        transform: async (callback) => {
+          await callback({
+            add: () => seen.push("add"),
+            update: () => {
+              throw new Error("update must not be called");
+            },
+            remove: () => {
+              throw new Error("remove must not be called");
+            },
+          });
+          return { dispose: async () => {} };
+        },
+      },
+    };
+    const registration = await registerWorktreeCommand(context);
+    expect(registration).toBeObject();
+    expect(seen).toEqual(["add"]);
+  });
+
+  test("a draft without add never throws into the transform", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const context = {
+        command: {
+          transform: async (callback) => {
+            await callback({ list: () => [] });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      const registration = await registerWorktreeCommand(context);
+      expect(registration).toBeObject();
+      expect(warnings.some((line) => line.includes("host command draft exposes no add"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("a rejected add only warns", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const context = {
+        command: {
+          transform: async (callback) => {
+            await callback({
+              add: () => {
+                throw new Error("registration refused");
+              },
+            });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      const registration = await registerWorktreeCommand(context);
+      expect(registration).toBeObject();
+      expect(warnings.some((line) => line.includes("command registration was rejected"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("returns null when the host exposes no command.transform", async () => {
+    expect(await registerWorktreeCommand({})).toBeNull();
+    expect(await registerWorktreeCommand(undefined)).toBeNull();
+  });
+
+  test("reports the acquired worktree path", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const context = {};
+      const result = await acquireWorktreeCommand(context, { sessionID: "session-1" }, {
+        ensure: async (received, sessionId) => {
+          expect(received).toBe(context);
+          expect(sessionId).toBe("session-1");
+          return WORKTREE;
+        },
+      });
+      expect(result).toBe(WORKTREE);
+      expect(warnings.some((line) => line.includes(`worktree ready at ${WORKTREE}`))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("warns instead of throwing when the acquire fails", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const result = await acquireWorktreeCommand({}, { sessionID: "session-1" }, {
+        ensure: async () => {
+          throw new Error("lease unavailable");
+        },
+      });
+      expect(result).toBeNull();
+      expect(warnings.some((line) => line.includes("lease unavailable"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("warns when the session has no worktree to report", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const result = await acquireWorktreeCommand({}, {}, { ensure: async () => null });
+      expect(result).toBeNull();
+      expect(warnings.some((line) => line.includes("nothing acquired"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("the registered execute stays inert without a command payload or the CLI", async () => {
+    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const added = [];
+      const context = {
+        command: {
+          transform: async (callback) => {
+            await callback({ add: (info) => added.push(info) });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      await registerWorktreeCommand(context);
+      expect(typeof added[0].execute).toBe("function");
+      // The runtime hands the command a payload; a missing one must not throw.
+      expect(await added[0].execute({ sessionID: "session-1" })).toBeNull();
+      expect(await added[0].execute(undefined)).toBeNull();
+      expect(warnings.filter((line) => line.includes("nothing acquired")).length).toBe(2);
+    } finally {
+      console.warn = original;
+      restoreNoDiscover(saved);
+    }
   });
 });
 

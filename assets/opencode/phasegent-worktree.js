@@ -25,12 +25,13 @@
 //     runtime draft is `{ list, get, add, update, remove }`, and `add` takes the
 //     same flat `Skill.Info` the host's builtin skills use; the typed SDK's
 //     `source({ type: "embedded", skill })` draft does not exist at runtime.
-//   * No slash command: the live v2.0.11 command draft exposes only
-//     `add({ name, description, execute })`, and `execute` must return an
-//     Effect that a promise plugin cannot build. Registering through the
-//     typed SDK's `update(name, mutate)` draft raised a `TypeError` and the
-//     host then disabled the whole plugin, redirect hook included (issue #533
-//     host evidence), so `phasegent worktree acquire` stays the manual path.
+//   * `context.command.transform(draft => draft.add({ name, description, execute }))`
+//     registers the `/phasegent-acquire` command. The runtime wraps a
+//     promise-returning `execute` into an Effect, so the promise plugin needs no
+//     Effect of its own. The v2 promise draft exposes `add` and reload only:
+//     `update(name, mutate)` raised a `TypeError` that made the host disable the
+//     whole plugin, redirect hook included (issue #533 host evidence), so the
+//     callback probes for `add` and warns instead of calling anything else.
 //
 // The npm `@opencode-ai/plugin` type package can lag the binary it ships with
 // (`tool`, `worktree`, `session` and `location` are absent from 1.18.25 while
@@ -823,6 +824,9 @@ const WORKTREE_SKILL_NAME = "phasegent-worktree-v2";
 const WORKTREE_SKILL_PATH = "/builtin/phasegent-worktree-v2.md";
 const WORKTREE_SKILL_DESCRIPTION =
   "phasegent worktree adapter for OpenCode v2 — the PHASEGENT_SESSION_ID and PHASEGENT_WORKTREE_NO_DISCOVER escape hatches, the worktree acquire flow, and the phasegent worktree prune recovery. Load when a session needs its (repo, issue, session) worktree lease, when the adapter is not redirecting tool calls, or when leases must be inspected or released.";
+const ACQUIRE_COMMAND_NAME = "phasegent-acquire";
+const ACQUIRE_COMMAND_DESCRIPTION =
+  "Report this session's phasegent worktree, acquiring the lease for the branch-bound issue when it is not claimed yet (orchestrator-facing).";
 
 const WORKTREE_SKILL_CONTENT = `---
 name: phasegent-worktree-v2
@@ -842,22 +846,28 @@ rejected by the v2 module loader.
   shell \`workdir\` are rewritten into the acquired worktree. Absolute paths pass
   through untouched, so the \`external_directory\` permission check still applies.
 - Rewrites the shell's \`phasegent\` invocations before they run: the session role
-  is injected, a claimed orchestrator/admin role is downgraded, \`--session\` is
-  appended to an \`issue create|bind\` segment, and those two commands are refused
-  outside an orchestrator session. See *Agent role injection*.
+  travels as a \`PHASEGENT_ROLE=<role>\` assignment prefixed to the invocation, a
+  claimed orchestrator/admin role is rewritten to the session's own role,
+  \`--session\` is appended to an \`issue create|bind\` segment, and those two
+  commands are refused outside an orchestrator session. See *Agent role
+  injection*.
 - Claims the \`worktree.transform\` strategy only when the checkout already
   carries a phasegent issue binding; otherwise the host git strategy stays in
   place.
+- Registers the \`/phasegent-acquire\` command: it reports this session's
+  worktree, acquiring the lease for the branch-bound issue when it is not
+  claimed yet. Failures warn instead of throwing.
 - Moves the session into the acquired worktree with \`session.move\`, and
   registers this skill through \`skill.transform\`.
 - Degrades gracefully: a missing binding, a failed acquire, or a failed
   \`session.move\` keeps the original directory, warns, and never blocks a tool
   call.
 
-The adapter registers no slash command. The OpenCode v2 command draft only
-accepts \`execute\` callbacks that return an Effect, which a promise plugin cannot
-build, so there is no \`/phasegent-worktree-acquire\`: use \`phasegent worktree
-acquire\` directly.
+The adapter registers both the embedded skill and \`/phasegent-acquire\` through
+their \`transform\` drafts, and only through \`add\`: a draft surface without \`add\`,
+or a rejection from it, warns and leaves the rest of the adapter — path
+redirection included — in place, because a throw inside a transform callback
+disables the whole plugin.
 
 The npm \`@opencode-ai/plugin\` type package can lag the binary it ships with:
 \`tool\`, \`worktree\`, \`session\` and \`location\` are missing from 1.18.25 even
@@ -871,15 +881,23 @@ type \`--role\` by hand.
 
 - \`orchestrator\`, \`executor\`, \`reviewer\` and \`tester\` resolve to their own role
   and \`explore\` resolves to \`reviewer\`; the agent name is matched
-  case-insensitively against those hints. The role is injected right after the
-  \`phasegent\` token unless the segment already carries \`--role\`.
+  case-insensitively against those hints. The role travels to the CLI as a
+  \`PHASEGENT_ROLE=<role>\` assignment prefixed to the invocation, which is the
+  CLI's environment fallback; an explicit \`--role\` flag in the segment stays
+  untouched and wins. A segment that already assigns that same role is left as
+  it is, while a blank or different assignment still gets the prefix, which wins
+  because it comes last.
 - An unknown agent name injects nothing: the adapter never guesses a role, and a
   session with no agent name is treated as role-less.
 - A sub-agent session — any resolved role other than \`orchestrator\` — that
   claims \`--role orchestrator\`, \`--role admin\`, \`PHASEGENT_ROLE=orchestrator\` or
-  \`PHASEGENT_ROLE=admin\` is downgraded to the session's own role and warned
-  about. Only code spans are rewritten, so the same text inside a quoted value
-  stays byte-for-byte.
+  \`PHASEGENT_ROLE=admin\` never keeps that role: a claimed flag is rewritten in
+  place, an elevated \`PHASEGENT_ROLE\` value is rewritten to the session's own
+  role, and the session is warned about the takeover.
+- The elevated-value rewrite is independent of invocation recognition, so it also
+  covers a claim behind a wrapper (\`env …\`, \`/usr/bin/env …\`, \`time …\`), a
+  continued line, or a here-doc body handed to a shell, and it reads a value with
+  its quotes and surrounding padding removed.
 - A sub-agent session running \`issue create\` or \`issue bind\` is refused: the
   whole command is replaced by a stub that prints the orchestrator-only hint on
   stderr and exits non-zero. Both commands are orchestrator-only.
@@ -910,16 +928,22 @@ type \`--role\` by hand.
   adapter. Export one value per session and reuse it for every worktree call;
   \`worktree acquire --session\` resolves the flag, then this variable, then the
   legacy \`phasegent\` fallback.
-- \`PHASEGENT_ROLE\` — the CLI-level role fallback for a host outside the adapter
-  (scripts, wrappers, Git hooks). It is consulted only when no \`--role\` flag is
-  present, so an explicit flag always wins; a blank value means "no role" while
-  a non-empty invalid value is an error rather than a silent role-less run.
+- \`PHASEGENT_ROLE\` — the CLI-level role fallback the adapter prefixes to every
+  shell invocation, and the fallback for a host outside the adapter (scripts,
+  wrappers, Git hooks). It is consulted only when no \`--role\` flag is present, so
+  an explicit flag always wins; a blank value means "no role" while a non-empty
+  invalid value is an error rather than a silent role-less run.
 - \`PHASEGENT_WORKTREE_NO_DISCOVER=1\` — keeps the adapter from running the CLI at
-  all: no discovery, no acquire, no strategy claim. The skill registration stays
-  inert metadata. Paths then stay relative to the session directory.
+  all: no discovery, no acquire, no strategy claim. The skill and command
+  registrations stay inert metadata. Paths then stay relative to the session
+  directory.
 
 ## Acquire
 
+- \`/phasegent-acquire\` reports this session's worktree: it reuses the worktree
+  the adapter already claimed, otherwise acquires the lease for the branch-bound
+  issue, moves the session into the returned path, and reports that path on the
+  adapter's console channel. A missing binding or a failed acquire only warns.
 - Manual: \`phasegent worktree acquire --issue N [--session S] --format json\`
   (orchestrator-only). Idempotent per \`(repo, issue, session)\`; re-running
   refreshes the heartbeat instead of creating a second lease, and the managed
@@ -967,6 +991,67 @@ async function registerWorktreeSkill(context) {
       draft.add(definition);
     } catch (error) {
       warn(`phasegent: skill registration was rejected (${errorText(error)})`);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// v2 command.transform: the `/phasegent-acquire` slash command.
+//
+// The live v2.0.11+ runtime command draft exposes `add({ name, description,
+// execute })` and wraps a promise-returning `execute` into an Effect
+// (`execute: (input) => Effect.try(...)`), which is what the standalone probe
+// proved. `update(name, mutate)` does not exist on the promise draft and threw a
+// TypeError that made the host disable the whole plugin (issue #533), so the
+// callback only ever calls `add`, and a missing draft method only warns.
+//
+// The command reports this session's worktree, acquiring the lease for the
+// branch-bound issue when it is not claimed yet, through the same
+// `ensureSessionWorktree` the tool hook uses: an invocation can therefore never
+// reach further than the adapter's own lazy acquisition, and `issue create|bind`
+// stays refused for sub-agent sessions. Every failure warns instead of throwing,
+// and reporting goes through the adapter's console channel, the only one v2
+// offers.
+// ---------------------------------------------------------------------------
+
+async function acquireWorktreeCommand(context, input, deps) {
+  const sessionId = input && typeof input.sessionID === "string" ? input.sessionID : null;
+  const ensure = (deps && deps.ensure) || ensureSessionWorktree;
+  try {
+    const path = await ensure(context, sessionId);
+    if (typeof path === "string" && path.length > 0) {
+      warn(`phasegent: worktree ready at ${path}`);
+    } else {
+      warn("phasegent: no worktree for this session; nothing acquired");
+    }
+    return path;
+  } catch (error) {
+    warn(`phasegent: worktree acquire failed (${errorText(error)})`);
+    return null;
+  }
+}
+
+async function registerWorktreeCommand(context, deps) {
+  const command = context && context.command;
+  const transform = command && command.transform;
+  if (typeof transform !== "function") {
+    warn("phasegent: host exposes no command.transform; /phasegent-acquire stays unregistered");
+    return null;
+  }
+  return await transform((draft) => {
+    // Same guard as the skill: a throw here disables the whole plugin.
+    if (!draft || typeof draft.add !== "function") {
+      warn("phasegent: host command draft exposes no add; /phasegent-acquire stays unregistered");
+      return;
+    }
+    try {
+      draft.add({
+        name: ACQUIRE_COMMAND_NAME,
+        description: ACQUIRE_COMMAND_DESCRIPTION,
+        execute: (input) => acquireWorktreeCommand(context, input, deps),
+      });
+    } catch (error) {
+      warn(`phasegent: command registration was rejected (${errorText(error)})`);
     }
   });
 }
@@ -1041,6 +1126,12 @@ const PhasegentWorktreePlugin = {
     } catch (error) {
       warn(`phasegent: skill.transform registration failed (${errorText(error)})`);
     }
+    try {
+      const command = await registerWorktreeCommand(context);
+      if (command) registrations.push(command);
+    } catch (error) {
+      warn(`phasegent: command.transform registration failed (${errorText(error)})`);
+    }
     return async () => {
       for (const registration of registrations) {
         try {
@@ -1079,6 +1170,8 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   gitWorktreeAdd,
   registerWorktreeSkill,
   worktreeSkillDefinition,
+  registerWorktreeCommand,
+  acquireWorktreeCommand,
 });
 
 export default PhasegentWorktreePlugin;

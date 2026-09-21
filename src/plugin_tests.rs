@@ -19,10 +19,11 @@
 //!   `phasegent --role orchestrator worktree acquire` call, the v2
 //!   `worktree.transform` strategy, the issue #440
 //!   `tool.execute.before` redirect helpers, and the issue #533
-//!   `skill.transform` embedded skill registration. It must not
-//!   register a slash command: the live v2.0.11 command draft only
-//!   accepts an Effect-returning `execute`, which a promise plugin
-//!   cannot build. The embedded skill body must also match
+//!   registrations: the embedded skill through `skill.transform` and
+//!   the `/phasegent-acquire` command through `command.transform`.
+//!   Both go through `add` only, because a call into a missing draft
+//!   method disabled the whole plugin at runtime (issue #533 host
+//!   evidence). The embedded skill body must also match
 //!   `skills/phasegent-worktree-v2/SKILL.md` byte-for-byte
 //!   (issue #544).
 //!
@@ -219,6 +220,8 @@ fn install_at_writes_managed_file_with_marker_and_v2_plugin_definition() {
     assert!(text.contains("--format"));
     assert!(text.contains("\"json\""));
     assert!(text.contains("redirectPaths"));
+    assert!(text.contains("command.transform"));
+    assert!(text.contains("\"phasegent-acquire\""));
     assert!(
         !text.contains("experimental_workspace.register"),
         "the v1 workspace adapter contract must be gone from the template"
@@ -553,18 +556,25 @@ fn adapter_template_documents_redirect_contract() {
 }
 
 #[test]
-fn adapter_template_registers_embedded_skill_without_a_command() {
+fn adapter_template_registers_embedded_skill_and_acquire_command() {
     let _lock = lock_workflow_tests();
     let source = adapter_source();
-    // issue #533: the live v2.0.11 command draft only accepts an
-    // Effect-returning `execute`, which a promise plugin cannot build, so the
-    // adapter must not touch the command domain at all. The previous
-    // `update(name, mutate)` template raised a TypeError in the host and the
-    // host then disabled the whole plugin, redirect hook included.
-    assert!(!source.contains("context.command"));
+    // issues #533/#547: the live v2 command draft exposes `add` and reload only,
+    // and the runtime wraps a promise-returning `execute` into an Effect. The
+    // previous `update(name, mutate)` template raised a TypeError in the host,
+    // which then disabled the whole plugin, redirect hook included, so the
+    // command callback only ever calls `add`.
     assert!(!source.contains("draft.update("));
-    assert!(!source.contains("ACQUIRE_COMMAND_NAME"));
-    assert!(!source.contains("worktreeAcquireCommandTemplate"));
+    assert!(source.contains("context.command"));
+    assert!(source.contains("command.transform"));
+    assert!(source.contains("ACQUIRE_COMMAND_NAME"));
+    assert!(source.contains("\"phasegent-acquire\""));
+    assert!(source.contains("execute: (input) => acquireWorktreeCommand("));
+    // A missing or incomplete command draft degrades to a warning instead of
+    // failing setup.
+    assert!(source.contains("host exposes no command.transform"));
+    assert!(source.contains("host command draft exposes no add"));
+    assert!(source.contains("command registration was rejected"));
     // issue #533: the worktree skill travels with the plugin as an embedded
     // `Skill.Info` added through the runtime skill draft.
     assert!(source.contains("skill.transform"));

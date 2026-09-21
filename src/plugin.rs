@@ -23,19 +23,20 @@
 //! `context.session.move`, because the v2 worktree domain has no v1
 //! `target` callback.
 //!
-//! `setup` also registers the issue #533 surface: the embedded
+//! `setup` also registers the issue #533 registrations: the embedded
 //! `phasegent-worktree-v2` skill (`context.skill.transform`, same bytes
-//! as `skills/phasegent-worktree-v2/SKILL.md`). It registers no slash
-//! command: the live v2.0.11 command draft only accepts an
-//! Effect-returning `execute` callback, which a promise plugin cannot
-//! build, and registering through the typed SDK's `update(name,
-//! mutate)` draft disabled the whole plugin at runtime (issue #533
-//! host evidence), so `phasegent worktree acquire` stays the manual
-//! path. The adapter targets the OpenCode binary's runtime plugin
-//! context, not the npm `@opencode-ai/plugin` type package, which can
-//! lag the binary (1.18.25 exposes no `tool`, `worktree`, `session`,
-//! or `location`); a missing registration surface degrades to a
-//! console warning.
+//! as `skills/phasegent-worktree-v2/SKILL.md`) and the
+//! `/phasegent-acquire` command (`context.command.transform`), whose
+//! promise-returning `execute` reports the session's worktree and
+//! acquires the lease for the branch-bound issue when it is not claimed
+//! yet; the runtime wraps that promise into an Effect. Both registrations
+//! go through the draft's `add` only, because a call into a draft method
+//! the runtime does not expose disabled the whole plugin at runtime
+//! (issue #533 host evidence), and a missing or rejecting registration
+//! surface then degrades to a console warning. The adapter targets the
+//! OpenCode binary's runtime plugin context, not the npm
+//! `@opencode-ai/plugin` type package, which can lag the binary (1.18.25
+//! exposes no `tool`, `worktree`, `session`, or `location`).
 //! `PHASEGENT_SESSION_ID` and `PHASEGENT_WORKTREE_NO_DISCOVER=1` are the
 //! only hard environment guarantees.
 //!
