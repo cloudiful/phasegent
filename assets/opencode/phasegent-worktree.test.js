@@ -1075,3 +1075,121 @@ describe("v2 skill.transform (embedded phasegent-worktree-v2)", () => {
     expect(await registerWorktreeSkill(undefined)).toBeNull();
   });
 });
+
+describe("invocation boundary tightening (issue #544 P1-a)", () => {
+  test("leaves the incident python path byte-for-byte", () => {
+    const command =
+      'js = pathlib.Path("assets/opencode/phasegent-worktree.js").read_text(encoding="utf-8")';
+    expect(rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" })).toBe(command);
+    expect(rewritePhasegentCommand(command, "session-1", { agent: "executor" })).toBe(command);
+    expect(rewritePhasegentCommand(command, "session-1", undefined)).toBe(command);
+  });
+
+  test("does not rewrite paths, look-alikes or foreign commands", () => {
+    for (const command of [
+      '"assets/opencode/phasegent-worktree.js"',
+      "assets/opencode/phasegent-worktree.js",
+      "`tools/phasegent`",
+      "./phasegent.toml",
+      "phasegent:",
+      "grep -rn phasegent src",
+      "git -C repo phasegent issue status",
+    ]) {
+      expect(rewritePhasegentCommand(command, "s1", { agent: "executor" })).toBe(command);
+    }
+  });
+
+  test("still rewrites real invocations at the boundary", () => {
+    expect(rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" })).toBe(
+      "phasegent --role executor issue status",
+    );
+    // A bare `phasegent` is a whole word at the segment end.
+    expect(rewritePhasegentCommand("phasegent", "s1", { agent: "executor" })).toBe(
+      "phasegent --role executor",
+    );
+    expect(
+      rewritePhasegentCommand("./phasegent issue bind 1", "s1", { agent: "orchestrator" }),
+    ).toBe("./phasegent --role orchestrator issue bind 1 --session s1");
+    expect(
+      rewritePhasegentCommand("/usr/local/bin/phasegent worktree acquire --issue 1", "s1", {
+        agent: "reviewer",
+      }),
+    ).toBe("/usr/local/bin/phasegent --role reviewer worktree acquire --issue 1");
+    expect(
+      rewritePhasegentCommand("PHASEGENT_ROLE=x phasegent issue status", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("PHASEGENT_ROLE=x phasegent --role executor issue status");
+    expect(
+      rewritePhasegentCommand("(phasegent issue create --title t)", "s1", {
+        agent: "orchestrator",
+      }),
+    ).toBe("(phasegent --role orchestrator issue create --title t --session s1)");
+    expect(
+      rewritePhasegentCommand("phasegent issue status && phasegent issue bind 1", "s1", {
+        agent: "orchestrator",
+      }),
+    ).toBe(
+      "phasegent --role orchestrator issue status && phasegent --role orchestrator issue bind 1 --session s1",
+    );
+  });
+});
+
+describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
+  test("keeps the incident 2>&1 redirection intact with --session before the pipe", () => {
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue create --title t --body b --keep-body-file 2>&1 | tail -c 900",
+        "ses_x",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      "phasegent --role orchestrator issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
+    );
+  });
+
+  test("appends --session after a trailing redirection, never inside it", () => {
+    const cases = [
+      [
+        "phasegent issue create --title t --body b > /dev/null 2>&1",
+        "phasegent --role orchestrator issue create --title t --body b > /dev/null 2>&1 --session ses_x",
+      ],
+      [
+        "phasegent issue bind 1 >&2",
+        "phasegent --role orchestrator issue bind 1 >&2 --session ses_x",
+      ],
+      [
+        "phasegent issue create --title t &> log",
+        "phasegent --role orchestrator issue create --title t &> log --session ses_x",
+      ],
+      [
+        "phasegent issue create --title t &>> log",
+        "phasegent --role orchestrator issue create --title t &>> log --session ses_x",
+      ],
+    ];
+    for (const [command, expected] of cases) {
+      expect(rewritePhasegentCommand(command, "ses_x", { agent: "orchestrator" })).toBe(expected);
+    }
+  });
+
+  test("still splits a standalone & and && around redirections", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue bind 1 &", "ses_x", { agent: "orchestrator" }),
+    ).toBe("phasegent --role orchestrator issue bind 1 --session ses_x &");
+    expect(
+      rewritePhasegentCommand("phasegent issue create --title t 2>&1 && echo done", "ses_x", {
+        agent: "orchestrator",
+      }),
+    ).toBe(
+      "phasegent --role orchestrator issue create --title t 2>&1 --session ses_x && echo done",
+    );
+  });
+
+  test("treats |& as a pipe and keeps the injection point before it", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue create --title t |& tail -c 9", "ses_x", {
+        agent: "orchestrator",
+      }),
+    ).toBe("phasegent --role orchestrator issue create --title t --session ses_x |& tail -c 9");
+  });
+});

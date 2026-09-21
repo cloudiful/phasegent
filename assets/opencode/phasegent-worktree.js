@@ -262,14 +262,16 @@ function separatorAt(command, index) {
   const pair = command.slice(index, index + 2);
   if (pair === "&&" || pair === "||") return pair;
   const char = command[index];
-  if (
-    char === ";" ||
-    char === "&" ||
-    char === "|" ||
-    char === "(" ||
-    char === ")" ||
-    char === "\n"
-  ) {
+  if (char === "&") {
+    // Redirection, not a segment boundary: `&>`/`&>>` (the `&` sits before
+    // `>`) and `N>&M`/`>&N`/`<&N` (the `&` sits after `>`/`<`). Only a
+    // standalone `&` is the background separator (issue #544 P1-b).
+    if (command[index + 1] === ">" || command[index - 1] === ">" || command[index - 1] === "<") {
+      return null;
+    }
+    return "&";
+  }
+  if (char === ";" || char === "|" || char === "(" || char === ")" || char === "\n") {
     return char;
   }
   return null;
@@ -329,7 +331,12 @@ function phasegentInvocation(segment) {
     offset += env[0].length;
     text = text.slice(env[0].length);
   }
-  const token = text.match(/^(?:[^\s;&|()]*\/)?phasegent\b/);
+  // The command name must be a whole word followed by whitespace or the
+  // segment end, and the prefix slot excludes quotes and backticks: `\b` also
+  // matched before `-`/`.`/`:`/`/`, so a quoted path such as
+  // `assets/opencode/phasegent-worktree.js` was rewritten as a call
+  // (issue #544 P1-a).
+  const token = text.match(/^(?:[^\s;&|()'"`]*\/)?phasegent(?=\s|$)/);
   if (!token) return null;
   const trailing = text.length - text.trimEnd().length;
   return {
