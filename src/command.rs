@@ -654,7 +654,22 @@ pub enum McpCommand {
     },
 }
 
+/// Parse the process argv, falling back to the `PHASEGENT_ROLE`
+/// environment variable when no explicit `--role` is present. Kept as a
+/// thin wrapper so the environment lookup happens exactly once; the
+/// decision logic lives in `parse_with_role_env`.
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
+    let role_env = std::env::var("PHASEGENT_ROLE").ok();
+    parse_with_role_env(args, role_env.as_deref())
+}
+
+/// Role-injectable parser used by `parse` and by unit tests. `role_env`
+/// models `PHASEGENT_ROLE` so tests never mutate process-global state
+/// (which would race the parallel parser assertions).
+pub(crate) fn parse_with_role_env(
+    args: &[String],
+    role_env: Option<&str>,
+) -> Result<Invocation, String> {
     if args.is_empty() {
         return Ok(Invocation {
             role: None,
@@ -782,6 +797,20 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             value if value.starts_with('-') => return Err(format!("unknown option '{value}'")),
             _ => break,
         }
+    }
+
+    // An explicit `--role` always wins; `PHASEGENT_ROLE` is the fallback for
+    // hosts outside the adapter (scripts, wrappers). A blank value means
+    // "not provided", but a non-empty invalid value is an error rather than a
+    // silent downgrade to role-less execution.
+    if role.is_none()
+        && let Some(value) = role_env.map(str::trim).filter(|value| !value.is_empty())
+    {
+        role = Some(
+            value
+                .parse::<Role>()
+                .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))?,
+        );
     }
 
     let command = args.get(index).ok_or("a command is required")?;

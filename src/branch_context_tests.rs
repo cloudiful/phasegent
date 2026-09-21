@@ -2,6 +2,7 @@ use crate::branch_context::{
     self, BindOutcome, BranchContextError, GitOutput, GitRunner, UnbindOutcome,
 };
 use crate::command::{self, Command, IssueCommand};
+use crate::policy::Role;
 use std::cell::RefCell;
 use std::path::PathBuf;
 
@@ -255,6 +256,101 @@ fn existing_issue_commands_still_parse() {
         other => panic!("unexpected command: {other:?}"),
     }
     assert!(parse_args(&["--role", "orchestrator", "issue", "search"]).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// `PHASEGENT_ROLE` fallback.
+//
+// The process-global `PHASEGENT_ROLE` is never set here: the parser exposes
+// an injectable variant so parallel parser assertions in other test modules
+// stay independent of this environment.
+// ---------------------------------------------------------------------------
+
+fn parse_with_role(values: &[&str], role_env: Option<&str>) -> Result<command::Invocation, String> {
+    let args = values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    command::parse_with_role_env(&args, role_env)
+}
+
+#[test]
+fn phasegent_role_env_supplies_role_when_flag_is_absent() {
+    for raw in ["executor", " executor ", "\texecutor\n"] {
+        let invocation = parse_with_role(&["issue", "get", "1"], Some(raw))
+            .unwrap_or_else(|error| panic!("env role {raw:?} must parse: {error}"));
+        assert_eq!(invocation.role, Some(Role::Executor), "env role {raw:?}");
+        assert!(matches!(
+            invocation.command,
+            Command::Issue(IssueCommand::Get { number: 1 })
+        ));
+    }
+}
+
+#[test]
+fn explicit_role_flag_wins_over_phasegent_role_env() {
+    let invocation = parse_with_role(
+        &["--role", "reviewer", "issue", "get", "1"],
+        Some("executor"),
+    )
+    .expect("explicit --role must parse");
+    assert_eq!(invocation.role, Some(Role::Reviewer));
+
+    // A valid explicit flag also shields an invalid env value from being
+    // evaluated at all.
+    let invocation = parse_with_role(
+        &["--role=reviewer", "issue", "get", "1"],
+        Some("not-a-role"),
+    )
+    .expect("explicit --role must short-circuit the env fallback");
+    assert_eq!(invocation.role, Some(Role::Reviewer));
+}
+
+#[test]
+fn invalid_phasegent_role_env_is_rejected() {
+    let error = parse_with_role(&["issue", "get", "1"], Some("bogus"))
+        .expect_err("invalid env role must error");
+    assert!(
+        error.contains("PHASEGENT_ROLE is invalid"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains("invalid role 'bogus'"), "got: {error}");
+}
+
+#[test]
+fn blank_or_absent_phasegent_role_env_keeps_the_previous_requirement() {
+    for role_env in [None, Some(""), Some("   ")] {
+        let error = parse_with_role(&["issue", "get", "1"], role_env).unwrap_err();
+        assert!(
+            error.contains("--role is required"),
+            "env {role_env:?} must behave as unset, got: {error}"
+        );
+    }
+}
+
+#[test]
+fn no_role_whitelist_commands_still_parse_with_role_env_present() {
+    // The env fallback lands before the `no_role_allowed` gate, so a
+    // role-less whitelist command is accepted and carries whatever role the
+    // environment supplied; an explicit flag still overrides it.
+    let invocation =
+        parse_with_role(&["issue", "bind", "23"], Some("executor")).expect("bind parses");
+    assert_eq!(invocation.role, Some(Role::Executor));
+    assert!(matches!(
+        invocation.command,
+        Command::Issue(IssueCommand::Bind { issue_id: 23, .. })
+    ));
+
+    let invocation =
+        parse_with_role(&["issue", "status"], Some("executor")).expect("status parses");
+    assert_eq!(invocation.role, Some(Role::Executor));
+
+    let invocation = parse_with_role(
+        &["--role", "orchestrator", "issue", "unbind"],
+        Some("executor"),
+    )
+    .expect("unbind parses");
+    assert_eq!(invocation.role, Some(Role::Orchestrator));
 }
 
 // ---------------------------------------------------------------------------
