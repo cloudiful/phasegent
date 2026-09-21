@@ -150,6 +150,7 @@ fn parse_acquire_minimal() {
             base,
             format,
             isolate,
+            no_sync: _,
         }) => {
             assert_eq!(issue, 1);
             assert_eq!(session, None);
@@ -210,6 +211,7 @@ fn parse_acquire_with_session_and_base() {
             base,
             format,
             isolate,
+            no_sync: _,
         }) => {
             assert_eq!(issue, 42);
             assert_eq!(session.as_deref(), Some("alpha"));
@@ -341,7 +343,7 @@ fn parse_list_repo_optional() {
     let invocation =
         crate::command::parse(&strings(["--role", "executor", "worktree", "list"])).unwrap();
     match invocation.command {
-        Command::Worktree(WorktreeCommand::List { repo }) => assert!(repo.is_none()),
+        Command::Worktree(WorktreeCommand::List { repo, .. }) => assert!(repo.is_none()),
         other => panic!("unexpected command {other:?}"),
     }
 }
@@ -357,6 +359,7 @@ fn parse_prune_defaults_to_read_only_and_stale_days_7() {
             release_stale,
             remove,
             reason,
+            no_sync: _,
         }) => {
             assert_eq!(repo, None);
             assert_eq!(stale_days, 7);
@@ -505,6 +508,7 @@ fn executor_cannot_acquire() {
             base: None,
             format: "json".to_owned(),
             isolate: false,
+            no_sync: false,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -534,6 +538,7 @@ fn executor_cannot_prune() {
             release_stale: false,
             remove: false,
             reason: None,
+            no_sync: false,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -549,7 +554,13 @@ fn tester_cannot_status() {
 
 #[test]
 fn tester_cannot_list() {
-    let exit = execute_worktree(Some(Role::Tester), WorktreeCommand::List { repo: None });
+    let exit = execute_worktree(
+        Some(Role::Tester),
+        WorktreeCommand::List {
+            repo: None,
+            no_sync: false,
+        },
+    );
     assert_eq!(exit, 3, "permission error must return exit code 3");
 }
 
@@ -563,6 +574,7 @@ fn admin_cannot_acquire() {
             base: None,
             format: "json".to_owned(),
             isolate: false,
+            no_sync: false,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -594,7 +606,13 @@ fn executor_status_passes_role_gate() {
 fn reviewer_list_passes_role_gate() {
     let _lock = lock_workflow_tests();
     let (_temp, _storage, _env) = open_temp_db("list-reviewer");
-    let exit = execute_worktree(Some(Role::Reviewer), WorktreeCommand::List { repo: None });
+    let exit = execute_worktree(
+        Some(Role::Reviewer),
+        WorktreeCommand::List {
+            repo: None,
+            no_sync: false,
+        },
+    );
     // List requires a real git repo; the test path lives under
     // /tmp so `repo_identity` will return an error and the
     // executor returns the structured error. The important
@@ -1418,6 +1436,7 @@ fn run_cli_acquire_with_session(repo: &TempRepo, isolate: bool, session: Option<
             base: None,
             format: "json".to_owned(),
             isolate,
+            no_sync: false,
         },
     );
     let _ = std::env::set_current_dir(&previous_cwd);
@@ -1747,6 +1766,7 @@ fn prune_command(
         release_stale,
         remove,
         reason: reason.map(str::to_owned),
+        no_sync: false,
     }
 }
 
@@ -1807,6 +1827,7 @@ fn parse_prune_defaults_to_read_only_scan_and_7_days() {
             release_stale,
             remove,
             reason,
+            no_sync: _,
         }) => {
             assert_eq!(repo, None);
             assert_eq!(stale_days, 7);
@@ -1870,6 +1891,7 @@ fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale()
             release_stale,
             remove,
             reason,
+            no_sync: _,
         }) => {
             assert_eq!(repo.as_deref(), Some("/tmp/repo"));
             assert_eq!(stale_days, 3);
@@ -1937,6 +1959,7 @@ fn reviewer_cannot_prune() {
             release_stale: false,
             remove: false,
             reason: None,
+            no_sync: false,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");

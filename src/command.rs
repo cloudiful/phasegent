@@ -270,6 +270,18 @@ pub enum IssueCommand {
         path: String,
         description: Option<String>,
     },
+    /// `issue sync [--all] [--no-clean]` (issue 552 Phase 2): reconcile
+    /// local worktree leases and worktree directories against the
+    /// provider's issue state. Default scope is the current repository;
+    /// `--all` scans every repository recorded in the lease table.
+    /// Remotely closed issues converge their active leases to `retained`
+    /// and then run the `issue close` guarded cleanup; `--no-clean`
+    /// reports the same verdicts without writing anything.
+    /// Orchestrator-only at execution time.
+    Sync {
+        all: bool,
+        no_clean: bool,
+    },
     /// Local branch context operations (no provider access). `bind`
     /// stores the issue id under `branch.<name>.redmine-issue-id` in the
     /// local Git config and rejects a different existing binding unless
@@ -544,6 +556,10 @@ pub enum PluginCommand {
 ///   of an active lease, but only when the resolved session owns the
 ///   row; a foreign session or terminal lease is a structured conflict.
 ///   Orchestrator-only.
+///
+/// `acquire`, `list`, and `prune` also accept `--no-sync` (issue 552
+/// Phase 2): the pre-subcommand reconciliation pass described on
+/// [`WorktreeCommand::sync_taxi`] is skipped for that invocation.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum WorktreeCommand {
@@ -566,6 +582,8 @@ pub enum WorktreeCommand {
         /// `worktree-auto` switch is OR-ed with it, so the default
         /// (both off) reuses the current checkout with a warning.
         isolate: bool,
+        /// `--no-sync` opt-out for the pre-subcommand reconciliation.
+        no_sync: bool,
     },
     Release {
         lease: String,
@@ -580,6 +598,8 @@ pub enum WorktreeCommand {
     },
     List {
         repo: Option<String>,
+        /// `--no-sync` opt-out for the pre-subcommand reconciliation.
+        no_sync: bool,
     },
     Prune {
         /// Optional `--repo`; `None` resolves the current directory.
@@ -594,6 +614,8 @@ pub enum WorktreeCommand {
         /// Required (non-empty) when `release_stale` is true so the
         /// recovery stays attributable; rejected on its own.
         reason: Option<String>,
+        /// `--no-sync` opt-out for the pre-subcommand reconciliation.
+        no_sync: bool,
     },
     Heartbeat {
         lease: String,
@@ -601,6 +623,34 @@ pub enum WorktreeCommand {
         /// `PHASEGENT_SESSION_ID` and then the legacy fallback.
         session: Option<String>,
     },
+}
+
+impl WorktreeCommand {
+    /// The reconciliation pass runs before `acquire`, `list`, and `prune`;
+    /// every other subcommand returns `None`. The pair is the operation
+    /// label used for stderr warnings plus the checkout to reconcile:
+    /// `--repo` when the subcommand takes one, otherwise `None` so the
+    /// caller falls back to the current working directory.
+    pub(crate) fn sync_taxi(&self) -> Option<(&'static str, Option<&str>)> {
+        match self {
+            Self::Acquire { no_sync: false, .. } => Some(("worktree acquire", None)),
+            Self::List {
+                repo,
+                no_sync: false,
+            } => Some(("worktree list", repo.as_deref())),
+            Self::Prune {
+                repo,
+                no_sync: false,
+                ..
+            } => Some(("worktree prune", repo.as_deref())),
+            Self::Acquire { .. }
+            | Self::List { .. }
+            | Self::Prune { .. }
+            | Self::Release { .. }
+            | Self::Status { .. }
+            | Self::Heartbeat { .. } => None,
+        }
+    }
 }
 
 /// Agent notification send. `event` is the structured kind

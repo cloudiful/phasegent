@@ -340,3 +340,58 @@ fn issue_create_branch_rejects_base_without_branch_and_bad_names() {
         "unexpected error: {whitespace}"
     );
 }
+
+/// Issue 552 Phase 2: `issue sync [--all] [--no-clean]` parses both
+/// switches, defaults them off, rejects unknown options, and keeps the
+/// orchestrator gate at the role-required level (the command-level gate
+/// runs at execution time).
+#[test]
+fn issue_sync_parses_scope_and_report_switches() {
+    let both = command::parse(&strings(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "sync",
+        "--all",
+        "--no-clean",
+    ]))
+    .expect("issue sync --all --no-clean must parse");
+    match both.command {
+        Command::Issue(IssueCommand::Sync { all, no_clean }) => {
+            assert!(all, "--all must round-trip");
+            assert!(no_clean, "--no-clean must round-trip");
+        }
+        other => panic!("expected Sync, got {other:?}"),
+    }
+
+    let default = command::parse(&strings(&["--role", "orchestrator", "issue", "sync"]))
+        .expect("bare issue sync must parse");
+    match default.command {
+        Command::Issue(IssueCommand::Sync { all, no_clean }) => {
+            assert!(!all, "--all must default off");
+            assert!(!no_clean, "--no-clean must default off");
+        }
+        other => panic!("expected Sync, got {other:?}"),
+    }
+
+    let unknown = command::parse(&strings(&[
+        "--role",
+        "orchestrator",
+        "issue",
+        "sync",
+        "--nonsense",
+    ]))
+    .expect_err("an unknown option must be rejected");
+    assert!(
+        unknown.contains("unknown option '--nonsense'"),
+        "got: {unknown}"
+    );
+
+    // Unlike the local branch context commands, `issue sync` needs a role.
+    let missing_role =
+        command::parse(&strings(&["issue", "sync"])).expect_err("a role must be required");
+    assert!(
+        missing_role.contains("--role is required"),
+        "got: {missing_role}"
+    );
+}

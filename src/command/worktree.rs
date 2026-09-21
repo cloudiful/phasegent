@@ -18,13 +18,14 @@
 //!
 //! ## Subcommands
 //!
-//! * `acquire --issue N [--session S] [--base REF] [--isolate] [--format json]`
+//! * `acquire --issue N [--session S] [--base REF] [--isolate] [--format json] [--no-sync]`
 //!   Idempotent. Returns `AcquireOutcome` JSON. The optional `--base`
 //!   flag is accepted for future Phase 2 follow-up; the current
 //!   implementation always bases on `HEAD` (matching the Phase 1
 //!   contract). `--isolate` forces a fresh branch/worktree on a
 //!   conflict; without it (and with `worktree-auto` off) acquire reuses
-//!   the current checkout and warns.
+//!   the current checkout and warns. `--no-sync` skips the
+//!   pre-subcommand reconciliation pass (issue 552 Phase 2).
 //! * `release --lease ID [--retain=true] [--force --reason TEXT]`
 //!   Default `--retain` is `true`. `--retain=false` flips the lease to
 //!   `released`; `--retain=true` (or omitted) flips to `retained`.
@@ -32,10 +33,10 @@
 //!   row; lease rows are never deleted.
 //! * `status --issue N`
 //!   Lists active leases for the issue. Read-only.
-//! * `list [--repo PATH]`
+//! * `list [--repo PATH] [--no-sync]`
 //!   Lists every lease for the resolved repo identity. `--repo` defaults
 //!   to the current working directory.
-//! * `prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove]`
+//! * `prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove] [--no-sync]`
 //!   The single pruning entry point (folds the former `release-stale`).
 //!   Default `--stale-days 7`. With neither action flag it is a
 //!   read-only dry-run. `--release-stale` requires a non-empty
@@ -43,6 +44,8 @@
 //!   deletes clean + expired + retained worktrees. `--reason` without
 //!   `--release-stale` is rejected. Branches are never deleted; the only
 //!   `git` invocation is `git worktree remove` (no `--force`).
+//!   `--no-sync` skips the pre-subcommand reconciliation pass (issue 552
+//!   Phase 2).
 //! * `heartbeat --lease ID [--session SESSION]`
 //!   Refreshes the heartbeat of an active lease the resolved session
 //!   owns; a foreign session, terminal lease, or unknown id is a
@@ -81,7 +84,7 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         args,
         0,
         &["--issue", "--session", "--base", "--format"],
-        &["--isolate"],
+        &["--isolate", "--no-sync"],
         "worktree acquire",
     )?;
     let issue_raw = required_nonempty_option(args, "--issue", "worktree acquire")?;
@@ -111,6 +114,7 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         base,
         format,
         isolate,
+        no_sync: has_flag(args, "--no-sync"),
     }))
 }
 
@@ -175,11 +179,14 @@ fn parse_status(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_list(args: &[String]) -> Result<Command, String> {
-    validate_options(args, 0, &["--repo"], &[], "worktree list")?;
+    validate_options(args, 0, &["--repo"], &["--no-sync"], "worktree list")?;
     let repo = optional_option(args, "--repo")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    Ok(Command::Worktree(WorktreeCommand::List { repo }))
+    Ok(Command::Worktree(WorktreeCommand::List {
+        repo,
+        no_sync: has_flag(args, "--no-sync"),
+    }))
 }
 
 fn parse_prune(args: &[String]) -> Result<Command, String> {
@@ -187,7 +194,7 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         args,
         0,
         &["--repo", "--stale-days", "--reason"],
-        &["--release-stale", "--remove"],
+        &["--release-stale", "--remove", "--no-sync"],
         "worktree prune",
     )?;
     let repo = optional_option(args, "--repo")
@@ -222,6 +229,7 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         release_stale,
         remove,
         reason,
+        no_sync: has_flag(args, "--no-sync"),
     }))
 }
 
@@ -281,12 +289,14 @@ mod tests {
                 base,
                 format,
                 isolate,
+                no_sync,
             }) => {
                 assert_eq!(issue, 239);
                 assert_eq!(session, None);
                 assert_eq!(base, None);
                 assert_eq!(format, "json");
                 assert!(!isolate, "--isolate must default off");
+                assert!(!no_sync, "--no-sync must default off");
             }
             other => panic!("unexpected command {other:?}"),
         }
@@ -336,12 +346,14 @@ mod tests {
                 base,
                 format,
                 isolate,
+                no_sync,
             }) => {
                 assert_eq!(issue, 239);
                 assert_eq!(session.as_deref(), Some("alpha"));
                 assert_eq!(base.as_deref(), Some("main"));
                 assert_eq!(format, "json");
                 assert!(!isolate);
+                assert!(!no_sync);
             }
             other => panic!("unexpected command {other:?}"),
         }
@@ -575,7 +587,7 @@ mod tests {
         ]))
         .unwrap();
         match invocation.command {
-            Command::Worktree(WorktreeCommand::List { repo }) => {
+            Command::Worktree(WorktreeCommand::List { repo, .. }) => {
                 assert_eq!(repo.as_deref(), Some("/tmp/repo"));
             }
             other => panic!("unexpected command {other:?}"),
@@ -593,12 +605,14 @@ mod tests {
                 release_stale,
                 remove,
                 reason,
+                no_sync,
             }) => {
                 assert_eq!(repo, None);
                 assert_eq!(stale_days, 7);
                 assert!(!release_stale, "--release-stale must default off");
                 assert!(!remove, "--remove must default off");
                 assert_eq!(reason, None);
+                assert!(!no_sync, "--no-sync must default off");
             }
             other => panic!("unexpected command {other:?}"),
         }
@@ -625,6 +639,7 @@ mod tests {
                 release_stale,
                 remove,
                 reason,
+                ..
             }) => {
                 assert_eq!(repo.as_deref(), Some("/tmp/repo"));
                 assert_eq!(stale_days, 30);
@@ -662,5 +677,137 @@ mod tests {
             }
             other => panic!("unexpected command {other:?}"),
         }
+    }
+
+    // Issue 552 Phase 2: `acquire` / `list` / `prune` accept `--no-sync`,
+    // the opt-out for the pre-subcommand reconciliation pass.
+
+    #[test]
+    fn acquire_parses_no_sync_flag() {
+        let invocation = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "acquire",
+            "--issue",
+            "552",
+            "--no-sync",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::Acquire { no_sync, .. }) => {
+                assert!(no_sync, "--no-sync must round-trip to the command");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_parses_no_sync_flag() {
+        let invocation = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "list",
+            "--no-sync",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::List { repo, no_sync }) => {
+                assert_eq!(repo, None);
+                assert!(no_sync, "--no-sync must round-trip to the command");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prune_parses_no_sync_flag_without_actions() {
+        let invocation = command::parse(&strings([
+            "--role",
+            "orchestrator",
+            "worktree",
+            "prune",
+            "--no-sync",
+        ]))
+        .unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::Prune {
+                release_stale,
+                remove,
+                no_sync,
+                ..
+            }) => {
+                assert!(no_sync);
+                assert!(!release_stale, "--no-sync does not imply --release-stale");
+                assert!(!remove, "--no-sync does not imply --remove");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn release_and_status_have_no_sync_switch() {
+        // The reconciliation pass only runs for acquire / list / prune, so
+        // every other subcommand reports no target and `--no-sync` removes
+        // a taxable subcommand from the set entirely.
+        for command in [
+            WorktreeCommand::Release {
+                lease: "lease-1".to_owned(),
+                retain: true,
+                force: false,
+                reason: None,
+            },
+            WorktreeCommand::Status { issue: 1 },
+            WorktreeCommand::Heartbeat {
+                lease: "lease-1".to_owned(),
+                session: None,
+            },
+        ] {
+            assert!(command.sync_taxi().is_none());
+        }
+        assert!(
+            WorktreeCommand::List {
+                repo: None,
+                no_sync: true,
+            }
+            .sync_taxi()
+            .is_none(),
+            "--no-sync removes the list pass"
+        );
+        assert_eq!(
+            WorktreeCommand::List {
+                repo: None,
+                no_sync: false,
+            }
+            .sync_taxi(),
+            Some(("worktree list", None)),
+            "without --repo the pass targets the current directory"
+        );
+        assert_eq!(
+            WorktreeCommand::Acquire {
+                issue: 552,
+                session: None,
+                base: None,
+                format: "json".to_owned(),
+                isolate: false,
+                no_sync: false,
+            }
+            .sync_taxi(),
+            Some(("worktree acquire", None))
+        );
+        assert_eq!(
+            WorktreeCommand::Prune {
+                repo: Some("/tmp/repo".to_owned()),
+                stale_days: 7,
+                release_stale: false,
+                remove: false,
+                reason: None,
+                no_sync: false,
+            }
+            .sync_taxi(),
+            Some(("worktree prune", Some("/tmp/repo"))),
+            "the pass targets the --repo checkout the subcommand operates on"
+        );
     }
 }

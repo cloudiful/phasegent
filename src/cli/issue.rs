@@ -10,6 +10,10 @@ mod issue_search;
 #[path = "issue_search_tests.rs"]
 #[cfg(test)]
 mod issue_search_tests;
+// Issue 552 Phase 2: the reconciliation engine lives next to the issue
+// command it belongs to; `execute_issue` only dispatches into it.
+#[path = "sync.rs"]
+pub(crate) mod sync;
 
 pub(crate) fn execute_issue(
     role_value: Option<Role>,
@@ -20,6 +24,22 @@ pub(crate) fn execute_issue(
     close_status_id: Option<&str>,
     command: IssueCommand,
 ) -> i32 {
+    // `issue sync` is local reconciliation, not a provider issue operation:
+    // it gates on the orchestrator role and resolves its own provider
+    // inside the sync module, so it never enters the capability table
+    // below.
+    if let IssueCommand::Sync { all, no_clean } = &command {
+        return sync::execute_sync(
+            super::required_role(role_value),
+            provider_kind,
+            api_base,
+            repository,
+            project_id,
+            close_status_id,
+            *all,
+            *no_clean,
+        );
+    }
     let (role, capability) = match &command {
         IssueCommand::Get { .. } | IssueCommand::GetBatch { .. } => {
             (super::required_role(role_value), Capability::IssueRead)
@@ -36,9 +56,13 @@ pub(crate) fn execute_issue(
             Capability::IssueAttachmentUpload,
         ),
         // Local branch context commands are dispatched before provider
-        // resolution and never reach this function.
-        IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch => {
-            unreachable!("local branch context commands bypass provider execution")
+        // resolution and never reach this function; `issue sync` is
+        // dispatched above for the same reason.
+        IssueCommand::Bind { .. }
+        | IssueCommand::Unbind
+        | IssueCommand::StatusBranch
+        | IssueCommand::Sync { .. } => {
+            unreachable!("local-only issue commands bypass provider execution")
         }
     };
     if !role.allows(capability) {
@@ -641,8 +665,11 @@ pub(crate) fn execute_issue(
                 Err(error) => super::provider_error(error),
             }
         }
-        IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch => {
-            unreachable!("local branch context commands bypass provider execution")
+        IssueCommand::Bind { .. }
+        | IssueCommand::Unbind
+        | IssueCommand::StatusBranch
+        | IssueCommand::Sync { .. } => {
+            unreachable!("local-only issue commands bypass provider execution")
         }
     }
 }

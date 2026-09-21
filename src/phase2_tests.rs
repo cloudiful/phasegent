@@ -3482,3 +3482,873 @@ fn cli_issue_close_provider_failure_leaves_worktree_directory() {
     let _ = fs::remove_dir_all(&worktree);
     let _ = fs::remove_dir_all(root);
 }
+
+// ---------------------------------------------------------------------------
+// Issue 552 Phase 2: `issue sync` reconciles an issue the provider already
+// closed, and `worktree acquire|list|prune` run the same pass before their
+// own work.
+//
+// The pass itself is driven through `cli::issue::sync::run_sync` so the
+// report object is asserted field by field; the CLI wiring is driven through
+// `cli::issue::execute_issue` (direct sync) and
+// `cli::worktree::execute_worktree` (taxi). Every test pins its database,
+// local database, and git checkouts to temp paths.
+// ---------------------------------------------------------------------------
+
+fn sync_cli_local_dispatcher() -> crate::providers::ProviderDispatcher {
+    crate::providers::ProviderDispatcher::local(
+        crate::providers::local::LocalProvider::open().expect("local provider"),
+    )
+}
+
+/// Run one reconciliation pass against the temp local provider and return
+/// its report.
+fn sync_cli_pass(
+    repo: &std::path::Path,
+    all: bool,
+    mode: crate::cli::issue::sync::SyncMode,
+) -> crate::cli::issue::sync::SyncReport {
+    let provider = sync_cli_local_dispatcher();
+    let runner = crate::worktree::ProcessWorktreeRunner::new();
+    let storage = Storage::open().expect("storage");
+    crate::worktree::ensure_schema(&storage).expect("lease schema");
+    crate::cli::issue::sync::run_sync(
+        &provider,
+        &runner,
+        &storage,
+        crate::cli::issue::sync::SyncRequest {
+            all,
+            mode,
+            cwd: repo,
+        },
+    )
+    .expect("reconciliation pass")
+}
+
+/// Seed one local issue directly in the provider's closed state, the way a
+/// web close leaves it (`is_closed` status without a local close chain).
+fn sync_cli_seed_closed_issue(title: &str) -> u64 {
+    close_cli_seed_issue(title, "Closed")
+}
+
+/// Run `issue sync` through the CLI executor from `cwd`.
+fn sync_cli_run_cli(
+    provider: ProviderKind,
+    all: bool,
+    no_clean: bool,
+    cwd: &std::path::Path,
+) -> i32 {
+    let previous_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(cwd).unwrap();
+    let exit = crate::cli::issue::execute_issue(
+        Some(Role::Orchestrator),
+        Some(provider),
+        None,
+        None,
+        None,
+        None,
+        command::IssueCommand::Sync { all, no_clean },
+    );
+    let _ = std::env::set_current_dir(&previous_cwd);
+    exit
+}
+
+/// Run one `worktree` subcommand through the CLI executor from `cwd`.
+fn sync_cli_run_worktree(command: crate::command::WorktreeCommand, cwd: &std::path::Path) -> i32 {
+    let previous_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(cwd).unwrap();
+    let exit = crate::cli::worktree::execute_worktree(Some(Role::Orchestrator), command);
+    let _ = std::env::set_current_dir(&previous_cwd);
+    exit
+}
+
+/// A bound-then-released loopback port, so the connection is refused fast
+/// without depending on a well-known port being free.
+fn sync_cli_dead_api_base() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind free port");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}/api/v1")
+}
+
+fn sync_cli_identity(repo: &std::path::Path) -> String {
+    crate::worktree::repo_identity(&crate::worktree::ProcessWorktreeRunner::new(), repo)
+        .expect("repository identity")
+}
+
+#[test]
+fn issue_sync_cleans_remotely_closed_issue_residue() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-clean");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "sync-clean", "feat/552-sync");
+    let number = sync_cli_seed_closed_issue("Sync me");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-sync", "active", &worktree);
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(report.mode, "clean");
+    assert!(!report.all);
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.not_closed, 0);
+    assert_eq!(report.released_leases, 1);
+    assert_eq!(report.cleaned, 1);
+    assert_eq!(report.kept, 0);
+    assert_eq!(report.issues.len(), 1);
+    let issue = &report.issues[0];
+    assert_eq!(issue.issue, number);
+    assert_eq!(issue.remote_state, "closed");
+    assert_eq!(issue.active_leases, 1);
+    assert_eq!(issue.released_leases, 1);
+    assert_eq!(issue.directories.len(), 1);
+    assert_eq!(issue.directories[0].action, "cleaned");
+    assert!(issue.directories[0].reason.is_none());
+
+    assert!(
+        !worktree.exists(),
+        "a remotely closed issue's clean worktree must be removed"
+    );
+    let (status, reason) = close_cli_lease_state(&lease);
+    assert_eq!(status, "retained");
+    assert_eq!(
+        reason.as_deref(),
+        Some("issue closed on the remote (issue sync)")
+    );
+    assert!(
+        close_cli_branch_exists(&repo, "feat/552-sync"),
+        "the branch must never be deleted"
+    );
+
+    // The CLI wiring exits 0 for the same converged state (nothing left to
+    // reconcile once the directory is gone).
+    let exit = sync_cli_run_cli(ProviderKind::Local, false, false, &repo);
+    assert_eq!(exit, 0);
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_keeps_dirty_worktree_and_reports_reason() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-dirty");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "sync-dirty", "feat/552-dirty");
+    // An untracked file is enough to make the directory dirty.
+    fs::write(worktree.join("scratch.txt"), "wip").unwrap();
+    let number = sync_cli_seed_closed_issue("Sync dirty");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-dirty", "active", &worktree);
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(report.cleaned, 0);
+    assert_eq!(report.kept, 1);
+    let directory = &report.issues[0].directories[0];
+    assert_eq!(directory.action, "kept");
+    let reason = directory.reason.as_deref().expect("keep reason");
+    assert!(
+        reason.contains("uncommitted or untracked files"),
+        "the shared cleanliness guard must supply the reason; got: {reason}"
+    );
+    assert!(worktree.exists(), "a dirty worktree must be kept");
+    // The lease still converges: the issue is closed remotely.
+    assert_eq!(close_cli_lease_state(&lease).0, "retained");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_never_removes_the_main_checkout() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-main-checkout");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let number = sync_cli_seed_closed_issue("Sync main");
+    let identity = sync_cli_identity(&repo);
+    // A reused-current-checkout lease points at the main checkout itself.
+    let lease = close_cli_seed_lease_at(&identity, number, "session-main", "active", &repo);
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(report.cleaned, 0);
+    assert_eq!(report.kept, 1);
+    let directory = &report.issues[0].directories[0];
+    assert_eq!(directory.action, "kept");
+    let reason = directory.reason.as_deref().expect("keep reason");
+    assert!(
+        reason.contains("main checkout is never removed"),
+        "the shared main-checkout guard must supply the reason; got: {reason}"
+    );
+    assert!(repo.exists(), "the main checkout is never removed");
+    assert_eq!(close_cli_lease_state(&lease).0, "retained");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_sync_keeps_directory_held_by_another_issues_active_lease() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-foreign-lease");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "sync-foreign", "feat/552-foreign");
+    let number = sync_cli_seed_closed_issue("Sync foreign");
+    let other_issue = close_cli_seed_issue("Still open", "New");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-sync", "active", &worktree);
+    // Another issue holds an active lease on the same directory through a
+    // symlinked spelling: the unique `(repo, path)` lease index keeps the
+    // row distinct while the shared directory guard still sees one target.
+    let link = root.join("foreign-link");
+    std::os::unix::fs::symlink(&worktree, &link).expect("symlink");
+    let other_lease =
+        close_cli_seed_lease_at(&identity, other_issue, "session-foreign", "active", &link);
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(report.checked, 2);
+    assert_eq!(report.not_closed, 1);
+    assert_eq!(report.cleaned, 0);
+    assert_eq!(report.kept, 1);
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.issue == number)
+        .expect("the closed issue is reported");
+    assert_eq!(issue.directories[0].action, "kept");
+    let reason = issue.directories[0].reason.as_deref().expect("keep reason");
+    assert!(
+        reason.contains("session-foreign") && reason.contains(&format!("issue {other_issue}")),
+        "the shared foreign-lease guard must name the owning session and issue; got: {reason}"
+    );
+    assert!(worktree.exists(), "the foreign lease keeps the directory");
+    assert_eq!(close_cli_lease_state(&lease).0, "retained");
+    assert_eq!(
+        close_cli_lease_state(&other_lease).0,
+        "active",
+        "another issue's active lease is never released"
+    );
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_leaves_open_issue_residue_and_lease_untouched() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-open");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let open_issue = close_cli_seed_issue("Still open", "New");
+    let worktree = close_cli_add_worktree(&repo, "sync-open", "feat/552-open");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, open_issue, "session-open", "active", &worktree);
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.not_closed, 1);
+    assert!(
+        report.issues.is_empty(),
+        "an open issue is not a reconciliation candidate"
+    );
+    assert_eq!(report.cleaned, 0);
+    assert_eq!(report.released_leases, 0);
+    assert!(worktree.exists());
+    assert_eq!(close_cli_lease_state(&lease).0, "active");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_no_clean_reports_verdicts_without_writing() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-report");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let clean_number = sync_cli_seed_closed_issue("Report clean");
+    let clean_worktree =
+        close_cli_add_worktree(&repo, "sync-report-clean", "feat/552-report-clean");
+    let dirty_number = sync_cli_seed_closed_issue("Report dirty");
+    let dirty_worktree =
+        close_cli_add_worktree(&repo, "sync-report-dirty", "feat/552-report-dirty");
+    fs::write(dirty_worktree.join("scratch.txt"), "wip").unwrap();
+    let identity = sync_cli_identity(&repo);
+    let clean_lease = close_cli_seed_lease_at(
+        &identity,
+        clean_number,
+        "session-report",
+        "active",
+        &clean_worktree,
+    );
+    let dirty_lease = close_cli_seed_lease_at(
+        &identity,
+        dirty_number,
+        "session-dirty",
+        "active",
+        &dirty_worktree,
+    );
+    let clean_dir = clean_worktree.to_string_lossy().to_string();
+    let dirty_dir = dirty_worktree.to_string_lossy().to_string();
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Report);
+
+    assert_eq!(report.mode, "report");
+    assert_eq!(report.checked, 2);
+    assert_eq!(report.released_leases, 0);
+    assert_eq!(report.cleaned, 0);
+    assert_eq!(report.kept, 1);
+    let clean_issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.issue == clean_number)
+        .expect("closed clean issue is reported");
+    assert_eq!(clean_issue.active_leases, 1);
+    assert_eq!(clean_issue.released_leases, 0);
+    assert_eq!(clean_issue.cleaned, 0);
+    let clean_report = clean_issue
+        .directories
+        .iter()
+        .find(|directory| directory.path == clean_dir)
+        .expect("clean directory verdict");
+    assert_eq!(clean_report.action, "would_clean");
+    assert!(clean_report.reason.is_none());
+    let dirty_issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.issue == dirty_number)
+        .expect("closed dirty issue is reported");
+    let dirty_report = dirty_issue
+        .directories
+        .iter()
+        .find(|directory| directory.path == dirty_dir)
+        .expect("dirty directory verdict");
+    assert_eq!(dirty_report.action, "would_keep");
+    assert!(
+        dirty_report
+            .reason
+            .as_deref()
+            .expect("keep reason")
+            .contains("uncommitted or untracked files"),
+        "got: {:?}",
+        dirty_report.reason
+    );
+
+    // Report mode writes nothing, including the lease convergence.
+    assert!(clean_worktree.exists());
+    assert!(dirty_worktree.exists());
+    assert_eq!(close_cli_lease_state(&clean_lease).0, "active");
+    assert_eq!(close_cli_lease_state(&dirty_lease).0, "active");
+
+    // `issue sync --no-clean` exits 0 and still writes nothing.
+    let exit = sync_cli_run_cli(ProviderKind::Local, false, true, &repo);
+    assert_eq!(exit, 0);
+    assert!(clean_worktree.exists(), "report mode must not clean");
+    assert_eq!(close_cli_lease_state(&clean_lease).0, "active");
+    let _ = fs::remove_dir_all(&clean_worktree);
+    let _ = fs::remove_dir_all(&dirty_worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_all_scans_every_lease_repository() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-all");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo_a = root.join("repo-a");
+    close_cli_init_repo(&repo_a);
+    let worktree_a = close_cli_add_worktree(&repo_a, "sync-all-a", "feat/552-all-a");
+    let number_a = sync_cli_seed_closed_issue("All scan A");
+    let identity_a = sync_cli_identity(&repo_a);
+    let lease_a =
+        close_cli_seed_lease_at(&identity_a, number_a, "session-a", "active", &worktree_a);
+
+    let repo_b = root.join("repo-b");
+    close_cli_init_repo(&repo_b);
+    let worktree_b = close_cli_add_worktree(&repo_b, "sync-all-b", "feat/552-all-b");
+    let number_b = sync_cli_seed_closed_issue("All scan B");
+    let identity_b = sync_cli_identity(&repo_b);
+    let lease_b =
+        close_cli_seed_lease_at(&identity_b, number_b, "session-b", "active", &worktree_b);
+
+    // A lease whose checkout is gone must be reported, not scanned.
+    let missing_identity = format!(
+        "{}/phasegent-sync-missing-{}/.git",
+        crate::test_scratch::root().display(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    close_cli_seed_lease_at(
+        &missing_identity,
+        9_000,
+        "session-missing",
+        "active",
+        &std::path::Path::new(&missing_identity).with_file_name("worktree"),
+    );
+
+    let report = sync_cli_pass(&repo_a, true, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert!(report.all);
+    assert_eq!(report.checked, 2);
+    assert_eq!(report.released_leases, 2);
+    assert_eq!(report.cleaned, 2);
+    assert_eq!(report.skipped_repos.len(), 1);
+    assert!(
+        report.skipped_repos[0].repo_identity == missing_identity,
+        "the missing checkout is reported verbatim"
+    );
+    assert!(
+        report.skipped_repos[0].reason.contains("missing"),
+        "got: {}",
+        report.skipped_repos[0].reason
+    );
+    let cleaned: Vec<u64> = report.issues.iter().map(|issue| issue.issue).collect();
+    assert!(cleaned.contains(&number_a) && cleaned.contains(&number_b));
+    assert!(!worktree_a.exists(), "repo A's residue is reconciled");
+    assert!(!worktree_b.exists(), "repo B's residue is reconciled");
+    assert_eq!(close_cli_lease_state(&lease_a).0, "retained");
+    assert_eq!(close_cli_lease_state(&lease_b).0, "retained");
+
+    // The CLI wiring accepts `--all` and exits 0 on the converged state.
+    let exit = sync_cli_run_cli(ProviderKind::Local, true, false, &repo_a);
+    assert_eq!(exit, 0);
+    let _ = fs::remove_dir_all(&worktree_a);
+    let _ = fs::remove_dir_all(&worktree_b);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_skips_missing_remote_issue() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-missing-remote");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "sync-missing-remote", "feat/552-missing");
+    let identity = sync_cli_identity(&repo);
+    // No provider issue 9_999 exists for this lease row: a stale row must
+    // not wedge the pass.
+    let lease = close_cli_seed_lease_at(&identity, 9_999, "session-missing", "active", &worktree);
+
+    let report = sync_cli_pass(&repo, false, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.not_found, 1);
+    assert!(report.issues.is_empty());
+    assert!(worktree.exists(), "a missing remote issue deletes nothing");
+    assert_eq!(close_cli_lease_state(&lease).0, "active");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_reports_remote_failure_with_non_zero_exit() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-remote-failure");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+    let api_base = sync_cli_dead_api_base();
+    let _api_guard = EnvGuard::set("PHASEGENT_API_BASE", &api_base);
+    let _repo_guard = EnvGuard::set("PHASEGENT_REPOSITORY", "owner/repo");
+    Storage::open()
+        .expect("storage")
+        .save_credential(Role::Orchestrator, "forgejo", "sync-test-token")
+        .expect("store forgejo token");
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "sync-remote", "feat/552-remote");
+    let number = sync_cli_seed_closed_issue("Remote down");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-remote", "active", &worktree);
+
+    let exit = sync_cli_run_cli(ProviderKind::Forgejo, false, false, &repo);
+
+    assert_ne!(
+        exit, 0,
+        "a direct sync against an unreachable remote must exit non-zero"
+    );
+    assert!(
+        worktree.exists(),
+        "a failed pass must not delete a worktree directory"
+    );
+    assert_eq!(close_cli_lease_state(&lease).0, "active");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn issue_sync_rejects_non_orchestrator_roles() {
+    // The role gate fires before any storage or provider access.
+    for role in [Role::Executor, Role::Reviewer, Role::Tester, Role::Admin] {
+        let exit = crate::cli::issue::execute_issue(
+            Some(role),
+            Some(ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+            command::IssueCommand::Sync {
+                all: false,
+                no_clean: false,
+            },
+        );
+        assert_eq!(exit, 3, "role '{role}' must be denied with exit code 3");
+    }
+}
+
+#[test]
+fn worktree_list_taxi_reconciles_closed_issue_residue() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("taxi-list");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+    // `worktree` subcommands take no provider flag, so the taxi resolves the
+    // configured default provider.
+    let _provider_guard = EnvGuard::set("PHASEGENT_PROVIDER", "local");
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "taxi-list", "feat/552-taxi");
+    let number = sync_cli_seed_closed_issue("Taxi list");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-taxi", "active", &worktree);
+
+    let exit = sync_cli_run_worktree(
+        crate::command::WorktreeCommand::List {
+            repo: None,
+            no_sync: false,
+        },
+        &repo,
+    );
+
+    assert_eq!(exit, 0, "the taxi never changes the list exit code");
+    assert!(
+        !worktree.exists(),
+        "the taxi reconciles the closed issue before list runs"
+    );
+    assert_eq!(close_cli_lease_state(&lease).0, "retained");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn worktree_list_no_sync_skips_the_taxi() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("taxi-no-sync");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+    let _provider_guard = EnvGuard::set("PHASEGENT_PROVIDER", "local");
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "taxi-no-sync", "feat/552-no-sync");
+    let number = sync_cli_seed_closed_issue("Taxi no sync");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-taxi", "active", &worktree);
+
+    let exit = sync_cli_run_worktree(
+        crate::command::WorktreeCommand::List {
+            repo: None,
+            no_sync: true,
+        },
+        &repo,
+    );
+
+    assert_eq!(exit, 0);
+    assert!(
+        worktree.exists(),
+        "--no-sync must skip the reconciliation pass entirely"
+    );
+    assert_eq!(close_cli_lease_state(&lease).0, "active");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn worktree_list_taxi_remote_failure_does_not_block() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("taxi-remote-failure");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+    let api_base = sync_cli_dead_api_base();
+    let _api_guard = EnvGuard::set("PHASEGENT_API_BASE", &api_base);
+    let _repo_guard = EnvGuard::set("PHASEGENT_REPOSITORY", "owner/repo");
+    let _provider_guard = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
+    Storage::open()
+        .expect("storage")
+        .save_credential(Role::Orchestrator, "forgejo", "sync-test-token")
+        .expect("store forgejo token");
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "taxi-remote", "feat/552-taxi-remote");
+    let number = sync_cli_seed_closed_issue("Taxi remote down");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-taxi", "active", &worktree);
+
+    let exit = sync_cli_run_worktree(
+        crate::command::WorktreeCommand::List {
+            repo: None,
+            no_sync: false,
+        },
+        &repo,
+    );
+
+    assert_eq!(
+        exit, 0,
+        "an unreachable remote is a taxi warning, never a blocking error"
+    );
+    assert!(worktree.exists(), "a failed taxi pass deletes nothing");
+    assert_eq!(close_cli_lease_state(&lease).0, "active");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn worktree_list_taxi_targets_the_repo_flag_checkout() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("taxi-repo-flag");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+    let _provider_guard = EnvGuard::set("PHASEGENT_PROVIDER", "local");
+
+    let repo_main = root.join("repo-main");
+    close_cli_init_repo(&repo_main);
+    let worktree = close_cli_add_worktree(&repo_main, "taxi-repo-flag", "feat/552-repo-flag");
+    let number = sync_cli_seed_closed_issue("Taxi repo flag");
+    let identity = sync_cli_identity(&repo_main);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-taxi", "active", &worktree);
+
+    let repo_other = root.join("repo-other");
+    close_cli_init_repo(&repo_other);
+
+    // `--repo` names the checkout the subcommand operates on, so the pass
+    // reconciles that checkout instead of the working directory.
+    let exit = sync_cli_run_worktree(
+        crate::command::WorktreeCommand::List {
+            repo: Some(repo_other.to_string_lossy().to_string()),
+            no_sync: false,
+        },
+        &repo_main,
+    );
+    assert_eq!(exit, 0);
+    assert!(
+        worktree.exists(),
+        "the --repo checkout has no residue, so the working directory is untouched"
+    );
+    assert_eq!(close_cli_lease_state(&lease).0, "active");
+
+    // Without `--repo` the pass targets the working directory again.
+    let exit = sync_cli_run_worktree(
+        crate::command::WorktreeCommand::List {
+            repo: None,
+            no_sync: false,
+        },
+        &repo_main,
+    );
+    assert_eq!(exit, 0);
+    assert!(!worktree.exists(), "the working directory is reconciled");
+    assert_eq!(close_cli_lease_state(&lease).0, "retained");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn worktree_prune_taxi_reconciles_closed_issue_residue() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("taxi-prune");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+    let _provider_guard = EnvGuard::set("PHASEGENT_PROVIDER", "local");
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let worktree = close_cli_add_worktree(&repo, "taxi-prune", "feat/552-taxi-prune");
+    let number = sync_cli_seed_closed_issue("Taxi prune");
+    let identity = sync_cli_identity(&repo);
+    let lease = close_cli_seed_lease_at(&identity, number, "session-taxi", "active", &worktree);
+
+    // `prune` without action flags stays a read-only dry-run; the taxi runs
+    // before it and reconciles the closed issue's residue.
+    let exit = sync_cli_run_worktree(
+        crate::command::WorktreeCommand::Prune {
+            repo: Some(repo.to_string_lossy().to_string()),
+            stale_days: 14,
+            release_stale: false,
+            remove: false,
+            reason: None,
+            no_sync: false,
+        },
+        &repo,
+    );
+
+    assert_eq!(exit, 0, "the taxi never changes the prune exit code");
+    assert!(
+        !worktree.exists(),
+        "the taxi reconciles before prune classifies anything"
+    );
+    assert_eq!(close_cli_lease_state(&lease).0, "retained");
+    let _ = fs::remove_dir_all(&worktree);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn taxi_sync_is_silent_when_no_residue_exists() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("taxi-silent");
+    let db = root.join("phasegent.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    // Deliberately no provider configuration: a silent pass never resolves
+    // one, so an unconfigured host still gets zero output.
+    let _provider_guard = EnvGuard::set("PHASEGENT_PROVIDER", "");
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let identity = sync_cli_identity(&repo);
+    // A lease whose directory is already gone is not residue.
+    close_cli_seed_lease_at(
+        &identity,
+        777,
+        "session-gone",
+        "retained",
+        &root.join("missing-worktree"),
+    );
+
+    let previous_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&repo).unwrap();
+    let warnings = crate::cli::issue::sync::taxi_sync(Role::Orchestrator, None);
+    let _ = std::env::set_current_dir(&previous_cwd);
+
+    assert!(
+        warnings.is_empty(),
+        "no residue means zero output; got: {warnings:?}"
+    );
+    let _ = fs::remove_dir_all(root);
+}

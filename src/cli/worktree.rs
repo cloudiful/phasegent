@@ -46,6 +46,21 @@ pub(crate) use prune::{
 
 pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeCommand) -> i32 {
     let role = super::required_role(role_value);
+    // Issue 552 Phase 2: `acquire` / `list` / `prune` run one
+    // reconciliation pass for the repository they operate on (`--repo`
+    // when supplied, otherwise the current directory) first. The pass
+    // never writes stdout and never blocks: a failure is a bounded stderr
+    // warning, and `--no-sync` skips it. The pass is orchestrator-only
+    // (like `issue sync` and the mutating worktree subcommands), so a
+    // read-only role can never trigger a lease flip or a removal by
+    // inspecting leases.
+    if role == Role::Orchestrator
+        && let Some((operation, repo)) = command.sync_taxi()
+    {
+        for warning in crate::cli::issue::sync::taxi_sync(role, repo) {
+            super::report_local_warnings(operation, Some(warning));
+        }
+    }
     match command {
         WorktreeCommand::Acquire {
             issue,
@@ -53,6 +68,7 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             base: _,
             format,
             isolate,
+            no_sync: _,
         } => {
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree acquire");
@@ -76,7 +92,7 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             }
             query::execute_status(issue)
         }
-        WorktreeCommand::List { repo } => {
+        WorktreeCommand::List { repo, no_sync: _ } => {
             if !is_read_role(role) {
                 return permission_error(role, "worktree list");
             }
@@ -88,6 +104,7 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             release_stale,
             remove,
             reason,
+            no_sync: _,
         } => {
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree prune");
@@ -107,7 +124,10 @@ fn is_read_role(role: Role) -> bool {
     matches!(role, Role::Orchestrator | Role::Executor | Role::Reviewer)
 }
 
-fn permission_error(role: Role, operation: &str) -> i32 {
+/// Shared structured `permission` envelope for command-level role gates.
+/// `sync` reuses it so `issue sync` and the `worktree` write paths stay
+/// byte-identical for the same denial.
+pub(crate) fn permission_error(role: Role, operation: &str) -> i32 {
     super::structured_error(
         serde_json::json!({
             "kind": "permission",

@@ -121,8 +121,23 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             require_exact_positionals(args, 1, "issue status")?;
             Ok(Command::Issue(IssueCommand::StatusBranch))
         }
+        "sync" => parse_issue_sync(args),
         value => Err(format!("unknown issue command '{value}'")),
     }
+}
+
+/// `issue sync [--all] [--no-clean]` (issue 552 Phase 2). Both switches
+/// are plain flags: the default invocation reconciles the current
+/// repository, `--all` widens the scan to every repository recorded in
+/// the lease table, and `--no-clean` turns the pass into a read-only
+/// report. The role gate and the provider resolution happen at
+/// execution time.
+fn parse_issue_sync(args: &[String]) -> Result<Command, String> {
+    validate_options(args, 0, &[], &["--all", "--no-clean"], "issue sync")?;
+    Ok(Command::Issue(IssueCommand::Sync {
+        all: has_flag(args, "--all"),
+        no_clean: has_flag(args, "--no-clean"),
+    }))
 }
 
 /// Validate an explicit `--session` value for `issue create` / `issue bind`
