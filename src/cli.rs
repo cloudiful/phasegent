@@ -7,7 +7,7 @@ use crate::providers::forgejo::{ForgejoConfig, ForgejoError};
 use crate::providers::{GitlabConfig, ProviderDispatcher, ProviderKind, RedmineConfig};
 use serde::Serialize;
 
-mod branch;
+pub(crate) mod branch;
 mod comment;
 pub(crate) mod doctor;
 mod help;
@@ -163,7 +163,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             command @ (IssueCommand::Bind { .. }
             | IssueCommand::Unbind
             | IssueCommand::StatusBranch),
-        ) => branch::execute_branch_context(command),
+        ) => branch::execute_branch_context(invocation.role, command),
         Command::Issue(command) => issue::execute_issue(
             invocation.role,
             invocation.provider,

@@ -1,6 +1,7 @@
 use crate::branch_context::{
     self, BindOutcome, BranchContextError, GitOutput, GitRunner, UnbindOutcome,
 };
+use crate::cli::branch::{permission_denial, should_auto_acquire};
 use crate::command::{self, Command, IssueCommand};
 use crate::policy::Role;
 use std::cell::RefCell;
@@ -598,6 +599,96 @@ fn sanitize_output_strips_control_characters_and_bounds_length() {
     let long = "x".repeat(500);
     let sanitized = branch_context::sanitize_output(long.as_bytes());
     assert_eq!(sanitized.len(), 200);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #541 Phase 3: bind/unbind role gate and repeat-bind acquire skip.
+// ---------------------------------------------------------------------------
+
+fn bind_command(issue_id: u64) -> IssueCommand {
+    IssueCommand::Bind {
+        issue_id,
+        replace: false,
+        session: None,
+    }
+}
+
+#[test]
+fn explicit_non_orchestrator_roles_are_denied_bind_and_unbind() {
+    for role in [Role::Executor, Role::Reviewer, Role::Tester, Role::Admin] {
+        for (command, operation) in [
+            (bind_command(541), "issue bind"),
+            (IssueCommand::Unbind, "issue unbind"),
+        ] {
+            let denial = permission_denial(Some(role), &command)
+                .unwrap_or_else(|| panic!("{role} must be denied {operation}"));
+            assert_eq!(denial["kind"], serde_json::json!("permission"));
+            assert_eq!(denial["role"], serde_json::json!(role.as_str()));
+            assert_eq!(denial["operation"], serde_json::json!(operation));
+            assert!(
+                denial["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(operation)),
+                "the message must name the denied operation: {denial}"
+            );
+        }
+    }
+}
+
+#[test]
+fn orchestrator_and_role_less_calls_pass_the_branch_gate() {
+    assert!(permission_denial(Some(Role::Orchestrator), &bind_command(541)).is_none());
+    assert!(permission_denial(Some(Role::Orchestrator), &IssueCommand::Unbind).is_none());
+    assert!(permission_denial(None, &bind_command(541)).is_none());
+    assert!(permission_denial(None, &IssueCommand::Unbind).is_none());
+}
+
+#[test]
+fn status_branch_is_unrestricted_for_every_role() {
+    for role in [
+        None,
+        Some(Role::Orchestrator),
+        Some(Role::Executor),
+        Some(Role::Reviewer),
+        Some(Role::Tester),
+        Some(Role::Admin),
+    ] {
+        assert!(
+            permission_denial(role, &IssueCommand::StatusBranch).is_none(),
+            "{role:?} must keep read-only status-branch access"
+        );
+    }
+}
+
+#[test]
+fn repeat_bind_skips_auto_acquire_while_first_bind_keeps_it() {
+    let already_bound = branch_context::execute_bind(&branch_runner("main", Some("23")), 23, false)
+        .expect("repeat bind document");
+    assert_eq!(already_bound["already_bound"], serde_json::json!(true));
+    assert!(!should_auto_acquire(&already_bound));
+
+    let fresh = branch_context::execute_bind(&branch_runner("feature/ctx", None), 23, false)
+        .expect("first bind document");
+    assert_eq!(fresh["already_bound"], serde_json::json!(false));
+    assert!(should_auto_acquire(&fresh));
+
+    // A missing flag is not a skip: only an explicit `true` suppresses the
+    // hook, so an older document shape keeps the previous behaviour.
+    assert!(should_auto_acquire(&serde_json::json!({"bound": true})));
+
+    // The bind document stays the same five-field object; the gate only reads
+    // a flag out of it (keys sort alphabetically without `preserve_order`).
+    let mut keys: Vec<&str> = fresh
+        .as_object()
+        .expect("bind document is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["already_bound", "bound", "branch", "issue_id", "replaced"]
+    );
 }
 
 // ---------------------------------------------------------------------------
