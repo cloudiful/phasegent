@@ -99,20 +99,7 @@ pub(super) fn resolve_scopes(
 /// the same table `list_for_repo` reads, scoped to the distinct identities
 /// so `--all` never walks the operator's filesystem looking for checkouts.
 fn repo_identities(storage: &Storage) -> Result<Vec<String>, WorktreeError> {
-    let mut statement = storage
-        .connection
-        .prepare("SELECT DISTINCT repo_identity FROM worktree_leases ORDER BY repo_identity")
-        .map_err(|error| WorktreeError::new("storage", format!("prepare repo scan: {error}")))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| WorktreeError::new("storage", format!("repo scan: {error}")))?;
-    let mut identities = Vec::new();
-    for row in rows {
-        identities.push(
-            row.map_err(|error| WorktreeError::new("storage", format!("repo row: {error}")))?,
-        );
-    }
-    Ok(identities)
+    Ok(vec![]) /* ~ changed by cargo-mutants ~ */
 }
 
 /// Open the lease store and make sure the schema exists, so a pass on a

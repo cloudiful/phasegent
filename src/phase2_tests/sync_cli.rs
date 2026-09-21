@@ -201,6 +201,67 @@ fn issue_sync_keeps_directory_held_by_another_issues_active_lease() {
 }
 
 #[test]
+fn issue_sync_all_skips_checkout_recreated_as_another_repository() {
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let root = close_cli_root("sync-stale-identity");
+    let db = root.join("phasegent.sqlite3");
+    let local_db = root.join("phasegent-local.sqlite3");
+    let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db.to_string_lossy().as_ref());
+    let _local_guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        local_db.to_string_lossy().as_ref(),
+    );
+
+    let repo = root.join("repo");
+    close_cli_init_repo(&repo);
+    let checkout = close_cli_add_worktree(&repo, "sync-stale", "feat/552-stale");
+    // The lease table still records the identity this directory had when it
+    // was a repository of its own; it now resolves into `repo`, so the pass
+    // must skip the stale identity instead of reconciling its residue.
+    let stale_identity = format!("{}/.git", checkout.display());
+    let number = sync_cli_seed_closed_issue("Sync stale identity");
+    let lease = close_cli_seed_lease_at(
+        &stale_identity,
+        number,
+        "session-stale",
+        "active",
+        &checkout,
+    );
+
+    let report = sync_cli_pass(&root, true, crate::cli::issue::sync::SyncMode::Clean);
+
+    assert_eq!(
+        report.skipped_repos.len(),
+        1,
+        "the stale identity is skipped"
+    );
+    assert_eq!(report.skipped_repos[0].repo_identity, stale_identity);
+    let reason = &report.skipped_repos[0].reason;
+    assert!(
+        reason.contains("resolves to a different repository identity"),
+        "got: {reason}"
+    );
+    assert!(
+        reason.contains(&sync_cli_identity(&repo)),
+        "the reason must name the identity the checkout resolves to; got: {reason}"
+    );
+    assert_eq!(report.checked, 0, "a skipped identity is never scanned");
+    assert!(report.issues.is_empty());
+    assert_eq!(report.cleaned, 0);
+    assert_eq!(report.released_leases, 0);
+    assert!(checkout.exists(), "a skipped checkout is never removed");
+    assert_eq!(
+        close_cli_lease_state(&lease).0,
+        "active",
+        "a skipped identity's lease is never released"
+    );
+    let _ = fs::remove_dir_all(&checkout);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn issue_sync_leaves_open_issue_residue_and_lease_untouched() {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
