@@ -598,6 +598,25 @@ pub(crate) fn execute_issue(
                         )
                         .warning(),
                     );
+                    // Issue 552 Phase 1: after the close and the lease
+                    // release, delete the closed issue's clean worktree
+                    // directories in this repository. The helper reuses
+                    // the `worktree prune --remove` primitives and adds
+                    // the close-specific guards (clean, no foreign
+                    // active lease, never the main checkout); a blocked
+                    // directory is kept and named on stderr, branches
+                    // are never deleted, and the stdout close document
+                    // stays byte-identical.
+                    for warning in crate::lifecycle::cleanup_closed_issue_worktrees(
+                        &crate::worktree::ProcessWorktreeRunner::new(),
+                        &repo_path,
+                        number,
+                        release_session,
+                    )
+                    .warnings()
+                    {
+                        super::report_local_warnings("issue close", Some(warning));
+                    }
                     // Phase 3 relation auto: fire the helper after a
                     // successful close. The shared issue DTO does not
                     // surface the parent linkage without a server

@@ -10,7 +10,7 @@
 use crate::branch_context::{self, BranchContextError, GitRunner};
 use crate::hooks::{self, InstallOutcome};
 use crate::remote;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Upper bound for any warning text derived from local repository state.
 pub const MAX_WARNING_CHARS: usize = 200;
@@ -516,6 +516,245 @@ pub fn release_closed_issue_leases(
             ),
         },
     }
+}
+
+/// Outcome of the `issue close` worktree-directory cleanup hook.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AutoCleanupOutcome {
+    /// No lease row for the issue in this repository pointed at a
+    /// directory, or every candidate directory was already absent:
+    /// nothing was deleted and there is nothing to report.
+    Noop,
+    /// The pass ran: `removed` clean directories were deleted and every
+    /// entry in `kept` names a directory a guard preserved, with the
+    /// reason.
+    Cleaned { removed: u64, kept: Vec<String> },
+    /// The repository identity or the lease store could not be resolved.
+    /// Nothing was deleted; the remote close already succeeded, so this
+    /// is a bounded warning only.
+    Warning { reason: String },
+}
+
+impl AutoCleanupOutcome {
+    /// Stderr warning lines: one per preserved directory (reason first,
+    /// directory verbatim), or the single warning of the
+    /// unresolvable-context arm. Empty for a no-op and for a cleanup
+    /// that removed every candidate.
+    pub fn warnings(&self) -> Vec<String> {
+        match self {
+            Self::Noop => Vec::new(),
+            Self::Cleaned { kept, .. } => kept.clone(),
+            Self::Warning { reason } => vec![bounded(reason)],
+        }
+    }
+}
+
+/// Canonicalise `path`, falling back to the path itself when it no
+/// longer exists so a just-removed directory still compares equal to
+/// its recorded lease path.
+fn canonical_or_self(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// True when both paths name the same directory, resolving symlinks and
+/// relative spellings first.
+fn same_directory(left: &Path, right: &Path) -> bool {
+    canonical_or_self(left) == canonical_or_self(right)
+}
+
+/// True when `directory` is the repository's main working tree: the
+/// checkout whose per-worktree Git dir *is* the shared common dir.
+/// Every linked worktree resolves `git rev-parse --git-dir` to
+/// `<common>/worktrees/<name>` instead, so it never matches. A probe
+/// that cannot answer is an `Err`; callers must then keep the
+/// directory, because the guard cannot be verified.
+fn is_main_checkout(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    directory: &Path,
+    identity: &str,
+) -> Result<bool, crate::worktree::WorktreeError> {
+    let output = runner.run(&["rev-parse", "--git-dir"], directory)?;
+    if output.status != 0 {
+        return Err(crate::worktree::WorktreeError::new(
+            "git",
+            format!(
+                "git rev-parse --git-dir failed with exit status {}",
+                output.status
+            ),
+        ));
+    }
+    let raw = output.stdout.trim();
+    if raw.is_empty() {
+        return Err(crate::worktree::WorktreeError::new(
+            "git",
+            "git rev-parse --git-dir returned an empty path",
+        ));
+    }
+    let resolved = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        directory.join(raw)
+    };
+    Ok(canonical_or_self(&resolved) == canonical_or_self(Path::new(identity)))
+}
+
+/// Delete the closed issue's clean worktree directories in this
+/// repository, after the remote close and the lease release succeeded.
+///
+/// The dirty probe ([`crate::worktree::is_clean`]) and the removal call
+/// ([`crate::worktree::worktree_remove`]) are the same primitives the
+/// `worktree prune --remove` pass is built on; only the guards differ,
+/// because a close converges the issue's lifecycle immediately instead
+/// of waiting for the stale window. A directory is removed only when
+/// all three guards hold:
+///
+/// 1. the directory is clean — `git status --porcelain` is empty, so
+///    untracked files count as dirty;
+/// 2. no *other* session holds an `active` lease pointing at the
+///    directory; the closing session's own lease never blocks its own
+///    cleanup, while `session == None` (the legacy fallback) makes
+///    every active lease foreign and therefore keeps every active
+///    row's directory;
+/// 3. the directory is not the repository's main working tree, i.e.
+///    its `git rev-parse --git-dir` is not the shared common dir.
+///
+/// Every blocked, failed, or unreadable candidate is kept and returned
+/// as one reason-first warning entry naming the directory verbatim, so
+/// the operator can act on it; only embedded error text is bounded.
+/// Lease rows are never touched here (the close chain flipped them to
+/// `retained` before this helper runs, and they stay as audit records)
+/// and branches are never deleted. Every failure degrades to a warning
+/// because the remote close has already succeeded.
+pub fn cleanup_closed_issue_worktrees(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    repo_path: &Path,
+    issue: u64,
+    session: Option<&str>,
+) -> AutoCleanupOutcome {
+    if issue == 0 {
+        return AutoCleanupOutcome::Noop;
+    }
+    let session = session.map(str::trim).filter(|value| !value.is_empty());
+    let identity = match crate::worktree::repo_identity(runner, repo_path) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return AutoCleanupOutcome::Warning {
+                reason: format!(
+                    "issue {issue} closed; could not resolve repository identity for \
+                     worktree cleanup: {}",
+                    bounded(&error.message)
+                ),
+            };
+        }
+    };
+    let storage = match crate::infra::storage::Storage::open() {
+        Ok(storage) => storage,
+        Err(error) => {
+            return AutoCleanupOutcome::Warning {
+                reason: format!(
+                    "issue {issue} closed; could not open the lease store for worktree \
+                     cleanup: {}",
+                    bounded(&error)
+                ),
+            };
+        }
+    };
+    if let Err(error) = crate::worktree::leases::ensure_schema(&storage) {
+        return AutoCleanupOutcome::Warning {
+            reason: format!(
+                "issue {issue} closed; could not initialise the lease store for worktree \
+                 cleanup: {}",
+                bounded(&error)
+            ),
+        };
+    }
+    let rows = match crate::worktree::leases::list_for_repo(&storage, &identity) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return AutoCleanupOutcome::Warning {
+                reason: format!(
+                    "issue {issue} closed; could not read worktree leases for cleanup: {}",
+                    bounded(&error.message)
+                ),
+            };
+        }
+    };
+    if !rows.iter().any(|row| row.issue == issue) {
+        return AutoCleanupOutcome::Noop;
+    }
+    let mut removed = 0u64;
+    let mut kept: Vec<String> = Vec::new();
+    for row in rows.iter().filter(|row| row.issue == issue) {
+        let directory = PathBuf::from(&row.worktree_path);
+        if !directory.exists() {
+            continue;
+        }
+        match is_main_checkout(runner, &directory, &identity) {
+            Ok(true) => {
+                kept.push(format!(
+                    "issue {issue} closed; kept worktree (main checkout is never removed): {}",
+                    row.worktree_path
+                ));
+                continue;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                kept.push(format!(
+                    "issue {issue} closed; kept worktree (could not verify the \
+                     main-checkout guard: {}): {}",
+                    bounded(&error.message),
+                    row.worktree_path
+                ));
+                continue;
+            }
+        }
+        let foreign_active = rows.iter().find(|other| {
+            other.status == crate::worktree::LEASE_STATUS_ACTIVE
+                && session != Some(other.session.as_str())
+                && same_directory(Path::new(&other.worktree_path), &directory)
+        });
+        if let Some(other) = foreign_active {
+            kept.push(format!(
+                "issue {issue} closed; kept worktree (session '{}' holds an active lease \
+                 for issue {}): {}",
+                other.session, other.issue, row.worktree_path
+            ));
+            continue;
+        }
+        match crate::worktree::is_clean(runner, &directory) {
+            Ok(true) => {}
+            Ok(false) => {
+                kept.push(format!(
+                    "issue {issue} closed; kept worktree (uncommitted or untracked files): {}",
+                    row.worktree_path
+                ));
+                continue;
+            }
+            Err(error) => {
+                kept.push(format!(
+                    "issue {issue} closed; kept worktree (cleanliness probe failed: {}): {}",
+                    bounded(&error.message),
+                    row.worktree_path
+                ));
+                continue;
+            }
+        }
+        // Run the removal from inside the candidate: it exists at this
+        // point, while the close's own working directory may already be
+        // a removed sibling by the time a later candidate is handled.
+        match crate::worktree::worktree_remove(runner, &directory, &directory) {
+            Ok(()) => removed += 1,
+            Err(error) => kept.push(format!(
+                "issue {issue} closed; worktree removal failed ({}): {}",
+                bounded(&error.message),
+                row.worktree_path
+            )),
+        }
+    }
+    if removed == 0 && kept.is_empty() {
+        return AutoCleanupOutcome::Noop;
+    }
+    AutoCleanupOutcome::Cleaned { removed, kept }
 }
 
 fn local_failure(operation: &str, error: &BranchContextError) -> AutoBindOutcome {
