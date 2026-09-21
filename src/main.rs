@@ -36,6 +36,9 @@ mod phase3_tests;
 mod branch_context_tests;
 
 #[cfg(test)]
+mod branch_context_prop_tests;
+
+#[cfg(test)]
 mod hooks_tests;
 
 #[cfg(test)]
