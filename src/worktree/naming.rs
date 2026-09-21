@@ -12,11 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::worktree::{WorktreeError, now_unix_secs};
 
-/// Length of the short hex suffix appended to `phasegent/<issue>-` so
-/// collisions on issue id are astronomically unlikely within a
-/// single-machine cache.
-#[allow(dead_code)]
-pub(super) const SHORT_SUFFIX_HEX: usize = 6;
 /// Width of the FNV-1a fingerprint used to scope per-repo cache
 /// directories. 12 hex chars (48 bits) is well past the practical
 /// number of repos a single user / machine ever holds; collisions

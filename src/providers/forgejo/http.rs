@@ -32,48 +32,6 @@ pub(crate) fn decode<T: DeserializeOwned>(
     })
 }
 
-#[allow(dead_code)]
-pub(crate) fn decode_page<T: DeserializeOwned>(
-    response: Response,
-    operation: &str,
-) -> Result<Page<T>, ForgejoError> {
-    let (status, headers, text) = response_parts(response, operation)?;
-    if !status.is_success() {
-        return Err(http_error(status, &text, operation));
-    }
-    let items = serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
-        operation: operation.to_owned(),
-        message: error.to_string(),
-    })?;
-    let total = headers
-        .get("x-total-count")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok());
-    let next = headers
-        .get(LINK)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(',')
-                .any(|link| link.contains("rel=\"next\"") || link.contains("rel=next"))
-        });
-    Ok(Page {
-        items,
-        total,
-        next,
-        signature: text,
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) fn decode_text(response: Response, operation: &str) -> Result<String, ForgejoError> {
-    let (status, _, text) = response_parts(response, operation)?;
-    if !status.is_success() {
-        return Err(http_error(status, &text, operation));
-    }
-    Ok(text)
-}
-
 pub(crate) fn decode_from_parts<T: DeserializeOwned>(
     status: StatusCode,
     text: &str,

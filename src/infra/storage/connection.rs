@@ -1,8 +1,7 @@
+use crate::infra::sqlite_file;
 use crate::infra::storage_schema::DB_FILENAME;
 use crate::infra::storage_schema::{MIGRATIONS, PRAGMA_STATEMENTS, SCHEMA};
-use directories::ProjectDirs;
 use rusqlite::Connection;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct Storage {
@@ -27,7 +26,7 @@ impl Storage {
             let path = PathBuf::from(override_path);
             return Self::open_at(&path);
         }
-        let path = project_dirs_db_path()?;
+        let path = sqlite_file::project_dirs_config_path(DB_FILENAME)?;
         Self::open_at(&path)
     }
 
@@ -37,23 +36,9 @@ impl Storage {
     /// on Unix before handing the connection off.
     pub fn open_at(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            sqlite_file::create_private_dir(parent, "phasegent config", false)?;
         }
-        let connection = Connection::open(path)
-            .map_err(|error| format!("could not open phasegent database: {error}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // Make sure the file itself is private even when an
-            // existing database already lived on disk with broader
-            // permissions.
-            let metadata = fs::metadata(path)
-                .map_err(|error| format!("could not stat phasegent database: {error}"))?;
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(0o600);
-            fs::set_permissions(path, permissions)
-                .map_err(|error| format!("could not secure phasegent database: {error}"))?;
-        }
+        let connection = sqlite_file::open_private_connection(path, "phasegent")?;
         Self::initialise(&connection)?;
         Ok(Self {
             connection,
@@ -169,35 +154,6 @@ impl Storage {
     pub fn db_path(&self) -> &Path {
         &self.path
     }
-}
-
-/// Create `path` with private permissions. Used for both the SQLite
-/// database directory and the database file itself; on non-Unix
-/// platforms the directory/file is created with default permissions
-/// and only the SQLite file-mode pragma handles visibility.
-fn create_private_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|error| format!("could not create phasegent config directory: {error}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("could not secure phasegent config directory: {error}"))?;
-    }
-    Ok(())
-}
-
-/// Resolve the canonical phasegent database path via
-/// [`directories::ProjectDirs`]. The qualifier / organisation / application
-/// tuple (`com` / `Cloud1ful` / `phasegent`) maps to the platform-standard
-/// config directory:
-/// - Linux: `$XDG_CONFIG_HOME/phasegent` (defaults to `~/.config/phasegent`)
-/// - macOS: `~/Library/Application Support/com.Cloud1ful.phasegent`
-/// - Windows: `%APPDATA%\Cloud1ful\phasegent\config`
-fn project_dirs_db_path() -> Result<PathBuf, String> {
-    let dirs = ProjectDirs::from("com", "Cloud1ful", "phasegent")
-        .ok_or_else(|| "could not resolve phasegent config directory".to_owned())?;
-    Ok(dirs.config_dir().join(DB_FILENAME))
 }
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {

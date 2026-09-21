@@ -481,15 +481,6 @@ fn save_redmine_config(
     storage.update_provider(role, PROVIDER_REDMINE)
 }
 
-#[allow(dead_code)]
-fn parse_gitlab_project_id(value: &str) -> Option<u64> {
-    value
-        .trim()
-        .parse()
-        .ok()
-        .filter(|project_id| *project_id > 0)
-}
-
 fn save_gitlab_config(
     storage: &Storage,
     role: Role,

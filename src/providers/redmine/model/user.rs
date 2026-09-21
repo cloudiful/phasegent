@@ -125,26 +125,6 @@ impl<'a> RedmineNewUser<'a> {
             },
         }
     }
-
-    pub(crate) fn with_generate_password(mut self, value: bool) -> Self {
-        self.user.generate_password = Some(value);
-        self
-    }
-
-    pub(crate) fn with_must_change_passwd(mut self, value: bool) -> Self {
-        self.user.must_change_passwd = Some(value);
-        self
-    }
-
-    pub(crate) fn with_admin(mut self, value: bool) -> Self {
-        self.user.admin = Some(value);
-        self
-    }
-
-    pub(crate) fn with_status(mut self, value: u64) -> Self {
-        self.user.status = Some(value);
-        self
-    }
 }
 
 impl<'a> std::fmt::Debug for RedmineNewUser<'a> {

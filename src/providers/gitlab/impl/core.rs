@@ -101,11 +101,6 @@ impl GitlabProvider {
     pub(crate) fn milestones_path(&self) -> String {
         format!("projects/{}/milestones", self.project_id())
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn unsupported<T>(&self, operation: &str) -> Result<T, ForgejoError> {
-        Err(ForgejoError::not_supported("gitlab", operation))
-    }
 }
 
 impl GitlabProvider {

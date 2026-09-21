@@ -368,12 +368,6 @@ impl GitlabConfig {
             project_id: parsed_project,
         })
     }
-
-    /// Constrain the borrow of `api_base` for callers that need to read
-    /// the normalised endpoint without consuming the config.
-    pub fn require_api_base(&self) -> &str {
-        &self.api_base
-    }
 }
 
 /// Normalise the GitLab API base URL to its `/api/v4` endpoint while

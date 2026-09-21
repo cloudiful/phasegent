@@ -29,35 +29,11 @@ pub fn escape_fts_query(input: &str) -> Result<String, String> {
     // Join with space => implicit AND between terms.
     Ok(escaped_tokens.join(" "))
 }
-/// Validate and normalize a raw user query for lexical search.
-/// Returns the escaped FTS query or a config error.
-pub fn normalize_query(raw: &str) -> Result<String, String> {
-    escape_fts_query(raw)
-}
-
-/// Perform the actual FTS lookup. Caller validates limit/offset and holds
-/// no transaction; this runs two bounded queries (count + page).
-pub fn lexical_search_inner(
-    conn: &Connection,
-    escaped_query: &str,
-    limit: usize,
-    offset: usize,
-    include_body: bool,
-) -> Result<IssueIndexSearchResult, String> {
-    lexical_search_scoped_inner(
-        conn,
-        escaped_query,
-        limit,
-        offset,
-        include_body,
-        &crate::providers::index::LexicalScope::global(),
-    )
-}
 
 /// Scoped FTS lookup for transparent fallback. Filters by `source`/
 /// `project` when both are present and by `state` when it is
-/// `Some(open|closed)`; a global scope behaves exactly like
-/// [`lexical_search_inner`]. Deterministic ordering and bounded
+/// `Some(open|closed)`; a global scope behaves exactly like an
+/// unfiltered search. Deterministic ordering and bounded
 /// pagination are preserved.
 pub fn lexical_search_scoped_inner(
     conn: &Connection,

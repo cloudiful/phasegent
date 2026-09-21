@@ -41,13 +41,39 @@ pub(crate) fn stale_window(now: i64, stale_days: u32) -> StaleWindow {
 
 /// Hard cap on `list()` / `status()` results so a runaway query never
 /// floods the response. Mirrors the timer-ledger 64-row ceiling.
-#[allow(dead_code)]
 pub(super) const MAX_LEASES_PER_QUERY: i64 = 256;
 /// Hard cap on leases scanned when checking for an existing
 /// `(repo, issue, session)` match. Phase 1 always has a tiny per-repo
 /// population, but the cap is a defensive upper bound.
-#[allow(dead_code)]
 pub(super) const MAX_ACTIVE_LEASES_PER_REPO: i64 = 256;
+
+/// Column list every lease read selects, so the row shape and the
+/// decoder stay paired in one place.
+const LEASE_SELECT: &str = "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+     branch, status, created_at, heartbeat_at, release_reason FROM worktree_leases";
+
+/// Run one bounded lease query and decode every row. `label` names the
+/// failing step in the structured storage error.
+fn query_leases(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+    label: &str,
+) -> Result<Vec<LeaseRow>, WorktreeError> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| WorktreeError::new("storage", format!("prepare {label} list: {error}")))?;
+    let rows = statement
+        .query_map(params, decode_lease_row)
+        .map_err(|error| WorktreeError::new("storage", format!("{label} list: {error}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(
+            row.map_err(|error| WorktreeError::new("storage", format!("{label} row: {error}")))?,
+        );
+    }
+    Ok(out)
+}
 
 /// Operator-facing guidance for a `(repo_identity, worktree_path)`
 /// collision. SQLite reports the raw index name (`insert lease: UNIQUE
@@ -369,33 +395,20 @@ fn select_stale_active_leases(
     identity: &str,
     stale_before: i64,
 ) -> Result<Vec<LeaseRow>, WorktreeError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at, release_reason \
-             FROM worktree_leases \
-             WHERE repo_identity = ?1 AND status = ?2 AND heartbeat_at < ?3 \
-             ORDER BY heartbeat_at ASC LIMIT ?4",
-        )
-        .map_err(|error| WorktreeError::new("storage", format!("prepare stale list: {error}")))?;
-    let rows = statement
-        .query_map(
-            rusqlite::params![
-                identity,
-                LEASE_STATUS_ACTIVE,
-                stale_before,
-                MAX_LEASES_PER_QUERY
-            ],
-            decode_lease_row,
-        )
-        .map_err(|error| WorktreeError::new("storage", format!("stale list: {error}")))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(
-            row.map_err(|error| WorktreeError::new("storage", format!("stale row: {error}")))?,
-        );
-    }
-    Ok(out)
+    query_leases(
+        connection,
+        &format!(
+            "{LEASE_SELECT} WHERE repo_identity = ?1 AND status = ?2 AND heartbeat_at < ?3 \
+             ORDER BY heartbeat_at ASC LIMIT ?4"
+        ),
+        &[
+            &identity,
+            &LEASE_STATUS_ACTIVE,
+            &stale_before,
+            &MAX_LEASES_PER_QUERY,
+        ],
+        "stale",
+    )
 }
 
 /// Atomically flip every active lease for `identity` whose heartbeat is
@@ -506,59 +519,27 @@ pub(crate) fn retain_active_leases_for_issue(
     Ok(updated as u64)
 }
 
-#[allow(dead_code)]
 pub fn list_for_issue(storage: &Storage, issue: u64) -> Result<Vec<LeaseRow>, WorktreeError> {
-    let mut statement = storage
-        .connection
-        .prepare(
-            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at, release_reason \
-             FROM worktree_leases \
-             WHERE issue = ?1 AND status = ?2 \
-             ORDER BY created_at DESC LIMIT ?3",
-        )
-        .map_err(|error| WorktreeError::new("storage", format!("prepare issue list: {error}")))?;
-    let rows = statement
-        .query_map(
-            rusqlite::params![issue as i64, LEASE_STATUS_ACTIVE, MAX_LEASES_PER_QUERY],
-            decode_lease_row,
-        )
-        .map_err(|error| WorktreeError::new("storage", format!("issue list: {error}")))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(
-            row.map_err(|error| WorktreeError::new("storage", format!("issue row: {error}")))?,
-        );
-    }
-    Ok(out)
+    query_leases(
+        &storage.connection,
+        &format!(
+            "{LEASE_SELECT} WHERE issue = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT ?3"
+        ),
+        &[&(issue as i64), &LEASE_STATUS_ACTIVE, &MAX_LEASES_PER_QUERY],
+        "issue",
+    )
 }
 
 #[allow(dead_code)]
 pub fn list_for_repo(storage: &Storage, identity: &str) -> Result<Vec<LeaseRow>, WorktreeError> {
-    let mut statement = storage
-        .connection
-        .prepare(
-            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
-                    branch, status, created_at, heartbeat_at, release_reason \
-             FROM worktree_leases \
-             WHERE repo_identity = ?1 \
-             ORDER BY created_at DESC LIMIT ?2",
-        )
-        .map_err(|error| WorktreeError::new("storage", format!("prepare repo list: {error}")))?;
-    let rows = statement
-        .query_map(
-            rusqlite::params![identity, MAX_LEASES_PER_QUERY],
-            decode_lease_row,
-        )
-        .map_err(|error| WorktreeError::new("storage", format!("repo list: {error}")))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|error| WorktreeError::new("storage", format!("repo row: {error}")))?);
-    }
-    Ok(out)
+    query_leases(
+        &storage.connection,
+        &format!("{LEASE_SELECT} WHERE repo_identity = ?1 ORDER BY created_at DESC LIMIT ?2"),
+        &[&identity, &MAX_LEASES_PER_QUERY],
+        "repo",
+    )
 }
 
-#[allow(dead_code)]
 fn decode_lease_row(row: &rusqlite::Row<'_>) -> Result<LeaseRow, rusqlite::Error> {
     Ok(LeaseRow {
         lease_id: row.get(0)?,

@@ -18,8 +18,6 @@ pub const ISSUE_INDEX_MAX_CHUNK_BYTES: usize = 4000;
 pub const ISSUE_INDEX_MAX_CHUNKS: usize = 64;
 pub const ISSUE_INDEX_MAX_DOCUMENT_BYTES: usize =
     ISSUE_INDEX_MAX_CHUNK_BYTES * ISSUE_INDEX_MAX_CHUNKS;
-pub const ISSUE_INDEX_SEARCH_DEFAULT_LIMIT: usize = 20;
-pub const ISSUE_INDEX_SEARCH_DEFAULT_OFFSET: usize = 0;
 pub const ISSUE_INDEX_SEARCH_MAX_LIMIT: usize = 100;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -449,13 +447,18 @@ impl LexicalScope {
 #[async_trait(?Send)]
 pub trait IssueIndexStore {
     async fn upsert(&self, doc: &IssueIndexDocument) -> Result<(), String>;
+    /// Unscoped lexical search: the scoped lookup under a global scope,
+    /// so implementations only carry the scoped path.
     async fn lexical_search(
         &self,
         query: &str,
         limit: usize,
         offset: usize,
         include_body: bool,
-    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String>;
+    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String> {
+        self.lexical_search_scoped(query, limit, offset, include_body, &LexicalScope::global())
+            .await
+    }
     /// Scoped lexical search for transparent fallback. Implementations
     /// filter by `source`/`project` when both are present and by `state`
     /// when it is `Some(open|closed)`; a global scope behaves exactly

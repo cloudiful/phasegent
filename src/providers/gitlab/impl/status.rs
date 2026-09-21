@@ -21,33 +21,6 @@ use crate::providers::redmine::model::RedmineIssueStatus;
 
 use super::core::GitlabProvider;
 
-/// Stable identifier for the canonical workflow catalogue. It is
-/// surfaced via the existing `RedmineIssueStatus` shape so the shared
-/// CLI output stays identical across providers. The string is the
-/// single source of truth that an operator can grep for when
-/// differentiating GitLab workflow labels from Redmine status ids in
-/// audit comments.
-///
-/// `#[allow(dead_code)]` keeps the constant available for future
-/// audit comments and orchestrator prompts without forcing the
-/// current Phase 2 surfaces to consume it; the value stays the
-/// single source of truth and a future call site can adopt it.
-#[allow(dead_code)]
-pub(crate) const WORKFLOW_CATALOGUE_SOURCE: &str = "phasegent/gitlab-workflow-labels@v1";
-
-/// Caveat appended to every catalogue entry so an operator knows the
-/// static id is an advisory mapping, not a server-side primary key.
-/// Mirrors `RedmineProvider::STATUS_POLICY_CAVEAT` so the audit
-/// vocabulary stays symmetric.
-///
-/// `#[allow(dead_code)]` keeps the caveat available for future audit
-/// comments and orchestrator prompts.
-#[allow(dead_code)]
-pub(crate) const WORKFLOW_CATALOGUE_CAVEAT: &str = "Static mapping: the GitLab server does not expose a native status enum; \
-     the orchestrator drives the workflow via workflow::* labels paired with \
-     state_event when needed; the canonical ids below are advisory and may \
-     differ from Redmine status ids.";
-
 impl GitlabProvider {
     /// Return the static GitLab workflow catalogue as the shared
     /// `RedmineIssueStatus` shape. No HTTP traffic: GitLab has no

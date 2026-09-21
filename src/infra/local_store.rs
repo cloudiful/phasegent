@@ -1,24 +1,25 @@
 //! Local provider storage backends.
 //!
 //! SQLite file `phasegent-local.sqlite3` is independent from config and
-//! index files. Backend selection is URL-driven via the same
-//! `PHASEGENT_INDEX_PG_URL` as the index (env overrides persisted global):
-//! non-empty URL selects PostgreSQL, absent/blank selects SQLite. Only one
-//! backend is ever active (single-active, no dual-write). Static SQL lives
-//! in `.sql` files (`local_sql/*.sql` for SQLite, `migrations/pg/0002_*`
-//! for PostgreSQL) and is embedded via `include_str!` with runtime
-//! `rusqlite`/`sqlx::query` APIs; compile-time `query_file!` is avoided
-//! for the same reason as `issue_index_postgres.rs` (no offline query
-//! metadata/live DB for `cargo check`).
+//! index files; `PHASEGENT_LOCAL_DB_PATH` overrides the platform directory
+//! for tests and operators. A PostgreSQL backend lives behind the
+//! `postgres` feature and is exercised by the cross-backend parity test.
+//! Static SQL lives in `.sql` files (`local_sql/*.sql` for SQLite,
+//! `migrations/pg/0002_*` for PostgreSQL) and is embedded via
+//! `include_str!` with runtime `rusqlite`/`sqlx::query` APIs; compile-time
+//! `query_file!` is avoided for the same reason as
+//! `issue_index_postgres.rs` (no offline query metadata/live DB for
+//! `cargo check`).
 
+#[cfg(test)]
 use crate::infra::issue_index_backend::{IndexBackendKind, resolve_index_backend};
 use crate::infra::local_schema::{
     DB_FILENAME_LOCAL, PRAGMA_STATEMENTS_LOCAL, SCHEMA_LOCAL, SEED_LOCAL,
 };
+use crate::infra::sqlite_file;
+#[cfg(test)]
 use crate::infra::storage::Storage;
-use directories::ProjectDirs;
 use rusqlite::Connection;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "postgres")]
@@ -28,10 +29,8 @@ use sqlx::postgres::PgPoolOptions;
 
 /// SQLite backend for the local provider. Stands up the connection,
 /// schema, and seeds.
-#[allow(dead_code)]
 pub struct SqliteLocalStore {
     pub(crate) connection: Connection,
-    path: PathBuf,
 }
 
 impl SqliteLocalStore {
@@ -49,25 +48,11 @@ impl SqliteLocalStore {
 
     pub fn open_at(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            sqlite_file::create_private_dir(parent, "local", true)?;
         }
-        let connection =
-            Connection::open(path).map_err(|e| format!("could not open local database: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let meta =
-                fs::metadata(path).map_err(|e| format!("could not stat local database: {e}"))?;
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(path, perms)
-                .map_err(|e| format!("could not secure local database: {e}"))?;
-        }
+        let connection = sqlite_file::open_private_connection(path, "local")?;
         Self::initialise(&connection)?;
-        Ok(Self {
-            connection,
-            path: path.to_path_buf(),
-        })
+        Ok(Self { connection })
     }
 
     fn initialise(conn: &Connection) -> Result<(), String> {
@@ -93,24 +78,8 @@ pub fn open_local_at(path: &Path) -> Result<SqliteLocalStore, String> {
     SqliteLocalStore::open_at(path)
 }
 
-fn create_private_dir(path: &Path) -> Result<(), String> {
-    let existed = path.exists();
-    fs::create_dir_all(path).map_err(|e| format!("could not create local directory: {e}"))?;
-    #[cfg(unix)]
-    {
-        if !existed {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("could not secure local directory: {e}"))?;
-        }
-    }
-    Ok(())
-}
-
 fn project_dirs_local_path() -> Result<PathBuf, String> {
-    let dirs = ProjectDirs::from("com", "Cloud1ful", "phasegent")
-        .ok_or_else(|| "could not resolve phasegent config directory".to_owned())?;
-    Ok(dirs.config_dir().join(DB_FILENAME_LOCAL))
+    sqlite_file::project_dirs_config_path(DB_FILENAME_LOCAL)
 }
 
 /// PostgreSQL backend for the local provider (single-active alternative).
@@ -171,54 +140,6 @@ async fn apply_embedded_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     Ok(())
-}
-
-#[cfg(not(feature = "postgres"))]
-#[allow(dead_code)]
-pub struct PostgresLocalStore;
-
-#[cfg(not(feature = "postgres"))]
-impl PostgresLocalStore {
-    pub async fn open(_url: &str) -> Result<Self, String> {
-        Err("postgres local support is not enabled; rebuild with --features postgres".to_owned())
-    }
-}
-
-/// Single-active dispatcher: exactly one backend per process, never both.
-#[allow(dead_code)]
-pub enum LocalStore {
-    Sqlite(SqliteLocalStore),
-    Postgres(PostgresLocalStore),
-}
-
-#[allow(dead_code)]
-impl LocalStore {
-    pub async fn open() -> Result<Self, String> {
-        let storage = Storage::open()?;
-        Self::open_with_storage(&storage).await
-    }
-
-    pub async fn open_with_storage(storage: &Storage) -> Result<Self, String> {
-        match resolve_index_backend(storage)? {
-            IndexBackendKind::Sqlite => Ok(Self::Sqlite(SqliteLocalStore::open()?)),
-            IndexBackendKind::Postgres => {
-                let url = crate::infra::issue_index_backend::resolve_pg_url(storage)?.ok_or_else(
-                    || {
-                        "postgres local backend requires PHASEGENT_INDEX_PG_URL; use admin config set index-pg-url --stdin"
-                            .to_owned()
-                    },
-                )?;
-                Ok(Self::Postgres(PostgresLocalStore::open(&url).await?))
-            }
-        }
-    }
-
-    pub fn kind(&self) -> IndexBackendKind {
-        match self {
-            Self::Sqlite(_) => IndexBackendKind::Sqlite,
-            Self::Postgres(_) => IndexBackendKind::Postgres,
-        }
-    }
 }
 
 #[cfg(test)]

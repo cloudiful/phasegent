@@ -6,6 +6,7 @@ pub mod issue_index_postgres;
 pub(crate) mod issue_index_schema;
 pub mod local_schema;
 pub mod local_store;
+pub(crate) mod sqlite_file;
 pub mod storage;
 pub(crate) mod storage_schema;
 pub mod timer_ledger;

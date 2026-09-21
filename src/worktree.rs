@@ -99,8 +99,6 @@ pub const LEASE_STATUS_RELEASED: &str = "released";
 /// back to callers. Bounded so a misbehaving `git` invocation cannot
 /// flood logs with arbitrary content.
 const MAX_ECHO_CHARS: usize = 200;
-#[allow(dead_code)]
-const ECHO_LIMIT: usize = 200;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct LeaseRow {
@@ -182,11 +180,6 @@ impl WorktreeError {
             message: bounded(&message.into()),
         }
     }
-
-    #[allow(dead_code)]
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({ "kind": self.kind, "message": self.message })
-    }
 }
 
 impl fmt::Display for WorktreeError {
@@ -260,7 +253,7 @@ pub(crate) fn bounded(text: &str) -> String {
 fn sanitized_git_output(raw: &[u8]) -> String {
     let lossy = String::from_utf8_lossy(raw);
     let cleaned: String = lossy.chars().filter(|c| !c.is_control()).collect();
-    cleaned.trim().chars().take(ECHO_LIMIT).collect()
+    cleaned.trim().chars().take(MAX_ECHO_CHARS).collect()
 }
 
 /// Wall-clock seconds since UNIX_EPOCH, with a defensive `0` fallback

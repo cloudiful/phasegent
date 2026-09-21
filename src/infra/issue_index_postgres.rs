@@ -117,23 +117,6 @@ impl crate::providers::index::IssueIndexStore for PostgresIssueIndex {
         Ok(())
     }
 
-    async fn lexical_search(
-        &self,
-        query: &str,
-        limit: usize,
-        offset: usize,
-        include_body: bool,
-    ) -> Result<IssueIndexSearchResult, String> {
-        self.lexical_search_scoped(
-            query,
-            limit,
-            offset,
-            include_body,
-            &crate::providers::index::LexicalScope::global(),
-        )
-        .await
-    }
-
     async fn lexical_search_scoped(
         &self,
         query: &str,

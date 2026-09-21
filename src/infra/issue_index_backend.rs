@@ -30,26 +30,6 @@ pub enum IndexBackendKind {
     Postgres,
 }
 
-impl IndexBackendKind {
-    #[allow(dead_code)]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Sqlite => "sqlite",
-            Self::Postgres => "postgres",
-        }
-    }
-}
-
-/// Resolved index backend plus the optional PostgreSQL URL (when postgres).
-/// The URL value is never included in Debug output.
-#[allow(dead_code)]
-pub struct IndexBackendConfig {
-    pub kind: IndexBackendKind,
-    /// Present only when `kind == Postgres` and a URL was supplied via
-    /// env or persistent storage.
-    pub pg_url_present: bool,
-}
-
 /// Enum dispatcher that implements `IssueIndexStore` without requiring a
 /// `Send` bound on the future (SQLite's rusqlite connection is `!Send`).
 /// Callers hold the enum by `&self` and `await` the trait methods; the
@@ -97,11 +77,6 @@ impl IssueIndexBackend {
     /// `!Send` future and is avoided by keeping automatic search callers
     /// sync and confined to this bridge.
     #[allow(dead_code)]
-    pub fn open_blocking() -> Result<Self, String> {
-        block_on(Self::open())
-    }
-
-    #[allow(dead_code)]
     pub fn open_blocking_with_storage(storage: &Storage) -> Result<Self, String> {
         block_on(Self::open_with_storage(storage))
     }
@@ -116,27 +91,6 @@ impl IssueIndexStore for IssueIndexBackend {
         match self {
             Self::Sqlite(inner) => inner.upsert(doc).await,
             Self::Postgres(inner) => inner.upsert(doc).await,
-        }
-    }
-
-    async fn lexical_search(
-        &self,
-        query: &str,
-        limit: usize,
-        offset: usize,
-        include_body: bool,
-    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String> {
-        match self {
-            Self::Sqlite(inner) => {
-                inner
-                    .lexical_search(query, limit, offset, include_body)
-                    .await
-            }
-            Self::Postgres(inner) => {
-                inner
-                    .lexical_search(query, limit, offset, include_body)
-                    .await
-            }
         }
     }
 

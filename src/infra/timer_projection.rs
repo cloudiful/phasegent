@@ -31,31 +31,6 @@ impl Storage {
         Ok(changed == 1)
     }
 
-    /// Reset a `projecting` row back to `failed` when the caller presents
-    /// the matching lease token. The token check guarantees a concurrent
-    /// live projector cannot be reset by a second caller. Use
-    /// `reset_stale_projection_to_failed` for the hard-crash recovery path
-    /// where the original token is no longer available.
-    #[allow(dead_code)]
-    pub fn reset_projecting_to_failed(
-        &self,
-        run_id: &str,
-        token: &str,
-        error: &str,
-    ) -> Result<bool, String> {
-        validate_projection_token(token)?;
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE execution_timer_runs \
-                 SET sync_status = ?1, sync_error = ?2, projection_token = NULL, projection_claimed_at = NULL \
-                 WHERE run_id = ?3 AND sync_status = ?4 AND projection_token = ?5",
-                params![TIMER_SYNC_FAILED, error, run_id, TIMER_SYNC_PROJECTING, token],
-            )
-            .map_err(|error| format!("could not reset projecting timer: {error}"))?;
-        Ok(changed == 1)
-    }
-
     /// Force-reset a stale `projecting` claim that is older than the lease
     /// window or has a NULL claimed_at (legacy). This is the explicit
     /// `timer recover` recovery path for a hard-crash orphan: the caller

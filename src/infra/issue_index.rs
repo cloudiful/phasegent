@@ -11,13 +11,13 @@ mod issue_index_search;
 #[path = "issue_index_store.rs"]
 mod issue_index_store;
 
-use self::issue_index_search::{lexical_search_inner, normalize_query};
+use self::issue_index_search::escape_fts_query;
 use self::issue_index_store::ensure_fts_populated;
 use crate::infra::issue_index_schema::{PRAGMA_STATEMENTS_INDEX, SCHEMA_INDEX};
+use crate::infra::sqlite_file;
 use crate::providers::index::{ISSUE_INDEX_SEARCH_MAX_LIMIT, IssueIndexDocument, IssueIndexStore};
 use async_trait::async_trait;
 use rusqlite::{Connection, params};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct SqliteIssueIndex {
@@ -39,20 +39,9 @@ impl SqliteIssueIndex {
     }
     pub fn open_at(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
-            create_private_dir(parent)?;
+            sqlite_file::create_private_dir(parent, "issue index", true)?;
         }
-        let connection = Connection::open(path)
-            .map_err(|e| format!("could not open issue index database: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = fs::metadata(path)
-                .map_err(|e| format!("could not stat issue index database: {e}"))?;
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(path, perms)
-                .map_err(|e| format!("could not secure issue index database: {e}"))?;
-        }
+        let connection = sqlite_file::open_private_connection(path, "issue index")?;
         Self::initialise(&connection)?;
         Ok(Self {
             connection,
@@ -141,25 +130,6 @@ impl IssueIndexStore for SqliteIssueIndex {
         Ok(())
     }
 
-    async fn lexical_search(
-        &self,
-        query: &str,
-        limit: usize,
-        offset: usize,
-        include_body: bool,
-    ) -> Result<crate::providers::index_store::IssueIndexSearchResult, String> {
-        if limit == 0 || limit > ISSUE_INDEX_SEARCH_MAX_LIMIT {
-            return Err(format!(
-                "search limit must be between 1 and {}",
-                ISSUE_INDEX_SEARCH_MAX_LIMIT
-            ));
-        }
-        let escaped = normalize_query(query)?;
-        // FTS errors (e.g., malformed after escaping) are surfaced as config
-        // errors so the CLI can return a structured failure without crashing.
-        lexical_search_inner(&self.connection, &escaped, limit, offset, include_body)
-    }
-
     async fn lexical_search_scoped(
         &self,
         query: &str,
@@ -174,7 +144,9 @@ impl IssueIndexStore for SqliteIssueIndex {
                 ISSUE_INDEX_SEARCH_MAX_LIMIT
             ));
         }
-        let escaped = normalize_query(query)?;
+        let escaped = escape_fts_query(query)?;
+        // FTS errors (e.g., malformed after escaping) are surfaced as config
+        // errors so the CLI can return a structured failure without crashing.
         self::issue_index_search::lexical_search_scoped_inner(
             &self.connection,
             &escaped,
@@ -186,9 +158,6 @@ impl IssueIndexStore for SqliteIssueIndex {
     }
 }
 
-fn create_private_dir(path: &Path) -> Result<(), String> {
-    self::issue_index_store::create_private_dir(path)
-}
 pub(crate) fn project_dirs_index_path() -> Result<PathBuf, String> {
-    self::issue_index_store::project_dirs_index_path()
+    sqlite_file::project_dirs_config_path(crate::infra::issue_index_schema::DB_FILENAME_INDEX)
 }

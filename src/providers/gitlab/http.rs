@@ -104,35 +104,6 @@ impl GitlabHttp {
         })
     }
 
-    /// `GET` helper that tolerates a 404 by returning `Ok(None)` so
-    /// the label-existence probe can short-circuit cleanly without
-    /// inventing a not-found error.
-    #[allow(dead_code)]
-    pub(crate) fn get_optional<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        query: &[(&str, String)],
-        operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
-        // Safe GET with optional 404: retry policy applies, 404 is terminal.
-        let (status, text) = self.response_with_retry(
-            self.client.get(self.endpoint(path)?).query(query),
-            operation,
-        )?;
-        if status == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        if !status.is_success() {
-            return Err(self.http_error(status, &text, operation));
-        }
-        serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|error| ForgejoError::Decode {
-                operation: operation.to_owned(),
-                message: self.redact(&error.to_string()),
-            })
-    }
-
     pub(crate) fn post<T: DeserializeOwned, B: Serialize>(
         &self,
         path: &str,
