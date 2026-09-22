@@ -92,6 +92,7 @@ pub struct PostgresLocalStore {
 
 #[cfg(feature = "postgres")]
 impl PostgresLocalStore {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn open(url: &str) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -107,9 +108,11 @@ impl PostgresLocalStore {
 }
 
 #[cfg(feature = "postgres")]
+#[cfg_attr(not(test), allow(dead_code))]
 const PG_MIGRATION_SQL: &str = include_str!("../../migrations/pg/0002_local.sql");
 
 #[cfg(feature = "postgres")]
+#[cfg_attr(not(test), allow(dead_code))]
 async fn apply_embedded_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS _local_migrations \
