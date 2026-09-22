@@ -414,8 +414,8 @@ async function discoverWorktreeForSession(sessionId, cwd) {
 // reports for the parent — instead of guessing from the most recently
 // remembered worktree. The registry keeps the per-session mapping, and
 // `activeWorktree` stays the fallback for sessions whose parentage the host
-// cannot report. An empty registry means "no worktree", and the hook then
-// leaves every tool argument untouched.
+// cannot report. An empty registry still tries parent inheritance, so only a
+// session with neither a recorded nor an inherited worktree stays untouched.
 // ---------------------------------------------------------------------------
 
 const sessionWorktrees = new Map();
@@ -790,7 +790,7 @@ const SKILL_PATH = "/builtin/phasegent.md";
 
 const SKILL_CONTENT = `---
 name: phasegent
-description: Role-aware, provider-backed workflow protocol for phasegent issue/plan work plus the OpenCode worktree adapter — pick a tracking mode (INLINE/TRACKED_ISSUE/LOCAL_ISSUE), delegate to executor/reviewer/tester, enforce the marker, VERDICT, note-pointer, and orchestrator-owned timer/status contracts, and run the (repo, issue, session) worktree lease through the adapter's session identity, agent-role injection, path redirect, and prune recovery. Provider-neutral — the tracking provider comes from user config and is never assumed by this skill. Load when starting or interpreting a multi-phase task, delegating to a child role, reading or publishing a phase-terminal audit note, when a session needs its worktree lease, when the adapter is not redirecting tool calls, or when leases must be inspected or released.
+description: Role-aware, provider-backed workflow protocol for phasegent issue/plan work plus the OpenCode worktree adapter — tracking modes (INLINE/TRACKED_ISSUE/LOCAL_ISSUE), executor/reviewer/tester delegation, marker and VERDICT contracts, note-pointer results, and the automatic (repo, issue, session) worktree lease. Provider-neutral — the tracking provider comes from user config and is never assumed; load it when starting, delegating, or publishing a phase-terminal audit note.
 ---
 
 # Phasegent
@@ -807,18 +807,16 @@ authoritative **syntax** reference and is never duplicated here.
   \`tester\` as subagents, and repeatable prompts run via \`/orchestrate\`,
   \`/review\`, and \`/test\`. Agent, skill, command, and plugin files load once at
   startup, so editing any of them needs a new session.
-- \`phasegent plugin install\` writes the worktree adapter to
-  \`\$XDG_CONFIG_HOME/opencode/plugins/phasegent-worktree.js\` (project slot:
-  \`.opencode/plugins/\`). The adapter owns the session identity, so nothing has
-  to mint or pass a session id by hand. After a session acquires a worktree its
-  \`tool.execute.before\` hook redirects relative file paths and a bare or
-  relative shell workdir into it; absolute paths pass through unchanged and the
-  \`external_directory\` permission check is never bypassed.
-- The same adapter registers this skill through \`skill.transform\` (\`id\`/\`name\`
-  \`phasegent\`, path \`/builtin/phasegent.md\`, body and description embedded from
-  \`skills/phasegent/SKILL.md\`), so the plugin install is the skill's only
-  deployment channel and the skill is visible on any host the adapter is
-  installed on.
+- \`phasegent plugin install\` is this skill's only deployment channel: the
+  adapter registers it through \`skill.transform\` (\`id\`/\`name\` \`phasegent\`, path
+  \`/builtin/phasegent.md\`, body and description embedded from
+  \`skills/phasegent/SKILL.md\`), so the skill is visible on any host the adapter
+  is installed on.
+- Session and worktree wiring is automatic — the adapter owns the session
+  identity, a child session inherits its parent's worktree on its first call,
+  and relative paths land there while absolute paths pass through untouched.
+  Never run \`worktree acquire\`, \`issue bind\`, or \`issue create\` by hand from a
+  child role, and never pass a worktree path between sessions.
 - The loose plan-markdown fallback lives in \`.opencode/plans/*.md\`.
 
 ## When to use this skill
@@ -839,10 +837,13 @@ Load it when one of these is true:
 ## Tracking modes (decision tree)
 
 Pick exactly one before work starts; the artifact owns goal, constraints,
-acceptance criteria, phases, and decisions. A delegation parent prompt overrides
-only safety boundaries, the exact allowlist, the \`git restore\` allowlist, the
-attempt/round, and comment authorization. The provider always comes from user
-config; this skill never picks one.
+acceptance criteria, phases, and decisions. A delegation prompt carries the
+issue number; children read the artifact and this skill for the rest, and a
+delegation adds only what the artifact cannot carry — the marker, the
+attempt/round, a safety-boundary or allowlist delta (including the
+\`git restore\` allowlist), and comment authorization. Never restate the
+mechanism, the plan, or the worktree path in a delegation. The provider always
+comes from user config; this skill never picks one.
 
 1. **\`INLINE\`** — trivial or read-only work, no plan and no issue. The parent
    prompt carries the full context; no artifact read and no audit comment.
@@ -1026,145 +1027,44 @@ of role.
 
 ## Worktree leases
 
-Worktree leases are keyed by \`(repo, issue, session)\`, and the session identity
-must stay stable within one agent session so two concurrent sessions never
-collide on one issue. The managed adapter installed by \`phasegent plugin
-install\` owns the lease side of a session: it requires **OpenCode >= 2.0** and
-loads as a v2 \`export default { id, setup }\` module; the v1 plugin contract is
-rejected by the v2 module loader.
+Leases are keyed by \`(repo, issue, session)\` and the adapter installed by
+\`phasegent plugin install\` (OpenCode >= 2.0, v2 \`export default { id, setup }\`)
+owns the session identity and the lease side, so no session id, worktree path,
+or lease call travels between sessions. Wiring is automatic: never mint a fresh
+session id per command or per phase, and a child session inherits its parent's
+worktree on its first tool call — children never run \`worktree acquire\`,
+\`issue bind\`, or \`issue create\` (sub-agent sessions are refused those
+commands). A failed move is retried on the next call, and every degradation
+keeps the original directory; nothing blocks a tool call.
 
-What the adapter does:
+Boundaries:
 
-- Registers \`tool.execute.before\`: relative file paths and a bare or relative
-  shell \`workdir\` are rewritten into the acquired worktree. Absolute paths pass
-  through untouched, so the \`external_directory\` permission check still applies.
-- Rewrites the shell's \`phasegent\` invocations before they run: the session role
-  is injected, a claimed orchestrator/admin role is downgraded, \`--session\` is
-  appended to an \`issue create|bind\` segment, and those two commands are refused
-  outside an orchestrator session. See *Agent role injection*.
-- Claims the \`worktree.transform\` strategy only when the checkout already
-  carries a phasegent issue binding; otherwise the host git strategy stays in
-  place, and a failed acquire falls back to a plain git worktree.
-- Moves the session into the acquired worktree with \`session.move\`, and
-  registers the \`phasegent\` skill through \`skill.transform\`.
-- Degrades gracefully: a missing binding, a failed acquire, or a failed
-  \`session.move\` keeps the original directory, warns, and never blocks a tool
-  call.
-
-Rules:
-
-- Never mint a fresh session id per command or per phase. A successful
-  \`issue create\` and an \`issue bind\` that changes the binding auto-acquire a
-  worktree (best-effort stderr warning only) when the checkout conflicts with
-  another lease, so later tool calls land there; a repeated bind reports
-  \`already_bound\` and does not acquire again. The adapter's lazy discovery in
-  \`tool.execute.before\` stays as the idempotent fallback.
-- \`issue bind\` and \`issue unbind\` are orchestrator-only writes: an explicit
-  non-orchestrator \`--role\` is refused with a structured \`permission\` error,
-  while a role-less call (Git hooks, manual repair, legacy scripts) keeps the
-  historical passthrough. The read-only \`issue status\` stays unrestricted.
-- Role resolution at the CLI is \`--role\` first, then the \`PHASEGENT_ROLE\`
-  environment variable: an explicit flag always wins, a blank value means "no
-  role", and a non-empty invalid value is an error rather than a silent
-  role-less run. The managed adapter resolves the role from the session's agent
-  name (\`explore\` counts as \`reviewer\`), injects it into every shell \`phasegent\`
-  invocation, injects nothing for an unknown agent, and downgrades a sub-agent
-  that claims \`orchestrator\`/\`admin\` by flag or by \`PHASEGENT_ROLE=\` back to its
-  own role. Sub-agent sessions cannot run \`issue create\`/\`issue bind\` at all.
-- Never delete lease rows, branches, or a dirty worktree to force cleanup.
-
-\`phasegent --help worktree\` owns the exact flags for these commands.
-
-### Agent role injection
-
-The adapter reads the agent name from the hook event and never asks the model to
-type \`--role\` by hand.
-
-- \`orchestrator\`, \`executor\`, \`reviewer\` and \`tester\` resolve to their own role
-  and \`explore\` resolves to \`reviewer\`; the agent name is matched
-  case-insensitively against those hints. The role is injected right after the
-  \`phasegent\` token unless the segment already carries \`--role\`.
-- An unknown agent name injects nothing: the adapter never guesses a role, and a
-  session with no agent name is treated as role-less.
-- A sub-agent session — any resolved role other than \`orchestrator\` — that
-  claims \`--role orchestrator\`, \`--role admin\`, \`PHASEGENT_ROLE=orchestrator\` or
-  \`PHASEGENT_ROLE=admin\` is downgraded to the session's own role and warned
-  about. Only code spans are rewritten, so the same text inside a quoted value
-  stays byte-for-byte.
-- A sub-agent session running \`issue create\` or \`issue bind\` is refused: the
-  whole command is replaced by a stub that prints the orchestrator-only hint on
-  stderr and exits non-zero. Both commands are orchestrator-only.
-- \`--session\` is appended at the end of the \`issue create\`/\`issue bind\` segment
-  (after any trailing redirection, before the \`;\`, \`&\`, \`|\` or newline
-  separator) and only when that segment carries no \`--session\` yet. No other
-  command is touched.
-- Segmentation and flag detection are quote-aware: a separator or a flag inside
-  single or double quotes is data, and a segment with an unterminated quote is
-  left byte-for-byte. A rewrite therefore requires a \`phasegent\` invocation at
-  the start of a segment, optionally behind env assignments or a \`path/\` prefix,
-  with the command name as a whole word — a mention such as
-  \`grep -rn phasegent src\` or a quoted path is never rewritten.
-
-### Relative path redirect
-
-- A confirmed \`session.move\` already placed the session's working directory in
-  the worktree, so relative paths resolve there on their own and the adapter
-  stops rewriting \`path\`/\`workdir\` for the rest of the session. The call that
-  triggers the move still runs in the old directory and is redirected.
-- When the host exposes no \`session.move\`, the move fails, or it has not run
-  yet, per-tool path rewriting stays the fallback. Command rewriting is
-  independent of it and always runs, with or without a worktree.
-
-### Environment
-
-- \`PHASEGENT_SESSION_ID\` — the only hard session guarantee on a host without the
-  adapter. Export one value per session and reuse it for every worktree call;
-  \`worktree acquire --session\` resolves the flag, then this variable, then the
-  legacy \`phasegent\` fallback.
-- \`PHASEGENT_ROLE\` — the CLI-level role fallback for a host outside the adapter
-  (scripts, wrappers, Git hooks). It is consulted only when no \`--role\` flag is
-  present, so an explicit flag always wins; a blank value means "no role" while
-  a non-empty invalid value is an error rather than a silent role-less run.
-- \`PHASEGENT_WORKTREE_NO_DISCOVER=1\` — keeps the adapter from running the CLI at
-  all: no discovery, no acquire, no strategy claim. The skill registration stays
-  inert metadata. Paths then stay relative to the session directory.
-
-### Acquire
-
-- Manual: \`phasegent worktree acquire --issue N [--session S] --format json\`
-  (orchestrator-only). Idempotent per \`(repo, issue, session)\`; re-running
-  refreshes the heartbeat instead of creating a second lease, and the managed
-  adapter then moves the session into the returned path.
-- Failure is a warning, never a delete: no branch, lease row, or dirty worktree
-  is removed by the adapter.
-
-### Prune and release
-
+- Relative paths and a bare or relative shell \`workdir\` land in the worktree.
+  Absolute paths pass through untouched, so an explicit escape and the
+  \`external_directory\` permission check are never rewritten.
+- Never delete a lease row, a branch, or a dirty or untracked worktree to force
+  cleanup.
 - \`phasegent worktree prune\` reports stale active leases and removable
-  worktrees (read-only).
-- \`phasegent worktree prune --release-stale --reason TEXT\` flips exactly the
+  worktrees (read-only). \`--release-stale --reason TEXT\` flips exactly the
   stale active leases to \`retained\`; \`--remove\` deletes only clean, expired,
   retained worktrees. Neither action implies the other, and an owner is never
   guessed.
-- \`phasegent --help worktree\` owns the exact flags.
-
-### Close cleanup and remote reconciliation
-
-- A successful \`issue close\` flips this issue's \`active\` leases in the
-  resolved repository to \`retained\` and then removes its worktree directories
-  only when the directory is clean (uncommitted or untracked files count as
-  dirty), no \`active\` lease of another session points at it, and it is not the
-  repository's main checkout. Branches and lease rows are never deleted, a
-  kept directory emits one reason-first stderr warning, and the cleanup never
-  changes the close exit code or its stdout document.
-- \`phasegent issue sync [--all] [--no-clean]\` runs the same guards against the
-  issues the provider already closed: the default scope is the current
-  repository, \`--all\` every repository identity recorded in the lease table,
-  and \`--no-clean\` reports the per-directory verdicts without writing.
-- An orchestrator session's \`worktree acquire\`, \`worktree list\`, and
-  \`worktree prune\` run that pass for their repository first and append its
-  warnings to stderr; \`--no-sync\` skips it, and the subcommand's own stdout is
-  unchanged either way.
+- \`worktree release --force\` requires a non-empty \`--reason\` — the attributed
+  override, visible on the row; rows are never deleted.
+- A successful \`issue close\` flips this issue's active leases to \`retained\` and
+  then removes a worktree directory only when it is clean, no active lease of
+  another session points at it, and it is not the repository's main checkout.
+  Branches and lease rows are never deleted, and the cleanup never changes the
+  close exit code or its stdout. \`issue sync [--all] [--no-clean]\` runs the same
+  guards for issues the provider already closed (\`--no-clean\` reports the
+  verdicts without writing).
+- Environment: \`PHASEGENT_SESSION_ID\` is the only hard session guarantee on a
+  host without the adapter (one value per session, reused for every worktree
+  call); \`PHASEGENT_ROLE\` is the CLI-level role fallback (\`--role\` wins, a blank
+  value means "no role", an invalid value is an error); and
+  \`PHASEGENT_WORKTREE_NO_DISCOVER=1\` keeps the adapter inert beyond the
+  in-memory registry.
+- \`phasegent --help worktree\` owns the exact flags for these commands.
 
 ## Branch binding lifecycle
 
