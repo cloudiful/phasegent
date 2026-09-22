@@ -163,7 +163,7 @@ fn cli_issue_close_provider_failure_leaves_lease_active() {
 }
 
 #[test]
-fn cli_issue_close_without_session_leaves_lease_active() {
+fn cli_issue_close_without_session_converges_lease() {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     let _lock = lock_workflow_tests();
@@ -204,10 +204,16 @@ fn cli_issue_close_without_session_leaves_lease_active() {
     let _ = std::env::set_current_dir(&previous_cwd);
 
     // The provider close succeeded (exit 0), so the stdout envelope is the
-    // unchanged provider close document; no owner is guessed locally.
+    // unchanged provider close document. Issue 575 Phase 1: the local
+    // convergence no longer needs a session identity, so both active rows
+    // flip and no closer is guessed in the reason.
     assert_eq!(exit, 0);
-    assert_eq!(close_cli_lease_state(&lease_a).0, "active");
-    assert_eq!(close_cli_lease_state(&lease_b).0, "active");
+    let (status_a, reason_a) = close_cli_lease_state(&lease_a);
+    assert_eq!(status_a, "retained");
+    assert_eq!(reason_a.as_deref(), Some("issue closed"));
+    let (status_b, reason_b) = close_cli_lease_state(&lease_b);
+    assert_eq!(status_b, "retained");
+    assert_eq!(reason_b.as_deref(), Some("issue closed"));
     let _ = fs::remove_dir_all(root);
 }
 

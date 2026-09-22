@@ -72,7 +72,7 @@ fn close_release_flips_a_foreign_session_lease_without_a_local_lease() {
 }
 
 #[test]
-fn close_release_without_session_is_noop_with_warning() {
+fn close_release_without_session_still_flips_every_lease() {
     let _lock = lock_workflow_tests();
     let (temp, _storage, _env) = open_temp_storage("close-no-session");
     let Some((repo_dir, identity)) = temp_git_repo("no-session") else {
@@ -82,36 +82,35 @@ fn close_release_without_session_is_noop_with_warning() {
     let lease_a = seed_lease(&identity, 305, "session-a", "active");
     let lease_b = seed_lease(&identity, 305, "session-b", "active");
 
+    // Issue 575 Phase 1: the close converges the issue, so the release is
+    // not session-scoped and an absent session must not leave the rows
+    // active. No closer is named either: the reason stays unattributed.
     let outcome = crate::lifecycle::release_closed_issue_leases(
         &crate::worktree::ProcessWorktreeRunner::new(),
         &repo_dir,
         305,
         None,
     );
-    match &outcome {
-        crate::lifecycle::AutoReleaseLeaseOutcome::NoSession { reason } => {
-            assert!(
-                reason.contains("left untouched"),
-                "no-session reason must say leases were left untouched: {reason}"
-            );
-        }
-        other => panic!("expected NoSession, got {other:?}"),
-    }
-    let warning = outcome
-        .warning()
-        .expect("an absent session must surface a stderr warning");
-    assert!(
-        warning.contains("PHASEGENT_SESSION_ID"),
-        "warning must name the session source, got: {warning}"
+    assert_eq!(
+        outcome,
+        crate::lifecycle::AutoReleaseLeaseOutcome::Released { released: 2 }
     );
-    assert_eq!(lease_state(&lease_a).0, "active");
-    assert_eq!(lease_state(&lease_b).0, "active");
+    assert!(
+        outcome.warning().is_none(),
+        "a session-less close is the common path and stays silent"
+    );
+    let (status_a, reason_a) = lease_state(&lease_a);
+    assert_eq!(status_a, "retained");
+    assert_eq!(reason_a.as_deref(), Some("issue closed"));
+    let (status_b, reason_b) = lease_state(&lease_b);
+    assert_eq!(status_b, "retained");
+    assert_eq!(reason_b.as_deref(), Some("issue closed"));
     let _ = fs::remove_dir_all(repo_dir);
     let _ = fs::remove_dir_all(temp);
 }
 
 #[test]
-fn close_release_with_blank_session_is_noop_with_warning() {
+fn close_release_with_blank_session_uses_the_plain_reason() {
     let _lock = lock_workflow_tests();
     let (temp, _storage, _env) = open_temp_storage("close-blank-session");
     let Some((repo_dir, identity)) = temp_git_repo("blank-session") else {
@@ -126,11 +125,17 @@ fn close_release_with_blank_session_is_noop_with_warning() {
         305,
         Some("   "),
     );
-    assert!(matches!(
+    assert_eq!(
         outcome,
-        crate::lifecycle::AutoReleaseLeaseOutcome::NoSession { .. }
-    ));
-    assert_eq!(lease_state(&lease_a).0, "active");
+        crate::lifecycle::AutoReleaseLeaseOutcome::Released { released: 1 }
+    );
+    let (status, reason) = lease_state(&lease_a);
+    assert_eq!(status, "retained");
+    assert_eq!(
+        reason.as_deref(),
+        Some("issue closed"),
+        "a blank session is unattributed, not an empty session name"
+    );
     let _ = fs::remove_dir_all(repo_dir);
     let _ = fs::remove_dir_all(temp);
 }

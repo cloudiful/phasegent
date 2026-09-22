@@ -131,8 +131,12 @@ fn close_cleanup_without_a_session_keeps_active_lease_directories() {
     let worktree = add_cleanup_worktree(&repo_dir, "no-session", "feat/555-nosession");
     seed_lease_at(&identity, 555, "session-a", "active", &worktree);
 
-    // The legacy fallback has no closer: every active lease is foreign,
-    // so an unattributed close keeps the directory.
+    // The helper itself has no closer: every active lease it sees is
+    // foreign, so it keeps the directory instead of removing it. The
+    // close chain reaches this state only for a row that was not
+    // flipped (another issue, or a failed release), because the release
+    // runs first and retains every `active` row of the closed issue
+    // (issue 575 Phase 1).
     let outcome = cleanup_outcome(&repo_dir, 555, None);
     match &outcome {
         crate::lifecycle::AutoCleanupOutcome::Cleaned { removed, kept } => {

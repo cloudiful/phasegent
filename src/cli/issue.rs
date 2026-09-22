@@ -532,11 +532,11 @@ pub(crate) fn execute_issue(
         } => {
             // Resolve the worktree session before the remote close so a
             // blank or overlong value fails fast without closing the
-            // issue. The resolved context attributes the local lease
-            // release (issue 305 Task 3, widened by issue 537 Phase 2)
-            // and identifies the legacy fallback, which never releases;
-            // Task 1 only resolves the identity and emits the legacy
-            // migration warning.
+            // issue. The resolved context is optional for the local lease
+            // release (issue 575 Phase 1) and only attributes its reason
+            // when a session is known (issue 305 Task 3, widened by issue
+            // 537 Phase 2); it also identifies the legacy fallback, whose
+            // migration warning goes to stderr.
             let session = match crate::worktree::resolve_session(worktree_session.as_deref()) {
                 Ok(context) => context,
                 Err(error) => {
@@ -600,11 +600,15 @@ pub(crate) fn execute_issue(
                     );
                     // Release every active worktree lease the closed issue
                     // holds across all sessions (issue 305 Task 3, widened
-                    // by issue 537 Phase 2). The legacy fallback never
-                    // guesses a closer: it is passed as `None` so no lease
-                    // is released. The hook runs after the remote close
-                    // succeeded, so a failed close never mutates local
-                    // lease state, and warnings stay on stderr.
+                    // by issue 537 Phase 2, session-independent since issue
+                    // 575 Phase 1). The release needs no session identity;
+                    // the legacy fallback never guesses a closer, so it is
+                    // passed as `None` and the leases flip with the plain
+                    // `issue closed` reason. An explicit or environment
+                    // session only names the closer in the release_reason.
+                    // The hook runs after the remote close succeeded, so a
+                    // failed close never mutates local lease state, and
+                    // warnings stay on stderr.
                     let release_session = match session.source {
                         crate::worktree::SessionSource::Explicit
                         | crate::worktree::SessionSource::Environment => Some(session.id.as_str()),
@@ -624,13 +628,15 @@ pub(crate) fn execute_issue(
                     );
                     // Issue 552 Phase 1: after the close and the lease
                     // release, delete the closed issue's clean worktree
-                    // directories in this repository. The helper reuses
-                    // the `worktree prune --remove` primitives and adds
-                    // the close-specific guards (clean, no foreign
-                    // active lease, never the main checkout); a blocked
-                    // directory is kept and named on stderr, branches
-                    // are never deleted, and the stdout close document
-                    // stays byte-identical.
+                    // directories in this repository. The flip above
+                    // already retained this issue's active rows, so the
+                    // missing session filter never keeps a converged
+                    // directory. The helper reuses the `worktree prune
+                    // --remove` primitives and adds the close-specific
+                    // guards (clean, no foreign active lease, never the
+                    // main checkout); a blocked directory is kept and
+                    // named on stderr, branches are never deleted, and the
+                    // stdout close document stays byte-identical.
                     for warning in crate::lifecycle::cleanup_closed_issue_worktrees(
                         &crate::worktree::ProcessWorktreeRunner::new(),
                         &repo_path,

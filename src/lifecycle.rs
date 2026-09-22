@@ -438,12 +438,6 @@ pub fn unbind_closed_issue(
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoReleaseLeaseOutcome {
-    /// No explicit `--worktree-session` and no `PHASEGENT_SESSION_ID`:
-    /// the lease owner is unknown, so nothing is released. The operator
-    /// gets a warning instead of a guessed release.
-    NoSession {
-        reason: String,
-    },
     Released {
         released: u64,
     },
@@ -458,7 +452,7 @@ pub enum AutoReleaseLeaseOutcome {
 impl AutoReleaseLeaseOutcome {
     pub fn warning(&self) -> Option<String> {
         match self {
-            Self::NoSession { reason } | Self::Warning { reason } => Some(bounded(reason)),
+            Self::Warning { reason } => Some(bounded(reason)),
             Self::Released { .. } => None,
         }
     }
@@ -466,16 +460,17 @@ impl AutoReleaseLeaseOutcome {
 
 /// Release every active worktree lease that the current repository
 /// holds for a closed issue, across every session, after a successful
-/// remote close (issue 305 Task 3, widened by issue 537 Phase 2).
+/// remote close (issue 305 Task 3, widened by issue 537 Phase 2, made
+/// session-independent by issue 575 Phase 1).
 ///
-/// Only an explicit `--worktree-session` or an environment
-/// `PHASEGENT_SESSION_ID` counts as a session; the legacy fallback is
-/// passed as `None` so the helper never guesses an owner or runs
-/// without an explicit close attribution. When a session is known it
-/// only attributes the `release_reason`; the release itself is not
-/// session-scoped, so closing an issue converges every active lease for
-/// that issue. The canonical repository identity is resolved here and
-/// the atomic flip is delegated to
+/// Closing an issue converges its lifecycle, so the release never needs
+/// a session identity: every `active` lease of `(repo, issue)` flips to
+/// `retained`, whether or not the closer owns one. An explicit
+/// `--worktree-session` or an environment `PHASEGENT_SESSION_ID` is
+/// optional and only attributes the `release_reason`
+/// (`issue closed: <session>`); without one the reason is the plain
+/// `issue closed`, so no owner is guessed. The canonical repository
+/// identity is resolved here and the atomic flip is delegated to
 /// [`crate::worktree::release_active_leases_for_issue`], so a different
 /// issue or repository is never touched. Every failure degrades to a
 /// bounded warning because the remote close has already succeeded.
@@ -485,14 +480,6 @@ pub fn release_closed_issue_leases(
     issue: u64,
     session: Option<&str>,
 ) -> AutoReleaseLeaseOutcome {
-    let Some(session) = session.map(str::trim).filter(|value| !value.is_empty()) else {
-        return AutoReleaseLeaseOutcome::NoSession {
-            reason: format!(
-                "issue {issue} closed; no --worktree-session or PHASEGENT_SESSION_ID \
-                 supplied, so active worktree leases were left untouched"
-            ),
-        };
-    };
     let identity = match crate::worktree::repo_identity(runner, repo_path) {
         Ok(identity) => identity,
         Err(error) => {
@@ -505,7 +492,10 @@ pub fn release_closed_issue_leases(
             };
         }
     };
-    let reason = format!("issue closed: {session}");
+    let reason = match session.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(session) => format!("issue closed: {session}"),
+        None => "issue closed".to_owned(),
+    };
     match crate::worktree::release_active_leases_for_issue(&identity, issue, &reason) {
         Ok(released) => AutoReleaseLeaseOutcome::Released { released },
         Err(error) => AutoReleaseLeaseOutcome::Warning {
@@ -606,10 +596,14 @@ fn is_main_checkout(
 /// 1. the directory is clean — `git status --porcelain` is empty, so
 ///    untracked files count as dirty;
 /// 2. no *other* session holds an `active` lease pointing at the
-///    directory; the closing session's own lease never blocks its own
-///    cleanup, while `session == None` (the legacy fallback) makes
-///    every active lease foreign and therefore keeps every active
-///    row's directory;
+///    directory. The close chain flips this issue's `active` leases to
+///    `retained` before this helper runs (issue 575 Phase 1), so an
+///    `active` row seen here belongs to another issue, or to another
+///    session of this repository; the closing session's own row is
+///    exempted for the callers that reach the guard without a preceding
+///    flip, such as the `issue sync` report mode. `session == None`
+///    makes every still-active row foreign, which keeps an
+///    unconverged directory instead of deleting it;
 /// 3. the directory is not the repository's main working tree, i.e.
 ///    its `git rev-parse --git-dir` is not the shared common dir.
 ///
