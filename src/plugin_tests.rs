@@ -19,7 +19,9 @@
 //!   `phasegent --role orchestrator worktree acquire` call, the v2
 //!   `worktree.transform` strategy, the issue #440
 //!   `tool.execute.before` redirect helpers, and the issue #533
-//!   `skill.transform` embedded skill registration. It must not
+//!   `skill.transform` embedded skill registration. Issue #572 adds
+//!   the `agent.transform` binding that prepends each protocol
+//!   agent's own slim skill to its system prompt. It must not
 //!   register a slash command: the live v2.0.11 command draft only
 //!   accepts an Effect-returning `execute`, which a promise plugin
 //!   cannot build. The embedded skill body must also match
@@ -561,12 +563,15 @@ fn adapter_template_registers_embedded_skill_without_a_command() {
     // `update(name, mutate)` template raised a TypeError in the host and the
     // host then disabled the whole plugin, redirect hook included.
     assert!(!source.contains("context.command"));
-    assert!(!source.contains("draft.update("));
     assert!(!source.contains("ACQUIRE_COMMAND_NAME"));
     assert!(!source.contains("worktreeAcquireCommandTemplate"));
     // issue #533: the phasegent skill travels with the plugin as an embedded
     // `Skill.Info` added through the runtime skill draft.
     assert!(source.contains("skill.transform"));
+    // issue #572: each protocol agent gets its own slim skill prepended to its
+    // `system` through the agent draft, so the role skill is the agent's stable
+    // system prefix. The command domain stays untouched.
+    assert!(source.contains("agent.transform"));
     assert!(source.contains("draft.add(definition)"));
     assert!(source.contains("const SKILL_ID = \"phasegent\""));
     assert!(source.contains("/builtin/phasegent.md"));

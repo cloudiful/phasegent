@@ -31,6 +31,10 @@ const {
   skillDefinition,
   roleSkillDefinitions,
   skillDefinitions,
+  registerAgentSkills,
+  roleSkillId,
+  roleSkillContent,
+  withSkillPrefix,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
@@ -78,9 +82,23 @@ describe("plugin module shape (v2)", () => {
             return { dispose: async () => {} };
           },
         },
+        agent: {
+          transform: async (callback) => {
+            registered.push({ name: "agent.transform" });
+            await callback({
+              list: () => [{ id: "executor", system: "" }],
+              update: (id, mutate) => mutate({ id, system: "" }),
+            });
+            return { dispose: async () => {} };
+          },
+        },
       };
       const cleanup = await PhasegentWorktreePlugin.setup(context);
-      expect(registered.map((item) => item.name)).toEqual(["execute.before", "skill.transform"]);
+      expect(registered.map((item) => item.name)).toEqual([
+        "execute.before",
+        "skill.transform",
+        "agent.transform",
+      ]);
       expect(typeof registered[0].callback).toBe("function");
       expect(typeof cleanup).toBe("function");
       await cleanup();
@@ -104,6 +122,11 @@ describe("plugin module shape (v2)", () => {
       skill: {
         transform: async () => {
           throw new Error("skill transform unavailable");
+        },
+      },
+      agent: {
+        transform: async () => {
+          throw new Error("agent transform unavailable");
         },
       },
     };
@@ -1378,6 +1401,211 @@ describe("v2 skill.transform (embedded phasegent)", () => {
   test("returns null when the host exposes no skill.transform", async () => {
     expect(await registerSkill({})).toBeNull();
     expect(await registerSkill(undefined)).toBeNull();
+  });
+});
+
+describe("v2 agent.transform role skill binding (issue #572)", () => {
+  const PROTOCOL = [
+    ["orchestrator", "phasegent-orchestrator"],
+    ["executor", "phasegent-executor"],
+    ["reviewer", "phasegent-reviewer"],
+  ];
+
+  function agentState() {
+    return [
+      { id: "orchestrator", system: "You own the objective." },
+      { id: "executor", system: "You implement a phase." },
+      { id: "reviewer", system: "You review a phase." },
+      { id: "explore", system: "You recon." },
+      { id: "tester", system: "You test." },
+    ];
+  }
+
+  // The live v2.0.12 agent draft: `{ list, get, default, update, remove }`.
+  function agentContext(state) {
+    return {
+      agent: {
+        transform: async (callback) => {
+          const byId = new Map(state.map((entry) => [entry.id, entry]));
+          await callback({
+            list: () => [...byId.values()],
+            get: (id) => byId.get(id),
+            default: () => {},
+            update: (id, mutate) => {
+              const entry = byId.get(id);
+              if (entry) mutate(entry);
+            },
+            remove: (id) => byId.delete(id),
+          });
+          return { dispose: async () => {} };
+        },
+      },
+    };
+  }
+
+  test("prepends each protocol agent's own skill as the system prefix", async () => {
+    const state = agentState();
+    const registration = await registerAgentSkills(agentContext(state));
+    expect(registration).toBeObject();
+    for (const [id, skillId] of PROTOCOL) {
+      const entry = state.find((candidate) => candidate.id === id);
+      const content = roleSkillDefinitions().find((definition) => definition.id === skillId).content;
+      expect(entry.system.startsWith(content)).toBe(true);
+      // The agent's own body survives verbatim after the prefix.
+      expect(entry.system).toContain(agentState().find((candidate) => candidate.id === id).system);
+      // Exactly one skill body: a second copy only appears if prefixing stacked.
+      expect(entry.system.split(content).length - 1).toBe(1);
+    }
+    // Recon-only and tester agents keep their own system untouched.
+    expect(state.find((entry) => entry.id === "explore").system).toBe("You recon.");
+    expect(state.find((entry) => entry.id === "tester").system).toBe("You test.");
+  });
+
+  test("re-running the transform never stacks the skill body", async () => {
+    const state = agentState();
+    await registerAgentSkills(agentContext(state));
+    const once = state.find((entry) => entry.id === "executor").system;
+    await registerAgentSkills(agentContext(state));
+    expect(state.find((entry) => entry.id === "executor").system).toBe(once);
+    expect(withSkillPrefix(once, roleSkillContent("phasegent-executor"))).toBe(once);
+    expect(withSkillPrefix("", "body")).toBe("body");
+  });
+
+  test("stays inert and warns when the host draft has no update", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const context = {
+        agent: {
+          transform: async (callback) => {
+            await callback({ list: () => [] });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      const registration = await registerAgentSkills(context, { backoff: [0] });
+      expect(registration).toBeObject();
+      expect(warnings.some((line) => line.includes("inert metadata"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("returns null without agent.transform", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      expect(await registerAgentSkills({})).toBeNull();
+      expect(await registerAgentSkills(undefined)).toBeNull();
+      expect(warnings.some((line) => line.includes("no agent.transform"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("retries while the host still loads its agents, replacing the stale callback", async () => {
+    // The host materializes configured agents a few tens of milliseconds after
+    // plugin setup and never re-runs an already-registered callback, so the
+    // binding retries: attempt 0 sees only the built-ins, attempt 1 sees the
+    // protocol agents.
+    const state = agentState().filter((entry) => ["build", "explore"].includes(entry.id));
+    const disposals = [];
+    const waits = [];
+    let attempts = 0;
+    const context = {
+      agent: {
+        transform: async (callback) => {
+          attempts += 1;
+          if (attempts >= 2) state.push(...agentState().filter((e) => e.id !== "build"));
+          const byId = new Map(state.map((entry) => [entry.id, entry]));
+          await callback({
+            list: () => [...byId.values()],
+            get: (id) => byId.get(id),
+            update: (id, mutate) => {
+              const entry = byId.get(id);
+              if (entry) mutate(entry);
+            },
+            remove: (id) => byId.delete(id),
+          });
+          const registration = (() => {
+            const attempt = attempts;
+            return { dispose: async () => disposals.push(attempt) };
+          })();
+          return registration;
+        },
+      },
+    };
+    const registration = await registerAgentSkills(context, {
+      backoff: [0, 10, 20],
+      wait: async (ms) => waits.push(ms),
+    });
+    await registration.settle;
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([10]);
+    // The stale first callback is disposed, so only the last one stays live.
+    expect(disposals).toEqual([1]);
+    expect(registration).toBeObject();
+    for (const [id, skillId] of PROTOCOL) {
+      const entry = state.find((candidate) => candidate.id === id);
+      const content = roleSkillDefinitions().find((definition) => definition.id === skillId).content;
+      expect(entry.system.startsWith(content)).toBe(true);
+      expect(entry.system.split(content).length - 1).toBe(1);
+    }
+  });
+
+  test("warns and keeps a registration when no protocol agent ever appears", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const attempts = [];
+      const context = {
+        agent: {
+          transform: async (callback) => {
+            attempts.push(1);
+            await callback({
+              list: () => [{ id: "build", system: "" }],
+              update: () => {},
+            });
+            return { dispose: async () => {} };
+          },
+        },
+      };
+      const registration = await registerAgentSkills(context, {
+        backoff: [0, 5],
+        wait: async () => {},
+      });
+      await registration.settle;
+      expect(registration).toBeObject();
+      expect(attempts).toHaveLength(2);
+      expect(warnings.some((line) => line.includes("no protocol agent was found"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("binds only the three protocol agents", () => {
+    expect(roleSkillId("orchestrator")).toBe("phasegent-orchestrator");
+    expect(roleSkillId("Executor")).toBe("phasegent-executor");
+    expect(roleSkillId("build-reviewer-x")).toBe("phasegent-reviewer");
+    expect(roleSkillId("explore")).toBeNull();
+    expect(roleSkillId("tester")).toBeNull();
+    expect(roleSkillId("build")).toBeNull();
+    expect(roleSkillId("")).toBeNull();
+    expect(roleSkillId(undefined)).toBeNull();
+  });
+
+  test("the injected prefix is byte-stable and free of role flags and ids", () => {
+    for (const [, skillId] of PROTOCOL) {
+      const content = roleSkillContent(skillId);
+      expect(content.startsWith("---\n")).toBe(true);
+      expect(content).not.toContain("--role");
+      expect(content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+      expect(content).not.toMatch(/\bses_[A-Za-z0-9]/);
+    }
+    expect(roleSkillContent("phasegent")).toBeNull();
   });
 });
 
