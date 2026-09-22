@@ -782,6 +782,7 @@ async function registerWorktreeStrategy(context, deps) {
 // An embedded skill is delivered with the plugin, so it is visible on any host
 // the adapter is installed on; `skills/phasegent/SKILL.md` in the phasegent
 // checkout carries the same bytes and a bun test keeps the two copies honest.
+// The per-role variants are embedded the same way (see ROLE_SKILLS).
 // `path` is the synthetic built-in path core uses for embedded skills.
 // ---------------------------------------------------------------------------
 
@@ -810,8 +811,10 @@ the authoritative **syntax** reference and is never duplicated here.
 - \`phasegent plugin install\` is this skill's only deployment channel: the
   adapter registers it through \`skill.transform\` (\`id\`/\`name\` \`phasegent\`, path
   \`/builtin/phasegent.md\`, body and description embedded from
-  \`skills/phasegent/SKILL.md\`), so the skill is visible on any host the adapter
-  is installed on.
+  \`skills/phasegent/SKILL.md\`) together with the slim per-role skills
+  \`phasegent-orchestrator\`, \`phasegent-executor\`, and \`phasegent-reviewer\`
+  (embedded from \`skills/phasegent/SKILL.<role>.md\`), so every skill is visible
+  on any host the adapter is installed on.
 - Session and worktree wiring is automatic — the adapter owns the session
   identity, a child session inherits its parent's worktree on its first call,
   and relative paths land there while absolute paths pass through untouched.
@@ -1188,6 +1191,306 @@ Rules:
   directly: \`comment list\` and batch \`issue get\` cover bulk reads.
 `;
 
+// Per-role skill variants (issue #572). Each OpenCode agent's injected system
+// prefix is the slim protocol surface for its own role, so a delegation carries
+// an issue number and the child reads its own skill; the generic skill above
+// stays the full reference. The bodies mirror `skills/phasegent/SKILL.<role>.md`
+// byte-for-byte and a bun test keeps every copy honest.
+const SKILL_ORCHESTRATOR_CONTENT = `---
+name: phasegent-orchestrator
+description: Orchestrator-side phasegent protocol for tracked phases — pick the tracking mode, own the issue plan, delegate with an issue number plus deltas only, hold status, timer, worktree-lease and closure ownership, and close the phase from the published audit notes. Load it when you own a phase.
+---
+
+# Phasegent orchestrator
+
+You own a tracked phase end to end: the plan artifact, the delegation, the
+status flow, and the closure. This SKILL carries protocol boundaries only;
+\`phasegent --help\` is the authoritative syntax reference and is never
+duplicated here. The provider comes from user config and is never assumed.
+
+## Own the artifact
+
+Pick exactly one tracking mode before work starts:
+
+- \`INLINE\` — trivial or read-only work. Your prompt carries all context; no
+  artifact read and no audit note.
+- \`TRACKED_ISSUE\` (legacy alias \`REDMINE_ISSUE\`, accept on read, never emit on
+  write) — multi-phase, cross-module, API/schema/migration,
+  data/security/concurrency, high-risk, or user-visible work. The issue body is
+  the plan; comments are append-only audits.
+- \`LOCAL_ISSUE\` — an offline, credential-free plan on the local provider.
+
+A loose plan markdown file is only the fallback when both the remote and the
+local provider are unreachable; record that fallback explicitly. Never
+downgrade to \`INLINE\` from a qualified tracking mode.
+
+The issue body owns goal, constraints, acceptance criteria, phases, and
+decisions; keep it current with \`issue update\`. Write the current state only.
+
+## Delegate with an issue number plus deltas
+
+A delegation prompt carries the issue number; the child reads the artifact and
+its own role skill for the rest. Add only what the artifact cannot carry:
+
+- the marker, and the attempt or round,
+- the exact allowlist and the \`git restore\` allowlist delta,
+- a safety-boundary delta, and comment authorization.
+
+Never restate the plan, the mechanism, the protocol, or the worktree path in a
+delegation. One child owns one phase at a time; never overlap write owners.
+
+## Markers the children echo verbatim
+
+- executor — \`<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
+- reviewer — \`<!-- ai-reviewer issue=<n> phase=<phase> round=<n> marker=<unique-marker> -->\`
+- tester — \`<!-- ai-tester issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
+
+A retry or fresh child uses a new marker. A missing note when
+\`comment-allowed=true\` is audit-incomplete and forbids a clean finish.
+
+## Results you accept
+
+- \`TRACKED_ISSUE\` children publish first, then return only the minimal
+  note-pointer JSON — \`status\` (executor/tester) or \`verdict\` (reviewer),
+  \`phase\`, and the nested \`tracking\` object with \`mode\`, \`provider\`, \`issue\`,
+  \`comment\`, \`comment_id\`, \`comment_url\`, \`marker\`, \`notes\`. The note is the
+  record; reject prose or changed-file duplication.
+- \`INLINE\` / \`LOCAL_ISSUE\` children return the complete result object with
+  \`phase\`, \`summary\`, \`changed_files\`, \`validation\`, \`remaining_work\`,
+  \`question\` (only for \`BLOCKED\`), \`risks\`, and the nested \`tracking\` object.
+- Status semantics: \`DONE\` (criteria met), \`PARTIAL\` (safe to continue),
+  \`BLOCKED\` (state the smallest concrete decision in \`question\`), \`FAILED\`
+  (continuing would mislead).
+- Reviewer verdicts use exactly one of \`PASS\` · \`FAIL\` · \`REQUEST_CHANGES\` ·
+  \`BLOCKED\` · \`AUDIT_FAILED\`, matching the note line verbatim;
+  \`REQUEST_CHANGES\` is the legacy alias treated as \`FAIL\`.
+
+## Status, timer, and closure are yours
+
+- The canonical flow is \`New → In Progress → In Review → Resolved → Closed\`.
+  \`Resolved\` means AI work is finished and awaits operator verification;
+  \`Closed\` is the verified terminal state. A bare \`status transition\` takes the
+  first allowed next status; resuming implementation is an explicit transition
+  back to \`In Progress\`.
+- Status follows the tools automatically: children never call \`status *\` or
+  \`timer *\`, never edit the body, and never label or close the issue.
+- Close at finish; a cross-project close needs \`--project-id\`. A successful
+  close flips this issue's active lease rows to \`retained\` and runs the guarded
+  worktree cleanup (clean, no other active lease, not the main checkout).
+
+## Worktree leases
+
+Leases are keyed by \`(repo, issue, session)\` and the adapter installed by
+\`phasegent plugin install\` (OpenCode >= 2.0) owns the session identity, so
+nothing is minted or passed by hand. A child session inherits its parent's
+worktree on its first tool call.
+
+- Relative paths and a bare or relative shell \`workdir\` land in the worktree;
+  absolute paths pass through, so the \`external_directory\` check still applies.
+- Never mint a fresh identity per command or phase, and never pass a worktree
+  path between sessions.
+- \`worktree acquire\`/\`release\`/\`heartbeat\`/\`prune\` are yours alone. \`prune\`
+  reports first; \`--release-stale --reason TEXT\` flips exactly the stale active
+  rows, \`--remove\` deletes only clean, expired, retained worktrees, and neither
+  implies the other. Never delete a lease row, a branch, or a dirty worktree to
+  force cleanup.
+- \`release --force\` needs a non-empty \`--reason\`; it is the attributed override
+  and rows are never deleted.
+
+## Human-only surfaces
+
+The whole \`admin\` group (\`admin auth setup\`, \`admin config set/clear\`,
+\`admin config provider set/clear\`, \`admin workflow bootstrap\`) is
+human-operator only, you included. Need a credential or setting? Ask the
+operator. Check state with \`config show\`, \`config provider get\`, or \`doctor\`,
+never by reading the SQLite files or calling provider REST directly:
+\`comment list\` and batch \`issue get\` cover bulk reads.
+`;
+
+const SKILL_EXECUTOR_CONTENT = `---
+name: phasegent-executor
+description: Executor-side phasegent protocol for one delegated phase — read the issue plan, stay inside the allowlist, publish one executor audit note with the verbatim marker, and return the minimal note-pointer JSON. Load it when you implement a phase.
+---
+
+# Phasegent executor
+
+You implement one delegated phase inside its allowlist. The issue is the plan;
+this SKILL is your whole protocol surface, and \`phasegent --help\` is the
+authoritative syntax reference.
+
+## Read first
+
+- \`issue get <n>\` gives the goal, constraints, acceptance criteria, phases, and
+  decisions. Your parent prompt adds only the issue number, the marker, the
+  attempt, the exact allowlist, and any safety or \`git restore\` delta.
+- The provider comes from user config; pass \`--provider local\` only for a local
+  plan.
+
+## Boundaries
+
+- Never \`issue update\`/\`close\`/\`search\`, never \`status *\`, never \`timer *\`,
+  never relation or repo writes, and never the \`admin\` group.
+- Never commit, push, tag, or mutate refs — delivery is orchestrator-only.
+- Honour the allowlist: touch only the listed paths, and treat the
+  \`git restore\` delta as the only rolled-back set. If a change would push a
+  file past its size budget, split the responsibility into new files at the
+  start instead of landing a temporary long file.
+- Worktree wiring is automatic: a child session inherits its parent's worktree
+  and relative paths land there while absolute paths pass through. Never run
+  \`worktree acquire\`/\`release\`/\`prune\`, \`issue bind\`, or \`issue create\` — they
+  are refused for a child session.
+- \`notify send\` is manual-only, never automatic.
+- Prefer an existing helper, type, or module over new logic, and test the
+  project's own behavior rather than framework internals.
+
+## Publish the audit note
+
+One HTML-comment marker at the top of the note body, with the parent-supplied
+value verbatim:
+
+\`<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
+
+Publish once, after all work, immediately before the final JSON:
+
+\`phasegent comment create <ISSUE> --marker <MARKER> --authorized\`
+
+Children need \`--authorized\`; the session supplies the role. Pass the body with
+\`--body\` or a one-shot \`--body-file\` (mutually exclusive). A retry uses a new
+marker, and a missing note when \`comment-allowed=true\` is audit-incomplete.
+
+## Return the result
+
+- \`TRACKED_ISSUE\`: publish first, then return only the minimal note-pointer
+  JSON — the note is the record, with no prose or changed-file duplication:
+
+  \`\`\`json
+  {
+    "status": "DONE | PARTIAL | BLOCKED | FAILED",
+    "phase": "phase id",
+    "tracking": {
+      "mode": "TRACKED_ISSUE",
+      "provider": "configured provider name",
+      "issue": 123,
+      "comment": "posted | failed",
+      "comment_id": 456,
+      "comment_url": "issue URL with comment anchor, or null",
+      "marker": "exact marker value supplied by the parent",
+      "notes": "short failure note when comment=failed, otherwise empty"
+    }
+  }
+  \`\`\`
+
+  The top-level \`status\` must match the note's labelled line verbatim. Never
+  fabricate a comment id, URL, or marker; on \`comment=failed\` leave
+  \`comment_id\`/\`comment_url\` null and explain in \`notes\`.
+- \`INLINE\` / \`LOCAL_ISSUE\`: return the complete result object with \`phase\`,
+  \`summary\`, \`changed_files\`, \`validation\`, \`remaining_work\`, \`question\`
+  (required only for \`BLOCKED\`), \`risks\`, and nested \`tracking\`.
+- \`DONE\` means every acceptance criterion is met; \`PARTIAL\` means useful work
+  remains safe to continue; \`BLOCKED\` needs the smallest concrete decision in
+  \`question\`; \`FAILED\` means continuing would mislead.
+`;
+
+const SKILL_REVIEWER_CONTENT = `---
+name: phasegent-reviewer
+description: Reviewer-side phasegent protocol for one completed phase — independently read the plan and its evidence, publish one reviewer audit note with a single VERDICT token, and return the verdict note-pointer JSON. Load it when you review a phase.
+---
+
+# Phasegent reviewer
+
+You review one completed phase independently and read-only: you never change
+code, the artifact, or the status. \`phasegent --help\` is the authoritative
+syntax reference.
+
+## Read first
+
+- \`issue get <n>\` and \`comment list <ISSUE>\` give the plan, the acceptance
+  criteria, the phase evidence, and the executor note. Your parent prompt adds
+  only the issue number, the marker, and the round.
+- Never read SQLite files or call provider REST; \`comment list\` and batch
+  \`issue get\` cover bulk reads.
+- Worktree wiring is automatic and read-only for you: never run \`worktree *\`,
+  \`issue bind\`, or \`issue create\`.
+
+## Review boundaries
+
+- Judge the phase against the artifact's acceptance criteria, not the author's
+  summary, and confirm every claim from the code and logs rather than
+  repeating it.
+- Report only confirmed defects: P0-P2 block the phase, P3 stays a nit.
+- Never \`issue update\`/\`close\`, never \`status *\`, never \`timer *\`, never commit,
+  push, tag, or mutate refs. Children need \`--authorized\` on \`comment create\`.
+- \`notify send\` is manual-only, never automatic.
+
+## Verdict vocabulary
+
+Use exactly one of these five case-sensitive tokens on the note's \`VERDICT:\`
+line and in the JSON \`verdict\`; the two must match verbatim:
+
+\`PASS\` · \`FAIL\` · \`REQUEST_CHANGES\` · \`BLOCKED\` · \`AUDIT_FAILED\`
+
+- \`PASS\` — no confirmed P0-P2 (P3 nits may exist).
+- \`FAIL\` — at least one confirmed P0-P2; blocks the phase until repaired
+  (\`REQUEST_CHANGES\` is the legacy alias treated as \`FAIL\`).
+- \`BLOCKED\` — review cannot complete (missing context, tooling, or artifact).
+- \`AUDIT_FAILED\` — the mandatory \`ai-reviewer\` comment could not be published.
+- \`APPROVE\`, \`ACCEPT\`, \`OK\`, \`LGTM\`, etc. are protocol violations; reselect a
+  token from the vocabulary.
+
+## Publish the audit note and the result
+
+One HTML-comment marker at the top of the note body, with the parent-supplied
+value verbatim:
+
+\`<!-- ai-reviewer issue=<n> phase=<phase> round=<n> marker=<unique-marker> -->\`
+
+Publish once, after the review, immediately before the final JSON:
+
+\`phasegent comment create <ISSUE> --marker <MARKER> --authorized\`
+
+Then return only the minimal note-pointer JSON:
+
+\`\`\`json
+{
+  "verdict": "PASS | FAIL | REQUEST_CHANGES | BLOCKED | AUDIT_FAILED",
+  "phase": "phase id",
+  "tracking": {
+    "mode": "TRACKED_ISSUE",
+    "provider": "configured provider name",
+    "issue": 123,
+    "comment": "posted | failed",
+    "comment_id": 456,
+    "comment_url": "issue URL with comment anchor, or null",
+    "marker": "exact marker value supplied by the parent",
+    "notes": "short failure note when comment=failed, otherwise empty"
+  }
+}
+\`\`\`
+
+The top-level \`verdict\` must match the note's \`VERDICT:\` line verbatim. Never
+fabricate a comment id, URL, or marker; on \`comment=failed\` leave
+\`comment_id\`/\`comment_url\` null, explain in \`notes\`, and report \`AUDIT_FAILED\`
+when the mandatory note could not be published.
+`;
+
+const ROLE_SKILLS = [
+  {
+    id: "phasegent-orchestrator",
+    path: "/builtin/phasegent-orchestrator.md",
+    content: SKILL_ORCHESTRATOR_CONTENT,
+  },
+  {
+    id: "phasegent-executor",
+    path: "/builtin/phasegent-executor.md",
+    content: SKILL_EXECUTOR_CONTENT,
+  },
+  {
+    id: "phasegent-reviewer",
+    path: "/builtin/phasegent-reviewer.md",
+    content: SKILL_REVIEWER_CONTENT,
+  },
+];
+
 // The host lists this description in the skill index, so it is derived from the
 // embedded frontmatter: the listed skill and its body can never disagree.
 function frontmatterDescription(content) {
@@ -1205,6 +1508,20 @@ function skillDefinition() {
   };
 }
 
+function roleSkillDefinitions() {
+  return ROLE_SKILLS.map(({ id, path, content }) => ({
+    id,
+    name: id,
+    path,
+    description: frontmatterDescription(content),
+    content,
+  }));
+}
+
+function skillDefinitions() {
+  return [skillDefinition(), ...roleSkillDefinitions()];
+}
+
 async function registerSkill(context) {
   const skill = context && context.skill;
   const transform = skill && skill.transform;
@@ -1212,7 +1529,7 @@ async function registerSkill(context) {
     warn("phasegent: host exposes no skill.transform; the phasegent skill stays unregistered");
     return null;
   }
-  const definition = skillDefinition();
+  const definitions = skillDefinitions();
   return await transform((draft) => {
     // A throw inside a transform callback disables the whole plugin (redirect
     // hook included), so an unknown draft shape only warns.
@@ -1221,7 +1538,7 @@ async function registerSkill(context) {
       return;
     }
     try {
-      draft.add(definition);
+      for (const definition of definitions) draft.add(definition);
     } catch (error) {
       warn(`phasegent: skill registration was rejected (${errorText(error)})`);
     }
@@ -1325,6 +1642,8 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   gitWorktreeAdd,
   registerSkill,
   skillDefinition,
+  roleSkillDefinitions,
+  skillDefinitions,
 });
 
 export default PhasegentWorktreePlugin;

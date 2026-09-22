@@ -20,8 +20,10 @@ the authoritative **syntax** reference and is never duplicated here.
 - `phasegent plugin install` is this skill's only deployment channel: the
   adapter registers it through `skill.transform` (`id`/`name` `phasegent`, path
   `/builtin/phasegent.md`, body and description embedded from
-  `skills/phasegent/SKILL.md`), so the skill is visible on any host the adapter
-  is installed on.
+  `skills/phasegent/SKILL.md`) together with the slim per-role skills
+  `phasegent-orchestrator`, `phasegent-executor`, and `phasegent-reviewer`
+  (embedded from `skills/phasegent/SKILL.<role>.md`), so every skill is visible
+  on any host the adapter is installed on.
 - Session and worktree wiring is automatic — the adapter owns the session
   identity, a child session inherits its parent's worktree on its first call,
   and relative paths land there while absolute paths pass through untouched.

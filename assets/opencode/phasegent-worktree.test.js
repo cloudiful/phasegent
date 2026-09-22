@@ -29,6 +29,8 @@ const {
   worktreeStrategyDefinition,
   registerSkill,
   skillDefinition,
+  roleSkillDefinitions,
+  skillDefinitions,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
@@ -1284,6 +1286,35 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(skillDefinition().content).toBe(disk);
   });
 
+  test("each role definition mirrors its own skill file byte-for-byte", async () => {
+    const files = {
+      "phasegent-orchestrator": "../../skills/phasegent/SKILL.orchestrator.md",
+      "phasegent-executor": "../../skills/phasegent/SKILL.executor.md",
+      "phasegent-reviewer": "../../skills/phasegent/SKILL.reviewer.md",
+    };
+    const definitions = roleSkillDefinitions();
+    expect(definitions.map((definition) => definition.id)).toEqual(Object.keys(files));
+    for (const definition of definitions) {
+      const path = new URL(files[definition.id], import.meta.url);
+      const disk = await Bun.file(path).text();
+      expect(definition.content).toBe(disk);
+      // The flat Skill.Info contract, plus the synthetic builtin path.
+      expect(definition.name).toBe(definition.id);
+      expect(definition.path).toBe(`/builtin/${definition.id}.md`);
+      expect(definition.description).toBe(
+        definition.content.match(/^description:[ \t]*(.+)$/m)[1].trim(),
+      );
+      // A slim role surface is byte-stable: no role flag literal, no timestamp
+      // and no session id that would break the cached system prefix.
+      expect(definition.content).not.toContain("--role");
+      expect(definition.content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+      expect(definition.content).not.toMatch(/\bses_[A-Za-z0-9]/);
+    }
+    // The generic skill plus the three role variants are what setup registers.
+    expect(skillDefinitions()).toHaveLength(4);
+    expect(skillDefinitions()[0].id).toBe("phasegent");
+  });
+
   test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {
@@ -1306,10 +1337,19 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     };
     const registration = await registerSkill(context);
     expect(registration).toBeObject();
-    expect(skills.size).toBe(1);
+    expect([...skills.keys()]).toEqual([
+      "phasegent",
+      "phasegent-orchestrator",
+      "phasegent-executor",
+      "phasegent-reviewer",
+    ]);
     const skill = skills.get("phasegent");
     expect(skill.path).toBe("/builtin/phasegent.md");
     expect(skill.content).toContain("# Phasegent");
+    for (const id of ["phasegent-orchestrator", "phasegent-executor", "phasegent-reviewer"]) {
+      expect(skills.get(id).path).toBe(`/builtin/${id}.md`);
+      expect(skills.get(id).content.startsWith("---\n")).toBe(true);
+    }
   });
 
   test("a draft without add never throws into the transform", async () => {
