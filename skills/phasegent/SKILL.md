@@ -5,10 +5,10 @@ description: Role-aware, provider-backed workflow protocol for phasegent issue/p
 
 # Phasegent
 
-`phasegent` is a role-aware CLI for provider-backed workflow. `--role` selects the
-capability/routing policy; the tracking provider comes from user config. This
-SKILL defines **protocol boundaries** only. `phasegent --help` is the
-authoritative **syntax** reference and is never duplicated here.
+`phasegent` is a role-aware CLI for provider-backed workflow. The session role
+selects the capability/routing policy; the tracking provider comes from user
+config. This SKILL defines **protocol boundaries** only. `phasegent --help` is
+the authoritative **syntax** reference and is never duplicated here.
 
 ## OpenCode adaptation
 
@@ -94,7 +94,7 @@ The role capability matrix below is the human-readable mirror of `src/policy.rs`
 ## Role capability matrix
 
 Source of truth: `src/policy.rs` (`Role::allows`). The five roles are
-`admin`, `orchestrator`, `executor`, `reviewer`, `tester`. `--role` is a
+`admin`, `orchestrator`, `executor`, `reviewer`, `tester`. The session role is a
 capability/routing policy, not identity isolation; each role's credential stays
 least-privilege and never crosses roles.
 
@@ -161,7 +161,7 @@ token; agent permission rules deny that single prefix.
 | Command | Capability / gate | Roles allowed | Provider / surface notes |
 |---|---|---|---|
 | `issue get` | IssueRead | orchestrator, executor, reviewer, tester | one number returns the single-issue object; 2–20 return an `{issues, errors}` envelope (exit 1 unless every fetch succeeds) |
-| `doctor` | none (read-only self-check) | any (no `--role` required) | credential presence (fingerprint, never values), index backend state, masked PG URL; approved replacement for schema dumps and raw setting reads |
+| `doctor` | none (read-only self-check) | any (no role gate) | credential presence (fingerprint, never values), index backend state, masked PG URL; approved replacement for schema dumps and raw setting reads |
 | `issue search` | IssueSearch | orchestrator only | provider-fresh; auto-bootstraps project on no match; scoped local-index fallback on failure |
 | `issue create` | IssueCreate | orchestrator only | planning flags Redmine/GitLab; Forgejo rejects every planning flag |
 | `issue update` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
@@ -191,11 +191,11 @@ token; agent permission rules deny that single prefix.
 | `admin workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |
 | `repo create` | RepoCreate | orchestrator only | Forgejo/GitLab; `--private` required; Redmine/local reject as not-supported |
 | `notify send` | role gate | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |
-| `mcp serve` | startup `--role` | role-scoped toolset | tools: `capabilities`, `issue_get`, `issue_search`, `status_next`, `comment_create` (needs server-side `--authorized` unless orchestrator), `notify_send`; excludes status writes (`status transition` is CLI-only), timer start/finish, role elevation |
+| `mcp serve` | startup role | role-scoped toolset | tools: `capabilities`, `issue_get`, `issue_search`, `status_next`, `comment_create` (needs server-side `--authorized` unless orchestrator), `notify_send`; excludes status writes (`status transition` is CLI-only), timer start/finish, role elevation |
 | `admin auth setup` | all roles | admin, orchestrator, executor, reviewer, tester | credentials never a CLI value |
-| `config show` / `config provider get` | machine-wide | any (no `--role` required) | redacted snapshot; secrets as presence/length/fingerprint, never values |
-| `admin config set` / `admin config clear` | global or role-scoped | any; role-scoped settings need `--role` | SQLite only; secret settings require `--stdin` |
-| `admin config provider set` / `admin config provider clear` | machine-wide | any (no `--role` required) | SQLite only |
+| `config show` / `config provider get` | machine-wide | any (no role gate) | redacted snapshot; secrets as presence/length/fingerprint, never values |
+| `admin config set` / `admin config clear` | global or role-scoped | any; role-scoped settings require a role | SQLite only; secret settings require `--stdin` |
+| `admin config provider set` / `admin config provider clear` | machine-wide | any (no role gate) | SQLite only |
 | `hooks install` | no role gate | any | local checkout; managed prepare-commit-msg/commit-msg hooks |
 | `gui` | none | any | desktop single-binary shell |
 
@@ -270,8 +270,8 @@ Boundaries:
   verdicts without writing).
 - Environment: `PHASEGENT_SESSION_ID` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
-  call); `PHASEGENT_ROLE` is the CLI-level role fallback (`--role` wins, a blank
-  value means "no role", an invalid value is an error); and
+  call); `PHASEGENT_ROLE` is the CLI-level role fallback (an explicit role flag
+  wins, a blank value means "no role", an invalid value is an error); and
   `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter inert beyond the
   in-memory registry.
 - `phasegent --help worktree` owns the exact flags for these commands.
