@@ -34,12 +34,15 @@
 // (`tool`, `worktree`, `session` and `location` are absent from 1.18.25 while
 // the binary exposes them); the adapter targets the binary's runtime context.
 //
-// Session identity is `event.sessionID`. Degradation is deliberate: no binding or a
-// failed acquire keeps the original directory and warns on the console (v2 has no
-// structured warning channel). Absolute paths pass through untouched, so an explicit
-// escape and the external_directory check that guards it are never rewritten. All
-// worktree calls stay local: no network, no credentials, no .env copies. Branches
-// and directories are never deleted here; removal is `phasegent worktree prune`.
+// Session identity is `event.sessionID`, and a Task-spawned child reads its
+// `parentID` through `context.session.get` so it inherits the parent's directory
+// instead of guessing from the most recently remembered worktree. Degradation is
+// deliberate: no binding or a failed acquire keeps the original directory and warns
+// on the console (v2 has no structured warning channel). Absolute paths pass through
+// untouched, so an explicit escape and the external_directory check that guards it
+// are never rewritten. All worktree calls stay local: no network, no credentials, no
+// .env copies. Branches and directories are never deleted here; removal is
+// `phasegent worktree prune`.
 
 function errorText(error) {
   return String(error && error.message ? error.message : error);
@@ -402,20 +405,24 @@ async function discoverWorktreeForSession(sessionId, cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Acquired-worktree registry (issue #440).
+// Acquired-worktree registry (issue #440; parent inheritance issue #567).
 //
-// `ctx.session.move` relocates a session, but there is no per-session worktree
-// identity on the v2 worktree domain: Task-spawned sub-agents run with a
-// different sessionID and never resolve one themselves. Keep the per-session
-// mapping when the runtime reports one and fall back to the most recently
-// acquired worktree so those sub-agents are redirected too. An empty registry
-// means "no worktree", and the hook then leaves every tool argument untouched.
+// `ctx.session.move` relocates a session, and the host's session info
+// (`ctx.session.get`) reports a Task-spawned child's `parentID` plus the
+// session's own `location.directory`. A child therefore inherits its parent's
+// directory — the parent's registered target first, then the directory the host
+// reports for the parent — instead of guessing from the most recently
+// remembered worktree. The registry keeps the per-session mapping, and
+// `activeWorktree` stays the fallback for sessions whose parentage the host
+// cannot report. An empty registry means "no worktree", and the hook then
+// leaves every tool argument untouched.
 // ---------------------------------------------------------------------------
 
 const sessionWorktrees = new Map();
 let activeWorktree = null;
 const moveAttempts = new Set();
 const movedSessions = new Set();
+const sessionInfo = new Map();
 
 function sessionPlaced(sessionId) {
   return sessionId !== undefined && sessionId !== null && movedSessions.has(String(sessionId));
@@ -441,58 +448,147 @@ function resetWorktrees() {
   sessionWorktrees.clear();
   moveAttempts.clear();
   movedSessions.clear();
+  sessionInfo.clear();
   activeWorktree = null;
 }
 
+// `context.session.get` is the host's session lookup: `parentID` names the
+// session that spawned this one, and `location.directory` is where the session
+// runs. The result is cached per session because the hook must not add a host
+// call to every tool call; a failed lookup stays uncached so a later call can
+// still inherit.
+async function readSessionInfo(context, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  const key = String(sessionId);
+  if (sessionInfo.has(key)) return sessionInfo.get(key);
+  const get = context && context.session && context.session.get;
+  if (typeof get !== "function") {
+    sessionInfo.set(key, null);
+    return null;
+  }
+  let info = null;
+  try {
+    const result = await get({ sessionID: sessionId });
+    if (result && typeof result === "object") {
+      const parentID = typeof result.parentID === "string" ? result.parentID : "";
+      const directory =
+        result.location && typeof result.location.directory === "string"
+          ? result.location.directory
+          : "";
+      info = { parentID: parentID || null, directory: directory || null };
+    }
+  } catch (_) {
+    info = null;
+  }
+  if (info) sessionInfo.set(key, info);
+  return info;
+}
+
+// The parent's registered target is the destination of a move that may still be
+// pending at the parent's next step boundary; the directory the host reports for
+// the parent is the fallback once that move has landed.
+async function inheritedWorktree(context, parentId, readInfo) {
+  if (parentId === undefined || parentId === null) return null;
+  const registered = sessionWorktrees.get(String(parentId));
+  if (registered) return registered;
+  const read = readInfo || readSessionInfo;
+  const info = await read(context, parentId);
+  return info ? info.directory : null;
+}
+
 // `context.session.move` hands an active runner the placement at its next step
-// boundary (packages/core/src/session/move.ts:114-155). It is attempted once per
-// session: repeated calls would enqueue repeated inbox items. A confirmed
-// placement (`sessionPlaced`) is what lets the hook skip path rewriting.
-async function moveSessionToWorktree(context, sessionId, directory) {
+// boundary (packages/core/src/session/move.ts:114-155). A confirmed placement
+// (`sessionPlaced`) is what lets the hook skip path rewriting, while
+// `moveAttempts` only deduplicates concurrent calls: a move that failed is
+// retried on the next tool call instead of pinning the session to the old
+// directory. `currentDirectory` is the session's own directory when the host
+// reports one, so a session that already sits in the target is not moved again.
+async function moveSessionToWorktree(context, sessionId, directory, currentDirectory) {
   if (!context) return;
   if (typeof directory !== "string" || directory.length === 0) return;
   if (sessionId === undefined || sessionId === null) return;
   const key = String(sessionId);
   if (movedSessions.has(key) || moveAttempts.has(key)) return;
   moveAttempts.add(key);
-  const current = locationDirectory(context);
-  if (current === directory) {
-    movedSessions.add(key); // the session already sits in the worktree
-    return;
-  }
-  const move = context && context.session && context.session.move;
-  if (typeof move !== "function") {
-    warn("phasegent: host exposes no session.move; redirecting tool arguments only");
-    return;
-  }
   try {
+    const current =
+      typeof currentDirectory === "string" && currentDirectory.length > 0
+        ? currentDirectory
+        : locationDirectory(context);
+    if (current === directory) {
+      movedSessions.add(key); // the session already sits in the worktree
+      return;
+    }
+    const move = context && context.session && context.session.move;
+    if (typeof move !== "function") {
+      warn("phasegent: host exposes no session.move; redirecting tool arguments only");
+      return;
+    }
     await move({ sessionID: sessionId, directory });
     movedSessions.add(key);
   } catch (error) {
     warn(
       `phasegent: session move to ${directory} failed; redirecting tool arguments instead (${errorText(error)})`,
     );
+  } finally {
+    moveAttempts.delete(key);
   }
 }
 
-async function ensureSessionWorktree(context, sessionId) {
-  if (!sessionId) return null;
+// The registry fallback: a sub-agent whose session id was never remembered
+// reuses the most recently remembered worktree. An empty registry means "no
+// worktree" and leaves the call untouched.
+async function reuseRememberedWorktree(context, sessionId) {
   const known = worktreeForSession(sessionId);
-  if (known) {
-    await moveSessionToWorktree(context, sessionId, known);
-    return known;
+  if (!known) return null;
+  await moveSessionToWorktree(context, sessionId, known);
+  return known;
+}
+
+// A Task-spawned child inherits its parent's directory and never acquires a
+// lease of its own; a session without a reported parent keeps the registry
+// fallback and the acquire path. `deps` is an internal seam so tests can
+// exercise that order without the phasegent CLI.
+async function ensureSessionWorktree(context, sessionId, event, deps) {
+  if (!sessionId) return null;
+  const registered = sessionWorktrees.get(String(sessionId));
+  if (registered) {
+    await moveSessionToWorktree(context, sessionId, registered);
+    return registered;
   }
-  if (phasegentCallsDisabled()) return null;
+  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
+  // in-memory registry: no host session lookup, no CLI, no acquire.
+  if (phasegentCallsDisabled()) return await reuseRememberedWorktree(context, sessionId);
+  const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
+  const discover = (deps && deps.discover) || discoverWorktreeForSession;
+  const acquire = (deps && deps.acquire) || acquireWorktree;
+  const readBinding = (deps && deps.readBinding) || readBranchBinding;
   const cwd = locationDirectory(context);
   try {
-    const discovered = await discoverWorktreeForSession(sessionId, cwd);
+    const info = await readInfo(context, sessionId);
+    if (info && info.parentID) {
+      const target = await inheritedWorktree(context, info.parentID, readInfo);
+      if (!target) return null;
+      if (info.directory === target) {
+        // The child already runs inside the parent's directory: nothing to move
+        // and nothing to rewrite, while a later parent move stays followed.
+        return null;
+      }
+      rememberWorktree(sessionId, target);
+      await moveSessionToWorktree(context, sessionId, target, info.directory);
+      return target;
+    }
+    const remembered = await reuseRememberedWorktree(context, sessionId);
+    if (remembered) return remembered;
+    const discovered = await discover(sessionId, cwd);
     if (discovered) {
       await moveSessionToWorktree(context, sessionId, discovered);
       return discovered;
     }
-    const issueId = await readBranchBinding(cwd);
+    if (isSubagentSession(event)) return null; // sub-agents never acquire
+    const issueId = await readBinding(cwd);
     if (!issueId) return null;
-    const acquired = await acquireWorktree(issueId, sessionId, cwd);
+    const acquired = await acquire(issueId, sessionId, cwd);
     if (!acquired || typeof acquired.path !== "string") {
       warn("phasegent: worktree acquire failed; reusing original directory");
       return null;
@@ -1232,14 +1328,14 @@ async function registerSkill(context) {
   });
 }
 
-function createRedirectHook(context) {
+function createRedirectHook(context, deps) {
   return async function executeBefore(event) {
     const sessionId = event ? event.sessionID : undefined;
     const input = event ? event.input : undefined;
     const placedBefore = sessionPlaced(sessionId);
     let workdir = null;
     try {
-      workdir = await ensureSessionWorktree(context, sessionId);
+      workdir = await ensureSessionWorktree(context, sessionId, event, deps);
     } catch (_) {
       workdir = null; // silent passthrough: a failed lookup must not block the call
     }
@@ -1319,6 +1415,8 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   discoverWorktreeForSession,
   ensureSessionWorktree,
   moveSessionToWorktree,
+  readSessionInfo,
+  inheritedWorktree,
   readBranchBinding,
   acquireWorktree,
   readIssueLeases,

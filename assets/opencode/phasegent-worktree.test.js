@@ -22,6 +22,9 @@ const {
   resetWorktrees,
   createRedirectHook,
   pickActiveWorktreePath,
+  ensureSessionWorktree,
+  readSessionInfo,
+  inheritedWorktree,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   registerSkill,
@@ -409,6 +412,263 @@ describe("tool.execute.before hook (v2 single event)", () => {
     await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
     // The attempt set was cleared too, so a fresh move is allowed.
     expect(moves).toHaveLength(2);
+  });
+});
+
+describe("parent-inherit worktree (issue #567)", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  // `discover`/`acquire`/`readBinding` are stubbed so a missed inheritance
+  // fails loudly instead of spawning the phasegent CLI; `readSessionInfo` stays
+  // real and reads the fake host.
+  const noCliDeps = {
+    discover: async () => null,
+    readBinding: async () => 567,
+    acquire: async () => {
+      throw new Error("this session must never acquire a lease");
+    },
+  };
+
+  function hostContext(sessions, moves) {
+    return {
+      location: { directory: "/repo" },
+      session: {
+        move: async (input) => moves.push(input),
+        get: async ({ sessionID }) => sessions[sessionID],
+      },
+    };
+  }
+
+  test("moves a child into the parent's registered worktree on its first call", async () => {
+    rememberWorktree("parent-1", WORKTREE);
+    // A stale global fallback must not win over the parent's own target.
+    rememberWorktree("other-session", "/wt/other");
+    const moves = [];
+    const context = hostContext(
+      {
+        "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+        "parent-1": { parentID: null, location: { directory: "/wt/host-parent" } },
+      },
+      moves,
+    );
+    const hook = createRedirectHook(context, noCliDeps);
+
+    const first = {
+      tool: "read",
+      sessionID: "child-1",
+      agent: "executor",
+      input: { path: "src/a.rs" },
+    };
+    await hook(first);
+    // The call that triggers the move still runs in the old directory.
+    expect(first.input.path).toBe(`${WORKTREE}/src/a.rs`);
+    expect(sessionPlaced("child-1")).toBe(true);
+    expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+
+    const second = {
+      tool: "read",
+      sessionID: "child-1",
+      agent: "executor",
+      input: { path: "src/b.rs" },
+    };
+    await hook(second);
+    // The child cwd now is the worktree, so the relative path is left alone.
+    expect(second.input.path).toBe("src/b.rs");
+    expect(moves).toHaveLength(1);
+  });
+
+  test("falls back to the parent's host-reported directory", async () => {
+    // No registry entry for the parent, and a stale global fallback in place.
+    rememberWorktree("other-session", "/wt/other");
+    const moves = [];
+    const context = hostContext(
+      {
+        "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+        "parent-1": { parentID: null, location: { directory: WORKTREE } },
+      },
+      moves,
+    );
+    const hook = createRedirectHook(context, noCliDeps);
+
+    const event = {
+      tool: "shell",
+      sessionID: "child-1",
+      agent: "explore",
+      input: { command: "pwd" },
+    };
+    await hook(event);
+    expect(event.input.workdir).toBe(WORKTREE);
+    expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+  });
+
+  test("leaves a child that already sits in the parent's directory untouched", async () => {
+    const moves = [];
+    const context = hostContext(
+      {
+        "child-1": { parentID: "parent-1", location: { directory: WORKTREE } },
+        "parent-1": { parentID: null, location: { directory: WORKTREE } },
+      },
+      moves,
+    );
+    const hook = createRedirectHook(context, noCliDeps);
+
+    const read = {
+      tool: "read",
+      sessionID: "child-1",
+      agent: "executor",
+      input: { path: "src/a.rs" },
+    };
+    await hook(read);
+    // Relative paths already resolve in the parent's directory: no move, no
+    // absolute rewrite.
+    expect(read.input.path).toBe("src/a.rs");
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("child-1")).toBe(false);
+
+    const glob = {
+      tool: "glob",
+      sessionID: "child-1",
+      agent: "executor",
+      input: { pattern: "*.rs" },
+    };
+    await hook(glob);
+    expect(glob.input.path).toBeUndefined();
+  });
+
+  test("keeps a child in place when the parent has no worktree", async () => {
+    rememberWorktree("other-session", "/wt/other");
+    const moves = [];
+    const context = hostContext(
+      {
+        "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+        "parent-1": { parentID: null, location: { directory: "/repo" } },
+      },
+      moves,
+    );
+    const hook = createRedirectHook(context, noCliDeps);
+
+    const event = {
+      tool: "read",
+      sessionID: "child-1",
+      agent: "reviewer",
+      input: { path: "src/a.rs" },
+    };
+    await hook(event);
+    expect(event.input.path).toBe("src/a.rs");
+    expect(moves).toEqual([]);
+  });
+
+  test("a sub-agent never acquires while an orchestrator session still does", async () => {
+    const acquired = [];
+    const deps = {
+      readSessionInfo: async () => null,
+      discover: async () => null,
+      readBinding: async () => 567,
+      acquire: async (issueId, sessionId, cwd) => {
+        acquired.push({ issueId, sessionId, cwd });
+        return { path: WORKTREE };
+      },
+    };
+    const context = { location: { directory: "/repo" }, session: { move: async () => {} } };
+
+    expect(await ensureSessionWorktree(context, "child-1", { agent: "executor" }, deps)).toBeNull();
+    expect(acquired).toEqual([]);
+
+    expect(await ensureSessionWorktree(context, "parent-1", { agent: "orchestrator" }, deps)).toBe(
+      WORKTREE,
+    );
+    expect(acquired).toEqual([{ issueId: 567, sessionId: "parent-1", cwd: "/repo" }]);
+  });
+
+  test("retries a failed session move on the next call", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    let attempts = 0;
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("runner not ready");
+        },
+      },
+    };
+    const hook = createRedirectHook(context);
+
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
+    expect(sessionPlaced("session-1")).toBe(false);
+    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
+    expect(attempts).toBe(2);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("caches the host session lookup and clears it with the registry", async () => {
+    let calls = 0;
+    const context = {
+      session: {
+        get: async ({ sessionID }) => {
+          calls += 1;
+          return { parentID: null, location: { directory: `/repo/${sessionID}` } };
+        },
+      },
+    };
+    expect(await readSessionInfo(context, "s1")).toEqual({
+      parentID: null,
+      directory: "/repo/s1",
+    });
+    expect(await readSessionInfo(context, "s1")).toEqual({
+      parentID: null,
+      directory: "/repo/s1",
+    });
+    expect(calls).toBe(1);
+
+    resetWorktrees();
+    await readSessionInfo(context, "s1");
+    expect(calls).toBe(2);
+  });
+
+  test("retries a failed session lookup and degrades without one", async () => {
+    let calls = 0;
+    const flaky = {
+      session: {
+        get: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error("session store unavailable");
+          return { parentID: "parent-1", location: { directory: WORKTREE } };
+        },
+      },
+    };
+    expect(await readSessionInfo(flaky, "s1")).toBeNull();
+    expect(await readSessionInfo(flaky, "s1")).toEqual({
+      parentID: "parent-1",
+      directory: WORKTREE,
+    });
+    expect(calls).toBe(2);
+
+    resetWorktrees();
+    expect(await readSessionInfo(undefined, "s1")).toBeNull();
+    expect(await readSessionInfo({}, "s2")).toBeNull();
+    const odd = { session: { get: async () => "not a session" } };
+    expect(await readSessionInfo(odd, "s3")).toBeNull();
+    // A non-object result stays uncached, so a usable answer still lands later.
+    odd.session.get = async () => ({ parentID: null, location: { directory: "/repo" } });
+    expect(await readSessionInfo(odd, "s3")).toEqual({ parentID: null, directory: "/repo" });
+  });
+
+  test("prefers the parent's registered target over the host-reported directory", async () => {
+    const context = {
+      session: { get: async () => ({ parentID: null, location: { directory: "/wt/host" } }) },
+    };
+    rememberWorktree("parent-1", WORKTREE);
+    expect(await inheritedWorktree(context, "parent-1")).toBe(WORKTREE);
+    expect(await inheritedWorktree(context, "parent-2")).toBe("/wt/host");
+    expect(await inheritedWorktree(context, null)).toBeNull();
   });
 });
 
