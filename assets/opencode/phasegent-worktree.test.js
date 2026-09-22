@@ -22,6 +22,7 @@ const {
   resetWorktrees,
   createRedirectHook,
   pickActiveWorktreePath,
+  issueClosedLocally,
   ensureSessionWorktree,
   readSessionInfo,
   inheritedWorktree,
@@ -456,6 +457,7 @@ describe("parent-inherit worktree (issue #567)", () => {
   const noCliDeps = {
     discover: async () => null,
     readBinding: async () => 567,
+    readLeaseHistory: async () => [],
     acquire: async () => {
       throw new Error("this session must never acquire a lease");
     },
@@ -596,6 +598,7 @@ describe("parent-inherit worktree (issue #567)", () => {
       readSessionInfo: async () => null,
       discover: async () => null,
       readBinding: async () => 567,
+      readLeaseHistory: async () => [],
       acquire: async (issueId, sessionId, cwd) => {
         acquired.push({ issueId, sessionId, cwd });
         return { path: WORKTREE };
@@ -879,11 +882,13 @@ describe("rewritePhasegentCommand (issue #541)", () => {
   });
 
   test("downgrades a claimed orchestrator/admin role to the session role", () => {
+    // The close segment also carries its closer flag (issue #575 P2); the CLI
+    // role gate still refuses a close that is not run as an orchestrator.
     expect(
       rewritePhasegentCommand("phasegent --role orchestrator issue close 1", "s1", {
         agent: "executor",
       }),
-    ).toBe("phasegent --role executor issue close 1");
+    ).toBe("phasegent --role executor issue close 1 --worktree-session s1");
     expect(
       rewritePhasegentCommand("phasegent --role=admin issue status", "s1", {
         agent: "tester",
@@ -911,11 +916,73 @@ describe("rewritePhasegentCommand (issue #541)", () => {
   });
 
   test("keeps an orchestrator session's own role claim", () => {
+    // `issue close` additionally gets its closer flag (issue #575 P2).
     expect(
       rewritePhasegentCommand("phasegent --role orchestrator issue close 1", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("phasegent --role orchestrator issue close 1");
+    ).toBe("phasegent --role orchestrator issue close 1 --worktree-session s1");
+  });
+});
+
+describe("issue close session injection (issue #575 P2)", () => {
+  test("appends --worktree-session to an issue close segment", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue close 575", "session-1", {
+        agent: "orchestrator",
+      }),
+    ).toBe("phasegent --role orchestrator issue close 575 --worktree-session session-1");
+  });
+
+  test("uses --worktree-session, never --session, on a close segment", () => {
+    // `issue close` rejects `--session` with `unknown option` (exit 2), so the
+    // injected flag must be the one the CLI parses.
+    const out = rewritePhasegentCommand("phasegent issue close 575", "session-1", undefined);
+    expect(out).toBe("phasegent issue close 575 --worktree-session session-1");
+    expect(out.includes("--session")).toBe(false);
+  });
+
+  test("skips the flag when --worktree-session is already present", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue close 575 --worktree-session s1", "s2", undefined),
+    ).toBe("phasegent issue close 575 --worktree-session s1");
+    expect(
+      rewritePhasegentCommand("phasegent issue close 575 --worktree-session=s1", "s2", undefined),
+    ).toBe("phasegent issue close 575 --worktree-session=s1");
+  });
+
+  test("injects per segment in a compound close command", () => {
+    const expected =
+      "phasegent --role orchestrator issue close 575 --worktree-session s1 && " +
+      "phasegent --role orchestrator issue sync";
+    expect(
+      rewritePhasegentCommand("phasegent issue close 575 && phasegent issue sync", "s1", {
+        agent: "orchestrator",
+      }),
+    ).toBe(expected);
+  });
+
+  test("keeps a quoted --worktree-session value and adds nothing", () => {
+    expect(
+      rewritePhasegentCommand('phasegent issue close 575 --worktree-session "s1 s2"', "s9", {
+        agent: "orchestrator",
+      }),
+    ).toBe('phasegent --role orchestrator issue close 575 --worktree-session "s1 s2"');
+  });
+
+  test("adds the close flag only when a session id is resolved", () => {
+    const command = "phasegent issue close 575";
+    expect(rewritePhasegentCommand(command, undefined, undefined)).toBe(command);
+    expect(rewritePhasegentCommand(command, "", undefined)).toBe(command);
+  });
+
+  test("keeps --session on create/bind segments only", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue bind 575", "s1", undefined),
+    ).toBe("phasegent issue bind 575 --session s1");
+    expect(rewritePhasegentCommand("phasegent issue close 575", "s1", undefined)).toBe(
+      "phasegent issue close 575 --worktree-session s1",
+    );
   });
 });
 
@@ -1162,6 +1229,181 @@ describe("pickActiveWorktreePath (issue #18 Task 2 lazy discovery)", () => {
     expect(
       pickActiveWorktreePath([{ status: "active", worktree_path: "" }]),
     ).toBeNull();
+  });
+});
+
+describe("closed issue refusal (issue #575 P2)", () => {
+  // The lazy path must not rebuild what `issue close` converged: a lease row
+  // that keeps the close/sync release reason marks the issue as closed. The
+  // rows come from the lease history (`worktree list --no-sync`), because
+  // `worktree status` selects active rows only.
+  const closedRow = { status: "released", release_reason: "issue closed" };
+
+  function orchContext(moves) {
+    return {
+      location: { directory: "/repo" },
+      session: { move: async (input) => moves.push(input) },
+    };
+  }
+
+  function capturingDeps(overrides) {
+    return {
+      readSessionInfo: async () => null,
+      discover: async () => null,
+      readBinding: async () => 575,
+      readLeaseHistory: async () => [closedRow],
+      acquire: async () => {
+        throw new Error("a closed issue must never acquire a lease");
+      },
+      ...overrides,
+    };
+  }
+
+  test("issueClosedLocally matches the close and sync release reasons", () => {
+    expect(issueClosedLocally([closedRow])).toBe(true);
+    expect(
+      issueClosedLocally([{ status: "retained", release_reason: "issue closed: session-a" }]),
+    ).toBe(true);
+    expect(
+      issueClosedLocally([
+        { status: "released", release_reason: "issue closed on the remote (issue sync)" },
+      ]),
+    ).toBe(true);
+    expect(issueClosedLocally([{ release_reason: "  issue closed: spaced  " }])).toBe(true);
+  });
+
+  test("issueClosedLocally ignores live, manual and malformed rows", () => {
+    expect(issueClosedLocally([])).toBe(false);
+    expect(issueClosedLocally(null)).toBe(false);
+    expect(issueClosedLocally([{ status: "active", release_reason: null }])).toBe(false);
+    expect(issueClosedLocally([{ status: "retained", release_reason: null }])).toBe(false);
+    expect(
+      issueClosedLocally([{ status: "retained", release_reason: "pruned by hand" }]),
+    ).toBe(false);
+    expect(issueClosedLocally([null, "row", 7, {}])).toBe(false);
+  });
+
+  test("refuses to acquire a worktree for a closed issue and warns", async () => {
+    const moves = [];
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    let acquired = 0;
+    try {
+      const deps = capturingDeps({
+        acquire: async () => {
+          acquired += 1;
+          return { path: WORKTREE };
+        },
+      });
+      expect(
+        await ensureSessionWorktree(orchContext(moves), "orch-1", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+    } finally {
+      console.warn = original;
+    }
+    expect(acquired).toBe(0);
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("orch-1")).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("issue 575 is closed");
+    expect(warnings[0]).toContain("refusing to acquire a worktree");
+  });
+
+  test("probes the leases once and keeps the session in place on the next call", async () => {
+    const moves = [];
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    let reads = 0;
+    try {
+      const deps = capturingDeps({
+        readLeaseHistory: async () => {
+          reads += 1;
+          return [{ status: "released", release_reason: "issue closed: session-a" }];
+        },
+      });
+      const context = orchContext(moves);
+      expect(
+        await ensureSessionWorktree(context, "orch-2", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+      expect(
+        await ensureSessionWorktree(context, "orch-2", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+    } finally {
+      console.warn = original;
+    }
+    expect(reads).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(moves).toEqual([]);
+  });
+
+  test("still acquires when no lease row carries the closed reason", async () => {
+    const moves = [];
+    const deps = capturingDeps({
+      readLeaseHistory: async () => [
+        { status: "retained", release_reason: null },
+        { status: "active", worktree_path: "/wt/live" },
+      ],
+      acquire: async (issueId, sessionId, cwd) => {
+        expect([issueId, sessionId, cwd]).toEqual([575, "orch-3", "/repo"]);
+        return { path: WORKTREE };
+      },
+    });
+    expect(
+      await ensureSessionWorktree(orchContext(moves), "orch-3", { agent: "orchestrator" }, deps),
+    ).toBe(WORKTREE);
+    expect(moves).toEqual([{ sessionID: "orch-3", directory: WORKTREE }]);
+  });
+
+  test("PHASEGENT_WORKTREE_NO_DISCOVER keeps the registry-only path", async () => {
+    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    try {
+      let reads = 0;
+      const deps = capturingDeps({
+        readLeaseHistory: async () => {
+          reads += 1;
+          return [closedRow];
+        },
+      });
+      expect(
+        await ensureSessionWorktree(orchContext([]), "orch-4", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+      expect(reads).toBe(0);
+    } finally {
+      restoreNoDiscover(saved);
+    }
+  });
+
+  test("the hook leaves a closed issue's session in place", async () => {
+    const moves = [];
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    let acquired = 0;
+    try {
+      const deps = capturingDeps({
+        acquire: async () => {
+          acquired += 1;
+          return { path: WORKTREE };
+        },
+      });
+      const hook = createRedirectHook(orchContext(moves), deps);
+      const event = {
+        tool: "read",
+        sessionID: "orch-5",
+        agent: "orchestrator",
+        input: { path: "src/a.rs" },
+      };
+      await hook(event);
+      expect(event.input.path).toBe("src/a.rs");
+    } finally {
+      console.warn = original;
+    }
+    expect(acquired).toBe(0);
+    expect(moves).toEqual([]);
+    expect(warnings.some((line) => line.includes("issue 575 is closed"))).toBe(true);
   });
 });
 

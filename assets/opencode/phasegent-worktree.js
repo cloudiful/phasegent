@@ -45,7 +45,12 @@
 // `parentID` through `context.session.get` so it inherits the parent's directory
 // instead of guessing from the most recently remembered worktree. Degradation is
 // deliberate: no binding or a failed acquire keeps the original directory and warns
-// on the console (v2 has no structured warning channel). Absolute paths pass through
+// on the console (v2 has no structured warning channel). A lease row that
+// `issue close` / `issue sync` converged keeps its "issue closed…" release
+// reason, so the lazy path refuses to acquire a fresh worktree for an already
+// closed issue and stays in place (issue #575 P2; the marker is read from the
+// lease history, since `worktree status` hides terminal rows); explicit
+// `phasegent worktree acquire` remains the manual path. Absolute paths pass through
 // untouched, so an explicit escape and the external_directory check that guards it
 // are never rewritten. All worktree calls stay local: no network, no credentials, no
 // .env copies. Branches and directories are never deleted here; removal is
@@ -133,6 +138,24 @@ async function readIssueLeases(issueId, cwd) {
   try {
     const parsed = JSON.parse(result.value);
     return parsed && Array.isArray(parsed.leases) ? parsed.leases : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// `worktree status` selects active rows only, so a converged issue looks empty
+// there: its closed marker is read through `worktree list --no-sync`, whose
+// envelope keeps every row (active and terminal) of the resolved repo
+// identity. `--no-sync` keeps the probe local and offline: no provider
+// resolution, no reconciliation pass.
+async function readIssueLeaseHistory(issueId, cwd) {
+  const args = ["--role", "executor", "worktree", "list", "--no-sync"];
+  const result = await safeText(phasegentCommand(args, cwd));
+  if (!result.ok || !result.value) return null;
+  try {
+    const parsed = JSON.parse(result.value);
+    if (!parsed || !Array.isArray(parsed.leases)) return null;
+    return parsed.leases.filter((lease) => lease && Number(lease.issue) === Number(issueId));
   } catch (_) {
     return null;
   }
@@ -322,8 +345,25 @@ function phasegentInvocation(segment) {
 }
 
 const PHASEGENT_ISSUE_WRITE = /\bissue\s+(create|bind)\b/;
+// `issue close` names its closer through `--worktree-session`: the parser
+// rejects `--session` there with `unknown option '--session'` (exit 2,
+// src/command/issue.rs), so the segment gets the flag the CLI parses.
+const PHASEGENT_ISSUE_CLOSE = /\bissue\s+close\b/;
 const ROLE_FLAG = /(^|\s)--role(\s|=)/;
 const SESSION_FLAG = /(^|\s)--session(\s|=)/;
+const WORKTREE_SESSION_FLAG = /(^|\s)--worktree-session(\s|=)/;
+
+// The session-bearing flag of a segment: `issue create|bind` carry `--session`,
+// `issue close` carries `--worktree-session`; every other segment stays
+// untouched.
+function sessionFlagFor(tail) {
+  if (PHASEGENT_ISSUE_WRITE.test(tail)) return { name: "--session", present: SESSION_FLAG };
+  if (PHASEGENT_ISSUE_CLOSE.test(tail)) {
+    return { name: "--worktree-session", present: WORKTREE_SESSION_FLAG };
+  }
+  return null;
+}
+
 const SUBAGENT_REFUSAL =
   "echo \"phasegent: sub-agent sessions cannot run 'issue create|bind'; ask the orchestrator\" >&2; false";
 
@@ -358,8 +398,9 @@ function rewritePhasegentCommand(command, sessionId, event) {
     const tailFlags = [];
     const headFlags = [];
     if (role && !ROLE_FLAG.test(invocation.tail)) headFlags.push(`--role ${role}`);
-    if (sessionId && PHASEGENT_ISSUE_WRITE.test(invocation.tail) && !SESSION_FLAG.test(invocation.tail)) {
-      tailFlags.push(`--session ${sessionId}`);
+    const sessionFlag = sessionId ? sessionFlagFor(invocation.tail) : null;
+    if (sessionFlag && !sessionFlag.present.test(invocation.tail)) {
+      tailFlags.push(`${sessionFlag.name} ${sessionId}`);
     }
     if (tailFlags.length > 0) {
       result = `${result.slice(0, invocation.segmentEnd)} ${tailFlags.join(" ")}${result.slice(invocation.segmentEnd)}`;
@@ -369,6 +410,26 @@ function rewritePhasegentCommand(command, sessionId, event) {
     }
   }
   return result;
+}
+
+// `issue close` and `issue sync` converge an issue's lease rows instead of
+// deleting them: the rows keep their status (`retained` / `released`) and carry
+// a release reason of "issue closed" ("issue closed: <session>") or "issue
+// closed on the remote (issue sync)" (src/lifecycle.rs, src/cli/sync.rs). That
+// reason is the adapter's local, offline marker for a closed issue, so the lazy
+// path can refuse a fresh worktree without a provider call. The rows come from
+// the lease history (`worktree list --no-sync`), which keeps terminal rows.
+const ISSUE_CLOSED_REASON = /^issue closed/i;
+
+function issueClosedLocally(leases) {
+  if (!Array.isArray(leases)) return false;
+  return leases.some(
+    (lease) =>
+      Boolean(lease) &&
+      typeof lease === "object" &&
+      typeof lease.release_reason === "string" &&
+      ISSUE_CLOSED_REASON.test(lease.release_reason.trim()),
+  );
 }
 
 function pickActiveWorktreePath(leases) {
@@ -430,9 +491,21 @@ let activeWorktree = null;
 const moveAttempts = new Set();
 const movedSessions = new Set();
 const sessionInfo = new Map();
+const closedIssues = new Set();
 
 function sessionPlaced(sessionId) {
   return sessionId !== undefined && sessionId !== null && movedSessions.has(String(sessionId));
+}
+
+// A refused acquisition is remembered per issue: the session stays in the
+// main checkout, and the next tool call must not repeat the lease probe or
+// the warning.
+function issueKnownClosed(issueId) {
+  return closedIssues.has(String(issueId));
+}
+
+function rememberClosedIssue(issueId) {
+  closedIssues.add(String(issueId));
 }
 
 function rememberWorktree(sessionId, directory) {
@@ -456,6 +529,7 @@ function resetWorktrees() {
   moveAttempts.clear();
   movedSessions.clear();
   sessionInfo.clear();
+  closedIssues.clear();
   activeWorktree = null;
 }
 
@@ -554,8 +628,11 @@ async function reuseRememberedWorktree(context, sessionId) {
 
 // A Task-spawned child inherits its parent's directory and never acquires a
 // lease of its own; a session without a reported parent keeps the registry
-// fallback and the acquire path. `deps` is an internal seam so tests can
-// exercise that order without the phasegent CLI.
+// fallback and the acquire path. Before that acquire, the issue's lease history
+// is read: a closed issue (its rows carry the "issue closed…" release reason)
+// is refused so the lazy path cannot rebuild a worktree that `issue close`
+// just converged. `deps` is an internal seam so tests can exercise that order
+// without the phasegent CLI.
 async function ensureSessionWorktree(context, sessionId, event, deps) {
   if (!sessionId) return null;
   const registered = sessionWorktrees.get(String(sessionId));
@@ -570,6 +647,7 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const acquire = (deps && deps.acquire) || acquireWorktree;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
+  const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   const cwd = locationDirectory(context);
   try {
     const info = await readInfo(context, sessionId);
@@ -595,6 +673,12 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
     if (isSubagentSession(event)) return null; // sub-agents never acquire
     const issueId = await readBinding(cwd);
     if (!issueId) return null;
+    if (issueKnownClosed(issueId)) return null;
+    if (issueClosedLocally(await readLeaseHistory(issueId, cwd))) {
+      rememberClosedIssue(issueId);
+      warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
+      return null;
+    }
     const acquired = await acquire(issueId, sessionId, cwd);
     if (!acquired || typeof acquired.path !== "string") {
       warn("phasegent: worktree acquire failed; reusing original directory");
@@ -1785,6 +1869,7 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   resetWorktrees,
   createRedirectHook,
   pickActiveWorktreePath,
+  issueClosedLocally,
   discoverWorktreeForSession,
   ensureSessionWorktree,
   moveSessionToWorktree,
@@ -1793,6 +1878,7 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   readBranchBinding,
   acquireWorktree,
   readIssueLeases,
+  readIssueLeaseHistory,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   gitWorktreeAdd,
