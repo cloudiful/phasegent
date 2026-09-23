@@ -18,14 +18,14 @@
 //
 // `PHASEGENT_PROPERTY_MODULE` points the same suite at a historical or
 // mutated adapter copy (used to watch the suite fail on the pre-#544 scanner);
-// it defaults to the shipped module.
+// it defaults to the source entry.
 
 import { describe, expect, test } from "bun:test";
 import { pathToFileURL } from "node:url";
 
 const MODULE = process.env.PHASEGENT_PROPERTY_MODULE
   ? pathToFileURL(process.env.PHASEGENT_PROPERTY_MODULE).href
-  : "./phasegent-worktree.js";
+  : "./src/index.js";
 const { rewritePhasegentCommand } = (await import(MODULE)).default.redirect;
 
 const SESSION = "ses_544p3";

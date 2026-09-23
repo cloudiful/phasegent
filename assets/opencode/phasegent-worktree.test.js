@@ -1,13 +1,19 @@
 // Focused tests for the phasegent worktree plugin (issue #532, v2 contract).
 //
 // The helpers are pure or dependency-injected so they run under `bun test`
-// without OpenCode and without the phasegent CLI: the plugin module is imported
+// without OpenCode and without the phasegent CLI: the source entry is imported
 // directly and only its default export plus the attached `redirect` helpers are
-// touched. The install/status/uninstall marker behaviour is covered by the Rust
-// asset assertions in `src/plugin_tests.rs`.
+// touched. The generated `phasegent-worktree.js` dist is covered by the
+// freshness assertions at the bottom of this file; the install/status/uninstall
+// marker behaviour is covered by the Rust asset assertions in
+// `src/plugin_tests.rs`.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import PhasegentWorktreePlugin from "./phasegent-worktree.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildPlugin } from "./src/build.js";
+import PhasegentWorktreePlugin from "./src/index.js";
 
 const {
   isAbsolutePath,
@@ -1545,27 +1551,18 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(definition.skill).toBeUndefined();
   });
 
-  test("embedded content matches skills/phasegent/SKILL.md", async () => {
-    const path = new URL("../../skills/phasegent/SKILL.md", import.meta.url);
-    const disk = await Bun.file(path).text();
-    expect(skillDefinition().content).toBe(disk);
-  });
-
-  test("each role definition mirrors its own skill file byte-for-byte", async () => {
-    const files = {
-      "phasegent-orchestrator": "../../skills/phasegent/SKILL.orchestrator.md",
-      "phasegent-executor": "../../skills/phasegent/SKILL.executor.md",
-      "phasegent-reviewer": "../../skills/phasegent/SKILL.reviewer.md",
-    };
+  test("each role definition is the flat Skill.Info for its own slim skill", () => {
     const definitions = roleSkillDefinitions();
-    expect(definitions.map((definition) => definition.id)).toEqual(Object.keys(files));
+    expect(definitions.map((definition) => definition.id)).toEqual([
+      "phasegent-orchestrator",
+      "phasegent-executor",
+      "phasegent-reviewer",
+    ]);
     for (const definition of definitions) {
-      const path = new URL(files[definition.id], import.meta.url);
-      const disk = await Bun.file(path).text();
-      expect(definition.content).toBe(disk);
       // The flat Skill.Info contract, plus the synthetic builtin path.
       expect(definition.name).toBe(definition.id);
       expect(definition.path).toBe(`/builtin/${definition.id}.md`);
+      expect(definition.content.startsWith("---\n")).toBe(true);
       expect(definition.description).toBe(
         definition.content.match(/^description:[ \t]*(.+)$/m)[1].trim(),
       );
@@ -1966,5 +1963,53 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
         agent: "orchestrator",
       }),
     ).toBe("phasegent --role orchestrator issue create --title t --session ses_x |& tail -c 9");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Generated dist freshness (issue #576 P1).
+//
+// `phasegent-worktree.js` is a build product: `bun run build:plugin` links the
+// source tree into the single deployable file and inlines the prompt bodies
+// from `skills/phasegent/*.md` at build time. These assertions keep the
+// checked-in dist reproducible — a stale or hand-edited file fails here instead
+// of shipping — and the runtime never reads a markdown file.
+// ---------------------------------------------------------------------------
+
+describe("generated dist freshness (issue #576 P1)", () => {
+  const DIST = new URL("./phasegent-worktree.js", import.meta.url);
+
+  async function buildToTemp() {
+    const dir = await mkdtemp(join(tmpdir(), "phasegent-dist-"));
+    try {
+      const outfile = join(dir, "phasegent-worktree.js");
+      buildPlugin(outfile);
+      return await readFile(outfile);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("checked-in dist is byte-identical to a fresh build", async () => {
+    const fresh = await buildToTemp();
+    const checkedIn = await readFile(DIST);
+    if (!checkedIn.equals(fresh)) {
+      throw new Error("checked-in dist is stale or hand-edited; run `bun run build:plugin`");
+    }
+  });
+
+  test("two fresh builds are byte-identical (reproducible)", async () => {
+    const first = await buildToTemp();
+    const second = await buildToTemp();
+    if (!first.equals(second)) {
+      throw new Error("two builds of the same source differ; the pipeline is not reproducible");
+    }
+  });
+
+  test("dist opens with the managed marker and the @generated header", async () => {
+    const lines = (await readFile(DIST, "utf8")).split("\n");
+    // `phasegent plugin install` recognises its managed files by this marker.
+    expect(lines[0]).toBe("// phasegent:managed");
+    expect(lines[1]).toContain("@generated");
   });
 });

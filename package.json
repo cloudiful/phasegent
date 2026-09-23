@@ -13,6 +13,7 @@
     "test": "bun test frontend/tests",
     "tauri": "tauri",
     "validate": "bun run build-only && bun frontend/scripts/validate-dist.mjs",
+    "build:plugin": "bun assets/opencode/src/build.js",
     "dist:hash": "bun scripts/dist-hash.mjs"
   },
   "dependencies": {
