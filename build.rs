@@ -22,25 +22,8 @@ const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 #[cfg(feature = "gui")]
 const FNV_PRIME: u64 = 0x00000100000001b3;
 
-/// Create the scratch root `.cargo/config.toml` points `TMPDIR`/`TMP`/`TEMP`
-/// at (`target/tmp`), before any child process inherits that value.
-///
-/// Cargo `[env]` applies repo-wide, so build scripts and their children see it
-/// too; `ensure_frontend_ready` spawns `bun run validate`, which would
-/// otherwise be handed a temp root the test helper has not created yet.
-/// Resolved from `CARGO_MANIFEST_DIR` exactly like the config's
-/// `relative = true` value. Best effort: the test helper still guarantees the
-/// root at run time, so a failure here must not fail the build.
-fn ensure_scratch_root() {
-    let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
-        return;
-    };
-    let _ = std::fs::create_dir_all(std::path::Path::new(&manifest_dir).join("target/tmp"));
-}
-
 #[cfg(feature = "gui")]
 fn main() {
-    ensure_scratch_root();
     let out_dir = std::env::var_os("OUT_DIR")
         .map(std::path::PathBuf::from)
         .expect("OUT_DIR must be set by cargo");
@@ -52,7 +35,6 @@ fn main() {
 
 #[cfg(not(feature = "gui"))]
 fn main() {
-    ensure_scratch_root();
     println!("cargo:rerun-if-changed=tauri.conf.json");
     println!("cargo:rerun-if-changed=capabilities/default.json");
     println!("cargo:rerun-if-changed=frontend/index.html");

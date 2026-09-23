@@ -2,6 +2,7 @@
 # copies a prebuilt CLI binary staged by CI at ci-image-input/phasegent,
 # so only that path (plus Dockerfile itself) is needed at build time.
 target/
+.scratch/
 .git/
 .github/
 dist/

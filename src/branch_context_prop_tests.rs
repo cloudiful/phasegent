@@ -8,7 +8,7 @@
 //! precedence in [`status`].
 //!
 //! Every property runs with a fixed RNG seed, and failing cases persist
-//! under `target/tmp/` so a shrunk counterexample is reproducible without
+//! under `.scratch/` so a shrunk counterexample is reproducible without
 //! `PROPTEST_RNG_SEED` and can never land at the repository root.
 
 use crate::branch_context::{
@@ -21,12 +21,12 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, FileFailurePersistence, RngAlgorithm, RngSeed};
 
 /// Fixed-seed config: one seed per property group, failure cases written
-/// under the gitignored `target/` tree.
+/// under the gitignored `.scratch/` tree.
 fn prop_config(seed: u64) -> Config {
     Config {
         cases: 128,
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
-            "target/tmp/proptest-regressions/branch_context.txt",
+            ".scratch/proptest-regressions/branch_context.txt",
         ))),
         rng_algorithm: RngAlgorithm::ChaCha,
         rng_seed: RngSeed::Fixed(seed),

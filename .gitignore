@@ -2,6 +2,12 @@
 Cargo.lock
 *.log
 
+# Scratch root forced into TMPDIR/TMP/TEMP by .cargo/config.toml. The tracked
+# .gitkeep keeps the directory present in every clone and worktree, so the
+# first compiler or cargo wrapper invocation never sees a missing temp root.
+/.scratch/*
+!/.scratch/.gitkeep
+
 # Local phasegent credentials and configuration.
 .phasegent/
 *.token
