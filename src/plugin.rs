@@ -9,6 +9,13 @@
 //! case the foreign file is moved to
 //! `phasegent-worktree.js.phasegent-orig`.
 //!
+//! The installed bytes are the checked-in generated dist
+//! (`assets/opencode/phasegent-worktree.js`; `// phasegent:managed` on
+//! line 1, the `@generated` header on line 2). Its sources of truth are
+//! `assets/opencode/src/**` plus the `skills/phasegent/*.md` prompts,
+//! and `bun run build:plugin` regenerates it; edit the sources and
+//! rebuild, never the dist or an installed copy.
+//!
 //! The installed adapter is the OpenCode v2 plugin shape
 //! `export default { id, setup }` (opencode v2.0.11
 //! `packages/core/src/plugin/module.ts`), replacing the v1 workspace
@@ -24,8 +31,8 @@
 //! `target` callback.
 //!
 //! `setup` also registers the issue #533 surface: the embedded
-//! `phasegent` skill (`context.skill.transform`, same bytes
-//! as `skills/phasegent/SKILL.md`). It registers no slash
+//! `phasegent` skill (`context.skill.transform`; the body is inlined at
+//! build time from `skills/phasegent/SKILL.md`). It registers no slash
 //! command: the live v2.0.11 command draft only accepts an
 //! Effect-returning `execute` callback, which a promise plugin cannot
 //! build, and registering through the typed SDK's `update(name,
@@ -68,10 +75,13 @@ pub const PLUGIN_FILENAME: &str = "phasegent-worktree.js";
 
 pub const FOREIGN_BACKUP_SUFFIX: &str = ".phasegent-orig";
 
-/// Embedded adapter source. The file lives in `assets/opencode/` so it
-/// is also available on the repo source tree (tests assert against the
-/// file directly), and `include_str!` makes it a real compile input
-/// so an adapter change busts the Cargo fingerprint.
+/// Embedded adapter dist, compiled in via `include_str!` so a rebuilt
+/// dist busts the Cargo fingerprint. The file is the checked-in
+/// generated artifact at `assets/opencode/phasegent-worktree.js`: its
+/// sources are `assets/opencode/src/**` and `skills/phasegent/*.md`,
+/// and `bun run build:plugin` regenerates it. The dist also lives on
+/// the repo source tree, so the tests can assert against the exact
+/// bytes that ship with the binary.
 const ADAPTER_JS: &str = include_str!("../assets/opencode/phasegent-worktree.js");
 
 /// Outcome of a single-scope install. The CLI executor merges the
@@ -182,7 +192,7 @@ pub fn resolve_project_dir(cwd: &Path) -> PathBuf {
 
 /// Install into the given directory. Idempotent: a re-run against an
 /// already-managed file either reports `skipped` (when the bytes
-/// already match) or `updated` (when the embedded template changed).
+/// already match) or `updated` (when the embedded dist changed).
 /// Foreign files (no marker) are refused unless `force` is true; in
 /// the forced case the foreign file is renamed to
 /// `<name>.phasegent-orig` before the managed file is written.

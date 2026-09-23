@@ -68,6 +68,11 @@ skill 见 `skills/phasegent`：它选择 tracking 模式（`INLINE` /
 `TRACKED_ISSUE` / `LOCAL_ISSUE`），通过 `--provider` 从配置解析 provider
 （最终回退 Forgejo），并记录当前的 `issue update` 与 `worktree prune` 用法。
 
+`phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
+dist。真源为 `assets/opencode/src/` 和 `skills/phasegent/` 的提示词文件；用
+`bun run build:plugin` 重建（`bun` 仅开发时需要），绝不手改仓库中的 dist
+`assets/opencode/phasegent-worktree.js` 或已安装副本。
+
 ## 许可证
 
 Apache-2.0，详见 [LICENSE](LICENSE)。

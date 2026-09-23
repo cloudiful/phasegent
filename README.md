@@ -72,6 +72,12 @@ the tracking mode (`INLINE` / `TRACKED_ISSUE` / `LOCAL_ISSUE`), resolves the
 provider from configuration through `--provider` with a Forgejo fallback, and
 covers the current `issue update` and `worktree prune` surfaces.
 
+The OpenCode worktree adapter deployed by `phasegent plugin install` is a
+generated single-file dist. Its sources are `assets/opencode/src/` plus the
+`skills/phasegent/` prompts; rebuild with `bun run build:plugin` (`bun` is a
+development requirement only), and never hand-edit the checked-in dist
+`assets/opencode/phasegent-worktree.js` or an installed copy.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
