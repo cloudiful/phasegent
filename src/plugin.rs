@@ -1,9 +1,12 @@
 //! Managed OpenCode plugin installation (issue #239 Phase 3).
 //!
 //! `phasegent plugin install` writes the worktree adapter into the
-//! OpenCode plugin directory: `~/.config/opencode/plugins/` for the
-//! global scope, or `.opencode/plugins/` (relative to the current
-//! working directory) for the project scope. Files are tagged with
+//! OpenCode plugin directory: `$XDG_CONFIG_HOME/opencode/plugins/`,
+//! `<HOME>/.config/opencode/plugins/`, or, on Windows without `HOME`,
+//! `<USERPROFILE>/.config/opencode/plugins/` for the global scope, or
+//! `.opencode/plugins/` (relative to the current working directory) for
+//! the project scope. The installer targets OpenCode only: it never
+//! probes other agent hosts. Files are tagged with
 //! the `// phasegent:managed` header marker and never clobber
 //! foreign files unless the operator passes `--force`, in which
 //! case the foreign file is moved to
@@ -59,17 +62,17 @@
 //! Phase 3 surface reads the same as Phase 1 / 2 for an operator
 //! already familiar with `phasegent hooks install`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod paths;
+
+pub use paths::{resolve_global_dir, resolve_project_dir};
 
 /// Marker comment embedded at the top of every managed plugin file so
 /// later installs can recognise and update their own scripts without
 /// touching foreign ones. Mirrors `hooks::MANAGED_MARKER` so the
 /// managed-file detection logic stays uniform.
 pub const MANAGED_MARKER: &str = "// phasegent:managed";
-
-/// OpenCode plugins directory under `$XDG_CONFIG_HOME` (preferred) or
-/// `$HOME/.config/`. Matches the OpenCode convention.
-pub const OPENCODE_PLUGIN_DIR: &str = "opencode/plugins";
 
 pub const PLUGIN_FILENAME: &str = "phasegent-worktree.js";
 
@@ -155,40 +158,6 @@ impl std::fmt::Display for PluginError {
 }
 
 impl std::error::Error for PluginError {}
-
-/// Resolve the global OpenCode plugins directory. Honours
-/// `$XDG_CONFIG_HOME` first (per the XDG Base Directory spec) and
-/// falls back to `$HOME/.config`. Returns a structured error when
-/// neither variable points at a usable location.
-pub fn resolve_global_dir() -> Result<PathBuf, PluginError> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join(OPENCODE_PLUGIN_DIR));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        PluginError::new(
-            "filesystem",
-            "HOME is not defined; cannot resolve global OpenCode config directory",
-        )
-    })?;
-    if home.is_empty() {
-        return Err(PluginError::new(
-            "filesystem",
-            "HOME is empty; cannot resolve global OpenCode config directory",
-        ));
-    }
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join(OPENCODE_PLUGIN_DIR))
-}
-
-/// Resolve the project-scope plugins directory inside the given
-/// checkout. Always returned as an absolute path so callers can
-/// canonicalise later.
-pub fn resolve_project_dir(cwd: &Path) -> PathBuf {
-    cwd.join(".opencode").join("plugins")
-}
 
 /// Install into the given directory. Idempotent: a re-run against an
 /// already-managed file either reports `skipped` (when the bytes
@@ -302,13 +271,15 @@ pub fn install_at(dir: &Path, force: bool) -> Result<InstallOutcome, PluginError
 
 /// Compute the status of the global + project slots without touching
 /// the filesystem beyond the metadata reads. Used by `plugin status`.
-pub fn status_at(cwd: &Path) -> StatusReport {
-    let global_dir = resolve_global_dir().unwrap_or_else(|_| PathBuf::from(""));
+/// Propagates the global resolver error instead of falling back to a
+/// relative current-directory target.
+pub fn status_at(cwd: &Path) -> Result<StatusReport, PluginError> {
+    let global_dir = resolve_global_dir()?;
     let project_dir = resolve_project_dir(cwd);
-    StatusReport {
+    Ok(StatusReport {
         global: inspect_target(&global_dir),
         project: inspect_target(&project_dir),
-    }
+    })
 }
 
 /// Remove the managed file at `dir` only when it exists AND contains

@@ -36,9 +36,10 @@ use crate::cli::plugin::{InstallEnvelope, StatusEnvelope, UninstallEnvelope, exe
 use crate::command::{self, Command, PluginCommand};
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::plugin::{
-    FOREIGN_BACKUP_SUFFIX, MANAGED_MARKER, PLUGIN_FILENAME, adapter_source, install_at, status_at,
-    uninstall_at,
+    FOREIGN_BACKUP_SUFFIX, MANAGED_MARKER, PLUGIN_FILENAME, adapter_source, install_at,
+    resolve_global_dir, status_at, uninstall_at,
 };
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 struct TempDir(PathBuf);
@@ -81,6 +82,48 @@ fn override_home(label: &str) -> (TempDir, EnvGuard, EnvGuard) {
     let home_guard = EnvGuard::set("HOME", home.to_string_lossy().as_ref());
     let xdg_guard = EnvGuard::set("XDG_CONFIG_HOME", xdg.to_string_lossy().as_ref());
     (temp, home_guard, xdg_guard)
+}
+
+/// Set, empty, or unset the given environment variables for the duration of
+/// the guard, restoring the previous values on Drop. The `EnvGuard` helper in
+/// `test_support` only sets a value, while the Windows-profile resolution
+/// tests need to model an unset `HOME`/`XDG_CONFIG_HOME`, so this local guard
+/// covers both. Callers hold `lock_workflow_tests()` because the mutation is
+/// process-wide.
+struct ScopedEnv {
+    saved: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl ScopedEnv {
+    fn apply(changes: &[(&'static str, Option<&str>)]) -> Self {
+        let mut saved = Vec::with_capacity(changes.len());
+        for &(name, value) in changes {
+            saved.push((name, std::env::var_os(name)));
+            // SAFETY::`set_var`/`remove_var` are unsafe in this toolchain;
+            // tests serialise on `lock_workflow_tests()`.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+        for (name, previous) in self.saved.drain(..).rev() {
+            // SAFETY::symmetric to `apply` above; still under the lock.
+            unsafe {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 }
 
 fn read_bytes(path: &Path) -> Vec<u8> {
@@ -349,7 +392,7 @@ fn status_at_reports_both_slots_when_nothing_is_installed() {
     let _lock = lock_workflow_tests();
     let (_temp, _home, _xdg) = override_home("status-empty");
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let report = status_at(&cwd);
+    let report = status_at(&cwd).expect("status resolves");
     assert!(!report.global.exists);
     assert!(!report.global.managed);
     assert!(!report.project.exists);
@@ -368,7 +411,7 @@ fn status_at_reflects_installed_marker_and_size() {
     // Pass the project plugins dir directly so the two paths agree.
     let project_plugins = dir.child(".opencode").join("plugins");
     install_at(&project_plugins, false).expect("install");
-    let report = status_at(dir.path());
+    let report = status_at(dir.path()).expect("status resolves");
     let project_path = project_plugins
         .join(PLUGIN_FILENAME)
         .to_string_lossy()
@@ -382,6 +425,190 @@ fn status_at_reflects_installed_marker_and_size() {
     assert!(matching.managed);
     assert!(matching.size > 0);
     assert!(matching.mtime.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Global path resolution coverage (issue #591).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn global_dir_prefers_xdg_over_home_and_profile() {
+    let _lock = lock_workflow_tests();
+    let temp = TempDir::new("global-xdg");
+    let xdg = temp.child("xdg");
+    let home = temp.child("home");
+    let profile = temp.child("profile");
+    let xdg_str = xdg.to_string_lossy().to_string();
+    let home_str = home.to_string_lossy().to_string();
+    let profile_str = profile.to_string_lossy().to_string();
+    let _env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", Some(&xdg_str)),
+        ("HOME", Some(&home_str)),
+        ("USERPROFILE", Some(&profile_str)),
+    ]);
+    assert_eq!(
+        resolve_global_dir().expect("xdg root resolves"),
+        xdg.join("opencode").join("plugins")
+    );
+}
+
+#[test]
+fn global_dir_falls_back_to_home_config() {
+    let _lock = lock_workflow_tests();
+    let temp = TempDir::new("global-home");
+    let home = temp.child("home");
+    let profile = temp.child("profile");
+    let home_str = home.to_string_lossy().to_string();
+    let profile_str = profile.to_string_lossy().to_string();
+    let _env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", None),
+        ("HOME", Some(&home_str)),
+        ("USERPROFILE", Some(&profile_str)),
+    ]);
+    assert_eq!(
+        resolve_global_dir().expect("home root resolves"),
+        home.join(".config").join("opencode").join("plugins")
+    );
+}
+
+#[test]
+fn global_dir_falls_back_to_userprofile_without_home() {
+    let _lock = lock_workflow_tests();
+    let temp = TempDir::new("global-profile");
+    let profile = temp.child("profile");
+    let profile_str = profile.to_string_lossy().to_string();
+    let _env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", None),
+        ("HOME", None),
+        ("USERPROFILE", Some(&profile_str)),
+    ]);
+    assert_eq!(
+        resolve_global_dir().expect("profile root resolves"),
+        profile.join(".config").join("opencode").join("plugins"),
+        "Windows without HOME must resolve under %USERPROFILE%/.config"
+    );
+}
+
+#[test]
+fn global_dir_skips_empty_roots() {
+    let _lock = lock_workflow_tests();
+    let temp = TempDir::new("global-empty");
+    let home = temp.child("home");
+    let profile = temp.child("profile");
+    let home_str = home.to_string_lossy().to_string();
+    let profile_str = profile.to_string_lossy().to_string();
+
+    let env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", Some("")),
+        ("HOME", Some(&home_str)),
+        ("USERPROFILE", Some(&profile_str)),
+    ]);
+    assert_eq!(
+        resolve_global_dir().expect("empty xdg is skipped"),
+        home.join(".config").join("opencode").join("plugins")
+    );
+    drop(env);
+
+    let _env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", Some("")),
+        ("HOME", Some("")),
+        ("USERPROFILE", Some(&profile_str)),
+    ]);
+    assert_eq!(
+        resolve_global_dir().expect("empty home is skipped"),
+        profile.join(".config").join("opencode").join("plugins")
+    );
+}
+
+#[test]
+fn global_dir_errors_when_no_root_is_usable() {
+    let _lock = lock_workflow_tests();
+    let _env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", None),
+        ("HOME", None),
+        ("USERPROFILE", None),
+    ]);
+    let error = resolve_global_dir().expect_err("no usable root must error");
+    assert_eq!(error.kind, "filesystem");
+    for name in ["XDG_CONFIG_HOME", "HOME", "USERPROFILE"] {
+        assert!(
+            error.message.contains(name),
+            "error must name {name}; got: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn status_at_errors_instead_of_resolving_a_relative_target() {
+    let _lock = lock_workflow_tests();
+    let _env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", None),
+        ("HOME", None),
+        ("USERPROFILE", None),
+    ]);
+    let error = status_at(Path::new("/tmp")).expect_err("unresolved status must error");
+    assert_eq!(error.kind, "filesystem");
+    assert!(
+        error.message.contains("USERPROFILE"),
+        "error must stay clear about the missing roots; got: {}",
+        error.message
+    );
+}
+
+#[test]
+fn plugin_scopes_share_the_global_resolver_via_userprofile() {
+    let _lock = lock_workflow_tests();
+    let temp = TempDir::new("exec-profile");
+    let profile = temp.child("profile");
+    let project_cwd = temp.child("project");
+    std::fs::create_dir_all(&profile).expect("profile dir");
+    std::fs::create_dir_all(&project_cwd).expect("project cwd");
+    let profile_str = profile.to_string_lossy().to_string();
+    let env = ScopedEnv::apply(&[
+        ("XDG_CONFIG_HOME", None),
+        ("HOME", None),
+        ("USERPROFILE", Some(&profile_str)),
+    ]);
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(&project_cwd).expect("set cwd");
+
+    let global_target = profile
+        .join(".config")
+        .join("opencode")
+        .join("plugins")
+        .join(PLUGIN_FILENAME);
+
+    let install_rc = execute_plugin(PluginCommand::Install {
+        global: true,
+        project: false,
+        force: false,
+    });
+    assert_eq!(install_rc, 0, "global install rc=0");
+    assert!(
+        global_target.exists(),
+        "install must write {}",
+        global_target.display()
+    );
+
+    let report = status_at(&project_cwd).expect("status resolves through the same resolver");
+    assert_eq!(
+        report.global.path,
+        global_target.to_string_lossy(),
+        "status must inspect the USERPROFILE-derived path"
+    );
+    assert!(report.global.exists);
+    assert!(report.global.managed);
+
+    let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
+        global: true,
+        project: false,
+    });
+    assert_eq!(uninstall_rc, 0, "global uninstall rc=0");
+    assert!(!global_target.exists());
+
+    let _ = std::env::set_current_dir(&previous_cwd);
+    drop(env);
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +694,7 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
 
     let _xdg_for_type = xdg_guard;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let report = status_at(&cwd);
+    let report = status_at(&cwd).expect("status resolves");
     assert!(report.project.exists);
     assert!(report.project.managed);
     assert!(report.project.size > 0);

@@ -183,8 +183,10 @@ fn execute_install(global_flag: bool, project_flag: bool, force: bool) -> i32 {
 
 fn execute_status() -> i32 {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let envelope: StatusEnvelope = status_at(&cwd).into();
-    super::print_json(&envelope)
+    match status_at(&cwd) {
+        Ok(report) => super::print_json(&StatusEnvelope::from(report)),
+        Err(error) => super::structured_error(error.json(), 1),
+    }
 }
 
 fn execute_uninstall(global_flag: bool, project_flag: bool) -> i32 {
