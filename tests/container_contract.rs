@@ -147,9 +147,14 @@ fn dockerfile_has_deterministic_entrypoint_defaulting_to_loopback_http() {
         "/usr/local/bin/phasegent",
         "Dockerfile entrypoint",
     );
-    // Deterministic default: authenticated HTTP MCP on loopback.
+    // Deterministic default: authenticated HTTP MCP on loopback, run as the
+    // executor role supplied through the environment (no CLI flag).
+    assert_contains(
+        &dockerfile,
+        "ENV PHASEGENT_ROLE=executor",
+        "Dockerfile role",
+    );
     for token in [
-        "--role",
         "mcp",
         "serve",
         "--transport",
@@ -159,6 +164,7 @@ fn dockerfile_has_deterministic_entrypoint_defaulting_to_loopback_http() {
     ] {
         assert_contains(&dockerfile, token, "Dockerfile default CMD");
     }
+    assert_not_contains(&dockerfile, "--role", "Dockerfile default CMD");
     // No shell-form entrypoint that would wrap stdout.
     for line in dockerfile.lines() {
         let trimmed = line.trim();
@@ -309,8 +315,6 @@ fn container_image_build_and_smoke_when_docker_available() {
             "--entrypoint",
             "/usr/local/bin/phasegent",
             tag,
-            "--role",
-            "executor",
             "mcp",
             "serve",
             "--transport",

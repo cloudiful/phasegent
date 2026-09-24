@@ -7,7 +7,7 @@ fn config_provider_get_parses_without_role() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("config provider get without --role must parse");
+    let invocation = command::parse(&args).expect("config provider get without a role must parse");
     match invocation.command {
         Command::ConfigProviderGet => {}
         other => panic!("expected ConfigProviderGet, got {other:?}"),
@@ -16,11 +16,12 @@ fn config_provider_get_parses_without_role() {
 
 #[test]
 fn config_provider_get_parses_with_role() {
-    let args = ["--role", "executor", "config", "provider", "get"]
+    let args = ["config", "provider", "get"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("config provider get with --role must parse");
+    let invocation = command::parse_with_role_env(&args, Some("executor"))
+        .expect("config provider get with a role must parse");
     match invocation.command {
         Command::ConfigProviderGet => {}
         other => panic!("expected ConfigProviderGet, got {other:?}"),
@@ -92,7 +93,7 @@ fn config_provider_clear_parses_without_role() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let invocation =
-        command::parse(&args).expect("config provider clear without --role must parse");
+        command::parse(&args).expect("config provider clear without a role must parse");
     match invocation.command {
         Command::ConfigProviderClear => {}
         other => panic!("expected ConfigProviderClear, got {other:?}"),

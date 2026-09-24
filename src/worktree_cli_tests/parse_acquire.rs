@@ -3,14 +3,10 @@ use super::*;
 
 #[test]
 fn parse_acquire_minimal() {
-    let invocation = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "acquire",
-        "--issue",
-        "1",
-    ]))
+    let invocation = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire", "--issue", "1"]),
+        Some("orchestrator"),
+    )
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Acquire {
@@ -33,15 +29,10 @@ fn parse_acquire_minimal() {
 
 #[test]
 fn parse_acquire_isolate_flag_round_trips() {
-    let invocation = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "acquire",
-        "--issue",
-        "247",
-        "--isolate",
-    ]))
+    let invocation = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire", "--issue", "247", "--isolate"]),
+        Some("orchestrator"),
+    )
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Acquire { isolate, .. }) => {
@@ -53,25 +44,29 @@ fn parse_acquire_isolate_flag_round_trips() {
 
 #[test]
 fn parse_acquire_rejects_missing_issue() {
-    let err = crate::command::parse(&strings(["--role", "orchestrator", "worktree", "acquire"]))
-        .unwrap_err();
+    let err = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire"]),
+        Some("orchestrator"),
+    )
+    .unwrap_err();
     assert!(err.contains("--issue"), "expected --issue error, got {err}");
 }
 
 #[test]
 fn parse_acquire_with_session_and_base() {
-    let invocation = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "acquire",
-        "--issue",
-        "42",
-        "--session",
-        "alpha",
-        "--base",
-        "main",
-    ]))
+    let invocation = crate::command::parse_with_role_env(
+        &strings([
+            "worktree",
+            "acquire",
+            "--issue",
+            "42",
+            "--session",
+            "alpha",
+            "--base",
+            "main",
+        ]),
+        Some("orchestrator"),
+    )
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Acquire {
@@ -94,16 +89,10 @@ fn parse_acquire_with_session_and_base() {
 
 #[test]
 fn parse_acquire_rejects_non_json_format() {
-    let err = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "acquire",
-        "--issue",
-        "1",
-        "--format",
-        "yaml",
-    ]))
+    let err = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire", "--issue", "1", "--format", "yaml"]),
+        Some("orchestrator"),
+    )
     .unwrap_err();
     assert!(
         err.contains("--format"),
@@ -113,14 +102,10 @@ fn parse_acquire_rejects_non_json_format() {
 
 #[test]
 fn parse_acquire_rejects_non_numeric_issue() {
-    let err = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "acquire",
-        "--issue",
-        "abc",
-    ]))
+    let err = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire", "--issue", "abc"]),
+        Some("orchestrator"),
+    )
     .unwrap_err();
     assert!(err.contains("--issue"), "expected --issue error, got {err}");
 }

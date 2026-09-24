@@ -272,10 +272,10 @@ Boundaries:
   verdicts without writing).
 - Environment: `PHASEGENT_SESSION_ID` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
-  call); `PHASEGENT_ROLE` is the CLI-level role fallback (an explicit role flag
-  wins, a blank value means "no role", an invalid value is an error); and
-  `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter inert beyond the
-  in-memory registry.
+  call); `PHASEGENT_ROLE` is the CLI-level role source (a managed session
+  exports it for its child processes; a blank value means "no role", an invalid
+  value is an error); and `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter
+  inert beyond the in-memory registry.
 - `phasegent --help worktree` owns the exact flags for these commands.
 
 ## Branch binding lifecycle

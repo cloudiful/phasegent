@@ -28,31 +28,35 @@ cargo install --path . --features postgres
 
 ```sh
 # 安全提示输入
-phasegent --role orchestrator admin auth setup
+PHASEGENT_ROLE=orchestrator phasegent admin auth setup
 
 # 从受保护文件或其他安全来源读取
-phasegent --role executor admin auth setup --stdin < /secure/path/token
+PHASEGENT_ROLE=executor phasegent admin auth setup --stdin < /secure/path/token
 
 # 显式选择其他 provider 及其 API base
-phasegent --role orchestrator --provider redmine admin auth setup \
+PHASEGENT_ROLE=orchestrator phasegent --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
 
 # 准备 Redmine 的 project 和 role membership
-phasegent --role admin --provider redmine admin workflow bootstrap \
+PHASEGENT_ROLE=admin phasegent --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
+
+CLI 从 `PHASEGENT_ROLE` 环境变量解析 role：受管 OpenCode session 按次导出，
+其他宿主在 shell 中设置。PowerShell 下使用
+`$env:PHASEGENT_ROLE='orchestrator'; phasegent ...`，而不是 `NAME=value` 前缀。
 
 ## 常用命令
 
 ```sh
-phasegent --role orchestrator issue search --query "bug"
-phasegent --role orchestrator issue get 123
-phasegent --role orchestrator issue get 123 124 125
-phasegent --role orchestrator comment list 123
-phasegent --role orchestrator issue create \
+PHASEGENT_ROLE=orchestrator phasegent issue search --query "bug"
+PHASEGENT_ROLE=orchestrator phasegent issue get 123
+PHASEGENT_ROLE=orchestrator phasegent issue get 123 124 125
+PHASEGENT_ROLE=orchestrator phasegent comment list 123
+PHASEGENT_ROLE=orchestrator phasegent issue create \
   --title "Short title" --body "Issue details"
-phasegent --role orchestrator issue update 123 --body "Updated details"
-phasegent --role orchestrator issue close 123
+PHASEGENT_ROLE=orchestrator phasegent issue update 123 --body "Updated details"
+PHASEGENT_ROLE=orchestrator phasegent issue close 123
 phasegent doctor
 ```
 

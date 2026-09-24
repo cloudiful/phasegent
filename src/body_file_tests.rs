@@ -38,8 +38,6 @@ fn issue_create_body_file_parses_and_keeps_legacy_body_path() {
     let path = temp_body_path("create-parse");
     write_body(&path, "# Plan\n- goal");
     let args = [
-        "--role",
-        "orchestrator",
         "issue",
         "create",
         "--title=Plan",
@@ -49,7 +47,8 @@ fn issue_create_body_file_parses_and_keeps_legacy_body_path() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("--body-file must parse");
+    let invocation =
+        command::parse_with_role_env(&args, Some("orchestrator")).expect("--body-file must parse");
     match invocation.command {
         Command::Issue(IssueCommand::Create {
             body, body_file, ..
@@ -62,19 +61,14 @@ fn issue_create_body_file_parses_and_keeps_legacy_body_path() {
     let _ = fs::remove_file(&path);
 
     // Legacy `--body` keeps parsing exactly as before, with no file input.
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "create",
-        "--title=Plan",
-        "--body",
-        "text",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    let args = ["issue", "create", "--title=Plan", "--body", "text"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         Command::Issue(IssueCommand::Create {
             body, body_file, ..
         }) => {
@@ -90,8 +84,6 @@ fn body_flags_are_mutually_exclusive_and_keep_requires_body_file() {
     let path = temp_body_path("mutual");
     write_body(&path, "b");
     let mutually_exclusive = [
-        "--role",
-        "orchestrator",
         "issue",
         "create",
         "--title=Plan",
@@ -103,7 +95,7 @@ fn body_flags_are_mutually_exclusive_and_keep_requires_body_file() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let error = command::parse(&mutually_exclusive)
+    let error = command::parse_with_role_env(&mutually_exclusive, Some("orchestrator"))
         .expect_err("--body and --body-file must be mutually exclusive");
     assert!(
         error.contains("mutually exclusive"),
@@ -111,8 +103,6 @@ fn body_flags_are_mutually_exclusive_and_keep_requires_body_file() {
     );
 
     let keep_without_file = [
-        "--role",
-        "orchestrator",
         "issue",
         "create",
         "--title=Plan",
@@ -123,38 +113,30 @@ fn body_flags_are_mutually_exclusive_and_keep_requires_body_file() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let error =
-        command::parse(&keep_without_file).expect_err("--keep-body-file without --body-file");
+    let error = command::parse_with_role_env(&keep_without_file, Some("orchestrator"))
+        .expect_err("--keep-body-file without --body-file");
     assert!(
         error.contains("--keep-body-file requires --body-file"),
         "unexpected error: {error}"
     );
 
-    let update_missing_body = ["--role", "orchestrator", "issue", "update", "9"]
+    let update_missing_body = ["issue", "update", "9"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let error = command::parse(&update_missing_body)
+    let error = command::parse_with_role_env(&update_missing_body, Some("orchestrator"))
         .expect_err("issue update without body flags must error");
     assert!(
         error.contains("requires --body or --body-file"),
         "unexpected error: {error}"
     );
 
-    let comment_missing = [
-        "--role",
-        "executor",
-        "comment",
-        "create",
-        "9",
-        "--marker",
-        "m",
-        "--authorized",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let error = command::parse(&comment_missing).expect_err("comment without body flags");
+    let comment_missing = ["comment", "create", "9", "--marker", "m", "--authorized"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse_with_role_env(&comment_missing, Some("executor"))
+        .expect_err("comment without body flags");
     assert!(
         error.contains("requires --body or --body-file"),
         "unexpected error: {error}"
@@ -358,10 +340,8 @@ fn local_issue_create_via_body_file_deletes_after_success() {
 
     let body_path = dir.join("plan.md");
     write_body(&body_path, "# Audit note\n\n- marker content");
-    let exit = crate::cli::run(
+    let exit = crate::cli::run_with_role(
         [
-            "--role",
-            "orchestrator",
             "--provider",
             "local",
             "issue",
@@ -374,6 +354,7 @@ fn local_issue_create_via_body_file_deletes_after_success() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>(),
+        Some("orchestrator"),
     );
     assert_eq!(exit, 0, "local create via --body-file must succeed");
     assert!(
@@ -421,10 +402,8 @@ fn local_comment_create_via_body_file_deletes_after_success() {
 
     let body_path = dir.join("audit.md");
     write_body(&body_path, "<!-- ai-executor marker=x -->\n\nNote text.");
-    let exit = crate::cli::run(
+    let exit = crate::cli::run_with_role(
         [
-            "--role",
-            "executor",
             "--provider",
             "local",
             "comment",
@@ -439,6 +418,7 @@ fn local_comment_create_via_body_file_deletes_after_success() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>(),
+        Some("executor"),
     );
     assert_eq!(exit, 0, "local comment via --body-file must succeed");
     assert!(!body_path.exists(), "success must delete the body file");
@@ -446,10 +426,8 @@ fn local_comment_create_via_body_file_deletes_after_success() {
     // Failure path: a body file missing the marker must be kept.
     let bad_path = dir.join("bad.md");
     write_body(&bad_path, "no marker here");
-    let exit = crate::cli::run(
+    let exit = crate::cli::run_with_role(
         [
-            "--role",
-            "executor",
             "--provider",
             "local",
             "comment",
@@ -464,6 +442,7 @@ fn local_comment_create_via_body_file_deletes_after_success() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>(),
+        Some("executor"),
     );
     assert_ne!(exit, 0, "marker mismatch must fail");
     assert!(bad_path.is_file(), "a failed write must keep the body file");
@@ -501,10 +480,8 @@ fn local_issue_update_body_keeps_file_on_provider_failure() {
     write_body(&body_path, "updated body");
     // Issue 999999 does not exist, so the provider write fails and the
     // body file must be preserved.
-    let exit = crate::cli::run(
+    let exit = crate::cli::run_with_role(
         [
-            "--role",
-            "orchestrator",
             "--provider",
             "local",
             "issue",
@@ -516,6 +493,7 @@ fn local_issue_update_body_keeps_file_on_provider_failure() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>(),
+        Some("orchestrator"),
     );
     assert_ne!(exit, 0, "update on a missing issue must fail");
     assert!(

@@ -46,49 +46,35 @@ fn role_policy_remains_capability_based() {
 
 #[test]
 fn repo_create_requires_private_and_valid_owner_repository() {
-    let base = ["--role", "orchestrator", "repo", "create", "owner/new-repo"]
+    let base = ["repo", "create", "owner/new-repo"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     assert_eq!(
-        command::parse(&base).unwrap_err(),
+        command::parse_with_role_env(&base, Some("orchestrator")).unwrap_err(),
         "repo create requires --private"
     );
 
     for suffix in ["--public", "--unknown"] {
-        let args = [
-            "--role",
-            "orchestrator",
-            "repo",
-            "create",
-            "owner/new-repo",
-            "--private",
-            suffix,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-        assert!(command::parse(&args).is_err());
+        let args = ["repo", "create", "owner/new-repo", "--private", suffix]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(command::parse_with_role_env(&args, Some("orchestrator")).is_err());
     }
 
     for target in ["", "/repo", "owner/", "owner/repo/extra", "owner/repo name"] {
-        let args = [
-            "--role",
-            "orchestrator",
-            "repo",
-            "create",
-            target,
-            "--private",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-        assert!(command::parse(&args).is_err(), "accepted target {target:?}");
+        let args = ["repo", "create", target, "--private"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(
+            command::parse_with_role_env(&args, Some("orchestrator")).is_err(),
+            "accepted target {target:?}"
+        );
     }
 
     let args = [
-        "--role",
-        "orchestrator",
         "repo",
         "create",
         "owner/new-repo",
@@ -100,7 +86,10 @@ fn repo_create_requires_private_and_valid_owner_repository() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Repo(command::RepoCommand::Create {
             target,
             private,

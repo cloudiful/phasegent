@@ -1,17 +1,19 @@
 ---
 source: tests/snapshots_help_contracts.rs
-expression: "help(&scratch, &[\"--help\"])"
+expression: "help(&scratch, None, &[\"--help\"])"
 ---
 phasegent [VERSION]
 
 Provider-backed workflow CLI (all roles).
 
 Usage:
-  phasegent --role <ROLE> <COMMAND> [OPTIONS]
+  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]
   phasegent gui
 
+Role resolution:
+  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.
+
 Options:
-  --role <ROLE>          admin, orchestrator, executor, reviewer, or tester
   --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)
   --api-base <URL>       Override the provider API base
   --repository <O/R>     Override the Forgejo owner/repository
@@ -26,7 +28,7 @@ Commands:
   comment                Comment operations
   admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)
   config                 Local configuration (read-only show/get; writes live under admin)
-  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no --role needed)
+  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)
   hooks                  Managed Git hook installation
   notify                 Bounded agent notifications
   mcp                    MCP server over stdio or streamable HTTP

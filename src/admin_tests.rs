@@ -16,16 +16,10 @@ fn strings(values: &[&str]) -> Vec<String> {
 
 #[test]
 fn admin_auth_setup_parses_to_auth_setup() {
-    let invocation = command::parse(&strings(&[
-        "--role",
-        "executor",
-        "--provider",
-        "redmine",
-        "admin",
-        "auth",
-        "setup",
-        "--stdin",
-    ]))
+    let invocation = command::parse_with_role_env(
+        &strings(&["--provider", "redmine", "admin", "auth", "setup", "--stdin"]),
+        Some("executor"),
+    )
     .expect("admin auth setup must parse");
     assert!(matches!(
         invocation.command,
@@ -38,10 +32,9 @@ fn admin_auth_setup_parses_to_auth_setup() {
 
 #[test]
 fn top_level_auth_setup_is_rejected_with_moved_error() {
-    let error = command::parse(&strings(&[
-        "--role", "executor", "auth", "setup", "--stdin",
-    ]))
-    .expect_err("top-level auth setup must not parse");
+    let error =
+        command::parse_with_role_env(&strings(&["auth", "setup", "--stdin"]), Some("executor"))
+            .expect_err("top-level auth setup must not parse");
     assert!(
         error.contains("admin auth setup"),
         "moved error must name the admin form: {error}"
@@ -50,21 +43,17 @@ fn top_level_auth_setup_is_rejected_with_moved_error() {
 
 #[test]
 fn admin_config_writes_parse_to_shared_variants() {
-    let set = command::parse(&strings(&[
-        "--role",
-        "executor",
-        "admin",
-        "config",
-        "set",
-        "api-base",
-        "https://example.com",
-    ]))
+    let set = command::parse_with_role_env(
+        &strings(&["admin", "config", "set", "api-base", "https://example.com"]),
+        Some("executor"),
+    )
     .expect("admin config set must parse");
     assert!(matches!(set.command, Command::ConfigSet { .. }));
 
-    let clear = command::parse(&strings(&[
-        "--role", "executor", "admin", "config", "clear", "api-base",
-    ]))
+    let clear = command::parse_with_role_env(
+        &strings(&["admin", "config", "clear", "api-base"]),
+        Some("executor"),
+    )
     .expect("admin config clear must parse");
     assert!(matches!(clear.command, Command::ConfigClear { .. }));
 
@@ -86,12 +75,13 @@ fn admin_config_writes_parse_to_shared_variants() {
 #[test]
 fn top_level_config_writes_are_rejected_with_moved_error() {
     for argv in [
-        strings(&["--role", "executor", "config", "set", "api-base", "x"]),
-        strings(&["--role", "executor", "config", "clear", "api-base"]),
+        strings(&["config", "set", "api-base", "x"]),
+        strings(&["config", "clear", "api-base"]),
         strings(&["config", "provider", "set", "redmine"]),
         strings(&["config", "provider", "clear"]),
     ] {
-        let error = command::parse(&argv).expect_err("top-level config write must not parse");
+        let error = command::parse_with_role_env(&argv, Some("executor"))
+            .expect_err("top-level config write must not parse");
         assert!(
             error.contains("admin config"),
             "moved error must name the admin form: {error}"
@@ -126,28 +116,25 @@ fn admin_group_rejects_read_only_views() {
 
 #[test]
 fn admin_workflow_bootstrap_parses_and_top_level_is_rejected() {
-    let invocation = command::parse(&strings(&[
-        "--role",
-        "admin",
-        "--provider",
-        "redmine",
-        "admin",
-        "workflow",
-        "bootstrap",
-        "--repository",
-        "owner/repo",
-    ]))
+    let invocation = command::parse_with_role_env(
+        &strings(&[
+            "--provider",
+            "redmine",
+            "admin",
+            "workflow",
+            "bootstrap",
+            "--repository",
+            "owner/repo",
+        ]),
+        Some("admin"),
+    )
     .expect("admin workflow bootstrap must parse");
     assert!(matches!(invocation.command, Command::Workflow(_)));
 
-    let error = command::parse(&strings(&[
-        "--role",
-        "admin",
-        "--provider",
-        "redmine",
-        "workflow",
-        "bootstrap",
-    ]))
+    let error = command::parse_with_role_env(
+        &strings(&["--provider", "redmine", "workflow", "bootstrap"]),
+        Some("admin"),
+    )
     .expect_err("top-level workflow bootstrap must not parse");
     assert!(
         error.contains("admin workflow bootstrap"),

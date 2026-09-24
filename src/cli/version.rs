@@ -68,7 +68,7 @@ pub(crate) fn execute_version(
                     .map(|remote| remote.repository)
                     .unwrap_or_else(|_| "current Git origin".to_owned());
                 return super::provider_error(ForgejoError::config(format!(
-                    "no Redmine project matches the current Git origin '{}'; pass --project-id or run 'phasegent --role admin --provider redmine admin workflow bootstrap'",
+                    "no Redmine project matches the current Git origin '{}'; pass --project-id or run 'PHASEGENT_ROLE=admin phasegent --provider redmine admin workflow bootstrap'",
                     origin
                 )));
             }

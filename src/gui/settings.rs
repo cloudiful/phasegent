@@ -21,7 +21,9 @@ pub fn write_setting_blocking(request: SetSettingRequest) -> Result<SetSettingRe
     let canonical = canonical_non_secret_setting(&request.setting)?;
     let role = parse_role_optional(request.role.as_deref())?;
     if crate::config_write::is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!("--role is required for setting '{canonical}'"));
+        return Err(format!(
+            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
+        ));
     }
     let value = validate_setting_value(canonical, &request.value)?;
     let storage = crate::infra::storage::Storage::open().map_err(bound_message)?;

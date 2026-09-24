@@ -60,22 +60,23 @@ fn explicit_project_id_bypasses_discovery_for_issue_create() {
         &[],
     ))]);
     save_orchestrator(&storage, Some(base.clone()));
-    let code = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base,
-        "--project-id",
-        "99",
-        "issue",
-        "create",
-        "--title",
-        "Explicit",
-        "--body",
-        "Body",
-    ]));
+    let code = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base,
+            "--project-id",
+            "99",
+            "issue",
+            "create",
+            "--title",
+            "Explicit",
+            "--body",
+            "Body",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code, 0);
     let reqs = requests.recv().unwrap();
     assert_eq!(reqs.len(), 1);
@@ -145,20 +146,21 @@ fn unique_match_bypasses_bootstrap_for_issue_create_and_version_list() {
             },
         )
         .unwrap();
-    let code = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base,
-        "issue",
-        "create",
-        "--title",
-        "Discovered",
-        "--body",
-        "Body",
-    ]));
+    let code = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base,
+            "issue",
+            "create",
+            "--title",
+            "Discovered",
+            "--body",
+            "Body",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code, 0);
     let reqs = requests.recv().unwrap();
     assert_eq!(reqs.len(), 3);
@@ -194,16 +196,17 @@ fn unique_match_bypasses_bootstrap_for_issue_create_and_version_list() {
         MockResponse::ok(version_collection(&[(12, "Sprint 1", "open", None)])),
     ]);
     save_orchestrator(&storage2, Some(base2.clone()));
-    let code2 = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base2,
-        "version",
-        "list",
-    ]));
+    let code2 = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base2,
+            "version",
+            "list",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code2, 0);
     let reqs2 = requests2.recv().unwrap();
     assert_eq!(reqs2.len(), 3);
@@ -271,20 +274,21 @@ fn multiple_matches_fail_before_writes_for_issue_and_version() {
             },
         )
         .unwrap();
-    let code = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base,
-        "issue",
-        "create",
-        "--title",
-        "X",
-        "--body",
-        "Y",
-    ]));
+    let code = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base,
+            "issue",
+            "create",
+            "--title",
+            "X",
+            "--body",
+            "Y",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code, 1);
     let reqs = requests.recv().unwrap();
     assert_eq!(reqs.len(), 3);
@@ -333,16 +337,17 @@ fn multiple_matches_fail_before_writes_for_issue_and_version() {
             },
         )
         .unwrap();
-    let code3 = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base3,
-        "version",
-        "list",
-    ]));
+    let code3 = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base3,
+            "version",
+            "list",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code3, 1);
     let reqs3 = requests3.recv().unwrap();
     assert_eq!(reqs3.len(), 3);
@@ -361,20 +366,21 @@ fn discovery_errors_are_not_swallowed() {
         MockResponse::error(500, r#"{"errors":["server error"]}"#),
     ]);
     save_orchestrator(&s, Some(b.clone()));
-    let c = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &b,
-        "issue",
-        "create",
-        "--title",
-        "X",
-        "--body",
-        "Y",
-    ]));
+    let c = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &b,
+            "issue",
+            "create",
+            "--title",
+            "X",
+            "--body",
+            "Y",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(c, 1);
     let r = req.recv().unwrap();
     assert_eq!(r.len(), 2);

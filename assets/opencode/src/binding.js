@@ -1,8 +1,16 @@
 // Local, offline probes around the `phasegent` CLI: branch binding, worktree
 // acquire, active lease status, and the full lease history. All calls stay
 // local: no network, no credentials, no .env copies.
+//
+// The role a probe needs is scoped to that single call through the
+// `PHASEGENT_ROLE` environment entry, so the host process environment is never
+// mutated (issue #588 phase 2).
 
 import { phasegentCommand, safeText } from "./runtime.js";
+
+// `worktree acquire` is orchestrator-only; the lease reads are executor-scoped.
+const ORCHESTRATOR_ENV = { PHASEGENT_ROLE: "orchestrator" };
+const EXECUTOR_ENV = { PHASEGENT_ROLE: "executor" };
 
 export async function readBranchBinding(cwd) {
   const result = await safeText(phasegentCommand(["issue", "status"], cwd));
@@ -19,13 +27,12 @@ export async function readBranchBinding(cwd) {
 
 export async function acquireWorktree(issueId, sessionId, cwd) {
   const args = [
-    "--role", "orchestrator",
     "worktree", "acquire",
     "--issue", String(issueId),
     "--format", "json",
   ];
   if (sessionId) args.push("--session", String(sessionId));
-  const result = await safeText(phasegentCommand(args, cwd));
+  const result = await safeText(phasegentCommand(args, cwd, ORCHESTRATOR_ENV));
   if (!result.ok || !result.value) return null;
   try {
     const parsed = JSON.parse(result.value);
@@ -38,8 +45,8 @@ export async function acquireWorktree(issueId, sessionId, cwd) {
 }
 
 export async function readIssueLeases(issueId, cwd) {
-  const args = ["--role", "executor", "worktree", "status", "--issue", String(issueId)];
-  const result = await safeText(phasegentCommand(args, cwd));
+  const args = ["worktree", "status", "--issue", String(issueId)];
+  const result = await safeText(phasegentCommand(args, cwd, EXECUTOR_ENV));
   if (!result.ok || !result.value) return null;
   try {
     const parsed = JSON.parse(result.value);
@@ -55,8 +62,8 @@ export async function readIssueLeases(issueId, cwd) {
 // identity. `--no-sync` keeps the probe local and offline: no provider
 // resolution, no reconciliation pass.
 export async function readIssueLeaseHistory(issueId, cwd) {
-  const args = ["--role", "executor", "worktree", "list", "--no-sync"];
-  const result = await safeText(phasegentCommand(args, cwd));
+  const args = ["worktree", "list", "--no-sync"];
+  const result = await safeText(phasegentCommand(args, cwd, EXECUTOR_ENV));
   if (!result.ok || !result.value) return null;
   try {
     const parsed = JSON.parse(result.value);

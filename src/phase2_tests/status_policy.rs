@@ -2,19 +2,14 @@ use super::*;
 
 #[test]
 fn status_next_and_advance_parse_positional_and_status_option() {
-    let next = [
-        "--role",
-        "executor",
-        "--provider",
-        "redmine",
-        "status",
-        "next",
-        "51",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    match command::parse(&next).unwrap().command {
+    let next = ["--provider", "redmine", "status", "next", "51"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match command::parse_with_role_env(&next, Some("executor"))
+        .unwrap()
+        .command
+    {
         command::Command::Status(command::StatusCommand::Next { number }) => {
             assert_eq!(number, 51);
         }
@@ -23,15 +18,13 @@ fn status_next_and_advance_parse_positional_and_status_option() {
 
     // `next` takes exactly one positional and no options.
     for extra in [vec!["51", "52"], vec!["51", "--status", "Blocked"]] {
-        let mut args = vec!["--role", "orchestrator", "status", "next"];
+        let mut args = vec!["status", "next"];
         args.extend(extra);
         let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        assert!(command::parse(&args).is_err());
+        assert!(command::parse_with_role_env(&args, Some("orchestrator")).is_err());
     }
 
     let advance = [
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "status",
@@ -43,7 +36,10 @@ fn status_next_and_advance_parse_positional_and_status_option() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&advance).unwrap().command {
+    match command::parse_with_role_env(&advance, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Status(command::StatusCommand::Advance { number, status }) => {
             assert_eq!(number, 51);
             assert_eq!(status, "In Review");
@@ -51,19 +47,11 @@ fn status_next_and_advance_parse_positional_and_status_option() {
         other => panic!("unexpected command: {other:?}"),
     }
 
-    let missing_status = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "status",
-        "advance",
-        "51",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    assert!(command::parse(&missing_status).is_err());
+    let missing_status = ["--provider", "redmine", "status", "advance", "51"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(command::parse_with_role_env(&missing_status, Some("orchestrator")).is_err());
 }
 
 /// The canonical transition graph is the single source of truth for the
@@ -189,8 +177,6 @@ fn transition_policy_handles_no_op_casing_and_custom_statuses() {
 #[test]
 fn status_set_parses_number_and_validated_status_value() {
     let args = [
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "status",
@@ -202,7 +188,10 @@ fn status_set_parses_number_and_validated_status_value() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Status(command::StatusCommand::Set { number, status }) => {
             assert_eq!(number, 12);
             assert_eq!(status, "In Progress");
@@ -210,24 +199,14 @@ fn status_set_parses_number_and_validated_status_value() {
         other => panic!("unexpected command: {other:?}"),
     }
 
-    let missing = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "status",
-        "set",
-        "12",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    assert!(command::parse(&missing).is_err());
+    let missing = ["--provider", "redmine", "status", "set", "12"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(command::parse_with_role_env(&missing, Some("orchestrator")).is_err());
 
     // The inline escape hatch keeps leading-dash values usable.
     let inline = [
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "status",
@@ -238,7 +217,10 @@ fn status_set_parses_number_and_validated_status_value() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&inline).unwrap().command {
+    match command::parse_with_role_env(&inline, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Status(command::StatusCommand::Set { status, .. }) => {
             assert_eq!(status, "-Blocked");
         }

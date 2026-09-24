@@ -31,7 +31,7 @@ fn scratch_db(label: &str) -> (std::path::PathBuf, EnvGuard) {
 #[test]
 fn doctor_parses_without_role_and_rejects_arguments() {
     let invocation =
-        command::parse(&strings(&["doctor"])).expect("doctor without --role must parse");
+        command::parse(&strings(&["doctor"])).expect("doctor without a role must parse");
     assert!(matches!(invocation.command, Command::Doctor));
 
     let error =

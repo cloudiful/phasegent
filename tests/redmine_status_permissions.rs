@@ -41,9 +41,8 @@ fn status_set_denies_executor_reviewer_and_admin_with_structured_error() {
         let output = run_cli(
             &db.path,
             &server.base_url,
+            Some(role),
             &[
-                "--role",
-                role,
                 "--provider",
                 "redmine",
                 "--project-id",
@@ -119,9 +118,8 @@ fn issue_close_denies_executor_reviewer_and_admin_with_structured_error() {
         let output = run_cli(
             &db.path,
             &server.base_url,
+            Some(role),
             &[
-                "--role",
-                role,
                 "--provider",
                 "redmine",
                 "--project-id",
@@ -176,9 +174,8 @@ fn status_list_uses_orchestrator_credential_through_subprocess() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "redmine",
             "--project-id",

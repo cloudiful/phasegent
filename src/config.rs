@@ -2,10 +2,10 @@
 //!
 //! The commands cooperate so operators can inspect a redacted snapshot
 //! of the local SQLite database and explicitly persist settings.
-//! `show` is safe to invoke without `--role` so an operator can read
+//! `show` is safe to invoke without a role so an operator can read
 //! the global picture. `config set` / `config clear` persist a single
 //! setting at a time; global settings are machine-wide and usable
-//! without `--role`, while role-scoped settings require `--role`.
+//! without a role, while role-scoped settings require `PHASEGENT_ROLE`.
 //! The mirror bearer key is never accepted as a direct value; it
 //! must be supplied via `--stdin` or the secure interactive prompt.
 //!

@@ -11,8 +11,6 @@ const POLICY_SOURCE: &str = "phasegent/canonical-phase-workflow@v1";
 
 fn status_args(command: &str) -> Vec<&str> {
     vec![
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "--project-id",
@@ -53,7 +51,12 @@ fn status_next_reports_current_and_allowed_next_with_installation_ids() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(&db.path, &server.base_url, &status_args("next"));
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &status_args("next"),
+    );
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -131,7 +134,12 @@ fn status_next_reports_resolved_continuation_and_final_close() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(&db.path, &server.base_url, &status_args("next"));
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &status_args("next"),
+    );
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -190,7 +198,12 @@ fn status_next_reports_terminal_status_with_no_allowed_next() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(&db.path, &server.base_url, &status_args("next"));
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &status_args("next"),
+    );
     let json: serde_json::Value =
         serde_json::from_str(stdout_text(&output).trim()).expect("status next emits JSON");
     assert_eq!(json["current"]["name"], "Closed");
@@ -223,7 +236,12 @@ fn status_next_marks_custom_status_as_advisory() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(&db.path, &server.base_url, &status_args("next"));
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &status_args("next"),
+    );
     let json: serde_json::Value =
         serde_json::from_str(stdout_text(&output).trim()).expect("status next emits JSON");
     assert_eq!(json["current"]["name"], "Triaged");
@@ -256,7 +274,12 @@ fn status_next_resolves_installation_specific_ids_and_reports_missing_names() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(&db.path, &server.base_url, &status_args("next"));
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &status_args("next"),
+    );
     let json: serde_json::Value =
         serde_json::from_str(stdout_text(&output).trim()).expect("status next emits JSON");
     assert_eq!(json["current"]["id"], 501);

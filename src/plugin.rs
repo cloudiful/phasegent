@@ -27,11 +27,11 @@
 //! and claims the v2 worktree strategy (`context.worktree.transform`)
 //! only when the checkout already carries a phasegent issue binding, so
 //! a non-phasegent project keeps the host git strategy. The strategy
-//! runs `phasegent --role orchestrator worktree acquire --issue N
-//! --format json` and falls back to a plain git worktree when acquire
-//! fails. The acquired worktree becomes the session directory through
-//! `context.session.move`, because the v2 worktree domain has no v1
-//! `target` callback.
+//! runs `phasegent worktree acquire --issue N --format json` with
+//! `PHASEGENT_ROLE=orchestrator` scoped to that call, and falls back to
+//! a plain git worktree when acquire fails. The acquired worktree
+//! becomes the session directory through `context.session.move`,
+//! because the v2 worktree domain has no v1 `target` callback.
 //!
 //! `setup` also registers the issue #533 surface: the embedded
 //! `phasegent` skill (`context.skill.transform`; the body is inlined at
@@ -47,7 +47,9 @@
 //! or `location`); a missing registration surface degrades to a
 //! console warning.
 //! `PHASEGENT_SESSION_ID` and `PHASEGENT_WORKTREE_NO_DISCOVER=1` are the
-//! only hard environment guarantees.
+//! only hard environment guarantees; each rewritten `phasegent`
+//! invocation additionally carries the session role as a
+//! per-invocation `PHASEGENT_ROLE` assignment (issue #588).
 //!
 //! Once a session has acquired a worktree, relative file paths and a
 //! bare or relative shell `workdir` are redirected into it, while

@@ -3,14 +3,10 @@ use super::*;
 
 #[test]
 fn parse_release_default_retain_is_true() {
-    let invocation = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "release",
-        "--lease",
-        "lease-1",
-    ]))
+    let invocation = crate::command::parse_with_role_env(
+        &strings(["worktree", "release", "--lease", "lease-1"]),
+        Some("orchestrator"),
+    )
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Release {
@@ -30,16 +26,12 @@ fn parse_release_default_retain_is_true() {
 
 #[test]
 fn parse_release_retain_false_round_trip() {
-    let invocation = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "release",
-        "--lease",
-        "lease-1",
-        "--retain",
-        "false",
-    ]))
+    let invocation = crate::command::parse_with_role_env(
+        &strings([
+            "worktree", "release", "--lease", "lease-1", "--retain", "false",
+        ]),
+        Some("orchestrator"),
+    )
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Release {
@@ -59,16 +51,12 @@ fn parse_release_retain_false_round_trip() {
 
 #[test]
 fn parse_release_rejects_bad_retain() {
-    let err = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "release",
-        "--lease",
-        "lease-1",
-        "--retain",
-        "maybe",
-    ]))
+    let err = crate::command::parse_with_role_env(
+        &strings([
+            "worktree", "release", "--lease", "lease-1", "--retain", "maybe",
+        ]),
+        Some("orchestrator"),
+    )
     .unwrap_err();
     assert!(
         err.contains("--retain"),

@@ -220,39 +220,41 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
         let st = Storage::open_at(&db).unwrap();
         st.save_credential(Role::Orchestrator, prov, "dummy-token-for-test")
             .unwrap();
-        let exit = crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            prov,
-            "--api-base",
-            "http://example.test",
-            "--repository",
-            "owner/repo",
-            "issue",
-            "upload-attachment",
-            "42",
-            "--path",
-            missing,
-        ]));
+        let exit = crate::cli::run_with_role(
+            strings([
+                "--provider",
+                prov,
+                "--api-base",
+                "http://example.test",
+                "--repository",
+                "owner/repo",
+                "issue",
+                "upload-attachment",
+                "42",
+                "--path",
+                missing,
+            ]),
+            Some("orchestrator"),
+        );
         assert_eq!(exit, 1, "{prov}");
         let dir = temp_dir();
         let real = write_temp_file(&dir, "real.txt", b"data");
-        let exit2 = crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            prov,
-            "--api-base",
-            "http://example.test",
-            "--repository",
-            "owner/repo",
-            "issue",
-            "upload-attachment",
-            "42",
-            "--path",
-            real.to_str().unwrap(),
-        ]));
+        let exit2 = crate::cli::run_with_role(
+            strings([
+                "--provider",
+                prov,
+                "--api-base",
+                "http://example.test",
+                "--repository",
+                "owner/repo",
+                "issue",
+                "upload-attachment",
+                "42",
+                "--path",
+                real.to_str().unwrap(),
+            ]),
+            Some("orchestrator"),
+        );
         assert_eq!(exit2, 1, "{prov} real");
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(tmp);
@@ -261,9 +263,25 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
 #[test]
 fn upload_cli_requires_orchestrator_and_validates_args() {
     for role in ["executor", "reviewer", "admin"] {
-        let e = crate::cli::run(strings([
-            "--role",
-            role,
+        let e = crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "issue",
+                "upload-attachment",
+                "5",
+                "--path",
+                "/tmp/any.txt",
+            ]),
+            Some(role),
+        );
+        assert_eq!(e, 3, "{role}");
+    }
+    // Tester passes the role gate; the dispatcher rejects uniformly
+    // (Phase 1 + Phase 4 sink), so the exit is 1 (not_supported) and
+    // never 3 (permission denied).
+    let tester_exit = crate::cli::run_with_role(
+        strings([
             "--provider",
             "redmine",
             "issue",
@@ -271,51 +289,33 @@ fn upload_cli_requires_orchestrator_and_validates_args() {
             "5",
             "--path",
             "/tmp/any.txt",
-        ]));
-        assert_eq!(e, 3, "{role}");
-    }
-    // Tester passes the role gate; the dispatcher rejects uniformly
-    // (Phase 1 + Phase 4 sink), so the exit is 1 (not_supported) and
-    // never 3 (permission denied).
-    let tester_exit = crate::cli::run(strings([
-        "--role",
-        "tester",
-        "--provider",
-        "redmine",
-        "issue",
-        "upload-attachment",
-        "5",
-        "--path",
-        "/tmp/any.txt",
-    ]));
+        ]),
+        Some("tester"),
+    );
     assert_ne!(
         tester_exit, 3,
         "tester must clear the role gate on upload-attachment"
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "issue",
-            "upload-attachment",
-            "5"
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "redmine", "issue", "upload-attachment", "5"]),
+            Some("orchestrator")
+        ),
         2
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "issue",
-            "upload-attachment",
-            "0",
-            "--path",
-            "/tmp/any.txt"
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "issue",
+                "upload-attachment",
+                "0",
+                "--path",
+                "/tmp/any.txt"
+            ]),
+            Some("orchestrator")
+        ),
         2
     );
 }

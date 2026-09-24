@@ -6,8 +6,9 @@
 // commands are the first corpus entries. The properties are the invariants the
 // scanner must never break:
 //
-//   1. inserting `--role`/`--session` must never split a look-alike token
-//      (issue #544 P1-a: a quoted path containing `phasegent` stays data);
+//   1. inserting the role assignment / `--session` must never split a
+//      look-alike token (issue #544 P1-a: a quoted path containing `phasegent`
+//      stays data);
 //   2. a redirection such as `2>&1`, `>&2`, `&>`, `&>>` or `<&` survives
 //      byte-for-byte and never gets an injection inside it (issue #544 P1-b);
 //   3. every quoted run survives byte-for-byte;
@@ -159,7 +160,7 @@ function splitEveryRedirection(command, out) {
 
 function stripInjections(text, role, sessionId) {
   let out = text;
-  if (role) out = out.split(` --role ${role}`).join("");
+  if (role) out = out.split(`PHASEGENT_ROLE=${role} `).join("");
   return out.split(` --session ${sessionId}`).join("");
 }
 
@@ -225,10 +226,46 @@ describe("property: scanner invariants over generated commands (issue #558 Phase
     }
   });
 
+  test("windows rewriting scopes every injected role to one invocation", () => {
+    // Issue #588 P2 review: a bare `$env:PHASEGENT_ROLE=...;` outlives the
+    // invocation, and a successful restore must not mask a failing CLI. Each
+    // injected role therefore sits in a `$( … )` scope whose `finally` restores
+    // the previous value, captures the CLI status, and re-asserts a failure.
+    // Nothing may use `& { … }`, which resets `$?` on its own.
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      for (const seed of SEEDS) {
+        const rng = mulberry32(seed);
+        for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
+          const command =
+            iteration < SEED_COMMANDS.length ? SEED_COMMANDS[iteration] : generateCommand(rng);
+          const out = rewritePhasegentCommand(command, SESSION, ORCHESTRATOR, { windows: true });
+          const context = `command=${JSON.stringify(command)} out=${JSON.stringify(out)}`;
+          const injected = out.split("try { $env:PHASEGENT_ROLE='orchestrator'").length - 1;
+          const opens = out.split("$( $__phasegent_role=$env:PHASEGENT_ROLE;").length - 1;
+          const restores = out.split("finally { $__phasegent_status=$LASTEXITCODE;").length - 1;
+          expect(opens, context).toBe(injected);
+          expect(restores, context).toBe(injected);
+          expect(out.includes("& { "), context).toBe(false);
+          // A re-run must not nest a second scope around an already-scoped call.
+          expect(
+            rewritePhasegentCommand(out, SESSION, ORCHESTRATOR, { windows: true }),
+            context,
+          ).toBe(out);
+          // Quoted data stays byte-for-byte, as on POSIX.
+          expect(quotedRuns(command).filter((run) => !out.includes(run)), context).toEqual([]);
+        }
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   test("the #544 redirection seed keeps its --session outside the redirection", () => {
     const out = rewritePhasegentCommand(REDIRECT_SEED, SESSION, ORCHESTRATOR);
     expect(out).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --keep-body-file 2>&1 --session ses_544p3 | tail -c 900",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_544p3 | tail -c 900",
     );
     expect(out.includes("2>&1")).toBe(true);
     expect(out.indexOf(`--session ${SESSION}`)).toBeLessThan(out.indexOf("| tail"));

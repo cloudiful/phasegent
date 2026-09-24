@@ -6,10 +6,11 @@ use super::{
 };
 use crate::policy::Role;
 
-/// Parse the process argv, falling back to the `PHASEGENT_ROLE`
-/// environment variable when no explicit `--role` is present. Kept as a
-/// thin wrapper so the environment lookup happens exactly once; the
-/// decision logic lives in `parse_with_role_env`.
+/// Parse the process argv, resolving the role from the `PHASEGENT_ROLE`
+/// environment variable. A managed session exports that variable for its
+/// child processes, so no CLI flag carries the role. Kept as a thin
+/// wrapper so the environment lookup happens exactly once; the decision
+/// logic lives in `parse_with_role_env`.
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let role_env = std::env::var("PHASEGENT_ROLE").ok();
     parse_with_role_env(args, role_env.as_deref())
@@ -22,9 +23,23 @@ pub(crate) fn parse_with_role_env(
     args: &[String],
     role_env: Option<&str>,
 ) -> Result<Invocation, String> {
+    // Role context comes only from `PHASEGENT_ROLE`, which a managed session
+    // exports for its child processes. A blank value means "not provided", but
+    // a non-empty invalid value is an error rather than a silent downgrade to
+    // role-less execution.
+    let role = role_env
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<Role>()
+                .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))
+        })
+        .transpose()?;
+
     if args.is_empty() {
         return Ok(Invocation {
-            role: None,
+            role,
             provider: None,
             api_base: None,
             repository: None,
@@ -35,7 +50,6 @@ pub(crate) fn parse_with_role_env(
         });
     }
 
-    let mut role = None;
     let mut provider = None;
     let mut api_base = None;
     let mut repository = None;
@@ -76,10 +90,6 @@ pub(crate) fn parse_with_role_env(
                     command: Command::Version,
                 });
             }
-            "--role" => {
-                role = Some(required_value(args, index, "--role")?.parse()?);
-                index += 2;
-            }
             "--provider" => {
                 provider = Some(required_value(args, index, "--provider")?.parse()?);
                 index += 2;
@@ -109,11 +119,6 @@ pub(crate) fn parse_with_role_env(
             // The two-arg `--option value` form keeps strict missing-value detection
             // (next token starting with `-` still counts as missing).
             value if value.starts_with("--") => {
-                if let Some(parsed) = split_inline(value, "--role") {
-                    role = Some(parsed.parse()?);
-                    index += 1;
-                    continue;
-                }
                 if let Some(parsed) = split_inline(value, "--provider") {
                     provider = Some(parsed.parse()?);
                     index += 1;
@@ -151,26 +156,12 @@ pub(crate) fn parse_with_role_env(
         }
     }
 
-    // An explicit `--role` always wins; `PHASEGENT_ROLE` is the fallback for
-    // hosts outside the adapter (scripts, wrappers). A blank value means
-    // "not provided", but a non-empty invalid value is an error rather than a
-    // silent downgrade to role-less execution.
-    if role.is_none()
-        && let Some(value) = role_env.map(str::trim).filter(|value| !value.is_empty())
-    {
-        role = Some(
-            value
-                .parse::<Role>()
-                .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))?,
-        );
-    }
-
     let command = args.get(index).ok_or("a command is required")?;
     let rest = &args[index + 1..];
     let command = parse_command(command, rest).map_err(with_global_option_hint)?;
     // Local branch context and hooks never touch provider credentials. The
     // internal `hooks run` forms are also invoked by generated Git scripts
-    // without a role. `config set/clear` is allowed without --role when
+    // without a role. `config set/clear` is allowed without a role when
     // the target is a global setting; role-scoped settings still require it.
     let no_role_allowed = match &command {
         Command::Help(_)
@@ -190,7 +181,10 @@ pub(crate) fn parse_with_role_env(
         _ => false,
     };
     if role.is_none() && !no_role_allowed {
-        return Err("--role is required for operations".to_owned());
+        return Err(
+            "a role is required for operations; set PHASEGENT_ROLE or run in a managed session"
+                .to_owned(),
+        );
     }
     if close_status_name.is_some() && !matches!(&command, Command::Workflow(_)) {
         return Err("--close-status-name is only supported by workflow bootstrap".to_owned());
@@ -275,22 +269,38 @@ mod tests {
     }
 
     #[test]
+    fn removed_role_flag_is_rejected_as_an_unknown_option() {
+        for token in ["--role", "--role=executor"] {
+            let error = parse_with_role_env(
+                &args(&[token, "executor", "issue", "get", "1"]),
+                Some("executor"),
+            )
+            .expect_err("the removed --role flag must be rejected");
+            assert!(
+                error.starts_with("unknown option '--role"),
+                "token {token}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn misplaced_global_option_after_subcommand_hints_at_position() {
         // The reported flow: `--project-id` after `issue create` failed with a
         // bare "unknown option". The error must now state that global options
         // come before the subcommand and show a correct example.
-        let error = parse(&args(&[
-            "--role",
-            "orchestrator",
-            "issue",
-            "create",
-            "--title",
-            "T",
-            "--body",
-            "B",
-            "--project-id",
-            "23",
-        ]))
+        let error = parse_with_role_env(
+            &args(&[
+                "issue",
+                "create",
+                "--title",
+                "T",
+                "--body",
+                "B",
+                "--project-id",
+                "23",
+            ]),
+            Some("orchestrator"),
+        )
         .expect_err("a misplaced global option must be rejected");
         assert!(
             error.starts_with("unknown option '--project-id'"),
@@ -309,14 +319,10 @@ mod tests {
     #[test]
     fn global_option_hint_covers_inline_and_separator_variants() {
         for token in ["--project-id=23", "--project_id"] {
-            let error = parse(&args(&[
-                "--role",
-                "orchestrator",
-                "issue",
-                "close",
-                "42",
-                token,
-            ]))
+            let error = parse_with_role_env(
+                &args(&["issue", "close", "42", token]),
+                Some("orchestrator"),
+            )
             .expect_err("a misplaced global option must be rejected");
             assert!(
                 error.contains("must come before the subcommand"),
@@ -327,18 +333,19 @@ mod tests {
 
     #[test]
     fn unrelated_unknown_option_keeps_its_plain_message() {
-        let error = parse(&args(&[
-            "--role",
-            "orchestrator",
-            "issue",
-            "create",
-            "--title",
-            "T",
-            "--body",
-            "B",
-            "--nonsense",
-            "alpha",
-        ]))
+        let error = parse_with_role_env(
+            &args(&[
+                "issue",
+                "create",
+                "--title",
+                "T",
+                "--body",
+                "B",
+                "--nonsense",
+                "alpha",
+            ]),
+            Some("orchestrator"),
+        )
         .expect_err("an unknown option must be rejected");
         assert_eq!(error, "unknown option '--nonsense'");
     }
@@ -346,22 +353,16 @@ mod tests {
     #[test]
     fn global_option_hint_only_matches_global_options() {
         for token in [
-            "--role",
             "--provider",
             "--api-base",
             "--repository",
             "--project-id",
             "--close-status-id",
         ] {
-            let error = parse(&args(&[
-                "--role",
-                "orchestrator",
-                "issue",
-                "bind",
-                "42",
-                token,
-                "value",
-            ]))
+            let error = parse_with_role_env(
+                &args(&["issue", "bind", "42", token, "value"]),
+                Some("orchestrator"),
+            )
             .expect_err("a misplaced global option must be rejected");
             assert!(
                 error.contains("must come before the subcommand"),

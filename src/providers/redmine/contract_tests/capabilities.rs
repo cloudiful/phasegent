@@ -24,13 +24,15 @@ use std::{fs, time};
 
 #[test]
 fn metadata_parser_requires_confirmation_and_required_fields() {
-    let list = command::parse(&strings(["--role", "executor", "project", "list"])).unwrap();
+    let list =
+        command::parse_with_role_env(&strings(["project", "list"]), Some("executor")).unwrap();
     assert!(matches!(
         list.command,
         Command::Project(ProjectCommand::List)
     ));
 
-    let status = command::parse(&strings(["--role", "reviewer", "status", "list"])).unwrap();
+    let status =
+        command::parse_with_role_env(&strings(["status", "list"]), Some("reviewer")).unwrap();
     assert!(matches!(
         status.command,
         Command::Status(StatusCommand::List)
@@ -38,8 +40,6 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
 
     for args in [
         strings([
-            "--role",
-            "orchestrator",
             "project",
             "create",
             "--name",
@@ -47,32 +47,25 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
             "--identifier",
             "workflow",
         ]),
-        strings([
-            "--role",
-            "orchestrator",
+        strings(["project", "create", "--name", "Workflow", "--confirm"]),
+    ] {
+        assert!(command::parse_with_role_env(&args, Some("orchestrator")).is_err());
+    }
+
+    let create = command::parse_with_role_env(
+        &strings([
             "project",
             "create",
             "--name",
             "Workflow",
+            "--identifier",
+            "workflow",
+            "--description",
+            "Tracking project",
             "--confirm",
         ]),
-    ] {
-        assert!(command::parse(&args).is_err());
-    }
-
-    let create = command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "project",
-        "create",
-        "--name",
-        "Workflow",
-        "--identifier",
-        "workflow",
-        "--description",
-        "Tracking project",
-        "--confirm",
-    ]))
+        Some("orchestrator"),
+    )
     .unwrap();
     assert!(matches!(
         create.command,
@@ -86,19 +79,20 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
             && description.as_deref() == Some("Tracking project")
     ));
 
-    let bootstrap = command::parse(&strings([
-        "--role",
-        "admin",
-        "--provider",
-        "redmine",
-        "admin",
-        "workflow",
-        "bootstrap",
-        "--repository",
-        "Cloud1ful/repo",
-        "--close-status-name",
-        "Closed",
-    ]))
+    let bootstrap = command::parse_with_role_env(
+        &strings([
+            "--provider",
+            "redmine",
+            "admin",
+            "workflow",
+            "bootstrap",
+            "--repository",
+            "Cloud1ful/repo",
+            "--close-status-name",
+            "Closed",
+        ]),
+        Some("admin"),
+    )
     .unwrap();
     assert!(matches!(
         bootstrap.command,
@@ -117,8 +111,6 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
         ("--group-role=Developer", ""),
     ] {
         let mut args = vec![
-            "--role".to_owned(),
-            "admin".to_owned(),
             "--provider".to_owned(),
             "redmine".to_owned(),
             "workflow".to_owned(),
@@ -130,7 +122,8 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
             args.push(flag.to_owned());
             args.push(value.to_owned());
         }
-        let error = command::parse(&args).expect_err("legacy group flag must be rejected");
+        let error = command::parse_with_role_env(&args, Some("admin"))
+            .expect_err("legacy group flag must be rejected");
         assert!(
             error.contains("is no longer supported"),
             "unexpected error for {flag}: {error}"
@@ -180,60 +173,59 @@ fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
     );
 
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "project",
-            "list"
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "forgejo", "project", "list"]),
+            Some("orchestrator")
+        ),
         1
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "executor",
-            "--provider",
-            "redmine",
-            "project",
-            "create",
-            "--name",
-            "Workflow",
-            "--identifier",
-            "workflow",
-            "--confirm",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "project",
+                "create",
+                "--name",
+                "Workflow",
+                "--identifier",
+                "workflow",
+                "--confirm",
+            ]),
+            Some("executor")
+        ),
         3
     );
     for role in ["executor", "reviewer"] {
         assert_eq!(
-            crate::cli::run(strings([
-                "--role",
-                role,
+            crate::cli::run_with_role(
+                strings([
+                    "--provider",
+                    "redmine",
+                    "admin",
+                    "workflow",
+                    "bootstrap",
+                    "--repository",
+                    "owner/repo",
+                ]),
+                Some(role)
+            ),
+            3
+        );
+    }
+    assert_eq!(
+        crate::cli::run_with_role(
+            strings([
                 "--provider",
-                "redmine",
+                "forgejo",
                 "admin",
                 "workflow",
                 "bootstrap",
                 "--repository",
                 "owner/repo",
-            ])),
-            3
-        );
-    }
-    assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "admin",
-            "workflow",
-            "bootstrap",
-            "--repository",
-            "owner/repo",
-        ])),
+            ]),
+            Some("orchestrator")
+        ),
         3
     );
 }
@@ -244,17 +236,18 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
     // error fires before any provider or network access.
     for role in ["admin", "executor", "reviewer"] {
         assert_eq!(
-            crate::cli::run(strings([
-                "--role",
-                role,
-                "--provider",
-                "redmine",
-                "status",
-                "set",
-                "3",
-                "--status",
-                "New",
-            ])),
+            crate::cli::run_with_role(
+                strings([
+                    "--provider",
+                    "redmine",
+                    "status",
+                    "set",
+                    "3",
+                    "--status",
+                    "New",
+                ]),
+                Some(role)
+            ),
             3,
             "expected exit 3 for {role} status set"
         );
@@ -262,17 +255,18 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
 
     // status set is Redmine-only: Forgejo is rejected as unsupported.
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "status",
-            "set",
-            "3",
-            "--status",
-            "New",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "forgejo",
+                "status",
+                "set",
+                "3",
+                "--status",
+                "New",
+            ]),
+            Some("orchestrator")
+        ),
         1
     );
 
@@ -296,38 +290,40 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         .unwrap();
 
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--api-base",
-            "http://forgejo.test",
-            "--repository",
-            "owner/repo",
-            "issue",
-            "create",
-            "--title",
-            "Plan",
-            "--tracker",
-            "Bug",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--api-base",
+                "http://forgejo.test",
+                "--repository",
+                "owner/repo",
+                "issue",
+                "create",
+                "--title",
+                "Plan",
+                "--tracker",
+                "Bug",
+            ]),
+            Some("orchestrator")
+        ),
         1
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--api-base",
-            "http://forgejo.test",
-            "--repository",
-            "owner/repo",
-            "issue",
-            "update",
-            "9",
-            "--body",
-            "Updated",
-            "--tracker",
-            "Bug",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--api-base",
+                "http://forgejo.test",
+                "--repository",
+                "owner/repo",
+                "issue",
+                "update",
+                "9",
+                "--body",
+                "Updated",
+                "--tracker",
+                "Bug",
+            ]),
+            Some("orchestrator")
+        ),
         1
     );
 }
@@ -401,17 +397,18 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     for role in ["admin", "executor", "reviewer"] {
         for provider in ["redmine", "forgejo", "gitlab"] {
             assert_eq!(
-                crate::cli::run(strings([
-                    "--role",
-                    role,
-                    "--provider",
-                    provider,
-                    "issue",
-                    "upload-attachment",
-                    "5",
-                    "--path",
-                    "/tmp/any.txt"
-                ])),
+                crate::cli::run_with_role(
+                    strings([
+                        "--provider",
+                        provider,
+                        "issue",
+                        "upload-attachment",
+                        "5",
+                        "--path",
+                        "/tmp/any.txt"
+                    ]),
+                    Some(role)
+                ),
                 3,
                 "role {role} on {provider} must hit the permission gate first"
             );
@@ -422,17 +419,18 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     // allowed by the role gate but the inherent provider rejects
     // uniformly.
     for provider in ["redmine", "forgejo", "gitlab"] {
-        let exit = crate::cli::run(strings([
-            "--role",
-            "tester",
-            "--provider",
-            provider,
-            "issue",
-            "upload-attachment",
-            "5",
-            "--path",
-            "/tmp/any.txt",
-        ]));
+        let exit = crate::cli::run_with_role(
+            strings([
+                "--provider",
+                provider,
+                "issue",
+                "upload-attachment",
+                "5",
+                "--path",
+                "/tmp/any.txt",
+            ]),
+            Some("tester"),
+        );
         assert_eq!(
             exit, 1,
             "tester upload-attachment on {provider} must be not_supported (Phase 4 sinking)"
@@ -461,21 +459,9 @@ fn tester_least_privilege_matrix() {
     assert!(!Role::Tester.allows(Capability::RelationDelete));
     // CLI enforcement: tester cannot search/create/update/close or bootstrap or repo create
     for (args, expected) in [
+        (strings(["--provider", "redmine", "issue", "search"]), 3),
         (
             strings([
-                "--role",
-                "tester",
-                "--provider",
-                "redmine",
-                "issue",
-                "search",
-            ]),
-            3,
-        ),
-        (
-            strings([
-                "--role",
-                "tester",
                 "--provider",
                 "redmine",
                 "issue",
@@ -489,8 +475,6 @@ fn tester_least_privilege_matrix() {
         ),
         (
             strings([
-                "--role",
-                "tester",
                 "--provider",
                 "redmine",
                 "issue",
@@ -501,22 +485,9 @@ fn tester_least_privilege_matrix() {
             ]),
             3,
         ),
+        (strings(["--provider", "redmine", "issue", "close", "1"]), 3),
         (
             strings([
-                "--role",
-                "tester",
-                "--provider",
-                "redmine",
-                "issue",
-                "close",
-                "1",
-            ]),
-            3,
-        ),
-        (
-            strings([
-                "--role",
-                "tester",
                 "--provider",
                 "redmine",
                 "admin",
@@ -527,35 +498,26 @@ fn tester_least_privilege_matrix() {
             ]),
             3,
         ),
-        (
-            strings([
-                "--role",
-                "tester",
-                "repo",
-                "create",
-                "owner/repo",
-                "--private",
-            ]),
-            3,
-        ),
+        (strings(["repo", "create", "owner/repo", "--private"]), 3),
     ] {
-        assert_eq!(crate::cli::run(args), expected);
+        assert_eq!(crate::cli::run_with_role(args, Some("tester")), expected);
     }
     // Tester can read issues/comments
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "tester",
-            "--provider",
-            "redmine",
-            "comment",
-            "create",
-            "1",
-            "--body",
-            "<!-- m --> hi",
-            "--marker",
-            "<!-- m -->"
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "comment",
+                "create",
+                "1",
+                "--body",
+                "<!-- m --> hi",
+                "--marker",
+                "<!-- m -->"
+            ]),
+            Some("tester")
+        ),
         2,
         "tester comment without --authorized must be authorization error, not permission"
     );

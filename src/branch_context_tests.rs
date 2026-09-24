@@ -98,18 +98,13 @@ fn detached_runner() -> FakeGitRunner {
 // ---------------------------------------------------------------------------
 
 fn parse_args(values: &[&str]) -> Result<command::Invocation, String> {
-    command::parse(
-        &values
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>(),
-    )
+    parse_with_role(values, None)
 }
 
 #[test]
 fn issue_bind_parses_positive_id_and_optional_replace() {
     let invocation =
-        parse_args(&["--role", "orchestrator", "issue", "bind", "23"]).expect("bind parses");
+        parse_with_role(&["issue", "bind", "23"], Some("orchestrator")).expect("bind parses");
     match invocation.command {
         Command::Issue(IssueCommand::Bind {
             issue_id,
@@ -123,7 +118,7 @@ fn issue_bind_parses_positive_id_and_optional_replace() {
         other => panic!("unexpected command: {other:?}"),
     }
 
-    let invocation = parse_args(&["--role", "orchestrator", "issue", "bind", "24", "--replace"])
+    let invocation = parse_with_role(&["issue", "bind", "24", "--replace"], Some("orchestrator"))
         .expect("bind --replace parses");
     match invocation.command {
         Command::Issue(IssueCommand::Bind {
@@ -141,15 +136,10 @@ fn issue_bind_parses_positive_id_and_optional_replace() {
 
 #[test]
 fn issue_bind_accepts_optional_session() {
-    let invocation = parse_args(&[
-        "--role",
-        "orchestrator",
-        "issue",
-        "bind",
-        "23",
-        "--session",
-        "s1",
-    ])
+    let invocation = parse_with_role(
+        &["issue", "bind", "23", "--session", "s1"],
+        Some("orchestrator"),
+    )
     .expect("bind --session parses");
     match invocation.command {
         Command::Issue(IssueCommand::Bind { session, .. }) => {
@@ -163,29 +153,19 @@ fn issue_bind_accepts_optional_session() {
 fn issue_bind_rejects_blank_and_overlong_session() {
     for raw in ["", "   "] {
         assert!(
-            parse_args(&[
-                "--role",
-                "orchestrator",
-                "issue",
-                "bind",
-                "23",
-                "--session",
-                raw
-            ])
+            parse_with_role(
+                &["issue", "bind", "23", "--session", raw],
+                Some("orchestrator")
+            )
             .is_err(),
             "issue bind accepted blank session {raw:?}"
         );
     }
     let overlong = "s".repeat(129);
-    let error = parse_args(&[
-        "--role",
-        "orchestrator",
-        "issue",
-        "bind",
-        "23",
-        "--session",
-        &overlong,
-    ])
+    let error = parse_with_role(
+        &["issue", "bind", "23", "--session", &overlong],
+        Some("orchestrator"),
+    )
     .unwrap_err();
     assert!(
         error.contains("session") && error.contains("128"),
@@ -197,7 +177,7 @@ fn issue_bind_rejects_blank_and_overlong_session() {
 fn issue_bind_rejects_zero_negative_and_nonnumeric_ids() {
     for raw in ["0", "-1", "abc", "12abc"] {
         assert!(
-            parse_args(&["--role", "orchestrator", "issue", "bind", raw]).is_err(),
+            parse_with_role(&["issue", "bind", raw], Some("orchestrator")).is_err(),
             "issue bind accepted invalid id {raw:?}"
         );
     }
@@ -220,11 +200,11 @@ fn issue_unbind_and_status_parse_without_arguments_or_options() {
             ));
         }
         assert!(
-            parse_args(&["--role", "executor", "issue", operation, "extra"]).is_err(),
+            parse_with_role(&["issue", operation, "extra"], Some("executor")).is_err(),
             "issue {operation} must reject extra arguments"
         );
         assert!(
-            parse_args(&["--role", "executor", "issue", operation, "--unknown"]).is_err(),
+            parse_with_role(&["issue", operation, "--unknown"], Some("executor")).is_err(),
             "issue {operation} must reject unknown options"
         );
     }
@@ -233,15 +213,15 @@ fn issue_unbind_and_status_parse_without_arguments_or_options() {
 #[test]
 fn hooks_install_parses_as_placeholder_command() {
     let invocation =
-        parse_args(&["--role", "orchestrator", "hooks", "install"]).expect("hooks install parses");
+        parse_with_role(&["hooks", "install"], Some("orchestrator")).expect("hooks install parses");
     match invocation.command {
         Command::Hooks(crate::hooks::HooksCommand::Install) => {}
         other => panic!("unexpected command: {other:?}"),
     }
 
-    assert!(parse_args(&["--role", "orchestrator", "hooks"]).is_ok());
-    assert!(parse_args(&["--role", "orchestrator", "hooks", "uninstall"]).is_err());
-    assert!(parse_args(&["--role", "orchestrator", "hooks", "install", "extra"]).is_err());
+    assert!(parse_args(&["hooks"]).is_ok());
+    assert!(parse_args(&["hooks", "uninstall"]).is_err());
+    assert!(parse_args(&["hooks", "install", "extra"]).is_err());
     assert!(parse_args(&["--help", "hooks"]).is_ok());
     assert!(parse_args(&["--help", "hooks", "install"]).is_ok());
 }
@@ -251,16 +231,16 @@ fn existing_issue_commands_still_parse() {
     // Compatibility guard: adding bind/unbind/status must not disturb the
     // pre-existing provider-backed subcommands.
     let invocation =
-        parse_args(&["--role", "orchestrator", "issue", "close", "5"]).expect("close parses");
+        parse_with_role(&["issue", "close", "5"], Some("orchestrator")).expect("close parses");
     match invocation.command {
         Command::Issue(IssueCommand::Close { number, .. }) => assert_eq!(number, 5),
         other => panic!("unexpected command: {other:?}"),
     }
-    assert!(parse_args(&["--role", "orchestrator", "issue", "search"]).is_ok());
+    assert!(parse_with_role(&["issue", "search"], Some("orchestrator")).is_ok());
 }
 
 // ---------------------------------------------------------------------------
-// `PHASEGENT_ROLE` fallback.
+// `PHASEGENT_ROLE` resolution.
 //
 // The process-global `PHASEGENT_ROLE` is never set here: the parser exposes
 // an injectable variant so parallel parser assertions in other test modules
@@ -276,7 +256,7 @@ fn parse_with_role(values: &[&str], role_env: Option<&str>) -> Result<command::I
 }
 
 #[test]
-fn phasegent_role_env_supplies_role_when_flag_is_absent() {
+fn phasegent_role_env_supplies_role() {
     for raw in ["executor", " executor ", "\texecutor\n"] {
         let invocation = parse_with_role(&["issue", "get", "1"], Some(raw))
             .unwrap_or_else(|error| panic!("env role {raw:?} must parse: {error}"));
@@ -289,22 +269,15 @@ fn phasegent_role_env_supplies_role_when_flag_is_absent() {
 }
 
 #[test]
-fn explicit_role_flag_wins_over_phasegent_role_env() {
-    let invocation = parse_with_role(
-        &["--role", "reviewer", "issue", "get", "1"],
-        Some("executor"),
-    )
-    .expect("explicit --role must parse");
-    assert_eq!(invocation.role, Some(Role::Reviewer));
-
-    // A valid explicit flag also shields an invalid env value from being
-    // evaluated at all.
-    let invocation = parse_with_role(
-        &["--role=reviewer", "issue", "get", "1"],
-        Some("not-a-role"),
-    )
-    .expect("explicit --role must short-circuit the env fallback");
-    assert_eq!(invocation.role, Some(Role::Reviewer));
+fn removed_role_flag_is_rejected() {
+    for token in ["--role", "--role=reviewer"] {
+        let error = parse_with_role(&[token, "reviewer", "issue", "get", "1"], Some("executor"))
+            .expect_err("the removed --role flag must be rejected");
+        assert!(
+            error.starts_with("unknown option '--role"),
+            "token {token}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -323,7 +296,7 @@ fn blank_or_absent_phasegent_role_env_keeps_the_previous_requirement() {
     for role_env in [None, Some(""), Some("   ")] {
         let error = parse_with_role(&["issue", "get", "1"], role_env).unwrap_err();
         assert!(
-            error.contains("--role is required"),
+            error.contains("a role is required"),
             "env {role_env:?} must behave as unset, got: {error}"
         );
     }
@@ -333,7 +306,7 @@ fn blank_or_absent_phasegent_role_env_keeps_the_previous_requirement() {
 fn no_role_whitelist_commands_still_parse_with_role_env_present() {
     // The env fallback lands before the `no_role_allowed` gate, so a
     // role-less whitelist command is accepted and carries whatever role the
-    // environment supplied; an explicit flag still overrides it.
+    // environment supplied.
     let invocation =
         parse_with_role(&["issue", "bind", "23"], Some("executor")).expect("bind parses");
     assert_eq!(invocation.role, Some(Role::Executor));
@@ -346,11 +319,8 @@ fn no_role_whitelist_commands_still_parse_with_role_env_present() {
         parse_with_role(&["issue", "status"], Some("executor")).expect("status parses");
     assert_eq!(invocation.role, Some(Role::Executor));
 
-    let invocation = parse_with_role(
-        &["--role", "orchestrator", "issue", "unbind"],
-        Some("executor"),
-    )
-    .expect("unbind parses");
+    let invocation =
+        parse_with_role(&["issue", "unbind"], Some("orchestrator")).expect("unbind parses");
     assert_eq!(invocation.role, Some(Role::Orchestrator));
 }
 

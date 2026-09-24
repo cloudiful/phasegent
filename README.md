@@ -30,31 +30,36 @@ values.
 
 ```sh
 # Secure prompt
-phasegent --role orchestrator admin auth setup
+PHASEGENT_ROLE=orchestrator phasegent admin auth setup
 
 # Read from a protected file or another secure source
-phasegent --role executor admin auth setup --stdin < /secure/path/token
+PHASEGENT_ROLE=executor phasegent admin auth setup --stdin < /secure/path/token
 
 # Select another provider and its API base explicitly
-phasegent --role orchestrator --provider redmine admin auth setup \
+PHASEGENT_ROLE=orchestrator phasegent --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
 
 # Prepare the Redmine project and role memberships
-phasegent --role admin --provider redmine admin workflow bootstrap \
+PHASEGENT_ROLE=admin phasegent --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
+
+The CLI resolves its role from the `PHASEGENT_ROLE` environment variable: a
+managed OpenCode session exports it per invocation, and any other host sets it
+in the shell. On PowerShell use `$env:PHASEGENT_ROLE='orchestrator'; phasegent
+...` instead of the `NAME=value` prefix.
 
 ## Common Commands
 
 ```sh
-phasegent --role orchestrator issue search --query "bug"
-phasegent --role orchestrator issue get 123
-phasegent --role orchestrator issue get 123 124 125
-phasegent --role orchestrator comment list 123
-phasegent --role orchestrator issue create \
+PHASEGENT_ROLE=orchestrator phasegent issue search --query "bug"
+PHASEGENT_ROLE=orchestrator phasegent issue get 123
+PHASEGENT_ROLE=orchestrator phasegent issue get 123 124 125
+PHASEGENT_ROLE=orchestrator phasegent comment list 123
+PHASEGENT_ROLE=orchestrator phasegent issue create \
   --title "Short title" --body "Issue details"
-phasegent --role orchestrator issue update 123 --body "Updated details"
-phasegent --role orchestrator issue close 123
+PHASEGENT_ROLE=orchestrator phasegent issue update 123 --body "Updated details"
+PHASEGENT_ROLE=orchestrator phasegent issue close 123
 phasegent doctor
 ```
 

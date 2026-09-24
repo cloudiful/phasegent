@@ -44,15 +44,29 @@ impl Drop for ScratchDir {
 }
 
 fn run_phasegent(scratch: &ScratchDir, args: &[&str]) -> Output {
-    run_phasegent_with_token(scratch, args, None)
+    run_phasegent_with(scratch, None, args, None)
+}
+
+fn run_phasegent_as(scratch: &ScratchDir, role: &str, args: &[&str]) -> Output {
+    run_phasegent_with(scratch, Some(role), args, None)
 }
 
 fn run_phasegent_with_token(scratch: &ScratchDir, args: &[&str], token: Option<&str>) -> Output {
+    run_phasegent_with(scratch, Some("executor"), args, token)
+}
+
+fn run_phasegent_with(
+    scratch: &ScratchDir,
+    role: Option<&str>,
+    args: &[&str],
+    token: Option<&str>,
+) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_phasegent"));
     command
         .args(args)
         .env("PHASEGENT_DB_PATH", scratch.db_path().as_os_str())
         .env("PHASEGENT_CONFIG_PATH", scratch.missing_toml().as_os_str())
+        .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_NOTIFY_ENABLED")
@@ -66,6 +80,9 @@ fn run_phasegent_with_token(scratch: &ScratchDir, args: &[&str], token: Option<&
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(role) = role {
+        command.env("PHASEGENT_ROLE", role);
+    }
     // Hermetic HTTP auth isolation: ambient tokens must never leak
     // into fail-closed assertions.
     match token {
@@ -90,18 +107,10 @@ fn free_loopback_port() -> u16 {
 fn spawn_http_server(scratch: &ScratchDir, bind: &str, token: Option<&str>) -> std::process::Child {
     let mut command = Command::new(env!("CARGO_BIN_EXE_phasegent"));
     command
-        .args([
-            "--role",
-            "executor",
-            "mcp",
-            "serve",
-            "--transport",
-            "http",
-            "--bind",
-            bind,
-        ])
+        .args(["mcp", "serve", "--transport", "http", "--bind", bind])
         .env("PHASEGENT_DB_PATH", scratch.db_path().as_os_str())
         .env("PHASEGENT_CONFIG_PATH", scratch.missing_toml().as_os_str())
+        .env("PHASEGENT_ROLE", "executor")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env("RUST_BACKTRACE", "0")
@@ -296,10 +305,10 @@ fn mcp_serve_requires_role() {
     let output = run_phasegent(&scratch, &["mcp", "serve"]);
     assert!(
         !output.status.success(),
-        "mcp serve without --role must fail"
+        "mcp serve without a role must fail"
     );
     assert!(
-        stderr_text(&output).contains("--role"),
+        stderr_text(&output).contains("a role is required"),
         "stderr={}",
         stderr_text(&output)
     );
@@ -308,9 +317,10 @@ fn mcp_serve_requires_role() {
 #[test]
 fn mcp_serve_rejects_bad_transport() {
     let scratch = scratch_db();
-    let output = run_phasegent(
+    let output = run_phasegent_as(
         &scratch,
-        &["--role", "executor", "mcp", "serve", "--transport", "bogus"],
+        "executor",
+        &["mcp", "serve", "--transport", "bogus"],
     );
     assert!(!output.status.success());
     assert!(
@@ -323,11 +333,10 @@ fn mcp_serve_rejects_bad_transport() {
 #[test]
 fn mcp_serve_rejects_bind_without_http() {
     let scratch = scratch_db();
-    let output = run_phasegent(
+    let output = run_phasegent_as(
         &scratch,
+        "executor",
         &[
-            "--role",
-            "executor",
             "mcp",
             "serve",
             "--transport",
@@ -347,11 +356,10 @@ fn mcp_serve_rejects_bind_without_http() {
 #[test]
 fn mcp_serve_rejects_bad_bind() {
     let scratch = scratch_db();
-    let output = run_phasegent(
+    let output = run_phasegent_as(
         &scratch,
+        "executor",
         &[
-            "--role",
-            "executor",
             "mcp",
             "serve",
             "--transport",
@@ -371,7 +379,7 @@ fn mcp_serve_rejects_bad_bind() {
 #[test]
 fn mcp_rejects_unknown_subcommand() {
     let scratch = scratch_db();
-    let output = run_phasegent(&scratch, &["--role", "executor", "mcp", "frobnicate"]);
+    let output = run_phasegent_as(&scratch, "executor", &["mcp", "frobnicate"]);
     assert!(!output.status.success());
     assert!(
         stderr_text(&output).contains("unknown mcp command"),
@@ -403,8 +411,6 @@ fn mcp_http_fails_closed_without_token() {
     let port = free_loopback_port();
     let bind = format!("127.0.0.1:{port}");
     let args = [
-        "--role",
-        "executor",
         "mcp",
         "serve",
         "--transport",
@@ -519,9 +525,10 @@ fn mcp_stdio_does_not_require_http_token() {
     // initialize), but it must never fail closed with the HTTP token
     // message. If it stays alive, that also proves no token gate.
     let mut child = Command::new(env!("CARGO_BIN_EXE_phasegent"))
-        .args(["--role", "executor", "mcp", "serve", "--transport", "stdio"])
+        .args(["mcp", "serve", "--transport", "stdio"])
         .env("PHASEGENT_DB_PATH", scratch.db_path().as_os_str())
         .env("PHASEGENT_CONFIG_PATH", scratch.missing_toml().as_os_str())
+        .env("PHASEGENT_ROLE", "executor")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_MCP_AUTH_TOKEN")
@@ -594,11 +601,10 @@ fn mcp_help_marks_bind_http_only() {
 fn notify_send_rejects_notify_setting_phase() {
     let scratch = scratch_db();
     for phase in ["PHASEGENT_NOTIFY_CHANNEL", "PHASEGENT_NOTIFY_WEBHOOK_TOKEN"] {
-        let output = run_phasegent(
+        let output = run_phasegent_as(
             &scratch,
+            "executor",
             &[
-                "--role",
-                "executor",
                 "notify",
                 "send",
                 "--event",
@@ -619,11 +625,10 @@ fn notify_send_rejects_notify_setting_phase() {
             "phase={phase} stderr={stderr}"
         );
     }
-    let ok = run_phasegent(
+    let ok = run_phasegent_as(
         &scratch,
+        "executor",
         &[
-            "--role",
-            "executor",
             "notify",
             "send",
             "--event",
@@ -645,11 +650,10 @@ fn notify_send_rejects_notify_setting_phase() {
 fn notify_send_title_truncate_ceiling() {
     let scratch = scratch_db();
     let too_long = "t".repeat(2001);
-    let output = run_phasegent(
+    let output = run_phasegent_as(
         &scratch,
+        "executor",
         &[
-            "--role",
-            "executor",
             "notify",
             "send",
             "--event",
@@ -670,11 +674,10 @@ fn notify_send_title_truncate_ceiling() {
     // Above the 140-char envelope truncation but below the 2000-char
     // parser ceiling: accepted (truncated), not rejected.
     let truncated = "t".repeat(500);
-    let ok = run_phasegent(
+    let ok = run_phasegent_as(
         &scratch,
+        "executor",
         &[
-            "--role",
-            "executor",
             "notify",
             "send",
             "--event",

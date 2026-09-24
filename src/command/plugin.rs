@@ -13,7 +13,7 @@
 //!   with `-`.
 //! * No role / provider / network is touched here; the role gate is
 //!   not applied because plugin management is operator-local and
-//!   mirrors the hooks install surface (no `--role` required).
+//!   mirrors the hooks install surface (no role required).
 
 use super::parse_helpers::{has_flag, validate_options};
 use super::{Command as RootCommand, HelpTopic, PluginCommand};
@@ -85,7 +85,8 @@ mod tests {
     #[test]
     fn install_defaults_to_both_scopes_unforced() {
         let invocation =
-            command::parse(&strings(["--role", "orchestrator", "plugin", "install"])).unwrap();
+            command::parse_with_role_env(&strings(["plugin", "install"]), Some("orchestrator"))
+                .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install {
                 global,
@@ -102,15 +103,10 @@ mod tests {
 
     #[test]
     fn install_parses_global_project_force_flags() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "plugin",
-            "install",
-            "--global",
-            "--project",
-            "--force",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["plugin", "install", "--global", "--project", "--force"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install {
@@ -128,13 +124,10 @@ mod tests {
 
     #[test]
     fn install_rejects_unknown_option() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "plugin",
-            "install",
-            "--bogus",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings(["plugin", "install", "--bogus"]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(err.contains("unknown option"), "got: {err}");
     }
@@ -142,7 +135,8 @@ mod tests {
     #[test]
     fn status_parses_without_flags() {
         let invocation =
-            command::parse(&strings(["--role", "orchestrator", "plugin", "status"])).unwrap();
+            command::parse_with_role_env(&strings(["plugin", "status"]), Some("orchestrator"))
+                .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Status) => {}
             other => panic!("unexpected command {other:?}"),
@@ -151,13 +145,10 @@ mod tests {
 
     #[test]
     fn status_rejects_unknown_option() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "plugin",
-            "status",
-            "--global",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings(["plugin", "status", "--global"]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(err.contains("unknown option"), "got: {err}");
     }
@@ -165,7 +156,8 @@ mod tests {
     #[test]
     fn uninstall_defaults_to_both_scopes() {
         let invocation =
-            command::parse(&strings(["--role", "orchestrator", "plugin", "uninstall"])).unwrap();
+            command::parse_with_role_env(&strings(["plugin", "uninstall"]), Some("orchestrator"))
+                .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Uninstall { global, project }) => {
                 assert!(!global);
@@ -177,13 +169,10 @@ mod tests {
 
     #[test]
     fn uninstall_parses_scope_flags() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "plugin",
-            "uninstall",
-            "--project",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["plugin", "uninstall", "--project"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Uninstall { global, project }) => {
@@ -197,7 +186,7 @@ mod tests {
     #[test]
     fn plugin_install_does_not_require_role() {
         // `plugin install` mirrors `hooks install`: operator-local,
-        // never touches a provider, so no `--role` is required.
+        // never touches a provider, so no role is required.
         let invocation = command::parse(&strings(["plugin", "install"])).unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install { .. }) => {}
@@ -207,8 +196,9 @@ mod tests {
 
     #[test]
     fn plugin_unknown_subcommand_is_rejected() {
-        let err = command::parse(&strings(["--role", "orchestrator", "plugin", "reinstall"]))
-            .unwrap_err();
+        let err =
+            command::parse_with_role_env(&strings(["plugin", "reinstall"]), Some("orchestrator"))
+                .unwrap_err();
         assert!(err.contains("unknown plugin command"), "got: {err}");
     }
 }

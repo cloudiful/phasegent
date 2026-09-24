@@ -16,7 +16,9 @@ pub fn clear_setting(
     storage: &Storage,
 ) -> Result<Value, String> {
     if is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!("--role is required for setting '{canonical}'"));
+        return Err(format!(
+            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
+        ));
     }
     let cleared = persist_clear_value(role, canonical, storage)?;
     let outcome = ConfigClearOutcome {

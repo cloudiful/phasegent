@@ -17,7 +17,7 @@ use crate::policy::{Capability, Role};
 use crate::providers::{IssueProvider, ProviderDispatcher, ProviderKind};
 
 /// Server-side invocation context. Captured once at `mcp serve`
-/// startup from the CLI `--role`/`--provider` flags; never taken
+/// startup from `PHASEGENT_ROLE` and the provider flags; never taken
 /// from MCP client input.
 #[derive(Clone, Debug)]
 pub struct McpConfig {

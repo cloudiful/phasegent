@@ -232,8 +232,6 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
         .unwrap();
 
     let args = strings([
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "--api-base",
@@ -247,63 +245,66 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
         "--body",
         "Body",
     ]);
-    assert_eq!(crate::cli::run(args), 0);
+    assert_eq!(crate::cli::run_with_role(args, Some("orchestrator")), 0);
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "--api-base",
-            &base,
-            "--repository",
-            "owner/repo",
-            "issue",
-            "create",
-            "--title",
-            "Created again",
-            "--body",
-            "Body",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                &base,
+                "--repository",
+                "owner/repo",
+                "issue",
+                "create",
+                "--title",
+                "Created again",
+                "--body",
+                "Body",
+            ]),
+            Some("orchestrator")
+        ),
         0
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "--api-base",
-            &base,
-            "--repository",
-            "owner/repo",
-            "issue",
-            "search",
-            "--all",
-            "--state",
-            "all",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                &base,
+                "--repository",
+                "owner/repo",
+                "issue",
+                "search",
+                "--all",
+                "--state",
+                "all",
+            ]),
+            Some("orchestrator")
+        ),
         0
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "--api-base",
-            &base,
-            "--repository",
-            "owner/repo",
-            "--project-id",
-            "99",
-            "issue",
-            "create",
-            "--title",
-            "Explicit",
-            "--body",
-            "Body",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                &base,
+                "--repository",
+                "owner/repo",
+                "--project-id",
+                "99",
+                "issue",
+                "create",
+                "--title",
+                "Explicit",
+                "--body",
+                "Body",
+            ]),
+            Some("orchestrator")
+        ),
         0
     );
 

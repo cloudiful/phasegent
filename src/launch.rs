@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn explicit_gui_parses_without_role() {
         let invocation =
-            crate::command::parse(&["gui".to_owned()]).expect("gui must parse without --role");
+            crate::command::parse(&["gui".to_owned()]).expect("gui must parse without a role");
         assert!(invocation.role.is_none());
         assert!(matches!(invocation.command, crate::command::Command::Gui));
     }
@@ -180,9 +180,15 @@ mod tests {
             invocation.command,
             crate::command::Command::Help(crate::command::HelpTopic::Root)
         ));
-        // A representative existing command still requires --role.
-        let error = crate::command::parse(&["issue".to_owned(), "get".to_owned(), "1".to_owned()])
-            .expect_err("issue get without --role must still fail");
-        assert!(error.contains("--role"), "unexpected error: {error}");
+        // A representative existing command still requires a role.
+        let error = crate::command::parse_with_role_env(
+            &["issue".to_owned(), "get".to_owned(), "1".to_owned()],
+            None,
+        )
+        .expect_err("issue get without a role must still fail");
+        assert!(
+            error.contains("a role is required"),
+            "unexpected error: {error}"
+        );
     }
 }

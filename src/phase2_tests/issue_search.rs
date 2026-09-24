@@ -3,18 +3,14 @@ use super::*;
 #[test]
 fn issue_search_bounded_pagination_parses_and_validates() {
     // Default page 1 limit 50, requires query or --all
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "search",
-        "--query",
-        "needle",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    let args = ["issue", "search", "--query", "needle"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Issue(command::IssueCommand::Search {
             query,
             state,
@@ -34,11 +30,14 @@ fn issue_search_bounded_pagination_parses_and_validates() {
     }
 
     // --all allows empty query, bounded listing
-    let args = ["--role", "orchestrator", "issue", "search", "--all"]
+    let args = ["issue", "search", "--all"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Issue(command::IssueCommand::Search { all, query, .. }) => {
             assert!(all);
             assert!(query.is_none());
@@ -47,18 +46,11 @@ fn issue_search_bounded_pagination_parses_and_validates() {
     }
 
     // whitespace-only query without --all is rejected at validation layer
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "search",
-        "--query",
-        "   ",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).unwrap();
+    let args = ["issue", "search", "--query", "   "]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator")).unwrap();
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Search {
             query,
@@ -82,11 +74,11 @@ fn issue_search_bounded_pagination_parses_and_validates() {
     }
 
     // without query and without --all is rejected at validation layer
-    let args = ["--role", "orchestrator", "issue", "search"]
+    let args = ["issue", "search"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).unwrap();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator")).unwrap();
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Search {
             query,
@@ -111,8 +103,6 @@ fn issue_search_bounded_pagination_parses_and_validates() {
 
     // page/limit validation
     let args = [
-        "--role",
-        "orchestrator",
         "issue",
         "search",
         "--query",
@@ -126,7 +116,10 @@ fn issue_search_bounded_pagination_parses_and_validates() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Issue(command::IssueCommand::Search {
             page,
             limit,
@@ -142,8 +135,6 @@ fn issue_search_bounded_pagination_parses_and_validates() {
 
     for (page, limit) in [(0, 50), (1, 0), (1, 101)] {
         let args = [
-            "--role",
-            "orchestrator",
             "issue",
             "search",
             "--query",
@@ -157,7 +148,7 @@ fn issue_search_bounded_pagination_parses_and_validates() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
         assert!(
-            command::parse(&args).is_err(),
+            command::parse_with_role_env(&args, Some("orchestrator")).is_err(),
             "should reject page={page} limit={limit}"
         );
     }

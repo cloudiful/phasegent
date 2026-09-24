@@ -20,8 +20,6 @@ const POLICY_SOURCE: &str = "phasegent/canonical-phase-workflow@v1";
 
 fn status_args(target: Option<&str>) -> Vec<&str> {
     let mut args = vec![
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "--project-id",
@@ -69,6 +67,7 @@ fn status_advance_performs_policy_allowed_transition() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(
@@ -113,6 +112,7 @@ fn status_advance_same_status_is_idempotent_no_op() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(
@@ -166,6 +166,7 @@ fn status_advance_performs_resolved_to_in_progress_phase_continuation() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(
@@ -217,6 +218,7 @@ fn status_advance_preserves_server_rejection_of_phase_continuation() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(output.status.code(), Some(1));
@@ -261,7 +263,12 @@ fn status_advance_rejects_illegal_transition_before_any_write() {
     ]);
     let db = make_test_db(&server.base_url);
 
-    let output = run_cli(&db.path, &server.base_url, &status_args(Some("In Review")));
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &status_args(Some("In Review")),
+    );
     assert_eq!(output.status.code(), Some(1));
     let stderr = stderr_text(&output);
     let json: serde_json::Value =
@@ -303,6 +310,7 @@ fn status_advance_rejects_transition_out_of_terminal_status() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(output.status.code(), Some(1));
@@ -343,6 +351,7 @@ fn status_advance_forwards_custom_status_as_advisory() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(
@@ -383,6 +392,7 @@ fn status_advance_preserves_server_rejection_with_added_context() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &status_args(Some("In Progress")),
     );
     assert_eq!(output.status.code(), Some(1));

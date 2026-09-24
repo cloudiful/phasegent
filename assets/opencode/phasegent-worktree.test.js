@@ -9,7 +9,8 @@
 // `src/plugin_tests.rs`.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPlugin } from "./src/build.js";
@@ -45,6 +46,22 @@ const {
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
+
+// The generated Windows role scope (issue #588 P2): a `$( … )` subexpression
+// that scopes `PHASEGENT_ROLE` to the CLI child, restores the previous value
+// from `finally`, and re-asserts a failing CLI status after the restore.
+const WINDOWS_SCOPE_HEAD =
+  "$( $__phasegent_role=$env:PHASEGENT_ROLE; try { $env:PHASEGENT_ROLE='executor'; ";
+const WINDOWS_SCOPE_TAIL =
+  " } finally { $__phasegent_status=$LASTEXITCODE; $env:PHASEGENT_ROLE=$__phasegent_role; " +
+  "if ($__phasegent_status -ne 0) { Write-Error -Message 'phasegent failed' -ErrorAction SilentlyContinue } } )";
+const windowsScope = (command) => `${WINDOWS_SCOPE_HEAD}${command}${WINDOWS_SCOPE_TAIL}`;
+
+// The PowerShell runtime regressions need a PowerShell 7 host; they are skipped
+// where none is installed (CI on Linux) and run locally via `PHASEGENT_PWSH`.
+const PWSH_PATH =
+  process.env.PHASEGENT_PWSH ||
+  (typeof Bun !== "undefined" && typeof Bun.which === "function" ? Bun.which("pwsh") : null);
 
 function restoreNoDiscover(saved) {
   if (saved === undefined) {
@@ -408,7 +425,7 @@ describe("tool.execute.before hook (v2 single event)", () => {
     };
     await hook(event);
     // Command rewriting is independent of the placement fast path.
-    expect(event.input.command).toBe("phasegent --role orchestrator issue get 1");
+    expect(event.input.command).toBe("PHASEGENT_ROLE=orchestrator phasegent issue get 1");
     expect(event.input.workdir).toBeUndefined();
   });
 
@@ -754,18 +771,18 @@ describe("rewritePhasegentCommand (issue #541)", () => {
       { agent: "orchestrator" },
     );
     expect(out).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --session session-1 | tee /tmp/x",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
     );
   });
 
-  test("keeps an existing --role and appends --session to issue bind", () => {
+  test("keeps an existing role assignment and appends --session to issue bind", () => {
     expect(
       rewritePhasegentCommand(
-        "phasegent --role executor --provider local issue bind 18",
+        "PHASEGENT_ROLE=executor phasegent --provider local issue bind 18",
         "abc",
         { agent: "orchestrator" },
       ),
-    ).toBe("phasegent --role executor --provider local issue bind 18 --session abc");
+    ).toBe("PHASEGENT_ROLE=executor phasegent --provider local issue bind 18 --session abc");
   });
 
   test("skips --session when it is already present", () => {
@@ -781,28 +798,179 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     ).toBe("phasegent issue bind 18 --session=s1");
   });
 
-  test("injects --role right after the phasegent token", () => {
+  test("injects the role before the phasegent token", () => {
     expect(
       rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("phasegent --role executor issue status");
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
     expect(
       rewritePhasegentCommand("phasegent worktree status --issue 1", undefined, {
         agent: "reviewer",
       }),
-    ).toBe("phasegent --role reviewer worktree status --issue 1");
+    ).toBe("PHASEGENT_ROLE=reviewer phasegent worktree status --issue 1");
   });
 
-  test("leaves an existing --role flag untouched", () => {
+  test("leaves an existing role assignment untouched", () => {
     expect(
-      rewritePhasegentCommand("phasegent --role reviewer issue get 1", "s1", {
+      rewritePhasegentCommand("PHASEGENT_ROLE=reviewer phasegent issue get 1", "s1", {
+        agent: "orchestrator",
+      }),
+    ).toBe("PHASEGENT_ROLE=reviewer phasegent issue get 1");
+    expect(
+      rewritePhasegentCommand("PHASEGENT_ROLE=admin phasegent issue get 1", "s1", {
+        agent: "orchestrator",
+      }),
+    ).toBe("PHASEGENT_ROLE=admin phasegent issue get 1");
+    expect(
+      rewritePhasegentCommand("PHASEGENT_ROLE=executor phasegent issue get 1", "s1", {
         agent: "executor",
       }),
-    ).toBe("phasegent --role reviewer issue get 1");
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue get 1");
+  });
+
+  test("scopes the role to the invocation on a Windows host", () => {
     expect(
-      rewritePhasegentCommand("phasegent --role=reviewer issue get 1", "s1", {
+      rewritePhasegentCommand(
+        "phasegent issue status",
+        "s1",
+        { agent: "executor" },
+        { windows: true },
+      ),
+    ).toBe(windowsScope("phasegent issue status"));
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue status",
+        "s1",
+        { agent: "executor" },
+        { windows: false },
+      ),
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
+    expect(
+      rewritePhasegentCommand(
+        "PHASEGENT_ROLE=executor phasegent issue status",
+        "s1",
+        { agent: "executor" },
+        { windows: true },
+      ),
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
+  });
+
+  test("does not leak the PowerShell role into a following statement", () => {
+    // Issue #588 P2 review: a bare `$env:PHASEGENT_ROLE=...;` assignment stays
+    // set for the rest of the shell, so `Write-Output` and any child process
+    // launched afterwards inherited the session role. The scope restores the
+    // previous value before the following statement runs.
+    const out = rewritePhasegentCommand(
+      "phasegent issue get 1; Write-Output $env:PHASEGENT_ROLE",
+      "s1",
+      { agent: "executor" },
+      { windows: true },
+    );
+    expect(out).toBe(`${windowsScope("phasegent issue get 1")}; Write-Output $env:PHASEGENT_ROLE`);
+    const restore = out.indexOf("$env:PHASEGENT_ROLE=$__phasegent_role");
+    expect(restore).toBeGreaterThan(-1);
+    expect(restore).toBeLessThan(out.indexOf("Write-Output"));
+    expect(out.slice(restore)).not.toContain("'executor'");
+  });
+
+  test("does not leak the PowerShell role into a following child process", () => {
+    const out = rewritePhasegentCommand(
+      "phasegent issue get 1; cmd /c echo %PHASEGENT_ROLE%",
+      "s1",
+      { agent: "executor" },
+      { windows: true },
+    );
+    const injected = out.indexOf("$env:PHASEGENT_ROLE='executor'");
+    const restore = out.indexOf("$env:PHASEGENT_ROLE=$__phasegent_role");
+    const child = out.indexOf("cmd /c");
+    expect(injected).toBeGreaterThan(-1);
+    expect(restore).toBeGreaterThan(injected);
+    expect(child).toBeGreaterThan(restore);
+    // The child command runs after the restore, so the role literal is gone.
+    expect(out.slice(child)).not.toContain("'executor'");
+  });
+
+  test("scopes each Windows invocation independently", () => {
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue status && phasegent issue get 1",
+        "s1",
+        { agent: "executor" },
+        { windows: true },
+      ),
+    ).toBe(`${windowsScope("phasegent issue status")} && ${windowsScope("phasegent issue get 1")}`);
+    expect(
+      rewritePhasegentCommand(
+        "phasegent issue status | tee /tmp/x",
+        "s1",
+        { agent: "executor" },
+        { windows: true },
+      ),
+    ).toBe(`${windowsScope("phasegent issue status")} | tee /tmp/x`);
+  });
+
+  test("preserves the CLI failure status across the PowerShell restore (&&)", () => {
+    // Issue #588 P2 round 3: the successful restore assignment must not make a
+    // failing CLI look successful, so the captured nonzero `$LASTEXITCODE` is
+    // re-asserted after the restore. The scope is a `$( … )` subexpression (not
+    // `& { … }`, which resets `$?` on its own), so the failure survives into the
+    // `&&` evaluation.
+    const out = rewritePhasegentCommand(
+      "phasegent issue get 1 && Write-Output done",
+      "s1",
+      { agent: "executor" },
+      { windows: true },
+    );
+    expect(out).toBe(`${windowsScope("phasegent issue get 1")} && Write-Output done`);
+    expect(out.startsWith("$( ")).toBe(true);
+    expect(out).not.toContain("& { ");
+    const status = out.indexOf("$__phasegent_status=$LASTEXITCODE");
+    const restore = out.indexOf("$env:PHASEGENT_ROLE=$__phasegent_role");
+    const reassert = out.indexOf(
+      "Write-Error -Message 'phasegent failed' -ErrorAction SilentlyContinue",
+    );
+    const chain = out.indexOf(") && Write-Output done");
+    expect(status).toBeGreaterThan(-1);
+    expect(restore).toBeGreaterThan(status);
+    expect(reassert).toBeGreaterThan(restore);
+    expect(chain).toBeGreaterThan(reassert);
+  });
+
+  test("preserves the CLI failure status before a PowerShell || fallback", () => {
+    const out = rewritePhasegentCommand(
+      "phasegent issue get 1 || Write-Output fallback",
+      "s1",
+      { agent: "executor" },
+      { windows: true },
+    );
+    expect(out).toBe(`${windowsScope("phasegent issue get 1")} || Write-Output fallback`);
+    expect(out.indexOf(") || Write-Output fallback")).toBeGreaterThan(
+      out.indexOf("Write-Error"),
+    );
+  });
+
+  test("restores the PowerShell role even when the CLI fails", () => {
+    const out = rewritePhasegentCommand(
+      "phasegent issue get 1",
+      "s1",
+      { agent: "executor" },
+      { windows: true },
+    );
+    // `finally` runs on a terminating CLI failure instead of leaving the role
+    // set for the rest of the shell, and captures the status before restoring.
+    expect(out).toContain("try { $env:PHASEGENT_ROLE='executor'; ");
+    expect(out).toContain(
+      "finally { $__phasegent_status=$LASTEXITCODE; $env:PHASEGENT_ROLE=$__phasegent_role;",
+    );
+  });
+
+  test("leaves a removed --role flag for the CLI to reject", () => {
+    // The flag is intentionally incompatible (issue #588): the adapter adds the
+    // role assignment and never rewrites the flag itself.
+    expect(
+      rewritePhasegentCommand("phasegent --role orchestrator issue status", "s1", {
         agent: "executor",
       }),
-    ).toBe("phasegent --role=reviewer issue get 1");
+    ).toBe("PHASEGENT_ROLE=executor phasegent --role orchestrator issue status");
   });
 
   test("does not inject a role for an unknown agent", () => {
@@ -841,7 +1009,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "phasegent --role orchestrator issue get 1 && phasegent --role orchestrator issue bind 541 --session s9",
+      "PHASEGENT_ROLE=orchestrator phasegent issue get 1 && PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --session s9",
     );
   });
 
@@ -852,10 +1020,10 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe("PHASEGENT_WORKTREE_NO_DISCOVER=1 phasegent --role executor issue status");
+    ).toBe("PHASEGENT_WORKTREE_NO_DISCOVER=1 PHASEGENT_ROLE=executor phasegent issue status");
     expect(
       rewritePhasegentCommand("./phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("./phasegent --role executor issue status");
+    ).toBe("PHASEGENT_ROLE=executor ./phasegent issue status");
   });
 
   test("does not rewrite phasegent look-alikes", () => {
@@ -877,7 +1045,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
       "phasegent issue create --title t --body b",
       "phasegent issue bind 541",
       // A claimed orchestrator role must not buy a sub-agent an issue write.
-      "phasegent --role orchestrator issue create --title t",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t",
     ]) {
       const out = rewritePhasegentCommand(command, "s1", { agent: "executor" });
       expect(out).toContain("cannot run 'issue create|bind'");
@@ -891,45 +1059,116 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     // The close segment also carries its closer flag (issue #575 P2); the CLI
     // role gate still refuses a close that is not run as an orchestrator.
     expect(
-      rewritePhasegentCommand("phasegent --role orchestrator issue close 1", "s1", {
+      rewritePhasegentCommand("PHASEGENT_ROLE=orchestrator phasegent issue close 1", "s1", {
         agent: "executor",
       }),
-    ).toBe("phasegent --role executor issue close 1 --worktree-session s1");
+    ).toBe("PHASEGENT_ROLE=executor phasegent issue close 1 --worktree-session s1");
     expect(
-      rewritePhasegentCommand("phasegent --role=admin issue status", "s1", {
+      rewritePhasegentCommand("PHASEGENT_ROLE=ADMIN phasegent issue status", "s1", {
         agent: "tester",
       }),
-    ).toBe("phasegent --role=tester issue status");
+    ).toBe("PHASEGENT_ROLE=tester phasegent issue status");
   });
 
-  test("downgrades a PHASEGENT_ROLE=orchestrator|admin env claim", () => {
+  test("outranks a quoted orchestrator/admin env claim for a sub-agent", () => {
+    // A quoted value is never rewritten in place, so the injected session-role
+    // assignment comes last and wins.
     expect(
       rewritePhasegentCommand(
-        "PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 1",
+        "PHASEGENT_ROLE='orchestrator' phasegent issue status",
         "s1",
         { agent: "executor" },
       ),
-    ).toBe(
-      "PHASEGENT_ROLE=executor phasegent --role executor worktree acquire --issue 1",
-    );
+    ).toBe("PHASEGENT_ROLE='orchestrator' PHASEGENT_ROLE=executor phasegent issue status");
+  });
+
+  test("outranks a differing role claim for a sub-agent", () => {
     expect(
       rewritePhasegentCommand(
-        "FOO=1 PHASEGENT_ROLE=admin phasegent issue get 1",
+        "PHASEGENT_ROLE=reviewer phasegent issue status",
         "s1",
-        { agent: "reviewer" },
+        { agent: "executor" },
       ),
-    ).toBe("FOO=1 PHASEGENT_ROLE=reviewer phasegent --role reviewer issue get 1");
+    ).toBe("PHASEGENT_ROLE=reviewer PHASEGENT_ROLE=executor phasegent issue status");
   });
 
   test("keeps an orchestrator session's own role claim", () => {
     // `issue close` additionally gets its closer flag (issue #575 P2).
     expect(
-      rewritePhasegentCommand("phasegent --role orchestrator issue close 1", "s1", {
+      rewritePhasegentCommand("PHASEGENT_ROLE=orchestrator phasegent issue close 1", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("phasegent --role orchestrator issue close 1 --worktree-session s1");
+    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue close 1 --worktree-session s1");
   });
 });
+
+// Real PowerShell 7 regressions for the Windows role scope (issue #588 P2):
+// the emitted command runs unchanged against a fake `phasegent` on PATH, so
+// `&&`, `||`, and the restored environment state are exercised for real rather
+// than only matched as text. Skipped where PowerShell 7 is unavailable (the CI
+// Linux image) and run locally through `PHASEGENT_PWSH`.
+if (PWSH_PATH && process.platform !== "win32") {
+  describe("PowerShell role scope runtime (issue #588 P2)", () => {
+    let dir;
+
+    beforeEach(async () => {
+      dir = await mkdtemp(join(tmpdir(), "phasegent-pwsh-"));
+      const fake = join(dir, "phasegent");
+      await writeFile(
+        fake,
+        '#!/usr/bin/env bash\nprintf "role=%s\\n" "${PHASEGENT_ROLE:-<absent>}"\nexit "${FAKE_CODE:-0}"\n',
+      );
+      await chmod(fake, 0o755);
+    });
+
+    afterEach(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    function run(command, options) {
+      const { code = 0, role } = options || {};
+      const prelude = `$env:PHASEGENT_ROLE=${role ? `'${role}'` : "$null"}\n`;
+      const rewritten = rewritePhasegentCommand(
+        command,
+        "s1",
+        { agent: "executor" },
+        { windows: true },
+      );
+      const script =
+        `${prelude}${rewritten}\n` +
+        `Write-Output "final=<$env:PHASEGENT_ROLE> code=$LASTEXITCODE"\n`;
+      const result = spawnSync(PWSH_PATH, ["-NoProfile", "-Command", script], {
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FAKE_CODE: String(code) },
+        encoding: "utf8",
+      });
+      return { stdout: result.stdout || "", stderr: result.stderr || "", status: result.status };
+    }
+
+    test("a failing invocation skips && and runs ||", () => {
+      const and = run("phasegent issue get 1 && Write-Output done", { code: 3 });
+      expect(and.stdout).toContain("role=executor");
+      expect(and.stdout).not.toContain("done");
+      expect(and.stdout).toContain("final=<> code=3");
+
+      const or = run("phasegent issue get 1 || Write-Output fallback", { code: 3 });
+      expect(or.stdout).toContain("fallback");
+      expect(or.stdout).toContain("final=<> code=3");
+    });
+
+    test("a successful invocation runs && and restores a pre-existing role", () => {
+      const ok = run("phasegent issue get 1 && Write-Output done", { code: 0, role: "admin" });
+      expect(ok.stdout).toContain("role=executor");
+      expect(ok.stdout).toContain("done");
+      expect(ok.stdout).toContain("final=<admin> code=0");
+    });
+
+    test("a failing invocation restores a pre-existing role", () => {
+      const out = run("phasegent issue get 1 || Write-Output fallback", { code: 4, role: "admin" });
+      expect(out.stdout).toContain("fallback");
+      expect(out.stdout).toContain("final=<admin> code=4");
+    });
+  });
+}
 
 describe("issue close session injection (issue #575 P2)", () => {
   test("appends --worktree-session to an issue close segment", () => {
@@ -937,7 +1176,9 @@ describe("issue close session injection (issue #575 P2)", () => {
       rewritePhasegentCommand("phasegent issue close 575", "session-1", {
         agent: "orchestrator",
       }),
-    ).toBe("phasegent --role orchestrator issue close 575 --worktree-session session-1");
+    ).toBe(
+      "PHASEGENT_ROLE=orchestrator phasegent issue close 575 --worktree-session session-1",
+    );
   });
 
   test("uses --worktree-session, never --session, on a close segment", () => {
@@ -959,8 +1200,8 @@ describe("issue close session injection (issue #575 P2)", () => {
 
   test("injects per segment in a compound close command", () => {
     const expected =
-      "phasegent --role orchestrator issue close 575 --worktree-session s1 && " +
-      "phasegent --role orchestrator issue sync";
+      "PHASEGENT_ROLE=orchestrator phasegent issue close 575 --worktree-session s1 && " +
+      "PHASEGENT_ROLE=orchestrator phasegent issue sync";
     expect(
       rewritePhasegentCommand("phasegent issue close 575 && phasegent issue sync", "s1", {
         agent: "orchestrator",
@@ -973,7 +1214,9 @@ describe("issue close session injection (issue #575 P2)", () => {
       rewritePhasegentCommand('phasegent issue close 575 --worktree-session "s1 s2"', "s9", {
         agent: "orchestrator",
       }),
-    ).toBe('phasegent --role orchestrator issue close 575 --worktree-session "s1 s2"');
+    ).toBe(
+      'PHASEGENT_ROLE=orchestrator phasegent issue close 575 --worktree-session "s1 s2"',
+    );
   });
 
   test("adds the close flag only when a session id is resolved", () => {
@@ -999,7 +1242,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'phasegent --role orchestrator issue create --title t --body "a | b" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "a | b" --session session-1',
     );
   });
 
@@ -1007,7 +1250,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
     // A real newline inside the value must not split the segment.
     const command = 'phasegent issue create --title t --body "l1\nl2"';
     expect(rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" })).toBe(
-      'phasegent --role orchestrator issue create --title t --body "l1\nl2" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "l1\nl2" --session session-1',
     );
   });
 
@@ -1017,7 +1260,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'phasegent --role orchestrator issue create --title "a && b" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title "a && b" --session session-1',
     );
   });
 
@@ -1049,7 +1292,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'phasegent --role orchestrator issue create --title t --body "--session s9" --session session-1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "--session s9" --session session-1',
     );
   });
 
@@ -1058,7 +1301,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
       rewritePhasegentCommand('phasegent issue get 1 --body "issue bind"', "session-1", {
         agent: "executor",
       }),
-    ).toBe('phasegent --role executor issue get 1 --body "issue bind"');
+    ).toBe('PHASEGENT_ROLE=executor phasegent issue get 1 --body "issue bind"');
   });
 
   test("does not rewrite a quoted --role value for a sub-agent", () => {
@@ -1066,7 +1309,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
       rewritePhasegentCommand('phasegent issue get 1 --body "--role orchestrator"', "s1", {
         agent: "executor",
       }),
-    ).toBe('phasegent --role executor issue get 1 --body "--role orchestrator"');
+    ).toBe('PHASEGENT_ROLE=executor phasegent issue get 1 --body "--role orchestrator"');
   });
 
   test("does not rewrite a quoted PHASEGENT_ROLE value for a sub-agent", () => {
@@ -1076,7 +1319,19 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe('phasegent --role executor issue get 1 --body "PHASEGENT_ROLE=orchestrator"');
+    ).toBe(
+      'PHASEGENT_ROLE=executor phasegent issue get 1 --body "PHASEGENT_ROLE=orchestrator"',
+    );
+  });
+
+  test("does not read a quoted role literal before the invocation as an assignment", () => {
+    expect(
+      rewritePhasegentCommand(
+        'FOO="PHASEGENT_ROLE=admin" phasegent issue get 1',
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe('FOO="PHASEGENT_ROLE=admin" PHASEGENT_ROLE=executor phasegent issue get 1');
   });
 
   test("handles single-quoted values and escaped quotes", () => {
@@ -1086,7 +1341,9 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "orchestrator" },
       ),
-    ).toBe("phasegent --role orchestrator issue create --title t --body 'a | b' --session s1");
+    ).toBe(
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body 'a | b' --session s1",
+    );
     expect(
       rewritePhasegentCommand(
         'phasegent issue create --title t --body "a \\" | b"',
@@ -1094,7 +1351,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'phasegent --role orchestrator issue create --title t --body "a \\" | b" --session s1',
+      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "a \\" | b" --session s1',
     );
   });
 
@@ -1106,7 +1363,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --session session-1 | tee /tmp/x",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
     );
     expect(
       rewritePhasegentCommand(
@@ -1115,7 +1372,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'phasegent --role orchestrator issue bind 541 --note "a && b" --session s9 | tee /tmp/y',
+      'PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --note "a && b" --session s9 | tee /tmp/y',
     );
   });
 
@@ -1127,7 +1384,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      'phasegent --role executor issue status; echo "a | b"; phasegent --role executor worktree status',
+      'PHASEGENT_ROLE=executor phasegent issue status; echo "a | b"; PHASEGENT_ROLE=executor phasegent worktree status',
     );
   });
 
@@ -1138,7 +1395,9 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe('PHASEGENT_WORKTREE_NO_DISCOVER="1" phasegent --role executor issue status');
+    ).toBe(
+      'PHASEGENT_WORKTREE_NO_DISCOVER="1" PHASEGENT_ROLE=executor phasegent issue status',
+    );
   });
 });
 
@@ -1158,10 +1417,10 @@ describe("shell command rewriting through the hook (issue #541)", () => {
       tool: "shell",
       sessionID: "s2",
       agent: "executor",
-      input: { command: "phasegent --role orchestrator issue status", workdir: "/tmp" },
+      input: { command: "PHASEGENT_ROLE=orchestrator phasegent issue status", workdir: "/tmp" },
     };
     await hook(event);
-    expect(event.input.command).toBe("phasegent --role executor issue status");
+    expect(event.input.command).toBe("PHASEGENT_ROLE=executor phasegent issue status");
     expect(event.input.workdir).toBe("/tmp");
   });
 
@@ -1873,36 +2132,36 @@ describe("invocation boundary tightening (issue #544 P1-a)", () => {
 
   test("still rewrites real invocations at the boundary", () => {
     expect(rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" })).toBe(
-      "phasegent --role executor issue status",
+      "PHASEGENT_ROLE=executor phasegent issue status",
     );
     // A bare `phasegent` is a whole word at the segment end.
     expect(rewritePhasegentCommand("phasegent", "s1", { agent: "executor" })).toBe(
-      "phasegent --role executor",
+      "PHASEGENT_ROLE=executor phasegent",
     );
     expect(
       rewritePhasegentCommand("./phasegent issue bind 1", "s1", { agent: "orchestrator" }),
-    ).toBe("./phasegent --role orchestrator issue bind 1 --session s1");
+    ).toBe("PHASEGENT_ROLE=orchestrator ./phasegent issue bind 1 --session s1");
     expect(
       rewritePhasegentCommand("/usr/local/bin/phasegent worktree acquire --issue 1", "s1", {
         agent: "reviewer",
       }),
-    ).toBe("/usr/local/bin/phasegent --role reviewer worktree acquire --issue 1");
+    ).toBe("PHASEGENT_ROLE=reviewer /usr/local/bin/phasegent worktree acquire --issue 1");
     expect(
       rewritePhasegentCommand("PHASEGENT_ROLE=x phasegent issue status", "s1", {
         agent: "executor",
       }),
-    ).toBe("PHASEGENT_ROLE=x phasegent --role executor issue status");
+    ).toBe("PHASEGENT_ROLE=x PHASEGENT_ROLE=executor phasegent issue status");
     expect(
       rewritePhasegentCommand("(phasegent issue create --title t)", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("(phasegent --role orchestrator issue create --title t --session s1)");
+    ).toBe("(PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session s1)");
     expect(
       rewritePhasegentCommand("phasegent issue status && phasegent issue bind 1", "s1", {
         agent: "orchestrator",
       }),
     ).toBe(
-      "phasegent --role orchestrator issue status && phasegent --role orchestrator issue bind 1 --session s1",
+      "PHASEGENT_ROLE=orchestrator phasegent issue status && PHASEGENT_ROLE=orchestrator phasegent issue bind 1 --session s1",
     );
   });
 });
@@ -1916,7 +2175,7 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "phasegent --role orchestrator issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
     );
   });
 
@@ -1924,19 +2183,19 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
     const cases = [
       [
         "phasegent issue create --title t --body b > /dev/null 2>&1",
-        "phasegent --role orchestrator issue create --title t --body b > /dev/null 2>&1 --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b > /dev/null 2>&1 --session ses_x",
       ],
       [
         "phasegent issue bind 1 >&2",
-        "phasegent --role orchestrator issue bind 1 >&2 --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue bind 1 >&2 --session ses_x",
       ],
       [
         "phasegent issue create --title t &> log",
-        "phasegent --role orchestrator issue create --title t &> log --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t &> log --session ses_x",
       ],
       [
         "phasegent issue create --title t &>> log",
-        "phasegent --role orchestrator issue create --title t &>> log --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t &>> log --session ses_x",
       ],
     ];
     for (const [command, expected] of cases) {
@@ -1947,13 +2206,13 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
   test("still splits a standalone & and && around redirections", () => {
     expect(
       rewritePhasegentCommand("phasegent issue bind 1 &", "ses_x", { agent: "orchestrator" }),
-    ).toBe("phasegent --role orchestrator issue bind 1 --session ses_x &");
+    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue bind 1 --session ses_x &");
     expect(
       rewritePhasegentCommand("phasegent issue create --title t 2>&1 && echo done", "ses_x", {
         agent: "orchestrator",
       }),
     ).toBe(
-      "phasegent --role orchestrator issue create --title t 2>&1 --session ses_x && echo done",
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t 2>&1 --session ses_x && echo done",
     );
   });
 
@@ -1962,7 +2221,9 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
       rewritePhasegentCommand("phasegent issue create --title t |& tail -c 9", "ses_x", {
         agent: "orchestrator",
       }),
-    ).toBe("phasegent --role orchestrator issue create --title t --session ses_x |& tail -c 9");
+    ).toBe(
+      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session ses_x |& tail -c 9",
+    );
   });
 });
 

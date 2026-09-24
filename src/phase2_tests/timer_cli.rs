@@ -3,8 +3,6 @@ use super::*;
 #[test]
 fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
     let args = [
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "timer",
@@ -22,7 +20,10 @@ fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&args).unwrap().command {
+    match command::parse_with_role_env(&args, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Timer(command::TimerCommand::Start {
             issue,
             phase,
@@ -45,8 +46,6 @@ fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
 
     for malformed in [
         vec![
-            "--role",
-            "orchestrator",
             "timer",
             "start",
             "28",
@@ -57,18 +56,8 @@ fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
             "--attempt",
             "0",
         ],
+        vec!["timer", "finish", "run-28", "--result", "SUCCESS"],
         vec![
-            "--role",
-            "orchestrator",
-            "timer",
-            "finish",
-            "run-28",
-            "--result",
-            "SUCCESS",
-        ],
-        vec![
-            "--role",
-            "orchestrator",
             "timer",
             "start",
             "0",
@@ -81,7 +70,7 @@ fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
         ],
     ] {
         let malformed = malformed.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        assert!(command::parse(&malformed).is_err());
+        assert!(command::parse_with_role_env(&malformed, Some("orchestrator")).is_err());
     }
 }
 
@@ -159,8 +148,6 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
     // plugin can attach its session/call identifiers without a special
     // encoding.
     let start_with_owner = [
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "timer",
@@ -182,7 +169,10 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    match command::parse(&start_with_owner).unwrap().command {
+    match command::parse_with_role_env(&start_with_owner, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Timer(command::TimerCommand::Start {
             issue,
             run_id,
@@ -201,8 +191,6 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
     // Empty owner args are rejected with the same shape as the other
     // bounded timer inputs.
     let empty_owner = [
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "timer",
@@ -220,7 +208,8 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let error = command::parse(&empty_owner).expect_err("empty owner must error");
+    let error = command::parse_with_role_env(&empty_owner, Some("orchestrator"))
+        .expect_err("empty owner must error");
     assert!(
         error.contains("owner-session-id cannot be empty"),
         "expected empty owner error, got: {error}"
@@ -229,21 +218,12 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
     // `list` accepts the status filter and the limit cap.
     for (args, expected_status, expected_limit) in [
         (
-            vec![
-                "--role",
-                "orchestrator",
-                "--provider",
-                "redmine",
-                "timer",
-                "list",
-            ],
+            vec!["--provider", "redmine", "timer", "list"],
             "all".to_owned(),
             100_u32,
         ),
         (
             vec![
-                "--role",
-                "orchestrator",
                 "--provider",
                 "redmine",
                 "timer",
@@ -258,7 +238,10 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
         ),
     ] {
         let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        match command::parse(&args).unwrap().command {
+        match command::parse_with_role_env(&args, Some("orchestrator"))
+            .unwrap()
+            .command
+        {
             command::Command::Timer(command::TimerCommand::List { status, limit }) => {
                 assert_eq!(status, expected_status);
                 assert_eq!(limit, expected_limit);
@@ -269,55 +252,37 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
 
     // Invalid status values keep the parser strict so a typo surfaces
     // before any storage call.
-    let bad_status = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "timer",
-        "list",
-        "--status",
-        "open",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let bad = command::parse(&bad_status).expect_err("invalid --status must error");
+    let bad_status = ["--provider", "redmine", "timer", "list", "--status", "open"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let bad = command::parse_with_role_env(&bad_status, Some("orchestrator"))
+        .expect_err("invalid --status must error");
     assert!(bad.contains("running, finished, or all"));
 
     // `get` and `recover` need a non-empty positional run id.
-    let get = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "timer",
-        "get",
-        "phase-51",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    match command::parse(&get).unwrap().command {
+    let get = ["--provider", "redmine", "timer", "get", "phase-51"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match command::parse_with_role_env(&get, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Timer(command::TimerCommand::Get { run_id }) => {
             assert_eq!(run_id, "phase-51");
         }
         other => panic!("unexpected command: {other:?}"),
     }
 
-    let recover = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "timer",
-        "recover",
-        "phase-51",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    match command::parse(&recover).unwrap().command {
+    let recover = ["--provider", "redmine", "timer", "recover", "phase-51"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match command::parse_with_role_env(&recover, Some("orchestrator"))
+        .unwrap()
+        .command
+    {
         command::Command::Timer(command::TimerCommand::Recover { run_id }) => {
             assert_eq!(run_id, "phase-51");
         }
@@ -325,25 +290,12 @@ fn timer_parser_handles_owner_args_and_recovery_subcommands() {
     }
 
     for missing in [
-        vec![
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "timer",
-            "get",
-        ],
-        vec![
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "timer",
-            "recover",
-        ],
+        vec!["--provider", "redmine", "timer", "get"],
+        vec!["--provider", "redmine", "timer", "recover"],
     ] {
         let missing = missing.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        let error = command::parse(&missing).expect_err("missing positional must error");
+        let error = command::parse_with_role_env(&missing, Some("orchestrator"))
+            .expect_err("missing positional must error");
         assert!(
             error.contains("missing arguments") || error.contains("requires a run id"),
             "expected run-id error, got: {error}"

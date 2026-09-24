@@ -64,6 +64,7 @@ fn run_help(args: &[&str]) -> Output {
         .env("PHASEGENT_DB_PATH", db.path().as_os_str())
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
+        .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")
@@ -133,7 +134,6 @@ fn root_help_is_short_and_points_at_deep_pages() {
 
     // Universal global options stay advertised at root.
     for option in [
-        "--role",
         "--provider",
         "--api-base",
         "--repository",

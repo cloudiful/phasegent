@@ -238,14 +238,10 @@ mod tests {
 
     #[test]
     fn acquire_parses_minimal_args() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "239",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "acquire", "--issue", "239"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Acquire {
@@ -269,15 +265,10 @@ mod tests {
 
     #[test]
     fn acquire_parses_isolate_flag() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "247",
-            "--isolate",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "acquire", "--issue", "247", "--isolate"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Acquire { isolate, .. }) => {
@@ -289,20 +280,21 @@ mod tests {
 
     #[test]
     fn acquire_parses_session_base_and_format() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "239",
-            "--session",
-            "alpha",
-            "--base",
-            "main",
-            "--format",
-            "json",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings([
+                "worktree",
+                "acquire",
+                "--issue",
+                "239",
+                "--session",
+                "alpha",
+                "--base",
+                "main",
+                "--format",
+                "json",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Acquire {
@@ -326,46 +318,30 @@ mod tests {
 
     #[test]
     fn acquire_rejects_non_json_format() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "1",
-            "--format",
-            "yaml",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings(["worktree", "acquire", "--issue", "1", "--format", "yaml"]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(err.contains("--format"));
     }
 
     #[test]
     fn acquire_rejects_zero_issue() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "0",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings(["worktree", "acquire", "--issue", "0"]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(err.contains("--issue"));
     }
 
     #[test]
     fn acquire_rejects_blank_session() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "1",
-            "--session",
-            "",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings(["worktree", "acquire", "--issue", "1", "--session", ""]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(err.contains("session"), "unexpected error: {err}");
     }
@@ -373,16 +349,17 @@ mod tests {
     #[test]
     fn acquire_rejects_overlong_session() {
         let overlong = "s".repeat(129);
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "1",
-            "--session",
-            &overlong,
-        ]))
+        let err = command::parse_with_role_env(
+            &strings([
+                "worktree",
+                "acquire",
+                "--issue",
+                "1",
+                "--session",
+                &overlong,
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(
             err.contains("session") && err.contains("128"),
@@ -392,14 +369,10 @@ mod tests {
 
     #[test]
     fn release_defaults_to_retain() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release",
-            "--lease",
-            "lease-1",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "release", "--lease", "lease-1"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Release {
@@ -419,16 +392,12 @@ mod tests {
 
     #[test]
     fn release_retain_false_is_recognised() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release",
-            "--lease",
-            "lease-1",
-            "--retain",
-            "false",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings([
+                "worktree", "release", "--lease", "lease-1", "--retain", "false",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Release {
@@ -448,33 +417,30 @@ mod tests {
 
     #[test]
     fn release_rejects_invalid_retain_value() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release",
-            "--lease",
-            "lease-1",
-            "--retain",
-            "maybe",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings([
+                "worktree", "release", "--lease", "lease-1", "--retain", "maybe",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(err.contains("--retain"));
     }
 
     #[test]
     fn release_force_requires_non_empty_reason() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release",
-            "--lease",
-            "lease-1",
-            "--force",
-            "--reason",
-            "stuck session cleanup",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings([
+                "worktree",
+                "release",
+                "--lease",
+                "lease-1",
+                "--force",
+                "--reason",
+                "stuck session cleanup",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Release {
@@ -491,31 +457,22 @@ mod tests {
             other => panic!("unexpected command {other:?}"),
         }
 
-        let missing = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release",
-            "--lease",
-            "lease-1",
-            "--force",
-        ]))
+        let missing = command::parse_with_role_env(
+            &strings(["worktree", "release", "--lease", "lease-1", "--force"]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(
             missing.contains("--force requires a non-empty --reason"),
             "unexpected error: {missing}"
         );
 
-        let dangling = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "release",
-            "--lease",
-            "lease-1",
-            "--reason",
-            "no force",
-        ]))
+        let dangling = command::parse_with_role_env(
+            &strings([
+                "worktree", "release", "--lease", "lease-1", "--reason", "no force",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(
             dangling.contains("--reason requires --force"),
@@ -525,14 +482,10 @@ mod tests {
 
     #[test]
     fn status_parses_issue() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "status",
-            "--issue",
-            "42",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "status", "--issue", "42"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Status { issue }) => assert_eq!(issue, 42),
@@ -542,14 +495,10 @@ mod tests {
 
     #[test]
     fn list_parses_repo_optional() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "executor",
-            "worktree",
-            "list",
-            "--repo",
-            "/tmp/repo",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "list", "--repo", "/tmp/repo"]),
+            Some("executor"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::List { repo, .. }) => {
@@ -562,7 +511,8 @@ mod tests {
     #[test]
     fn prune_defaults_to_7_days_and_read_only_dry_run() {
         let invocation =
-            command::parse(&strings(["--role", "orchestrator", "worktree", "prune"])).unwrap();
+            command::parse_with_role_env(&strings(["worktree", "prune"]), Some("orchestrator"))
+                .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Prune {
                 repo,
@@ -585,17 +535,18 @@ mod tests {
 
     #[test]
     fn prune_parses_remove_and_stale_days() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--stale-days",
-            "30",
-            "--remove",
-            "--repo",
-            "/tmp/repo",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings([
+                "worktree",
+                "prune",
+                "--stale-days",
+                "30",
+                "--remove",
+                "--repo",
+                "/tmp/repo",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Prune {
@@ -618,16 +569,17 @@ mod tests {
 
     #[test]
     fn prune_combines_release_stale_and_remove() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--release-stale",
-            "--remove",
-            "--reason",
-            "recover then remove",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings([
+                "worktree",
+                "prune",
+                "--release-stale",
+                "--remove",
+                "--reason",
+                "recover then remove",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Prune {
@@ -649,15 +601,10 @@ mod tests {
 
     #[test]
     fn acquire_parses_no_sync_flag() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "acquire",
-            "--issue",
-            "552",
-            "--no-sync",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "acquire", "--issue", "552", "--no-sync"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Acquire { no_sync, .. }) => {
@@ -669,13 +616,10 @@ mod tests {
 
     #[test]
     fn list_parses_no_sync_flag() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "list",
-            "--no-sync",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "list", "--no-sync"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::List { repo, no_sync }) => {
@@ -688,13 +632,10 @@ mod tests {
 
     #[test]
     fn prune_parses_no_sync_flag_without_actions() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "worktree",
-            "prune",
-            "--no-sync",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings(["worktree", "prune", "--no-sync"]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Prune {

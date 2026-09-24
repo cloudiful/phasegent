@@ -5,7 +5,7 @@
 //! PostgreSQL URL. It is the approved replacement for schema dumps,
 //! `substr(credential, ...)` peeks, and raw `global_setting` reads:
 //! everything an agent may legitimately want to confirm about local
-//! state, with nothing it must not see. No `--role` required.
+//! state, with nothing it must not see. No role required.
 
 use crate::config_snapshot::{self, RoleSnapshot};
 use crate::policy::Role;

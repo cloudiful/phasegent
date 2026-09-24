@@ -3,15 +3,16 @@ use crate::providers::ProviderKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Root usage block. `--provider` is resolved from configuration and named
-/// only in the options list, so the common invocation shape never tags it on.
-pub(crate) const ROOT_USAGE: &str =
-    "Usage:\n  phasegent --role <ROLE> <COMMAND> [OPTIONS]\n  phasegent gui";
+/// Root usage block. The session role comes from the managed session or
+/// `PHASEGENT_ROLE`, so the common invocation shape never carries a role
+/// flag. `--provider` is resolved from configuration and named only in the
+/// options list, so the common invocation shape never tags it on either.
+pub(crate) const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]\n  phasegent gui\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
 
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{ROOT_USAGE}\n\nOptions:\n  --role <ROLE>          admin, orchestrator, executor, reviewer, or tester\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)\n  config                 Local configuration (read-only show/get; writes live under admin)\n  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no --role needed)\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{ROOT_USAGE}\n\nOptions:\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)\n  config                 Local configuration (read-only show/get; writes live under admin)\n  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
   plugin                 Managed OpenCode plugin installation"
     );
     if provider != Some(ProviderKind::Redmine)
@@ -63,7 +64,7 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
 /// needs no new help file; dispatched from the help router.
 pub(crate) fn print_mcp_help(role: Option<Role>) {
     println!(
-        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: capabilities, issue_get, issue_search, status_next, comment_create (needs server-side --authorized unless orchestrator), notify_send. Excluded: status_advance, timer start/finish, role elevation. The server runs with the startup --role and provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
+        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: capabilities, issue_get, issue_search, status_next, comment_create (needs server-side --authorized unless orchestrator), notify_send. Excluded: status_advance, timer start/finish, role elevation. The server resolves its role from PHASEGENT_ROLE and its provider from the provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
         role.map_or("all roles", Role::as_str)
     );
 }
@@ -73,7 +74,7 @@ pub(crate) fn print_mcp_command_help(role: Option<Role>, command: &str) {
         "serve" => {
             let role_text = role.map_or("ROLE", Role::as_str);
             println!(
-                "Usage: phasegent --role {role_text} mcp serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]\n\nServe the contracted MCP tools with the startup role. --transport stdio (default) speaks JSON-RPC on stdin/stdout; --transport http serves streamable HTTP via axum at /mcp on --bind (HTTP-only; requires --transport http). --authorized enables comment_create for non-orchestrator roles; without it the tool rejects with an authorization error. status_advance, timer start/finish, and role elevation are never exposed."
+                "Usage: PHASEGENT_ROLE={role_text} phasegent mcp serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]\n\nServe the contracted MCP tools with the role from PHASEGENT_ROLE. --transport stdio (default) speaks JSON-RPC on stdin/stdout; --transport http serves streamable HTTP via axum at /mcp on --bind (HTTP-only; requires --transport http). --authorized enables comment_create for non-orchestrator roles; without it the tool rejects with an authorization error. status_advance, timer start/finish, and role elevation are never exposed."
             );
         }
         _ => print_mcp_help(role),
@@ -85,14 +86,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn root_usage_keeps_the_command_shape_without_tagging_provider() {
+    fn root_usage_leads_with_the_role_less_command_shape() {
         assert!(
             ROOT_USAGE.contains("Usage:"),
             "root usage must label itself: {ROOT_USAGE}"
         );
+        let primary = ROOT_USAGE
+            .lines()
+            .nth(1)
+            .expect("root usage must carry a primary invocation line");
         assert!(
-            ROOT_USAGE.contains("phasegent --role <ROLE> <COMMAND> [OPTIONS]"),
-            "root usage must keep the role/command shape: {ROOT_USAGE}"
+            !primary.contains("--role"),
+            "the primary usage line must not carry a role prefix: {primary}"
+        );
+        assert!(
+            primary.contains("phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]"),
+            "the primary usage line must keep the global-option/command shape: {primary}"
         );
         assert!(
             ROOT_USAGE.contains("phasegent gui"),
@@ -101,6 +110,19 @@ mod tests {
         assert!(
             !ROOT_USAGE.contains("--provider"),
             "root usage must not tag --provider onto the common invocation: {ROOT_USAGE}"
+        );
+    }
+
+    #[test]
+    fn root_usage_names_the_role_source() {
+        assert!(
+            ROOT_USAGE.contains("Managed sessions supply the role")
+                && ROOT_USAGE.contains("PHASEGENT_ROLE"),
+            "root usage must state that managed sessions supply the role and other hosts set PHASEGENT_ROLE: {ROOT_USAGE}"
+        );
+        assert!(
+            !ROOT_USAGE.contains("--role"),
+            "root usage must not document a role flag: {ROOT_USAGE}"
         );
     }
 }

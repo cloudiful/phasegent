@@ -12,8 +12,9 @@ fn strings(values: &[&str]) -> Vec<String> {
 
 #[test]
 fn comment_list_parses_single_issue_number() {
-    let invocation = command::parse(&strings(&["--role", "executor", "comment", "list", "17"]))
-        .expect("comment list must parse");
+    let invocation =
+        command::parse_with_role_env(&strings(&["comment", "list", "17"]), Some("executor"))
+            .expect("comment list must parse");
     assert!(matches!(
         invocation.command,
         Command::Comment(CommentCommand::List { issue: 17 })
@@ -22,15 +23,16 @@ fn comment_list_parses_single_issue_number() {
 
 #[test]
 fn comment_list_rejects_missing_and_non_numeric_numbers() {
-    let missing = command::parse(&strings(&["--role", "executor", "comment", "list"]))
+    let missing = command::parse_with_role_env(&strings(&["comment", "list"]), Some("executor"))
         .expect_err("missing number must error");
     assert!(
         missing.contains("unexpected arguments"),
         "unexpected error: {missing}"
     );
 
-    let non_numeric = command::parse(&strings(&["--role", "executor", "comment", "list", "abc"]))
-        .expect_err("non-numeric number must error");
+    let non_numeric =
+        command::parse_with_role_env(&strings(&["comment", "list", "abc"]), Some("executor"))
+            .expect_err("non-numeric number must error");
     assert!(
         non_numeric.contains("numeric issue number"),
         "unexpected error: {non_numeric}"

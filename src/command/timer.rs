@@ -151,19 +151,20 @@ mod tests {
 
     #[test]
     fn tester_parses_as_child_identity() {
-        let invocation = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "timer",
-            "start",
-            "42",
-            "--phase",
-            "impl",
-            "--agent-role",
-            "tester",
-            "--attempt",
-            "1",
-        ]))
+        let invocation = command::parse_with_role_env(
+            &strings([
+                "timer",
+                "start",
+                "42",
+                "--phase",
+                "impl",
+                "--agent-role",
+                "tester",
+                "--attempt",
+                "1",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap();
         match invocation.command {
             Command::Timer(TimerCommand::Start { agent_role, .. }) => {
@@ -188,19 +189,20 @@ mod tests {
 
     #[test]
     fn timer_start_rejects_invalid_agent_role() {
-        let err = command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "timer",
-            "start",
-            "42",
-            "--phase",
-            "impl",
-            "--agent-role",
-            "admin",
-            "--attempt",
-            "1",
-        ]))
+        let err = command::parse_with_role_env(
+            &strings([
+                "timer",
+                "start",
+                "42",
+                "--phase",
+                "impl",
+                "--agent-role",
+                "admin",
+                "--attempt",
+                "1",
+            ]),
+            Some("orchestrator"),
+        )
         .unwrap_err();
         assert!(
             err.contains("executor, reviewer, or tester") || err.contains("executor or reviewer"),
@@ -211,19 +213,20 @@ mod tests {
     #[test]
     fn executor_and_reviewer_still_parse() {
         for role in ["executor", "reviewer"] {
-            let invocation = command::parse(&strings([
-                "--role",
-                "orchestrator",
-                "timer",
-                "start",
-                "7",
-                "--phase",
-                "p",
-                "--agent-role",
-                role,
-                "--attempt",
-                "2",
-            ]))
+            let invocation = command::parse_with_role_env(
+                &strings([
+                    "timer",
+                    "start",
+                    "7",
+                    "--phase",
+                    "p",
+                    "--agent-role",
+                    role,
+                    "--attempt",
+                    "2",
+                ]),
+                Some("orchestrator"),
+            )
             .unwrap();
             match invocation.command {
                 Command::Timer(TimerCommand::Start { agent_role, .. }) => {

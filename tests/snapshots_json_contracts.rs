@@ -44,17 +44,9 @@ fn issue_close_stdout_snapshot() {
     );
     set_local_status(&scratch, &fixture, number, "Resolved");
     let number = number.to_string();
-    let args = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "local",
-        "issue",
-        "close",
-        &number,
-    ];
+    let args = ["--provider", "local", "issue", "close", &number];
 
-    let first = run(&scratch, &repo, &args);
+    let first = run(&scratch, &repo, Some("orchestrator"), &args);
     assert!(
         first.status.success(),
         "issue close exited with {}: stderr={}",
@@ -62,7 +54,7 @@ fn issue_close_stdout_snapshot() {
         stderr_text(&first),
     );
     let document = stdout_text(&first);
-    let second = stdout_text(&run(&scratch, &repo, &args));
+    let second = stdout_text(&run(&scratch, &repo, Some("orchestrator"), &args));
     assert_eq!(
         document, second,
         "an already-closed issue must print the same document",
@@ -106,16 +98,8 @@ fn issue_sync_no_clean_stdout_snapshot() {
         &open_worktree,
     );
 
-    let args = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "local",
-        "issue",
-        "sync",
-        "--no-clean",
-    ];
-    let first = run(&scratch, &repo, &args);
+    let args = ["--provider", "local", "issue", "sync", "--no-clean"];
+    let first = run(&scratch, &repo, Some("orchestrator"), &args);
     assert!(
         first.status.success(),
         "issue sync --no-clean exited with {}: stderr={}",
@@ -123,7 +107,7 @@ fn issue_sync_no_clean_stdout_snapshot() {
         stderr_text(&first),
     );
     let document = stdout_text(&first);
-    let second = stdout_text(&run(&scratch, &repo, &args));
+    let second = stdout_text(&run(&scratch, &repo, Some("orchestrator"), &args));
     assert_eq!(
         document, second,
         "report mode writes nothing, so two runs must print the same document",

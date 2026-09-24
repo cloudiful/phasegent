@@ -62,6 +62,7 @@ fn run_phasegent(scratch: &TempfileLikeDir, args: &[&str], extra_env: &[(&str, &
         .env_remove("PHASEGENT_NOTIFY_WEBHOOK_TOKEN")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
+        .env_remove("PHASEGENT_ROLE")
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -85,6 +86,7 @@ fn run_with_stdin(scratch: &TempfileLikeDir, args: &[&str], stdin_text: &str) ->
         .env_remove("PHASEGENT_NOTIFY_NTFY_TOKEN")
         .env_remove("PHASEGENT_NOTIFY_WEBHOOK_URL")
         .env_remove("PHASEGENT_NOTIFY_WEBHOOK_TOKEN")
+        .env_remove("PHASEGENT_ROLE")
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -108,11 +110,11 @@ fn notify_send_requires_role() {
         &["notify", "send", "--event", "completion", "--title", "hi"],
         &[],
     );
-    assert!(!output.status.success(), "notify without --role must fail");
+    assert!(!output.status.success(), "notify without a role must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--role"),
-        "missing --role error; stderr={stderr}"
+        stderr.contains("a role is required"),
+        "missing role error; stderr={stderr}"
     );
 }
 
@@ -121,10 +123,8 @@ fn notify_send_validates_event() {
     let scratch = scratch_db();
     let output = run_phasegent(
         &scratch,
-        &[
-            "--role", "executor", "notify", "send", "--event", "pager", "--title", "hi",
-        ],
-        &[],
+        &["notify", "send", "--event", "pager", "--title", "hi"],
+        &[("PHASEGENT_ROLE", "executor")],
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -138,8 +138,6 @@ fn notify_send_skipped_when_disabled_persists_intent() {
     let output = run_phasegent(
         &scratch,
         &[
-            "--role",
-            "executor",
             "notify",
             "send",
             "--event",
@@ -149,7 +147,7 @@ fn notify_send_skipped_when_disabled_persists_intent() {
             "--body",
             "all good",
         ],
-        &[],
+        &[("PHASEGENT_ROLE", "executor")],
     );
     assert!(
         output.status.success(),

@@ -1,7 +1,6 @@
 /// Global options recognized before the command, paired with a concrete
 /// example value used when explaining a misplaced option.
 const GLOBAL_OPTIONS: &[(&str, &str)] = &[
-    ("--role", "executor"),
     ("--provider", "redmine"),
     ("--api-base", "https://redmine.example.com"),
     ("--repository", "owner/repo"),
@@ -48,9 +47,7 @@ fn normalize_option_name(name: &str) -> String {
 }
 
 fn global_option_example(flag: &str, value: &str) -> String {
-    if flag == "--role" {
-        format!("phasegent --role {value} issue create --title TITLE --body BODY")
-    } else {
-        format!("phasegent --role executor {flag} {value} issue create --title TITLE --body BODY")
-    }
+    format!(
+        "PHASEGENT_ROLE=executor phasegent {flag} {value} issue create --title TITLE --body BODY"
+    )
 }

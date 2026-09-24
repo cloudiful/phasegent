@@ -128,7 +128,7 @@ fn config_clear_global_without_role_and_role_scoped() {
         );
 
         let err = config_write::clear_setting(None, "PHASEGENT_API_BASE", storage).unwrap_err();
-        assert!(err.contains("--role is required"), "got: {err}");
+        assert!(err.contains("a role is required"), "got: {err}");
 
         config_write::set_setting_value(
             Some(Role::Executor),
@@ -178,7 +178,8 @@ fn config_clear_command_parsing() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let inv = command::parse(&args).expect("clear global without role must parse");
+    let inv =
+        command::parse_with_role_env(&args, None).expect("clear global without role must parse");
     match inv.command {
         Command::ConfigClear { setting } => {
             assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
@@ -189,30 +190,34 @@ fn config_clear_command_parsing() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let err = command::parse(&args).expect_err("clear role-scoped without role must error");
-    assert!(err.contains("--role is required"), "got: {err}");
+    let err = command::parse_with_role_env(&args, None)
+        .expect_err("clear role-scoped without role must error");
+    assert!(err.contains("a role is required"), "got: {err}");
 
-    let args = ["--role", "executor", "admin", "config", "clear", "api-base"]
+    let args = ["admin", "config", "clear", "api-base"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let inv = command::parse(&args).expect("clear with role must parse");
+    let inv =
+        command::parse_with_role_env(&args, Some("executor")).expect("clear with role must parse");
     match inv.command {
         Command::ConfigClear { setting } => assert_eq!(setting, "PHASEGENT_API_BASE"),
         other => panic!("got {other:?}"),
     }
 
-    let args = ["--role", "executor", "admin", "config", "clear"]
+    let args = ["admin", "config", "clear"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let err = command::parse(&args).expect_err("clear without setting must error");
+    let err = command::parse_with_role_env(&args, Some("executor"))
+        .expect_err("clear without setting must error");
     assert!(err.contains("requires a setting"), "got: {err}");
 
-    let args = ["--role", "executor", "admin", "config", "clear", "unknown"]
+    let args = ["admin", "config", "clear", "unknown"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let err = command::parse(&args).expect_err("unknown clear setting must error");
+    let err = command::parse_with_role_env(&args, Some("executor"))
+        .expect_err("unknown clear setting must error");
     assert!(err.contains("unknown config setting"), "got: {err}");
 }

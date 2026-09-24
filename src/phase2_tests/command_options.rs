@@ -3,30 +3,14 @@ use super::*;
 #[test]
 fn option_values_cannot_be_omitted() {
     for args in [
-        vec!["--role", "orchestrator", "issue", "search", "--state"],
-        vec![
-            "--role",
-            "orchestrator",
-            "issue",
-            "search",
-            "--query",
-            "--state",
-            "all",
-        ],
-        vec!["--role", "orchestrator", "issue", "update", "1", "--body"],
-        vec![
-            "--role",
-            "orchestrator",
-            "issue",
-            "create",
-            "--title",
-            "Title",
-            "--body",
-        ],
+        vec!["issue", "search", "--state"],
+        vec!["issue", "search", "--query", "--state", "all"],
+        vec!["issue", "update", "1", "--body"],
+        vec!["issue", "create", "--title", "Title", "--body"],
     ] {
         let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
         assert!(
-            command::parse(&args).is_err(),
+            command::parse_with_role_env(&args, Some("orchestrator")).is_err(),
             "accepted missing value: {args:?}"
         );
     }
@@ -34,19 +18,12 @@ fn option_values_cannot_be_omitted() {
 
 #[test]
 fn issue_close_parses_worktree_session_option() {
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "close",
-        "42",
-        "--worktree-session",
-        "alpha",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("close with --worktree-session parses");
+    let args = ["issue", "close", "42", "--worktree-session", "alpha"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("close with --worktree-session parses");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Close {
             number,
@@ -63,11 +40,12 @@ fn issue_close_parses_worktree_session_option() {
 fn issue_close_worktree_session_defaults_to_none() {
     // Legacy `issue close N` keeps parsing with no explicit session; the
     // CLI resolves PHASEGENT_SESSION_ID / legacy fallback at execution.
-    let args = ["--role", "orchestrator", "issue", "close", "42"]
+    let args = ["issue", "close", "42"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("legacy close parses");
+    let invocation =
+        command::parse_with_role_env(&args, Some("orchestrator")).expect("legacy close parses");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Close {
             number,
@@ -82,19 +60,11 @@ fn issue_close_worktree_session_defaults_to_none() {
 
 #[test]
 fn issue_close_rejects_blank_worktree_session() {
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "close",
-        "42",
-        "--worktree-session",
-        "",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let error = command::parse(&args).unwrap_err();
+    let args = ["issue", "close", "42", "--worktree-session", ""]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse_with_role_env(&args, Some("orchestrator")).unwrap_err();
     assert!(error.contains("session"), "unexpected error: {error}");
 }
 
@@ -102,8 +72,6 @@ fn issue_close_rejects_blank_worktree_session() {
 fn issue_close_rejects_overlong_worktree_session() {
     let overlong = "s".repeat(129);
     let args = [
-        "--role",
-        "orchestrator",
         "issue",
         "close",
         "42",
@@ -113,7 +81,7 @@ fn issue_close_rejects_overlong_worktree_session() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let error = command::parse(&args).unwrap_err();
+    let error = command::parse_with_role_env(&args, Some("orchestrator")).unwrap_err();
     assert!(
         error.contains("session") && error.contains("128"),
         "unexpected error: {error}"
@@ -122,28 +90,20 @@ fn issue_close_rejects_overlong_worktree_session() {
 
 #[test]
 fn issue_close_still_rejects_extra_positionals() {
-    let args = ["--role", "orchestrator", "issue", "close", "42", "extra"]
+    let args = ["issue", "close", "42", "extra"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    assert!(command::parse(&args).is_err());
+    assert!(command::parse_with_role_env(&args, Some("orchestrator")).is_err());
 }
 
 #[test]
 fn issue_close_still_rejects_unknown_options() {
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "close",
-        "42",
-        "--session",
-        "alpha",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let error = command::parse(&args).unwrap_err();
+    let args = ["issue", "close", "42", "--session", "alpha"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse_with_role_env(&args, Some("orchestrator")).unwrap_err();
     assert!(
         error.contains("unknown option"),
         "unexpected error: {error}"
@@ -152,11 +112,12 @@ fn issue_close_still_rejects_unknown_options() {
 
 #[test]
 fn issue_close_help_routes_to_command_topic() {
-    let args = ["--role", "orchestrator", "issue", "close", "--help"]
+    let args = ["issue", "close", "--help"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("issue close --help parses");
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("issue close --help parses");
     match invocation.command {
         command::Command::Help(command::HelpTopic::IssueCommand(name)) => {
             assert_eq!(name, "close");
@@ -170,11 +131,12 @@ fn issue_close_help_routes_to_command_topic() {
 /// the topic as unknown.
 #[test]
 fn issue_sync_help_routes_to_command_topic() {
-    let args = ["--role", "orchestrator", "issue", "sync", "--help"]
+    let args = ["issue", "sync", "--help"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("issue sync --help parses");
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("issue sync --help parses");
     match invocation.command {
         command::Command::Help(command::HelpTopic::IssueCommand(name)) => {
             assert_eq!(name, "sync");

@@ -163,20 +163,21 @@ fn no_match_keeps_bootstrap_for_issue_and_actionable_for_version() {
         ),
         MockResponse::ok(issue_response(92, "Bootstrapped", "Body", false, &[])),
     ]);
-    let code = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base,
-        "issue",
-        "create",
-        "--title",
-        "Bootstrapped",
-        "--body",
-        "Body",
-    ]));
+    let code = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base,
+            "issue",
+            "create",
+            "--title",
+            "Bootstrapped",
+            "--body",
+            "Body",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code, 0);
     let reqs = requests.recv().unwrap();
     assert!(reqs[0].starts_with("GET /projects.json?"));
@@ -190,16 +191,17 @@ fn no_match_keeps_bootstrap_for_issue_and_actionable_for_version() {
     let (base2, requests2, server2) =
         sequence(vec![MockResponse::ok(project_collection(0, 100, &[]))]);
     save_orchestrator(&storage2, Some(base2.clone()));
-    let code2 = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base2,
-        "version",
-        "list",
-    ]));
+    let code2 = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base2,
+            "version",
+            "list",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code2, 1);
     let reqs2 = requests2.recv().unwrap();
     assert_eq!(reqs2.len(), 1);
@@ -305,22 +307,23 @@ fn explicit_repository_mismatch_does_not_use_wrong_origin() {
         ),
         MockResponse::ok(issue_response(93, "Mismatched", "Body", false, &[])),
     ]);
-    let code = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &base,
-        "--repository",
-        explicit,
-        "issue",
-        "create",
-        "--title",
-        "Mismatched",
-        "--body",
-        "Body",
-    ]));
+    let code = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base,
+            "--repository",
+            explicit,
+            "issue",
+            "create",
+            "--title",
+            "Mismatched",
+            "--body",
+            "Body",
+        ]),
+        Some("orchestrator"),
+    );
     assert_eq!(code, 0);
     let reqs = requests.recv().unwrap();
     assert!(reqs[0].starts_with(&format!("GET /projects/{bootstrap_id}.json")));
@@ -339,16 +342,10 @@ fn discovery_error_for_version_list_is_not_swallowed() {
         MockResponse::error(401, r#"{"errors":["unauthorized"]}"#),
     ]);
     save_orchestrator(&s, Some(b.clone()));
-    let c = crate::cli::run(strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "--api-base",
-        &b,
-        "version",
-        "list",
-    ]));
+    let c = crate::cli::run_with_role(
+        strings(["--provider", "redmine", "--api-base", &b, "version", "list"]),
+        Some("orchestrator"),
+    );
     assert_eq!(c, 1);
     let r = req.recv().unwrap();
     assert_eq!(r.len(), 2);

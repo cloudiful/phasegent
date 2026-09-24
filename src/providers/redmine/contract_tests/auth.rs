@@ -24,14 +24,10 @@ use std::{fs, time};
 
 #[test]
 fn parser_auth_config_and_provider_selection_regressions() {
-    let admin = command::parse(&strings([
-        "--role",
-        "admin",
-        "--provider",
-        "redmine",
-        "project",
-        "list",
-    ]))
+    let admin = command::parse_with_role_env(
+        &strings(["--provider", "redmine", "project", "list"]),
+        Some("admin"),
+    )
     .unwrap();
     assert_eq!(admin.role, Some(Role::Admin));
     let invalid_role = "invalid".parse::<Role>().unwrap_err();
@@ -40,8 +36,6 @@ fn parser_auth_config_and_provider_selection_regressions() {
     assert_eq!("tester".parse::<Role>().unwrap().as_str(), "tester");
 
     let args = strings([
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "issue",
@@ -51,7 +45,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
         "--state",
         "closed",
     ]);
-    let invocation = command::parse(&args).unwrap();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator")).unwrap();
     assert_eq!(invocation.provider, Some(ProviderKind::Redmine));
     assert!(matches!(
         invocation.command,
@@ -60,8 +54,6 @@ fn parser_auth_config_and_provider_selection_regressions() {
     ));
 
     let auth_args = strings([
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "admin",
@@ -74,7 +66,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
         "37",
     ]);
     assert!(matches!(
-        command::parse(&auth_args).unwrap().command,
+        command::parse_with_role_env(&auth_args, Some("orchestrator")).unwrap().command,
         Command::AuthSetup {
             read_stdin: true,
             provider: None,
@@ -87,8 +79,6 @@ fn parser_auth_config_and_provider_selection_regressions() {
     // Project-id is no longer a persisted auth option; it must be
     // rejected as unknown.
     let rejected = strings([
-        "--role",
-        "orchestrator",
         "--provider",
         "redmine",
         "admin",
@@ -100,7 +90,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
         "--project-id",
         "42",
     ]);
-    let error = command::parse(&rejected).unwrap_err();
+    let error = command::parse_with_role_env(&rejected, Some("orchestrator")).unwrap_err();
     assert!(
         error.contains("unknown auth setup option"),
         "project-id must be rejected on auth setup: {error}"
@@ -272,10 +262,8 @@ fn tester_credential_is_role_scoped_and_isolated() {
 #[test]
 fn tester_role_parsing_and_auth_setup_provider() {
     assert_eq!("tester".parse::<Role>().unwrap(), Role::Tester);
-    // admin auth setup --role tester --provider redmine must parse and store separate row
+    // admin auth setup as tester must parse and store a separate row.
     let args = strings([
-        "--role",
-        "tester",
         "--provider",
         "redmine",
         "admin",
@@ -285,7 +273,7 @@ fn tester_role_parsing_and_auth_setup_provider() {
         "--api-base",
         "https://redmine.cloud1ful.com",
     ]);
-    let invocation = command::parse(&args).unwrap();
+    let invocation = command::parse_with_role_env(&args, Some("tester")).unwrap();
     match invocation.command {
         Command::AuthSetup {
             read_stdin,

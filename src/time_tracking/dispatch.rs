@@ -143,8 +143,11 @@ pub(crate) fn timer_orchestrator(
     role_value: Option<Role>,
     operation: &str,
 ) -> Result<Role, ForgejoError> {
-    let role = role_value
-        .ok_or_else(|| ForgejoError::config(format!("{operation} requires --role orchestrator")))?;
+    let role = role_value.ok_or_else(|| {
+        ForgejoError::config(format!(
+            "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
+        ))
+    })?;
     if role != Role::Orchestrator {
         return Err(ForgejoError::config(format!(
             "{operation} is orchestrator-only"

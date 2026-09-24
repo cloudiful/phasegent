@@ -16,7 +16,8 @@
 //! * **Adapter template** — the embedded JS contains the
 //!   `// phasegent:managed` marker, the OpenCode v2
 //!   `export default { id, setup }` shape, the
-//!   `phasegent --role orchestrator worktree acquire` call, the v2
+//!   `phasegent worktree acquire` call with its per-call
+//!   `PHASEGENT_ROLE` scope, the v2
 //!   `worktree.transform` strategy, the issue #440
 //!   `tool.execute.before` redirect helpers, and the issue #533
 //!   `skill.transform` embedded skill registration. Issue #572 adds
@@ -257,8 +258,9 @@ fn install_at_writes_managed_file_with_marker_and_v2_plugin_definition() {
     assert!(text.contains("worktree.transform"));
     assert!(text.contains("session.move"));
     assert!(text.contains("[\"issue\", \"status\"]"));
-    assert!(text.contains("--role"));
+    assert!(text.contains("PHASEGENT_ROLE"));
     assert!(text.contains("orchestrator"));
+    assert!(!text.contains("--role"));
     assert!(text.contains("worktree acquire"));
     assert!(text.contains("--format"));
     assert!(text.contains("\"json\""));
@@ -731,9 +733,11 @@ fn adapter_template_is_well_formed_for_opencode_v2_api() {
     // Branch binding detection (local-only path): `phasegent issue status`, run
     // with the project directory as cwd.
     assert!(source.contains("[\"issue\", \"status\"]"));
-    // Worktree acquire uses --role orchestrator and --format json.
-    assert!(source.contains("--role"));
+    // Worktree acquire scopes the orchestrator role to the call and uses
+    // --format json.
+    assert!(source.contains("PHASEGENT_ROLE"));
     assert!(source.contains("orchestrator"));
+    assert!(!source.contains("--role"));
     assert!(source.contains("worktree acquire"));
     assert!(source.contains("--format"));
     assert!(source.contains("json"));

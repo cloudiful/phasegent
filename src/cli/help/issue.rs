@@ -318,13 +318,10 @@ mod tests {
             "the removed update-body topic must not resolve"
         );
 
-        let invocation = crate::command::parse(&[
-            "--role".to_owned(),
-            "orchestrator".to_owned(),
-            "--help".to_owned(),
-            "issue".to_owned(),
-            "update".to_owned(),
-        ])
+        let invocation = crate::command::parse_with_role_env(
+            &["--help".to_owned(), "issue".to_owned(), "update".to_owned()],
+            Some("orchestrator"),
+        )
         .expect("help issue update must route");
         match invocation.command {
             crate::command::Command::Help(crate::command::HelpTopic::IssueCommand(value)) => {
@@ -332,13 +329,14 @@ mod tests {
             }
             other => panic!("unexpected command {other:?}"),
         }
-        let help_error = crate::command::parse(&[
-            "--role".to_owned(),
-            "orchestrator".to_owned(),
-            "--help".to_owned(),
-            "issue".to_owned(),
-            "update-body".to_owned(),
-        ])
+        let help_error = crate::command::parse_with_role_env(
+            &[
+                "--help".to_owned(),
+                "issue".to_owned(),
+                "update-body".to_owned(),
+            ],
+            Some("orchestrator"),
+        )
         .expect_err("help issue update-body must be rejected");
         assert!(
             help_error.contains("unknown issue help topic 'update-body'"),
@@ -346,8 +344,6 @@ mod tests {
         );
 
         let update = [
-            "--role",
-            "orchestrator",
             "issue",
             "update",
             "9",
@@ -361,7 +357,10 @@ mod tests {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-        match crate::command::parse(&update).unwrap().command {
+        match crate::command::parse_with_role_env(&update, Some("orchestrator"))
+            .unwrap()
+            .command
+        {
             crate::command::Command::Issue(crate::command::IssueCommand::Update {
                 number,
                 body,
@@ -376,33 +375,22 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
-        let removed = [
-            "--role",
-            "orchestrator",
-            "issue",
-            "update-body",
-            "9",
-            "--body",
-            "x",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-        let error =
-            crate::command::parse(&removed).expect_err("removed update-body must be rejected");
+        let removed = ["issue", "update-body", "9", "--body", "x"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let error = crate::command::parse_with_role_env(&removed, Some("orchestrator"))
+            .expect_err("removed update-body must be rejected");
         assert!(error.contains("unknown issue command"), "got: {error}");
     }
 
     #[test]
     fn help_routes_branch_context_commands_through_outer_dispatch() {
         for topic in ["bind", "unbind", "status"] {
-            let invocation = crate::command::parse(&[
-                "--role".to_owned(),
-                "executor".to_owned(),
-                "--help".to_owned(),
-                "issue".to_owned(),
-                topic.to_owned(),
-            ])
+            let invocation = crate::command::parse_with_role_env(
+                &["--help".to_owned(), "issue".to_owned(), topic.to_owned()],
+                Some("executor"),
+            )
             .unwrap_or_else(|error| panic!("help issue {topic} must route; got: {error}"));
             match invocation.command {
                 crate::command::Command::Help(crate::command::HelpTopic::IssueCommand(value)) => {

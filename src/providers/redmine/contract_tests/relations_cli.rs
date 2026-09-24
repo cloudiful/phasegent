@@ -24,19 +24,20 @@ use std::{fs, time};
 
 #[test]
 fn relation_parser_accepts_canonical_types_and_rejects_invalid() {
-    let parsed = command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "relation",
-        "create",
-        "10",
-        "--to",
-        "20",
-        "--type",
-        "blocks",
-    ]))
+    let parsed = command::parse_with_role_env(
+        &strings([
+            "--provider",
+            "redmine",
+            "relation",
+            "create",
+            "10",
+            "--to",
+            "20",
+            "--type",
+            "blocks",
+        ]),
+        Some("orchestrator"),
+    )
     .expect("valid relation create should parse");
     assert!(matches!(
         parsed.command,
@@ -48,21 +49,22 @@ fn relation_parser_accepts_canonical_types_and_rejects_invalid() {
         })
     ));
 
-    let with_delay = command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "--provider",
-        "redmine",
-        "relation",
-        "create",
-        "10",
-        "--to",
-        "20",
-        "--type",
-        "precedes",
-        "--delay",
-        "5",
-    ]))
+    let with_delay = command::parse_with_role_env(
+        &strings([
+            "--provider",
+            "redmine",
+            "relation",
+            "create",
+            "10",
+            "--to",
+            "20",
+            "--type",
+            "precedes",
+            "--delay",
+            "5",
+        ]),
+        Some("orchestrator"),
+    )
     .expect("valid relation create with delay should parse");
     assert!(matches!(
         with_delay.command,
@@ -76,53 +78,56 @@ fn relation_parser_accepts_canonical_types_and_rejects_invalid() {
 
     // Inverse names are rejected as CLI input.
     assert!(
-        command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "relation",
-            "create",
-            "10",
-            "--to",
-            "20",
-            "--type",
-            "blocked",
-        ]))
+        command::parse_with_role_env(
+            &strings([
+                "--provider",
+                "redmine",
+                "relation",
+                "create",
+                "10",
+                "--to",
+                "20",
+                "--type",
+                "blocked",
+            ]),
+            Some("orchestrator")
+        )
         .is_err()
     );
 
     // Unknown type is rejected.
     assert!(
-        command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "relation",
-            "create",
-            "10",
-            "--to",
-            "20",
-            "--type",
-            "weird",
-        ]))
+        command::parse_with_role_env(
+            &strings([
+                "--provider",
+                "redmine",
+                "relation",
+                "create",
+                "10",
+                "--to",
+                "20",
+                "--type",
+                "weird",
+            ]),
+            Some("orchestrator")
+        )
         .is_err()
     );
 
     // Missing --to and missing --type are rejected.
     assert!(
-        command::parse(&strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "relation",
-            "create",
-            "10",
-            "--type",
-            "blocks",
-        ]))
+        command::parse_with_role_env(
+            &strings([
+                "--provider",
+                "redmine",
+                "relation",
+                "create",
+                "10",
+                "--type",
+                "blocks",
+            ]),
+            Some("orchestrator")
+        )
         .is_err()
     );
 }
@@ -130,26 +135,17 @@ fn relation_parser_accepts_canonical_types_and_rejects_invalid() {
 #[test]
 fn relation_help_prints_usage_and_exits_cleanly() {
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "relation",
-            "--help"
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "redmine", "relation", "--help"]),
+            Some("orchestrator")
+        ),
         0
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "relation",
-            "create",
-            "--help"
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "redmine", "relation", "create", "--help"]),
+            Some("orchestrator")
+        ),
         0
     );
 }
@@ -160,15 +156,10 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
     // permission check passes and parsing succeeds); admin is denied and
     // Forgejo is rejected before any provider is built.
     for role in ["orchestrator", "executor", "reviewer"] {
-        let parsed = command::parse(&strings([
-            "--role",
-            role,
-            "--provider",
-            "redmine",
-            "relation",
-            "list",
-            "10",
-        ]))
+        let parsed = command::parse_with_role_env(
+            &strings(["--provider", "redmine", "relation", "list", "10"]),
+            Some(role),
+        )
         .unwrap();
         assert!(matches!(
             parsed.command,
@@ -177,27 +168,17 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
     }
     // admin is denied relation list before any network/provider access.
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "admin",
-            "--provider",
-            "redmine",
-            "relation",
-            "list",
-            "10",
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "redmine", "relation", "list", "10",]),
+            Some("admin")
+        ),
         3
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "relation",
-            "list",
-            "10",
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "forgejo", "relation", "list", "10",]),
+            Some("orchestrator")
+        ),
         1
     );
 
@@ -205,32 +186,28 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
     // are denied before any provider is built.
     for role in ["admin", "executor", "reviewer"] {
         assert_eq!(
-            crate::cli::run(strings([
-                "--role",
-                role,
-                "--provider",
-                "redmine",
-                "relation",
-                "create",
-                "10",
-                "--to",
-                "20",
-                "--type",
-                "blocks",
-            ])),
+            crate::cli::run_with_role(
+                strings([
+                    "--provider",
+                    "redmine",
+                    "relation",
+                    "create",
+                    "10",
+                    "--to",
+                    "20",
+                    "--type",
+                    "blocks",
+                ]),
+                Some(role)
+            ),
             3,
             "expected permission error for {role} relation create"
         );
         assert_eq!(
-            crate::cli::run(strings([
-                "--role",
-                role,
-                "--provider",
-                "redmine",
-                "relation",
-                "delete",
-                "5",
-            ])),
+            crate::cli::run_with_role(
+                strings(["--provider", "redmine", "relation", "delete", "5",]),
+                Some(role)
+            ),
             3,
             "expected permission error for {role} relation delete"
         );
@@ -238,31 +215,27 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
     // Forgejo rejects relation create/delete with a structured not-supported
     // error before any network access.
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "relation",
-            "create",
-            "10",
-            "--to",
-            "20",
-            "--type",
-            "blocks",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "forgejo",
+                "relation",
+                "create",
+                "10",
+                "--to",
+                "20",
+                "--type",
+                "blocks",
+            ]),
+            Some("orchestrator")
+        ),
         1
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "relation",
-            "delete",
-            "5",
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "forgejo", "relation", "delete", "5",]),
+            Some("orchestrator")
+        ),
         1
     );
 }
@@ -286,23 +259,24 @@ fn relation_create_denies_delay_for_non_precedes_types() {
         .unwrap();
     // `--delay` with `--type blocks` must fail locally before any request.
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "--api-base",
-            "http://127.0.0.1:1",
-            "relation",
-            "create",
-            "10",
-            "--to",
-            "20",
-            "--type",
-            "blocks",
-            "--delay",
-            "3",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                "http://127.0.0.1:1",
+                "relation",
+                "create",
+                "10",
+                "--to",
+                "20",
+                "--type",
+                "blocks",
+                "--delay",
+                "3",
+            ]),
+            Some("orchestrator")
+        ),
         1
     );
     let _ = fs::remove_dir_all(directory);
@@ -345,35 +319,37 @@ fn relation_create_and_list_hit_redmine_endpoints_end_to_end() {
 
     // Create then list, both against the mock Redmine server.
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "--api-base",
-            &base,
-            "relation",
-            "create",
-            "10",
-            "--to",
-            "20",
-            "--type",
-            "blocks",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                &base,
+                "relation",
+                "create",
+                "10",
+                "--to",
+                "20",
+                "--type",
+                "blocks",
+            ]),
+            Some("orchestrator")
+        ),
         0
     );
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "redmine",
-            "--api-base",
-            &base,
-            "relation",
-            "list",
-            "10",
-        ])),
+        crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                &base,
+                "relation",
+                "list",
+                "10",
+            ]),
+            Some("orchestrator")
+        ),
         0
     );
 

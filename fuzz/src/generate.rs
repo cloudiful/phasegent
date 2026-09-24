@@ -47,7 +47,6 @@ const SUBCOMMANDS: &[&str] = &[
 ];
 
 const GLOBAL_OPTIONS: &[&str] = &[
-    "--role",
     "--provider",
     "--api-base",
     "--repository",
@@ -60,7 +59,10 @@ const GLOBAL_OPTIONS: &[&str] = &[
     "-V",
 ];
 
+// `--role` was removed (issue #588); the token stays in the pool so the fuzzer
+// keeps exercising its rejection as an unknown option.
 const INLINE_OPTIONS: &[&str] = &[
+    "--role",
     "--role=orchestrator",
     "--role=",
     "--provider=Redmine",

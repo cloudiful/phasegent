@@ -17,8 +17,8 @@ use insta::assert_snapshot;
 use snapshots::{Scratch, regex_escape, run, stderr_text, stdout_text};
 
 /// Render one help page and fail loudly when the page does not render.
-fn help(scratch: &Scratch, args: &[&str]) -> String {
-    let output = run(scratch, scratch.root(), args);
+fn help(scratch: &Scratch, role: Option<&str>, args: &[&str]) -> String {
+    let output = run(scratch, scratch.root(), role, args);
     assert!(
         output.status.success(),
         "{args:?} exited with {}: stderr={}",
@@ -37,7 +37,7 @@ fn root_help_snapshot() {
     // bump and is not part of the help contract.
     let version = regex_escape(&format!("phasegent {}", env!("CARGO_PKG_VERSION")));
     insta::with_settings!({filters => vec![(version.as_str(), "phasegent [VERSION]")]}, {
-        assert_snapshot!("root_help", help(&scratch, &["--help"]));
+        assert_snapshot!("root_help", help(&scratch, None, &["--help"]));
     });
 }
 
@@ -46,7 +46,7 @@ fn issue_close_help_snapshot() {
     let scratch = Scratch::new("help-issue-close");
     assert_snapshot!(
         "issue_close_help",
-        help(&scratch, &["--help", "issue", "close"])
+        help(&scratch, None, &["--help", "issue", "close"])
     );
 }
 
@@ -55,7 +55,7 @@ fn issue_sync_help_snapshot() {
     let scratch = Scratch::new("help-issue-sync");
     assert_snapshot!(
         "issue_sync_help",
-        help(&scratch, &["--help", "issue", "sync"])
+        help(&scratch, None, &["--help", "issue", "sync"])
     );
 }
 
@@ -64,14 +64,17 @@ fn issue_sync_help_hides_the_orchestrator_only_command_from_executor() {
     let scratch = Scratch::new("help-issue-sync-executor");
     assert_snapshot!(
         "issue_sync_help_executor",
-        help(&scratch, &["--role", "executor", "--help", "issue", "sync"])
+        help(&scratch, Some("executor"), &["--help", "issue", "sync"])
     );
 }
 
 #[test]
 fn worktree_help_snapshot() {
     let scratch = Scratch::new("help-worktree");
-    assert_snapshot!("worktree_help", help(&scratch, &["--help", "worktree"]));
+    assert_snapshot!(
+        "worktree_help",
+        help(&scratch, None, &["--help", "worktree"])
+    );
 }
 
 #[test]
@@ -79,7 +82,7 @@ fn worktree_acquire_help_snapshot() {
     let scratch = Scratch::new("help-worktree-acquire");
     assert_snapshot!(
         "worktree_acquire_help",
-        help(&scratch, &["--help", "worktree", "acquire"])
+        help(&scratch, None, &["--help", "worktree", "acquire"])
     );
 }
 
@@ -88,7 +91,7 @@ fn worktree_list_help_snapshot() {
     let scratch = Scratch::new("help-worktree-list");
     assert_snapshot!(
         "worktree_list_help",
-        help(&scratch, &["--help", "worktree", "list"])
+        help(&scratch, None, &["--help", "worktree", "list"])
     );
 }
 
@@ -97,6 +100,6 @@ fn worktree_prune_help_snapshot() {
     let scratch = Scratch::new("help-worktree-prune");
     assert_snapshot!(
         "worktree_prune_help",
-        help(&scratch, &["--help", "worktree", "prune"])
+        help(&scratch, None, &["--help", "worktree", "prune"])
     );
 }

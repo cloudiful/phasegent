@@ -8,18 +8,12 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     // so this regression covers only the escape hatch.
 
     // issue title leading dash
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "create",
-        "--title=-starts-with-dash",
-        "--body=ok",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --title should parse");
+    let args = ["issue", "create", "--title=-starts-with-dash", "--body=ok"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("inline --title should parse");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Create { title, body, .. }) => {
             assert_eq!(title, "-starts-with-dash");
@@ -29,18 +23,12 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     }
 
     // issue body (Markdown bullet) via issue create
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "create",
-        "--title=ok",
-        "--body=- Goal",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --body should parse");
+    let args = ["issue", "create", "--title=ok", "--body=- Goal"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("inline --body should parse");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Create { title, body, .. }) => {
             assert_eq!(title, "ok");
@@ -50,18 +38,12 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     }
 
     // issue body (`---` separator) via issue update
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "update",
-        "1",
-        "--body=---",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --body should parse");
+    let args = ["issue", "update", "1", "--body=---"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("inline --body should parse");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Update { number, body, .. }) => {
             assert_eq!(number, 1);
@@ -71,17 +53,12 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     }
 
     // issue search query beginning with a dash (negative filter style)
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "search",
-        "--query=-tag:regression",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --query should parse");
+    let args = ["issue", "search", "--query=-tag:regression"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("inline --query should parse");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Search { query, state, .. }) => {
             assert_eq!(query.as_deref(), Some("-tag:regression"));
@@ -95,8 +72,6 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     // non-{open,closed,all} state values regardless of leading-dash, which
     // is verified by `inline_form_with_invalid_state_value_errors_semantically`.
     let args = [
-        "--role",
-        "orchestrator",
         "issue",
         "search",
         "--state=closed",
@@ -105,7 +80,8 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --state should parse");
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("inline --state should parse");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Search { query, state, .. }) => {
             assert_eq!(query.as_deref(), Some("-tag:regression"));
@@ -116,8 +92,6 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
 
     // comment body leading dash via comment create
     let args = [
-        "--role",
-        "executor",
         "comment",
         "create",
         "1",
@@ -128,7 +102,8 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --body should parse");
+    let invocation =
+        command::parse_with_role_env(&args, Some("executor")).expect("inline --body should parse");
     match invocation.command {
         command::Command::Comment(command::CommentCommand::Create {
             issue,
@@ -146,18 +121,12 @@ fn inline_form_accepts_leading_dash_values_for_required_options() {
     }
 
     // comment marker leading dash via comment find-marker
-    let args = [
-        "--role",
-        "executor",
-        "comment",
-        "find-marker",
-        "1",
-        "--marker=---",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline --marker should parse");
+    let args = ["comment", "find-marker", "1", "--marker=---"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("executor"))
+        .expect("inline --marker should parse");
     match invocation.command {
         command::Command::Comment(command::CommentCommand::FindMarker { issue, marker }) => {
             assert_eq!(issue, 1);
@@ -176,8 +145,6 @@ fn two_arg_value_with_leading_dash_still_errors_via_strict_missing_check() {
     for args in [
         // --body followed by a leading-dash value should still error
         vec![
-            "--role",
-            "orchestrator",
             "issue",
             "create",
             "--title",
@@ -186,38 +153,15 @@ fn two_arg_value_with_leading_dash_still_errors_via_strict_missing_check() {
             "-not-value",
         ],
         // --body followed by a separator-style value should still error
-        vec![
-            "--role",
-            "orchestrator",
-            "issue",
-            "update",
-            "1",
-            "--body",
-            "---",
-        ],
+        vec!["issue", "update", "1", "--body", "---"],
         // --query followed by a leading-dash value should still error
-        vec![
-            "--role",
-            "orchestrator",
-            "issue",
-            "search",
-            "--query",
-            "-tag:regression",
-        ],
+        vec!["issue", "search", "--query", "-tag:regression"],
         // --marker followed by a leading-dash value should still error
-        vec![
-            "--role",
-            "executor",
-            "comment",
-            "find-marker",
-            "1",
-            "--marker",
-            "---",
-        ],
+        vec!["comment", "find-marker", "1", "--marker", "---"],
     ] {
         let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
         assert!(
-            command::parse(&args).is_err(),
+            command::parse_with_role_env(&args, Some("executor")).is_err(),
             "two-arg form accepted a leading-dash value: {args:?}"
         );
     }
@@ -230,8 +174,6 @@ fn inline_form_does_not_match_other_long_options_with_the_same_prefix() {
     // value. We verify by passing a deliberately crafted inline token against
     // an unrelated subcommand; it must surface as "unknown option".
     let args = [
-        "--role",
-        "orchestrator",
         "issue",
         "create",
         "--title=ok",
@@ -240,7 +182,8 @@ fn inline_form_does_not_match_other_long_options_with_the_same_prefix() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let error = command::parse(&args).expect_err("unknown long option must error");
+    let error = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect_err("unknown long option must error");
     assert!(
         error.contains("unknown option"),
         "expected unknown option error, got: {error}"
@@ -253,18 +196,12 @@ fn inline_form_accepts_empty_value_for_body_but_rejects_empty_marker() {
     // whether empty is meaningful for that field). For `--marker=` the
     // required-nonempty semantic must still reject the empty value with the
     // same structured error as the two-arg form.
-    let args = [
-        "--role",
-        "orchestrator",
-        "issue",
-        "create",
-        "--title=ok",
-        "--body=",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("inline empty body should parse");
+    let args = ["issue", "create", "--title=ok", "--body="]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("inline empty body should parse");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Create { title, body, .. }) => {
             assert_eq!(title, "ok");
@@ -273,19 +210,12 @@ fn inline_form_accepts_empty_value_for_body_but_rejects_empty_marker() {
         other => panic!("unexpected command: {other:?}"),
     }
 
-    let args = [
-        "--role",
-        "executor",
-        "comment",
-        "create",
-        "1",
-        "--body=ok",
-        "--marker=",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let error = command::parse(&args).expect_err("empty inline marker must error");
+    let args = ["comment", "create", "1", "--body=ok", "--marker="]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse_with_role_env(&args, Some("executor"))
+        .expect_err("empty inline marker must error");
     assert!(
         error.contains("non-empty"),
         "expected non-empty marker error, got: {error}"
@@ -294,19 +224,11 @@ fn inline_form_accepts_empty_value_for_body_but_rejects_empty_marker() {
 
 #[test]
 fn empty_marker_is_rejected_by_parser_and_provider() {
-    let args = [
-        "--role",
-        "orchestrator",
-        "comment",
-        "find-marker",
-        "1",
-        "--marker",
-        "",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    assert!(command::parse(&args).is_err());
+    let args = ["comment", "find-marker", "1", "--marker", ""]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(command::parse_with_role_env(&args, Some("orchestrator")).is_err());
 
     let provider = ForgejoProvider::new(
         ForgejoConfig::new("http://127.0.0.1:1/api/v1", "owner", "repo"),

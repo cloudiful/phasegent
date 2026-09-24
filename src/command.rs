@@ -105,23 +105,23 @@ pub enum Command {
     Worktree(WorktreeCommand),
     /// Read-only self-check: credential presence (fingerprint, never
     /// values), index backend state, and the masked PostgreSQL URL.
-    /// Usable without `--role`; the approved replacement for schema
+    /// Usable without a role; the approved replacement for schema
     /// dumps and raw setting reads.
     Doctor,
     /// Explicit desktop entry point for the single-binary shell.
     /// `phasegent gui` opens the Tauri window; every other CLI command
-    /// never initializes the GUI. Usable without `--role` because the
+    /// never initializes the GUI. Usable without a role because the
     /// shell is an operator-local launcher, not a role-scoped
     /// provider operation.
     Gui,
     /// Manual-only agent notifications via `cloudiful-notifier`.
     /// `notify send` delivers a bounded envelope on the configured
     /// channel; there are no automatic triggers and no post-success
-    /// side effects. Requires `--role`.
+    /// side effects. Requires a role.
     Notify(NotifyCommand),
     /// rmcp MCP server over stdio (default) or streamable HTTP on
-    /// `/mcp`. Tools run with the server-side `--role` and provider
-    /// flags; clients never supply a role. Requires `--role`.
+    /// `/mcp`. Tools run with the server-side role from `PHASEGENT_ROLE`
+    /// and provider flags; clients never supply a role. Requires a role.
     Mcp(McpCommand),
 }
 

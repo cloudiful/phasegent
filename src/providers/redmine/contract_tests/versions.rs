@@ -147,14 +147,10 @@ fn version_list_paginates_and_selects_versions_on_later_pages() {
 fn version_list_enforces_role_and_provider_boundaries() {
     // Every role may list versions on Redmine...
     for role in ["admin", "orchestrator", "executor", "reviewer"] {
-        let parsed = command::parse(&strings([
-            "--role",
-            role,
-            "--provider",
-            "redmine",
-            "version",
-            "list",
-        ]))
+        let parsed = command::parse_with_role_env(
+            &strings(["--provider", "redmine", "version", "list"]),
+            Some(role),
+        )
         .unwrap();
         assert!(matches!(
             parsed.command,
@@ -164,14 +160,10 @@ fn version_list_enforces_role_and_provider_boundaries() {
     // ...while Forgejo is rejected with a not-supported error before any
     // provider is built.
     assert_eq!(
-        crate::cli::run(strings([
-            "--role",
-            "orchestrator",
-            "--provider",
-            "forgejo",
-            "version",
-            "list",
-        ])),
+        crate::cli::run_with_role(
+            strings(["--provider", "forgejo", "version", "list",]),
+            Some("orchestrator")
+        ),
         1
     );
 }

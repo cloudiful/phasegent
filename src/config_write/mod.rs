@@ -11,7 +11,7 @@
 //! direct values before this module persists anything; the module
 //! itself never echoes secret values in errors or JSON.
 //!
-//! Global settings are machine-wide and usable without `--role`;
+//! Global settings are machine-wide and usable without a role;
 //! role-scoped settings require a role and operate on the per-role
 //! rows.
 

@@ -1,5 +1,5 @@
 ---
 source: tests/snapshots_help_contracts.rs
-expression: "help(&scratch, &[\"--role\", \"executor\", \"--help\", \"issue\", \"sync\"])"
+expression: "help(&scratch, Some(\"executor\"), &[\"--help\", \"issue\", \"sync\"])"
 ---
 No command available for executor.

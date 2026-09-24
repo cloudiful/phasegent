@@ -4,16 +4,17 @@ use super::*;
 
 #[test]
 fn parse_heartbeat_requires_lease_and_parses_session() {
-    let invocation = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "heartbeat",
-        "--lease",
-        "lease-1",
-        "--session",
-        "alpha",
-    ]))
+    let invocation = crate::command::parse_with_role_env(
+        &strings([
+            "worktree",
+            "heartbeat",
+            "--lease",
+            "lease-1",
+            "--session",
+            "alpha",
+        ]),
+        Some("orchestrator"),
+    )
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Heartbeat { lease, session }) => {
@@ -22,28 +23,27 @@ fn parse_heartbeat_requires_lease_and_parses_session() {
         }
         other => panic!("unexpected command {other:?}"),
     }
-    let missing = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "heartbeat",
-    ]))
+    let missing = crate::command::parse_with_role_env(
+        &strings(["worktree", "heartbeat"]),
+        Some("orchestrator"),
+    )
     .unwrap_err();
     assert!(missing.contains("--lease"), "unexpected error: {missing}");
 }
 
 #[test]
 fn parse_heartbeat_rejects_blank_session() {
-    let error = crate::command::parse(&strings([
-        "--role",
-        "orchestrator",
-        "worktree",
-        "heartbeat",
-        "--lease",
-        "lease-1",
-        "--session",
-        "",
-    ]))
+    let error = crate::command::parse_with_role_env(
+        &strings([
+            "worktree",
+            "heartbeat",
+            "--lease",
+            "lease-1",
+            "--session",
+            "",
+        ]),
+        Some("orchestrator"),
+    )
     .unwrap_err();
     assert!(error.contains("session"), "unexpected error: {error}");
 }

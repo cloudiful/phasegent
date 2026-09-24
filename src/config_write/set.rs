@@ -30,7 +30,9 @@ pub fn set_setting_value(
         ));
     }
     if is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!("--role is required for setting '{canonical}'"));
+        return Err(format!(
+            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
+        ));
     }
     persist_set_value(role, canonical, trimmed, storage)?;
     let outcome = ConfigSetOutcome {
@@ -54,7 +56,9 @@ pub fn set_setting_stdin_content(
         return Err(format!("value for '{canonical}' cannot be empty"));
     }
     if is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!("--role is required for setting '{canonical}'"));
+        return Err(format!(
+            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
+        ));
     }
     persist_set_value(role, canonical, trimmed, storage)?;
     let outcome = ConfigSetOutcome {

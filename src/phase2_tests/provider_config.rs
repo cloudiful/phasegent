@@ -86,18 +86,12 @@ fn provider_kind_local_round_trips_and_resolves_without_credentials() {
     assert_eq!(round_trip, ProviderKind::Local);
 
     // The top-level `--provider local` flag flows through the parser.
-    let args = [
-        "--role",
-        "executor",
-        "--provider",
-        "local",
-        "issue",
-        "search",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("--provider local must parse");
+    let args = ["--provider", "local", "issue", "search"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation =
+        command::parse_with_role_env(&args, Some("executor")).expect("--provider local must parse");
     assert_eq!(
         invocation.provider.expect("--provider must be captured"),
         ProviderKind::Local
@@ -113,18 +107,12 @@ fn provider_flag_parses_gitlab_for_role_free_branch_commands() {
     // flag is still accepted by the outer parser.
     use std::str::FromStr;
 
-    let args = [
-        "--role",
-        "orchestrator",
-        "--provider",
-        "gitlab",
-        "issue",
-        "search",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("--provider gitlab must parse");
+    let args = ["--provider", "gitlab", "issue", "search"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("--provider gitlab must parse");
     assert_eq!(
         invocation.provider.expect("--provider must be captured"),
         ProviderKind::Gitlab
@@ -132,18 +120,12 @@ fn provider_flag_parses_gitlab_for_role_free_branch_commands() {
 
     // Inline form `--provider=gitlab` is recognised too so scripts
     // that build argv with the `option=value` style still work.
-    let inline = [
-        "--role=orchestrator",
-        "--provider=gitlab",
-        "issue",
-        "search",
-        "--query",
-        "phase-1",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    let parsed = command::parse(&inline).expect("--provider=gitlab must parse");
+    let inline = ["--provider=gitlab", "issue", "search", "--query", "phase-1"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let parsed = command::parse_with_role_env(&inline, Some("orchestrator"))
+        .expect("--provider=gitlab must parse");
     assert_eq!(parsed.provider, Some(ProviderKind::Gitlab));
 
     // Sanity: as_str + FromStr cross-check at the call site.

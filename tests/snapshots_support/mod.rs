@@ -78,8 +78,9 @@ impl Drop for Scratch {
 
 /// Run the compiled binary from `cwd` with a hermetic `PHASEGENT_*`
 /// environment: the scratch databases are pinned and every host override a
-/// developer may have exported is removed.
-pub fn run(scratch: &Scratch, cwd: &Path, args: &[&str]) -> Output {
+/// developer may have exported is removed. `role` is passed explicitly
+/// through `PHASEGENT_ROLE`; `None` removes it.
+pub fn run(scratch: &Scratch, cwd: &Path, role: Option<&str>, args: &[&str]) -> Output {
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -115,6 +116,9 @@ pub fn run(scratch: &Scratch, cwd: &Path, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(role) = role {
+        command.env("PHASEGENT_ROLE", role);
+    }
     command.output().expect("spawn phasegent binary")
 }
 
@@ -127,8 +131,13 @@ pub fn stderr_text(output: &Output) -> String {
 }
 
 /// Run a command that must succeed and parse its JSON stdout document.
-pub fn expect_json(scratch: &Scratch, cwd: &Path, args: &[&str]) -> serde_json::Value {
-    let output = run(scratch, cwd, args);
+pub fn expect_json(
+    scratch: &Scratch,
+    cwd: &Path,
+    role: Option<&str>,
+    args: &[&str],
+) -> serde_json::Value {
+    let output = run(scratch, cwd, role, args);
     assert!(
         output.status.success(),
         "{args:?} exited with {}: stderr={}",

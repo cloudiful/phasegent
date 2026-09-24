@@ -34,10 +34,23 @@ export function phasegentCallsDisabled() {
   }
 }
 
-// `args` is spread into separate argv entries by Bun's shell interpolation.
-export function phasegentCommand(args, cwd) {
+// The host platform decides how a role is expressed in a shell command: POSIX
+// shells take the `NAME=value` prefix, PowerShell needs `$env:NAME='value'`.
+export function isWindowsHost() {
+  try {
+    return typeof process !== "undefined" && process.platform === "win32";
+  } catch (_) {
+    return false;
+  }
+}
+
+// `args` is spread into separate argv entries by Bun's shell interpolation, and
+// `env` (when given) is layered over the inherited environment for this probe
+// only, so a role never leaks into the host process.
+export function phasegentCommand(args, cwd, env) {
   const command = Bun.$`phasegent ${args}`;
-  return (cwd ? command.cwd(cwd) : command).quiet();
+  const scoped = cwd ? command.cwd(cwd) : command;
+  return (env ? scoped.env({ ...process.env, ...env }) : scoped).quiet();
 }
 
 export function locationDirectory(context) {

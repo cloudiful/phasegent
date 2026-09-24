@@ -20,9 +20,8 @@ pub fn create_local_issue(scratch: &Scratch, cwd: &Path, title: &str, body: &str
     let document = expect_json(
         scratch,
         cwd,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "local",
             "issue",
@@ -45,9 +44,8 @@ pub fn set_local_status(scratch: &Scratch, cwd: &Path, number: u64, status: &str
     expect_json(
         scratch,
         cwd,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "local",
             "status",
@@ -122,15 +120,8 @@ pub fn open_lease_store(scratch: &Scratch, repo: &Path) -> String {
     let document = expect_json(
         scratch,
         scratch.root(),
-        &[
-            "--role",
-            "executor",
-            "worktree",
-            "list",
-            "--repo",
-            repo,
-            "--no-sync",
-        ],
+        Some("executor"),
+        &["worktree", "list", "--repo", repo, "--no-sync"],
     );
     document["repo_identity"]
         .as_str()

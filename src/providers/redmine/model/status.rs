@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn forbidden_parser_accepts_both_provider_wordings() {
-        let redmine = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
+        let redmine = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: PHASEGENT_ROLE=orchestrator phasegent --provider redmine status next 7";
         assert_eq!(
             parse_forbidden_transition(redmine),
             Some(("Resolved".to_owned(), "In Review".to_owned()))
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn structured_forbidden_json_round_trips_a_preflight_rejection() {
-        let message = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: phasegent --role orchestrator --provider redmine status next 7";
+        let message = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: PHASEGENT_ROLE=orchestrator phasegent --provider redmine status next 7";
         let error = ForgejoError::request("issue status advance", message.to_owned());
         let json = structured_forbidden_json(&error).expect("preflight rejection must map");
         assert_eq!(json["kind"], "request");
@@ -394,7 +394,7 @@ mod tests {
     fn structured_forbidden_json_rejects_server_side_and_non_request_errors() {
         let server = ForgejoError::request(
             "issue status advance",
-            "boom; current status 'In Progress' -> target status 'In Review'; server rejected a policy-allowed or custom transition, so the Redmine workflow is authoritative; recovery: phasegent --role orchestrator --provider redmine status next 7".to_owned(),
+            "boom; current status 'In Progress' -> target status 'In Review'; server rejected a policy-allowed or custom transition, so the Redmine workflow is authoritative; recovery: PHASEGENT_ROLE=orchestrator phasegent --provider redmine status next 7".to_owned(),
         );
         assert!(structured_forbidden_json(&server).is_none());
         let config = ForgejoError::config("issue number must be greater than zero");

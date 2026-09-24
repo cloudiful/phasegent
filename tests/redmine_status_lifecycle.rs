@@ -56,9 +56,8 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
         let output = run_cli(
             &db.path,
             &server.base_url,
+            Some("orchestrator"),
             &[
-                "--role",
-                "orchestrator",
                 "--provider",
                 "redmine",
                 "--project-id",
@@ -157,9 +156,8 @@ fn issue_close_verifies_remote_state_through_subprocess() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "redmine",
             "--project-id",
@@ -233,9 +231,8 @@ fn status_set_fails_when_remote_state_remains_stale() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "redmine",
             "--project-id",
@@ -307,9 +304,8 @@ fn issue_close_fails_when_remote_state_remains_open() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "redmine",
             "--project-id",
@@ -398,9 +394,8 @@ fn issue_close_fails_when_follow_up_get_shows_open_status() {
     let output = run_cli(
         &db.path,
         &server.base_url,
+        Some("orchestrator"),
         &[
-            "--role",
-            "orchestrator",
             "--provider",
             "redmine",
             "--project-id",

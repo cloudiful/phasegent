@@ -398,14 +398,22 @@ pub fn phasegent_bin() -> &'static str {
 /// Run the compiled binary with isolated `PHASEGENT_DB_PATH` plus a clean
 /// Redmine env so a developer's shell cannot leak overrides into the subprocess.
 /// `PHASEGENT_CONFIG_PATH` points at a guaranteed-missing per-test path so the
-/// ProjectDirs default TOML can never shadow integration assertions.
-pub fn run_cli(db_path: &Path, api_base: &str, args: &[&str]) -> std::process::Output {
+/// ProjectDirs default TOML can never shadow integration assertions. `role` is
+/// passed explicitly through `PHASEGENT_ROLE`; `None` removes it so role-less
+/// paths stay deterministic.
+pub fn run_cli(
+    db_path: &Path,
+    api_base: &str,
+    role: Option<&str>,
+    args: &[&str],
+) -> std::process::Output {
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
         .env("PHASEGENT_DB_PATH", db_path.as_os_str())
         // Pin to the test api_base so resolver changes cannot drift the mock URL.
         .env("PHASEGENT_REDMINE_API_BASE", api_base)
+        .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_REDMINE_PROJECT_ID")
@@ -423,6 +431,9 @@ pub fn run_cli(db_path: &Path, api_base: &str, args: &[&str]) -> std::process::O
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(role) = role {
+        command.env("PHASEGENT_ROLE", role);
+    }
     command.output().expect("spawn phasegent binary")
 }
 

@@ -33,6 +33,17 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
     }
 }
 
+/// Role-injectable entry point for in-process tests. Mirrors [`run`] but
+/// takes the role context directly so a test never has to mutate the
+/// process-global environment.
+#[cfg(test)]
+pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Option<&str>) -> i32 {
+    match command::parse_with_role_env(&args.into_iter().collect::<Vec<_>>(), role_env) {
+        Ok(invocation) => execute(invocation),
+        Err(message) => usage_error(&message),
+    }
+}
+
 /// Open the operator's platform-standard SQLite database. CLI entry
 /// points that touch [`Storage`] use this helper so the structured
 /// error path stays uniform: callers receive the same error string
@@ -84,7 +95,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         Command::Doctor => doctor::execute_doctor(),
         Command::ConfigShow => {
             // The CLI re-uses `invocation.role` so a user that runs
-            // `phasegent --role executor config show` gets a
+            // `PHASEGENT_ROLE=executor phasegent config show` gets a
             // single-role view, and `phasegent config show` (no
             // role) returns the global snapshot. Open the SQLite
             // database once so any structured failure surfaces

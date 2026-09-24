@@ -45,7 +45,7 @@ pub(crate) fn parse_config(args: &[String]) -> Result<Command, String> {
     match subcommand {
         Some("show") => {
             // `config show` deliberately accepts no options: the
-            // optional `--role` filter lives on the top-level
+            // optional role filter lives on the top-level
             // invocation, which already routes `role` into
             // `ConfigShow`. Surplus arguments therefore indicate
             // the operator meant something else.
@@ -146,7 +146,7 @@ fn parse_config_clear(args: &[String]) -> Result<Command, String> {
 
 /// Parse the `config provider` surface, which exposes the persisted
 /// machine-wide default through `get`/`set`/`clear`. None of these
-/// commands require `--role` because the global default is, by
+/// commands require a role because the global default is, by
 /// definition, machine-wide rather than role-scoped.
 fn parse_config_provider(args: &[String]) -> Result<Command, String> {
     if args

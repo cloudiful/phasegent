@@ -216,30 +216,22 @@ fn removed_index_commands_and_help_topics_are_rejected() {
     // command surface must fail at the CLI and under `--help`, and the
     // overview must not advertise a topic whose name starts with `index`.
     for args in [
-        vec![
-            "--role", "executor", "issue", "index", "sync", "--query", "bug",
-        ],
-        vec![
-            "--role", "executor", "issue", "index", "search", "--query", "hello",
-        ],
-        vec!["--role", "executor", "issue", "index"],
+        vec!["issue", "index", "sync", "--query", "bug"],
+        vec!["issue", "index", "search", "--query", "hello"],
+        vec!["issue", "index"],
     ] {
         let parsed: Vec<String> = args.into_iter().map(str::to_owned).collect();
-        let error = command::parse(&parsed).expect_err("removed index command must be rejected");
+        let error = command::parse_with_role_env(&parsed, Some("executor"))
+            .expect_err("removed index command must be rejected");
         assert!(
             error.contains("unknown issue command") && error.contains("index"),
             "got: {error}"
         );
     }
     for topic in ["index", "index sync", "index search"] {
-        let mut parts = vec![
-            "--role".to_owned(),
-            "executor".to_owned(),
-            "--help".to_owned(),
-            "issue".to_owned(),
-        ];
+        let mut parts = vec!["--help".to_owned(), "issue".to_owned()];
         parts.extend(topic.split_whitespace().map(str::to_owned));
-        let error = command::parse(&parts)
+        let error = command::parse_with_role_env(&parts, Some("executor"))
             .err()
             .unwrap_or_else(|| panic!("help {topic} must be rejected"));
         assert!(
@@ -248,11 +240,12 @@ fn removed_index_commands_and_help_topics_are_rejected() {
         );
     }
     // Ordinary search still parses with the transparent flags.
-    let args = ["--role", "executor", "issue", "search", "--query", "phase"]
+    let args = ["issue", "search", "--query", "phase"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("ordinary search must parse");
+    let invocation =
+        command::parse_with_role_env(&args, Some("executor")).expect("ordinary search must parse");
     match invocation.command {
         Command::Issue(crate::command::IssueCommand::Search { query, .. }) => {
             assert_eq!(query.as_deref(), Some("phase"));

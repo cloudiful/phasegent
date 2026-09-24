@@ -222,7 +222,7 @@ fn status_ref_for_name(statuses: &[RedmineIssueStatus], name: &str) -> StatusRef
 }
 
 fn local_recovery_hint(number: u64) -> String {
-    format!("phasegent --role orchestrator --provider local status next {number}")
+    format!("PHASEGENT_ROLE=orchestrator phasegent --provider local status next {number}")
 }
 
 fn forbidden_message(
