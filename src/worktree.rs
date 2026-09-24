@@ -57,6 +57,7 @@ mod create_hook;
 pub(crate) mod git;
 pub(crate) mod leases;
 mod naming;
+pub mod probe;
 mod session;
 
 // The re-exports below are part of the public surface of the
@@ -66,17 +67,22 @@ mod session;
 // positive here.
 #[allow(unused_imports)]
 pub use acquire::{
-    WORKTREE_AUTO_SETTING, acquire_lease, heartbeat_lease, release_active_leases_for_issue,
-    release_lease, release_lease_forced, resolve_worktree_auto,
+    AcquireOptions, WORKTREE_AUTO_SETTING, acquire_lease, acquire_lease_with, heartbeat_lease,
+    release_active_leases_for_issue, release_lease, release_lease_forced, resolve_worktree_auto,
 };
 #[allow(unused_imports)]
-pub use git::{is_clean, parse_worktree_list, worktree_add, worktree_remove};
+pub use git::{
+    checkout_git_dirs, head_rev, is_clean, is_inside_work_tree, parse_worktree_list,
+    ref_resolves_to_commit, worktree_add, worktree_add_from, worktree_remove,
+};
 #[allow(unused_imports)]
-pub use leases::{ensure_schema, list_for_issue, list_for_repo};
+pub use leases::{ensure_schema, find_active_lease_for_probe, list_for_issue, list_for_repo};
 #[allow(unused_imports)]
 pub use naming::{
     cache_root_in, compute_fingerprint, generate_branch, slug_from_branch, validate_ref_format,
 };
+#[allow(unused_imports)]
+pub use probe::{MAX_PROBE_ERRORS, ProbeError, ProbeFacts, probe_path};
 #[allow(unused_imports)]
 pub(crate) use session::{
     LEGACY_SESSION_ID, MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource,

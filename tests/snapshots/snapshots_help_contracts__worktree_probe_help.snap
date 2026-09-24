@@ -1,0 +1,7 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, None, &[\"--help\", \"worktree\", \"probe\"])"
+---
+Usage: worktree probe [--path PATH | --issue N [--session S]]
+
+Read-only diagnostic for one worktree. With --path PATH it probes that directory; with --issue N [--session S] it resolves the active lease for the current repository identity, the issue, and the optional session and probes the lease's worktree path; with no selector it probes the current checkout. --path and --issue are mutually exclusive, and --session requires --issue. Prints one bounded JSON document with resolved/path/exists/is_git_worktree/clean/branch/head/is_main_checkout/lease/errors: clean is true, false, or null (unknown), and a Git or filesystem failure is reported under errors instead of aborting, so a missing or non-Git path still returns a structured result. It never calls a provider, never writes or flips a lease, never syncs, and never deletes or repairs a directory, branch, or checkout. When --issue matches no active lease the result is the stable empty envelope (resolved=false, path=null) and no path is guessed. Available to orchestrator, executor, and reviewer; tester is denied.

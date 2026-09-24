@@ -181,6 +181,37 @@ pub(super) fn find_active_lease(
     Ok(None)
 }
 
+/// The active lease a read-only `worktree probe` resolves for
+/// `(repo_identity, issue)`. When `session` is `Some` the row must match
+/// it; otherwise the newest active row for the issue is used. `None`
+/// means no matching active lease exists, so the probe returns its
+/// stable empty result instead of guessing a worktree path.
+#[allow(dead_code)]
+pub fn find_active_lease_for_probe(
+    storage: &Storage,
+    identity: &str,
+    issue: u64,
+    session: Option<&str>,
+) -> Result<Option<LeaseRow>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(&format!(
+            "{LEASE_SELECT} \
+             WHERE repo_identity = ?1 AND issue = ?2 AND status = ?3 \
+               AND (?4 IS NULL OR session = ?4) \
+             ORDER BY created_at DESC LIMIT 1"
+        ))
+        .map_err(|error| WorktreeError::new("storage", format!("prepare probe lookup: {error}")))?;
+    let row: Option<LeaseRow> = statement
+        .query_row(
+            rusqlite::params![identity, issue as i64, LEASE_STATUS_ACTIVE, session],
+            decode_lease_row,
+        )
+        .optional()
+        .map_err(|error| WorktreeError::new("storage", format!("probe lookup: {error}")))?;
+    Ok(row)
+}
+
 #[allow(dead_code)]
 pub(super) fn count_other_active_leases(
     storage: &Storage,

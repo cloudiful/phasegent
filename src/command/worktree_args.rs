@@ -3,9 +3,9 @@
 /// * `acquire` returns a `(lease_id, path, branch, repo_identity,
 ///   created, reason)` JSON envelope (`reason ∈ {idempotent,
 ///   no_conflict, new_worktree}`) on stdout; the same session triple
-///   reuses the prior lease. `--base` is accepted for forward
-///   compatibility; the current implementation always bases on `HEAD`.
-///   Orchestrator-only.
+///   reuses the prior lease. An explicit `--base REF` skips the reuse /
+///   conflict decision table (after the idempotent home-coming) and
+///   creates a fresh worktree/branch from `REF`. Orchestrator-only.
 /// * `release` flips the lease to `retained` (default) or `released`.
 ///   Orchestrator-only. Never deletes the directory or the branch in
 ///   the current Phase 2 surface; prune is a separate subcommand.
@@ -15,6 +15,11 @@
 ///   the resolved repo identity; `--repo` defaults to the current
 ///   working directory. Read-only; available to orchestrator,
 ///   executor, and reviewer.
+/// * `probe [--path PATH | --issue N [--session S]]` reports bounded,
+///   read-only filesystem / Git facts about a checkout (or the lease
+///   that matches `--issue`). It never calls a provider, writes a
+///   lease, or syncs. Read-only; available to orchestrator, executor,
+///   and reviewer.
 /// * `prune [--repo PATH] [--stale-days N] [--release-stale --reason
 ///   TEXT] [--remove]` is the single pruning entry point (folds the
 ///   former `release-stale`). With neither `--release-stale` nor
@@ -43,12 +48,12 @@ pub enum WorktreeCommand {
         /// defers to `PHASEGENT_SESSION_ID` and then the legacy
         /// `phasegent` fallback at execution time (issue 305 Task 1).
         session: Option<String>,
-        /// Accepted for forward compatibility; the current Phase 2
-        /// implementation always bases on `HEAD`. The dispatcher in
-        /// `cli::worktree::execute_acquire` acknowledges the value
-        /// and ignores it without warning so the CLI surface stays
-        /// stable when a future Phase ships the actual `--base`
-        /// routing.
+        /// Explicit `--base REF` request (issue 595). After the
+        /// idempotent `(repo, issue, session)` home-coming, a fresh
+        /// acquire bases the new worktree/branch on `REF` (a branch,
+        /// tag, sha, or `origin/<branch>`) instead of `HEAD` and never
+        /// reuses the current checkout. `None` keeps the existing
+        /// decision table.
         base: Option<String>,
         format: String,
         /// Per-call isolation override (issue #247). `--isolate` forces
@@ -72,6 +77,14 @@ pub enum WorktreeCommand {
     List {
         repo: Option<String>,
         no_sync: bool,
+    },
+    /// Read-only diagnostic (issue 595). Exactly one selector applies:
+    /// `--path PATH`, or `--issue N [--session S]`, or neither (probe
+    /// the current checkout). Never writes, syncs, or calls a provider.
+    Probe {
+        path: Option<String>,
+        issue: Option<u64>,
+        session: Option<String>,
     },
     Prune {
         repo: Option<String>,
@@ -114,7 +127,8 @@ impl WorktreeCommand {
             | Self::Prune { .. }
             | Self::Release { .. }
             | Self::Status { .. }
-            | Self::Heartbeat { .. } => None,
+            | Self::Heartbeat { .. }
+            | Self::Probe { .. } => None,
         }
     }
 }

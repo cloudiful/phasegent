@@ -96,6 +96,15 @@ fn worktree_list_help_snapshot() {
 }
 
 #[test]
+fn worktree_probe_help_snapshot() {
+    let scratch = Scratch::new("help-worktree-probe");
+    assert_snapshot!(
+        "worktree_probe_help",
+        help(&scratch, None, &["--help", "worktree", "probe"])
+    );
+}
+
+#[test]
 fn worktree_prune_help_snapshot() {
     let scratch = Scratch::new("help-worktree-prune");
     assert_snapshot!(

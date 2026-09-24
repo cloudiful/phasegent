@@ -1,6 +1,6 @@
 ---
 source: tests/snapshots_help_contracts.rs
-expression: "help(&scratch, &[\"--help\", \"worktree\"])"
+expression: "help(&scratch, None, &[\"--help\", \"worktree\"])"
 ---
 Worktree commands for all roles:
 
@@ -9,8 +9,9 @@ Worktree commands for all roles:
   heartbeat      Refresh an active lease heartbeat
   prune          Prune stale leases and clean worktrees
 
-Read-only (status/list):
+Read-only (status/list/probe):
   status         List active leases for an issue
   list           List every lease for the resolved repo identity
+  probe          Probe a checkout or lease path read-only
 
 Use 'phasegent --help worktree <command>' for options. acquire, list, and prune run their repository's sync pass first; --no-sync skips it.

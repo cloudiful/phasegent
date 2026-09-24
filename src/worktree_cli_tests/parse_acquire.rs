@@ -109,3 +109,49 @@ fn parse_acquire_rejects_non_numeric_issue() {
     .unwrap_err();
     assert!(err.contains("--issue"), "expected --issue error, got {err}");
 }
+
+#[test]
+fn parse_acquire_rejects_an_explicitly_empty_base() {
+    // An explicit empty --base must not silently fall through to the
+    // omitted-option decision table (reviewer note 8446): presence is
+    // preserved and rejected.
+    for args in [
+        vec!["worktree", "acquire", "--issue", "595", "--base="],
+        vec!["worktree", "acquire", "--issue", "595", "--base", ""],
+        vec!["worktree", "acquire", "--issue", "595", "--base", "   "],
+    ] {
+        let argv: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
+        let err = crate::command::parse_with_role_env(&argv, Some("orchestrator")).unwrap_err();
+        assert!(
+            err.contains("--base") && err.contains("non-empty"),
+            "an empty --base must be a structured parser error for {args:?}, got {err}"
+        );
+    }
+}
+
+#[test]
+fn parse_acquire_still_omits_an_absent_base_and_trims_a_padded_one() {
+    let invocation = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire", "--issue", "595"]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Acquire { base, .. }) => assert_eq!(base, None),
+        other => panic!("unexpected command {other:?}"),
+    }
+
+    let padded = crate::command::parse_with_role_env(
+        &strings([
+            "worktree", "acquire", "--issue", "595", "--base", "  main  ",
+        ]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match padded.command {
+        Command::Worktree(WorktreeCommand::Acquire { base, .. }) => {
+            assert_eq!(base.as_deref(), Some("main"));
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}

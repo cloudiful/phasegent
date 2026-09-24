@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::branch_context::{ProcessGitRunner, read_issue_id};
 use crate::infra::storage::Storage;
-use crate::worktree::git::{current_branch_for, is_clean, worktree_add, worktree_remove};
+use crate::worktree::git::{
+    current_branch_for, is_clean, ref_resolves_to_commit, worktree_add_from, worktree_remove,
+};
 use crate::worktree::leases::{
     NewLease, count_other_active_leases, ensure_schema, find_active_lease, heartbeat_active_lease,
     insert_lease, list_for_repo, load_lease, record_release_reason, refresh_heartbeat,
@@ -68,6 +70,51 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
             )
         }),
     }
+}
+
+/// Options that shape one [`acquire_lease_with`] call beyond the
+/// `(repo, issue, session)` triple.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AcquireOptions<'a> {
+    /// Directory under which `<cache>/worktrees/<fingerprint>` is
+    /// created. `None` uses the OS cache dir (or
+    /// `PHASEGENT_WORKTREE_CACHE_DIR` when set).
+    pub cache_base: Option<&'a Path>,
+    /// `--isolate`: force a fresh worktree even on an otherwise reusing
+    /// checkout state (issue #509).
+    pub isolate: bool,
+    /// Resolved `worktree-auto` switch. OR-ed with `isolate`.
+    pub auto: bool,
+    /// Explicit `--base REF` request. `Some` never reuses the current
+    /// checkout after the idempotent home-coming and instead creates the
+    /// new worktree/branch from `REF` rather than `HEAD`.
+    pub base: Option<&'a str>,
+}
+
+/// Backwards-compatible entry point: an acquire with no explicit
+/// `--base`, delegating to [`acquire_lease_with`].
+#[allow(dead_code)]
+pub fn acquire_lease(
+    runner: &dyn WorktreeRunner,
+    repo_path: &Path,
+    issue: u64,
+    session: &str,
+    cache_base: Option<&Path>,
+    isolate: bool,
+    auto: bool,
+) -> Result<AcquireOutcome, WorktreeError> {
+    acquire_lease_with(
+        runner,
+        repo_path,
+        issue,
+        session,
+        AcquireOptions {
+            cache_base,
+            isolate,
+            auto,
+            base: None,
+        },
+    )
 }
 
 /// Acquire (or refresh) a worktree lease for `(repo_path, issue,
@@ -134,6 +181,13 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
 /// warnings: the lease is already durable, so a local binding or hook
 /// failure must never turn a successful acquire into an error.
 ///
+/// An explicit `AcquireOptions::base` short-circuits the decision table
+/// after Rule 1: the same `(repo, issue, session)` still returns its
+/// idempotent lease, but a fresh acquire creates the new
+/// branch/worktree from `REF` instead of `HEAD` and never reuses the
+/// current checkout. The ref is validated read-only first, so a bad
+/// base fails with a structured `git` error and writes nothing.
+///
 /// .env / secrets: this function never reads or copies `.env` files
 /// or credential material. The AI / user is expected to copy
 /// environment files by hand when needed (issue #239 Decisions).
@@ -144,15 +198,19 @@ pub fn resolve_worktree_auto(storage: &Storage) -> Result<bool, WorktreeError> {
 /// is used. Tests must pass a temp directory so they never touch
 /// the real `~/.cache`.
 #[allow(dead_code)]
-pub fn acquire_lease(
+pub fn acquire_lease_with(
     runner: &dyn WorktreeRunner,
     repo_path: &Path,
     issue: u64,
     session: &str,
-    cache_base: Option<&Path>,
-    isolate: bool,
-    auto: bool,
+    options: AcquireOptions<'_>,
 ) -> Result<AcquireOutcome, WorktreeError> {
+    let AcquireOptions {
+        cache_base,
+        isolate,
+        auto,
+        base,
+    } = options;
     const MAX_REF_CHARS: usize = 128;
     if issue == 0 {
         return Err(WorktreeError::new("argument", "issue must be > 0"));
@@ -196,6 +254,33 @@ pub fn acquire_lease(
 
     let mut warnings: Vec<String> = Vec::new();
 
+    // Explicit `--base REF` request (issue 595): the idempotent
+    // home-coming above still wins, but for a fresh triple an explicit
+    // base never reuses the current checkout. A fresh branch/worktree is
+    // created from `REF` instead of `HEAD`, and `acquire_new_worktree`
+    // validates the ref before creating a directory or a lease row so a
+    // bad base leaves no half state behind.
+    if let Some(base_ref) = base {
+        warnings.push(format!(
+            "explicit --base '{base_ref}' requested; acquiring issue {issue} in a fresh worktree \
+             from '{base_ref}'"
+        ));
+        return with_warnings(
+            acquire_new_worktree(
+                runner,
+                &storage,
+                &identity,
+                repo_path,
+                issue,
+                session,
+                cache_base,
+                Some(base_ref),
+            ),
+            issue,
+            warnings,
+        );
+    }
+
     // Dirty probe. The result is a three-state value so a `git status`
     // failure is `Unknown` instead of being silently folded into
     // `clean` (issue 305 Task 4). A probe failure is still best-effort:
@@ -216,7 +301,7 @@ pub fn acquire_lease(
             ));
             return with_warnings(
                 acquire_new_worktree(
-                    runner, &storage, &identity, repo_path, issue, session, cache_base,
+                    runner, &storage, &identity, repo_path, issue, session, cache_base, base,
                 ),
                 issue,
                 warnings,
@@ -250,7 +335,7 @@ pub fn acquire_lease(
                 ));
                 return with_warnings(
                     acquire_new_worktree(
-                        runner, &storage, &identity, repo_path, issue, session, cache_base,
+                        runner, &storage, &identity, repo_path, issue, session, cache_base, base,
                     ),
                     issue,
                     warnings,
@@ -266,6 +351,7 @@ pub fn acquire_lease(
                     return with_warnings(
                         acquire_new_worktree(
                             runner, &storage, &identity, repo_path, issue, session, cache_base,
+                            base,
                         ),
                         issue,
                         warnings,
@@ -291,7 +377,7 @@ pub fn acquire_lease(
         ));
         return with_warnings(
             acquire_new_worktree(
-                runner, &storage, &identity, repo_path, issue, session, cache_base,
+                runner, &storage, &identity, repo_path, issue, session, cache_base, base,
             ),
             issue,
             warnings,
@@ -312,7 +398,7 @@ pub fn acquire_lease(
         ));
         return with_warnings(
             acquire_new_worktree(
-                runner, &storage, &identity, repo_path, issue, session, cache_base,
+                runner, &storage, &identity, repo_path, issue, session, cache_base, base,
             ),
             issue,
             warnings,
@@ -528,7 +614,33 @@ fn acquire_reuse_current(
     })
 }
 
+/// Validate an explicit `--base REF` before any worktree is created.
+/// `git rev-parse --verify --quiet <ref>^{commit}` is read-only and
+/// network-free, so a typo or a missing ref fails with a structured
+/// `git` error and no branch, directory, or lease row is written.
+fn validate_base_ref(
+    runner: &dyn WorktreeRunner,
+    repo_path: &Path,
+    reference: &str,
+) -> Result<(), WorktreeError> {
+    match ref_resolves_to_commit(runner, repo_path, reference) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(WorktreeError::new(
+            "git",
+            format!("base ref '{reference}' does not resolve to a commit"),
+        )),
+        Err(error) => Err(WorktreeError::new(
+            "git",
+            format!(
+                "base ref '{reference}' could not be resolved: {}",
+                error.message
+            ),
+        )),
+    }
+}
+
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 fn acquire_new_worktree(
     runner: &dyn WorktreeRunner,
     storage: &Storage,
@@ -537,7 +649,13 @@ fn acquire_new_worktree(
     issue: u64,
     session: &str,
     cache_base: Option<&Path>,
+    base: Option<&str>,
 ) -> Result<AcquireOutcome, WorktreeError> {
+    // Validate an explicit base before any directory or lease work: a bad
+    // ref must fail locally and leave no half state behind.
+    if let Some(base_ref) = base {
+        validate_base_ref(runner, repo_path, base_ref)?;
+    }
     let (branch, _short) = generate_branch(issue)?;
     let fingerprint = compute_fingerprint(identity);
     let slug = slug_from_branch(&branch)?;
@@ -552,7 +670,13 @@ fn acquire_new_worktree(
             format!("worktree path already exists: {}", worktree_path.display()),
         ));
     }
-    worktree_add(runner, repo_path, &worktree_path, &branch)?;
+    worktree_add_from(
+        runner,
+        repo_path,
+        &worktree_path,
+        &branch,
+        base.unwrap_or("HEAD"),
+    )?;
     let lease_id = new_lease_id();
     let now = now_unix_secs();
     let checkout = repo_path.to_string_lossy().to_string();

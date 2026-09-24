@@ -136,8 +136,16 @@ pub(crate) fn help_topic(
         "worktree" => match subcommand {
             None => Ok(HelpTopic::Worktree),
             Some(value)
-                if ["acquire", "release", "heartbeat", "status", "list", "prune"]
-                    .contains(&value) =>
+                if [
+                    "acquire",
+                    "release",
+                    "heartbeat",
+                    "status",
+                    "list",
+                    "probe",
+                    "prune",
+                ]
+                .contains(&value) =>
             {
                 Ok(HelpTopic::WorktreeCommand(value.to_owned()))
             }

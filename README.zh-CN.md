@@ -70,7 +70,28 @@ Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`），OpenCode
 skill 见 `skills/phasegent`：它选择 tracking 模式（`INLINE` /
 `TRACKED_ISSUE` / `LOCAL_ISSUE`），通过 `--provider` 从配置解析 provider
-（最终回退 Forgejo），并记录当前的 `issue update` 与 `worktree prune` 用法。
+（最终回退 Forgejo），并记录当前的 `issue update`、`worktree acquire --base`、
+`worktree probe` 与 `worktree prune` 用法。
+
+## Worktree
+
+lease 以 `(repo, issue, session)` 为键。`phasegent worktree acquire --issue N
+[--session S] [--base REF]` 仅限 orchestrator：同一组合优先返回既有 lease；
+显式 `--base REF` 会从该 ref（而非 `HEAD`）新建 worktree 和
+`phasegent/<issue>-<short6hex>` 分支，且不复用当前 checkout。无法解析的 ref
+会在写入任何 worktree、分支或 lease 之前本地失败。
+
+`phasegent worktree probe [--path PATH | --issue N [--session S]]` 以有界 JSON
+报告 checkout 状态：路径是否存在、是否为 Git worktree、clean/dirty/unknown、
+分支与 `HEAD`、是否主 checkout，以及匹配的 lease。`--path` 与 `--issue` 互斥，
+`--session` 用于收窄 `--issue`，两者都不传则探测当前 checkout。它是只读命令
+（orchestrator、executor、reviewer）：不调用 provider、不写 lease、不同步、不
+删除、不修复；`--issue` 无匹配 lease 时返回稳定的空结果，绝不猜测路径。
+
+```sh
+PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 123 --base main
+PHASEGENT_ROLE=executor phasegent worktree probe --issue 123
+```
 
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
 dist。真源为 `assets/opencode/src/` 和 `skills/phasegent/` 的提示词文件；用

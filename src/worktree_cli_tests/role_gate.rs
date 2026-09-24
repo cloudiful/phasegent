@@ -68,6 +68,32 @@ fn tester_cannot_list() {
 }
 
 #[test]
+fn tester_cannot_probe() {
+    let exit = execute_worktree(
+        Some(Role::Tester),
+        WorktreeCommand::Probe {
+            path: None,
+            issue: None,
+            session: None,
+        },
+    );
+    assert_eq!(exit, 3, "permission error must return exit code 3");
+}
+
+#[test]
+fn admin_cannot_probe() {
+    let exit = execute_worktree(
+        Some(Role::Admin),
+        WorktreeCommand::Probe {
+            path: None,
+            issue: None,
+            session: None,
+        },
+    );
+    assert_eq!(exit, 3, "permission error must return exit code 3");
+}
+
+#[test]
 fn admin_cannot_acquire() {
     let exit = execute_worktree(
         Some(Role::Admin),

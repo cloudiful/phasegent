@@ -75,7 +75,31 @@ Run `phasegent --help` (or `phasegent --help <topic>`) for the full command
 reference, and see `skills/phasegent` for the OpenCode skill: it picks
 the tracking mode (`INLINE` / `TRACKED_ISSUE` / `LOCAL_ISSUE`), resolves the
 provider from configuration through `--provider` with a Forgejo fallback, and
-covers the current `issue update` and `worktree prune` surfaces.
+covers the current `issue update`, `worktree acquire --base`, `worktree probe`,
+and `worktree prune` surfaces.
+
+## Worktrees
+
+Leases are keyed by `(repo, issue, session)`. `phasegent worktree acquire
+--issue N [--session S] [--base REF]` is orchestrator-only: the same triple
+returns its existing lease first, and an explicit `--base REF` creates a new
+worktree and `phasegent/<issue>-<short6hex>` branch from that ref instead of
+`HEAD` without reusing the current checkout. A ref that does not resolve fails
+locally before any worktree, branch, or lease is written.
+
+`phasegent worktree probe [--path PATH | --issue N [--session S]]` reports the
+state of a checkout as bounded JSON: whether the path exists, is a Git work
+tree, is clean/dirty/unknown, its branch and `HEAD`, whether it is the main
+checkout, and any matching lease. `--path` and `--issue` are mutually
+exclusive, `--session` narrows `--issue`, and no selector probes the current
+checkout. It is read-only (orchestrator, executor, reviewer): it never calls a
+provider, writes a lease, syncs, deletes, or repairs, and an `--issue` with no
+matching lease returns a stable empty result instead of a guessed path.
+
+```sh
+PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 123 --base main
+PHASEGENT_ROLE=executor phasegent worktree probe --issue 123
+```
 
 The OpenCode worktree adapter deployed by `phasegent plugin install` is a
 generated single-file dist. Its sources are `assets/opencode/src/` plus the

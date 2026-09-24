@@ -187,8 +187,8 @@ token; agent permission rules deny that single prefix.
 | `relation create` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject; Phase 3 lifecycle helper auto-creates a `relates` link on `issue create --parent-issue <ID>` (idempotent, bounded warning on failure) |
 | `relation delete` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject |
 | `timer start/finish/list/get/recover` | role == orchestrator | orchestrator only | local ledger; finish/recover project to Redmine/GitLab (Forgejo rejects); list/get never reach a provider |
-| `worktree acquire/release/heartbeat/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; `prune` is read-only unless `--release-stale --reason TEXT` or `--remove` is given, removes only clean + expired + retained worktrees, and never deletes a branch or a dirty worktree; `release --force` requires non-empty `--reason`, persisted on the row and visible in status/list (rows are never deleted) |
-| `worktree status/list` | command-level read gate | orchestrator, executor, reviewer | read-only lease inspection; tester denied |
+| `worktree acquire/release/heartbeat/prune` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; `acquire --base REF` bases a fresh worktree/branch on `REF` instead of `HEAD` after the idempotent same-triple check, and a ref that does not resolve fails before anything is created; `prune` is read-only unless `--release-stale --reason TEXT` or `--remove` is given, removes only clean + expired + retained worktrees, and never deletes a branch or a dirty worktree; `release --force` requires non-empty `--reason`, persisted on the row and visible in status/list (rows are never deleted) |
+| `worktree status/list/probe` | command-level read gate | orchestrator, executor, reviewer | read-only lease and checkout inspection; `probe` reports a path (or a resolved lease's worktree) as bounded JSON and never writes; tester denied |
 | `plugin install/status/uninstall` | no role gate | any | worktree adapter for the OpenCode host (`$XDG_CONFIG_HOME/opencode/plugins/`, project slot `.opencode/plugins/`); managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
 | `admin workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |
 | `repo create` | RepoCreate | orchestrator only | Forgejo/GitLab; `--private` required; Redmine/local reject as not-supported |
@@ -263,6 +263,16 @@ Boundaries:
   guessed.
 - `worktree release --force` requires a non-empty `--reason` — the attributed
   override, visible on the row; rows are never deleted.
+- `worktree acquire --base REF` never reuses the current checkout once no
+  idempotent `(repo, issue, session)` lease exists: it creates a fresh worktree
+  and branch from `REF` instead of `HEAD`, and an unresolvable ref fails
+  locally with no worktree, branch, or lease written.
+- `worktree probe` is read-only: `--path PATH` or `--issue N [--session S]`
+  (mutually exclusive; `--session` narrows `--issue`; neither probes the
+  current checkout) reports existence, Git-worktree/clean/branch/`HEAD`/
+  main-checkout facts and any matching lease as bounded JSON. It never calls a
+  provider, writes a lease, syncs, deletes, or repairs, and no matching lease
+  yields a stable empty result instead of a guessed path.
 - A successful `issue close` flips this issue's active leases to `retained` and
   then removes a worktree directory only when it is clean, no active lease of
   another session points at it, and it is not the repository's main checkout.

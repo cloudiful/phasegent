@@ -91,6 +91,7 @@ pub(super) fn execute_acquire(
     session: Option<&str>,
     format: &str,
     isolate: bool,
+    base: Option<&str>,
 ) -> i32 {
     let _ = format; // only "json" is accepted at the parser layer
     // Resolve the session before any storage / git work so a blank or
@@ -131,14 +132,17 @@ pub(super) fn execute_acquire(
             );
         }
     };
-    match crate::worktree::acquire_lease(
+    match crate::worktree::acquire_lease_with(
         &runner,
         &repo_path,
         issue,
         &session.id,
-        None,
-        isolate,
-        auto,
+        crate::worktree::AcquireOptions {
+            cache_base: None,
+            isolate,
+            auto,
+            base,
+        },
     ) {
         Ok(outcome) => {
             let payload = AcquireJson::from(outcome);

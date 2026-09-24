@@ -43,6 +43,7 @@ use std::process::Command;
 // Test helpers: fake runner, temp repo, temp DB override.
 // ---------------------------------------------------------------------------
 
+mod acquire_base;
 mod acquire_fallbacks;
 mod acquire_isolation;
 mod acquire_reuse;
@@ -50,6 +51,7 @@ mod git_worktree;
 mod heartbeat;
 mod helpers;
 mod lease_api;
+mod probe;
 mod release;
 mod stale_recovery;
 mod storage_schema;

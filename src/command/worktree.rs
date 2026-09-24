@@ -38,6 +38,7 @@ pub(crate) fn parse_worktree(args: &[String]) -> Result<Command, String> {
         "release" => parse_release(args),
         "status" => parse_status(args),
         "list" => parse_list(args),
+        "probe" => parse_probe(args),
         "prune" => parse_prune(args),
         "heartbeat" => parse_heartbeat(args),
         value => Err(format!("unknown worktree command '{value}'")),
@@ -63,9 +64,7 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         Some(raw) => Some(validate_session_id(&raw, "worktree acquire")?),
         None => None,
     };
-    let base = optional_option(args, "--base")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
+    let base = optional_nonempty_option(args, "--base", "worktree acquire")?;
     let format = optional_option(args, "--format")
         .map(|value| value.trim().to_ascii_lowercase())
         .unwrap_or_else(|| "json".to_owned());
@@ -154,6 +153,44 @@ fn parse_list(args: &[String]) -> Result<Command, String> {
     }))
 }
 
+fn parse_probe(args: &[String]) -> Result<Command, String> {
+    validate_options(
+        args,
+        0,
+        &["--path", "--issue", "--session"],
+        &[],
+        "worktree probe",
+    )?;
+    let path = optional_nonempty_option(args, "--path", "worktree probe")?;
+    let issue = match optional_option(args, "--issue") {
+        Some(raw) => {
+            let parsed: u64 = raw
+                .parse()
+                .map_err(|_| "worktree probe --issue must be a positive integer".to_owned())?;
+            if parsed == 0 {
+                return Err("worktree probe --issue must be greater than zero".to_owned());
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
+    let session = match optional_option(args, "--session") {
+        Some(raw) => Some(validate_session_id(&raw, "worktree probe")?),
+        None => None,
+    };
+    if path.is_some() && issue.is_some() {
+        return Err("worktree probe --path and --issue are mutually exclusive".to_owned());
+    }
+    if session.is_some() && issue.is_none() {
+        return Err("worktree probe --session requires --issue".to_owned());
+    }
+    Ok(Command::Worktree(WorktreeCommand::Probe {
+        path,
+        issue,
+        session,
+    }))
+}
+
 fn parse_prune(args: &[String]) -> Result<Command, String> {
     validate_options(
         args,
@@ -215,6 +252,34 @@ fn parse_heartbeat(args: &[String]) -> Result<Command, String> {
         lease,
         session,
     }))
+}
+
+/// Resolve an optional value option while preserving the difference
+/// between an omitted option and an explicitly empty one.
+///
+/// The shared [`optional_option`] helper returns `Some("")` for both
+/// `--base=` / `--base ""` and for a whitespace-only value. Trimming
+/// that to `None` would make an invalid empty REF (or probe path) behave
+/// exactly like an omitted option, silently selecting the default path
+/// or the current checkout. This keeps presence observable: an omitted
+/// option stays `None`, while a present-but-blank value is a structured
+/// parser error.
+fn optional_nonempty_option(
+    args: &[String],
+    option: &str,
+    operation: &str,
+) -> Result<Option<String>, String> {
+    match optional_option(args, option) {
+        None => Ok(None),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Err(format!("{operation} requires a non-empty {option}"))
+            } else {
+                Ok(Some(trimmed.to_owned()))
+            }
+        }
+    }
 }
 
 /// Validate an explicit session id at parse time so blanks and overlong

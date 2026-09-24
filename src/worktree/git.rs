@@ -20,9 +20,24 @@ pub fn worktree_add(
     target: &Path,
     branch: &str,
 ) -> Result<(), WorktreeError> {
+    worktree_add_from(runner, repo_path, target, branch, "HEAD")
+}
+
+/// `git worktree add <path> -b <branch> <base>` wrapper. `base` is any
+/// revision Git resolves to a commit (a branch, tag, sha, or
+/// `origin/main`); the caller validates it before this runs so a bad
+/// ref never reaches `git worktree add`.
+#[allow(dead_code)]
+pub fn worktree_add_from(
+    runner: &dyn WorktreeRunner,
+    repo_path: &Path,
+    target: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<(), WorktreeError> {
     let target_str = target.to_string_lossy();
     let output = runner.run(
-        &["worktree", "add", &target_str, "-b", branch, "HEAD"],
+        &["worktree", "add", &target_str, "-b", branch, base],
         repo_path,
     )?;
     if output.status != 0 {
@@ -32,6 +47,89 @@ pub fn worktree_add(
         ));
     }
     Ok(())
+}
+
+/// True when `reference` resolves to a commit in `repo_path`.
+///
+/// `git rev-parse --verify --quiet <ref>^{commit}` is a network-free,
+/// read-only probe used before `worktree add` so an explicit `--base`
+/// that does not exist fails without creating a branch, a worktree
+/// directory, or a lease row.
+pub fn ref_resolves_to_commit(
+    runner: &dyn WorktreeRunner,
+    repo_path: &Path,
+    reference: &str,
+) -> Result<bool, WorktreeError> {
+    let spec = format!("{reference}^{{commit}}");
+    let output = runner.run(&["rev-parse", "--verify", "--quiet", &spec], repo_path)?;
+    Ok(output.status == 0)
+}
+
+/// True when `path` is inside a Git work tree. A non-repository or an
+/// unreadable path is `Ok(false)` rather than an error so a read-only
+/// probe can report "not a Git worktree" structurally.
+pub fn is_inside_work_tree(
+    runner: &dyn WorktreeRunner,
+    path: &Path,
+) -> Result<bool, WorktreeError> {
+    let output = runner.run(&["rev-parse", "--is-inside-work-tree"], path)?;
+    if output.status != 0 {
+        return Ok(false);
+    }
+    Ok(output.stdout.trim() == "true")
+}
+
+/// Resolve `HEAD` to its commit sha, or `None` on an unborn branch (a
+/// fresh repository with no commit) or any failure. Read-only.
+pub fn head_rev(runner: &dyn WorktreeRunner, path: &Path) -> Result<Option<String>, WorktreeError> {
+    let output = runner.run(&["rev-parse", "--verify", "--quiet", "HEAD"], path)?;
+    if output.status != 0 {
+        return Ok(None);
+    }
+    let trimmed = output.stdout.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(bounded(trimmed)))
+    }
+}
+
+/// `--git-dir` and `--git-common-dir` for `path`, each resolved to an
+/// absolute path. For the main checkout the two are equal; a linked
+/// worktree has a per-worktree `--git-dir` under the common dir, which
+/// is how a read-only probe distinguishes the main checkout.
+pub fn checkout_git_dirs(
+    runner: &dyn WorktreeRunner,
+    path: &Path,
+) -> Result<(String, String), WorktreeError> {
+    let git_dir = runner.run(&["rev-parse", "--git-dir"], path)?;
+    let common = runner.run(&["rev-parse", "--git-common-dir"], path)?;
+    if git_dir.status != 0 || common.status != 0 {
+        return Err(WorktreeError::new(
+            "git",
+            "git rev-parse --git-dir/--git-common-dir failed",
+        ));
+    }
+    Ok((
+        absolute_git_dir(path, git_dir.stdout.trim()),
+        absolute_git_dir(path, common.stdout.trim()),
+    ))
+}
+
+/// Resolve a `git rev-parse --git-dir` style value against `base` and
+/// canonicalise it so `.` and its absolute form compare equal.
+fn absolute_git_dir(base: &Path, raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    let candidate = Path::new(raw);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        base.join(candidate)
+    };
+    let canonical = resolved.canonicalize().unwrap_or(resolved);
+    bounded(&canonical.to_string_lossy())
 }
 
 /// `git worktree remove <path>` wrapper. The `git` invocation is run

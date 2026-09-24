@@ -2,8 +2,9 @@
 //!
 //! Subcommand gating lives here (command-level, not capability-level)
 //! so `acquire` / `release` / `heartbeat` / `prune` are
-//! orchestrator-only while `status` / `list` mirror the issue-status
-//! read surface (orchestrator, executor, reviewer; tester denied).
+//! orchestrator-only while `status` / `list` / `probe` mirror the
+//! issue-status read surface (orchestrator, executor, reviewer; tester
+//! denied).
 //! Branch deletion is never invoked; only `git worktree remove` is used
 //! on clean candidates. `.env` and secret material are never read,
 //! copied, or written by any code path here (issue #239 Decisions).
@@ -12,6 +13,7 @@
 //!
 //! * [`acquire`] — `acquire` / `release` / `heartbeat`.
 //! * [`query`] — read-only `status` / `list`.
+//! * [`probe`] — read-only `probe` diagnostics (issue 595).
 //! * [`prune`] — `prune` and its candidate-scan / action-apply model.
 //!
 //! Mutating subcommands route through `acquire_lease` /
@@ -30,6 +32,7 @@ use crate::worktree::leases::ensure_schema;
 use crate::worktree::repo_identity;
 
 mod acquire;
+mod probe;
 mod prune;
 mod query;
 
@@ -38,6 +41,8 @@ mod query;
 // the re-exports as unused.
 #[allow(unused_imports)]
 pub(crate) use acquire::AcquireJson;
+#[allow(unused_imports)]
+pub(crate) use probe::{ProbeJson, ProbeLeaseJson, build_probe};
 #[allow(unused_imports)]
 pub(crate) use prune::{
     PruneAction, PruneCombinedSummary, PruneDisposition, PruneMode, PruneSummary,
@@ -65,7 +70,7 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
         WorktreeCommand::Acquire {
             issue,
             session,
-            base: _,
+            base,
             format,
             isolate,
             no_sync: _,
@@ -73,7 +78,7 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             if role != Role::Orchestrator {
                 return permission_error(role, "worktree acquire");
             }
-            acquire::execute_acquire(issue, session.as_deref(), &format, isolate)
+            acquire::execute_acquire(issue, session.as_deref(), &format, isolate, base.as_deref())
         }
         WorktreeCommand::Release {
             lease,
@@ -97,6 +102,16 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
                 return permission_error(role, "worktree list");
             }
             query::execute_list(repo.as_deref())
+        }
+        WorktreeCommand::Probe {
+            path,
+            issue,
+            session,
+        } => {
+            if !is_read_role(role) {
+                return permission_error(role, "worktree probe");
+            }
+            probe::execute_probe(path.as_deref(), issue, session.as_deref())
         }
         WorktreeCommand::Prune {
             repo,
