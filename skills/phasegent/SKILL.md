@@ -172,7 +172,7 @@ token; agent permission rules deny that single prefix.
 | `issue upload-attachment` | IssueAttachmentUpload | orchestrator, tester | Uniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects with `not_supported` (exit 1) before any file, network, or credential access |
 | `issue bind` / `issue unbind` / `issue status` | IssueRead | orchestrator, executor, reviewer, tester | local branch–issue binding; no provider/network |
 | `comment create` | CommentCreate | orchestrator, executor, reviewer, tester | `--authorized` required unless orchestrator (CLI) |
-| `comment get` | CommentRead | orchestrator, executor, reviewer, tester | single note, full body |
+| `comment get <ISSUE> <COMMENT_ID>` | CommentRead | orchestrator, executor, reviewer, tester | single note, full body |
 | `comment list` | CommentRead | orchestrator, executor, reviewer, tester | every note on the issue with full bodies, provider order, as `{issue, comments}`; the approved bulk-read path |
 | `comment find-marker` | CommentFindMarker | orchestrator, executor, reviewer, tester | marker matched verbatim |
 | `project list` | ProjectRead | orchestrator, admin, executor, reviewer | Redmine, GitLab, and local; Forgejo rejects; does not need `--project-id` |
