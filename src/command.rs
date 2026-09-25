@@ -22,6 +22,11 @@ mod plugin;
 mod prelude;
 mod project;
 mod provider_args;
+// Phase 1 command registry skeleton (issue 597): top-level parser routing
+// consults `registry::top_level`; the remaining descriptors are consumed by
+// the help/dispatch wiring in later phases and are intentionally unused here.
+#[allow(dead_code)]
+mod registry;
 mod relation;
 mod status;
 mod timer;

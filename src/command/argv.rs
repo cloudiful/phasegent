@@ -2,7 +2,8 @@ use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
     Command, HelpTopic, Invocation, IssueCommand, admin, auth, comment, config, help_topic, hooks,
-    issue, mcp, notify, plugin, project, relation, status, timer, version, workflow, worktree,
+    issue, mcp, notify, plugin, project, registry, relation, status, timer, version, workflow,
+    worktree,
 };
 use crate::policy::Role;
 
@@ -202,6 +203,12 @@ pub(crate) fn parse_with_role_env(
 }
 
 fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
+    // Top-level routing is registry-driven: a name without a descriptor is
+    // unknown, so the registry can never fall behind the parser and accept a
+    // command it does not describe.
+    if registry::top_level(command).is_none() {
+        return Err(format!("unknown command '{command}'"));
+    }
     Ok(match command {
         "gui" => {
             if !rest.is_empty() {
