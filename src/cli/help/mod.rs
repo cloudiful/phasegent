@@ -26,6 +26,8 @@ use auth::print_auth_help;
 use comment::{print_comment_command_help, print_comment_help};
 use common::print_not_supported_help;
 use config::{
+    print_admin_config_command_help, print_admin_config_help,
+    print_admin_config_provider_command_help, print_admin_config_provider_help,
     print_config_command_help, print_config_help, print_config_provider_command_help,
     print_config_provider_help,
 };
@@ -43,7 +45,81 @@ use version::{print_version_command_help, print_version_help};
 use workflow::{print_workflow_command_help, print_workflow_help};
 use worktree::{print_worktree_command_help, print_worktree_help};
 
+/// Registry path for a help topic, used by the role-aware help gate. `Root`
+/// and unknown detail topics return `None`; group topics map to their group
+/// descriptor so a group with no runnable subcommand is denied uniformly.
+fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
+    Some(match topic {
+        HelpTopic::Root => return None,
+        HelpTopic::Gui => vec!["gui"],
+        HelpTopic::Doctor => vec!["doctor"],
+        HelpTopic::Admin => vec!["admin"],
+        HelpTopic::Auth => vec!["admin", "auth", "setup"],
+        HelpTopic::Config => vec!["config"],
+        HelpTopic::ConfigCommand(command) => match command.as_str() {
+            "show" => vec!["config", "show"],
+            // Defensive: any stray write topic still resolves through the
+            // admin gate rather than the open read-only group.
+            "set" => vec!["admin", "config", "set"],
+            "clear" => vec!["admin", "config", "clear"],
+            _ => return None,
+        },
+        HelpTopic::ConfigProvider => vec!["config", "provider"],
+        HelpTopic::ConfigProviderCommand(command) => match command.as_str() {
+            "get" => vec!["config", "provider", "get"],
+            "set" => vec!["admin", "config", "provider", "set"],
+            "clear" => vec!["admin", "config", "provider", "clear"],
+            _ => return None,
+        },
+        HelpTopic::AdminConfig => vec!["admin", "config"],
+        HelpTopic::AdminConfigCommand(command) => vec!["admin", "config", command.as_str()],
+        HelpTopic::AdminConfigProvider => vec!["admin", "config", "provider"],
+        HelpTopic::AdminConfigProviderCommand(command) => {
+            vec!["admin", "config", "provider", command.as_str()]
+        }
+        HelpTopic::Issue => vec!["issue"],
+        HelpTopic::IssueCommand(command) => vec!["issue", command.as_str()],
+        HelpTopic::Comment => vec!["comment"],
+        HelpTopic::CommentCommand(command) => vec!["comment", command.as_str()],
+        HelpTopic::Project => vec!["project"],
+        HelpTopic::ProjectCommand(command) => vec!["project", command.as_str()],
+        HelpTopic::Status => vec!["status"],
+        HelpTopic::StatusCommand(command) => vec!["status", command.as_str()],
+        HelpTopic::Version => vec!["version"],
+        HelpTopic::VersionCommand(command) => vec!["version", command.as_str()],
+        HelpTopic::Workflow => vec!["admin", "workflow"],
+        HelpTopic::WorkflowCommand(command) => vec!["admin", "workflow", command.as_str()],
+        HelpTopic::Repo => vec!["repo"],
+        HelpTopic::RepoCommand(command) => vec!["repo", command.as_str()],
+        HelpTopic::Hooks => vec!["hooks"],
+        HelpTopic::HooksCommand(command) => vec!["hooks", command.as_str()],
+        HelpTopic::Plugin => vec!["plugin"],
+        HelpTopic::PluginCommand(command) => vec!["plugin", command.as_str()],
+        HelpTopic::Relation => vec!["relation"],
+        HelpTopic::RelationCommand(command) => vec!["relation", command.as_str()],
+        HelpTopic::Timer => vec!["timer"],
+        HelpTopic::TimerCommand(command) => vec!["timer", command.as_str()],
+        HelpTopic::Notify => vec!["notify"],
+        HelpTopic::NotifyCommand(command) => vec!["notify", command.as_str()],
+        HelpTopic::Mcp => vec!["mcp"],
+        HelpTopic::McpCommand(command) => vec!["mcp", command.as_str()],
+        HelpTopic::Worktree => vec!["worktree"],
+        HelpTopic::WorktreeCommand(command) => vec!["worktree", command.as_str()],
+    })
+}
+
 pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, topic: HelpTopic) {
+    // Role-aware detail/group gate: the registry is the single source of truth
+    // for which commands a role may run, so a denied topic never leaks its
+    // parameters. No role keeps the compatibility superset pages; a detail
+    // topic the registry does not describe stays with its owning module.
+    if let Some(role) = role
+        && let Some(path) = topic_registry_path(&topic)
+        && !crate::command::registry_allows_role(role, &path)
+    {
+        println!("No command available for {}.", role.as_str());
+        return;
+    }
     match topic {
         HelpTopic::Root => print_root_help(role, provider),
         HelpTopic::Gui => print_gui_help(),
@@ -58,8 +134,16 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::Auth => print_auth_help(role),
         HelpTopic::Config => print_config_help(role),
         HelpTopic::ConfigCommand(command) => print_config_command_help(role, &command),
-        HelpTopic::ConfigProvider => print_config_provider_help(),
-        HelpTopic::ConfigProviderCommand(command) => print_config_provider_command_help(&command),
+        HelpTopic::ConfigProvider => print_config_provider_help(role),
+        HelpTopic::ConfigProviderCommand(command) => {
+            print_config_provider_command_help(role, &command)
+        }
+        HelpTopic::AdminConfig => print_admin_config_help(role),
+        HelpTopic::AdminConfigCommand(command) => print_admin_config_command_help(role, &command),
+        HelpTopic::AdminConfigProvider => print_admin_config_provider_help(role),
+        HelpTopic::AdminConfigProviderCommand(command) => {
+            print_admin_config_provider_command_help(role, &command)
+        }
         HelpTopic::Repo => {
             if provider == Some(ProviderKind::Redmine) {
                 print_not_supported_help("repo")

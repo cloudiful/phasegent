@@ -57,6 +57,12 @@ impl ScratchDb {
 }
 
 fn run_help(args: &[&str]) -> Output {
+    run_help_with_role(args, None)
+}
+
+/// Run help/CLI with an explicit `PHASEGENT_ROLE` so the role-aware surface can
+/// be asserted black-box.
+fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
     let db = ScratchDb::new();
     let mut command = Command::new(phasegent_bin());
     command
@@ -82,6 +88,9 @@ fn run_help(args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(role) = role {
+        command.env("PHASEGENT_ROLE", role);
+    }
     command.output().expect("spawn phasegent binary")
 }
 
@@ -413,4 +422,265 @@ fn documented_next_help_pointers_all_resolve() {
             pointer,
         );
     }
+}
+
+/// Whether the root overview carries a command row for `name`. The page footer
+/// mentions `--help admin`, so a bare substring check would false-positive.
+fn has_root_row(stdout: &str, name: &str) -> bool {
+    let prefix = format!("{name} ");
+    stdout
+        .lines()
+        .any(|line| line.trim_start().starts_with(&prefix))
+}
+
+/// Phase 2: a role's root help lists only commands that role can run, and a
+/// group whose subcommands are all denied is dropped from the overview.
+#[test]
+fn role_specific_root_help_only_lists_available_commands() {
+    let output = run_help_with_role(&["--provider", "redmine", "--help"], Some("executor"));
+    assert!(output.status.success(), "--help exited non-zero");
+    let stdout = stdout_text(&output);
+    for command in [
+        "issue", "comment", "config", "doctor", "hooks", "notify", "mcp", "plugin", "project",
+        "status", "version", "relation", "worktree",
+    ] {
+        assert!(
+            has_root_row(&stdout, command),
+            "executor root help must list {command:?};\n{stdout}",
+        );
+    }
+    for command in ["admin", "timer", "repo"] {
+        assert!(
+            !has_root_row(&stdout, command),
+            "executor root help must hide {command:?};\n{stdout}",
+        );
+    }
+    // The no-role superset keeps the human-only and Redmine-only rows.
+    let superset = stdout_text(&run_help(&["--provider", "redmine", "--help"]));
+    for command in ["admin", "timer", "project", "status", "version", "relation"] {
+        assert!(
+            has_root_row(&superset, command),
+            "roleless root help must keep {command:?};\n{superset}",
+        );
+    }
+}
+
+/// Phase 2: requesting a role-denied detail or group page never leaks its
+/// parameters; it prints the existing stable denial line instead.
+#[test]
+fn role_denied_help_pages_print_the_stable_denial() {
+    for (role, args) in [
+        ("executor", &["--help", "issue", "sync"][..]),
+        ("executor", &["--help", "issue", "bind"][..]),
+        ("executor", &["--help", "admin"][..]),
+        ("orchestrator", &["--help", "admin"][..]),
+        ("executor", &["--help", "timer", "start"][..]),
+        ("tester", &["--help", "worktree"][..]),
+    ] {
+        let output = run_help_with_role(args, Some(role));
+        assert!(output.status.success(), "{args:?} exited non-zero");
+        assert_eq!(
+            stdout_text(&output).trim_end(),
+            format!("No command available for {role}."),
+            "denied page {args:?} must not leak parameters",
+        );
+    }
+    // Allowed pages still render, including the role-open local branch status.
+    let get = stdout_text(&run_help_with_role(
+        &["--help", "issue", "get"],
+        Some("executor"),
+    ));
+    assert!(get.contains("Usage: issue get"), "got: {get}");
+    let status = stdout_text(&run_help_with_role(
+        &["--help", "issue", "status"],
+        Some("executor"),
+    ));
+    assert!(status.contains("Usage: issue status"), "got: {status}");
+    let admin = stdout_text(&run_help_with_role(&["--help", "admin"], Some("admin")));
+    assert!(
+        admin.contains("Human-operator provisioning"),
+        "the admin human role keeps the page; got: {admin}",
+    );
+}
+
+/// Phase 2: a role-denied command is rejected at parse time with the stable
+/// structured permission envelope, before any provider or credential lookup
+/// (the scratch environment has no credentials configured).
+#[test]
+fn role_denied_command_fails_before_any_provider_access() {
+    let output = run_help_with_role(
+        &[
+            "--provider",
+            "redmine",
+            "issue",
+            "create",
+            "--title",
+            "T",
+            "--body",
+            "B",
+        ],
+        Some("executor"),
+    );
+    assert_eq!(output.status.code(), Some(3), "denied create must exit 3");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
+    assert_eq!(envelope["error"]["kind"], "permission", "stderr: {stderr}");
+    assert_eq!(envelope["error"]["role"], "executor");
+    assert_eq!(envelope["error"]["operation"], "issue create");
+
+    // The same gate covers the human-only admin surface for an AI role.
+    let admin = run_help_with_role(
+        &["admin", "config", "set", "notify-enabled", "true"],
+        Some("orchestrator"),
+    );
+    assert_eq!(admin.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&admin.stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
+    assert_eq!(envelope["error"]["kind"], "permission");
+    assert_eq!(envelope["error"]["operation"], "admin config set");
+
+    // An unknown command stays a distinct argument error.
+    let unknown = run_help_with_role(&["frobnicate"], Some("orchestrator"));
+    assert_eq!(unknown.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&unknown.stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
+    assert_eq!(envelope["error"]["kind"], "argument");
+    assert_eq!(envelope["error"]["message"], "unknown command 'frobnicate'");
+}
+
+/// Phase 2 round 2: the human-operator `admin config` write surface is a
+/// separate help topic, so an AI role is denied it instead of falling back to
+/// the role-open top-level `config` page. The read-only `config` and
+/// `config provider` pages stay reachable but never expose admin write flags,
+/// secret-setting usage, or the provider-write page.
+#[test]
+fn admin_config_write_help_is_denied_for_ai_roles_and_absent_from_read_only_pages() {
+    // Both the global `--help admin config[...]` form and the equivalent
+    // command-form `admin config ... --help` / detail forms land on the
+    // dedicated admin topics and are denied with the stable line.
+    let denied_forms: &[&[&str]] = &[
+        &["--help", "admin", "config"],
+        &["--help", "admin", "config", "set"],
+        &["--help", "admin", "config", "provider"],
+        &["admin", "config", "--help"],
+        &["admin", "config", "provider", "--help"],
+        &["admin", "config", "set", "--help"],
+        &["admin", "config", "clear", "--help"],
+        &["admin", "config", "provider", "set", "--help"],
+        &["admin", "config", "provider", "clear", "--help"],
+    ];
+    for role in ["executor", "orchestrator"] {
+        for args in denied_forms {
+            let output = run_help_with_role(args, Some(role));
+            assert!(output.status.success(), "{args:?} exited non-zero");
+            assert_eq!(
+                stdout_text(&output).trim_end(),
+                format!("No command available for {role}."),
+                "{args:?} must be denied for {role}",
+            );
+        }
+    }
+
+    // The read-only pages an AI role can still reach never mention the admin
+    // config write surface at all. The top-level write details are denied too.
+    for role in ["executor", "orchestrator"] {
+        for args in [
+            &["--help", "config"][..],
+            &["--help", "config", "show"][..],
+            &["--help", "config", "provider"][..],
+            &["--help", "config", "provider", "get"][..],
+        ] {
+            let output = run_help_with_role(args, Some(role));
+            assert!(output.status.success(), "{args:?} exited non-zero");
+            let stdout = stdout_text(&output);
+            for leak in ["admin config", "--stdin", "Secret settings"] {
+                assert!(
+                    !stdout.contains(leak),
+                    "{args:?} for {role} leaked {leak:?}:\n{stdout}",
+                );
+            }
+            assert!(
+                stdout.contains("show") || stdout.contains(" get"),
+                "{args:?} for {role} must still document the read-only surface:\n{stdout}",
+            );
+        }
+        for args in [
+            &["--help", "config", "set"][..],
+            &["--help", "config", "clear"][..],
+            &["--help", "config", "provider", "set"][..],
+            &["--help", "config", "provider", "clear"][..],
+        ] {
+            let output = run_help_with_role(args, Some(role));
+            assert!(output.status.success(), "{args:?} exited non-zero");
+            assert_eq!(
+                stdout_text(&output).trim_end(),
+                format!("No command available for {role}."),
+                "top-level write detail {args:?} must be admin-scoped for {role}",
+            );
+        }
+    }
+
+    // The resolver chain is not admin-sensitive and stays documented for both
+    // the role-less and role-resolved provider page.
+    for role in [None, Some("executor")] {
+        let provider = stdout_text(&run_help_with_role(&["--help", "config", "provider"], role));
+        for needle in [
+            "PHASEGENT_PROVIDER",
+            "PHASEGENT_DEFAULT_PROVIDER",
+            "role_config.provider",
+            "forgejo fallback",
+        ] {
+            assert!(
+                provider.contains(needle),
+                "provider help for {role:?} missing {needle:?}:\n{provider}",
+            );
+        }
+    }
+
+    // The human role and the role-less superset keep the full write page for
+    // the global and command-form group/detail routes.
+    for args in [
+        &["--help", "admin", "config"][..],
+        &["admin", "config", "--help"][..],
+    ] {
+        let admin = stdout_text(&run_help_with_role(args, Some("admin")));
+        assert!(
+            admin.contains("admin config set") && admin.contains("--stdin"),
+            "admin role must keep the write page for {args:?}:\n{admin}",
+        );
+    }
+    for args in [
+        &["admin", "config", "provider", "--help"][..],
+        &["--help", "admin", "config", "provider"][..],
+    ] {
+        let admin = stdout_text(&run_help_with_role(args, Some("admin")));
+        assert!(
+            admin.contains("admin config provider set") && admin.contains("clear"),
+            "admin role must keep the provider group page for {args:?}:\n{admin}",
+        );
+    }
+    let provider_set_detail = stdout_text(&run_help_with_role(
+        &["admin", "config", "provider", "set", "--help"],
+        Some("admin"),
+    ));
+    assert!(
+        provider_set_detail.contains("admin config provider set"),
+        "admin role must keep the provider set detail page:\n{provider_set_detail}",
+    );
+    let set_detail = stdout_text(&run_help_with_role(
+        &["admin", "config", "set", "--help"],
+        Some("admin"),
+    ));
+    assert!(
+        set_detail.contains("Secret settings") && set_detail.contains("admin config set"),
+        "admin role must keep the set detail page:\n{set_detail}",
+    );
+    let superset = stdout_text(&run_help(&["--help", "admin", "config"]));
+    assert!(
+        superset.contains("admin config set"),
+        "roleless superset must keep the admin write page:\n{superset}",
+    );
 }

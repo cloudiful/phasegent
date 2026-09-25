@@ -27,7 +27,6 @@ const EXPECTED_WORKTREE_READ: &[&str] = &["worktree list", "worktree probe", "wo
 const EXPECTED_HUMAN_ONLY: &[&str] = &[
     "admin",
     "admin auth",
-    "admin auth setup",
     "admin config",
     "admin config clear",
     "admin config provider",
@@ -204,14 +203,60 @@ fn roleless_gate_covers_every_descriptor() {
 }
 
 #[test]
+fn command_level_gates_declare_a_permission_operation() {
+    // Capability nodes derive their label from `Capability::operation`;
+    // command-level gates must declare one so a parser denial names the same
+    // operation the execution layer would.
+    for (path, spec) in collect_paths() {
+        let path = path.join(" ");
+        if !spec.children.is_empty() {
+            // Group nodes are denied through their registry gate, not labelled
+            // by the permission envelope; only leaves need a label.
+            continue;
+        }
+        match spec.access {
+            RoleAccess::Capability(capability) => assert_eq!(
+                spec.operation(),
+                capability.operation(),
+                "{path} must derive its operation from its capability"
+            ),
+            RoleAccess::Open => {}
+            _ => assert!(
+                !spec.operation.is_empty(),
+                "{path} must declare an explicit permission operation"
+            ),
+        }
+    }
+}
+
+#[test]
+fn admin_auth_setup_is_role_scoped_for_every_role() {
+    let spec = find(&["admin", "auth", "setup"]).expect("admin auth setup is registered");
+    assert_eq!(spec.access, RoleAccess::AnyRole);
+    assert_eq!(spec.operation(), "admin auth setup");
+    for role in ALL_ROLES {
+        assert!(
+            spec.allows_role(*role),
+            "admin auth setup must allow {role}"
+        );
+    }
+    assert!(!spec.access.allows_roleless());
+    // The enclosing group stays human-only; only the credential entry is
+    // role-scoped.
+    assert_eq!(find(&["admin"]).unwrap().access, RoleAccess::AdminOnly);
+}
+
+#[test]
 fn any_role_gate_requires_a_role() {
     assert_eq!(
         sorted_paths_matching(|spec| spec.access == RoleAccess::AnyRole),
-        vec!["mcp serve".to_owned()]
+        vec!["admin auth setup".to_owned(), "mcp serve".to_owned()]
     );
-    let access = find(&["mcp", "serve"]).unwrap().access;
-    for role in ALL_ROLES {
-        assert!(access.allows_role(*role), "mcp serve must allow {role}");
+    for path in [&["admin", "auth", "setup"][..], &["mcp", "serve"][..]] {
+        let access = find(path).unwrap().access;
+        for role in ALL_ROLES {
+            assert!(access.allows_role(*role), "{path:?} must allow {role}");
+        }
+        assert!(!access.allows_roleless(), "{path:?} must require a role");
     }
-    assert!(!access.allows_roleless(), "mcp serve must require a role");
 }

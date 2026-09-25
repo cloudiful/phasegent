@@ -1,11 +1,12 @@
 use super::common::{HelpRow, print_group_help, render_group_help};
-use crate::policy::{Capability, Role};
+use crate::policy::Role;
 
 /// Split the top-level `timer` overview into header plus rows so the shape is
-/// testable without capturing stdout. Rows use an orchestrator-only
-/// capability purely as a `role.allows` gate (the executors in
-/// `src/time_tracking/` check `Role::Orchestrator` directly); the overview
-/// stays one-line-per-command and contract prose lives on the detail pages.
+/// testable without capturing stdout. Every row carries its registry path, so
+/// the overview and parser share the same orchestrator-only gate (the
+/// executors in `src/time_tracking/` check `Role::Orchestrator` directly as
+/// defense in depth); the overview stays one-line-per-command and contract
+/// prose lives on the detail pages.
 fn timer_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>) {
     let header = format!(
         "Timer commands for {}:",
@@ -15,27 +16,27 @@ fn timer_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>) {
         (
             "start",
             "Persist a local phase run (manual fallback)",
-            Capability::IssueCreate,
+            &["timer", "start"],
         ),
         (
             "finish",
             "Finish a manually-opened run and project its time",
-            Capability::IssueCreate,
+            &["timer", "finish"],
         ),
         (
             "list",
             "Inspect local phase runs (read-only, local-only)",
-            Capability::IssueCreate,
+            &["timer", "list"],
         ),
         (
             "get",
             "Show one local phase run (read-only, local-only)",
-            Capability::IssueCreate,
+            &["timer", "get"],
         ),
         (
             "recover",
             "Mark a known orphan FAILED and project via the configured provider",
-            Capability::IssueCreate,
+            &["timer", "recover"],
         ),
     ];
     (header, rows)

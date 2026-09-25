@@ -244,8 +244,8 @@ fn removed_index_commands_and_help_topics_are_rejected() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation =
-        command::parse_with_role_env(&args, Some("executor")).expect("ordinary search must parse");
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("ordinary search must parse");
     match invocation.command {
         Command::Issue(crate::command::IssueCommand::Search { query, .. }) => {
             assert_eq!(query.as_deref(), Some("phase"));

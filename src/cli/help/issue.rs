@@ -4,43 +4,43 @@ use super::common::{HelpRow, print_group_help};
 use crate::policy::{Capability, Role};
 
 /// Issue commands listed in `issue` help: command name, the one-line row
-/// description, and the capability that gates the row for a role.
-pub(crate) fn normal_issue_commands() -> Vec<(&'static str, &'static str, Capability)> {
+/// description, and the registry path gating the row for a role.
+pub(crate) fn normal_issue_commands() -> Vec<HelpRow<'static>> {
     vec![
         (
             "get",
             Capability::IssueRead.description(),
-            Capability::IssueRead,
+            &["issue", "get"],
         ),
         (
             "search",
             Capability::IssueSearch.description(),
-            Capability::IssueSearch,
+            &["issue", "search"],
         ),
         (
             "create",
             Capability::IssueCreate.description(),
-            Capability::IssueCreate,
+            &["issue", "create"],
         ),
         (
             "update",
             Capability::IssueUpdateBody.description(),
-            Capability::IssueUpdateBody,
+            &["issue", "update"],
         ),
         (
             "close",
             Capability::IssueClose.description(),
-            Capability::IssueClose,
+            &["issue", "close"],
         ),
         (
             "sync",
             "Reconcile worktrees of issues the provider already closed",
-            Capability::IssueClose,
+            &["issue", "sync"],
         ),
         (
             "upload-attachment",
             Capability::IssueAttachmentUpload.description(),
-            Capability::IssueAttachmentUpload,
+            &["issue", "upload-attachment"],
         ),
     ]
 }
@@ -55,17 +55,17 @@ fn issue_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>, Vec<H
         (
             "bind",
             "Bind the current branch to a Redmine issue in local Git config",
-            Capability::IssueRead,
+            &["issue", "bind"],
         ),
         (
             "unbind",
             "Remove the current branch's Redmine issue binding",
-            Capability::IssueRead,
+            &["issue", "unbind"],
         ),
         (
             "status",
             "Show the current branch and its Redmine issue with source bound/named/none",
-            Capability::IssueRead,
+            &["issue", "status"],
         ),
     ];
     (header, main, local)
@@ -176,17 +176,18 @@ pub(crate) fn issue_command_help_text(command: &str) -> Option<(Capability, Stri
 }
 
 pub(crate) fn print_issue_command_help(role: Option<Role>, command: &str) {
-    let Some((capability, text)) = issue_command_help_text(command) else {
+    let Some((_capability, text)) = issue_command_help_text(command) else {
         print_issue_help(role);
         return;
     };
-    if role.is_none_or(|role| role.allows(capability)) {
-        println!("{text}");
-    } else {
+    let path = ["issue", command];
+    if role.is_some_and(|role| !crate::command::registry_allows_role(role, &path)) {
         println!(
             "No command available for {}.",
             role.map_or("this role", Role::as_str)
         );
+    } else {
+        println!("{text}");
     }
 }
 
@@ -446,8 +447,12 @@ mod tests {
             "executor denies create; got: {text}"
         );
         assert!(
-            text.contains("bind"),
-            "executor keeps local rows; got: {text}"
+            text.contains("  status"),
+            "executor keeps the role-open local status row; got: {text}"
+        );
+        assert!(
+            !text.contains("  bind") && !text.contains("  unbind"),
+            "executor denies the orchestrator-only bind/unbind rows; got: {text}"
         );
         let full = render_issue_help(Some(Role::Orchestrator));
         for command in ["get", "search", "create", "update", "close", "bind"] {

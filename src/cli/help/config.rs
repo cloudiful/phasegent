@@ -1,10 +1,24 @@
 use crate::policy::Role;
 
+/// Role-less documentation view of the top-level `config` group. It keeps the
+/// historical superset: read-only rows plus a pointer at the human-operator
+/// write surface. A resolved role never receives this text.
+const CONFIG_SUPERSET: &str = "Local configuration for {}:\n\n  show               Print a redacted snapshot of the local SQLite database\n  provider get       Print the persisted machine-wide default provider (null when unset)\n\nWrites live under the human-operator admin group (AI roles must never invoke it):\n  admin config set SETTING [VALUE|--stdin]  Persist a setting (canonical PHASEGENT_* names or kebab-case aliases; secrets require --stdin or prompt)\n  admin config clear SETTING                Remove a persisted setting\n  admin config provider set NAME            Validate and persist the machine-wide default provider (forgejo, redmine, gitlab, or local)\n  admin config provider clear               Remove the persisted machine-wide default provider\n\nUse 'phasegent --help config <subcommand>' for options.\n`config show` and `config provider get` do not require a role because the global default and the global settings are machine-wide; `admin config set/clear` for global settings also works without a role, while role-scoped settings require PHASEGENT_ROLE.\n\nEffective precedence per field is CLI flags > PHASEGENT_* environment > TOML phasegent.toml (read-only overlay) > legacy SQLite > built-in defaults. `admin config set`/`clear` write SQLite only; a TOML value shadows SQLite until the file (or env) is removed. Credentials stay in SQLite/env and never belong in TOML. Override the file with an absolute PHASEGENT_CONFIG_PATH; the default is the ProjectDirs config_dir phasegent.toml alongside phasegent.sqlite3.\n\nIndex backend is URL-driven: a non-empty secret `PHASEGENT_INDEX_PG_URL` (`index-pg-url`, env overrides persisted) selects PostgreSQL, absent or blank selects SQLite. Use `admin config set index-pg-url --stdin` for Postgres and `admin config clear index-pg-url` to return to SQLite. `PHASEGENT_INDEX_BACKEND` (`index-backend`) is legacy, ignored for selection, and kept only for compatibility. PostgreSQL uses tsvector + GIN, auto-applies migrations from `migrations/pg/0001_issue_index.sql`, and never stores credentials.\n\nAgent notifications use one global_setting row per channel field (env overrides SQLite; no TOML overlay). Enable with `admin config set notify-enabled true` and `admin config set notify-channel <ntfy|webhook|dingtalk|email>`, then per-channel fields (notify-ntfy-base-url, notify-ntfy-topic, notify-webhook-url, ...). Secrets (notify-ntfy-token, notify-webhook-token, notify-dingtalk-secret, notify-email-password) require --stdin and stay write-only.";
+
+/// Role-specific view of the top-level `config` group: read-only rows plus the
+/// shared precedence notes, without any admin write flag or secret-setting
+/// usage.
+fn config_role_text(role: Role) -> String {
+    format!(
+        "Local configuration for {role}:\n\n  show               Print a redacted snapshot of the local SQLite database\n  provider get       Print the persisted machine-wide default provider (null when unset)\n\nWrites live under the human-operator admin group (AI roles must never invoke it); read-only views stay top-level.\n\nUse 'phasegent --help config <subcommand>' for options.\n`config show` and `config provider get` do not require a role because the global default and the global settings are machine-wide.\n\nEffective precedence per field is CLI flags > PHASEGENT_* environment > TOML phasegent.toml (read-only overlay) > legacy SQLite > built-in defaults. A TOML value shadows SQLite until the file (or env) is removed. Credentials stay in SQLite/env and never belong in TOML. Override the file with an absolute PHASEGENT_CONFIG_PATH; the default is the ProjectDirs config_dir phasegent.toml alongside phasegent.sqlite3.\n\nIndex backend is URL-driven: a non-empty secret `PHASEGENT_INDEX_PG_URL` (`index-pg-url`, env overrides persisted) selects PostgreSQL, absent or blank selects SQLite. `PHASEGENT_INDEX_BACKEND` (`index-backend`) is legacy, ignored for selection, and kept only for compatibility. PostgreSQL uses tsvector + GIN, auto-applies migrations from `migrations/pg/0001_issue_index.sql`, and never stores credentials."
+    )
+}
+
 pub(crate) fn print_config_help(role: Option<Role>) {
-    println!(
-        "Local configuration for {}:\n\n  show               Print a redacted snapshot of the local SQLite database\n  provider get       Print the persisted machine-wide default provider (null when unset)\n\nWrites live under the human-operator admin group (AI roles must never invoke it):\n  admin config set SETTING [VALUE|--stdin]  Persist a setting (canonical PHASEGENT_* names or kebab-case aliases; secrets require --stdin or prompt)\n  admin config clear SETTING                Remove a persisted setting\n  admin config provider set NAME            Validate and persist the machine-wide default provider (forgejo, redmine, gitlab, or local)\n  admin config provider clear               Remove the persisted machine-wide default provider\n\nUse 'phasegent --help config <subcommand>' for options.\n`config show` and `config provider get` do not require a role because the global default and the global settings are machine-wide; `admin config set/clear` for global settings also works without a role, while role-scoped settings require PHASEGENT_ROLE.\n\nEffective precedence per field is CLI flags > PHASEGENT_* environment > TOML phasegent.toml (read-only overlay) > legacy SQLite > built-in defaults. `admin config set`/`clear` write SQLite only; a TOML value shadows SQLite until the file (or env) is removed. Credentials stay in SQLite/env and never belong in TOML. Override the file with an absolute PHASEGENT_CONFIG_PATH; the default is the ProjectDirs config_dir phasegent.toml alongside phasegent.sqlite3.\n\nIndex backend is URL-driven: a non-empty secret `PHASEGENT_INDEX_PG_URL` (`index-pg-url`, env overrides persisted) selects PostgreSQL, absent or blank selects SQLite. Use `admin config set index-pg-url --stdin` for Postgres and `admin config clear index-pg-url` to return to SQLite. `PHASEGENT_INDEX_BACKEND` (`index-backend`) is legacy, ignored for selection, and kept only for compatibility. PostgreSQL uses tsvector + GIN, auto-applies migrations from `migrations/pg/0001_issue_index.sql`, and never stores credentials.\n\nAgent notifications use one global_setting row per channel field (env overrides SQLite; no TOML overlay). Enable with `admin config set notify-enabled true` and `admin config set notify-channel <ntfy|webhook|dingtalk|email>`, then per-channel fields (notify-ntfy-base-url, notify-ntfy-topic, notify-webhook-url, ...). Secrets (notify-ntfy-token, notify-webhook-token, notify-dingtalk-secret, notify-email-password) require --stdin and stay write-only.",
-        role.map_or("all roles", Role::as_str)
-    );
+    match role {
+        None => println!("{}", CONFIG_SUPERSET.replacen("{}", "all roles", 1)),
+        Some(role) => println!("{}", config_role_text(role)),
+    }
 }
 
 pub(crate) fn print_config_command_help(role: Option<Role>, command: &str) {
@@ -14,6 +28,57 @@ pub(crate) fn print_config_command_help(role: Option<Role>, command: &str) {
                 "Usage: phasegent [config show]\n\nPrints a compact JSON snapshot of the local SQLite database:\n  database_path              absolute path to the SQLite file\n  roles                      array with one entry per role (admin, orchestrator, executor, reviewer, tester)\n  global_settings            array of PHASEGENT_REDMINE_GIT_MIRROR_API_KEY, PHASEGENT_REDMINE_REPOSITORY_URL, PHASEGENT_DEFAULT_PROVIDER, PHASEGENT_INDEX_BACKEND, PHASEGENT_INDEX_PG_URL, plus PHASEGENT_NOTIFY_* channel fields\n  global_default_provider    machine-wide default provider literal (forgejo, redmine, gitlab, or local); null when unset\n\nCredential rows report presence and length only; the bearer key for the git mirror plugin, the index PG URL, and notify secrets (ntfy-token, webhook-token, dingtalk-secret, email-password) are also reported as presence/length, and URL overrides (repository URL, ntfy-base-url, webhook-url, dingtalk-webhook-url) are sanitised so embedded userinfo is stripped before the snapshot is rendered. The machine-wide default provider is a non-secret literal rendered both as a top-level field and inside `global_settings` so the snapshot stays self-contained. The legacy index backend literal is also rendered inside `global_settings` for compatibility but is ignored for selection; only `PHASEGENT_INDEX_PG_URL` presence selects PostgreSQL. Notify non-URL fields report presence/length only; notify precedence is env over SQLite with no TOML overlay.\n\nSnapshot reflects persisted SQLite only; a TOML phasegent.toml value shadows at resolve time but is not shown (notify has no TOML overlay). Effective precedence is CLI flags > PHASEGENT_* environment > TOML (read-only overlay, absolute PHASEGENT_CONFIG_PATH override) > legacy SQLite > built-in defaults.\n\nWith PHASEGENT_ROLE set, the snapshot is the same JSON with the roles array restricted to that single role."
             );
         }
+        // The write pages moved under `admin config`; delegate so any legacy
+        // `config set/clear --help` parse path lands on the admin-scoped page,
+        // which the topic gate already denies for a non-admin role.
+        "set" | "clear" => print_admin_config_command_help(role, command),
+        _ => print_config_help(role),
+    }
+}
+
+/// Role-less documentation view of the top-level `config provider` group.
+const CONFIG_PROVIDER_SUPERSET: &str = "Machine-wide default provider:\n\n  get               Print the persisted PHASEGENT_DEFAULT_PROVIDER (null when unset)\n  set NAME          Validate and persist the default (forgejo, redmine, gitlab, or local)\n  clear             Remove the persisted default so the resolver falls back to the role-scoped provider\n\n`config provider get` does not require a role because the default is global; `admin config provider set`/`clear` are human-operator only. The resolver precedence is: explicit --provider > PHASEGENT_PROVIDER (env) > PHASEGENT_DEFAULT_PROVIDER (env) > TOML default_provider in phasegent.toml (read-only overlay, absolute PHASEGENT_CONFIG_PATH override) > persisted PHASEGENT_DEFAULT_PROVIDER (SQLite) > role-scoped provider (TOML [roles.<role>] shadows SQLite role_config.provider) > forgejo fallback. `admin config provider set`/`clear` write SQLite only; a TOML value shadows SQLite until the file (or env) is removed.";
+
+/// Role-specific view: only the read-only `get` row, plus the resolver chain
+/// (which is not admin-sensitive). The write rows live on the admin group page.
+fn config_provider_role_text(role: Role) -> String {
+    format!(
+        "Machine-wide default provider ({role}):\n\n  get               Print the persisted PHASEGENT_DEFAULT_PROVIDER (null when unset)\n\n`config provider get` does not require a role because the default is global. Writes to the machine-wide default are human-operator only and live under the admin group (AI roles must never invoke it). The resolver precedence is: explicit --provider > PHASEGENT_PROVIDER (env) > PHASEGENT_DEFAULT_PROVIDER (env) > TOML default_provider in phasegent.toml (read-only overlay, absolute PHASEGENT_CONFIG_PATH override) > persisted PHASEGENT_DEFAULT_PROVIDER (SQLite) > role-scoped provider (TOML [roles.<role>] shadows SQLite role_config.provider) > forgejo fallback. A TOML value shadows SQLite until the file (or env) is removed."
+    )
+}
+
+pub(crate) fn print_config_provider_help(role: Option<Role>) {
+    match role {
+        None => println!("{CONFIG_PROVIDER_SUPERSET}"),
+        Some(role) => println!("{}", config_provider_role_text(role)),
+    }
+}
+
+pub(crate) fn print_config_provider_command_help(role: Option<Role>, command: &str) {
+    match command {
+        "get" => {
+            println!(
+                "Usage: phasegent config provider get\n\nPrints a JSON object with the persisted PHASEGENT_DEFAULT_PROVIDER literal (`forgejo`, `redmine`, `gitlab`, or `local`) or `null` when the default has never been set. The output never echoes any secret value. Snapshot is persisted SQLite only; effective resolution still applies TOML before this value."
+            );
+        }
+        // Provider writes moved under `admin config provider`; keep the admin
+        // gate on the delegated page.
+        "set" | "clear" => print_admin_config_provider_command_help(role, command),
+        _ => print_config_provider_help(role),
+    }
+}
+
+/// `admin config` group page: the human-operator write surface, reachable only
+/// after the topic gate admits `admin` (never an AI role).
+pub(crate) fn print_admin_config_help(role: Option<Role>) {
+    let role_text = role.map_or("ROLE", Role::as_str);
+    println!(
+        "Human-operator setting writes for {role_text}:\n\n  phasegent admin config set SETTING [VALUE|--stdin]  Persist a setting (canonical PHASEGENT_* names or kebab-case aliases; secrets require --stdin or prompt)\n  phasegent admin config clear SETTING                Remove a persisted setting\n  phasegent admin config provider set NAME            Validate and persist the machine-wide default provider (forgejo, redmine, gitlab, or local)\n  phasegent admin config provider clear               Remove the persisted machine-wide default provider\n\nUsage: PHASEGENT_ROLE={role_text} phasegent admin config <subcommand>\n\nAdmin config writes SQLite only (TOML is a read-only overlay) and a TOML value shadows SQLite until the file (or env) is removed. Global settings (mirror key, repository URL, default provider, index pg-url) are machine-wide and work without a role; role-scoped settings require PHASEGENT_ROLE. Secret settings never accept a direct value: pass --stdin or use the secure prompt.\n\nUse 'phasegent --help admin config set|clear' for the full setting list and examples."
+    );
+}
+
+pub(crate) fn print_admin_config_command_help(role: Option<Role>, command: &str) {
+    match command {
         "set" => {
             let role_text = role.map_or("ROLE", Role::as_str);
             println!(
@@ -65,23 +130,21 @@ role-scoped settings require PHASEGENT_ROLE. `admin config set default-provider`
                 "Usage: PHASEGENT_ROLE=<ROLE> phasegent admin config clear <SETTING>\n\nHuman-operator only; AI roles must never invoke the admin group.\n\nRemoves the persisted setting from SQLite. Prints the canonical setting name and whether a row/field was cleared.\n\nGlobal settings are machine-wide and can be cleared without a role. Role-scoped settings require PHASEGENT_ROLE.\nThe bearer key (`redmine-git-mirror-api-key`), index PG URL, and notify secrets (`notify-ntfy-token`, `notify-webhook-token`, `notify-dingtalk-secret`, `notify-email-password`) are reported only as presence/length in `config show`. Clearing `index-pg-url` returns the index to SQLite; clearing legacy `index-backend` never changes selection. Notify fields clear the same way (`admin config clear notify-channel` disables routing). `admin config clear` removes SQLite only; a TOML phasegent.toml value still shadows until the file (or env) is removed (notify has no TOML overlay)."
             );
         }
-        _ => print_config_help(role),
+        _ => print_admin_config_help(role),
     }
 }
 
-pub(crate) fn print_config_provider_help() {
+/// `admin config provider` group page: human-operator provider writes plus the
+/// shared resolver chain.
+pub(crate) fn print_admin_config_provider_help(role: Option<Role>) {
+    let role_text = role.map_or("ROLE", Role::as_str);
     println!(
-        "Machine-wide default provider:\n\n  get               Print the persisted PHASEGENT_DEFAULT_PROVIDER (null when unset)\n  set NAME          Validate and persist the default (forgejo, redmine, gitlab, or local)\n  clear             Remove the persisted default so the resolver falls back to the role-scoped provider\n\n`config provider get` does not require a role because the default is global; `admin config provider set`/`clear` are human-operator only. The resolver precedence is: explicit --provider > PHASEGENT_PROVIDER (env) > PHASEGENT_DEFAULT_PROVIDER (env) > TOML default_provider in phasegent.toml (read-only overlay, absolute PHASEGENT_CONFIG_PATH override) > persisted PHASEGENT_DEFAULT_PROVIDER (SQLite) > role-scoped provider (TOML [roles.<role>] shadows SQLite role_config.provider) > forgejo fallback. `admin config provider set`/`clear` write SQLite only; a TOML value shadows SQLite until the file (or env) is removed."
+        "Human-operator machine-wide default provider writes for {role_text}:\n\n  phasegent admin config provider set NAME  Validate and persist the default (forgejo, redmine, gitlab, or local)\n  phasegent admin config provider clear     Remove the persisted default so the resolver falls back to the role-scoped provider\n\nUsage: phasegent admin config provider <set NAME|clear>\n\nThe resolver precedence is: explicit --provider > PHASEGENT_PROVIDER (env) > PHASEGENT_DEFAULT_PROVIDER (env) > TOML default_provider in phasegent.toml (read-only overlay, absolute PHASEGENT_CONFIG_PATH override) > persisted PHASEGENT_DEFAULT_PROVIDER (SQLite) > role-scoped provider (TOML [roles.<role>] shadows SQLite role_config.provider) > forgejo fallback. Writes go to SQLite only; a TOML value shadows SQLite until the file (or env) is removed."
     );
 }
 
-pub(crate) fn print_config_provider_command_help(command: &str) {
+pub(crate) fn print_admin_config_provider_command_help(role: Option<Role>, command: &str) {
     match command {
-        "get" => {
-            println!(
-                "Usage: phasegent config provider get\n\nPrints a JSON object with the persisted PHASEGENT_DEFAULT_PROVIDER literal (`forgejo`, `redmine`, `gitlab`, or `local`) or `null` when the default has never been set. The output never echoes any secret value. Snapshot is persisted SQLite only; effective resolution still applies TOML before this value."
-            );
-        }
         "set" => {
             println!(
                 "Usage: phasegent admin config provider set <forgejo|redmine|gitlab|local>\n\nHuman-operator only; AI roles must never invoke the admin group.\n\nValidates NAME through ProviderKind::from_str and persists the result in the global_setting table. Unknown literals return a structured config error before any write happens. Writes SQLite only; a TOML default_provider shadows until the file (or env) is removed."
@@ -92,6 +155,6 @@ pub(crate) fn print_config_provider_command_help(command: &str) {
                 "Usage: phasegent admin config provider clear\n\nHuman-operator only; AI roles must never invoke the admin group.\n\nRemoves the PHASEGENT_DEFAULT_PROVIDER row from SQLite so the resolver falls back to the TOML overlay then the role-scoped provider. Removes SQLite only; a TOML value still shadows until removed. Returns {{\"cleared\": true}} when a row existed or {{\"cleared\": false}} when the default was already absent."
             );
         }
-        _ => print_config_provider_help(),
+        _ => print_admin_config_provider_help(role),
     }
 }

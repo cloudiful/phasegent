@@ -306,14 +306,21 @@ fn blank_or_absent_phasegent_role_env_keeps_the_previous_requirement() {
 fn no_role_whitelist_commands_still_parse_with_role_env_present() {
     // The env fallback lands before the `no_role_allowed` gate, so a
     // role-less whitelist command is accepted and carries whatever role the
-    // environment supplied.
+    // environment supplied. `issue bind` keeps its role-less passthrough, but
+    // an explicit child role is now rejected by the shared registry gate.
     let invocation =
-        parse_with_role(&["issue", "bind", "23"], Some("executor")).expect("bind parses");
-    assert_eq!(invocation.role, Some(Role::Executor));
+        parse_with_role(&["issue", "bind", "23"], Some("orchestrator")).expect("bind parses");
+    assert_eq!(invocation.role, Some(Role::Orchestrator));
     assert!(matches!(
         invocation.command,
         Command::Issue(IssueCommand::Bind { issue_id: 23, .. })
     ));
+
+    let denied = parse_with_role(&["issue", "bind", "23"], Some("executor")).unwrap_err();
+    assert!(
+        denied.contains("role 'executor' is not allowed to perform issue bind"),
+        "got: {denied}"
+    );
 
     let invocation =
         parse_with_role(&["issue", "status"], Some("executor")).expect("status parses");

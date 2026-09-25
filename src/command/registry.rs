@@ -15,8 +15,13 @@ use crate::providers::ProviderKind;
 
 #[path = "registry_commands.rs"]
 mod commands;
+#[path = "registry_query.rs"]
+mod query;
 
 pub(crate) use commands::COMMANDS;
+#[cfg(test)]
+pub(crate) use query::top_level_names;
+pub(crate) use query::{allows_role, denied_operation};
 
 /// Compile-time optional capability backed by a Cargo feature. The registry
 /// records the boundary; later phases decide whether a missing feature hides
@@ -119,6 +124,12 @@ pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
     pub(crate) summary: &'static str,
     pub(crate) access: RoleAccess,
+    /// Permission `operation` label used by the parser/execution denial
+    /// envelope. Empty for capability-gated nodes (the capability supplies
+    /// it) and for nodes that can never be denied; command-level gates set
+    /// it explicitly so the parser emits the same operation string the
+    /// execution layer would.
+    pub(crate) operation: &'static str,
     pub(crate) feature: Option<Feature>,
     /// Provider scope of the top-level group this node belongs to; only
     /// top-level nodes carry anything other than [`ProviderScope::Any`].
@@ -127,6 +138,18 @@ pub(crate) struct CommandSpec {
 }
 
 impl CommandSpec {
+    /// The `operation` field of the stable permission denial envelope.
+    pub(crate) fn operation(&self) -> &'static str {
+        if self.operation.is_empty() {
+            match self.access {
+                RoleAccess::Capability(capability) => capability.operation(),
+                _ => self.name,
+            }
+        } else {
+            self.operation
+        }
+    }
+
     /// Whether `role` may run this node. A group requires both its own access
     /// and at least one runnable child.
     pub(crate) const fn allows_role(&self, role: Role) -> bool {
@@ -158,6 +181,26 @@ pub(super) const fn leaf(
         name,
         summary,
         access,
+        operation: "",
+        feature: None,
+        provider_scope: ProviderScope::Any,
+        children: &[],
+    }
+}
+
+/// A leaf command whose command-level gate needs an explicit permission
+/// operation label (non-capability gates such as `Only`/`AdminOnly`).
+pub(super) const fn leaf_op(
+    name: &'static str,
+    summary: &'static str,
+    access: RoleAccess,
+    operation: &'static str,
+) -> CommandSpec {
+    CommandSpec {
+        name,
+        summary,
+        access,
+        operation,
         feature: None,
         provider_scope: ProviderScope::Any,
         children: &[],
@@ -176,6 +219,7 @@ pub(super) const fn group(
         name,
         summary,
         access,
+        operation: "",
         feature: None,
         provider_scope,
         children,

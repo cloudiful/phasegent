@@ -29,7 +29,7 @@ fn config_set_parses_canonical_and_kebab_alias() {
             } else {
                 args.push("test-value".to_owned());
             }
-            let invocation = command::parse_with_role_env(&args, Some("executor"))
+            let invocation = command::parse_with_role_env(&args, Some("admin"))
                 .unwrap_or_else(|e| panic!("set {name} must parse: {e}"));
             match invocation.command {
                 Command::ConfigSet { setting, .. } => assert_eq!(setting, canonical),

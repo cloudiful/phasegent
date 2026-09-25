@@ -199,7 +199,7 @@ fn config_clear_command_parsing() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let inv =
-        command::parse_with_role_env(&args, Some("executor")).expect("clear with role must parse");
+        command::parse_with_role_env(&args, Some("admin")).expect("clear with role must parse");
     match inv.command {
         Command::ConfigClear { setting } => assert_eq!(setting, "PHASEGENT_API_BASE"),
         other => panic!("got {other:?}"),

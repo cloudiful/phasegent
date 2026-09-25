@@ -80,11 +80,14 @@ pub(crate) fn help_topic(
             (None, _) => Ok(HelpTopic::Admin),
             (Some("auth"), _) => Ok(HelpTopic::Auth),
             (Some("workflow"), _) => Ok(HelpTopic::Workflow),
-            (Some("config"), None) => Ok(HelpTopic::Config),
-            (Some("config"), Some(value)) if ["show", "set", "clear"].contains(&value) => {
-                Ok(HelpTopic::ConfigCommand(value.to_owned()))
+            // The admin config group is the human-operator write surface; it
+            // gets its own topics so a role-denied request cannot fall back to
+            // the read-only top-level `config` page and leak write flags.
+            (Some("config"), None) => Ok(HelpTopic::AdminConfig),
+            (Some("config"), Some(value)) if ["set", "clear"].contains(&value) => {
+                Ok(HelpTopic::AdminConfigCommand(value.to_owned()))
             }
-            (Some("config"), Some("provider")) => Ok(HelpTopic::ConfigProvider),
+            (Some("config"), Some("provider")) => Ok(HelpTopic::AdminConfigProvider),
             (Some(value), _) => Err(format!("unknown admin help topic '{value}'")),
         },
         "doctor" => match subcommand {
@@ -94,12 +97,17 @@ pub(crate) fn help_topic(
         "auth" => Ok(HelpTopic::Auth),
         "config" => match subcommand {
             None => Ok(HelpTopic::Config),
-            Some("show") | Some("set") | Some("clear") => {
-                Ok(HelpTopic::ConfigCommand(subcommand.unwrap().to_owned()))
-            }
+            Some("show") => Ok(HelpTopic::ConfigCommand("show".to_owned())),
+            // The top-level `set`/`clear` writes moved under `admin config`;
+            // their help pages stay admin-scoped even though the read-only
+            // `config` group remains role-open.
+            Some("set") | Some("clear") => Ok(HelpTopic::AdminConfigCommand(
+                subcommand.unwrap().to_owned(),
+            )),
             Some("provider") => match nested_subcommand {
                 None => Ok(HelpTopic::ConfigProvider),
-                Some("get") | Some("set") | Some("clear") => Ok(HelpTopic::ConfigProviderCommand(
+                Some("get") => Ok(HelpTopic::ConfigProviderCommand("get".to_owned())),
+                Some("set") | Some("clear") => Ok(HelpTopic::AdminConfigProviderCommand(
                     nested_subcommand.unwrap().to_owned(),
                 )),
                 Some(value) => Err(format!("unknown config provider help topic '{value}'")),
@@ -152,5 +160,61 @@ pub(crate) fn help_topic(
             Some(value) => Err(format!("unknown worktree help topic '{value}'")),
         },
         _ => Err(format!("unknown help topic '{value}'")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The admin write surface gets its own topics so a role-denied request
+    /// cannot fall back to the role-open top-level `config` page.
+    #[test]
+    fn admin_config_help_topics_are_distinct_from_top_level_config() {
+        assert!(matches!(
+            help_topic("admin", Some("config"), None),
+            Ok(HelpTopic::AdminConfig)
+        ));
+        assert!(matches!(
+            help_topic("admin", Some("config"), Some("set")),
+            Ok(HelpTopic::AdminConfigCommand(command)) if command == "set"
+        ));
+        assert!(matches!(
+            help_topic("admin", Some("config"), Some("clear")),
+            Ok(HelpTopic::AdminConfigCommand(command)) if command == "clear"
+        ));
+        assert!(matches!(
+            help_topic("admin", Some("config"), Some("provider")),
+            Ok(HelpTopic::AdminConfigProvider)
+        ));
+
+        assert!(matches!(
+            help_topic("config", None, None),
+            Ok(HelpTopic::Config)
+        ));
+        assert!(matches!(
+            help_topic("config", Some("show"), None),
+            Ok(HelpTopic::ConfigCommand(command)) if command == "show"
+        ));
+        assert!(matches!(
+            help_topic("config", Some("provider"), None),
+            Ok(HelpTopic::ConfigProvider)
+        ));
+        assert!(matches!(
+            help_topic("config", Some("provider"), Some("get")),
+            Ok(HelpTopic::ConfigProviderCommand(command)) if command == "get"
+        ));
+        // Moved top-level writes resolve to the admin write topics.
+        assert!(matches!(
+            help_topic("config", Some("set"), None),
+            Ok(HelpTopic::AdminConfigCommand(command)) if command == "set"
+        ));
+        assert!(matches!(
+            help_topic("config", Some("provider"), Some("clear")),
+            Ok(HelpTopic::AdminConfigProviderCommand(command)) if command == "clear"
+        ));
+        // `admin config show` is not a valid write command; help rejects it
+        // rather than serving a page.
+        assert!(help_topic("admin", Some("config"), Some("show")).is_err());
     }
 }

@@ -14,8 +14,8 @@ fn strings(values: &[&str]) -> Vec<String> {
 fn create_assignee(argv: &[&str]) -> AssigneeOption {
     let mut args = vec!["issue", "create", "--title", "T", "--body", "B"];
     args.extend_from_slice(argv);
-    let invocation =
-        command::parse_with_role_env(&strings(&args), Some("executor")).expect("create must parse");
+    let invocation = command::parse_with_role_env(&strings(&args), Some("orchestrator"))
+        .expect("create must parse");
     match invocation.command {
         Command::Issue(IssueCommand::Create { assignee, .. }) => assignee,
         other => panic!("expected Create, got {other:?}"),

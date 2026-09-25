@@ -1,4 +1,4 @@
-use crate::policy::{Capability, Role};
+use crate::policy::Role;
 use crate::providers::ProviderKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -9,49 +9,27 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// options list, so the common invocation shape never tags it on either.
 pub(crate) const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]\n  phasegent gui\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
 
+/// Root-overview order (issue 597 Phase 2). Visibility comes from the command
+/// registry; this list only pins the print order and omits the retired
+/// top-level `auth`/`workflow` redirect leaves, which exist so the parser can
+/// resolve their moved-error help topics. A test keeps the two in sync.
+const ROOT_OVERVIEW: &[&str] = &[
+    "gui", "issue", "comment", "admin", "config", "doctor", "hooks", "notify", "mcp", "plugin",
+    "repo", "project", "status", "version", "relation", "timer", "worktree",
+];
+
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{ROOT_USAGE}\n\nOptions:\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:\n  gui                    Open the desktop GUI (single-binary shell)\n  issue                  Issue operations\n  comment                Comment operations\n  admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)\n  config                 Local configuration (read-only show/get; writes live under admin)\n  doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)\n  hooks                  Managed Git hook installation\n  notify                 Bounded agent notifications\n  mcp                    MCP server over stdio or streamable HTTP
-  plugin                 Managed OpenCode plugin installation"
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{ROOT_USAGE}\n\nOptions:\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:"
     );
-    if provider != Some(ProviderKind::Redmine)
-        && role.is_none_or(|role| role.allows(Capability::RepoCreate))
-    {
-        println!("  repo                   Repository operations");
-    }
-    if provider == Some(ProviderKind::Redmine)
-        && role.is_none_or(|role| role.allows(Capability::ProjectRead))
-    {
-        println!("  project                Redmine project operations");
-    }
-    if provider == Some(ProviderKind::Redmine)
-        && role.is_none_or(|role| role.allows(Capability::IssueStatusRead))
-    {
-        println!("  status                 Redmine issue status operations");
-    }
-    if provider == Some(ProviderKind::Redmine)
-        && role.is_none_or(|role| role.allows(Capability::VersionRead))
-    {
-        println!("  version                Redmine project version operations");
-    }
-    if provider == Some(ProviderKind::Redmine)
-        && role.is_none_or(|role| role.allows(Capability::RelationRead))
-    {
-        println!("  relation               Redmine issue relations");
-    }
-    if provider == Some(ProviderKind::Redmine) && role.is_none_or(|role| role == Role::Orchestrator)
-    {
-        println!(
-            "  timer                  Redmine phase time tracking (internal/auto; manual fallback only)"
-        );
-    }
-    if role.is_none_or(|role| {
-        role == Role::Orchestrator || role == Role::Executor || role == Role::Reviewer
-    }) {
-        println!(
-            "  worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)"
-        );
+    for &name in ROOT_OVERVIEW {
+        if !crate::command::top_level_visible(name, role, provider) {
+            continue;
+        }
+        if let Some(summary) = crate::command::top_level_summary(name) {
+            println!("  {name:<23}{summary}");
+        }
     }
     println!(
         "\nUse 'phasegent --help <command>' for the next level.\n\
@@ -123,6 +101,23 @@ mod tests {
         assert!(
             !ROOT_USAGE.contains("--role"),
             "root usage must not document a role flag: {ROOT_USAGE}"
+        );
+    }
+
+    /// The overview order must stay complete: every registered top-level
+    /// command is listed except the retired `auth`/`workflow` redirect leaves.
+    #[test]
+    fn root_overview_covers_every_surface_command() {
+        let mut expected: Vec<&str> = crate::command::top_level_names()
+            .into_iter()
+            .filter(|name| !matches!(*name, "auth" | "workflow"))
+            .collect();
+        let mut listed: Vec<&str> = ROOT_OVERVIEW.to_vec();
+        expected.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(
+            listed, expected,
+            "root overview must list every real top-level command exactly once"
         );
     }
 }

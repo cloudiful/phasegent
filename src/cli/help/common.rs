@@ -1,15 +1,22 @@
-use crate::policy::{Capability, Role};
+use crate::policy::Role;
 
 pub(crate) fn print_not_supported_help(operation: &str) {
     println!("No command available for Redmine: {operation} is Forgejo-only.");
 }
 
 /// One row in a help group: command name, one-line description, and the
-/// capability used for `role.allows` gating.
-pub(crate) type HelpRow<'a> = (&'a str, &'a str, Capability);
+/// registry path used for the role gate. The registry owns the gate, so the
+/// overview and the parser can never disagree about which role sees a row.
+pub(crate) type HelpRow<'a> = (&'a str, &'a str, &'static [&'static str]);
 /// One section in a help group: optional title (None = untitled first
 /// block) plus its rows.
 pub(crate) type HelpSection<'a> = (Option<&'a str>, &'a [HelpRow<'a>]);
+
+/// Whether a row is visible for the resolved role. No role keeps the
+/// compatibility superset view.
+fn row_visible(role: Option<Role>, path: &[&str]) -> bool {
+    role.is_none_or(|role| crate::command::registry_allows_role(role, path))
+}
 
 /// Render a `comment`/`status`-style group overview without printing, so the
 /// shape is testable without capturing stdout.
@@ -21,9 +28,9 @@ pub(crate) fn render_group_help(
 ) -> String {
     let mut out = format!("{header}\n\n");
     for (index, (title, rows)) in sections.iter().enumerate() {
-        let visible: Vec<&(&str, &str, Capability)> = rows
+        let visible: Vec<&HelpRow<'_>> = rows
             .iter()
-            .filter(|(_, _, capability)| role.is_none_or(|role| role.allows(*capability)))
+            .filter(|(_, _, path)| row_visible(role, path))
             .collect();
         if visible.is_empty() {
             continue;
@@ -43,7 +50,7 @@ pub(crate) fn render_group_help(
 }
 
 /// Print a `comment`/`status`-style group overview: header line, titled
-/// sections of `(name, desc)` rows gated by `role.allows`, and a footer
+/// sections of `(name, desc)` rows gated by the registry, and a footer
 /// pointer to the per-command detail pages.
 pub(crate) fn print_group_help(
     role: Option<Role>,
@@ -72,16 +79,8 @@ mod tests {
     #[test]
     fn all_roles_show_every_row() {
         let rows: &[HelpRow<'_>] = &[
-            (
-                "get",
-                Capability::IssueRead.description(),
-                Capability::IssueRead,
-            ),
-            (
-                "create",
-                Capability::IssueCreate.description(),
-                Capability::IssueCreate,
-            ),
+            ("get", "Read one issue", &["issue", "get"]),
+            ("create", "Create an issue", &["issue", "create"]),
         ];
         let text = render_group_help(None, "H:", &[(None, rows)], "F");
         assert!(text.contains("get"), "got: {text}");
@@ -91,25 +90,17 @@ mod tests {
     #[test]
     fn role_filtering_hides_denied_commands() {
         let rows: &[HelpRow<'_>] = &[
-            (
-                "get",
-                Capability::IssueRead.description(),
-                Capability::IssueRead,
-            ),
-            (
-                "create",
-                Capability::IssueCreate.description(),
-                Capability::IssueCreate,
-            ),
+            ("get", "Read one issue", &["issue", "get"]),
+            ("create", "Create an issue", &["issue", "create"]),
         ];
         let text = render_group_help(Some(Role::Executor), "H:", &[(None, rows)], "F");
         assert!(
             text.contains("get"),
-            "executor keeps IssueRead; got: {text}"
+            "executor keeps issue get; got: {text}"
         );
         assert!(
             !text.contains("create"),
-            "executor denies IssueCreate; got: {text}"
+            "executor denies issue create; got: {text}"
         );
         let full = render_group_help(Some(Role::Orchestrator), "H:", &[(None, rows)], "F");
         assert!(
@@ -120,12 +111,8 @@ mod tests {
 
     #[test]
     fn multiple_sections_keep_title_order() {
-        let first: &[HelpRow<'_>] = &[(
-            "get",
-            Capability::IssueRead.description(),
-            Capability::IssueRead,
-        )];
-        let second: &[HelpRow<'_>] = &[("bind", "Bind branch", Capability::IssueRead)];
+        let first: &[HelpRow<'_>] = &[("get", "Read one issue", &["issue", "get"])];
+        let second: &[HelpRow<'_>] = &[("bind", "Bind branch", &["issue", "bind"])];
         let text = render_group_help(None, "H:", &[(None, first), (Some("Local"), second)], "F");
         let header_at = text.find("H:").expect("header");
         let get_at = text.find("get").expect("first row");

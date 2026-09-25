@@ -45,14 +45,14 @@ fn top_level_auth_setup_is_rejected_with_moved_error() {
 fn admin_config_writes_parse_to_shared_variants() {
     let set = command::parse_with_role_env(
         &strings(&["admin", "config", "set", "api-base", "https://example.com"]),
-        Some("executor"),
+        Some("admin"),
     )
     .expect("admin config set must parse");
     assert!(matches!(set.command, Command::ConfigSet { .. }));
 
     let clear = command::parse_with_role_env(
         &strings(&["admin", "config", "clear", "api-base"]),
-        Some("executor"),
+        Some("admin"),
     )
     .expect("admin config clear must parse");
     assert!(matches!(clear.command, Command::ConfigClear { .. }));

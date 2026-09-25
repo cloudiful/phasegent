@@ -11,19 +11,54 @@ use crate::policy::Role;
 /// environment variable. A managed session exports that variable for its
 /// child processes, so no CLI flag carries the role. Kept as a thin
 /// wrapper so the environment lookup happens exactly once; the decision
-/// logic lives in `parse_with_role_env`.
+/// logic lives in `parse_outcome`.
+#[allow(dead_code)] // public parser entry used by the fuzz harness
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
-    let role_env = std::env::var("PHASEGENT_ROLE").ok();
-    parse_with_role_env(args, role_env.as_deref())
+    parse_outcome(args).and_then(ParseOutcome::into_invocation)
 }
 
-/// Role-injectable parser used by `parse` and by unit tests. `role_env`
+/// The parser outcome: an accepted invocation, or a stable role denial for a
+/// command the registry gates away. `cli::run` turns the latter into the same
+/// structured `permission` error the execution layer would emit, so a denied
+/// command fails before any provider or network access.
+pub(crate) enum ParseOutcome {
+    Invocation(Box<Invocation>),
+    Permission { role: Role, operation: &'static str },
+}
+
+impl ParseOutcome {
+    fn invocation(invocation: Invocation) -> Self {
+        Self::Invocation(Box::new(invocation))
+    }
+
+    #[allow(dead_code)] // used by the cfg(test) role-injectable entry point
+    fn into_invocation(self) -> Result<Invocation, String> {
+        match self {
+            Self::Invocation(invocation) => Ok(*invocation),
+            Self::Permission { role, operation } => Err(permission_message(role, operation)),
+        }
+    }
+}
+
+/// The stable parser-level permission message, byte-identical to the
+/// execution layer's generic denial.
+pub(crate) fn permission_message(role: Role, operation: &str) -> String {
+    format!("role '{role}' is not allowed to perform {operation}")
+}
+
+/// Parse the process argv with the process role environment.
+pub(crate) fn parse_outcome(args: &[String]) -> Result<ParseOutcome, String> {
+    let role_env = std::env::var("PHASEGENT_ROLE").ok();
+    parse_outcome_with_role_env(args, role_env.as_deref())
+}
+
+/// Role-injectable parser used by `parse_outcome` and by unit tests. `role_env`
 /// models `PHASEGENT_ROLE` so tests never mutate process-global state
 /// (which would race the parallel parser assertions).
-pub(crate) fn parse_with_role_env(
+pub(crate) fn parse_outcome_with_role_env(
     args: &[String],
     role_env: Option<&str>,
-) -> Result<Invocation, String> {
+) -> Result<ParseOutcome, String> {
     // Role context comes only from `PHASEGENT_ROLE`, which a managed session
     // exports for its child processes. A blank value means "not provided", but
     // a non-empty invalid value is an error rather than a silent downgrade to
@@ -39,7 +74,7 @@ pub(crate) fn parse_with_role_env(
         .transpose()?;
 
     if args.is_empty() {
-        return Ok(Invocation {
+        return Ok(ParseOutcome::invocation(Invocation {
             role,
             provider: None,
             api_base: None,
@@ -48,7 +83,7 @@ pub(crate) fn parse_with_role_env(
             close_status_id: None,
             close_status_name: None,
             command: Command::Help(HelpTopic::Root),
-        });
+        }));
     }
 
     let mut provider = None;
@@ -68,7 +103,7 @@ pub(crate) fn parse_with_role_env(
                         args.get(index + 3).map(String::as_str),
                     )
                 })?;
-                return Ok(Invocation {
+                return Ok(ParseOutcome::invocation(Invocation {
                     role,
                     provider,
                     api_base,
@@ -77,10 +112,10 @@ pub(crate) fn parse_with_role_env(
                     close_status_id,
                     close_status_name,
                     command: Command::Help(topic),
-                });
+                }));
             }
             "--version" | "-V" => {
-                return Ok(Invocation {
+                return Ok(ParseOutcome::invocation(Invocation {
                     role,
                     provider,
                     api_base,
@@ -89,7 +124,7 @@ pub(crate) fn parse_with_role_env(
                     close_status_id,
                     close_status_name,
                     command: Command::Version,
-                });
+                }));
             }
             "--provider" => {
                 provider = Some(required_value(args, index, "--provider")?.parse()?);
@@ -160,6 +195,18 @@ pub(crate) fn parse_with_role_env(
     let command = args.get(index).ok_or("a command is required")?;
     let rest = &args[index + 1..];
     let command = parse_command(command, rest).map_err(with_global_option_hint)?;
+    // Role-aware parser gate: the registry is the single source of truth for
+    // which command a role may run, so a denied command fails here with the
+    // stable permission error instead of being accepted and rejected by the
+    // execution layer after provider/credential setup. Unknown commands were
+    // already rejected by `parse_command` with the distinct unknown error, and
+    // a missing role keeps the historical superset routing (checked below).
+    if let Some(role) = role
+        && let Some(path) = super::command_registry_path(&command)
+        && let Some(operation) = super::registry_denied_operation(role, &path)
+    {
+        return Ok(ParseOutcome::Permission { role, operation });
+    }
     // Local branch context and hooks never touch provider credentials. The
     // internal `hooks run` forms are also invoked by generated Git scripts
     // without a role. `config set/clear` is allowed without a role when
@@ -190,7 +237,7 @@ pub(crate) fn parse_with_role_env(
     if close_status_name.is_some() && !matches!(&command, Command::Workflow(_)) {
         return Err("--close-status-name is only supported by workflow bootstrap".to_owned());
     }
-    Ok(Invocation {
+    Ok(ParseOutcome::invocation(Invocation {
         role,
         provider,
         api_base,
@@ -199,7 +246,16 @@ pub(crate) fn parse_with_role_env(
         close_status_id,
         close_status_name,
         command,
-    })
+    }))
+}
+
+/// Role-injectable entry point for tests that assert the accepted invocation.
+#[cfg(test)]
+pub(crate) fn parse_with_role_env(
+    args: &[String],
+    role_env: Option<&str>,
+) -> Result<Invocation, String> {
+    parse_outcome_with_role_env(args, role_env).and_then(ParseOutcome::into_invocation)
 }
 
 fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
@@ -268,113 +324,5 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    #[test]
-    fn removed_role_flag_is_rejected_as_an_unknown_option() {
-        for token in ["--role", "--role=executor"] {
-            let error = parse_with_role_env(
-                &args(&[token, "executor", "issue", "get", "1"]),
-                Some("executor"),
-            )
-            .expect_err("the removed --role flag must be rejected");
-            assert!(
-                error.starts_with("unknown option '--role"),
-                "token {token}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn misplaced_global_option_after_subcommand_hints_at_position() {
-        // The reported flow: `--project-id` after `issue create` failed with a
-        // bare "unknown option". The error must now state that global options
-        // come before the subcommand and show a correct example.
-        let error = parse_with_role_env(
-            &args(&[
-                "issue",
-                "create",
-                "--title",
-                "T",
-                "--body",
-                "B",
-                "--project-id",
-                "23",
-            ]),
-            Some("orchestrator"),
-        )
-        .expect_err("a misplaced global option must be rejected");
-        assert!(
-            error.starts_with("unknown option '--project-id'"),
-            "got: {error}"
-        );
-        assert!(
-            error.contains("must come before the subcommand"),
-            "got: {error}"
-        );
-        assert!(
-            error.contains("--project-id 23 issue create"),
-            "got: {error}"
-        );
-    }
-
-    #[test]
-    fn global_option_hint_covers_inline_and_separator_variants() {
-        for token in ["--project-id=23", "--project_id"] {
-            let error = parse_with_role_env(
-                &args(&["issue", "close", "42", token]),
-                Some("orchestrator"),
-            )
-            .expect_err("a misplaced global option must be rejected");
-            assert!(
-                error.contains("must come before the subcommand"),
-                "token {token}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn unrelated_unknown_option_keeps_its_plain_message() {
-        let error = parse_with_role_env(
-            &args(&[
-                "issue",
-                "create",
-                "--title",
-                "T",
-                "--body",
-                "B",
-                "--nonsense",
-                "alpha",
-            ]),
-            Some("orchestrator"),
-        )
-        .expect_err("an unknown option must be rejected");
-        assert_eq!(error, "unknown option '--nonsense'");
-    }
-
-    #[test]
-    fn global_option_hint_only_matches_global_options() {
-        for token in [
-            "--provider",
-            "--api-base",
-            "--repository",
-            "--project-id",
-            "--close-status-id",
-        ] {
-            let error = parse_with_role_env(
-                &args(&["issue", "bind", "42", token, "value"]),
-                Some("orchestrator"),
-            )
-            .expect_err("a misplaced global option must be rejected");
-            assert!(
-                error.contains("must come before the subcommand"),
-                "token {token}: {error}"
-            );
-        }
-    }
-}
+#[path = "argv_tests.rs"]
+mod tests;

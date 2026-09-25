@@ -27,8 +27,12 @@ pub(crate) mod worktree;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
-    match command::parse(&args.into_iter().collect::<Vec<_>>()) {
-        Ok(invocation) => execute(invocation),
+    let args = args.into_iter().collect::<Vec<_>>();
+    match command::parse_outcome(&args) {
+        Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
+        Ok(command::ParseOutcome::Permission { role, operation }) => {
+            permission_denial(role, operation)
+        }
         Err(message) => usage_error(&message),
     }
 }
@@ -38,8 +42,12 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
 /// process-global environment.
 #[cfg(test)]
 pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Option<&str>) -> i32 {
-    match command::parse_with_role_env(&args.into_iter().collect::<Vec<_>>(), role_env) {
-        Ok(invocation) => execute(invocation),
+    let args = args.into_iter().collect::<Vec<_>>();
+    match command::parse_outcome_with_role_env(&args, role_env) {
+        Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
+        Ok(command::ParseOutcome::Permission { role, operation }) => {
+            permission_denial(role, operation)
+        }
         Err(message) => usage_error(&message),
     }
 }
@@ -383,6 +391,21 @@ pub(crate) fn permission_error(role: Role, capability: Capability) -> i32 {
             "role":role.as_str(),
             "operation":capability.operation(),
             "message":format!("role '{}' is not allowed to perform {}", role, capability.operation())
+        }),
+        3,
+    )
+}
+
+/// Structured denial for a command the parser registry rejected. Emits the
+/// same `permission` envelope and exit code as the execution-layer gate so the
+/// failure point moves earlier without changing the observable contract.
+fn permission_denial(role: Role, operation: &str) -> i32 {
+    structured_error(
+        serde_json::json!({
+            "kind":"permission",
+            "role":role.as_str(),
+            "operation":operation,
+            "message":command::permission_message(role, operation),
         }),
         3,
     )

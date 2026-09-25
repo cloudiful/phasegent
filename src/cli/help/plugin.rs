@@ -21,17 +21,17 @@ fn plugin_help_parts() -> (String, Vec<HelpRow<'static>>) {
         (
             "install",
             "Install or update the worktree adapter (default: both scopes; idempotent)",
-            crate::policy::Capability::IssueRead,
+            &["plugin", "install"],
         ),
         (
             "status",
             "Report global and project file presence, managed-flag match, size, and mtime (read-only)",
-            crate::policy::Capability::IssueRead,
+            &["plugin", "status"],
         ),
         (
             "uninstall",
             "Remove managed adapter files; refuses files without the managed marker",
-            crate::policy::Capability::IssueRead,
+            &["plugin", "uninstall"],
         ),
     ];
     (header, rows)

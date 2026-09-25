@@ -20,7 +20,7 @@
 //! boundaries) can be asserted directly in tests.
 
 use super::common::{HelpRow, print_group_help, render_group_help};
-use crate::policy::{Capability, Role};
+use crate::policy::Role;
 
 const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--base REF] [--isolate] [--no-sync] [--format json]\n\nAcquire (or refresh) a per-(repo, issue, session) worktree lease and finish the local setup in one command. Idempotent: re-running with the same triple returns the same lease_id and updates the heartbeat (reason=\"idempotent\"). When the current checkout is clean and no other lease is active for the repo it is reused (reason=\"no_conflict\"); when it is dirty or any other active lease exists for the repo a fresh `phasegent/<issue>-<short6hex>` branch and a new worktree under ~/.cache/phasegent/worktrees/<fingerprint>/<slug> are created by default (reason=\"new_worktree\"), with the trigger explained by a stderr warning. That new default is the issue #436 behavior change: a dirty checkout or an existing lease no longer reuses the shared checkout, so a second session cannot collide with the `(repo, worktree_path)` lease index; `--isolate` remains accepted as the explicit opt-in for the same outcome. When the `git status` probe itself fails the dirty state is unknown: `--isolate` or the resolved `worktree-auto` switch creates a fresh worktree, otherwise the current checkout is reused, and both emit a stderr warning — an unknown status is never silently treated as clean, and this is the only case where the switches still change the outcome. On every successful acquire the issue is bound to the acquired checkout's branch and the managed commit hooks are installed when that checkout has a git origin, so one command leaves the checkout ready; both steps reuse the standard bind/hook helpers, never overwrite an existing binding to a different issue (the conflict is a warning naming `--replace`), and degrade to warnings that never fail the acquire. Returns compact JSON on stdout. --session resolves from the explicit flag, else PHASEGENT_SESSION_ID, else the legacy \"phasegent\" fallback (legacy only warns on stderr); --base REF requests an explicit baseline: after the idempotent home-coming for the same (repo, issue, session), a fresh acquire creates the new worktree/branch from REF instead of HEAD and does not reuse the current checkout; the ref is validated read-only before anything is created, so a bad REF fails locally and leaves no half lease or worktree behind. --format is json (the only accepted value). Orchestrator-only. No branch, lease row, or dirty worktree is ever deleted, .env / secret material is never read or copied, and the lease table is created lazily through `CREATE TABLE IF NOT EXISTS` so pre-Phase-1 databases still open. Before its own work an orchestrator session runs a repository-scoped `issue sync` pass and forwards its warnings to stderr; --no-sync skips that pass.";
 
@@ -38,10 +38,9 @@ const HEARTBEAT_HELP: &str = "Usage: worktree heartbeat --lease ID [--session SE
 
 /// Split the top-level `worktree` overview into header plus mutating and
 /// read-only row groups so the shape is testable without capturing stdout.
-/// Mutating rows use an orchestrator-only capability purely as a `role.allows`
-/// gate (the executor in `src/cli/worktree.rs` checks `Role::Orchestrator`
-/// directly); read-only rows use `RelationRead` because it matches the
-/// `status`/`list` surface exactly (orchestrator, executor, reviewer).
+/// Every row carries its registry path, so the overview and the parser share
+/// the same role gate (the execution layer also checks `Role::Orchestrator`
+/// directly as defense in depth).
 fn worktree_help_parts(
     role: Option<Role>,
 ) -> (String, Vec<HelpRow<'static>>, Vec<HelpRow<'static>>) {
@@ -53,39 +52,39 @@ fn worktree_help_parts(
         (
             "acquire",
             "Acquire or reuse a per-(repo, issue, session) lease",
-            Capability::IssueCreate,
+            &["worktree", "acquire"],
         ),
         (
             "release",
             "Flip an active lease to retained or released",
-            Capability::IssueCreate,
+            &["worktree", "release"],
         ),
         (
             "heartbeat",
             "Refresh an active lease heartbeat",
-            Capability::IssueCreate,
+            &["worktree", "heartbeat"],
         ),
         (
             "prune",
             "Prune stale leases and clean worktrees",
-            Capability::IssueCreate,
+            &["worktree", "prune"],
         ),
     ];
     let readonly: Vec<HelpRow<'static>> = vec![
         (
             "status",
             "List active leases for an issue",
-            Capability::RelationRead,
+            &["worktree", "status"],
         ),
         (
             "list",
             "List every lease for the resolved repo identity",
-            Capability::RelationRead,
+            &["worktree", "list"],
         ),
         (
             "probe",
             "Probe a checkout or lease path read-only",
-            Capability::RelationRead,
+            &["worktree", "probe"],
         ),
     ];
     (header, mutating, readonly)

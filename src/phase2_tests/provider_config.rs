@@ -90,8 +90,8 @@ fn provider_kind_local_round_trips_and_resolves_without_credentials() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation =
-        command::parse_with_role_env(&args, Some("executor")).expect("--provider local must parse");
+    let invocation = command::parse_with_role_env(&args, Some("orchestrator"))
+        .expect("--provider local must parse");
     assert_eq!(
         invocation.provider.expect("--provider must be captured"),
         ProviderKind::Local
