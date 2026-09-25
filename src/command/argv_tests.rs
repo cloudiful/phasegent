@@ -178,3 +178,39 @@ fn roleless_help_keeps_the_superset_view() {
             .unwrap_or_else(|error| panic!("help {argv:?} must route: {error}"));
     }
 }
+
+/// Phase 3: the compile-time boundary is a visibility/explanation gate, not a
+/// parser rejection. `gui` stays parseable without a role so the execution
+/// layer can return its structured not-compiled error; unknown commands and
+/// role denials keep their distinct parse errors.
+#[test]
+fn gui_feature_boundary_does_not_change_the_parser_contract() {
+    let invocation = parse_with_role_env(&args(&["gui"]), None)
+        .expect("gui must parse without a role even when the shell was not compiled");
+    assert!(invocation.role.is_none());
+    assert!(matches!(invocation.command, Command::Gui));
+
+    if !crate::command::top_level_compiled("gui") {
+        assert!(matches!(
+            crate::command::registry_unavailability(None, &["gui"]),
+            Some(crate::command::Unavailable::NotCompiled(_))
+        ));
+        assert!(
+            !crate::command::registry_allows_role(Role::Orchestrator, &["gui"]),
+            "an uncompiled command must not count as runnable for a role"
+        );
+        assert_eq!(
+            crate::command::registry_denied_operation(Role::Orchestrator, &["gui"]),
+            None,
+            "the parser must not turn a not-compiled command into a permission denial"
+        );
+    }
+
+    let unknown = parse_with_role_env(&args(&["frobnicate"]), None).unwrap_err();
+    assert_eq!(unknown, "unknown command 'frobnicate'");
+    let denied = parse_with_role_env(&args(&["issue", "sync"]), Some("executor")).unwrap_err();
+    assert_eq!(
+        denied,
+        "role 'executor' is not allowed to perform issue sync"
+    );
+}

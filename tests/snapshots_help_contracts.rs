@@ -34,9 +34,16 @@ fn help(scratch: &Scratch, role: Option<&str>, args: &[&str]) -> String {
 fn root_help_snapshot() {
     let scratch = Scratch::new("help-root");
     // The root page prints the crate version, which moves on every release
-    // bump and is not part of the help contract.
+    // bump and is not part of the help contract. The desktop entry exists only
+    // in a gui build; the feature boundary itself is asserted directly in
+    // `cli_help_progressive_disclosure`, so the snapshot stays stable across
+    // feature sets.
     let version = regex_escape(&format!("phasegent {}", env!("CARGO_PKG_VERSION")));
-    insta::with_settings!({filters => vec![(version.as_str(), "phasegent [VERSION]")]}, {
+    insta::with_settings!({filters => vec![
+        (version.as_str(), "phasegent [VERSION]"),
+        (r"(?m)^  phasegent gui\n", ""),
+        (r"(?m)^  gui +Open the desktop GUI.*\n", ""),
+    ]}, {
         assert_snapshot!("root_help", help(&scratch, None, &["--help"]));
     });
 }

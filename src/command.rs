@@ -24,9 +24,9 @@ mod project;
 mod provider_args;
 // Phase 1 command registry skeleton (issue 597): top-level parser routing
 // consults `registry::top_level`; Phase 2 wires the same tree into the
-// parser role gate, root help, and the help detail gate. The feature and
-// roleless-visibility accessors are consumed by the registry tests and by the
-// later feature-boundary phase, so they are allowed to sit unused here.
+// parser role gate, root help, and the help detail gate; Phase 3 wires the
+// compile-time feature boundary into visibility and the not-compiled help
+// result.
 #[allow(dead_code)]
 mod registry;
 mod registry_path;
@@ -52,6 +52,7 @@ pub use provider_args::{
     CommentCommand, ProjectCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand,
     WorkflowCommand,
 };
+pub(crate) use registry::Unavailable;
 pub use worktree_args::WorktreeCommand;
 
 #[derive(Debug)]
@@ -187,19 +188,27 @@ pub enum HelpTopic {
 
 /// Whether `role` may run the command at a registry `path`. Shared by the
 /// parser role gate and the help surface so visibility and acceptance can
-/// never drift apart.
+/// never drift apart. A node whose compile-time feature is absent is denied.
 pub(crate) fn registry_allows_role(role: Role, path: &[&str]) -> bool {
     registry::allows_role(role, path)
 }
 
+/// The stable reason a registry `path` is unavailable for `role`, or `None`
+/// when it is available or unknown. Used by the help gate so a feature that
+/// was not compiled and a role denial stay distinct.
+pub(crate) fn registry_unavailability(role: Option<Role>, path: &[&str]) -> Option<Unavailable> {
+    registry::unavailability(role, path)
+}
+
 /// The stable permission `operation` for a role-denied registry path, or
-/// `None` when the path is unknown or allowed.
+/// `None` when the path is unknown, allowed, or not compiled.
 pub(crate) fn registry_denied_operation(role: Role, path: &[&str]) -> Option<&'static str> {
     registry::denied_operation(role, path)
 }
 
 /// Whether a top-level command is visible for the resolved role and provider.
-/// Used by role-aware root help.
+/// Used by role-aware root help; an uncompiled feature is hidden from every
+/// view, including the role-less superset.
 pub(crate) fn top_level_visible(
     name: &str,
     role: Option<Role>,
@@ -207,6 +216,12 @@ pub(crate) fn top_level_visible(
 ) -> bool {
     registry::top_level(name)
         .is_some_and(|spec| spec.provider_scope.visible(provider) && spec.visible_for(role))
+}
+
+/// Whether this build compiled the registered top-level command. Used by root
+/// usage so it never advertises a command the binary cannot run.
+pub(crate) fn top_level_compiled(name: &str) -> bool {
+    registry::top_level(name).is_some_and(|spec| spec.is_compiled())
 }
 
 /// The root-help row summary for a registered top-level command.

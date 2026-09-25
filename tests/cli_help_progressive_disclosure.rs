@@ -684,3 +684,106 @@ fn admin_config_write_help_is_denied_for_ai_roles_and_absent_from_read_only_page
         "roleless superset must keep the admin write page:\n{superset}",
     );
 }
+
+/// Phase 3: the registry's compile-time feature boundary drives the role-less
+/// superset help too. `gui` appears in the overview and the usage block only
+/// when the desktop shell was compiled into the binary under test.
+#[test]
+fn root_help_follows_the_gui_feature_boundary() {
+    let output = run_help(&["--help"]);
+    assert!(output.status.success(), "--help exited non-zero");
+    let stdout = stdout_text(&output);
+    let compiled = cfg!(feature = "gui");
+    assert_eq!(
+        has_root_row(&stdout, "gui"),
+        compiled,
+        "root overview gui row must follow the feature boundary;\n{stdout}",
+    );
+    assert_eq!(
+        stdout.contains("phasegent gui"),
+        compiled,
+        "root usage must advertise the desktop entry only when compiled;\n{stdout}",
+    );
+    if compiled {
+        assert!(
+            stdout.contains("Open the desktop GUI (single-binary shell)"),
+            "a compiled gui row must keep its summary;\n{stdout}",
+        );
+    } else {
+        assert!(
+            !stdout.contains("Open the desktop GUI"),
+            "an uncompiled gui must not render its ordinary row;\n{stdout}",
+        );
+    }
+}
+
+/// Phase 3: a direct detail request for an uncompiled command never renders
+/// the ordinary page; it prints the same stable not-compiled message the
+/// execution layer returns. A compiled build keeps the ordinary page for every
+/// role context.
+#[test]
+fn gui_detail_help_reports_the_feature_boundary() {
+    for role in [None, Some("executor")] {
+        let output = run_help_with_role(&["--help", "gui"], role);
+        assert!(output.status.success(), "--help gui exited non-zero");
+        let stdout = stdout_text(&output);
+        if cfg!(feature = "gui") {
+            assert!(
+                stdout.contains("Usage: phasegent gui") && stdout.contains("Tauri shell"),
+                "compiled gui help must render the ordinary page for {role:?};\n{stdout}",
+            );
+        } else {
+            assert_eq!(
+                stdout.trim_end(),
+                "GUI support was not compiled into this binary; rebuild with --features gui to enable the desktop shell",
+                "uncompiled gui help must render the stable not-compiled message for {role:?}",
+            );
+            assert!(
+                !stdout.contains("Tauri shell"),
+                "uncompiled gui help must not render the ordinary page for {role:?};\n{stdout}",
+            );
+        }
+    }
+}
+
+/// Phase 3: the no-GUI runtime path stays reachable and explicit. `gui` parses
+/// without a role and the execution layer returns the structured not-compiled
+/// error, byte-identical to the help message and distinct from the
+/// unknown-command argument error.
+#[cfg(not(feature = "gui"))]
+#[test]
+fn uncompiled_gui_runtime_reports_the_structured_not_compiled_error() {
+    const MESSAGE: &str = "GUI support was not compiled into this binary; rebuild with --features gui to enable the desktop shell";
+    for role in [None, Some("executor")] {
+        let output = run_help_with_role(&["gui"], role);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "uncompiled gui must exit 1 for {role:?}; stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let envelope: serde_json::Value =
+            serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
+        assert_eq!(envelope["error"]["kind"], "gui", "stderr: {stderr}");
+        assert_eq!(envelope["error"]["message"], MESSAGE);
+    }
+
+    let help = stdout_text(&run_help(&["--help", "gui"]));
+    assert_eq!(
+        help.trim_end(),
+        MESSAGE,
+        "help and runtime must share one not-compiled contract",
+    );
+
+    let unknown = run_help_with_role(&["gui-unknown"], None);
+    assert_eq!(unknown.status.code(), Some(2));
+    let unknown_stderr = String::from_utf8_lossy(&unknown.stderr);
+    let unknown_envelope: serde_json::Value =
+        serde_json::from_str(unknown_stderr.trim()).expect("structured error envelope on stderr");
+    assert_eq!(unknown_envelope["error"]["kind"], "argument");
+    assert_eq!(
+        unknown_envelope["error"]["message"],
+        "unknown command 'gui-unknown'"
+    );
+}

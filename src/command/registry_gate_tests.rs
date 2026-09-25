@@ -260,3 +260,26 @@ fn any_role_gate_requires_a_role() {
         assert!(!access.allows_roleless(), "{path:?} must require a role");
     }
 }
+
+/// Phase 3: the compile-time feature boundary never rewrites a role gate.
+/// `gui` stays the role-open desktop entry so the parser keeps accepting it
+/// for the execution layer's structured not-compiled error, while the shared
+/// availability query reports the missing feature for every role context.
+#[test]
+fn feature_boundary_does_not_rewrite_role_gates() {
+    let gui = find(&["gui"]).expect("gui is registered");
+    assert_eq!(gui.access, RoleAccess::Open);
+    assert!(gui.access.allows_roleless());
+    if !gui.is_compiled() {
+        assert_eq!(
+            unavailability(None, &["gui"]),
+            Some(Unavailable::NotCompiled(Feature::Gui))
+        );
+        for role in ALL_ROLES {
+            assert!(
+                !allows_role(*role, &["gui"]),
+                "an uncompiled gui must not count as runnable for {role}"
+            );
+        }
+    }
+}

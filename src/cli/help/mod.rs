@@ -1,4 +1,4 @@
-use crate::command::HelpTopic;
+use crate::command::{HelpTopic, Unavailable};
 use crate::policy::Role;
 use crate::providers::ProviderKind;
 
@@ -109,15 +109,22 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
 }
 
 pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, topic: HelpTopic) {
-    // Role-aware detail/group gate: the registry is the single source of truth
-    // for which commands a role may run, so a denied topic never leaks its
-    // parameters. No role keeps the compatibility superset pages; a detail
-    // topic the registry does not describe stays with its owning module.
-    if let Some(role) = role
-        && let Some(path) = topic_registry_path(&topic)
-        && !crate::command::registry_allows_role(role, &path)
+    // Registry-driven detail/group gate: a command whose compile-time feature
+    // was not compiled and, for a resolved role, a command that role may not
+    // run never render their page. A not-compiled page prints the same stable
+    // message the execution layer returns; a role-denied page prints the
+    // existing denial line, so neither leaks its parameters. No role keeps the
+    // compatibility superset pages for compiled commands, and a detail topic
+    // the registry does not describe stays with its owning module.
+    if let Some(path) = topic_registry_path(&topic)
+        && let Some(unavailable) = crate::command::registry_unavailability(role, &path)
     {
-        println!("No command available for {}.", role.as_str());
+        match unavailable {
+            Unavailable::NotCompiled(feature) => println!("{}", feature.not_compiled_message()),
+            Unavailable::RoleDenied { role, .. } => {
+                println!("No command available for {}.", role.as_str());
+            }
+        }
         return;
     }
     match topic {

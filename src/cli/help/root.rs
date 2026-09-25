@@ -6,8 +6,24 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Root usage block. The session role comes from the managed session or
 /// `PHASEGENT_ROLE`, so the common invocation shape never carries a role
 /// flag. `--provider` is resolved from configuration and named only in the
-/// options list, so the common invocation shape never tags it on either.
-pub(crate) const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]\n  phasegent gui\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
+/// options list, so the common invocation shape never tags it on either. The
+/// `gui` entry belongs to the surface only when the desktop shell was
+/// compiled in, so root help never advertises an uncompiled command.
+const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]";
+const ROOT_USAGE_GUI: &str = "\n  phasegent gui";
+const ROOT_USAGE_ROLE: &str =
+    "\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
+
+/// The root usage block for this build, driven by the registry's feature
+/// boundary.
+fn root_usage() -> String {
+    let gui = if crate::command::top_level_compiled("gui") {
+        ROOT_USAGE_GUI
+    } else {
+        ""
+    };
+    format!("{ROOT_USAGE}{gui}{ROOT_USAGE_ROLE}")
+}
 
 /// Root-overview order (issue 597 Phase 2). Visibility comes from the command
 /// registry; this list only pins the print order and omits the retired
@@ -21,7 +37,8 @@ const ROOT_OVERVIEW: &[&str] = &[
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{ROOT_USAGE}\n\nOptions:\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:"
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{}\n\nOptions:\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:",
+        root_usage()
     );
     for &name in ROOT_OVERVIEW {
         if !crate::command::top_level_visible(name, role, provider) {
@@ -65,11 +82,12 @@ mod tests {
 
     #[test]
     fn root_usage_leads_with_the_role_less_command_shape() {
+        let usage = root_usage();
         assert!(
-            ROOT_USAGE.contains("Usage:"),
-            "root usage must label itself: {ROOT_USAGE}"
+            usage.contains("Usage:"),
+            "root usage must label itself: {usage}"
         );
-        let primary = ROOT_USAGE
+        let primary = usage
             .lines()
             .nth(1)
             .expect("root usage must carry a primary invocation line");
@@ -82,25 +100,33 @@ mod tests {
             "the primary usage line must keep the global-option/command shape: {primary}"
         );
         assert!(
-            ROOT_USAGE.contains("phasegent gui"),
-            "root usage must keep the gui entry: {ROOT_USAGE}"
+            !usage.contains("--provider"),
+            "root usage must not tag --provider onto the common invocation: {usage}"
         );
-        assert!(
-            !ROOT_USAGE.contains("--provider"),
-            "root usage must not tag --provider onto the common invocation: {ROOT_USAGE}"
+    }
+
+    /// The desktop entry is part of the usage block only when the binary
+    /// compiled the shell; the registry owns that boundary.
+    #[test]
+    fn root_usage_follows_the_gui_feature_boundary() {
+        let usage = root_usage();
+        assert_eq!(
+            usage.contains("phasegent gui"),
+            crate::command::top_level_compiled("gui"),
+            "root usage must advertise the desktop entry only when compiled: {usage}"
         );
     }
 
     #[test]
     fn root_usage_names_the_role_source() {
+        let usage = root_usage();
         assert!(
-            ROOT_USAGE.contains("Managed sessions supply the role")
-                && ROOT_USAGE.contains("PHASEGENT_ROLE"),
-            "root usage must state that managed sessions supply the role and other hosts set PHASEGENT_ROLE: {ROOT_USAGE}"
+            usage.contains("Managed sessions supply the role") && usage.contains("PHASEGENT_ROLE"),
+            "root usage must state that managed sessions supply the role and other hosts set PHASEGENT_ROLE: {usage}"
         );
         assert!(
-            !ROOT_USAGE.contains("--role"),
-            "root usage must not document a role flag: {ROOT_USAGE}"
+            !usage.contains("--role"),
+            "root usage must not document a role flag: {usage}"
         );
     }
 

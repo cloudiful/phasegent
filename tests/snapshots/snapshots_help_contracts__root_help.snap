@@ -8,7 +8,6 @@ Provider-backed workflow CLI (all roles).
 
 Usage:
   phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]
-  phasegent gui
 
 Role resolution:
   Managed sessions supply the role; other hosts set PHASEGENT_ROLE.
@@ -23,7 +22,6 @@ Options:
   -V, --version          Print version
 
 Commands:
-  gui                    Open the desktop GUI (single-binary shell)
   issue                  Issue operations
   comment                Comment operations
   admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)

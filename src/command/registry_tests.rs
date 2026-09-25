@@ -219,6 +219,7 @@ fn gui_feature_boundary_is_registered() {
     assert_eq!(Feature::Gui.name(), "gui");
     // The registry records the boundary; the build decides the answer.
     assert_eq!(Feature::Gui.is_compiled(), cfg!(feature = "gui"));
+    assert_eq!(gui.is_compiled(), Feature::Gui.is_compiled());
     every_node(|node| {
         if node.name == "gui" {
             assert_eq!(node.feature, Some(Feature::Gui));
@@ -226,14 +227,42 @@ fn gui_feature_boundary_is_registered() {
             assert_eq!(node.feature, None, "{} carries no feature", node.name);
         }
     });
+    // The feature boundary is part of visibility in every role context: an
+    // uncompiled node is hidden even from the role-less superset view and
+    // reports the stable not-compiled reason instead.
+    assert_eq!(gui.visible_for(None), Feature::Gui.is_compiled());
+    for role in ALL_ROLES {
+        assert_eq!(
+            gui.visible_for(Some(*role)),
+            Feature::Gui.is_compiled(),
+            "gui visibility for {role}"
+        );
+        assert_eq!(
+            allows_role(*role, &["gui"]),
+            Feature::Gui.is_compiled(),
+            "gui acceptance for {role}"
+        );
+    }
+    for role in [None, Some(Role::Executor), Some(Role::Admin)] {
+        assert_eq!(
+            unavailability(role, &["gui"]),
+            (!Feature::Gui.is_compiled()).then_some(Unavailable::NotCompiled(Feature::Gui)),
+            "gui availability for {role:?}"
+        );
+    }
+    assert_eq!(
+        Feature::Gui.not_compiled_message(),
+        "GUI support was not compiled into this binary; rebuild with --features gui to enable the desktop shell"
+    );
 }
 
 #[test]
-fn no_role_context_keeps_the_superset_view() {
+fn no_role_context_keeps_the_superset_view_for_compiled_nodes() {
     every_node(|node| {
-        assert!(
+        assert_eq!(
             node.visible_for(None),
-            "{} must stay visible in the no-role superset view",
+            node.is_compiled(),
+            "{} superset visibility must follow the compiled boundary",
             node.name
         );
     });
@@ -246,12 +275,49 @@ fn role_visibility_covers_at_least_the_gated_roles() {
         for role in ALL_ROLES {
             assert_eq!(
                 node.visible_for(Some(*role)),
-                node.allows_role(*role),
-                "{} visibility must follow its gate",
+                node.is_compiled() && node.allows_role(*role),
+                "{} visibility must follow its gate and feature boundary",
                 node.name
             );
         }
     });
+}
+
+#[test]
+fn compiled_nodes_stay_available_for_every_role_and_roleless_view() {
+    for (path, spec) in collect_paths() {
+        if !spec.is_compiled() {
+            continue;
+        }
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        assert_eq!(unavailability(None, &path), None, "{path:?}");
+        for role in ALL_ROLES {
+            assert_eq!(
+                allows_role(*role, &path),
+                spec.allows_role(*role),
+                "{path:?} acceptance for {role}"
+            );
+            assert_eq!(
+                denied_operation(*role, &path),
+                (!spec.allows_role(*role)).then(|| spec.operation()),
+                "{path:?} denial operation for {role}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unknown_registry_paths_stay_denied_without_a_reason() {
+    assert!(!allows_role(Role::Orchestrator, &["frobnicate"]));
+    assert_eq!(
+        unavailability(Some(Role::Orchestrator), &["frobnicate"]),
+        None
+    );
+    assert_eq!(
+        denied_operation(Role::Orchestrator, &["frobnicate"]),
+        None,
+        "an unknown path keeps the unknown-command contract; the parser handles it"
+    );
 }
 
 #[path = "registry_gate_tests.rs"]

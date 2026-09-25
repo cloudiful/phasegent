@@ -3,12 +3,14 @@
 //! provider scope so the parser, help, and execution gates share a single
 //! source instead of drifting apart.
 //!
-//! Phase 1 skeleton (issue 597): the tree describes the accepted surface
-//! exactly as the parser routes it today, but nothing is wired into help or
-//! dispatch yet, so user-visible behavior is unchanged. Top-level parser
-//! routing already consults [`top_level`], so a command cannot be accepted
-//! without a registry entry. Later phases consume [`COMMANDS`] for role-aware
-//! help, parser rejection, and MCP surface alignment.
+//! Phase 3 (issue 597) wires the compile-time feature boundary into the shared
+//! lookups: a node whose Cargo feature this binary did not compile is hidden
+//! from every help view (including the role-less superset) and is reported as
+//! not compiled instead of being rendered as an ordinary command. Top-level
+//! parser routing consumes [`top_level`], so a command cannot be accepted
+//! without a registry entry, and the parser keeps accepting a not-compiled
+//! runtime entry so the execution layer can return its structured
+//! not-compiled error.
 
 use crate::policy::{Capability, Role};
 use crate::providers::ProviderKind;
@@ -21,31 +23,7 @@ mod query;
 pub(crate) use commands::COMMANDS;
 #[cfg(test)]
 pub(crate) use query::top_level_names;
-pub(crate) use query::{allows_role, denied_operation};
-
-/// Compile-time optional capability backed by a Cargo feature. The registry
-/// records the boundary; later phases decide whether a missing feature hides
-/// a command, rejects it, or returns a structured not-compiled result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Feature {
-    /// The desktop shell behind `--features gui`.
-    Gui,
-}
-
-impl Feature {
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Gui => "gui",
-        }
-    }
-
-    /// Whether this build compiled the optional capability in.
-    pub(crate) const fn is_compiled(self) -> bool {
-        match self {
-            Self::Gui => cfg!(feature = "gui"),
-        }
-    }
-}
+pub(crate) use query::{Feature, Unavailable, allows_role, denied_operation, unavailability};
 
 /// Which role contexts may run a command or subcommand.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +128,14 @@ impl CommandSpec {
         }
     }
 
+    /// Whether this build compiled the node's optional feature (if any).
+    pub(crate) const fn is_compiled(&self) -> bool {
+        match self.feature {
+            None => true,
+            Some(feature) => feature.is_compiled(),
+        }
+    }
+
     /// Whether `role` may run this node. A group requires both its own access
     /// and at least one runnable child.
     pub(crate) const fn allows_role(&self, role: Role) -> bool {
@@ -162,8 +148,13 @@ impl CommandSpec {
         any_child_allows(self.children, role)
     }
 
-    /// Help visibility for a role context; no role keeps the superset view.
+    /// Help visibility for a role context. No role keeps the compatibility
+    /// superset view for compiled nodes; a node whose feature is absent is
+    /// hidden from every view.
     pub(crate) const fn visible_for(&self, role: Option<Role>) -> bool {
+        if !self.is_compiled() {
+            return false;
+        }
         match role {
             None => true,
             Some(role) => self.allows_role(role),
