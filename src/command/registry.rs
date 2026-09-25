@@ -136,6 +136,16 @@ impl CommandSpec {
         }
     }
 
+    /// The capability gate for this node, or `None` when it is not
+    /// capability-gated. Non-CLI surfaces (MCP) inherit the CLI's capability
+    /// from here instead of duplicating a role list.
+    pub(crate) const fn capability(&self) -> Option<Capability> {
+        match self.access {
+            RoleAccess::Capability(capability) => Some(capability),
+            _ => None,
+        }
+    }
+
     /// Whether `role` may run this node. A group requires both its own access
     /// and at least one runnable child.
     pub(crate) const fn allows_role(&self, role: Role) -> bool {
@@ -219,12 +229,6 @@ pub(super) const fn group(
 
 const ORCHESTRATOR_ONLY: &[Role] = &[Role::Orchestrator];
 const WORKTREE_READ_ROLES: &[Role] = &[Role::Orchestrator, Role::Executor, Role::Reviewer];
-const NOTIFY_ROLES: &[Role] = &[
-    Role::Orchestrator,
-    Role::Executor,
-    Role::Reviewer,
-    Role::Tester,
-];
 
 const ACCESS_ISSUE_READ: RoleAccess = RoleAccess::Capability(Capability::IssueRead);
 const ACCESS_ISSUE_SEARCH: RoleAccess = RoleAccess::Capability(Capability::IssueSearch);
@@ -246,7 +250,9 @@ const ACCESS_REPO_CREATE: RoleAccess = RoleAccess::Capability(Capability::RepoCr
 const ACCESS_ORCHESTRATOR: RoleAccess = RoleAccess::Only(ORCHESTRATOR_ONLY);
 const ACCESS_WORKTREE_READ: RoleAccess = RoleAccess::Only(WORKTREE_READ_ROLES);
 const ACCESS_BIND: RoleAccess = RoleAccess::RolelessOrOnly(ORCHESTRATOR_ONLY);
-const ACCESS_NOTIFY: RoleAccess = RoleAccess::Only(NOTIFY_ROLES);
+// `notify send` is gated by the shared `Capability::Notify` policy row, so the
+// CLI parser and the MCP tool surface can never drift from `Role::allows`.
+const ACCESS_NOTIFY: RoleAccess = RoleAccess::Capability(Capability::Notify);
 
 const fn any_child_allows(children: &[CommandSpec], role: Role) -> bool {
     let mut index = 0;
@@ -284,6 +290,13 @@ pub(crate) fn find(path: &[&str]) -> Option<&'static CommandSpec> {
         node = node.children.iter().find(|spec| spec.name == *name)?;
     }
     Some(node)
+}
+
+/// The capability gate for a registry `path`, or `None` when the path is
+/// unknown or not capability-gated. Shared by non-CLI surfaces (MCP) that must
+/// inherit the CLI's gate instead of duplicating a role list.
+pub(crate) fn capability(path: &[&str]) -> Option<Capability> {
+    find(path).and_then(CommandSpec::capability)
 }
 
 #[cfg(test)]

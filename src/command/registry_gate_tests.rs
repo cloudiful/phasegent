@@ -4,7 +4,7 @@
 
 use super::super::*;
 use super::{ALL_ROLES, collect_paths, sorted_paths_matching};
-use crate::policy::Role;
+use crate::policy::{Capability, Role};
 
 const EXPECTED_ORCHESTRATOR_ONLY: &[&str] = &[
     "issue sync",
@@ -129,16 +129,24 @@ fn worktree_read_gate_covers_every_descriptor() {
 #[test]
 fn notify_gate_covers_every_descriptor() {
     assert_eq!(
-        sorted_paths_matching(|spec| spec.access == RoleAccess::Only(NOTIFY_ROLES)),
+        sorted_paths_matching(|spec| matches!(
+            spec.access,
+            RoleAccess::Capability(Capability::Notify)
+        )),
         vec!["notify send".to_owned()]
     );
     let access = find(&["notify", "send"]).unwrap().access;
-    assert_eq!(access, RoleAccess::Only(NOTIFY_ROLES));
+    assert_eq!(access, RoleAccess::Capability(Capability::Notify));
     for role in ALL_ROLES {
         assert_eq!(
             access.allows_role(*role),
+            role.allows(Capability::Notify),
+            "notify send gate must mirror Role::allows for {role}"
+        );
+        assert_eq!(
             *role != Role::Admin,
-            "notify send gate for {role}"
+            role.allows(Capability::Notify),
+            "notify send must stay denied for admin only: {role}"
         );
     }
     assert!(!access.allows_roleless());

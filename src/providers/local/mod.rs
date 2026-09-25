@@ -93,7 +93,8 @@ impl LocalProvider {
             | Capability::RepoCreate
             | Capability::RelationRead
             | Capability::RelationCreate
-            | Capability::RelationDelete => false,
+            | Capability::RelationDelete
+            | Capability::Notify => false,
         }
     }
 }

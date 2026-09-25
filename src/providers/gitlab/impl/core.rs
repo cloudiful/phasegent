@@ -120,6 +120,9 @@ impl GitlabProvider {
             | Capability::IssueUpdateBody
             | Capability::IssueClose => true,
             Capability::IssueAttachmentUpload => false,
+            // Notify is not a provider operation; it never routes through a
+            // provider on any surface.
+            Capability::Notify => false,
             Capability::CommentCreate | Capability::CommentRead | Capability::CommentFindMarker => {
                 true
             }

@@ -7,14 +7,20 @@
 
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock, InitializeRequestParams, InitializeResult},
+    handler::server::{tool::ToolCallContext, wrapper::Parameters},
+    model::{
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
+        ProtocolVersion, ResultType, Tool,
+    },
     service::RequestContext,
     tool, tool_handler, tool_router,
 };
 
 use crate::policy::{Capability, Role};
 use crate::providers::{IssueProvider, ProviderDispatcher, ProviderKind};
+
+use super::tool_registry::{self, McpToolSpec};
 
 /// Server-side invocation context. Captured once at `mcp serve`
 /// startup from `PHASEGENT_ROLE` and the provider flags; never taken
@@ -81,6 +87,29 @@ impl PhasegentMcpServer {
             self.config.close_status_id.as_deref(),
         )
         .map_err(|error| internal_error(&error.to_string()))
+    }
+
+    /// Role gate for one registered tool. The capability comes from the shared
+    /// CLI registry via [`McpToolSpec::capability`], so every handler and the
+    /// advertised `capabilities` list share one descriptor table instead of a
+    /// per-handler role list.
+    fn require_tool(&self, tool: McpToolSpec) -> Result<(), McpError> {
+        match tool.capability() {
+            Some(capability) if !self.config.role.allows(capability) => {
+                Err(permission_error(self.config.role, capability.operation()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether the startup role may see and call the named tool. Unknown names
+    /// stay `false`, so the protocol surface filters them out while
+    /// `tools/call` keeps the router's not-found contract for a name no
+    /// handler is registered for.
+    fn tool_allowed_for_role(&self, name: &str) -> bool {
+        tool_registry::TOOLS
+            .iter()
+            .any(|tool| tool.name == name && tool.allows_role(self.config.role))
     }
 }
 
@@ -158,12 +187,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<IssueGetParams>,
     ) -> Result<CallToolResult, McpError> {
-        if !self.config.role.allows(Capability::IssueRead) {
-            return Err(permission_error(
-                self.config.role,
-                Capability::IssueRead.operation(),
-            ));
-        }
+        self.require_tool(tool_registry::ISSUE_GET)?;
         if params.number == 0 {
             return Err(invalid_params("issue_get number must be greater than zero"));
         }
@@ -188,12 +212,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<IssueSearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        if !self.config.role.allows(Capability::IssueSearch) {
-            return Err(permission_error(
-                self.config.role,
-                Capability::IssueSearch.operation(),
-            ));
-        }
+        self.require_tool(tool_registry::ISSUE_SEARCH)?;
         let options = crate::providers::IssueSearchOptions {
             query: params.query.clone(),
             state: params.state.clone().unwrap_or_else(|| "open".to_owned()),
@@ -244,12 +263,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<StatusNextParams>,
     ) -> Result<CallToolResult, McpError> {
-        if !self.config.role.allows(Capability::IssueStatusRead) {
-            return Err(permission_error(
-                self.config.role,
-                Capability::IssueStatusRead.operation(),
-            ));
-        }
+        self.require_tool(tool_registry::STATUS_NEXT)?;
         if params.number == 0 {
             return Err(invalid_params(
                 "status_next number must be greater than zero",
@@ -273,12 +287,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<CommentCreateParams>,
     ) -> Result<CallToolResult, McpError> {
-        if !self.config.role.allows(Capability::CommentCreate) {
-            return Err(permission_error(
-                self.config.role,
-                Capability::CommentCreate.operation(),
-            ));
-        }
+        self.require_tool(tool_registry::COMMENT_CREATE)?;
         if self.config.role != Role::Orchestrator && !self.config.authorized {
             return Err(McpError::internal_error(
                 "comment create requires server-side --authorized for this role".to_owned(),
@@ -317,18 +326,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<NotifySendParams>,
     ) -> Result<CallToolResult, McpError> {
-        if !matches!(
-            self.config.role,
-            Role::Orchestrator | Role::Executor | Role::Reviewer | Role::Tester
-        ) {
-            return Err(McpError::internal_error(
-                format!(
-                    "role '{}' is not allowed to perform notify send",
-                    self.config.role.as_str()
-                ),
-                None,
-            ));
-        }
+        self.require_tool(tool_registry::NOTIFY_SEND)?;
         let event = crate::notifications::NotificationEvent::parse(&params.event)
             .map_err(|message| invalid_params(&message))?;
         if params.title.trim().is_empty() {
@@ -380,31 +378,80 @@ impl ServerHandler for PhasegentMcpServer {
         context.peer.set_peer_info(request.clone());
         self.negotiate_initialize(&request)
     }
+
+    /// Protocol-level `tools/list`. The rmcp default advertises every routed
+    /// tool; this filters the router descriptors through the shared descriptor
+    /// table and its registry-backed role gate, so a client sees the same
+    /// allowlist as the `capabilities` payload and role-specific `--help mcp`.
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
+        Ok(ListToolsResult {
+            result_type: Some(ResultType::COMPLETE),
+            tools: Self::tool_router()
+                .list_all()
+                .into_iter()
+                .filter(|tool| self.tool_allowed_for_role(tool.name.as_ref()))
+                .collect(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(CacheScope::Public),
+        })
+    }
+
+    /// Protocol-level `tools/call`. An unadvertised tool is rejected before
+    /// the router deserializes arguments or any handler or provider runs, so
+    /// the protocol surface never dispatches a tool the startup role may not
+    /// call; the per-handler [`PhasegentMcpServer::require_tool`] gates stay
+    /// as defense in depth, and a name with no route still resolves through
+    /// the router's not-found path.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        if let Some(denied) = tool_registry::TOOLS
+            .iter()
+            .find(|tool| tool.name == request.name.as_ref())
+            .filter(|tool| !tool.allows_role(self.config.role))
+        {
+            let operation = denied
+                .capability()
+                .expect("a role-denied tool is capability-gated")
+                .operation();
+            return Err(permission_error(self.config.role, operation));
+        }
+        let call = ToolCallContext::new(self, request, context);
+        Self::tool_router().call(call).await
+    }
+
+    /// Tool definitions resolve through the same allowlist, so the HTTP
+    /// transport's `Mcp-Param-*` schema lookups never resolve an unadvertised
+    /// tool; an unknown name keeps returning `None`.
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        if !self.tool_allowed_for_role(name) {
+            return None;
+        }
+        Self::tool_router().get(name).cloned()
+    }
 }
 
-/// Tools allowed for a role. Mirrors CLI policy without exposing
-/// `status_advance`, timers, or role elevation.
+/// Tools allowed for a role, derived from the shared MCP descriptor table and
+/// the registry-backed capability gates. Mirrors CLI policy without exposing
+/// `status_advance`, timers, worktree lease mutations, admin, issue writes,
+/// comment reads, hooks, or plugin operations.
 pub fn allowed_tools(role: Role) -> Vec<&'static str> {
-    let mut tools = vec!["capabilities"];
-    if role.allows(Capability::IssueRead) {
-        tools.push("issue_get");
-    }
-    if role.allows(Capability::IssueSearch) {
-        tools.push("issue_search");
-    }
-    if role.allows(Capability::IssueStatusRead) {
-        tools.push("status_next");
-    }
-    if role.allows(Capability::CommentCreate) {
-        tools.push("comment_create");
-    }
-    if matches!(
-        role,
-        Role::Orchestrator | Role::Executor | Role::Reviewer | Role::Tester
-    ) {
-        tools.push("notify_send");
-    }
-    tools
+    tool_registry::TOOLS
+        .iter()
+        .filter(|tool| tool.allows_role(role))
+        .map(|tool| tool.name)
+        .collect()
 }
 
 /// MCP `phase` metadata must never carry a raw notify setting name.
@@ -519,69 +566,5 @@ fn permission_error(role: Role, operation: &str) -> McpError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn allowed_tools_never_expose_excluded_operations() {
-        for role in [
-            Role::Admin,
-            Role::Orchestrator,
-            Role::Executor,
-            Role::Reviewer,
-            Role::Tester,
-        ] {
-            let tools = allowed_tools(role);
-            for forbidden in ["status_advance", "timer_start", "timer_finish", "role"] {
-                assert!(
-                    !tools.iter().any(|tool| tool.contains(forbidden)),
-                    "role {} exposed {forbidden}: {tools:?}",
-                    role.as_str()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn executor_tools_match_contracted_scope() {
-        // Executor policy allows read/get but not search; the tool
-        // list mirrors CLI policy exactly.
-        let tools = allowed_tools(Role::Executor);
-        for expected in [
-            "capabilities",
-            "issue_get",
-            "status_next",
-            "comment_create",
-            "notify_send",
-        ] {
-            assert!(tools.contains(&expected), "missing {expected}: {tools:?}");
-        }
-        assert!(
-            !tools.contains(&"issue_search"),
-            "executor must not expose issue_search per policy: {tools:?}"
-        );
-    }
-
-    #[test]
-    fn orchestrator_tools_include_search() {
-        let tools = allowed_tools(Role::Orchestrator);
-        for expected in [
-            "capabilities",
-            "issue_get",
-            "issue_search",
-            "status_next",
-            "comment_create",
-            "notify_send",
-        ] {
-            assert!(tools.contains(&expected), "missing {expected}: {tools:?}");
-        }
-    }
-
-    #[test]
-    fn notify_phase_rejects_setting_and_secret_names() {
-        assert!(reject_notify_setting_phase("mcp-phase").is_ok());
-        assert!(reject_notify_setting_phase("").is_ok());
-        assert!(reject_notify_setting_phase("PHASEGENT_NOTIFY_CHANNEL").is_err());
-        assert!(reject_notify_setting_phase("PHASEGENT_NOTIFY_WEBHOOK_TOKEN").is_err());
-    }
-}
+#[path = "tool_gate_tests.rs"]
+mod tests;

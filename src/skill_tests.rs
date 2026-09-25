@@ -172,6 +172,7 @@ fn role_table_agrees_with_policy() {
         ("CommentCreate", Capability::CommentCreate),
         ("CommentRead", Capability::CommentRead),
         ("CommentFindMarker", Capability::CommentFindMarker),
+        ("Notify", Capability::Notify),
         ("ProjectRead", Capability::ProjectRead),
         ("ProjectCreate", Capability::ProjectCreate),
         ("IssueStatusRead", Capability::IssueStatusRead),

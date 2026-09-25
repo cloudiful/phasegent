@@ -40,7 +40,7 @@ impl RedmineProvider {
             Capability::RelationRead | Capability::RelationCreate | Capability::RelationDelete => {
                 true
             }
-            Capability::RepoCreate => false,
+            Capability::RepoCreate | Capability::Notify => false,
         }
     }
 }

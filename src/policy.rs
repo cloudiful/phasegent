@@ -46,6 +46,7 @@ impl Role {
                     | Capability::IssueStatusRead
                     | Capability::VersionRead
                     | Capability::RelationRead
+                    | Capability::Notify
             ),
             Self::Reviewer => matches!(
                 capability,
@@ -57,6 +58,7 @@ impl Role {
                     | Capability::IssueStatusRead
                     | Capability::VersionRead
                     | Capability::RelationRead
+                    | Capability::Notify
             ),
             Self::Tester => matches!(
                 capability,
@@ -65,6 +67,7 @@ impl Role {
                     | Capability::CommentFindMarker
                     | Capability::CommentCreate
                     | Capability::IssueAttachmentUpload
+                    | Capability::Notify
             ),
         }
     }
@@ -105,6 +108,10 @@ pub enum Capability {
     CommentCreate,
     CommentRead,
     CommentFindMarker,
+    /// Deliver one bounded manual agent notification (`notify send`). Not a
+    /// provider operation: the CLI and MCP paths both gate on it. Admin is
+    /// excluded because it only bootstraps.
+    Notify,
     ProjectRead,
     ProjectCreate,
     IssueStatusRead,
@@ -129,6 +136,7 @@ impl Capability {
             Self::CommentCreate => "Create one authorized comment",
             Self::CommentRead => "Read issue comments",
             Self::CommentFindMarker => "Find a comment by marker",
+            Self::Notify => "Send one bounded agent notification",
             Self::ProjectRead => "List projects (Redmine, GitLab, or local)",
             Self::ProjectCreate => {
                 "Create a project (Redmine or local; Forgejo/GitLab use `repo create`)"
@@ -153,6 +161,7 @@ impl Capability {
             Self::CommentCreate => "comment create",
             Self::CommentRead => "comment get",
             Self::CommentFindMarker => "comment find-marker",
+            Self::Notify => "notify send",
             Self::ProjectRead => "project list",
             Self::ProjectCreate => "project create",
             Self::IssueStatusRead => "issue status list",

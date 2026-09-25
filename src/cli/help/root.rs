@@ -59,9 +59,33 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
 /// needs no new help file; dispatched from the help router.
 pub(crate) fn print_mcp_help(role: Option<Role>) {
     println!(
-        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: capabilities, issue_get, issue_search, status_next, comment_create (needs server-side --authorized unless orchestrator), notify_send. Excluded: status_advance, timer start/finish, role elevation. The server resolves its role from PHASEGENT_ROLE and its provider from the provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
-        role.map_or("all roles", Role::as_str)
+        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: {}. Excluded: status_advance, timer start/finish, role elevation. The server resolves its role from PHASEGENT_ROLE and its provider from the provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
+        role.map_or("all roles", Role::as_str),
+        mcp_tools_line(role),
     );
+}
+
+/// The tool list for one help context. No role keeps the compatibility union
+/// (every registered tool); a resolved role sees only the tools its registry
+/// gate allows, matching the `capabilities` tool and the handler gates.
+fn mcp_tools_line(role: Option<Role>) -> String {
+    let names: Vec<&'static str> = match role {
+        None => crate::mcp::tool_registry::TOOLS
+            .iter()
+            .map(|tool| tool.name)
+            .collect(),
+        Some(role) => crate::mcp::tools::allowed_tools(role),
+    };
+    names
+        .into_iter()
+        .map(|name| match name {
+            "comment_create" => {
+                "comment_create (needs server-side --authorized unless orchestrator)"
+            }
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(crate) fn print_mcp_command_help(role: Option<Role>, command: &str) {

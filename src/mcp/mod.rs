@@ -7,4 +7,5 @@
 //! axum on `/mcp`; the sync CLI stays sync through scoped runtimes.
 
 pub mod server;
+pub mod tool_registry;
 pub mod tools;

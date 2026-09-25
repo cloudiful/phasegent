@@ -27,6 +27,7 @@ const ALL_CAPABILITIES: &[Capability] = &[
     Capability::CommentCreate,
     Capability::CommentRead,
     Capability::CommentFindMarker,
+    Capability::Notify,
     Capability::ProjectRead,
     Capability::ProjectCreate,
     Capability::IssueStatusRead,

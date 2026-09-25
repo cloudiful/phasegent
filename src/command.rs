@@ -1,4 +1,4 @@
-use crate::policy::Role;
+use crate::policy::{Capability, Role};
 use crate::providers::ProviderKind;
 
 pub use crate::hooks::HooksCommand;
@@ -204,6 +204,13 @@ pub(crate) fn registry_unavailability(role: Option<Role>, path: &[&str]) -> Opti
 /// `None` when the path is unknown, allowed, or not compiled.
 pub(crate) fn registry_denied_operation(role: Role, path: &[&str]) -> Option<&'static str> {
     registry::denied_operation(role, path)
+}
+
+/// The capability gate for a registry `path`, or `None` when the path is
+/// unknown or not capability-gated. Non-CLI surfaces (MCP tools) resolve their
+/// role gate from here so they cannot drift from the CLI's capability policy.
+pub(crate) fn registry_capability(path: &[&str]) -> Option<Capability> {
+    registry::capability(path)
 }
 
 /// Whether a top-level command is visible for the resolved role and provider.

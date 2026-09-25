@@ -1,14 +1,13 @@
 use crate::command::NotifyCommand;
-use crate::policy::Role;
+use crate::policy::{Capability, Role};
 
 pub(crate) fn execute_notify(role_value: Option<Role>, command: NotifyCommand) -> i32 {
     let role = super::required_role(role_value);
-    // Notify send is available to the workflow roles that produce
-    // progress; admin stays out because it only bootstraps.
-    if !matches!(
-        role,
-        Role::Orchestrator | Role::Executor | Role::Reviewer | Role::Tester
-    ) {
+    // Notify send is available to the workflow roles that produce progress;
+    // admin stays out because it only bootstraps. The gate is the shared
+    // `Capability::Notify` row the registry parser and the MCP `notify_send`
+    // handler also resolve, so no surface carries its own role list.
+    if !role.allows(Capability::Notify) {
         return super::structured_error(
             serde_json::json!({
                 "kind": "permission",

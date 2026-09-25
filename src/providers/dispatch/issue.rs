@@ -47,6 +47,7 @@ impl IssueProvider for ForgejoProvider {
             | Capability::IssueUpdateBody
             | Capability::IssueClose => self.capabilities().issue_lifecycle,
             Capability::IssueAttachmentUpload => false,
+            Capability::Notify => false,
             Capability::RepoCreate => self.capabilities().repository_creation,
             Capability::CommentCreate | Capability::CommentRead | Capability::CommentFindMarker => {
                 self.capabilities().comments

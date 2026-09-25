@@ -88,8 +88,9 @@ The role capability matrix below is the human-readable mirror of `src/policy.rs`
   automatically — child roles never call status; the orchestrator closes the
   issue at finish.
 - `executor`/`reviewer` are read/comment plus project/status/version/
-  relation-read; `tester` is issue-read plus comment read/find/create plus
-  attachment upload; `admin` is bootstrap-only.
+  relation-read and `notify send`; `tester` is issue-read, comment
+  read/find/create, attachment upload, and `notify send`; `admin` is
+  bootstrap-only.
 - Capability is how-much-can-it-do, not who; credentials stay role-scoped and
   least-privilege, and a role never claims another's.
 
@@ -114,6 +115,7 @@ Legend: `✓` allowed, `—` denied.
 | CommentCreate | comment create | — | ✓ | ✓ | ✓ | ✓ |
 | CommentRead | comment get | — | ✓ | ✓ | ✓ | ✓ |
 | CommentFindMarker | comment find-marker | — | ✓ | ✓ | ✓ | ✓ |
+| Notify | notify send | — | ✓ | ✓ | ✓ | ✓ |
 | ProjectRead | project list | ✓ | ✓ | ✓ | ✓ | — |
 | ProjectCreate | project create | ✓ | ✓ | — | — | — |
 | IssueStatusRead | issue status list | ✓ | ✓ | ✓ | ✓ | — |
@@ -131,13 +133,12 @@ Legend: `✓` allowed, `—` denied.
 - **admin** is bootstrap-only: project list/create, status list/next, version
   list, and `workflow bootstrap`.
 - **executor** and **reviewer** share the read/comment/project/status/version/
-  relation-read surface; executor alone can write to its own audit note, but
-  both are barred from issue write/close/search, relation write, repo create,
-  and timer; status flows automatically (command-level gates in
-  *Command contract*).
-- **tester** is comment + attachment read/write surface only: issue read,
-  comment read/find/create, and attachment upload. It never sees project,
-  status, version, or relation data.
+  relation-read surface and `notify send`; executor alone can write to its own
+  audit note, but both are barred from issue write/close/search, relation
+  write, repo create, and timer; status flows automatically (command-level
+  gates in *Command contract*).
+- **tester** is issue-read plus comment read/find/create, attachment upload,
+  and `notify send`. It never sees project, status, version, or relation data.
 - Capability-level entries above are authoritative; command-level gates such as
   `status transition`, `timer *`, and `workflow bootstrap` are keyed
   to the role, not a capability, so they are listed in *Command contract*.
@@ -192,7 +193,7 @@ token; agent permission rules deny that single prefix.
 | `plugin install/status/uninstall` | no role gate | any | worktree adapter for the OpenCode host (`$XDG_CONFIG_HOME/opencode/plugins/`, project slot `.opencode/plugins/`); managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
 | `admin workflow bootstrap` | role == admin | admin only | Redmine-only; needs only the admin key |
 | `repo create` | RepoCreate | orchestrator only | Forgejo/GitLab; `--private` required; Redmine/local reject as not-supported |
-| `notify send` | role gate | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |
+| `notify send` | Notify | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |
 | `mcp serve` | startup role | role-scoped toolset | tools: `capabilities`, `issue_get`, `issue_search`, `status_next`, `comment_create` (needs server-side `--authorized` unless orchestrator), `notify_send`; excludes status writes (`status transition` is CLI-only), timer start/finish, role elevation |
 | `admin auth setup` | all roles | admin, orchestrator, executor, reviewer, tester | credentials never a CLI value |
 | `config show` / `config provider get` | machine-wide | any (no role gate) | redacted snapshot; secrets as presence/length/fingerprint, never values |

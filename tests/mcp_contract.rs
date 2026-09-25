@@ -299,6 +299,131 @@ fn mcp_help_documents_contracted_scope_and_exclusions() {
     );
 }
 
+/// Phase 4: `--help mcp` renders the MCP tool descriptor table filtered by the
+/// resolved role, keeps the compatibility union for the role-less view, and
+/// preserves the exclusion wording.
+#[test]
+fn mcp_help_tool_list_follows_the_role_gate() {
+    let scratch = scratch_db();
+    let union = stdout_text(&run_phasegent(&scratch, &["--help", "mcp"]));
+    for tool in [
+        "capabilities",
+        "issue_get",
+        "issue_search",
+        "status_next",
+        "comment_create",
+        "notify_send",
+    ] {
+        assert!(
+            union.contains(tool),
+            "role-less mcp help must keep the union; missing {tool}:\n{union}"
+        );
+    }
+
+    let expected: &[(&str, &[&str], &[&str])] = &[
+        (
+            "orchestrator",
+            &[
+                "capabilities",
+                "issue_get",
+                "issue_search",
+                "status_next",
+                "comment_create",
+                "notify_send",
+            ],
+            &[],
+        ),
+        (
+            "executor",
+            &[
+                "capabilities",
+                "issue_get",
+                "status_next",
+                "comment_create",
+                "notify_send",
+            ],
+            &["issue_search"],
+        ),
+        (
+            "reviewer",
+            &[
+                "capabilities",
+                "issue_get",
+                "status_next",
+                "comment_create",
+                "notify_send",
+            ],
+            &["issue_search"],
+        ),
+        (
+            "tester",
+            &["capabilities", "issue_get", "comment_create", "notify_send"],
+            &["issue_search", "status_next"],
+        ),
+        (
+            "admin",
+            &["capabilities", "status_next"],
+            &["issue_get", "issue_search", "comment_create", "notify_send"],
+        ),
+    ];
+    for (role, present, absent) in expected {
+        let output = run_phasegent_as(&scratch, role, &["--help", "mcp"]);
+        assert!(
+            output.status.success(),
+            "{role} --help mcp exited non-zero: {}",
+            stderr_text(&output)
+        );
+        let stdout = stdout_text(&output);
+        for tool in *present {
+            assert!(
+                stdout.contains(tool),
+                "{role} mcp help must list {tool}:\n{stdout}"
+            );
+        }
+        for tool in *absent {
+            assert!(
+                !stdout.contains(tool),
+                "{role} mcp help must not list {tool}:\n{stdout}"
+            );
+        }
+        assert!(
+            stdout.contains("Excluded: status_advance, timer start/finish, role elevation."),
+            "{role} mcp help must keep the exclusion wording:\n{stdout}"
+        );
+    }
+}
+
+/// Phase 4: `notify send` is gated by the shared `Capability::Notify` policy
+/// row on the CLI, mirroring the MCP `notify_send` gate. Admin is denied at
+/// parse time with the stable structured permission envelope before any
+/// provider or storage access; the four workflow roles stay accepted.
+#[test]
+fn notify_send_role_gate_matches_the_notify_capability() {
+    let scratch = scratch_db();
+    let args = ["notify", "send", "--event", "completion", "--title", "hi"];
+    for role in ["orchestrator", "executor", "reviewer", "tester"] {
+        let output = run_phasegent_as(&scratch, role, &args);
+        assert!(
+            output.status.success(),
+            "{role} notify send must stay accepted; stderr={}",
+            stderr_text(&output),
+        );
+    }
+
+    let denied = run_phasegent_as(&scratch, "admin", &args);
+    assert_eq!(
+        denied.status.code(),
+        Some(3),
+        "admin notify send must be a parse-time permission denial",
+    );
+    let stderr = stderr_text(&denied);
+    let envelope: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
+    assert_eq!(envelope["error"]["kind"], "permission", "stderr={stderr}");
+    assert_eq!(envelope["error"]["role"], "admin");
+    assert_eq!(envelope["error"]["operation"], "notify send");
+}
+
 #[test]
 fn mcp_serve_requires_role() {
     let scratch = scratch_db();
