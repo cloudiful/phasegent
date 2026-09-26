@@ -26,7 +26,9 @@
 //!   register a slash command: the live v2.0.11 command draft only
 //!   accepts an Effect-returning `execute`, which a promise plugin
 //!   cannot build. The embedded skill body must also match
-//!   `skills/phasegent/SKILL.md` byte-for-byte (issue #544).
+//!   `skills/phasegent/SKILL.md` byte-for-byte (issue #544), and the
+//!   three embedded role prompts must match `skills/phasegent/SKILL.<role>.md`
+//!   (issue #602).
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -818,20 +820,20 @@ fn adapter_template_registers_embedded_skill_without_a_command() {
     assert!(source.contains("host skill draft exposes no add"));
 }
 
-/// Extract the JS template literal assigned to `SKILL_CONTENT` and resolve its
-/// escapes back to the bytes the adapter hands the host, so the embedded skill
-/// can be compared with the repository copy (issue #544).
+/// Extract the JS template literal assigned to `declaration` and resolve its
+/// escapes back to the bytes the adapter hands the host, so an embedded prompt
+/// can be compared with the repository copy (issue #544; issue #602 extends the
+/// same contract to the three role skills).
 ///
-/// Only the escapes the skill text actually needs are resolved: `` \` ``,
+/// Only the escapes the prompt text actually needs are resolved: `` \` ``,
 /// `\\` and `\$`. Any other backslash pair keeps both characters, so an
 /// unsupported escape shows up as a difference instead of being dropped.
-fn embedded_skill() -> String {
-    const DECLARATION: &str = "const SKILL_CONTENT = `";
+fn embedded_prompt(declaration: &str) -> String {
     let source = adapter_source();
     let start = source
-        .find(DECLARATION)
-        .expect("the adapter must declare SKILL_CONTENT")
-        + DECLARATION.len();
+        .find(declaration)
+        .unwrap_or_else(|| panic!("the adapter must declare {declaration}"))
+        + declaration.len();
     let body = &source[start..];
     let mut resolved = String::new();
     let mut chars = body.char_indices();
@@ -845,7 +847,7 @@ fn embedded_skill() -> String {
             '\\' => {
                 let escaped = chars
                     .next()
-                    .expect("SKILL_CONTENT must not end inside an escape")
+                    .expect("an embedded prompt must not end inside an escape")
                     .1;
                 match escaped {
                     '`' => resolved.push('`'),
@@ -860,11 +862,16 @@ fn embedded_skill() -> String {
             other => resolved.push(other),
         }
     }
-    let end = end.expect("SKILL_CONTENT must close its template literal");
+    let end = end.expect("the embedded prompt must close its template literal");
     assert!(
         body[end..].starts_with("`;"),
-        "SKILL_CONTENT must be terminated by a lone backtick + semicolon"
+        "an embedded prompt must be terminated by a lone backtick + semicolon"
     );
+    resolved
+}
+
+fn embedded_skill() -> String {
+    let resolved = embedded_prompt("const SKILL_CONTENT = `");
     assert!(
         resolved.contains("# Phasegent") && resolved.contains("## Marker protocol"),
         "the extracted SKILL_CONTENT must carry the skill body"
@@ -888,6 +895,40 @@ fn embedded_skill_matches_the_repository_copy() {
          editing one means re-escaping the other in the same change \
          (改一份必须同步另一份)"
     );
+}
+
+/// Issue #602 keeps the role prompts slim, so the embedded mirror matters just
+/// as much for them: every `SKILL.<role>.md` the adapter inlines must equal the
+/// repository copy byte-for-byte, and still open with its frontmatter.
+#[test]
+fn embedded_role_skills_match_the_repository_copies() {
+    let _lock = lock_workflow_tests();
+    for (declaration, on_disk) in [
+        (
+            "const SKILL_ORCHESTRATOR_CONTENT = `",
+            include_str!("../skills/phasegent/SKILL.orchestrator.md"),
+        ),
+        (
+            "const SKILL_EXECUTOR_CONTENT = `",
+            include_str!("../skills/phasegent/SKILL.executor.md"),
+        ),
+        (
+            "const SKILL_REVIEWER_CONTENT = `",
+            include_str!("../skills/phasegent/SKILL.reviewer.md"),
+        ),
+    ] {
+        let embedded = embedded_prompt(declaration);
+        assert!(
+            embedded.starts_with("---\n"),
+            "the embedded prompt for {declaration} must keep its frontmatter"
+        );
+        assert_eq!(
+            embedded, on_disk,
+            "the adapter's {declaration} and the repository role skill must stay \
+             byte-for-byte identical; editing one means re-escaping the other in the \
+             same change (改一份必须同步另一份)"
+        );
+    }
 }
 
 #[test]

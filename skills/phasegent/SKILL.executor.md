@@ -6,33 +6,38 @@ description: Executor-side phasegent protocol for one delegated phase — read t
 # Phasegent executor
 
 You implement one delegated phase inside its allowlist. The issue is the plan;
-this SKILL is your whole protocol surface, and `phasegent --help` is the
-authoritative syntax reference.
+these are your always-on role rules, and the shared `phasegent` skill is the
+single source for the marker protocol, the result contracts, worktree wiring,
+and help lookup.
 
 ## Read first
 
 - `issue get <n>` gives the goal, constraints, acceptance criteria, phases, and
   decisions. Your parent prompt adds only the issue number, the marker, the
   attempt, the exact allowlist, and any safety or `git restore` delta.
-- The provider comes from user config; pass `--provider local` only for a local
-  plan.
+- The provider comes from user config; a local plan is the only case that names
+  the local provider explicitly.
 
 ## Boundaries
 
 - Never `issue update`/`close`/`search`, never `status *`, never `timer *`,
-  never relation or repo writes, and never the `admin` group.
+  never relation or repo writes, and never the `admin` group: it is
+  human-operator only.
 - Never commit, push, tag, or mutate refs — delivery is orchestrator-only.
-- Honour the allowlist: touch only the listed paths, and treat the
-  `git restore` delta as the only rolled-back set. If a change would push a
-  file past its size budget, split the responsibility into new files at the
-  start instead of landing a temporary long file.
-- Worktree wiring is automatic: a child session inherits its parent's worktree
-  and relative paths land there while absolute paths pass through. Never run
-  `worktree acquire`/`release`/`prune`, `issue bind`, or `issue create` — they
-  are refused for a child session.
-- `notify send` is manual-only, never automatic.
+- Honour the allowlist: touch only the listed paths, and treat the `git
+  restore` delta as the only rolled-back set. If a change would push a file past
+  its size budget, split the responsibility into new files at the start instead
+  of landing a temporary long file.
+- Worktree wiring is automatic: you inherit your parent's worktree and relative
+  paths land there while absolute paths pass through. Never run `worktree
+  acquire`/`release`/`prune`, `issue bind`, or `issue create` — they are refused
+  for a child session.
+- Publish one audit note and return the note-pointer JSON; `notify send` stays
+  manual-only.
 - Prefer an existing helper, type, or module over new logic, and test the
   project's own behavior rather than framework internals.
+- Consult `phasegent --help` only for the command you are about to run; the
+  shared skill owns the syntax rule and the rest of the protocol.
 
 ## Publish the audit note
 
@@ -41,42 +46,17 @@ value verbatim:
 
 `<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->`
 
-Publish once, after all work, immediately before the final JSON:
-
-`phasegent comment create <ISSUE> --marker <MARKER> --authorized`
-
-Children need `--authorized`; the session supplies the role. Pass the body with
-`--body` or a one-shot `--body-file` (mutually exclusive). A retry uses a new
-marker, and a missing note when `comment-allowed=true` is audit-incomplete.
+Publish once, after all work, immediately before the final JSON; a retry uses a
+new marker, and a child's note needs explicit authorization. A missing note when
+`comment-allowed=true` is audit-incomplete.
 
 ## Return the result
 
-- `TRACKED_ISSUE`: publish first, then return only the minimal note-pointer
-  JSON — the note is the record, with no prose or changed-file duplication:
-
-  ```json
-  {
-    "status": "DONE | PARTIAL | BLOCKED | FAILED",
-    "phase": "phase id",
-    "tracking": {
-      "mode": "TRACKED_ISSUE",
-      "provider": "configured provider name",
-      "issue": 123,
-      "comment": "posted | failed",
-      "comment_id": 456,
-      "comment_url": "issue URL with comment anchor, or null",
-      "marker": "exact marker value supplied by the parent",
-      "notes": "short failure note when comment=failed, otherwise empty"
-    }
-  }
-  ```
-
-  The top-level `status` must match the note's labelled line verbatim. Never
-  fabricate a comment id, URL, or marker; on `comment=failed` leave
-  `comment_id`/`comment_url` null and explain in `notes`.
-- `INLINE` / `LOCAL_ISSUE`: return the complete result object with `phase`,
-  `summary`, `changed_files`, `validation`, `remaining_work`, `question`
-  (required only for `BLOCKED`), `risks`, and nested `tracking`.
-- `DONE` means every acceptance criterion is met; `PARTIAL` means useful work
-  remains safe to continue; `BLOCKED` needs the smallest concrete decision in
-  `question`; `FAILED` means continuing would mislead.
+- `TRACKED_ISSUE`: return only the minimal note-pointer JSON — `status`,
+  `phase`, and the nested `tracking` object; the note is the record, with no
+  prose or changed-file duplication. Never fabricate a comment id, URL, or
+  marker; when the publish fails, leave `comment_id`/`comment_url` null and
+  explain in `notes`.
+- `INLINE` / `LOCAL_ISSUE`: return the complete result object instead.
+- The exact shapes and the `DONE`/`PARTIAL`/`BLOCKED`/`FAILED` semantics live in
+  the shared skill's result contracts.

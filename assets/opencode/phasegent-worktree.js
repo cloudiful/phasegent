@@ -925,8 +925,21 @@ description: Role-aware, provider-backed workflow protocol for phasegent issue/p
 
 \`phasegent\` is a role-aware CLI for provider-backed workflow. The session role
 selects the capability/routing policy; the tracking provider comes from user
-config. This SKILL defines **protocol boundaries** only. \`phasegent --help\` is
-the authoritative **syntax** reference and is never duplicated here.
+config and is never assumed.
+
+This SKILL is the single source of the shared protocol: tracking modes, role
+gates, the marker protocol, result contracts, worktree lease safety, and the
+human-operator-only \`admin\` boundary. The role skills
+(\`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`) carry
+only their role-specific always-on rules and defer here for the shared detail;
+the \`tester\` role has no role skill and reads its rules here.
+
+Commands are not protocol. \`phasegent --help <command>\` owns flags, usage, and
+the provider surface, filtered by the session role: consult \`phasegent --help
+<command>\` only for the command you are about to run, and defer every other
+command's help until it is selected. Never copy a flag table into a plan, a
+note, or a delegation; a child acts only under its own role and never claims
+another.
 
 ## OpenCode adaptation
 
@@ -940,8 +953,9 @@ the authoritative **syntax** reference and is never duplicated here.
   \`/builtin/phasegent.md\`, body and description embedded from
   \`skills/phasegent/SKILL.md\`) together with the slim per-role skills
   \`phasegent-orchestrator\`, \`phasegent-executor\`, and \`phasegent-reviewer\`
-  (embedded from \`skills/phasegent/SKILL.<role>.md\`), so every skill is visible
-  on any host the adapter is installed on.
+  (embedded from \`skills/phasegent/SKILL.<role>.md\`), and prepends each
+  protocol agent's role skill to its \`system\`, so those boundaries are always
+  on and every skill is visible on any host the adapter is installed on.
 - Session and worktree wiring is automatic — the adapter owns the session
   identity, a child session inherits its parent's worktree on its first call,
   and relative paths land there while absolute paths pass through untouched.
@@ -995,29 +1009,14 @@ comes from user config; this skill never picks one.
   and the local provider are unreachable; record that fallback explicitly.
 - Never downgrade to \`INLINE\` from a qualified tracking mode.
 
-## Roles
-
-The role capability matrix below is the human-readable mirror of \`src/policy.rs\`
-(\`Role::allows\`); command-level gates live in *Command contract*. Summary:
-
-- \`orchestrator\` owns issue write/search/close, repo create, relation write,
-  \`status transition\`, \`timer\`, \`worktree\` leases, phase ordering,
-  delegation, review, and final closure. Status follows the tools
-  automatically — child roles never call status; the orchestrator closes the
-  issue at finish.
-- \`executor\`/\`reviewer\` are read/comment plus project/status/version/
-  relation-read and \`notify send\`; \`tester\` is issue-read, comment
-  read/find/create, attachment upload, and \`notify send\`; \`admin\` is
-  bootstrap-only.
-- Capability is how-much-can-it-do, not who; credentials stay role-scoped and
-  least-privilege, and a role never claims another's.
-
 ## Role capability matrix
 
-Source of truth: \`src/policy.rs\` (\`Role::allows\`). The five roles are
-\`admin\`, \`orchestrator\`, \`executor\`, \`reviewer\`, \`tester\`. The session role is a
-capability/routing policy, not identity isolation; each role's credential stays
-least-privilege and never crosses roles.
+Source of truth: \`src/policy.rs\` (\`Role::allows\`); command-level gates keyed to
+a role rather than a capability live in *Command contract*. The five roles are
+\`admin\`, \`orchestrator\`, \`executor\`, \`reviewer\`, \`tester\`. The session role is
+a capability/routing policy, not identity isolation: each role's credential
+stays least-privilege and never crosses roles, and status follows the tools
+automatically.
 
 Legend: \`✓\` allowed, \`—\` denied.
 
@@ -1044,117 +1043,76 @@ Legend: \`✓\` allowed, \`—\` denied.
 
 ### Role notes
 
-- **orchestrator** allows every capability, and is the only role with issue
-  write/search/close, repo create, relation write, and the only non-admin
-  status-transition and \`timer\` role (status flow is automatic; command-level
-  gates live in *Command contract*).
-- **admin** is bootstrap-only: project list/create, status list/next, version
-  list, and \`workflow bootstrap\`.
+- **orchestrator** allows every capability and is the only role with issue
+  write/search/close, repo create, relation write, and the only non-admin role
+  with the status-transition and \`timer\` commands.
+- **admin** is bootstrap-only — project list/create, status list/next, version
+  list, and \`workflow bootstrap\` — and is never an AI role.
 - **executor** and **reviewer** share the read/comment/project/status/version/
-  relation-read surface and \`notify send\`; executor alone can write to its own
-  audit note, but both are barred from issue write/close/search, relation
-  write, repo create, and timer; status flows automatically (command-level
-  gates in *Command contract*).
-- **tester** is issue-read plus comment read/find/create, attachment upload,
-  and \`notify send\`. It never sees project, status, version, or relation data.
-- Capability-level entries above are authoritative; command-level gates such as
-  \`status transition\`, \`timer *\`, and \`workflow bootstrap\` are keyed
-  to the role, not a capability, so they are listed in *Command contract*.
+  relation-read surface and \`notify send\`; both are barred from issue
+  write/close/search, relation write, repo create, status, and timer.
+- **tester** is issue-read plus comment read/find/create, attachment upload, and
+  \`notify send\`; it never sees project, status, version, or relation data.
+- Capability entries above are authoritative; command-level gates such as
+  \`status transition\`, \`timer *\`, and \`workflow bootstrap\` are keyed to the role,
+  not a capability, and are listed in *Command contract*.
 
 ## Command contract
 
 Source of truth: \`src/cli/help/\` role-filter plus \`src/policy.rs\`.
-\`phasegent --help <topic> [<command>]\` is the authoritative syntax for every
-command below, filtered by the session's role; no command here is invented. The
-provider is resolved from configuration: an explicit \`--provider\` wins, otherwise
-the configured default (role or global setting, \`phasegent.toml\`, or environment)
-applies, and Forgejo is the final fallback. This section records role gates, not
-flag tables. Credentials are never accepted as CLI values (\`admin auth setup\`
-reads a secure prompt or \`--stdin\`).
+\`phasegent --help <command>\` is the authoritative syntax for the command in
+hand, filtered by the session's role; this section records role gates and
+boundaries, never flag tables. The provider resolves from configuration at
+runtime — an explicit override wins, then the configured default (role or
+global setting, \`phasegent.toml\`, or environment), with Forgejo as the final
+fallback — and a session never hard-codes one.
 
-Provisioning lives under the human-operator \`admin\` group (\`admin auth
-setup\`, \`admin config set/clear\`, \`admin config provider set/clear\`,
-\`admin workflow bootstrap\`). AI roles must never invoke the \`admin\`
-token; agent permission rules deny that single prefix.
+### Role gates
 
-### Commands and role gates
+The canonical status flow is
+\`New → In Progress → In Review → Resolved → Closed\`: \`Resolved\` means AI work
+is finished and awaits the operator's verification, and \`Closed\` is the
+verified terminal state whose guarded cleanup may remove worktrees. A bare
+\`status transition\` takes the first policy-allowed next status, so it walks the
+\`In Review → Resolved → Closed\` chain; resuming implementation after a reviewed
+phase is an explicit transition back to \`In Progress\`.
 
-| Command | Capability / gate | Roles allowed | Provider / surface notes |
-|---|---|---|---|
-| \`issue get\` | IssueRead | orchestrator, executor, reviewer, tester | one number returns the single-issue object; 2–20 return an \`{issues, errors}\` envelope (exit 1 unless every fetch succeeds) |
-| \`doctor\` | none (read-only self-check) | any (no role gate) | credential presence (fingerprint, never values), index backend state, masked PG URL; approved replacement for schema dumps and raw setting reads |
-| \`issue search\` | IssueSearch | orchestrator only | provider-fresh; auto-bootstraps project on no match; scoped local-index fallback on failure |
-| \`issue create\` | IssueCreate | orchestrator only | planning flags Redmine/GitLab; Forgejo rejects every planning flag |
-| \`issue update\` | IssueUpdateBody | orchestrator only | tracker/planning flags in same PUT |
-| \`issue close\` | IssueClose | orchestrator only | orchestrator closes at finish; auto-climbs to the closed status; cross-project close needs \`--project-id\`; a successful close flips this issue's active leases to \`retained\` and runs the guarded worktree cleanup (see *Worktree leases*) |
-| \`issue sync\` | role == orchestrator | orchestrator only | reconciles the local residue of issues the provider already closed; default scope is the current repository, \`--all\` every repository identity in the lease table, \`--no-clean\` reports the verdicts without writing |
-| \`issue upload-attachment\` | IssueAttachmentUpload | orchestrator, tester | Uniformly not-supported (Phase 1 parity + Phase 4 sink); every provider rejects with \`not_supported\` (exit 1) before any file, network, or credential access |
-| \`issue bind\` / \`issue unbind\` / \`issue status\` | IssueRead | orchestrator, executor, reviewer, tester | local branch–issue binding; no provider/network |
-| \`comment create\` | CommentCreate | orchestrator, executor, reviewer, tester | \`--authorized\` required unless orchestrator (CLI) |
-| \`comment get <ISSUE> <COMMENT_ID>\` | CommentRead | orchestrator, executor, reviewer, tester | single note, full body |
-| \`comment list\` | CommentRead | orchestrator, executor, reviewer, tester | every note on the issue with full bodies, provider order, as \`{issue, comments}\`; the approved bulk-read path |
-| \`comment find-marker\` | CommentFindMarker | orchestrator, executor, reviewer, tester | marker matched verbatim |
-| \`project list\` | ProjectRead | orchestrator, admin, executor, reviewer | Redmine, GitLab, and local; Forgejo rejects; does not need \`--project-id\` |
-| \`project create\` | ProjectCreate | orchestrator, admin | Redmine and local; GitLab/Forgejo use \`repo create\` (single entry point to \`POST /projects\`); requires \`--confirm\` |
-| \`status list\` | IssueStatusRead | orchestrator, admin, executor, reviewer | Redmine, GitLab (static \`WORKFLOW_LABELS\` catalogue), and local; Forgejo returns not-supported |
-| \`status next\` | IssueStatusRead | orchestrator, admin, executor, reviewer | read-only; current + policy-allowed next + recovery command; Redmine and local |
-| \`status set\` | role == orchestrator | orchestrator only | validated name/id; Redmine, GitLab (managed workflow label), and local |
-| \`status advance\` | role == orchestrator | orchestrator only | policy preflight; idempotent no-op on the same status; Redmine and local |
-| \`status transition\` | role == orchestrator | orchestrator only | preferred status write; \`--to\`/\`--status\` names the target, bare auto-routes to the first allowed next; Redmine and local |
-| \`version list\` | VersionRead | orchestrator, admin, executor, reviewer | Redmine (native) and GitLab (GET /projects/:id/milestones); local returns an empty catalogue (no versions table); Forgejo returns not-supported; never auto-bootstraps |
-| \`relation list\` | RelationRead | orchestrator, executor, reviewer | Redmine/GitLab; Forgejo and local reject (no relation surface) |
-| \`relation create\` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject; Phase 3 lifecycle helper auto-creates a \`relates\` link on \`issue create --parent-issue <ID>\` (idempotent, bounded warning on failure) |
-| \`relation delete\` | role == orchestrator | orchestrator only | Redmine/GitLab; Forgejo and local reject |
-| \`timer start/finish/list/get/recover\` | role == orchestrator | orchestrator only | local ledger; finish/recover project to Redmine/GitLab (Forgejo rejects); list/get never reach a provider |
-| \`worktree acquire/release/heartbeat/prune\` | role == orchestrator | orchestrator only | per-(repo, issue, session) leases; \`acquire --base REF\` bases a fresh worktree/branch on \`REF\` instead of \`HEAD\` after the idempotent same-triple check, and a ref that does not resolve fails before anything is created; \`prune\` is read-only unless \`--release-stale --reason TEXT\` or \`--remove\` is given, removes only clean + expired + retained worktrees, and never deletes a branch or a dirty worktree; \`release --force\` requires non-empty \`--reason\`, persisted on the row and visible in status/list (rows are never deleted) |
-| \`worktree status/list/probe\` | command-level read gate | orchestrator, executor, reviewer | read-only lease and checkout inspection; \`probe\` reports a path (or a resolved lease's worktree) as bounded JSON and never writes; tester denied |
-| \`plugin install/status/uninstall\` | no role gate | any | worktree adapter for the OpenCode host (\`$XDG_CONFIG_HOME/opencode/plugins/\`, project slot \`.opencode/plugins/\`); managed-marker ownership, foreign-file refusal; never touches worktrees or branches |
-| \`admin workflow bootstrap\` | role == admin | admin only | Redmine-only; needs only the admin key |
-| \`repo create\` | RepoCreate | orchestrator only | Forgejo/GitLab; \`--private\` required; Redmine/local reject as not-supported |
-| \`notify send\` | Notify | orchestrator, executor, reviewer, tester (admin denied) | manual-only; bounded envelope; never automatic |
-| \`mcp serve\` | startup role | role-scoped toolset | tools: \`capabilities\`, \`issue_get\`, \`issue_search\`, \`status_next\`, \`comment_create\` (needs server-side \`--authorized\` unless orchestrator), \`notify_send\`; excludes status writes (\`status transition\` is CLI-only), timer start/finish, role elevation |
-| \`admin auth setup\` | all roles | admin, orchestrator, executor, reviewer, tester | credentials never a CLI value |
-| \`config show\` / \`config provider get\` | machine-wide | any (no role gate) | redacted snapshot; secrets as presence/length/fingerprint, never values |
-| \`admin config set\` / \`admin config clear\` | global or role-scoped | any; role-scoped settings require a role | SQLite only; secret settings require \`--stdin\` |
-| \`admin config provider set\` / \`admin config provider clear\` | machine-wide | any (no role gate) | SQLite only |
-| \`hooks install\` | no role gate | any | local checkout; managed prepare-commit-msg/commit-msg hooks |
-| \`gui\` | none | any | desktop single-binary shell |
-
-### Orchestrator-owned primitives (never client roles)
-
-\`timer start\` / \`timer finish\` / \`timer recover\` and \`status transition\` are
-orchestrator-only via manual CLI. Children (executor, reviewer, tester) never
-touch timers or status, edit the issue body, or label/close the issue.
-\`status transition\` and timer operations are never exposed over MCP.
-
-The canonical status flow is \`New → In Progress → In Review → Resolved →
-Closed\`. \`Resolved\` is the non-terminal "AI work finished, awaiting the
-operator's verification" state; \`Closed\` is the verified terminal state whose
-worktrees the guarded close cleanup may destroy. A bare \`status transition\`
-takes the first policy-allowed next status, so it walks the
-\`In Review → Resolved → Closed\` chain; resuming implementation after a
-reviewed phase is an explicit \`status transition --to "In Progress"\`.
+- Issue body/search/create/close writes, relation and repo writes,
+  \`status transition\`, every \`timer *\` command, and \`worktree\` lease writes are
+  orchestrator-only. Children never edit the body, label, search, or close an
+  issue, never call \`status *\` or \`timer *\`, never commit, push, tag, or mutate refs,
+  and never claim another role's credential.
+- \`comment create\` writes under the session role: a child's note needs explicit
+  authorization (the CLI flag, or server-side authorization for MCP unless the
+  server role is orchestrator).
+- \`issue get\` batch-reads up to 20 issues as an \`{issues, errors}\` envelope, and
+  \`comment list\` is the bulk note read.
+- \`notify send\` is manual-only and never automatic.
+- \`issue upload-attachment\` rejects uniformly as not-supported, before any file,
+  network, or credential access.
 
 ### Admin group (never AI roles)
 
 The entire \`admin\` group (\`admin auth setup\`, \`admin config set/clear\`,
 \`admin config provider set/clear\`, \`admin workflow bootstrap\`) is
-human-operator only — including the orchestrator. AI roles use the
-top-level read paths (\`config show\`, \`config provider get\`, \`doctor\`)
-for self-checks and ask the operator when provisioning is missing.
-Audit notes are append-only: there is deliberately no
-comment update/delete command; publish a follow-up note instead.
-Credentials are never writable outside the admin group, and lease
-rows are never deletable (\`worktree release --force --reason\` is the
-attributed override).
+human-operator only — for every AI role, orchestrator included. Agent
+permission rules deny the prefix, no role ever delegates it, and provisioning,
+credentials, and settings stay with the operator: a missing one goes back as a
+question, and credentials never travel as CLI values. Only when a configuration
+or provider problem actually blocks the task do the read-only self-checks come
+in — \`doctor\`, \`config show\`, and \`config provider get\` carry no role gate.
+Never read the local SQLite files or call provider REST directly, since
+\`comment list\` and batch \`issue get\` cover bulk reads. Audit notes are
+append-only: there is deliberately no comment update/delete command, so publish
+a follow-up note instead.
 
 ### MCP toolset nuance
 
-The MCP toolset depends on the startup role. \`comment_create\` is rejected with
-an authorization error unless the server was started with \`--authorized\` (or
-the server role is orchestrator). Status writes stay CLI-only (\`status transition\`
-has no MCP tool), as do timers and role elevation — never exposed regardless
-of role.
+\`mcp serve\` exposes only the startup role's toolset (\`capabilities\`,
+\`issue_get\`, \`issue_search\`, \`status_next\`, \`comment_create\`, \`notify_send\`);
+status writes (\`status transition\` stays CLI-only), timers, and role elevation
+are never exposed. Clients never supply a role, and \`comment_create\` needs
+server-side authorization unless the server role is orchestrator.
 
 ## Worktree leases
 
@@ -1163,10 +1121,8 @@ Leases are keyed by \`(repo, issue, session)\` and the adapter installed by
 owns the session identity and the lease side, so no session id, worktree path,
 or lease call travels between sessions. Wiring is automatic: never mint a fresh
 session id per command or per phase, and a child session inherits its parent's
-worktree on its first tool call — children never run \`worktree acquire\`,
-\`issue bind\`, or \`issue create\` (sub-agent sessions are refused those
-commands). A failed move is retried on the next call, and every degradation
-keeps the original directory; nothing blocks a tool call.
+worktree on its first tool call. A failed move is retried on the next call, and
+every degradation keeps the original directory; nothing blocks a tool call.
 
 Boundaries:
 
@@ -1175,30 +1131,25 @@ Boundaries:
   \`external_directory\` permission check are never rewritten.
 - Never delete a lease row, a branch, or a dirty or untracked worktree to force
   cleanup.
+- An acquire against a base ref that does not resolve fails locally before any
+  worktree, branch, or lease is written.
 - \`phasegent worktree prune\` reports stale active leases and removable
-  worktrees (read-only). \`--release-stale --reason TEXT\` flips exactly the
-  stale active leases to \`retained\`; \`--remove\` deletes only clean, expired,
-  retained worktrees. Neither action implies the other, and an owner is never
-  guessed.
-- \`worktree release --force\` requires a non-empty \`--reason\` — the attributed
-  override, visible on the row; rows are never deleted.
-- \`worktree acquire --base REF\` never reuses the current checkout once no
-  idempotent \`(repo, issue, session)\` lease exists: it creates a fresh worktree
-  and branch from \`REF\` instead of \`HEAD\`, and an unresolvable ref fails
-  locally with no worktree, branch, or lease written.
-- \`worktree probe\` is read-only: \`--path PATH\` or \`--issue N [--session S]\`
-  (mutually exclusive; \`--session\` narrows \`--issue\`; neither probes the
-  current checkout) reports existence, Git-worktree/clean/branch/\`HEAD\`/
-  main-checkout facts and any matching lease as bounded JSON. It never calls a
-  provider, writes a lease, syncs, deletes, or repairs, and no matching lease
-  yields a stable empty result instead of a guessed path.
+  worktrees (read-only). Releasing stale leases and removing worktrees are
+  separate explicit actions, and removal only ever touches clean, expired,
+  retained worktrees; an owner is never guessed.
+- Forced release is the attributed override: it requires a reason and the lease
+  row stays (rows are never deleted).
+- \`worktree probe\` is read-only: it reports existence,
+  Git-worktree/clean/branch/\`HEAD\`/main-checkout facts and any matching lease
+  as bounded JSON, and never calls a provider, writes a lease, syncs, deletes,
+  or repairs. No matching lease yields a stable empty result instead of a
+  guessed path.
 - A successful \`issue close\` flips this issue's active leases to \`retained\` and
   then removes a worktree directory only when it is clean, no active lease of
   another session points at it, and it is not the repository's main checkout.
-  Branches and lease rows are never deleted, and the cleanup never changes the
-  close exit code or its stdout. \`issue sync [--all] [--no-clean]\` runs the same
-  guards for issues the provider already closed (\`--no-clean\` reports the
-  verdicts without writing).
+  Branches and lease rows are never deleted, and cleanup never changes the
+  close exit code or its stdout. \`issue sync\` runs the same guards for issues
+  the provider already closed.
 - Environment: \`PHASEGENT_SESSION_ID\` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
   call); \`PHASEGENT_ROLE\` is the CLI-level role source (a managed session
@@ -1209,11 +1160,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a
-fallback repair when the name cannot resolve. A successful \`issue create\`
-auto-acquires a worktree when the checkout conflicts with another lease; a \`bind\`
-that changes the binding does the same, and an \`already_bound\` repeat is an
-idempotent no-op (see Worktree leases).
+Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a fallback repair when the name cannot resolve. A successful \`issue create\` auto-acquires a worktree when the checkout conflicts with another lease; a \`bind\` that changes the binding does the same, and an \`already_bound\` repeat is an idempotent no-op (see Worktree leases).
 
 ## Marker protocol
 
@@ -1230,13 +1177,11 @@ Rules:
   the final JSON. A retry or fresh child uses a **new** marker.
 - The JSON top-level \`status\` (executor/tester) or \`verdict\` (reviewer) must
   match the note's labelled line verbatim.
-- Publish under the child's own role: \`phasegent comment create <ISSUE>
-  --marker <MARKER> --authorized\` (children require \`--authorized\`; orchestrator
-  does not). The role is implicit — a managed session supplies it, and any other
-  host exports \`PHASEGENT_ROLE\` once per session. Pass the note body with
-  \`--body\` or a one-shot \`--body-file\` (mutually exclusive); always pass
-  \`--provider local\` for the local provider. \`phasegent --help comment create\`
-  owns the body-file lifecycle and cleanup flags.
+- Publish under the child's own role: the role is implicit — a managed session
+  supplies it, and any other host exports \`PHASEGENT_ROLE\` once per session —
+  and a child's note needs explicit authorization. A LOCAL_ISSUE note uses the
+  local provider explicitly, and \`phasegent --help comment create\` owns the
+  body-file lifecycle.
 - A missing note when \`comment-allowed=true\` is audit-incomplete and forbids a
   clean finish.
 
@@ -1291,42 +1236,6 @@ Rules:
   work done, criteria remain, safe to continue), \`BLOCKED\`
   (decision/prerequisite missing — state the smallest concrete decision in
   \`question\`), \`FAILED\` (execution failed; continuing would mislead).
-
-## Primitives (who may call what)
-
-- Orchestrator-only writes: issue body/search/create/close, \`status transition\`,
-  \`timer\`, \`worktree\` leases, repo/relation write. Status follows the tools
-  automatically — children never call status; the orchestrator closes the
-  issue at finish (cross-project close needs \`--project-id\`). Children never
-  edit the body, label, close, commit, push, or mutate refs.
-- \`status list\`/\`next\` are read-only for IssueStatusRead roles.
-- \`comment create\`/\`get\`/\`find-marker\` per the role matrix; non-orchestrator
-  \`comment create\` needs \`--authorized\` (CLI) or server-side \`--authorized\`
-  (MCP).
-- \`notify send\` is manual-only, never automatic; orchestrator/executor/reviewer/
-  tester allowed, admin denied.
-- \`mcp serve\` exposes only the startup role's toolset (\`capabilities\`,
-  \`issue_get\`, \`issue_search\`, \`status_next\`, \`comment_create\`, \`notify_send\`);
-  \`status transition\`, timer start/finish, and role elevation stay CLI-only
-  and are never exposed.
-
-## Syntax vs boundaries
-
-- \`phasegent --help <topic> [<command>]\` owns syntax, and its output reflects
-  the session's role; this SKILL owns boundaries (what may be published, note
-  shape, verdict vocabulary, who owns timer/status/closure).
-- Recommended commands: \`issue update\` (issue body/planning writes) and
-  \`worktree prune\` (stale-lease recovery and worktree cleanup), each with its
-  current flags; \`phasegent --help\` carries the flag tables this SKILL never
-  reproduces.
-- A child acts only under its own role and never claims another.
-- The \`admin\` group (\`admin auth setup\`, \`admin config set/clear\`,
-  \`admin config provider set/clear\`, \`admin workflow bootstrap\`) is
-  human-operator only — no AI role ever invokes it, and orchestrator
-  never delegates it. Need a credential or setting? Ask the operator.
-  Need to check state? Use \`config show\`, \`config provider get\`, or
-  \`doctor\`. Never read the SQLite files or call provider REST
-  directly: \`comment list\` and batch \`issue get\` cover bulk reads.
 `;
 const SKILL_ORCHESTRATOR_CONTENT = `---
 name: phasegent-orchestrator
@@ -1336,28 +1245,19 @@ description: Orchestrator-side phasegent protocol for tracked phases — pick th
 # Phasegent orchestrator
 
 You own a tracked phase end to end: the plan artifact, the delegation, the
-status flow, and the closure. This SKILL carries protocol boundaries only;
-\`phasegent --help\` is the authoritative syntax reference and is never
-duplicated here. The provider comes from user config and is never assumed.
+status flow, and the closure. These are your always-on role rules; the shared
+\`phasegent\` skill is the single source for the tracking-mode decision tree, the
+marker and result contracts, and worktree lease detail.
+
+Consult \`phasegent --help\` only for the command you are about to run; the
+shared skill owns the syntax rule and the rest of the protocol.
 
 ## Own the artifact
 
-Pick exactly one tracking mode before work starts:
-
-- \`INLINE\` — trivial or read-only work. Your prompt carries all context; no
-  artifact read and no audit note.
-- \`TRACKED_ISSUE\` (legacy alias \`REDMINE_ISSUE\`, accept on read, never emit on
-  write) — multi-phase, cross-module, API/schema/migration,
-  data/security/concurrency, high-risk, or user-visible work. The issue body is
-  the plan; comments are append-only audits.
-- \`LOCAL_ISSUE\` — an offline, credential-free plan on the local provider.
-
-A loose plan markdown file is only the fallback when both the remote and the
-local provider are unreachable; record that fallback explicitly. Never
-downgrade to \`INLINE\` from a qualified tracking mode.
-
-The issue body owns goal, constraints, acceptance criteria, phases, and
-decisions; keep it current with \`issue update\`. Write the current state only.
+Pick exactly one tracking mode before work starts, and keep the issue body
+current — the body owns goal, constraints, acceptance criteria, phases, and
+decisions, and the mode definitions live in the shared skill. Never downgrade
+to \`INLINE\` from a qualified tracking mode.
 
 ## Delegate with an issue number plus deltas
 
@@ -1369,74 +1269,39 @@ its own role skill for the rest. Add only what the artifact cannot carry:
 - a safety-boundary delta, and comment authorization.
 
 Never restate the plan, the mechanism, the protocol, or the worktree path in a
-delegation. One child owns one phase at a time; never overlap write owners.
+delegation. One child owns one phase at a time; never overlap write owners. The
+marker shapes and the note contract come from the shared skill.
 
-## Markers the children echo verbatim
+## Accept the note-pointer result
 
-- executor — \`<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
-- reviewer — \`<!-- ai-reviewer issue=<n> phase=<phase> round=<n> marker=<unique-marker> -->\`
-- tester — \`<!-- ai-tester issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
-
-A retry or fresh child uses a new marker. A missing note when
-\`comment-allowed=true\` is audit-incomplete and forbids a clean finish.
-
-## Results you accept
-
-- \`TRACKED_ISSUE\` children publish first, then return only the minimal
-  note-pointer JSON — \`status\` (executor/tester) or \`verdict\` (reviewer),
-  \`phase\`, and the nested \`tracking\` object with \`mode\`, \`provider\`, \`issue\`,
-  \`comment\`, \`comment_id\`, \`comment_url\`, \`marker\`, \`notes\`. The note is the
-  record; reject prose or changed-file duplication.
-- \`INLINE\` / \`LOCAL_ISSUE\` children return the complete result object with
-  \`phase\`, \`summary\`, \`changed_files\`, \`validation\`, \`remaining_work\`,
-  \`question\` (only for \`BLOCKED\`), \`risks\`, and the nested \`tracking\` object.
-- Status semantics: \`DONE\` (criteria met), \`PARTIAL\` (safe to continue),
-  \`BLOCKED\` (state the smallest concrete decision in \`question\`), \`FAILED\`
-  (continuing would mislead).
-- Reviewer verdicts use exactly one of \`PASS\` · \`FAIL\` · \`REQUEST_CHANGES\` ·
-  \`BLOCKED\` · \`AUDIT_FAILED\`, matching the note line verbatim;
-  \`REQUEST_CHANGES\` is the legacy alias treated as \`FAIL\`.
+A tracked child publishes its audit note first and returns only the minimal
+note-pointer JSON — \`status\` for executor/tester, \`verdict\` for reviewer, plus
+\`phase\` and the nested \`tracking\` object. The note is the record: reject prose
+or changed-file duplication, and reject any verdict outside the shared
+five-token vocabulary.
 
 ## Status, timer, and closure are yours
 
-- The canonical flow is \`New → In Progress → In Review → Resolved → Closed\`.
-  \`Resolved\` means AI work is finished and awaits operator verification;
-  \`Closed\` is the verified terminal state. A bare \`status transition\` takes the
-  first allowed next status; resuming implementation is an explicit transition
-  back to \`In Progress\`.
-- Status follows the tools automatically: children never call \`status *\` or
-  \`timer *\`, never edit the body, and never label or close the issue.
-- Close at finish; a cross-project close needs \`--project-id\`. A successful
-  close flips this issue's active lease rows to \`retained\` and runs the guarded
-  worktree cleanup (clean, no other active lease, not the main checkout).
+- The canonical status flow and its command-level gates live in the shared
+  skill. Children never call \`status *\` or \`timer *\`, never edit the body, and
+  never label or close the issue.
+- Close at finish; a cross-project close needs the project override. A
+  successful close flips this issue's active leases to \`retained\` and runs the
+  guarded worktree cleanup.
 
-## Worktree leases
+## Worktree leases are yours alone
 
-Leases are keyed by \`(repo, issue, session)\` and the adapter installed by
-\`phasegent plugin install\` (OpenCode >= 2.0) owns the session identity, so
-nothing is minted or passed by hand. A child session inherits its parent's
-worktree on its first tool call.
-
-- Relative paths and a bare or relative shell \`workdir\` land in the worktree;
-  absolute paths pass through, so the \`external_directory\` check still applies.
-- Never mint a fresh identity per command or phase, and never pass a worktree
-  path between sessions.
-- \`worktree acquire\`/\`release\`/\`heartbeat\`/\`prune\` are yours alone. \`prune\`
-  reports first; \`--release-stale --reason TEXT\` flips exactly the stale active
-  rows, \`--remove\` deletes only clean, expired, retained worktrees, and neither
-  implies the other. Never delete a lease row, a branch, or a dirty worktree to
-  force cleanup.
-- \`release --force\` needs a non-empty \`--reason\`; it is the attributed override
-  and rows are never deleted.
+\`acquire\`, \`release\`, \`heartbeat\`, and \`prune\` are orchestrator-only; children
+inherit your worktree automatically and never hold a lease of their own. Never
+delete a lease row, a branch, or a dirty worktree to force cleanup, and never
+pass a worktree path between sessions — the lease safety rules live in the
+shared skill.
 
 ## Human-only surfaces
 
-The whole \`admin\` group (\`admin auth setup\`, \`admin config set/clear\`,
-\`admin config provider set/clear\`, \`admin workflow bootstrap\`) is
-human-operator only, you included. Need a credential or setting? Ask the
-operator. Check state with \`config show\`, \`config provider get\`, or \`doctor\`,
-never by reading the SQLite files or calling provider REST directly:
-\`comment list\` and batch \`issue get\` cover bulk reads.
+The \`admin\` group is human-operator only, you included: never invoke it and
+never delegate it. Provisioning or credential gaps go back to the operator as a
+question, and the shared skill owns the read-only self-check paths.
 `;
 const SKILL_EXECUTOR_CONTENT = `---
 name: phasegent-executor
@@ -1446,33 +1311,38 @@ description: Executor-side phasegent protocol for one delegated phase — read t
 # Phasegent executor
 
 You implement one delegated phase inside its allowlist. The issue is the plan;
-this SKILL is your whole protocol surface, and \`phasegent --help\` is the
-authoritative syntax reference.
+these are your always-on role rules, and the shared \`phasegent\` skill is the
+single source for the marker protocol, the result contracts, worktree wiring,
+and help lookup.
 
 ## Read first
 
 - \`issue get <n>\` gives the goal, constraints, acceptance criteria, phases, and
   decisions. Your parent prompt adds only the issue number, the marker, the
   attempt, the exact allowlist, and any safety or \`git restore\` delta.
-- The provider comes from user config; pass \`--provider local\` only for a local
-  plan.
+- The provider comes from user config; a local plan is the only case that names
+  the local provider explicitly.
 
 ## Boundaries
 
 - Never \`issue update\`/\`close\`/\`search\`, never \`status *\`, never \`timer *\`,
-  never relation or repo writes, and never the \`admin\` group.
+  never relation or repo writes, and never the \`admin\` group: it is
+  human-operator only.
 - Never commit, push, tag, or mutate refs — delivery is orchestrator-only.
-- Honour the allowlist: touch only the listed paths, and treat the
-  \`git restore\` delta as the only rolled-back set. If a change would push a
-  file past its size budget, split the responsibility into new files at the
-  start instead of landing a temporary long file.
-- Worktree wiring is automatic: a child session inherits its parent's worktree
-  and relative paths land there while absolute paths pass through. Never run
-  \`worktree acquire\`/\`release\`/\`prune\`, \`issue bind\`, or \`issue create\` — they
-  are refused for a child session.
-- \`notify send\` is manual-only, never automatic.
+- Honour the allowlist: touch only the listed paths, and treat the \`git
+  restore\` delta as the only rolled-back set. If a change would push a file past
+  its size budget, split the responsibility into new files at the start instead
+  of landing a temporary long file.
+- Worktree wiring is automatic: you inherit your parent's worktree and relative
+  paths land there while absolute paths pass through. Never run \`worktree
+  acquire\`/\`release\`/\`prune\`, \`issue bind\`, or \`issue create\` — they are refused
+  for a child session.
+- Publish one audit note and return the note-pointer JSON; \`notify send\` stays
+  manual-only.
 - Prefer an existing helper, type, or module over new logic, and test the
   project's own behavior rather than framework internals.
+- Consult \`phasegent --help\` only for the command you are about to run; the
+  shared skill owns the syntax rule and the rest of the protocol.
 
 ## Publish the audit note
 
@@ -1481,45 +1351,20 @@ value verbatim:
 
 \`<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
 
-Publish once, after all work, immediately before the final JSON:
-
-\`phasegent comment create <ISSUE> --marker <MARKER> --authorized\`
-
-Children need \`--authorized\`; the session supplies the role. Pass the body with
-\`--body\` or a one-shot \`--body-file\` (mutually exclusive). A retry uses a new
-marker, and a missing note when \`comment-allowed=true\` is audit-incomplete.
+Publish once, after all work, immediately before the final JSON; a retry uses a
+new marker, and a child's note needs explicit authorization. A missing note when
+\`comment-allowed=true\` is audit-incomplete.
 
 ## Return the result
 
-- \`TRACKED_ISSUE\`: publish first, then return only the minimal note-pointer
-  JSON — the note is the record, with no prose or changed-file duplication:
-
-  \`\`\`json
-  {
-    "status": "DONE | PARTIAL | BLOCKED | FAILED",
-    "phase": "phase id",
-    "tracking": {
-      "mode": "TRACKED_ISSUE",
-      "provider": "configured provider name",
-      "issue": 123,
-      "comment": "posted | failed",
-      "comment_id": 456,
-      "comment_url": "issue URL with comment anchor, or null",
-      "marker": "exact marker value supplied by the parent",
-      "notes": "short failure note when comment=failed, otherwise empty"
-    }
-  }
-  \`\`\`
-
-  The top-level \`status\` must match the note's labelled line verbatim. Never
-  fabricate a comment id, URL, or marker; on \`comment=failed\` leave
-  \`comment_id\`/\`comment_url\` null and explain in \`notes\`.
-- \`INLINE\` / \`LOCAL_ISSUE\`: return the complete result object with \`phase\`,
-  \`summary\`, \`changed_files\`, \`validation\`, \`remaining_work\`, \`question\`
-  (required only for \`BLOCKED\`), \`risks\`, and nested \`tracking\`.
-- \`DONE\` means every acceptance criterion is met; \`PARTIAL\` means useful work
-  remains safe to continue; \`BLOCKED\` needs the smallest concrete decision in
-  \`question\`; \`FAILED\` means continuing would mislead.
+- \`TRACKED_ISSUE\`: return only the minimal note-pointer JSON — \`status\`,
+  \`phase\`, and the nested \`tracking\` object; the note is the record, with no
+  prose or changed-file duplication. Never fabricate a comment id, URL, or
+  marker; when the publish fails, leave \`comment_id\`/\`comment_url\` null and
+  explain in \`notes\`.
+- \`INLINE\` / \`LOCAL_ISSUE\`: return the complete result object instead.
+- The exact shapes and the \`DONE\`/\`PARTIAL\`/\`BLOCKED\`/\`FAILED\` semantics live in
+  the shared skill's result contracts.
 `;
 const SKILL_REVIEWER_CONTENT = `---
 name: phasegent-reviewer
@@ -1529,78 +1374,48 @@ description: Reviewer-side phasegent protocol for one completed phase — indepe
 # Phasegent reviewer
 
 You review one completed phase independently and read-only: you never change
-code, the artifact, or the status. \`phasegent --help\` is the authoritative
-syntax reference.
+code, the artifact, or the status. These are your always-on role rules; the
+shared \`phasegent\` skill is the single source for the marker protocol, the
+result contracts, the five-token VERDICT vocabulary, and help lookup.
 
 ## Read first
 
 - \`issue get <n>\` and \`comment list <ISSUE>\` give the plan, the acceptance
   criteria, the phase evidence, and the executor note. Your parent prompt adds
   only the issue number, the marker, and the round.
-- Never read SQLite files or call provider REST; \`comment list\` and batch
-  \`issue get\` cover bulk reads.
 - Worktree wiring is automatic and read-only for you: never run \`worktree *\`,
   \`issue bind\`, or \`issue create\`.
 
 ## Review boundaries
 
 - Judge the phase against the artifact's acceptance criteria, not the author's
-  summary, and confirm every claim from the code and logs rather than
-  repeating it.
+  summary, and confirm every claim from the code and logs rather than repeating
+  it.
 - Report only confirmed defects: P0-P2 block the phase, P3 stays a nit.
-- Never \`issue update\`/\`close\`, never \`status *\`, never \`timer *\`, never commit,
-  push, tag, or mutate refs. Children need \`--authorized\` on \`comment create\`.
+- Never \`issue update\`/\`close\`/\`search\`, never \`status *\`, never \`timer *\`,
+  never relation or repo writes, and never the \`admin\` group: it is
+  human-operator only.
+- Never commit, push, tag, or mutate refs.
 - \`notify send\` is manual-only, never automatic.
+- Consult \`phasegent --help\` only for the command you are about to run; the
+  shared skill owns the syntax rule and the rest of the protocol.
 
-## Verdict vocabulary
-
-Use exactly one of these five case-sensitive tokens on the note's \`VERDICT:\`
-line and in the JSON \`verdict\`; the two must match verbatim:
-
-\`PASS\` · \`FAIL\` · \`REQUEST_CHANGES\` · \`BLOCKED\` · \`AUDIT_FAILED\`
-
-- \`PASS\` — no confirmed P0-P2 (P3 nits may exist).
-- \`FAIL\` — at least one confirmed P0-P2; blocks the phase until repaired
-  (\`REQUEST_CHANGES\` is the legacy alias treated as \`FAIL\`).
-- \`BLOCKED\` — review cannot complete (missing context, tooling, or artifact).
-- \`AUDIT_FAILED\` — the mandatory \`ai-reviewer\` comment could not be published.
-- \`APPROVE\`, \`ACCEPT\`, \`OK\`, \`LGTM\`, etc. are protocol violations; reselect a
-  token from the vocabulary.
-
-## Publish the audit note and the result
+## Verdict and audit note
 
 One HTML-comment marker at the top of the note body, with the parent-supplied
 value verbatim:
 
 \`<!-- ai-reviewer issue=<n> phase=<phase> round=<n> marker=<unique-marker> -->\`
 
-Publish once, after the review, immediately before the final JSON:
+Use exactly one of the five shared VERDICT tokens defined in the shared skill's
+result contracts, on the note's \`VERDICT:\` line and in the JSON \`verdict\`, and
+keep the two matches verbatim; any other token — \`APPROVE\`, \`OK\`, \`LGTM\`, and
+the like — is a protocol violation. Publish once, after the review, immediately
+before the final JSON, and a child's note needs explicit authorization.
 
-\`phasegent comment create <ISSUE> --marker <MARKER> --authorized\`
-
-Then return only the minimal note-pointer JSON:
-
-\`\`\`json
-{
-  "verdict": "PASS | FAIL | REQUEST_CHANGES | BLOCKED | AUDIT_FAILED",
-  "phase": "phase id",
-  "tracking": {
-    "mode": "TRACKED_ISSUE",
-    "provider": "configured provider name",
-    "issue": 123,
-    "comment": "posted | failed",
-    "comment_id": 456,
-    "comment_url": "issue URL with comment anchor, or null",
-    "marker": "exact marker value supplied by the parent",
-    "notes": "short failure note when comment=failed, otherwise empty"
-  }
-}
-\`\`\`
-
-The top-level \`verdict\` must match the note's \`VERDICT:\` line verbatim. Never
-fabricate a comment id, URL, or marker; on \`comment=failed\` leave
-\`comment_id\`/\`comment_url\` null, explain in \`notes\`, and report \`AUDIT_FAILED\`
-when the mandatory note could not be published.
+Then return only the minimal note-pointer JSON (\`verdict\`, \`phase\`, nested
+\`tracking\`), never fabricating a comment id, URL, or marker. When the mandatory
+note cannot be published at all, report the \`AUDIT_FAILED\` token.
 `;
 
 

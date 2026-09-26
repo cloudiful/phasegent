@@ -1,10 +1,12 @@
 //! Skill consistency tests.
 //!
-//! Pins the shipped `skills/phasegent` skill against the code and the protocol
+//! Pins the shipped `skills/phasegent` skills against the code and the protocol
 //! contract: the SKILL frontmatter identity, the reviewer VERDICT vocabulary,
-//! the role capability table's agreement with `src/policy.rs`, and the
-//! single-file self-contained shape. Pure filesystem + policy reads; no
-//! network, credentials, HOME, or SQLite access.
+//! the role capability table's agreement with `src/policy.rs`, the
+//! single-file self-contained shape, and the issue #602 split between the
+//! shared protocol in `SKILL.md` and the always-on role boundaries in
+//! `SKILL.<role>.md`. Pure filesystem + policy reads; no network, credentials,
+//! HOME, or SQLite access.
 
 use crate::policy::{Capability, Role};
 use std::collections::HashMap;
@@ -342,5 +344,198 @@ fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
     assert!(
         !section.contains("- "),
         "lifecycle must stay a one-liner without a bullet list; got: {section}"
+    );
+}
+
+/// Issue #602 splits the protocol in two: `SKILL.md` is the single source of
+/// the shared guidance, and each `SKILL.<role>.md` is the always-on system
+/// prefix of its agent, carrying only its own marker and its own safety
+/// boundaries before pointing back at the shared skill. A shared block copied
+/// back into a role prompt is what this test forbids.
+#[test]
+fn role_skills_defer_shared_protocol_to_the_general_skill() {
+    let shared = read_skill("SKILL.md");
+    for shared_block in [
+        "# Phasegent",
+        "## Tracking modes (decision tree)",
+        "legacy alias `REDMINE_ISSUE`",
+        "## Marker protocol",
+        "## Result contracts",
+        "```json",
+        "`PASS` · `FAIL` · `REQUEST_CHANGES` · `BLOCKED` · `AUDIT_FAILED`",
+        "New → In Progress → In Review → Resolved → Closed",
+        "PHASEGENT_SESSION_ID",
+    ] {
+        assert!(
+            shared.contains(shared_block),
+            "SKILL.md must stay the single source for {shared_block:?}"
+        );
+    }
+
+    // (role skill, its own marker family; the orchestrator carries none)
+    let roles: &[(&str, &str)] = &[
+        ("SKILL.orchestrator.md", ""),
+        ("SKILL.executor.md", "ai-executor"),
+        ("SKILL.reviewer.md", "ai-reviewer"),
+    ];
+    for &(relative, own_marker) in roles {
+        let role = read_skill(relative);
+        // Every role prompt keeps its critical safety boundaries.
+        for boundary in ["`status *`", "`timer *`", "human-operator only"] {
+            assert!(
+                role.contains(boundary),
+                "{relative} must keep the safety boundary {boundary:?}"
+            );
+        }
+        if !own_marker.is_empty() {
+            assert!(
+                role.contains("Never commit, push, tag, or mutate refs"),
+                "{relative} must keep the delivery boundary"
+            );
+        }
+        // ...and its own marker shape only, never a sibling's.
+        if own_marker.is_empty() {
+            assert!(
+                !role.contains("<!-- ai-"),
+                "{relative} must not carry a child marker shape"
+            );
+        } else {
+            assert!(
+                role.contains(&format!("<!-- {own_marker} issue=")),
+                "{relative} must keep its own marker shape"
+            );
+            for sibling in ["ai-executor", "ai-reviewer", "ai-tester"] {
+                if sibling != own_marker {
+                    assert!(
+                        !role.contains(sibling),
+                        "{relative} must not repeat the {sibling} marker"
+                    );
+                }
+            }
+        }
+        // ...and no copy of a shared block; the pointer carries the rest.
+        for shared_only in [
+            "REDMINE_ISSUE",
+            "```json",
+            "`PASS` · `FAIL`",
+            "New → In Progress",
+            "PHASEGENT_SESSION_ID",
+            "admin auth setup",
+            "`doctor`",
+            "`config show`",
+            "`config provider get`",
+        ] {
+            assert!(
+                !role.contains(shared_only),
+                "{relative} must defer {shared_only:?} to SKILL.md"
+            );
+        }
+        let normalised: String = role.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            normalised.contains("shared `phasegent` skill"),
+            "{relative} must point at the shared `phasegent` skill"
+        );
+        assert!(
+            role.contains("only for the command you are about to run"),
+            "{relative} must scope help lookup to the command at hand"
+        );
+    }
+}
+
+/// Issue #602: help lookup stays scoped to the command in hand instead of
+/// preloading the whole surface, and the configuration/provider self-check is
+/// one conditional statement in the shared skill rather than a per-role note.
+#[test]
+fn help_lookup_is_scoped_and_self_checks_stay_conditional() {
+    let shared = read_skill("SKILL.md");
+    let normalised: String = shared.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalised.contains(
+            "only for the command you are about to run, and defer every other command's help until it is selected"
+        ),
+        "SKILL.md must scope help lookup to the selected command"
+    );
+    assert!(
+        normalised
+            .contains("Only when a configuration or provider problem actually blocks the task"),
+        "the shared skill must gate the configuration/provider self-check on an actual blocker"
+    );
+    for command in ["`doctor`", "`config show`", "`config provider get`"] {
+        assert!(
+            shared.contains(command),
+            "SKILL.md must keep the read-only self-check {command}"
+        );
+    }
+    for relative in [
+        "SKILL.orchestrator.md",
+        "SKILL.executor.md",
+        "SKILL.reviewer.md",
+    ] {
+        let role = read_skill(relative);
+        assert!(
+            role.contains("only for the command you are about to run"),
+            "{relative} must scope help lookup to the command at hand"
+        );
+        for duplicated in ["`doctor`", "`config show`", "`config provider get`"] {
+            assert!(
+                !role.contains(duplicated),
+                "{relative} must not repeat the shared configuration self-check {duplicated}"
+            );
+        }
+    }
+}
+
+/// Issue #602: the human-operator-only boundary must be unambiguous in every
+/// prompt that describes CLI role gates, while the full `admin` group list
+/// stays in the shared skill.
+#[test]
+fn admin_boundary_is_human_operator_only_in_every_prompt() {
+    for relative in [
+        "SKILL.md",
+        "SKILL.orchestrator.md",
+        "SKILL.executor.md",
+        "SKILL.reviewer.md",
+    ] {
+        let text = read_skill(relative);
+        assert!(
+            text.contains("human-operator only"),
+            "{relative} must state the human-operator-only admin boundary"
+        );
+        assert!(
+            text.contains("`admin` group"),
+            "{relative} must name the `admin` group the boundary protects"
+        );
+    }
+    let shared = read_skill("SKILL.md");
+    for entry in [
+        "`admin auth setup`",
+        "`admin config set/clear`",
+        "`admin config provider set/clear`",
+        "`admin workflow bootstrap`",
+    ] {
+        assert!(
+            shared.contains(entry),
+            "SKILL.md must keep the human-operator `admin` entry point {entry}"
+        );
+    }
+}
+
+/// The per-command role-gate catalogue lives in the role-filtered
+/// `phasegent --help`, not in the skill: `SKILL.md` keeps exactly the
+/// capability matrix and no other table that would mirror it.
+#[test]
+fn skill_does_not_reproduce_the_command_catalogue() {
+    let shared = read_skill("SKILL.md");
+    assert!(
+        !shared.contains("| Command |"),
+        "the command/role-gate catalogue must stay in `phasegent --help`"
+    );
+    let pipe_rows = shared
+        .lines()
+        .filter(|line| line.trim_start().starts_with('|'))
+        .count();
+    assert_eq!(
+        pipe_rows, 20,
+        "SKILL.md must carry exactly the capability table (header + separator + 18 rows)"
     );
 }
