@@ -89,10 +89,19 @@ pub struct AcquireOptions<'a> {
     /// checkout after the idempotent home-coming and instead creates the
     /// new worktree/branch from `REF` rather than `HEAD`.
     pub base: Option<&'a str>,
+    /// Never create a fresh worktree: a conflict that would otherwise
+    /// call for one returns actionable `isolation` guidance instead
+    /// (issue 616). The implicit `issue create` / `issue bind` hook sets
+    /// this, while the explicit `worktree acquire` command leaves it
+    /// `false` and keeps the issue #436 isolation default. Explicit
+    /// isolation (`isolate` / `auto`) still wins, so `worktree-auto`
+    /// remains the global opt-in for automatic isolation.
+    pub reuse_only: bool,
 }
 
 /// Backwards-compatible entry point: an acquire with no explicit
-/// `--base`, delegating to [`acquire_lease_with`].
+/// `--base`, delegating to [`acquire_lease_with`]. It keeps the explicit
+/// `worktree acquire` contract, so creation is allowed on a conflict.
 #[allow(dead_code)]
 pub fn acquire_lease(
     runner: &dyn WorktreeRunner,
@@ -113,6 +122,7 @@ pub fn acquire_lease(
             isolate,
             auto,
             base: None,
+            reuse_only: false,
         },
     )
 }
@@ -124,12 +134,13 @@ pub fn acquire_lease(
 /// error is returned; partial state is never left behind because the
 /// `git worktree add` runs before the lease row is inserted.
 ///
-/// The decision table (issue #246, default flipped by issue #436) is
-/// evaluated in order. Rules 2, 3, and 4 create a new worktree **by
-/// default**: a dirty checkout or any other active lease for the repo
-/// means the current checkout must not be reused, so the incoming task
-/// gets an isolated `phasegent/<issue>-<short6hex>` branch and a
-/// worktree under
+/// The decision table (issue #246, default flipped by issue #436,
+/// creation made opt-in for implicit callers by issue 616) is evaluated
+/// in order. Rules 2, 3, and 4 create a new worktree **by default** for
+/// callers that may create: a dirty checkout or any other active lease
+/// for the repo means the current checkout must not be reused, so the
+/// incoming task gets an isolated `phasegent/<issue>-<short6hex>` branch
+/// and a worktree under
 /// `~/.cache/phasegent/worktrees/<fingerprint>/<slug>` instead of
 /// colliding with a foreign tree or the `(repo, worktree_path)` lease
 /// index. `--isolate` forces a fresh branch/worktree (issue #509):
@@ -137,6 +148,17 @@ pub fn acquire_lease(
 /// switch) skips every reuse path and acquires an isolated worktree
 /// directly; there is deliberately no reuse fallback for a confirmed
 /// conflict trigger or an explicit isolation request.
+///
+/// [`AcquireOptions::reuse_only`] is the no-create mode of the implicit
+/// `issue create` / `issue bind` hook (issue 616): a conflict never
+/// creates a directory by itself. Rules 2 and 3 (a dirty checkout that
+/// belongs to another task) return a structured `isolation` error naming
+/// `phasegent worktree acquire --issue N --isolate`, and rule 4 (another
+/// active lease for the repo) does the same, because automatic isolation
+/// is opt-in and reuse cannot bypass lease safety. The idempotent
+/// home-coming (rule 1) and the safe reuse paths stay available, and
+/// `isolate` / `auto` still opt a `reuse_only` caller into creation when
+/// the operator enabled the global `worktree-auto` switch.
 ///
 /// The dirty probe feeding rules 2/3/5 is a three-state value
 /// (`Clean` / `Dirty` / `Unknown`, issue 305 Task 4). A failed
@@ -155,13 +177,18 @@ pub fn acquire_lease(
 ///    branch is bound to a *different* issue — a fresh worktree is
 ///    created so the new task never lands in a dirty tree that belongs
 ///    to another task. `created` is `true`, `reason == "new_worktree"`.
+///    A `reuse_only` caller gets the `isolation` guidance error instead.
 /// 3. The checkout is dirty and bound to *this* issue, but another
 ///    active session already holds a lease for `(repo, issue)` — a new
 ///    worktree is created because parallel sessions must not share a
 ///    dirty tree. If no such lease exists (the dirty tree is likely a
-///    crashed predecessor's own work) the decision falls through.
+///    crashed predecessor's own work) the decision falls through. A
+///    `reuse_only` caller gets the `isolation` guidance error instead.
 /// 4. Any other active lease exists for the repo — a fresh worktree is
-///    created. `created` is `true` and `reason == "new_worktree"`.
+///    created. `created` is `true` and `reason == "new_worktree"`. A
+///    `reuse_only` caller gets the `isolation` guidance error instead,
+///    because bookkeeping on the shared checkout is not safe while
+///    another lease is live.
 /// 5. Otherwise the current checkout is reused (no new worktree, no
 ///    new branch), but an `active` lease is still recorded so the
 ///    release path can flip it later. `created` is `false` and
@@ -210,6 +237,7 @@ pub fn acquire_lease_with(
         isolate,
         auto,
         base,
+        reuse_only,
     } = options;
     const MAX_REF_CHARS: usize = 128;
     if issue == 0 {
@@ -223,9 +251,15 @@ pub fn acquire_lease_with(
     }
     // Explicit isolation request (issues #247, #509): `--isolate` or the
     // resolved `worktree-auto` switch forces a fresh branch/worktree on
-    // every checkout state. Rules 2, 3, and 4 already isolate by default
-    // (issue #436); this gate additionally skips every reuse path below.
+    // every checkout state. Rules 2, 3, and 4 isolate by default (issue
+    // #436) for callers that may create; this gate additionally skips
+    // every reuse path below.
     let explicit_isolation = isolate || auto;
+    // Creation gate (issue 616): the implicit `issue create` / `issue
+    // bind` hook runs in `reuse_only` mode, so only an explicit isolation
+    // opt-in may create a fresh worktree for it. The explicit `worktree
+    // acquire` command keeps the issue #436 default isolation.
+    let may_create = explicit_isolation || !reuse_only;
     let identity = repo_identity(runner, repo_path)?;
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
@@ -325,10 +359,19 @@ pub fn acquire_lease_with(
     // Rules 2 and 3: dirty-tree triggers. Both isolate by default
     // (issue #436): reusing a dirty tree would mix two tasks' work, so
     // the incoming task gets its own worktree instead. `--isolate`
-    // remains accepted as the explicit opt-in for the same outcome.
+    // remains accepted as the explicit opt-in for the same outcome. A
+    // `reuse_only` caller may not create (issue 616), and it may not
+    // reuse a dirty foreign tree either, so it receives actionable
+    // `isolation` guidance instead.
     if dirty {
         match bound {
             Some(bound_issue) if bound_issue != issue => {
+                if !may_create {
+                    return Err(isolation_required(
+                        issue,
+                        &format!("checkout is dirty and bound to issue {bound_issue}"),
+                    ));
+                }
                 warnings.push(format!(
                     "checkout is dirty and bound to issue {bound_issue}; acquiring issue \
                      {issue} in an isolated worktree ({AUTO_ISOLATION_DEFAULT_NOTE})"
@@ -343,6 +386,14 @@ pub fn acquire_lease_with(
             }
             Some(_) => {
                 if active_lease_for_issue_other_session(&storage, &identity, issue, session)? {
+                    if !may_create {
+                        return Err(isolation_required(
+                            issue,
+                            &format!(
+                                "checkout is dirty and another session's lease covers issue {issue}"
+                            ),
+                        ));
+                    }
                     warnings.push(format!(
                         "checkout is dirty and another active session holds a lease for issue \
                          {issue}; acquiring issue {issue} in an isolated worktree \
@@ -368,9 +419,17 @@ pub fn acquire_lease_with(
 
     // Rule 4: any other active lease for the repo isolates by default
     // (issue #436) so two sessions never race for one checkout path (the
-    // `(repo_identity, worktree_path)` lease index rejects that reuse).
+    // `(repo_identity, worktree_path)` lease index rejects that reuse). A
+    // `reuse_only` caller must not create and cannot safely re-lease the
+    // shared checkout either, so it receives the `isolation` guidance.
     let other_active = count_other_active_leases(&storage, &identity, issue, session)?;
     if other_active > 0 {
+        if !may_create {
+            return Err(isolation_required(
+                issue,
+                "another active lease exists for this repository",
+            ));
+        }
         warnings.push(format!(
             "another active lease exists for this repository; acquiring issue {issue} in an \
              isolated worktree ({AUTO_ISOLATION_DEFAULT_NOTE})"
@@ -424,10 +483,37 @@ pub fn acquire_lease_with(
 }
 
 /// Warning suffix shared by every conflict trigger that isolates by
-/// default (issue #436). Kept short so the stderr payload stays readable
-/// and the wording names both the new default and the retained flag.
+/// default (issue #436) for a caller that may create. Kept short so the
+/// stderr payload stays readable and the wording names both the default
+/// and the retained flag.
 const AUTO_ISOLATION_DEFAULT_NOTE: &str = "auto-isolation now defaults on for a dirty checkout or an active lease; \
      --isolate remains accepted as the explicit opt-in";
+
+/// Error kind for a conflict that only an explicit isolation opt-in may
+/// resolve (issue 616): the caller asked for reuse / bookkeeping while the
+/// checkout is not safe to reuse and automatic creation is off.
+pub(crate) const ISOLATION_REQUIRED_KIND: &str = "isolation";
+
+/// True when `error` is the [`ISOLATION_REQUIRED_KIND`] conflict, so an
+/// implicit caller can surface its actionable guidance while every other
+/// failure keeps the caller's existing degradation.
+pub(crate) fn is_isolation_required(error: &WorktreeError) -> bool {
+    error.kind == ISOLATION_REQUIRED_KIND
+}
+
+/// Actionable guidance for a `reuse_only` conflict (issue 616): name the
+/// trigger, state that creation is opt-in, and give the explicit command
+/// that creates a dedicated worktree. The message stays inside the bounded
+/// error length so the command is never truncated.
+fn isolation_required(issue: u64, trigger: &str) -> WorktreeError {
+    WorktreeError::new(
+        ISOLATION_REQUIRED_KIND,
+        format!(
+            "{trigger}; isolation is opt-in: keep the current path only if it is safe, or run \
+             `phasegent worktree acquire --issue {issue} --isolate`"
+        ),
+    )
+}
 
 /// Three-state result of the checkout dirty probe.
 ///

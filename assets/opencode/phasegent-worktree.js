@@ -89,12 +89,16 @@ async function readBranchBinding(cwd) {
   return null;
 }
 
-async function acquireWorktree(issueId, sessionId, cwd) {
+async function acquireWorktree(issueId, sessionId, cwd, options) {
   const args = [
     "worktree", "acquire",
     "--issue", String(issueId),
     "--format", "json",
   ];
+  // The host strategy's explicit create request passes `isolate`, which
+  // forces a fresh directory; a caller that only wants the reuse decision
+  // leaves it unset.
+  if (options && options.isolate) args.push("--isolate");
   if (sessionId) args.push("--session", String(sessionId));
   const result = await safeText(phasegentCommand(args, cwd, ORCHESTRATOR_ENV));
   if (!result.ok || !result.value) return null;
@@ -700,7 +704,10 @@ async function reuseRememberedWorktree(context, sessionId) {
 // Lazy worktree discovery and the per-session placement decision.
 //
 // A session with neither a registered nor an inherited worktree probes the
-// checkout's issue binding and the issue's leases before it acquires one. A
+// checkout's issue binding and the issue's leases, and reuses a path only when
+// one is already recorded. Creating a worktree is opt-in (issue 616): with no
+// reusable lease the session keeps the current checkout and is pointed at the
+// explicit `phasegent worktree acquire --isolate` command instead. A
 // Task-spawned child inherits its parent's directory and never acquires a
 // lease of its own.
 
@@ -723,10 +730,27 @@ async function discoverWorktreeForSession(sessionId, cwd) {
   }
 }
 
+// A refused placement is remembered per (session, issue): the session stays in
+// the current checkout, so the next tool call must not repeat the same warning.
+// A fresh session id (or a new issue binding) warns again, and a lease that
+// appears later is still picked up by the reuse probe before this guard.
+const refusedPlacements = new Set();
+
+function warnRefusedPlacement(sessionId, issueId) {
+  const key = `${sessionId}:${issueId}`;
+  if (refusedPlacements.has(key)) return;
+  refusedPlacements.add(key);
+  warn(
+    `phasegent: no worktree was created for issue ${issueId} (isolation is opt-in); ` +
+      "staying in the current checkout. Run `phasegent worktree acquire " +
+      `--issue ${issueId} --isolate\` for a dedicated worktree.`,
+  );
+}
+
 // A Task-spawned child inherits its parent's directory and never acquires a
 // lease of its own; a session without a reported parent keeps the registry
-// fallback and the acquire path. Before that acquire, the issue's lease history
-// is read: a closed issue (its rows carry the "issue closed…" release reason)
+// fallback and the reuse probe. Before that probe, the issue's lease history is
+// read: a closed issue (its rows carry the "issue closed…" release reason)
 // is refused so the lazy path cannot rebuild a worktree that `issue close`
 // just converged. `deps` is an internal seam so tests can exercise that order
 // without the phasegent CLI.
@@ -742,7 +766,6 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
   if (phasegentCallsDisabled()) return await reuseRememberedWorktree(context, sessionId);
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
-  const acquire = (deps && deps.acquire) || acquireWorktree;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
   const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   const cwd = locationDirectory(context);
@@ -776,14 +799,11 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
       warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
       return null;
     }
-    const acquired = await acquire(issueId, sessionId, cwd);
-    if (!acquired || typeof acquired.path !== "string") {
-      warn("phasegent: worktree acquire failed; reusing original directory");
-      return null;
-    }
-    rememberWorktree(sessionId, acquired.path);
-    await moveSessionToWorktree(context, sessionId, acquired.path);
-    return acquired.path;
+    // Automatic creation is opt-in (issue 616): with no reusable lease the
+    // session keeps the current checkout instead of being moved into a freshly
+    // created worktree, and the explicit isolation command is the opt-in.
+    warnRefusedPlacement(sessionId, issueId);
+    return null;
   } catch (error) {
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
@@ -1124,6 +1144,12 @@ session id per command or per phase, and a child session inherits its parent's
 worktree on its first tool call. A failed move is retried on the next call, and
 every degradation keeps the original directory; nothing blocks a tool call.
 
+Creating a worktree is opt-in: \`issue create\` / \`issue bind\` and the adapter's
+lazy path reuse an existing lease, an inherited worktree, or the current
+checkout, and a conflict surfaces the explicit choices instead of a new
+directory — \`phasegent worktree acquire --issue N --isolate\` (or enabling
+\`worktree-auto\`) is how a dedicated worktree is requested.
+
 Boundaries:
 
 - Relative paths and a bare or relative shell \`workdir\` land in the worktree.
@@ -1160,7 +1186,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a fallback repair when the name cannot resolve. A successful \`issue create\` auto-acquires a worktree when the checkout conflicts with another lease; a \`bind\` that changes the binding does the same, and an \`already_bound\` repeat is an idempotent no-op (see Worktree leases).
+Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a fallback repair when the name cannot resolve. A successful \`issue create\`/\`bind\` reuses or books the current checkout; it only auto-acquires a worktree when the \`worktree-auto\` setting opted in, and a conflict otherwise surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\`, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases).
 
 ## Marker protocol
 
@@ -1292,9 +1318,11 @@ five-token vocabulary.
 ## Worktree leases are yours alone
 
 \`acquire\`, \`release\`, \`heartbeat\`, and \`prune\` are orchestrator-only; children
-inherit your worktree automatically and never hold a lease of their own. Never
-delete a lease row, a branch, or a dirty worktree to force cleanup, and never
-pass a worktree path between sessions — the lease safety rules live in the
+inherit your worktree automatically and never hold a lease of their own. A
+dedicated worktree is opt-in — \`worktree acquire --isolate\` (or \`worktree-auto\`)
+is the explicit request, and \`issue create\`/\`bind\` never create one silently.
+Never delete a lease row, a branch, or a dirty worktree to force cleanup, and
+never pass a worktree path between sessions — the lease safety rules live in the
 shared skill.
 
 ## Human-only surfaces
@@ -1641,7 +1669,10 @@ async function registerAgentSkills(context, deps) {
 // v2 worktree strategy. `editor.add` selects the strategy as the default, and
 // the v2 editor has no way to wrap the host git strategy, so the strategy is
 // only claimed when the checkout is already phasegent-bound; otherwise the host
-// keeps its own git implementation.
+// keeps its own git implementation. A host "create worktree" action is the
+// explicit isolation opt-in (issue 616), so `create` passes `isolate` and a
+// dedicated directory is really created instead of quietly reusing the current
+// checkout.
 
 
 // Mirrors the host git strategy's command (packages/core/src/git.ts:657) so a
@@ -1672,7 +1703,10 @@ function worktreeStrategyDefinition(options) {
       const sourceDirectory = input && typeof input.sourceDirectory === "string"
         ? input.sourceDirectory
         : fallbackDirectory;
-      const acquired = await options.acquire(issueId, null, sourceDirectory);
+      // A host "create worktree" action is the explicit opt-in (issue 616):
+      // without `--isolate` the acquire may reuse the current checkout, which
+      // would not honour the create request.
+      const acquired = await options.acquire(issueId, null, sourceDirectory, { isolate: true });
       if (acquired && typeof acquired.path === "string" && acquired.path.length > 0) {
         return { directory: acquired.path };
       }

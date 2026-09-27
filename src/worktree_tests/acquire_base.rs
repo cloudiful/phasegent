@@ -31,6 +31,7 @@ fn acquire_explicit_base_creates_a_fresh_worktree_from_the_ref() {
             isolate: false,
             auto: false,
             base: Some("main"),
+            reuse_only: false,
         },
     )
     .expect("explicit base must create a worktree");
@@ -111,6 +112,7 @@ fn acquire_base_honours_an_older_ref_not_just_head() {
             isolate: false,
             auto: false,
             base: Some(&first),
+            reuse_only: false,
         },
     )
     .expect("an older ref must be honoured");
@@ -156,6 +158,7 @@ fn acquire_base_is_idempotent_first_for_the_same_triple() {
             isolate: false,
             auto: false,
             base: Some("definitely-not-a-ref"),
+            reuse_only: false,
         },
     )
     .expect("the idempotent home-coming must win over --base");
@@ -187,6 +190,7 @@ fn acquire_bad_base_fails_locally_without_lease_or_worktree() {
             isolate: false,
             auto: false,
             base: Some("no-such-ref"),
+            reuse_only: false,
         },
     )
     .expect_err("a bad base must fail before any creation");
@@ -232,6 +236,7 @@ fn acquire_without_base_keeps_the_existing_decision_table() {
             isolate: false,
             auto: false,
             base: None,
+            reuse_only: false,
         },
     )
     .expect("no base reuses the clean checkout");
