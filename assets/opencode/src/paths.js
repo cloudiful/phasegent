@@ -1,4 +1,7 @@
-// Pure path redirect helpers (issue #440; split by issue #541).
+// Pure path helpers (issue #440; split by issue #541; placement became
+// move-only in issue 623 — the hook no longer rewrites tool arguments for
+// placement, these helpers stay exported for the plugin's `redirect` surface
+// and keep the v2 tool vocabulary documented).
 //
 // Only relative values are rewritten; everything absolute (POSIX, Windows drive
 // or UNC) is returned verbatim so an explicit escape is never silently

@@ -776,9 +776,13 @@ fn adapter_template_documents_redirect_contract() {
     // The shell gets a bare/relative workdir; command rewriting (issue #541)
     // lives in the hook, not in the pure path redirect.
     assert!(source.contains("redirected.workdir = workdir"));
-    // Absolute paths pass through and no-worktree sessions short-circuit.
+    // Absolute paths pass through (pure helper contract). Placement itself is
+    // move-only and fails closed (issue 623): the hook throws a prefixed
+    // placement error so OpenCode cancels the invocation instead of rewriting
+    // tool arguments for placement.
     assert!(source.contains("if (isAbsolutePath(value)) return value"));
-    assert!(source.contains("if (typeof workdir !== \"string\" || workdir.length === 0) return;"));
+    assert!(source.contains("PLACEMENT_ERROR_PREFIX"));
+    assert!(source.contains("await ensureSessionWorktree"));
     // Issue 616: creating a worktree is opt-in. The lazy path never acquires
     // one — it stays in the current checkout and points at the explicit
     // isolation command — while a host create request passes `isolate` so the

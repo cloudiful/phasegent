@@ -324,63 +324,82 @@ describe("tool.execute.before hook (v2 single event)", () => {
     restoreNoDiscover(savedNoDiscover);
   });
 
-  test("mutates event.input for a relative read", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const hook = createRedirectHook();
-    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await hook(event);
-    expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
-    expect(event.tool).toBe("read");
-  });
-
-  test("redirects a bare shell cwd for a sub-agent session", async () => {
-    rememberWorktree("parent-session", WORKTREE);
-    const hook = createRedirectHook();
-    const event = { tool: "shell", sessionID: "child-session", input: { command: "pwd" } };
-    await hook(event);
-    expect(event.input.workdir).toBe(WORKTREE);
-  });
-
-  test("leaves absolute paths and no-worktree sessions unchanged", async () => {
+  test("proceeds without a move when no worktree applies", async () => {
     const hook = createRedirectHook();
     const noWorktree = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
     await hook(noWorktree);
+    // No worktree, no placement requirement: the call is untouched.
     expect(noWorktree.input.path).toBe("src/a.rs");
 
     rememberWorktree("session-1", WORKTREE);
     const absolute = { tool: "read", sessionID: "session-1", input: { path: "/etc/hosts" } };
-    await hook(absolute);
+    const moves = [];
+    const context = {
+      location: { directory: WORKTREE },
+      session: { move: async (input) => moves.push(input) },
+    };
+    const placedHook = createRedirectHook(context);
+    await placedHook(absolute);
+    // The plugin location is the worktree, so the session is placed without a
+    // move and absolute paths are never touched (issue 623: no rewriting).
     expect(absolute.input.path).toBe("/etc/hosts");
+    expect(moves).toEqual([]);
   });
 
   test("ignores calls without input", async () => {
     rememberWorktree("session-1", WORKTREE);
-    const hook = createRedirectHook();
-    await hook({ tool: "shell", sessionID: "session-1" });
-  });
-
-  test("moves the session once and skips path redirection once placed", async () => {
-    rememberWorktree("session-1", WORKTREE);
     const moves = [];
     const context = {
-      location: { directory: "/repo" },
+      location: { directory: WORKTREE },
       session: { move: async (input) => moves.push(input) },
     };
     const hook = createRedirectHook(context);
-    const first = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await hook(first);
-    // The call that triggered the move still runs in the old cwd.
-    expect(first.input.path).toBe(`${WORKTREE}/src/a.rs`);
-    expect(sessionPlaced("session-1")).toBe(true);
-
-    const second = { tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } };
-    await hook(second);
-    // The session cwd now is the worktree, so the relative path is left alone.
-    expect(second.input.path).toBe("src/b.rs");
-    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
+    await hook({ tool: "shell", sessionID: "session-1" });
+    expect(moves).toEqual([]); // placed without a move; no error path needed
   });
 
-  test("survives a failing session move", async () => {
+  test("places the session and lets the retry proceed placed", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: "/repo" } },
+    };
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async (input) => moves.push(input),
+        get: async ({ sessionID }) => sessions[sessionID],
+      },
+    };
+    const hook = createRedirectHook(context);
+    // The initiating call is cancelled: the move is only admitted and lands at
+    // the runner's next step boundary, after this call ends.
+    expect(
+      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
+    ).rejects.toThrow(/session placement pending/);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
+
+    // The host record now shows the landing: the retry is placed and runs.
+    sessions["session-1"] = { parentID: null, location: { directory: WORKTREE } };
+    const retry = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(retry);
+    // No path rewriting exists any more; the retry resolves the path in cwd.
+    expect(retry.input.path).toBe("src/a.rs");
+    expect(sessionPlaced("session-1")).toBe(true);
+    expect(moves).toHaveLength(1);
+  });
+
+  test("throws when the host exposes no session.move", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const hook = createRedirectHook({ location: { directory: "/repo" } });
+    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    // Fail closed: without a move capability the invocation is cancelled
+    // instead of running unplaced in the old checkout.
+    expect(hook(event)).rejects.toThrow(/session placement unavailable.*session\.move/);
+  });
+
+  test("throws when the session move rejects", async () => {
     rememberWorktree("session-1", WORKTREE);
     const context = {
       location: { directory: "/repo" },
@@ -392,25 +411,13 @@ describe("tool.execute.before hook (v2 single event)", () => {
     };
     const hook = createRedirectHook(context);
     const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await hook(event);
-    // A failed move is not a placement: the fallback path rewrite still runs.
-    expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
-    expect(sessionPlaced("session-1")).toBe(false);
-  });
-
-  test("rewrites paths when the host has no session.move", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const hook = createRedirectHook({ location: { directory: "/repo" } });
-    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await hook(event);
-    expect(event.input.path).toBe(`${WORKTREE}/src/a.rs`);
-    expect(sessionPlaced("session-1")).toBe(false);
+    expect(hook(event)).rejects.toThrow(/session placement failed.*destination unavailable/);
   });
 
   test("still rewrites commands for an already placed session", async () => {
     rememberWorktree("session-1", WORKTREE);
     const context = {
-      location: { directory: "/repo" },
+      location: { directory: WORKTREE },
       session: { move: async () => {} },
     };
     const hook = createRedirectHook(context);
@@ -424,7 +431,7 @@ describe("tool.execute.before hook (v2 single event)", () => {
       input: { command: "phasegent issue get 1" },
     };
     await hook(event);
-    // Command rewriting is independent of the placement fast path.
+    // Command rewriting is independent of the placement state.
     expect(event.input.command).toBe("PHASEGENT_ROLE=orchestrator phasegent issue get 1");
     expect(event.input.workdir).toBeUndefined();
   });
@@ -451,16 +458,31 @@ describe("tool.execute.before hook (v2 single event)", () => {
       session: { move: async (input) => moves.push(input) },
     };
     const hook = createRedirectHook(context);
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
-    expect(sessionPlaced("session-1")).toBe(true);
+    await expect(
+      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
+    ).rejects.toThrow(/session placement pending/);
+    expect(sessionPlaced("session-1")).toBe(false);
 
     resetWorktrees();
     expect(sessionPlaced("session-1")).toBe(false);
 
     rememberWorktree("session-1", WORKTREE);
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
     // The attempt set was cleared too, so a fresh move is allowed.
+    await expect(
+      hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } }),
+    ).rejects.toThrow(/session placement pending/);
     expect(moves).toHaveLength(2);
+  });
+
+  test("never rewrites tool arguments for placement (issue 623)", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const hook = createRedirectHook();
+    const read = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await expect(hook(read)).rejects.toThrow(/session placement unavailable/);
+    expect(read.input.path).toBe("src/a.rs");
+    const shell = { tool: "shell", sessionID: "session-1", input: { command: "pwd" } };
+    await expect(hook(shell)).rejects.toThrow(/session placement unavailable/);
+    expect(shell.input.workdir).toBeUndefined();
   });
 });
 
@@ -499,36 +521,25 @@ describe("parent-inherit worktree (issue #567)", () => {
     // A stale global fallback must not win over the parent's own target.
     rememberWorktree("other-session", "/wt/other");
     const moves = [];
-    const context = hostContext(
-      {
-        "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
-        "parent-1": { parentID: null, location: { directory: "/wt/host-parent" } },
-      },
-      moves,
-    );
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: "/wt/host-parent" } },
+    };
+    const context = hostContext(sessions, moves);
     const hook = createRedirectHook(context, noCliDeps);
 
-    const first = {
-      tool: "read",
-      sessionID: "child-1",
-      agent: "executor",
-      input: { path: "src/a.rs" },
-    };
-    await hook(first);
-    // The call that triggers the move still runs in the old directory.
-    expect(first.input.path).toBe(`${WORKTREE}/src/a.rs`);
-    expect(sessionPlaced("child-1")).toBe(true);
+    // The first call only admits the move; it is cancelled so it cannot run
+    // in the parent's old directory (issue 623).
+    await expect(
+      hook({ tool: "read", sessionID: "child-1", agent: "executor", input: { path: "src/a.rs" } }),
+    ).rejects.toThrow(/session placement pending/);
     expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
 
-    const second = {
-      tool: "read",
-      sessionID: "child-1",
-      agent: "executor",
-      input: { path: "src/b.rs" },
-    };
-    await hook(second);
-    // The child cwd now is the worktree, so the relative path is left alone.
-    expect(second.input.path).toBe("src/b.rs");
+    // The retry sees the landed host record and proceeds placed.
+    sessions["child-1"] = { parentID: "parent-1", location: { directory: WORKTREE } };
+    const retry = { tool: "read", sessionID: "child-1", agent: "executor", input: { path: "src/a.rs" } };
+    await hook(retry);
+    expect(sessionPlaced("child-1")).toBe(true);
     expect(moves).toHaveLength(1);
   });
 
@@ -536,23 +547,16 @@ describe("parent-inherit worktree (issue #567)", () => {
     // No registry entry for the parent, and a stale global fallback in place.
     rememberWorktree("other-session", "/wt/other");
     const moves = [];
-    const context = hostContext(
-      {
-        "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
-        "parent-1": { parentID: null, location: { directory: WORKTREE } },
-      },
-      moves,
-    );
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: WORKTREE } },
+    };
+    const context = hostContext(sessions, moves);
     const hook = createRedirectHook(context, noCliDeps);
 
-    const event = {
-      tool: "shell",
-      sessionID: "child-1",
-      agent: "explore",
-      input: { command: "pwd" },
-    };
-    await hook(event);
-    expect(event.input.workdir).toBe(WORKTREE);
+    await expect(
+      hook({ tool: "shell", sessionID: "child-1", agent: "explore", input: { command: "pwd" } }),
+    ).rejects.toThrow(/session placement pending/);
     expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
   });
 
@@ -574,11 +578,11 @@ describe("parent-inherit worktree (issue #567)", () => {
       input: { path: "src/a.rs" },
     };
     await hook(read);
-    // Relative paths already resolve in the parent's directory: no move, no
-    // absolute rewrite.
+    // The child already runs in the parent's directory: placed without a move,
+    // and nothing is rewritten.
     expect(read.input.path).toBe("src/a.rs");
     expect(moves).toEqual([]);
-    expect(sessionPlaced("child-1")).toBe(false);
+    expect(sessionPlaced("child-1")).toBe(true);
 
     const glob = {
       tool: "glob",
@@ -661,11 +665,49 @@ describe("parent-inherit worktree (issue #567)", () => {
     };
     const hook = createRedirectHook(context);
 
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
+    // The first attempt rejects the move; the invocation fails closed and the
+    // attempt is released so a later call can retry.
+    await expect(
+      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
+    ).rejects.toThrow(/session placement failed.*runner not ready/);
     expect(sessionPlaced("session-1")).toBe(false);
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } });
+
+    // The retry succeeds: the move is admitted, this call is still cancelled
+    // (the placement lands at the next step boundary), and a later call
+    // confirms placement through the host record.
+    await expect(
+      hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } }),
+    ).rejects.toThrow(/session placement pending/);
     expect(attempts).toBe(2);
+    expect(sessionPlaced("session-1")).toBe(false);
+  });
+
+  test("confirms a landing move through the host session record", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: "/repo" } },
+    };
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async (input) => moves.push(input),
+        get: async ({ sessionID }) => sessions[sessionID],
+      },
+    };
+    const hook = createRedirectHook(context);
+
+    await expect(
+      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
+    ).rejects.toThrow(/session placement pending/);
+
+    // The host applied the move at the step boundary: the next call proceeds
+    // placed, with no further move issued.
+    sessions["session-1"] = { parentID: null, location: { directory: WORKTREE } };
+    const placed = { tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } };
+    await hook(placed);
     expect(sessionPlaced("session-1")).toBe(true);
+    expect(moves).toHaveLength(1);
   });
 
   test("caches the host session lookup and clears it with the registry", async () => {

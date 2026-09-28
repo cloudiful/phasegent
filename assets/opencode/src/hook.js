@@ -1,26 +1,26 @@
 // The v2 `tool.execute.before` hook: one mutable event
 // `{ tool, sessionID, agent, messageID, id, input }`; core continues with the
-// returned `event.input` (packages/core/src/tool.ts:103-111, :271-280), so
-// relative path arguments and a bare/relative shell `workdir` are rewritten in
-// place. Failures stay silent passthrough: a failed lookup must not block the
-// call.
+// returned `event.input` and rethrows a hook error before the tool executes
+// (packages/core/src/tool.ts:103-111, :271-280). Placement is move-only
+// (issue 623): `ensureSessionWorktree` throws when a required `session.move`
+// is unavailable, fails, or is still landing at a step boundary, so OpenCode
+// cancels that invocation instead of running it against the old checkout; the
+// next invocation retries the placement. Shell command rewriting (role/session
+// injection) runs regardless of placement and stays independent of it.
 
 import { rewritePhasegentCommand } from "./command.js";
 import { ensureSessionWorktree } from "./discovery.js";
-import { SHELL_TOOLS, redirectPaths } from "./paths.js";
-import { sessionPlaced } from "./session.js";
+import { SHELL_TOOLS } from "./paths.js";
 
 export function createRedirectHook(context, deps) {
   return async function executeBefore(event) {
     const sessionId = event ? event.sessionID : undefined;
     const input = event ? event.input : undefined;
-    const placedBefore = sessionPlaced(sessionId);
-    let workdir = null;
-    try {
-      workdir = await ensureSessionWorktree(context, sessionId, event, deps);
-    } catch (_) {
-      workdir = null; // silent passthrough: a failed lookup must not block the call
-    }
+    // A no-worktree session resolves to null and the call proceeds; a required
+    // placement that is unavailable, fails, or is still landing throws out of
+    // the hook, which is the host's contract for cancelling the pending call
+    // (issue 623). The retry then runs placed.
+    await ensureSessionWorktree(context, sessionId, event, deps);
     if (!input || typeof input !== "object") return;
     if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
       try {
@@ -29,15 +29,5 @@ export function createRedirectHook(context, deps) {
       } catch (_) {
       }
     }
-    if (typeof workdir !== "string" || workdir.length === 0) return;
-    // A confirmed `session.move` already placed the session cwd in the worktree,
-    // so relative paths resolve there on their own. The call that triggered the
-    // move still runs in the old cwd, hence the `placedBefore` guard.
-    if (placedBefore && sessionPlaced(sessionId)) return;
-    const redirected = redirectPaths(event.tool, workdir, input);
-    if (redirected === input) return;
-    // Mutate in place: core keeps using `event.input`, and in-place writes keep
-    // the object identity the caller already holds.
-    for (const key of Object.keys(redirected)) input[key] = redirected[key];
   };
 }

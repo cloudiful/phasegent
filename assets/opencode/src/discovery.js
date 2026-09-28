@@ -6,7 +6,8 @@
 // reusable lease the session keeps the current checkout and is pointed at the
 // explicit `phasegent worktree acquire --isolate` command instead. A
 // Task-spawned child inherits its parent's directory and never acquires a
-// lease of its own.
+// lease of its own. Placement is move-only (issue 623): a decided placement
+// that cannot move fails closed and the pending tool call is cancelled.
 
 import {
   issueClosedLocally,
@@ -20,7 +21,9 @@ import { errorText, locationDirectory, phasegentCallsDisabled, warn } from "./ru
 import {
   inheritedWorktree,
   issueKnownClosed,
+  markPlaced,
   moveSessionToWorktree,
+  PLACEMENT_ERROR_PREFIX,
   readSessionInfo,
   rememberClosedIssue,
   rememberWorktree,
@@ -28,6 +31,14 @@ import {
   sessionWorktrees,
   worktreeForSession,
 } from "./session.js";
+
+// A decided placement must fail closed: only errors raised by the move itself
+// (identified by `PLACEMENT_ERROR_PREFIX`) rethrow past the discovery guard, so
+// a host move rejection cancels the call while an ordinary probe failure keeps
+// the session in the current checkout.
+function isPlacementFailure(error) {
+  return error instanceof Error && error.message.startsWith(PLACEMENT_ERROR_PREFIX);
+}
 
 export async function discoverWorktreeForSession(sessionId, cwd) {
   if (phasegentCallsDisabled()) return null;
@@ -75,6 +86,8 @@ export async function ensureSessionWorktree(context, sessionId, event, deps) {
   if (!sessionId) return null;
   const registered = sessionWorktrees.get(String(sessionId));
   if (registered) {
+    // Move-only placement (issue 623): a required move that is unavailable or
+    // fails throws so the host cancels this invocation; the next call retries.
     await moveSessionToWorktree(context, sessionId, registered);
     return registered;
   }
@@ -86,14 +99,18 @@ export async function ensureSessionWorktree(context, sessionId, event, deps) {
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
   const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   const cwd = locationDirectory(context);
+  // The probe stays guarded — discovery failures keep the session in the
+  // current checkout — while a decided placement rethrows out of the `try` so
+  // the host cancels the call instead of running it unplaced (issue 623).
   try {
     const info = await readInfo(context, sessionId);
     if (info && info.parentID) {
       const target = await inheritedWorktree(context, info.parentID, readInfo);
       if (!target) return null;
       if (info.directory === target) {
-        // The child already runs inside the parent's directory: nothing to move
-        // and nothing to rewrite, while a later parent move stays followed.
+        // The host reports the child already inside the parent's directory:
+        // confirmed placement, nothing to move.
+        markPlaced(sessionId);
         return null;
       }
       rememberWorktree(sessionId, target);
@@ -122,6 +139,7 @@ export async function ensureSessionWorktree(context, sessionId, event, deps) {
     warnRefusedPlacement(sessionId, issueId);
     return null;
   } catch (error) {
+    if (isPlacementFailure(error)) throw error;
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
   }
