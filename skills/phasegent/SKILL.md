@@ -206,6 +206,12 @@ session id per command or per phase, and a child session inherits its parent's
 worktree on its first tool call. A failed move is retried on the next call, and
 every degradation keeps the original directory; nothing blocks a tool call.
 
+Creating a worktree is opt-in: `issue create` / `issue bind` and the adapter's
+lazy path reuse an existing lease, an inherited worktree, or the current
+checkout, and a conflict surfaces the explicit choices instead of a new
+directory — `phasegent worktree acquire --issue N --isolate` (or enabling
+`worktree-auto`) is how a dedicated worktree is requested.
+
 Boundaries:
 
 - Relative paths and a bare or relative shell `workdir` land in the worktree.
@@ -242,7 +248,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a fallback repair when the name cannot resolve. A successful `issue create` auto-acquires a worktree when the checkout conflicts with another lease; a `bind` that changes the binding does the same, and an `already_bound` repeat is an idempotent no-op (see Worktree leases).
+Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a fallback repair when the name cannot resolve. A successful `issue create`/`bind` reuses or books the current checkout; it only auto-acquires a worktree when the `worktree-auto` setting opted in, and a conflict otherwise surfaces guidance naming `phasegent worktree acquire --issue N --isolate`, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases).
 
 ## Marker protocol
 

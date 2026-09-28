@@ -474,16 +474,14 @@ describe("parent-inherit worktree (issue #567)", () => {
     restoreNoDiscover(savedNoDiscover);
   });
 
-  // `discover`/`acquire`/`readBinding` are stubbed so a missed inheritance
-  // fails loudly instead of spawning the phasegent CLI; `readSessionInfo` stays
-  // real and reads the fake host.
+  // `discover`/`readBinding` are stubbed so a missed inheritance fails loudly
+  // instead of spawning the phasegent CLI; `readSessionInfo` stays real and
+  // reads the fake host. The lazy path never creates a worktree on its own
+  // (issue 616), so there is no acquire seam to stub.
   const noCliDeps = {
     discover: async () => null,
     readBinding: async () => 567,
     readLeaseHistory: async () => [],
-    acquire: async () => {
-      throw new Error("this session must never acquire a lease");
-    },
   };
 
   function hostContext(sessions, moves) {
@@ -615,27 +613,38 @@ describe("parent-inherit worktree (issue #567)", () => {
     expect(moves).toEqual([]);
   });
 
-  test("a sub-agent never acquires while an orchestrator session still does", async () => {
-    const acquired = [];
+  test("neither a sub-agent nor an orchestrator session creates a worktree lazily", async () => {
+    // Issue 616: the lazy path never creates a directory. The sub-agent stops
+    // early, and the orchestrator session with no reusable lease stays in the
+    // current checkout and gets the explicit isolation guidance once.
+    const moves = [];
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
     const deps = {
       readSessionInfo: async () => null,
       discover: async () => null,
       readBinding: async () => 567,
       readLeaseHistory: async () => [],
-      acquire: async (issueId, sessionId, cwd) => {
-        acquired.push({ issueId, sessionId, cwd });
-        return { path: WORKTREE };
-      },
     };
-    const context = { location: { directory: "/repo" }, session: { move: async () => {} } };
-
-    expect(await ensureSessionWorktree(context, "child-1", { agent: "executor" }, deps)).toBeNull();
-    expect(acquired).toEqual([]);
-
-    expect(await ensureSessionWorktree(context, "parent-1", { agent: "orchestrator" }, deps)).toBe(
-      WORKTREE,
-    );
-    expect(acquired).toEqual([{ issueId: 567, sessionId: "parent-1", cwd: "/repo" }]);
+    const context = {
+      location: { directory: "/repo" },
+      session: { move: async (input) => moves.push(input) },
+    };
+    try {
+      expect(await ensureSessionWorktree(context, "child-1", { agent: "executor" }, deps)).toBeNull();
+      expect(
+        await ensureSessionWorktree(context, "parent-1", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+    } finally {
+      console.warn = original;
+    }
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("parent-1")).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("issue 567");
+    expect(warnings[0]).toContain("isolation is opt-in");
+    expect(warnings[0]).toContain("--isolate");
   });
 
   test("retries a failed session move on the next call", async () => {
@@ -1517,9 +1526,6 @@ describe("closed issue refusal (issue #575 P2)", () => {
       discover: async () => null,
       readBinding: async () => 575,
       readLeaseHistory: async () => [closedRow],
-      acquire: async () => {
-        throw new Error("a closed issue must never acquire a lease");
-      },
       ...overrides,
     };
   }
@@ -1553,21 +1559,14 @@ describe("closed issue refusal (issue #575 P2)", () => {
     const warnings = [];
     const original = console.warn;
     console.warn = (message) => warnings.push(String(message));
-    let acquired = 0;
     try {
-      const deps = capturingDeps({
-        acquire: async () => {
-          acquired += 1;
-          return { path: WORKTREE };
-        },
-      });
+      const deps = capturingDeps();
       expect(
         await ensureSessionWorktree(orchContext(moves), "orch-1", { agent: "orchestrator" }, deps),
       ).toBeNull();
     } finally {
       console.warn = original;
     }
-    expect(acquired).toBe(0);
     expect(moves).toEqual([]);
     expect(sessionPlaced("orch-1")).toBe(false);
     expect(warnings).toHaveLength(1);
@@ -1603,22 +1602,35 @@ describe("closed issue refusal (issue #575 P2)", () => {
     expect(moves).toEqual([]);
   });
 
-  test("still acquires when no lease row carries the closed reason", async () => {
+  test("keeps the session in the current checkout with isolation guidance", async () => {
+    // Issue 616: no reusable lease and no closed marker means the lazy path
+    // stays put, points at the explicit isolation command, and never moves the
+    // session into a new directory.
     const moves = [];
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
     const deps = capturingDeps({
       readLeaseHistory: async () => [
         { status: "retained", release_reason: null },
         { status: "active", worktree_path: "/wt/live" },
       ],
-      acquire: async (issueId, sessionId, cwd) => {
-        expect([issueId, sessionId, cwd]).toEqual([575, "orch-3", "/repo"]);
-        return { path: WORKTREE };
-      },
     });
-    expect(
-      await ensureSessionWorktree(orchContext(moves), "orch-3", { agent: "orchestrator" }, deps),
-    ).toBe(WORKTREE);
-    expect(moves).toEqual([{ sessionID: "orch-3", directory: WORKTREE }]);
+    try {
+      expect(
+        await ensureSessionWorktree(orchContext(moves), "orch-3", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+      expect(
+        await ensureSessionWorktree(orchContext(moves), "orch-3", { agent: "orchestrator" }, deps),
+      ).toBeNull();
+    } finally {
+      console.warn = original;
+    }
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("orch-3")).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("issue 575");
+    expect(warnings[0]).toContain("--isolate");
   });
 
   test("PHASEGENT_WORKTREE_NO_DISCOVER keeps the registry-only path", async () => {
@@ -1646,14 +1658,8 @@ describe("closed issue refusal (issue #575 P2)", () => {
     const warnings = [];
     const original = console.warn;
     console.warn = (message) => warnings.push(String(message));
-    let acquired = 0;
     try {
-      const deps = capturingDeps({
-        acquire: async () => {
-          acquired += 1;
-          return { path: WORKTREE };
-        },
-      });
+      const deps = capturingDeps();
       const hook = createRedirectHook(orchContext(moves), deps);
       const event = {
         tool: "read",
@@ -1666,7 +1672,6 @@ describe("closed issue refusal (issue #575 P2)", () => {
     } finally {
       console.warn = original;
     }
-    expect(acquired).toBe(0);
     expect(moves).toEqual([]);
     expect(warnings.some((line) => line.includes("issue 575 is closed"))).toBe(true);
   });
@@ -1717,14 +1722,13 @@ describe("v2 worktree strategy registration", () => {
     expect(typeof editors[0].list).toBe("function");
   });
 
-  test("create returns the acquired lease path", async () => {
+  test("create returns the acquired lease path and opts into isolation", async () => {
+    let requested = null;
     const definition = worktreeStrategyDefinition({
       issueId: 532,
       directory: "/repo",
-      acquire: async (issueId, sessionId, cwd) => {
-        expect(issueId).toBe(532);
-        expect(sessionId).toBeNull();
-        expect(cwd).toBe("/repo");
+      acquire: async (issueId, sessionId, cwd, options) => {
+        requested = { issueId, sessionId, cwd, options };
         return { path: WORKTREE };
       },
       gitAdd: async () => {
@@ -1734,6 +1738,14 @@ describe("v2 worktree strategy registration", () => {
     });
     expect(await definition.create({ sourceDirectory: "/repo", directory: "/wt/new" })).toEqual({
       directory: WORKTREE,
+    });
+    // Issue 616: the host create request must really create a dedicated
+    // directory, so the strategy passes the explicit isolation opt-in.
+    expect(requested).toEqual({
+      issueId: 532,
+      sessionId: null,
+      cwd: "/repo",
+      options: { isolate: true },
     });
   });
 

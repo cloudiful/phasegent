@@ -1,7 +1,10 @@
 // v2 worktree strategy. `editor.add` selects the strategy as the default, and
 // the v2 editor has no way to wrap the host git strategy, so the strategy is
 // only claimed when the checkout is already phasegent-bound; otherwise the host
-// keeps its own git implementation.
+// keeps its own git implementation. A host "create worktree" action is the
+// explicit isolation opt-in (issue 616), so `create` passes `isolate` and a
+// dedicated directory is really created instead of quietly reusing the current
+// checkout.
 
 import { acquireWorktree, readBranchBinding, readIssueLeases } from "./binding.js";
 import { locationDirectory, phasegentCallsDisabled, safeText, warn } from "./runtime.js";
@@ -34,7 +37,10 @@ export function worktreeStrategyDefinition(options) {
       const sourceDirectory = input && typeof input.sourceDirectory === "string"
         ? input.sourceDirectory
         : fallbackDirectory;
-      const acquired = await options.acquire(issueId, null, sourceDirectory);
+      // A host "create worktree" action is the explicit opt-in (issue 616):
+      // without `--isolate` the acquire may reuse the current checkout, which
+      // would not honour the create request.
+      const acquired = await options.acquire(issueId, null, sourceDirectory, { isolate: true });
       if (acquired && typeof acquired.path === "string" && acquired.path.length > 0) {
         return { directory: acquired.path };
       }

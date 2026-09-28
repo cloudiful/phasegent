@@ -25,12 +25,16 @@ export async function readBranchBinding(cwd) {
   return null;
 }
 
-export async function acquireWorktree(issueId, sessionId, cwd) {
+export async function acquireWorktree(issueId, sessionId, cwd, options) {
   const args = [
     "worktree", "acquire",
     "--issue", String(issueId),
     "--format", "json",
   ];
+  // The host strategy's explicit create request passes `isolate`, which
+  // forces a fresh directory; a caller that only wants the reuse decision
+  // leaves it unset.
+  if (options && options.isolate) args.push("--isolate");
   if (sessionId) args.push("--session", String(sessionId));
   const result = await safeText(phasegentCommand(args, cwd, ORCHESTRATOR_ENV));
   if (!result.ok || !result.value) return null;

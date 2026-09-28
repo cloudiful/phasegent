@@ -22,7 +22,10 @@
 //!   `tool.execute.before` redirect helpers, and the issue #533
 //!   `skill.transform` embedded skill registration. Issue #572 adds
 //!   the `agent.transform` binding that prepends each protocol
-//!   agent's own slim skill to its system prompt. It must not
+//!   agent's own slim skill to its system prompt. Issue #616 makes
+//!   worktree creation opt-in: the lazy path never acquires one, and a
+//!   host create request passes `isolate` so the dedicated directory is
+//!   really created. It must not
 //!   register a slash command: the live v2.0.11 command draft only
 //!   accepts an Effect-returning `execute`, which a promise plugin
 //!   cannot build. The embedded skill body must also match
@@ -776,8 +779,15 @@ fn adapter_template_documents_redirect_contract() {
     // Absolute paths pass through and no-worktree sessions short-circuit.
     assert!(source.contains("if (isAbsolutePath(value)) return value"));
     assert!(source.contains("if (typeof workdir !== \"string\" || workdir.length === 0) return;"));
-    // The worktree is remembered when acquire succeeds.
-    assert!(source.contains("rememberWorktree(sessionId, acquired.path)"));
+    // Issue 616: creating a worktree is opt-in. The lazy path never acquires
+    // one — it stays in the current checkout and points at the explicit
+    // isolation command — while a host create request passes `isolate` so the
+    // requested dedicated directory is really created.
+    assert!(!source.contains("rememberWorktree(sessionId, acquired.path)"));
+    assert!(source.contains("no worktree was created for issue"));
+    assert!(source.contains("staying in the current checkout"));
+    assert!(source.contains("args.push(\"--isolate\")"));
+    assert!(source.contains("{ isolate: true }"));
     // issue #541: shell command rewriting (agent-role injection, sub-agent
     // refusal, segment-scoped `--session`) replaced the append-only session
     // injection helper; the pure path redirect no longer touches commands.

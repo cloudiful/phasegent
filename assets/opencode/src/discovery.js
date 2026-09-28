@@ -1,12 +1,14 @@
 // Lazy worktree discovery and the per-session placement decision.
 //
 // A session with neither a registered nor an inherited worktree probes the
-// checkout's issue binding and the issue's leases before it acquires one. A
+// checkout's issue binding and the issue's leases, and reuses a path only when
+// one is already recorded. Creating a worktree is opt-in (issue 616): with no
+// reusable lease the session keeps the current checkout and is pointed at the
+// explicit `phasegent worktree acquire --isolate` command instead. A
 // Task-spawned child inherits its parent's directory and never acquires a
 // lease of its own.
 
 import {
-  acquireWorktree,
   issueClosedLocally,
   pickActiveWorktreePath,
   readBranchBinding,
@@ -45,10 +47,27 @@ export async function discoverWorktreeForSession(sessionId, cwd) {
   }
 }
 
+// A refused placement is remembered per (session, issue): the session stays in
+// the current checkout, so the next tool call must not repeat the same warning.
+// A fresh session id (or a new issue binding) warns again, and a lease that
+// appears later is still picked up by the reuse probe before this guard.
+const refusedPlacements = new Set();
+
+function warnRefusedPlacement(sessionId, issueId) {
+  const key = `${sessionId}:${issueId}`;
+  if (refusedPlacements.has(key)) return;
+  refusedPlacements.add(key);
+  warn(
+    `phasegent: no worktree was created for issue ${issueId} (isolation is opt-in); ` +
+      "staying in the current checkout. Run `phasegent worktree acquire " +
+      `--issue ${issueId} --isolate\` for a dedicated worktree.`,
+  );
+}
+
 // A Task-spawned child inherits its parent's directory and never acquires a
 // lease of its own; a session without a reported parent keeps the registry
-// fallback and the acquire path. Before that acquire, the issue's lease history
-// is read: a closed issue (its rows carry the "issue closed…" release reason)
+// fallback and the reuse probe. Before that probe, the issue's lease history is
+// read: a closed issue (its rows carry the "issue closed…" release reason)
 // is refused so the lazy path cannot rebuild a worktree that `issue close`
 // just converged. `deps` is an internal seam so tests can exercise that order
 // without the phasegent CLI.
@@ -64,7 +83,6 @@ export async function ensureSessionWorktree(context, sessionId, event, deps) {
   if (phasegentCallsDisabled()) return await reuseRememberedWorktree(context, sessionId);
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
-  const acquire = (deps && deps.acquire) || acquireWorktree;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
   const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   const cwd = locationDirectory(context);
@@ -98,14 +116,11 @@ export async function ensureSessionWorktree(context, sessionId, event, deps) {
       warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
       return null;
     }
-    const acquired = await acquire(issueId, sessionId, cwd);
-    if (!acquired || typeof acquired.path !== "string") {
-      warn("phasegent: worktree acquire failed; reusing original directory");
-      return null;
-    }
-    rememberWorktree(sessionId, acquired.path);
-    await moveSessionToWorktree(context, sessionId, acquired.path);
-    return acquired.path;
+    // Automatic creation is opt-in (issue 616): with no reusable lease the
+    // session keeps the current checkout instead of being moved into a freshly
+    // created worktree, and the explicit isolation command is the opt-in.
+    warnRefusedPlacement(sessionId, issueId);
+    return null;
   } catch (error) {
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;

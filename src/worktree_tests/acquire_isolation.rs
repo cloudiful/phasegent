@@ -200,7 +200,11 @@ fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
 fn acquire_dirty_foreign_bound_isolates_by_default_without_isolate_flag() {
     // Issue #436 behavior change: a dirty checkout bound to another issue
     // isolates even when neither `--isolate` nor `worktree-auto` is set.
-    // The warning must name the new default and the retained flag.
+    // This is the explicit `worktree acquire` / `acquire_lease` contract;
+    // the implicit create/bind hook runs in the `reuse_only` no-create mode
+    // (issue 616) and returns isolation guidance instead (see
+    // `acquire_opt_in`). The warning must name the new default and the
+    // retained flag.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("dirty-default-isolate") else {
         return;

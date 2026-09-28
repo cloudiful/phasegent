@@ -142,6 +142,10 @@ pub(super) fn execute_acquire(
             isolate,
             auto,
             base,
+            // The explicit `worktree acquire` command keeps the issue #436
+            // conflict isolation; only the implicit create/bind hook runs in
+            // the `reuse_only` no-create mode (issue 616).
+            reuse_only: false,
         },
     ) {
         Ok(outcome) => {

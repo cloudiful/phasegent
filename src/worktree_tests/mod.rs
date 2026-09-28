@@ -13,10 +13,11 @@
 //!   `PHASEGENT_DB_PATH` so the operator's real database is never
 //!   touched.
 //! * **Acquisition flows** — idempotent reuse, `no_conflict`
-//!   reuse-current-checkout, `new_worktree` for a second session, and
-//!   cross-issue isolation. Each test runs in its own temp git repo
-//!   under the OS temp directory and never mutates the real repository's
-//!   worktrees.
+//!   reuse-current-checkout, `new_worktree` for a second session,
+//!   cross-issue isolation, and the issue 616 `reuse_only` no-create
+//!   gate that the implicit create/bind hook runs. Each test runs in
+//!   its own temp git repo under the OS temp directory and never mutates
+//!   the real repository's worktrees.
 //! * **Release / dirty probe** — `release_lease` flips the row to
 //!   `retained`/`released`, and `is_clean` returns the documented
 //!   `Ok(true)` / `Ok(false)` / structured-error values against real
@@ -47,6 +48,7 @@ use std::process::Command;
 mod acquire_base;
 mod acquire_fallbacks;
 mod acquire_isolation;
+mod acquire_opt_in;
 mod acquire_reuse;
 mod git_worktree;
 mod heartbeat;
