@@ -7,7 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::branch_context::{ProcessGitRunner, read_issue_id};
+use super::active_link::{BranchOwnership, resolve_branch_ownership};
+use crate::branch_context::ProcessGitRunner;
 use crate::infra::storage::Storage;
 use crate::worktree::git::{
     current_branch_for, is_clean, ref_resolves_to_commit, worktree_add_from, worktree_remove,
@@ -196,9 +197,12 @@ pub fn acquire_lease(
 ///    carries no branch binding, a best-effort warning is recorded in
 ///    `AcquireOutcome::warnings` and emitted on stderr.
 ///
-/// The binding read mirrors `hooks.rs` `bound_issue_id`: a detached
-/// HEAD or any lookup failure is treated as *unbound* and never
-/// errors the acquire — it falls through with a warning instead.
+/// The ownership read mirrors `hooks.rs` `bound_issue_id` with the
+/// durable branch links layered in: a detached HEAD or any lookup
+/// failure is treated as *unbound* and never errors the acquire — it
+/// falls through with a warning instead. An ambiguous multi-link
+/// branch is never guessed and always takes the conflict path when
+/// the tree is dirty.
 ///
 /// On every successful outcome (including the idempotent and reuse
 /// paths) [`finalize_checkout`] best-effort binds `issue` to the
@@ -347,13 +351,15 @@ pub fn acquire_lease_with(
         ));
     }
 
-    // The branch binding is only resolved for a confirmed dirty
-    // checkout: a clean tree cannot be "contaminated", and an unknown
-    // probe must not infer a binding from an untrusted status result.
-    let (bound, binding_failure) = if dirty {
-        resolve_bound_issue(runner, repo_path)
+    // The branch ownership is resolved for a confirmed dirty
+    // checkout only: a clean tree cannot be "contaminated", and an unknown
+    // probe must not infer ownership from an untrusted status result.
+    // Durable links decide first (single links bind, ambiguous links
+    // refuse to guess below); otherwise the legacy Git binding applies.
+    let ownership = if dirty {
+        resolve_branch_ownership(&storage, runner, repo_path)
     } else {
-        (None, None)
+        BranchOwnership::Unbound { warning: None }
     };
 
     // Rules 2 and 3: dirty-tree triggers. Both isolate by default
@@ -364,8 +370,29 @@ pub fn acquire_lease_with(
     // reuse a dirty foreign tree either, so it receives actionable
     // `isolation` guidance instead.
     if dirty {
-        match bound {
-            Some(bound_issue) if bound_issue != issue => {
+        match &ownership {
+            // An ambiguous branch cannot prove the dirty tree belongs
+            // to this issue, so it is never reused silently.
+            BranchOwnership::Ambiguous => {
+                if !may_create {
+                    return Err(isolation_required(
+                        issue,
+                        "checkout is dirty and its branch is linked to multiple issues",
+                    ));
+                }
+                warnings.push(format!(
+                    "checkout is dirty and its branch is linked to multiple issues; acquiring \
+                     issue {issue} in an isolated worktree ({AUTO_ISOLATION_DEFAULT_NOTE})"
+                ));
+                return with_warnings(
+                    acquire_new_worktree(
+                        runner, &storage, &identity, repo_path, issue, session, cache_base, base,
+                    ),
+                    issue,
+                    warnings,
+                );
+            }
+            BranchOwnership::Bound(bound_issue) if *bound_issue != issue => {
                 if !may_create {
                     return Err(isolation_required(
                         issue,
@@ -384,7 +411,7 @@ pub fn acquire_lease_with(
                     warnings,
                 );
             }
-            Some(_) => {
+            BranchOwnership::Bound(_) => {
                 if active_lease_for_issue_other_session(&storage, &identity, issue, session)? {
                     if !may_create {
                         return Err(isolation_required(
@@ -409,8 +436,8 @@ pub fn acquire_lease_with(
                     );
                 }
             }
-            None => {
-                if let Some(message) = binding_failure.as_ref() {
+            BranchOwnership::Unbound { warning } => {
+                if let Some(message) = warning.as_ref() {
                     warnings.push(message.clone());
                 }
             }
@@ -468,7 +495,7 @@ pub fn acquire_lease_with(
     // bound to any issue gets a warning (there is no task evidence for
     // the dirt, so we do not create a worktree on suspicion, but the
     // operator should know the reused tree is not pristine).
-    if dirty && bound.is_none() && binding_failure.is_none() {
+    if dirty && matches!(ownership, BranchOwnership::Unbound { warning: None }) {
         warnings.push(
             "checkout is dirty and not bound to an issue; reusing it (no task evidence of a \
              conflict)"
@@ -545,40 +572,6 @@ fn probe_dirty_state(
             DirtyState::Unknown,
             Some(format!(
                 "dirty probe failed ({}); git status could not determine the checkout state",
-                error.message
-            )),
-        ),
-    }
-}
-
-/// Resolve the issue the current branch is bound to, following the
-/// `hooks.rs` `bound_issue_id` pattern but never erroring: a detached
-/// HEAD or any config lookup failure is treated as *unbound* and
-/// returned as a warning string so the caller falls through the
-/// decision table instead of failing the acquire.
-fn resolve_bound_issue(
-    runner: &dyn WorktreeRunner,
-    repo_path: &Path,
-) -> (Option<u64>, Option<String>) {
-    let branch = match current_branch_for(runner, repo_path) {
-        Ok(branch) => branch,
-        Err(error) => {
-            return (
-                None,
-                Some(format!(
-                    "could not resolve current branch ({}); treating checkout as unbound",
-                    error.message
-                )),
-            );
-        }
-    };
-    let git_runner = ProcessGitRunner::in_directory(repo_path.to_path_buf());
-    match read_issue_id(&git_runner, &branch) {
-        Ok(bound) => (bound, None),
-        Err(error) => (
-            None,
-            Some(format!(
-                "could not read binding for branch '{branch}' ({}); treating checkout as unbound",
                 error.message
             )),
         ),

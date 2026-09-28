@@ -59,6 +59,7 @@ fn issue_name(command: &IssueCommand) -> &'static str {
         IssueCommand::Bind { .. } => "bind",
         IssueCommand::Unbind => "unbind",
         IssueCommand::StatusBranch => "status",
+        IssueCommand::Branches { .. } => "branches",
     }
 }
 

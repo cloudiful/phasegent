@@ -121,6 +121,17 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             require_exact_positionals(args, 1, "issue status")?;
             Ok(Command::Issue(IssueCommand::StatusBranch))
         }
+        // Read-only reverse lookup across all scopes in this repository
+        // (issue 628 P5). No provider access, no writes; missing links
+        // yield an empty list, not an error.
+        "branches" => {
+            validate_options(args, 1, &[], &[], "issue branches")?;
+            let number = positional_number(args, 1, "issue branches")?;
+            if number == 0 {
+                return Err("issue branches requires a positive issue id".to_owned());
+            }
+            Ok(Command::Issue(IssueCommand::Branches { number }))
+        }
         "sync" => parse_issue_sync(args),
         value => Err(format!("unknown issue command '{value}'")),
     }

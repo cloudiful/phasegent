@@ -11,6 +11,9 @@
 use crate::branch_context::{self, BranchContextError, GitRunner};
 use std::path::{Path, PathBuf};
 
+#[path = "hooks/branch_context.rs"]
+mod link_context;
+
 pub const PREPARE_COMMIT_MSG_HOOK: &str = "prepare-commit-msg";
 pub const COMMIT_MSG_HOOK: &str = "commit-msg";
 /// Marker comment embedded in managed hook files so later installs can
@@ -386,12 +389,11 @@ pub fn run_with(
 
 /// Detached HEAD carries no branch section, so it behaves like "unbound":
 /// hooks stay silent instead of blocking rebases and cherry-pick workflows.
+/// Resolution prefers durable branch links (single unambiguous number,
+/// never the detected default) with the legacy Git binding as fallback;
+/// any store failure degrades to the legacy read.
 fn bound_issue_id(runner: &dyn GitRunner) -> Result<Option<u64>, BranchContextError> {
-    match branch_context::current_branch(runner) {
-        Ok(branch) => branch_context::read_issue_id(runner, &branch),
-        Err(error) if error.kind == "branch" => Ok(None),
-        Err(error) => Err(error),
-    }
+    link_context::resolve_hook_issue_id(runner)
 }
 
 fn noop(hook: HookKind, reason: &str) -> serde_json::Value {

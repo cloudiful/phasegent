@@ -13,6 +13,7 @@ pub(crate) mod doctor;
 mod help;
 mod hooks;
 pub(crate) mod issue;
+pub(crate) mod issue_branches;
 mod notify;
 pub(crate) mod plugin;
 mod project;
@@ -176,13 +177,25 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                 }
             }
         }
-        // Local branch context commands bypass provider resolution
-        // entirely: they only touch the checkout's own Git config.
+        // Local branch context commands resolve their durable link
+        // scope locally (no provider construction, no network); the
+        // flows keep legacy Git behavior when no scope is selected.
+        // `issue branches N` is the read-only reverse lookup across all
+        // scopes in this repository (no provider, no writes).
+        Command::Issue(IssueCommand::Branches { number }) => {
+            issue_branches::execute_branches(number)
+        }
         Command::Issue(
             command @ (IssueCommand::Bind { .. }
             | IssueCommand::Unbind
             | IssueCommand::StatusBranch),
-        ) => branch::execute_branch_context(invocation.role, command),
+        ) => branch::execute_branch_context_scoped(
+            invocation.role,
+            invocation.provider,
+            invocation.repository.as_deref(),
+            invocation.project_id.as_deref(),
+            command,
+        ),
         Command::Issue(command) => issue::execute_issue(
             invocation.role,
             invocation.provider,

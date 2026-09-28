@@ -1,10 +1,12 @@
 //! Lifecycle tests.
 //!
 //! Covers repository identity matching, bootstrap hook auto-install gating,
-//! Redmine create auto-bind / close auto-unbind, and the guarantee that local
-//! failures never fail a remote result. Tests run against fake Git runners
-//! and real throwaway temp repositories; no network, credentials, HOME, or
-//! SQLite access is involved.
+//! Redmine create auto-bind / close auto-unbind, the P4 safe
+//! create/link/switch flow, and the guarantee that local failures never
+//! fail a remote result. Tests run against fake Git runners and real
+//! throwaway temp repositories; no network, credentials, or HOME access
+//! is involved. SQLite access is isolated to temp databases under the
+//! workflow lock for the switch tests.
 
 use crate::branch_context::{GitOutput, GitRunner};
 use crate::lifecycle::{
@@ -12,6 +14,21 @@ use crate::lifecycle::{
     MAX_WARNING_CHARS,
 };
 use std::cell::RefCell;
+
+/// P4 attempt-4 focused tests: repo-wide switch gating, explicit-branch
+/// durable links, and conventional-default protection. Shared fixtures
+/// stay in this file; only new tests live in the child module.
+#[path = "phase3_tests/issue_switch.rs"]
+mod issue_switch;
+
+/// P4 safe same-checkout create/link/switch plus local-only provider
+/// scoping (issue 628). Shared fixtures stay in the child module; only
+/// new coverage lives there.
+mod create_switch;
+// Sibling `issue_switch` coverage (P5a2) resolves its P4 fixtures through
+// this namespace; keep the four names reachable without regrowing the
+// parent with duplicated helpers.
+use create_switch::{canonical_key, current_branch, pin_temp_db, switch_repo};
 
 struct ScriptedRunner {
     responses: RefCell<Vec<(Vec<String>, i32, String)>>,

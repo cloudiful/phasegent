@@ -254,7 +254,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a fallback repair when the name cannot resolve. A successful `issue create`/`bind` reuses or books the current checkout; it only auto-acquires a worktree when the `worktree-auto` setting opted in, and a conflict otherwise surfaces guidance naming `phasegent worktree acquire --issue N --isolate`, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases).
+Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a fallback repair when the name cannot resolve. A successful `issue create`/`bind` reuses or books the current checkout; it only auto-acquires a worktree when the `worktree-auto` setting opted in, and a conflict otherwise surfaces guidance naming `phasegent worktree acquire --issue N --isolate`, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases). `issue status` shows the current branch with its compatible single issue (only when unambiguous and not the detected default), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), the reverse branches of the active issue, and the legacy binding; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
 
 ## Marker protocol
 

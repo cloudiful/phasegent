@@ -60,8 +60,12 @@ PHASEGENT_ROLE=orchestrator phasegent issue create \
   --title "Short title" --body "Issue details"
 PHASEGENT_ROLE=orchestrator phasegent issue update 123 --body "Updated details"
 PHASEGENT_ROLE=orchestrator phasegent issue close 123
+PHASEGENT_ROLE=executor phasegent issue status
+PHASEGENT_ROLE=executor phasegent issue branches 123
 phasegent doctor
 ```
+
+Branch links are local-only and read-only: `issue status` shows the current branch with its linked issues and cached state, and `issue branches N` lists every branch linked to that issue across all scopes in this repository.
 
 Use `--provider redmine` or `--provider gitlab` on a command when the selected
 provider is not the default. Use `--repository OWNER/REPOSITORY` and

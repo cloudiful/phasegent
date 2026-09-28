@@ -67,6 +67,11 @@ fn issue_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>, Vec<H
             "Show the current branch and its Redmine issue with source bound/named/none",
             &["issue", "status"],
         ),
+        (
+            "branches",
+            "List every branch linked to an issue across all scopes",
+            &["issue", "branches"],
+        ),
     ];
     (header, main, local)
 }
@@ -128,7 +133,7 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "create" => (
             Capability::IssueCreate,
-            "Usage: issue create --title TEXT [--body TEXT | --body-file PATH [--keep-body-file]] [--tracker NAME_OR_ID] [--parent-issue ID] [--fixed-version NAME_OR_ID] [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD] [--estimated-hours HOURS] [--done-ratio 0-100] [--assignee ID_OR_USERNAME | --no-assign] [--branch [NAME]] [--base REF]\n\n--body-file reads the body from a one-shot Markdown file (regular file, at most 2 MiB, valid UTF-8) instead of passing long text through the shell. It is mutually exclusive with --body. The file is read and validated locally before any provider or network access. After a successful write the file is deleted unless --keep-body-file is given; any read, validation, or provider failure keeps the file, and a path that was replaced or modified after the read is never deleted (a bounded warning is emitted instead).\n\n--tracker accepts a validated tracker name (Bug, Feature) or numeric id and is Redmine-only (GitLab maps it to a `type::bug` / `type::feature` label). Planning flags set native Redmine fields; --fixed-version resolves by exact version name or numeric id within the configured project. All Redmine planning flags are Redmine-only except --estimated-hours, which GitLab forwards through the native time_estimate endpoint. Forgejo rejects every planning flag.\n\n--assignee is GitLab-only and accepts a numeric user id or a username resolved via GET /users?username=. GitLab self-assigns the authenticated user when neither flag is given; --no-assign keeps the issue unassigned, and --assignee is mutually exclusive with --no-assign. If the default self-assignment lookup (GET /user) fails, the issue is still created unassigned and a warning is written to stderr; the stdout JSON is unchanged. Other providers reject --assignee and treat --no-assign as a no-op with the legacy payload.\n\n--branch creates and binds a local branch explicitly (no default auto-create; Redmine-only, --base requires --branch). Bare --branch generates <type>/<id> from the tracker (Bug->fix, everything else->feat, e.g. feat/452); --branch NAME uses NAME verbatim; --base selects the new branch start point and defaults to HEAD. When --branch is given the target branch is created when missing and bound to the new issue instead of the current branch (an existing different binding is never overwritten); without --branch only the legacy current-branch auto-bind runs. Local failures warn on stderr; stdout JSON is unchanged.\n\nA successful create keeps the session in its current checkout: reuse and lease bookkeeping stay automatic, but a new worktree is never created implicitly. A checkout conflict reports guidance naming `phasegent worktree acquire --issue N --isolate`, and the `worktree-auto` setting is the global opt-in for automatic isolation.\n\nRedmine: when --project-id is omitted the current Git origin is matched against existing redmine_git_mirror records. Exactly one match uses that project and bypasses bootstrap; multiple matches fail before any write with candidate ids/names and require --project-id; no match automatically bootstraps the project (admin credentials) as before. Explicit --project-id always wins and skips discovery. An explicit --repository that does not equal the origin is not silently matched; it keeps the existing bootstrap behavior.\n\nValues beginning with `-` (Markdown bullets, separator lines) must use the inline form: --title=TEXT or --body=TEXT.",
+            "Usage: issue create --title TEXT [--body TEXT | --body-file PATH [--keep-body-file]] [--tracker NAME_OR_ID] [--parent-issue ID] [--fixed-version NAME_OR_ID] [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD] [--estimated-hours HOURS] [--done-ratio 0-100] [--assignee ID_OR_USERNAME | --no-assign] [--branch [NAME]] [--base REF]\n\n--body-file reads the body from a one-shot Markdown file (regular file, at most 2 MiB, valid UTF-8) instead of passing long text through the shell. It is mutually exclusive with --body. The file is read and validated locally before any provider or network access. After a successful write the file is deleted unless --keep-body-file is given; any read, validation, or provider failure keeps the file, and a path that was replaced or modified after the read is never deleted (a bounded warning is emitted instead).\n\n--tracker accepts a validated tracker name (Bug, Feature) or numeric id and is Redmine-only (GitLab maps it to a `type::bug` / `type::feature` label). Planning flags set native Redmine fields; --fixed-version resolves by exact version name or numeric id within the configured project. All Redmine planning flags are Redmine-only except --estimated-hours, which GitLab forwards through the native time_estimate endpoint. Forgejo rejects every planning flag.\n\n--assignee is GitLab-only and accepts a numeric user id or a username resolved via GET /users?username=. GitLab self-assigns the authenticated user when neither flag is given; --no-assign keeps the issue unassigned, and --assignee is mutually exclusive with --no-assign. If the default self-assignment lookup (GET /user) fails, the issue is still created unassigned and a warning is written to stderr; the stdout JSON is unchanged. Other providers reject --assignee and treat --no-assign as a no-op with the legacy payload.\n\n--branch creates and binds a local branch explicitly (explicit --branch is Redmine-only; --base requires --branch). Bare --branch generates <type>/<id> from the tracker (Bug->fix, everything else->feat, e.g. feat/452); --branch NAME uses NAME verbatim; --base selects the new branch start point and defaults to HEAD. When --branch is given the target branch is created when missing and bound to the new issue instead of the current branch (an existing different binding is never overwritten). Without --branch (the default path) the provider-scoped issue branch is created when missing, linked in the durable branch store, and the primary checkout switches onto it only when safe: clean tree, current branch is the detected default (cached-only detection, never a network query), and no conflicting active lease owns the checkout. The default path works for every provider kind with a known scope, derived from local provider configuration only (Forgejo owner/repo, Redmine project id, GitLab project id, local default) without a provider request; when the scope cannot be established (Redmine without a project id) the create still succeeds and an explicit warning names the fix instead of silently skipping. Dirty, unknown, detached, or foreign-active checkouts stay untouched with an actionable warning; nothing is stashed, discarded, or deleted. Local failures warn on stderr; stdout JSON is unchanged.\n\nA successful create keeps the session in its current checkout: reuse and lease bookkeeping stay automatic, but a new worktree is never created implicitly. A checkout conflict reports guidance naming `phasegent worktree acquire --issue N --isolate`, and the `worktree-auto` setting is the global opt-in for automatic isolation.\n\nRedmine: when --project-id is omitted the current Git origin is matched against existing redmine_git_mirror records. Exactly one match uses that project and bypasses bootstrap; multiple matches fail before any write with candidate ids/names and require --project-id; no match automatically bootstraps the project (admin credentials) as before. Explicit --project-id always wins and skips discovery. An explicit --repository that does not equal the origin is not silently matched; it keeps the existing bootstrap behavior.\n\nValues beginning with `-` (Markdown bullets, separator lines) must use the inline form: --title=TEXT or --body=TEXT.",
         ),
         "update" => (
             Capability::IssueUpdateBody,
@@ -148,15 +153,19 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "bind" => (
             Capability::IssueRead,
-            "Usage: issue bind <ID> [--replace]\n\nStores `branch.<name>.redmine-issue-id = <ID>` in the local Git config for the current named branch. Detached HEAD is rejected. A different existing binding is rejected unless --replace is given; re-binding the same issue is a no-op.\n\nA successful bind keeps the session in its current checkout: reuse and lease bookkeeping stay automatic, but a new worktree is never created implicitly. A checkout conflict reports guidance naming `phasegent worktree acquire --issue N --isolate`, and the `worktree-auto` setting is the global opt-in for automatic isolation.",
+            "Usage: issue bind <ID> [--replace]\n\nLinks the current named branch to issue <ID> in the durable branch/issue store (keyed by the canonical repository origin plus provider/project scope from global options or stored role config). The checkout's existing Git bindings are imported idempotently first (Redmine scope only; other scopes skip the import rather than misassigning Redmine IDs) and are never written or deleted. Detached HEAD is rejected, and the detected default branch cannot be bound (cached-only detection; unknown detection proceeds). With durable links a bind adds another link rather than replacing history; --replace stays accepted for compatibility.\n\nA successful bind keeps the session in its current checkout and never creates a worktree implicitly; lease flows for database links land in a later phase. Without a resolvable scope the legacy Git binding behavior (including its lease hook) applies.",
         ),
         "unbind" => (
             Capability::IssueRead,
-            "Usage: issue unbind\n\nRemoves the current branch's Redmine issue binding from the local Git config. Absence is a no-op.",
+            "Usage: issue unbind\n\nDetaches every linked issue of the current branch in scope, retaining each link as detached history. Legacy Git bindings are imported first (so the unlink has a record) but never deleted. Absence of links is a no-op.",
         ),
         "status" => (
             Capability::IssueRead,
-            "Usage: issue status\n\nPrints the current branch and its Redmine issue with source bound/named/none (key first, then branch-name fallback). Detached HEAD is an error.",
+            "Usage: issue status\n\nPrints the current branch with its compatible single issue (populated only when unambiguous and the branch is not the detected default; never guessed across multiple links), the durable linked issues with each issue's last-known local-index state/source/indexed time (missing state is unknown), the reverse branches of the active issue, the legacy Git binding, and the detected default branch. Detached HEAD is an error.",
+        ),
+        "branches" => (
+            Capability::IssueRead,
+            "Usage: issue branches <NUMBER>\n\nLists every branch linked to issue <NUMBER> in this repository across all provider/project scopes, with each branch's link status/source plus its last-known local-index state/source/indexed time (missing state is unknown). Same-number rows from distinct scopes stay distinct and set ambiguous=true instead of being collapsed; detached history is included. Read-only: no provider or network access, no writes. An issue with no links yields an empty branches list.",
         ),
         _ => return None,
     };
@@ -292,6 +301,7 @@ mod tests {
             "bind",
             "unbind",
             "status",
+            "branches",
         ] {
             let (_, text) = issue_command_help_text(command).expect("issue help must render");
             assert!(
@@ -387,7 +397,7 @@ mod tests {
 
     #[test]
     fn help_routes_branch_context_commands_through_outer_dispatch() {
-        for topic in ["bind", "unbind", "status"] {
+        for topic in ["bind", "unbind", "status", "branches"] {
             let invocation = crate::command::parse_with_role_env(
                 &["--help".to_owned(), "issue".to_owned(), topic.to_owned()],
                 Some("executor"),
@@ -420,7 +430,7 @@ mod tests {
             text.contains("Local branch context (no provider or network access):"),
             "Local section must stay; got: {text}"
         );
-        for command in ["bind", "unbind", "status"] {
+        for command in ["bind", "unbind", "status", "branches"] {
             assert!(text.contains(command), "got: {text}");
         }
         assert!(
@@ -449,6 +459,10 @@ mod tests {
         assert!(
             text.contains("  status"),
             "executor keeps the role-open local status row; got: {text}"
+        );
+        assert!(
+            text.contains("  branches"),
+            "executor keeps the IssueRead-gated branches row; got: {text}"
         );
         assert!(
             !text.contains("  bind") && !text.contains("  unbind"),

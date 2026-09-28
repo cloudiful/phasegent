@@ -77,73 +77,19 @@ fn query_leases(
 
 /// Operator-facing guidance for a `(repo_identity, worktree_path)`
 /// collision. SQLite reports the raw index name (`insert lease: UNIQUE
-/// constraint failed: worktree_leases.worktree_leases_repo_path_idx`),
-/// which names neither the cause nor the fix. Every lease-insert caller
-/// (the reuse-current path and the new-worktree compensation path) gets
-/// this wording instead; the `storage` kind, and therefore the CLI exit
-/// code, is unchanged.
+/// constraint failed: worktree_leases.<index>`), which names neither
+/// the cause nor the fix. Every lease-insert caller (the reuse-current
+/// path and the new-worktree compensation path) gets this wording
+/// instead; the `storage` kind, and therefore the CLI exit code, is
+/// unchanged. Since issue 628 P4 the uniqueness invariant covers
+/// `active` rows only (see `WORKTREE_LEASES_SCHEMA`), so this guidance
+/// always means a *live* lease already owns the checkout.
 const REPO_PATH_CONFLICT_GUIDANCE: &str = "current directory already has a worktree lease for this repository; add --isolate to acquire a separate worktree, or review existing leases with `worktree status` / `worktree list`";
 
 #[allow(dead_code)]
 pub fn ensure_schema(storage: &Storage) -> Result<(), String> {
-    storage
-        .connection
-        .execute_batch(WORKTREE_LEASES_SCHEMA)
-        .map_err(|error| format!("could not initialise worktree lease table: {error}"))?;
-    ensure_release_reason_column(storage)
+    super::lease_schema::ensure_lease_schema(storage)
 }
-
-/// Additive migration for `worktree_leases.release_reason`: databases
-/// created before the force-release surface gain a NULL column on
-/// open. Idempotent via `PRAGMA table_info`, mirroring the storage
-/// `MIGRATIONS` runner without pulling it in.
-fn ensure_release_reason_column(storage: &Storage) -> Result<(), String> {
-    let mut statement = storage
-        .connection
-        .prepare(
-            "SELECT name FROM pragma_table_info('worktree_leases') WHERE name = 'release_reason'",
-        )
-        .map_err(|error| format!("could not inspect worktree lease table: {error}"))?;
-    let present: bool = statement
-        .exists([])
-        .map_err(|error| format!("could not inspect worktree lease table: {error}"))?;
-    if !present {
-        storage
-            .connection
-            .execute(
-                "ALTER TABLE worktree_leases ADD COLUMN release_reason TEXT",
-                [],
-            )
-            .map_err(|error| format!("could not migrate worktree lease table: {error}"))?;
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
-const WORKTREE_LEASES_SCHEMA: &str = "\
--- `release_reason` records the operator justification for a forced
--- release (`worktree release --force --reason`); ordinary releases
--- keep it NULL. Lease rows are audit records and are never deleted.
-CREATE TABLE IF NOT EXISTS worktree_leases (
-    lease_id TEXT PRIMARY KEY,
-    repo_identity TEXT NOT NULL,
-    issue INTEGER NOT NULL,
-    session TEXT NOT NULL DEFAULT '',
-    checkout_path TEXT NOT NULL,
-    worktree_path TEXT NOT NULL,
-    branch TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    heartbeat_at INTEGER NOT NULL,
-    release_reason TEXT
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS worktree_leases_repo_path_idx
-    ON worktree_leases (repo_identity, worktree_path);
-
-CREATE INDEX IF NOT EXISTS worktree_leases_repo_status_idx
-    ON worktree_leases (repo_identity, status);
-";
 
 #[allow(dead_code)]
 pub(super) fn find_active_lease(
@@ -290,10 +236,11 @@ pub fn insert_lease(storage: &Storage, lease: NewLease<'_>) -> Result<(), Worktr
 }
 
 /// Map a failed lease insert onto a structured error. The only
-/// expected collision is the `(repo_identity, worktree_path)` unique
-/// index rejecting a second lease for one checkout; it is rewritten to
-/// actionable guidance while every other SQLite failure keeps the
-/// `insert lease:` prefix and the raw detail.
+/// expected collision is the active-only `(repo_identity,
+/// worktree_path)` unique index rejecting a second *live* lease for
+/// one checkout; it is rewritten to actionable guidance while every
+/// other SQLite failure keeps the `insert lease:` prefix and the raw
+/// detail.
 fn insert_lease_error(error: rusqlite::Error) -> WorktreeError {
     if is_repo_path_conflict(&error) {
         return WorktreeError::new("storage", REPO_PATH_CONFLICT_GUIDANCE);
@@ -304,7 +251,10 @@ fn insert_lease_error(error: rusqlite::Error) -> WorktreeError {
 /// True when `error` is the `(repo_identity, worktree_path)` unique
 /// index rejecting a duplicate checkout. SQLite reports this either
 /// with the index name or with the two column names depending on the
-/// linked SQLite version, so both shapes are recognised.
+/// linked SQLite version, so both shapes are recognised; both the
+/// pre-P4 full-table index name and the P4 active-only partial index
+/// name match because a mid-migration database may still carry the
+/// old one (and trigger-based tests raise with it).
 fn is_repo_path_conflict(error: &rusqlite::Error) -> bool {
     let rusqlite::Error::SqliteFailure(code, message) = error else {
         return false;
@@ -314,6 +264,7 @@ fn is_repo_path_conflict(error: &rusqlite::Error) -> bool {
     }
     message.as_deref().is_some_and(|text| {
         text.contains("worktree_leases_repo_path_idx")
+            || text.contains("worktree_leases_active_repo_path_idx")
             || (text.contains("repo_identity") && text.contains("worktree_path"))
     })
 }

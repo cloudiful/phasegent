@@ -161,6 +161,11 @@ pub(super) const CORE: &[CommandSpec] = &[
                 "issue unbind",
             ),
             leaf("status", "Show the branch binding", RoleAccess::Open),
+            leaf(
+                "branches",
+                "List branches linked to an issue",
+                ACCESS_ISSUE_READ,
+            ),
         ],
     ),
     group(

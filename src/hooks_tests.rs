@@ -10,6 +10,12 @@ use crate::command::{self, Command};
 use crate::hooks::{self, HookKind, HooksCommand, MANAGED_MARKER, ORIGINAL_BACKUP_DIR};
 use std::path::{Path, PathBuf};
 
+// Durable branch-link hook resolution tests (issue 628 P3 and later)
+// live next to the hook flows they cover so installation coverage and
+// link coverage stay in cohesive modules.
+#[path = "hooks_tests/branch_context.rs"]
+mod durable_links;
+
 // ---------------------------------------------------------------------------
 // Temp repository fixture (local to this module so branch-context tests stay
 // independent).

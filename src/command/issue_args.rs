@@ -100,6 +100,13 @@ pub enum IssueCommand {
     },
     Unbind,
     StatusBranch,
+    /// Read-only reverse lookup `issue branches N` (issue 628 P5):
+    /// every branch linked to numeric issue `N` in this repository
+    /// across all provider/project scopes, with last-known cached
+    /// state. No provider access, no writes.
+    Branches {
+        number: u64,
+    },
 }
 
 /// Raw planning option values captured by the parser. Numeric ranges,

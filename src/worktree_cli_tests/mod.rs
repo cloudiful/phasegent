@@ -50,6 +50,7 @@ mod bind_cli;
 mod cli_support;
 mod heartbeat_cli;
 mod help_routing;
+mod lease_reuse_cli;
 mod parse_acquire;
 mod parse_probe;
 mod parse_prune;

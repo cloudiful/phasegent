@@ -10,6 +10,14 @@ mod issue_search;
 #[path = "issue_search_tests.rs"]
 #[cfg(test)]
 mod issue_search_tests;
+// Issue 628 P3: branch-link retention for `issue close` lives next to
+// the close arm it belongs to; `execute_issue` only dispatches into it.
+#[path = "issue_branch.rs"]
+pub(crate) mod issue_branch;
+// Issue 628 P4: provider-scoped create/link/switch helpers live next to
+// the create arm they belong to; `execute_issue` only dispatches.
+#[path = "issue/create_branch.rs"]
+mod create_branch;
 // Issue 552 Phase 2: the reconciliation engine lives next to the issue
 // command it belongs to; `execute_issue` only dispatches into it.
 #[path = "sync.rs"]
@@ -61,6 +69,7 @@ pub(crate) fn execute_issue(
         IssueCommand::Bind { .. }
         | IssueCommand::Unbind
         | IssueCommand::StatusBranch
+        | IssueCommand::Branches { .. }
         | IssueCommand::Sync { .. } => {
             unreachable!("local-only issue commands bypass provider execution")
         }
@@ -344,65 +353,18 @@ pub(crate) fn execute_issue(
                     // normal issue JSON.
                     super::report_local_warnings("issue create", assignee_warning);
                     // Explicit `--branch` (issue 452 P2) is Redmine-only like
-                    // the legacy auto-bind. Without `--branch` the legacy
-                    // current-branch auto-bind runs; with `--branch` the
-                    // target branch is created when missing (from `--base`,
-                    // default `HEAD`) and bound instead of the current
-                    // branch. Never fails the created issue; warnings go to
-                    // stderr so stdout JSON stays byte-identical.
-                    if provider_kind == ProviderKind::Redmine {
-                        match &branch {
-                            crate::command::BranchOption::Unset => {
-                                super::report_local_warnings(
-                                    "issue create",
-                                    crate::lifecycle::bind_created_issue(
-                                        &crate::branch_context::ProcessGitRunner::new(),
-                                        summary.number,
-                                        repository,
-                                    )
-                                    .warning(),
-                                );
-                            }
-                            crate::command::BranchOption::Auto => {
-                                let name = crate::lifecycle::branch_name_for_issue(
-                                    tracker.as_deref(),
-                                    summary.number,
-                                );
-                                super::report_local_warnings(
-                                    "issue create",
-                                    crate::lifecycle::ensure_branch_and_bind(
-                                        &crate::branch_context::ProcessGitRunner::new(),
-                                        summary.number,
-                                        &name,
-                                        base.as_deref(),
-                                        repository,
-                                    )
-                                    .warning(),
-                                );
-                            }
-                            crate::command::BranchOption::Named(name) => {
-                                super::report_local_warnings(
-                                    "issue create",
-                                    crate::lifecycle::ensure_branch_and_bind(
-                                        &crate::branch_context::ProcessGitRunner::new(),
-                                        summary.number,
-                                        name,
-                                        base.as_deref(),
-                                        repository,
-                                    )
-                                    .warning(),
-                                );
-                            }
-                        }
-                    } else if !matches!(&branch, crate::command::BranchOption::Unset) {
-                        super::report_local_warnings(
-                            "issue create",
-                            Some(
-                                "issue create --branch is Redmine-only; skipping branch creation"
-                                    .to_owned(),
-                            ),
-                        );
-                    }
+                    // the legacy auto-bind; the P4 create/link helpers live
+                    // in `create_branch` so this arm stays dispatch-only.
+                    create_branch::report_create_branch_links(&create_branch::CreateBranchLinks {
+                        provider: &provider,
+                        provider_kind,
+                        issue_number: summary.number,
+                        tracker: tracker.as_deref(),
+                        branch: &branch,
+                        base: base.as_deref(),
+                        repository,
+                        session: session.as_deref(),
+                    });
                     // Issue 18: after a successful create and its bind step,
                     // let the shared conflict table decide whether the current
                     // checkout can be reused or a conflict needs an isolated
@@ -570,6 +532,16 @@ pub(crate) fn execute_issue(
                     // Legacy fallback is never silent: warn on stderr only
                     // so the stdout close document stays byte-identical.
                     super::report_local_warnings("issue close", session.legacy_warning());
+                    // Issue 628 P3: closing retains every durable branch
+                    // association — database links are never detached, and
+                    // this checkout's legacy keys are imported best-effort
+                    // under the close scope so the closed link stays
+                    // queryable afterward. The legacy Git unbind below is
+                    // unchanged; warnings go to stderr.
+                    super::report_local_warnings(
+                        "issue close",
+                        issue_branch::retain_closed_issue_links(&provider, number),
+                    );
                     // Redmine-only local side effect: unbind only when the current
                     // branch points at exactly the closed issue. A failed local
                     // unbind never undoes the remote close; warnings go to stderr.
@@ -673,6 +645,7 @@ pub(crate) fn execute_issue(
         IssueCommand::Bind { .. }
         | IssueCommand::Unbind
         | IssueCommand::StatusBranch
+        | IssueCommand::Branches { .. }
         | IssueCommand::Sync { .. } => {
             unreachable!("local-only issue commands bypass provider execution")
         }

@@ -24,6 +24,7 @@ pub(crate) fn help_topic(
                     "bind",
                     "unbind",
                     "status",
+                    "branches",
                 ]
                 .contains(&value) =>
             {

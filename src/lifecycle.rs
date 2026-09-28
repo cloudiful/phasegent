@@ -12,6 +12,16 @@ use crate::hooks::{self, InstallOutcome};
 use crate::remote;
 use std::path::{Path, PathBuf};
 
+#[path = "lifecycle/issue_switch.rs"]
+mod issue_switch;
+// `CreateSwitchOutcome` is named by phase3 tests and P5 flows; the
+// production create arm only calls `.warning()` on the value.
+#[allow(unused_imports)]
+pub use issue_switch::{
+    CreateSwitchOutcome, ExplicitLinkOutcome, ExplicitLinkParams, IssueSwitchParams,
+    create_link_and_switch, link_explicit_branch,
+};
+
 pub const MAX_WARNING_CHARS: usize = 200;
 
 /// Resolves the OWNER/REPOSITORY identity of the current checkout's origin.
@@ -116,6 +126,10 @@ pub fn auto_install_hooks(
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+// Kept for the frozen phase3 lifecycle contract: the P4 default
+// create path links through the branch store instead, but this
+// helper's behavior stays pinned by `phase3_tests`.
 pub enum AutoBindOutcome {
     Bound { branch: String, issue_id: u64 },
     Idempotent { branch: String, issue_id: u64 },
@@ -126,6 +140,7 @@ pub enum AutoBindOutcome {
 impl AutoBindOutcome {
     /// Only genuine local failures warn; deliberate skips (non-Git checkout,
     /// explicit-repository mismatch) stay silent.
+    #[allow(dead_code)]
     pub fn warning(&self) -> Option<String> {
         match self {
             Self::Warning { reason } => Some(bounded(reason)),
@@ -140,6 +155,7 @@ impl AutoBindOutcome {
 /// successfully created remote issue keeps its success result. Re-binding the
 /// same issue is idempotent. An existing different binding is never
 /// overwritten (`replace` is always disabled here).
+#[allow(dead_code)]
 pub fn bind_created_issue(
     runner: &dyn GitRunner,
     issue_id: u64,
@@ -746,6 +762,7 @@ pub fn cleanup_closed_issue_worktrees(
     AutoCleanupOutcome::Cleaned { removed, kept }
 }
 
+#[allow(dead_code)]
 fn local_failure(operation: &str, error: &BranchContextError) -> AutoBindOutcome {
     AutoBindOutcome::Warning {
         reason: format!("local {operation} failed: {}", bounded(&error.message)),

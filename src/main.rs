@@ -1,6 +1,7 @@
 mod auth;
 mod body_file;
 mod branch_context;
+mod branch_links;
 mod cli;
 mod command;
 mod config;
@@ -34,6 +35,9 @@ mod phase3_tests;
 
 #[cfg(test)]
 mod branch_context_tests;
+
+#[cfg(test)]
+mod branch_links_tests;
 
 #[cfg(test)]
 mod branch_context_prop_tests;

@@ -57,8 +57,12 @@ PHASEGENT_ROLE=orchestrator phasegent issue create \
   --title "Short title" --body "Issue details"
 PHASEGENT_ROLE=orchestrator phasegent issue update 123 --body "Updated details"
 PHASEGENT_ROLE=orchestrator phasegent issue close 123
+PHASEGENT_ROLE=executor phasegent issue status
+PHASEGENT_ROLE=executor phasegent issue branches 123
 phasegent doctor
 ```
+
+分支关联是本地只读查询：`issue status` 显示当前分支及其关联 issue 与缓存状态，`issue branches N` 列出本仓库中关联到该 issue 的全部分支（跨全部 scope）。
 
 选择的 provider 不是默认值时，在命令上添加 `--provider redmine` 或
 `--provider gitlab`。可以使用 `--repository OWNER/REPOSITORY` 和

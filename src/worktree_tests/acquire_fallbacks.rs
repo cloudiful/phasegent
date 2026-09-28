@@ -259,11 +259,11 @@ fn acquire_isolate_flag_forces_new_worktree_on_empty_table() {
 }
 
 #[test]
-fn acquire_without_isolate_still_collides_on_retained_row() {
-    // Reverse lock for issue #509: retained rows deliberately do NOT
-    // trigger default auto-isolation, so without any flag the clean reuse
-    // path still collides on the unique index and reports the guidance
-    // (which is now true: adding the flag really helps).
+fn acquire_without_isolate_reuses_over_retained_row() {
+    // Issue 628 P4: the `(repo_identity, worktree_path)` uniqueness is
+    // active-only, so a retained row is history and never blocks a
+    // later active lease on the same checkout. Without any flag the
+    // clean reuse path succeeds and preserves the terminal row.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("no-isolate-retained-row") else {
         return;
@@ -291,7 +291,7 @@ fn acquire_without_isolate_still_collides_on_retained_row() {
         },
     )
     .expect("seed retained row on the current checkout");
-    let error = acquire_lease(
+    let outcome = acquire_lease(
         &runner,
         repo.dir.path(),
         508,
@@ -300,13 +300,20 @@ fn acquire_without_isolate_still_collides_on_retained_row() {
         false,
         false,
     )
-    .expect_err("no flag + retained occupant must still hit the repo/path conflict");
-    assert_eq!(error.kind, "storage");
+    .expect("no flag + retained history must reuse the checkout");
     assert!(
-        error.message.contains("--isolate")
-            && error.message.contains("worktree status")
-            && error.message.contains("worktree list"),
-        "default collision must keep the original guidance: {error}"
+        !outcome.created,
+        "retained history must not force isolation: {outcome:?}"
+    );
+    assert_eq!(outcome.reason, "no_conflict");
+    let storage = Storage::open().expect("temp storage must reopen");
+    let rows = crate::worktree::list_for_repo(&storage, &identity).expect("repo list");
+    assert_eq!(rows.len(), 2, "history plus the new live row stay");
+    assert!(
+        rows.iter()
+            .any(|row| row.status == LEASE_STATUS_RETAINED
+                && row.lease_id == "lease-retained-occupant"),
+        "the retained row is preserved: {rows:?}"
     );
     drop(cache);
     drop(db_temp);
