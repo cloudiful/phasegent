@@ -15,7 +15,8 @@
 //! * **Acquisition flows** — idempotent reuse, `no_conflict`
 //!   reuse-current-checkout, `new_worktree` for a second session, and
 //!   cross-issue isolation. Each test runs in its own temp git repo
-//!   under `/tmp` and never mutates the real repository's worktrees.
+//!   under the OS temp directory and never mutates the real repository's
+//!   worktrees.
 //! * **Release / dirty probe** — `release_lease` flips the row to
 //!   `retained`/`released`, and `is_clean` returns the documented
 //!   `Ok(true)` / `Ok(false)` / structured-error values against real

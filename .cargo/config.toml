@@ -1,10 +1,10 @@
-# Test scratch is contained inside the repository's gitignored .scratch/ so a
-# test run never writes into the system temp directory, no matter what the
-# caller's environment already exports: `force = true` makes these values win
-# over an ambient TMPDIR/TMP/TEMP, and `relative = true` resolves ".scratch"
-# against this config's directory so every child process receives the absolute
-# scratch root it requires. TMPDIR covers Unix, TMP/TEMP cover Windows, where
-# `std::env::temp_dir()` ignores TMPDIR.
+# Test scratch defaults to the repository's gitignored .scratch/ when the
+# caller exports no temp-directory variable: `relative = true` resolves
+# ".scratch" against this config's directory so every child process receives
+# the absolute scratch root it requires, and the entries are fallbacks rather
+# than forced values, so an ambient TMPDIR/TMP/TEMP stays authoritative and a
+# session can point its scratch at a location of its own. TMPDIR covers Unix,
+# TMP/TEMP cover Windows, where `std::env::temp_dir()` ignores TMPDIR.
 #
 # The root is a tracked `.gitkeep` inside a gitignored directory rather than a
 # path under target/: Cargo's [env] cannot create a directory, and the first
@@ -13,12 +13,14 @@
 # every fresh clone, worktree, and after `cargo clean`.
 #
 # GIT_CEILING_DIRECTORIES declares that same scratch root as a repository
-# discovery boundary. It is deliberate that this is a process-global, forced
-# config value rather than a per-test EnvGuard: env mutation is process-global
-# and would race under parallel tests, while the boundary belongs to the
-# scratch root itself. Tests that build a plain directory assert git identity
-# discovery finds no enclosing repo; without this, discovery walks up into
-# the phasegent work tree and breaks them.
+# discovery boundary, and is itself a fallback so a caller-supplied value
+# replaces it. It is deliberate that this is a process-global config value
+# rather than a per-test EnvGuard: env mutation is process-global and would
+# race under parallel tests, while the boundary belongs to the scratch root
+# itself. Tests that build a plain directory assert git identity discovery
+# finds no enclosing repo; without this, discovery walks up into the phasegent
+# work tree and breaks them. A caller that relocates its temp root supplies its
+# own boundary when it needs the same isolation.
 #
 # sccache stays operator-provided instead of a repo-level `rustc-wrapper`:
 # cargo exec's the wrapper on every rustc call, and a machine without that
@@ -30,8 +32,8 @@
 # cache directory already serves every worktree of this checkout, so no
 # SCCACHE_DIR is set here; an ambient SCCACHE_CACHE_SIZE overrides this cap.
 [env]
-TMPDIR = { value = ".scratch", relative = true, force = true }
-TMP = { value = ".scratch", relative = true, force = true }
-TEMP = { value = ".scratch", relative = true, force = true }
-GIT_CEILING_DIRECTORIES = { value = ".scratch", relative = true, force = true }
+TMPDIR = { value = ".scratch", relative = true }
+TMP = { value = ".scratch", relative = true }
+TEMP = { value = ".scratch", relative = true }
+GIT_CEILING_DIRECTORIES = { value = ".scratch", relative = true }
 SCCACHE_CACHE_SIZE = "30G"

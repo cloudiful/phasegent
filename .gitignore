@@ -2,9 +2,11 @@
 Cargo.lock
 *.log
 
-# Scratch root forced into TMPDIR/TMP/TEMP by .cargo/config.toml. The tracked
-# .gitkeep keeps the directory present in every clone and worktree, so the
-# first compiler or cargo wrapper invocation never sees a missing temp root.
+# Default scratch root for Cargo workflows: .cargo/config.toml supplies it as
+# the TMPDIR/TMP/TEMP fallback whenever the caller exports none, while a
+# session may point its own temp variables elsewhere. The tracked .gitkeep
+# keeps the directory present in every clone and worktree, so the first
+# compiler or cargo wrapper invocation never sees a missing temp root.
 /.scratch/*
 !/.scratch/.gitkeep
 

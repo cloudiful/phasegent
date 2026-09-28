@@ -5,9 +5,8 @@ use std::path::PathBuf;
 /// Absolute test scratch root, created if it is missing.
 ///
 /// Tests build scratch *files* at `<root>/<name>` directly, and unlike a
-/// scratch directory such a path has no `create_dir_all` of its own; under
-/// the old `/tmp` root the directory happened to pre-exist, which is exactly
-/// the hidden dependency this removes.
+/// scratch directory such a path has no `create_dir_all` of its own, so this
+/// accessor guarantees the caller-selected temp directory exists.
 pub(crate) fn root() -> PathBuf {
     let root = std::env::temp_dir();
     std::fs::create_dir_all(&root).unwrap_or_else(|error| {

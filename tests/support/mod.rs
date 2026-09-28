@@ -267,9 +267,8 @@ fn write_response(stream: &mut TcpStream, response: MockResponse) {
 /// is missing.
 ///
 /// Tests build scratch *files* at `<root>/<name>` directly, and unlike a
-/// scratch directory such a path has no `create_dir_all` of its own; under
-/// the old `/tmp` root the directory happened to pre-exist, which is exactly
-/// the hidden dependency this removes.
+/// scratch directory such a path has no `create_dir_all` of its own, so this
+/// accessor guarantees the caller-selected temp directory exists.
 pub fn scratch_root() -> PathBuf {
     let root = std::env::temp_dir();
     fs::create_dir_all(&root)
@@ -441,7 +440,7 @@ fn missing_toml_path(db_path: &Path) -> PathBuf {
     db_path
         .parent()
         .map(|dir| dir.join("phasegent-missing.toml"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/phasegent-missing.toml"))
+        .unwrap_or_else(|| std::env::temp_dir().join("phasegent-missing.toml"))
 }
 
 pub fn stdout_text(output: &std::process::Output) -> String {

@@ -142,11 +142,10 @@ fn reviewer_list_passes_role_gate() {
             no_sync: false,
         },
     );
-    // List requires a real git repo; the test path lives under
-    // /tmp so `repo_identity` will return an error and the
-    // executor returns the structured error. The important
-    // assertion is the exit code is NOT 3, i.e. the role gate
-    // let the call through.
+    // List resolves its repo from the current directory when `--repo` is
+    // omitted, so the call may succeed or return a structured error; the
+    // assertion is only that the exit code is NOT 3, i.e. the role gate let
+    // the call through.
     assert_ne!(exit, 3, "reviewer list must pass the role gate");
 }
 
