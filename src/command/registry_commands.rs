@@ -29,7 +29,7 @@ const TOTAL: usize = core::CORE.len() + ops::OPS.len() + HIERARCHY.len();
 /// issue-read permission; writes ride the issue-update permission, so the
 /// read stays open to child roles while parent assignment stays
 /// orchestrator-only. Provider scope stays `Any`: Redmine and GitLab serve
-/// natively while Local/Forgejo reject with a structured `not_supported`
+/// natively while Local rejects with a structured `not_supported`
 /// at execution time.
 const HIERARCHY: &[CommandSpec] = &[group(
     "hierarchy",

@@ -92,7 +92,7 @@ describe('capitalizeProvider / payloadFetchedAtMs / invokeErrorMessage', () => {
     expect(capitalizeProvider('redmine')).toBe('Redmine')
     expect(capitalizeProvider('REDMINE')).toBe('Redmine')
     expect(capitalizeProvider('gitlab')).toBe('GitLab')
-    expect(capitalizeProvider('forgejo')).toBe('Forgejo')
+    expect(capitalizeProvider('local')).toBe('local')
     expect(capitalizeProvider('custom')).toBe('custom')
   })
 
@@ -203,12 +203,9 @@ describe('snapshot helpers', () => {
       {
         role: 'executor',
         provider: 'redmine',
-        forgejo_api_base: null,
-        forgejo_repository: null,
         redmine_api_base: 'https://redmine.example.invalid',
         redmine_close_status_id: 5,
         gitlab_api_base: null,
-        forgejo_credential: { present: false, length: 0 },
         redmine_credential: { present: true, length: 40 },
         gitlab_credential: { present: false },
       },
@@ -230,6 +227,11 @@ describe('snapshot helpers', () => {
     expect(snapshotEndpointForRole(snapshot, 'executor')).toBe('https://redmine.example.invalid')
     expect(snapshotEndpointForRole(snapshot, 'missing')).toBe('')
     expect(snapshotEndpointForRole(null, 'executor')).toBe('')
+    const gitlabOnly: ConfigSnapshotRaw = {
+      ...snapshot,
+      roles: [{ ...snapshot.roles[0], redmine_api_base: null, gitlab_api_base: 'https://gitlab.example.invalid' }],
+    }
+    expect(snapshotEndpointForRole(gitlabOnly, 'executor')).toBe('https://gitlab.example.invalid')
   })
 })
 

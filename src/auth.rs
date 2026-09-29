@@ -65,7 +65,6 @@ pub struct GitlabStoredConfig {
 pub struct SetupOptions {
     pub read_stdin: bool,
     pub api_base: Option<String>,
-    pub repository: Option<String>,
     pub close_status_id: Option<String>,
 }
 
@@ -77,7 +76,6 @@ pub fn setup_provider(
     let SetupOptions {
         read_stdin,
         api_base,
-        repository,
         close_status_id,
     } = options;
     // A stale stored selection names a provider that is no longer
@@ -91,10 +89,11 @@ pub fn setup_provider(
              or set `--provider redmine|gitlab|local`"
             .to_owned());
     }
-    validate_provider_options(provider, &repository, &close_status_id)?;
+    validate_provider_options(provider, &close_status_id)?;
     if provider == PROVIDER_LOCAL {
-        // The local provider keeps no credential, needs no repository and no
-        // close-status-id (both rejected above), and has no backend table.
+        // The local provider keeps no credential and no close-status-id
+        // (rejected above), takes no repository input, and has no
+        // backend table.
         // Flip the role-scoped provider preference only so `resolve_kind`
         // and `config show` report `local` while redmine/gitlab
         // rows stay intact. `api_base`/`read_stdin` are inert: there is
@@ -142,7 +141,6 @@ pub fn setup_provider(
 
 fn validate_provider_options(
     provider: &str,
-    repository: &Option<String>,
     close_status_id: &Option<String>,
 ) -> Result<(), String> {
     // Provider-agnostic: the option-applicability rules reference the
@@ -150,23 +148,14 @@ fn validate_provider_options(
     // the messages describe which provider owns each option rather than
     // which provider was configured. Credentials are not validated here;
     // the `setup_provider` local arm skips credential handling entirely.
-    // `--repository` belonged to the removed provider, so every
-    // remaining provider rejects it; the wording is retargeted in P4.
-    if provider == PROVIDER_REDMINE && repository.is_some() {
-        return Err("--repository requires the forgejo provider".to_owned());
-    }
-    if provider == PROVIDER_GITLAB && repository.is_some() {
-        return Err("--repository requires the forgejo provider".to_owned());
-    }
+    // (`auth setup` takes no repository input; the persisted column
+    // stays readable for legacy rows.)
     if provider == PROVIDER_GITLAB && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
-    // The local provider takes neither a repository override nor a
-    // Redmine close-status-id, mirroring the GitLab arms above so
-    // inapplicable options fail fast instead of being silently ignored.
-    if provider == PROVIDER_LOCAL && repository.is_some() {
-        return Err("--repository requires the forgejo provider".to_owned());
-    }
+    // The local provider takes no Redmine close-status-id, mirroring
+    // the GitLab arm above so inapplicable options fail fast instead
+    // of being silently ignored.
     if provider == PROVIDER_LOCAL && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
@@ -467,7 +456,6 @@ mod tests {
             SetupOptions {
                 read_stdin: false,
                 api_base: None,
-                repository: None,
                 close_status_id: None,
             },
         )
@@ -497,9 +485,9 @@ mod tests {
 
     #[test]
     fn auth_setup_local_rejects_inapplicable_options() {
-        // Local takes neither a repository override nor a Redmine
-        // close-status-id; both fail fast instead of being silently
-        // ignored. The repository wording is retargeted in P4.
+        // Local takes no Redmine close-status-id; it fails fast
+        // instead of being silently ignored. (`auth setup` takes no
+        // repository input at all since P3b.4.)
         let _lock = lock_workflow_tests();
         let err = setup_provider(
             Role::Executor,
@@ -507,20 +495,6 @@ mod tests {
             SetupOptions {
                 read_stdin: true,
                 api_base: None,
-                repository: Some("owner/repo".to_owned()),
-                close_status_id: None,
-            },
-        )
-        .unwrap_err();
-        assert_eq!(err, "--repository requires the forgejo provider");
-
-        let err = setup_provider(
-            Role::Executor,
-            PROVIDER_LOCAL,
-            SetupOptions {
-                read_stdin: true,
-                api_base: None,
-                repository: None,
                 close_status_id: Some("1".to_owned()),
             },
         )
@@ -529,8 +503,8 @@ mod tests {
     }
 
     #[test]
-    fn auth_setup_rejects_stale_forgejo_selection_without_touching_storage() {
-        // A stale `forgejo` selection fails closed before any storage or
+    fn auth_setup_rejects_stale_selection_without_touching_storage() {
+        // A stale selection fails closed before any storage or
         // credential access; the legacy row is left for explicit
         // clear/replace.
         let _lock = lock_workflow_tests();
@@ -540,7 +514,6 @@ mod tests {
             SetupOptions {
                 read_stdin: true,
                 api_base: None,
-                repository: None,
                 close_status_id: None,
             },
         )

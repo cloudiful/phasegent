@@ -73,7 +73,6 @@ pub(crate) fn execute_version(
         role,
         provider_kind,
         api_base,
-        repository,
         resolved_project_id.as_deref(),
         close_status_id,
     ) {

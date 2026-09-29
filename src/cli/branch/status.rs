@@ -176,14 +176,20 @@ pub(crate) fn execute_status(
         Ok(legacy) => legacy,
         Err(error) => return crate::cli::structured_error(error.json(), 1),
     };
-    // The repo key and scope shape the durable read; neither failure is
-    // fatal here. An unparseable origin, an unresolvable scope, or an
-    // unreachable store keeps the legacy-compatible core.
+    // The repo key shapes the durable read; its failure is not fatal
+    // here. An unparseable origin or an unreachable store keeps the
+    // legacy-compatible core. A scope selection failure (missing
+    // project, stale stored provider) is a structured actionable
+    // failure instead: only the legitimate no-provider case
+    // (`Ok(None)`, nothing selected anywhere) keeps the unscoped
+    // legacy read.
     let repo_key =
         resolve_repo_key(read_origin_url(&runner).as_deref(), &checkout_root(&runner)).ok();
-    let scope: Option<LinkScope> = resolve_link_scope(role, provider, repository, project_id)
-        .ok()
-        .flatten();
+    let scope: Option<LinkScope> = match resolve_link_scope(role, provider, repository, project_id)
+    {
+        Ok(scope) => scope,
+        Err(message) => return crate::cli::structured_error(super::scope_error(message), 1),
+    };
     let (resolved, storage) = match (&repo_key, crate::infra::storage::Storage::open()) {
         (Some(resolved), Ok(storage)) => match ensure_schema(&storage.connection) {
             Ok(()) => (resolved.clone(), storage),

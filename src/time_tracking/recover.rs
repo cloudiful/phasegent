@@ -111,7 +111,7 @@ pub(crate) fn handle_recover(
     drop(storage);
     // Durable local FAILED transition before any provider check.
     // This guarantees the orphan is never left running, even when
-    // the provider is forgejo or Redmine config is missing.
+    // the provider selection is stale or Redmine config is missing.
     let storage = Storage::open().map_err(timer_storage_error("timer recover"))?;
     let finished_at = now_epoch_seconds();
     let run = match storage.finish_timer_run(run_id, "FAILED", finished_at) {

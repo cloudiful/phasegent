@@ -110,6 +110,26 @@ fn global_option_hint_only_matches_global_options() {
     }
 }
 
+#[test]
+fn auth_setup_rejects_the_removed_repository_option() {
+    // `--repository` belonged to the removed provider: `auth setup`
+    // no longer accepts it in either form. The persisted `repository`
+    // column stays readable for legacy rows; only the setup input is
+    // gone.
+    let error = parse_with_role_env(
+        &args(&["admin", "auth", "setup", "--repository", "owner/repo"]),
+        Some("admin"),
+    )
+    .expect_err("auth setup --repository must be rejected");
+    assert_eq!(error, "unknown auth setup option '--repository'");
+    let error = parse_with_role_env(
+        &args(&["admin", "auth", "setup", "--repository=owner/repo"]),
+        Some("admin"),
+    )
+    .expect_err("auth setup --repository=value must be rejected");
+    assert_eq!(error, "unknown auth setup option '--repository=owner/repo'");
+}
+
 /// Phase 2 registry gate: a role-denied command fails at parse time with the
 /// stable permission message that names the command's operation, and stays
 /// distinct from the unknown-command error.

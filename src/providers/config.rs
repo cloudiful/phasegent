@@ -436,8 +436,8 @@ mod tests {
     }
 
     #[test]
-    fn stale_forgejo_selection_fails_with_migration_guidance() {
-        // A persisted `forgejo` value must fail with an actionable error
+    fn stale_selection_fails_with_migration_guidance() {
+        // A persisted stale value must fail with an actionable error
         // that names the stale value and points at the explicit
         // clear/replace path; it must never silently map to another
         // provider.

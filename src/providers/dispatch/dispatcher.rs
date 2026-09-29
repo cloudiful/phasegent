@@ -51,7 +51,6 @@ impl ProviderDispatcher {
         command: &RepoCommand,
         _role: crate::policy::Role,
         _api_base: Option<&str>,
-        _repository: Option<&str>,
     ) -> Result<RepoSummary, ProviderError> {
         let RepoCommand::Create {
             target,

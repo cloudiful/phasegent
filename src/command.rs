@@ -77,7 +77,6 @@ pub enum Command {
         read_stdin: bool,
         provider: Option<ProviderKind>,
         api_base: Option<String>,
-        repository: Option<String>,
         close_status_id: Option<String>,
     },
     ConfigShow,

@@ -96,17 +96,11 @@ pub(crate) fn execute_status(
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
-    let provider = match super::provider_for(
-        role,
-        provider_kind,
-        api_base,
-        repository,
-        project_id,
-        close_status_id,
-    ) {
-        Ok(provider) => provider,
-        Err(error) => return super::provider_error(error),
-    };
+    let provider =
+        match super::provider_for(role, provider_kind, api_base, project_id, close_status_id) {
+            Ok(provider) => provider,
+            Err(error) => return super::provider_error(error),
+        };
     if !provider.supports(capability) {
         return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),

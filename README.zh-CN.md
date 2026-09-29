@@ -98,8 +98,9 @@ Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`），OpenCode
 skill 见 `skills/phasegent`：它选择 tracking 模式（`INLINE` /
 `TRACKED_ISSUE` / `LOCAL_ISSUE`），通过 `--provider` 从配置解析 provider
-（最终回退 Forgejo），并记录当前的 `issue update`、`worktree acquire --base`、
-`worktree probe` 与 `worktree prune` 用法。
+（redmine、gitlab 或 local；缺失或过期选择会直接失败并给出可操作的指引），
+并记录当前的 `issue update`、`worktree acquire --base`、`worktree probe`
+与 `worktree prune` 用法。
 
 ## Worktree
 

@@ -212,9 +212,8 @@ fn list_comments_returns_every_comment_with_full_bodies_in_order() {
 fn marker_is_globally_unique_across_issues() {
     // The schema makes local_comments.marker globally UNIQUE
     // (schema.sql), so the same marker cannot be reused on a second
-    // issue. Forgejo/Redmine/GitLab allow per-issue reuse; local
-    // intentionally diverges and this test pins that behaviour so any
-    // future schema change is deliberate.
+    // issue. Redmine/GitLab allow per-issue reuse; local
+    // intentionally diverges and this test pins that behaviour.
     let (provider, dir) = tmp_provider("marker-global");
     let first = provider.create_issue("A", "b").unwrap();
     let second = provider.create_issue("B", "b").unwrap();

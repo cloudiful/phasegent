@@ -130,7 +130,7 @@ pub(super) fn default_provider(
     role: crate::policy::Role,
 ) -> Result<crate::providers::ProviderDispatcher, crate::providers::api::ProviderError> {
     let kind = crate::providers::config::resolve_kind(role, None)?;
-    crate::cli::provider_for(role, Some(kind), None, None, None, None)
+    crate::cli::provider_for(role, Some(kind), None, None, None)
 }
 
 /// Small adapter so a [`WorktreeError`] can travel through the pass's

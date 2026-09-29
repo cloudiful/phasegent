@@ -224,7 +224,6 @@ pub(crate) fn execute_search_transparent(
         role,
         Some(resolved_kind),
         api_base,
-        repository,
         effective_project.as_deref(),
         effective_close.as_deref(),
     ) {

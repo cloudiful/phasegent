@@ -63,9 +63,9 @@ pub(crate) fn parse_relation(args: &[String]) -> Result<Command, String> {
         "delete" => {
             // `--issue <SOURCE_ISSUE_IID>` is required for GitLab
             // because the DELETE endpoint is scoped per source issue;
-            // Redmine and Forgejo ignore the flag. Requiring the
+            // Redmine ignores the flag. Requiring the
             // option always keeps the GitLab dispatch honest; users
-            // who target Redmine or Forgejo can still pass any
+            // who target Redmine can still pass any
             // positive id (or zero, which the provider layer
             // surfaces as a structured config error if it lands on
             // GitLab by mistake).

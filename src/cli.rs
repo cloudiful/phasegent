@@ -77,7 +77,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             read_stdin,
             provider: auth_provider,
             api_base: auth_base,
-            repository: auth_repository,
             close_status_id: auth_close_status_id,
         } => {
             let role = required_role(invocation.role);
@@ -92,7 +91,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                 auth::SetupOptions {
                     read_stdin,
                     api_base: auth_base.or(invocation.api_base),
-                    repository: auth_repository.or(invocation.repository),
                     close_status_id: auth_close_status_id.or(invocation.close_status_id),
                 },
             ) {
@@ -219,7 +217,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.role,
             invocation.provider,
             invocation.api_base.as_deref(),
-            invocation.repository.as_deref(),
             invocation.project_id.as_deref(),
             invocation.close_status_id.as_deref(),
             command,
@@ -255,7 +252,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.role,
             invocation.provider,
             invocation.api_base.as_deref(),
-            invocation.repository.as_deref(),
             invocation.project_id.as_deref(),
             invocation.close_status_id.as_deref(),
             command,
@@ -264,7 +260,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.role,
             invocation.provider,
             invocation.api_base.as_deref(),
-            invocation.repository.as_deref(),
             invocation.project_id.as_deref(),
             invocation.close_status_id.as_deref(),
             command,
@@ -273,7 +268,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.role,
             invocation.provider,
             invocation.api_base.as_deref(),
-            invocation.repository.as_deref(),
             invocation.project_id.as_deref(),
             invocation.close_status_id.as_deref(),
             command,
@@ -310,7 +304,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             required_role(invocation.role),
             invocation.provider,
             invocation.api_base,
-            invocation.repository,
             invocation.project_id,
             invocation.close_status_id,
             command,
@@ -337,30 +330,10 @@ pub(crate) fn report_local_warnings(operation: &str, warnings: Option<String>) {
     }
 }
 
-/// Legacy `repo create` route. The removed provider no longer exists, so
-/// this entry point always fails closed with an actionable structured
-/// config error instead of selecting another provider; the GitLab route
-/// lives in `repo::execute_repo_or_gitlab`. P3 owns the replacement
-/// routing. Kept for the legacy `repo_cli` call path until P3b removes
-/// it.
-#[allow(dead_code)]
-pub(crate) fn provider(
-    role: Role,
-    _api_base: Option<&str>,
-    _repository: Option<&str>,
-) -> Result<ProviderDispatcher, ProviderError> {
-    let _ = role;
-    Err(ProviderError::config(
-        "repo create needs an explicit provider; use `--provider gitlab` \
-         (Redmine and local have no repository endpoint)",
-    ))
-}
-
 pub(crate) fn provider_for(
     role: Role,
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
-    repository: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
 ) -> Result<ProviderDispatcher, ProviderError> {
@@ -375,7 +348,6 @@ pub(crate) fn provider_for(
             // close status id. The dispatcher still hands the resolved
             // config to GitlabProvider so the not-supported stubs receive
             // the exact URL and project id the caller asked for.
-            let _ = repository;
             let _ = close_status_id;
             let config = GitlabConfig::resolve(role, api_base, project_id)?;
             ProviderDispatcher::gitlab(role, config)

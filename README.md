@@ -106,7 +106,8 @@ by AI roles.
 Run `phasegent --help` (or `phasegent --help <topic>`) for the full command
 reference, and see `skills/phasegent` for the OpenCode skill: it picks
 the tracking mode (`INLINE` / `TRACKED_ISSUE` / `LOCAL_ISSUE`), resolves the
-provider from configuration through `--provider` with a Forgejo fallback, and
+provider from configuration through `--provider` (redmine, gitlab, or local;
+a missing or stale selection fails closed with actionable guidance), and
 covers the current `issue update`, `worktree acquire --base`, `worktree probe`,
 and `worktree prune` surfaces.
 

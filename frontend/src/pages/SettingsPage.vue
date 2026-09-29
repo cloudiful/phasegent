@@ -15,6 +15,8 @@ import {
 } from '@/ipc'
 import type { RoleId } from '@/types'
 
+const SUPPORTED_PROVIDERS = ['redmine', 'gitlab', 'local']
+
 const ROLE_ITEMS: { label: string, value: RoleId, hint: string }[] = [
   { label: 'Admin', value: 'admin', hint: 'Bootstrap Redmine projects and provision agent users.' },
   { label: 'Orchestrator', value: 'orchestrator', hint: 'Plan phases and advance workflow state.' },
@@ -47,9 +49,17 @@ const initialized = ref(false)
 
 const roleHint = computed(() => ROLE_ITEMS.find(item => item.value === activeRole.value)?.hint ?? '')
 const roleEntry = computed(() => snapshotRoleEntry(snapshot.value, activeRole.value))
+// A stored selection naming a removed provider is never silently replaced:
+// the raw value stays visible in the input and this notice explains the
+// required action. Only redmine, gitlab, and local are offered.
+const staleProvider = computed(() => {
+  const value = provider.value.trim()
+  if (value === '') return ''
+  return SUPPORTED_PROVIDERS.includes(value.toLowerCase()) ? '' : value
+})
 const credentialPresenceText = computed(() => {
   if (!roleEntry.value) return 'Not loaded yet.'
-  const key = credentialProvider.value === 'forgejo' ? roleEntry.value.forgejo_credential : credentialProvider.value === 'gitlab' ? roleEntry.value.gitlab_credential : roleEntry.value.redmine_credential
+  const key = credentialProvider.value === 'gitlab' ? roleEntry.value.gitlab_credential : roleEntry.value.redmine_credential
   if (!key) return 'Not configured.'
   if (!key.present) return 'Not configured.'
   return `Configured (length ${key.length ?? 0}). Value is never displayed.`
@@ -66,7 +76,7 @@ function syncCredentialPresence(): void {
   if (!snapshot.value) return
   const entry = snapshotRoleEntry(snapshot.value, activeRole.value)
   if (entry) {
-    const key = credentialProvider.value === 'forgejo' ? entry.forgejo_credential : credentialProvider.value === 'gitlab' ? entry.gitlab_credential : entry.redmine_credential
+    const key = credentialProvider.value === 'gitlab' ? entry.gitlab_credential : entry.redmine_credential
     credentialInfo.value = key ? { present: key.present, length: key.length ?? 0 } : null
   }
   if (!initialized.value) initialized.value = true
@@ -307,6 +317,14 @@ async function clearCredentialAction(): Promise<void> {
             placeholder="redmine"
           />
         </UFormField>
+        <UAlert
+          v-if="staleProvider"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          title="Unsupported provider"
+          :description="`Support for the '${staleProvider}' provider was removed. Choose redmine, gitlab, or local and save to replace the stored selection.`"
+        />
         <UFormField
           label="Endpoint"
           name="endpoint"
@@ -369,7 +387,7 @@ async function clearCredentialAction(): Promise<void> {
           >
             <USelect
               v-model="credentialProvider"
-              :items="['forgejo', 'redmine', 'gitlab']"
+              :items="['redmine', 'gitlab']"
               class="w-full"
             />
           </UFormField>

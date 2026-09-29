@@ -2,6 +2,60 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn config_set_clear_reject_the_removed_repository_setting() {
+    // `PHASEGENT_REPOSITORY` belonged to the removed provider: the
+    // canonical name and the `repository` alias are unknown to
+    // set/clear at parse time and at dispatch, while rows the storage
+    // layer already holds stay intact (no destructive migration).
+    assert!(config_write::canonical_setting_name("PHASEGENT_REPOSITORY").is_none());
+    assert!(config_write::canonical_setting_name("repository").is_none());
+    for setting in ["PHASEGENT_REPOSITORY", "repository"] {
+        let args = ["admin", "config", "set", setting, "owner/repo"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let error = command::parse_with_role_env(&args, Some("executor"))
+            .expect_err("removed repository setting must not parse for set");
+        assert!(error.contains("unknown config setting"), "got: {error}");
+        let args = ["admin", "config", "clear", setting]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let error = command::parse_with_role_env(&args, Some("executor"))
+            .expect_err("removed repository setting must not parse for clear");
+        assert!(error.contains("unknown config setting"), "got: {error}");
+    }
+    with_isolated_storage("set-clear-repository-removed", |_db_path, storage| {
+        let error = config_write::set_setting_value(
+            Some(Role::Executor),
+            "PHASEGENT_REPOSITORY",
+            "owner/repo",
+            storage,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown setting"), "got: {error}");
+        // A legacy row with a stored repository survives the removal:
+        // clear dispatch rejects the name without touching the row.
+        storage
+            .save_role_config(
+                Role::Executor,
+                &crate::auth::StoredConfig {
+                    provider: None,
+                    api_base: None,
+                    repository: Some("owner/repo".to_owned()),
+                },
+            )
+            .unwrap();
+        let error =
+            config_write::clear_setting(Some(Role::Executor), "PHASEGENT_REPOSITORY", storage)
+                .unwrap_err();
+        assert!(error.contains("unknown setting"), "got: {error}");
+        let loaded = storage.load_role_config(Role::Executor).unwrap().unwrap();
+        assert_eq!(loaded.repository.as_deref(), Some("owner/repo"));
+    });
+}
+
+#[test]
 fn config_set_secret_via_stdin_persists_and_show_redacted() {
     with_isolated_storage("set-secret-stdin", |_db_path, storage| {
         let secret = "super-secret-bearer-123";

@@ -75,7 +75,7 @@ fn doctor_report_identifies_credentials_without_values() {
         "store time must be reported"
     );
     assert!(
-        !executor.forgejo_credential.present,
+        !executor.gitlab_credential.present,
         "unset credentials stay absent"
     );
     assert_eq!(report.index.backend, "sqlite");

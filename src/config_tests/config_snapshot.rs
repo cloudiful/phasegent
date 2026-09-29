@@ -1,13 +1,15 @@
 use super::support::*;
 use super::*;
 
-/// The `config show` snapshot contract after project-id removal: the snapshot
+/// The `config show` snapshot contract: the snapshot
 /// names `gitlab_api_base`/`gitlab_credential` and reports credential
 /// presence/length only (never a secret), an unset credential omits the length
-/// slot entirely, no `gitlab_project_id`/`redmine_project_id` slot may come
-/// back, legacy persisted project ids stay inert in storage, and provider
-/// resolution ignores both the legacy rows and the legacy environment
-/// variables while an explicit project id keeps winning.
+/// slot entirely, no `gitlab_project_id`/`redmine_project_id` slot is present,
+/// stored project ids stay inert in storage, and provider
+/// resolution ignores both the stored rows and the environment
+/// variables while an explicit project id keeps winning. Unsupported
+/// snapshot fields stay absent from the snapshot while the stored
+/// credential row remains stored.
 #[test]
 fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
     with_isolated_storage("show-project-id-contract", |db_path, storage| {
@@ -19,14 +21,20 @@ fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
         assert_eq!(empty_roles.len(), 1);
         let empty_executor = &empty_roles[0];
         assert!(empty_executor["gitlab_api_base"].is_null());
-        for removed in ["gitlab_project_id", "redmine_project_id"] {
+        for absent in [
+            "gitlab_project_id",
+            "redmine_project_id",
+            "forgejo_api_base",
+            "forgejo_repository",
+            "forgejo_credential",
+        ] {
             assert!(
-                empty_executor.get(removed).is_none(),
-                "snapshot must not expose {removed}: {empty_executor:?}"
+                empty_executor.get(absent).is_none(),
+                "snapshot must not expose {absent}: {empty_executor:?}"
             );
             assert!(
-                !empty_text.contains(removed),
-                "snapshot must not contain {removed}: {empty_text}"
+                !empty_text.contains(absent),
+                "snapshot must not contain {absent}: {empty_text}"
             );
         }
         assert_eq!(
@@ -87,32 +95,57 @@ fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
             executor["gitlab_api_base"].as_str(),
             Some("https://gitlab.example")
         );
-        // Project-id fields were removed; stored values are ignored and
-        // must not appear in the snapshot.
+        // Project-id fields are not part of the snapshot; stored values
+        // are ignored and must not appear in it.
         assert!(
             executor.get("gitlab_project_id").is_none(),
-            "snapshot must not expose gitlab_project_id after Phase 1: {executor:?}"
+            "snapshot must not expose gitlab_project_id: {executor:?}"
         );
         assert!(
             executor.get("redmine_project_id").is_none(),
-            "snapshot must not expose redmine_project_id after Phase 1: {executor:?}"
+            "snapshot must not expose redmine_project_id: {executor:?}"
         );
         assert_eq!(executor["gitlab_credential"]["present"], Value::Bool(true));
         assert_eq!(
             executor["gitlab_credential"]["length"],
             Value::from("gitlab-private-token-shhh".len())
         );
-        assert_eq!(executor["forgejo_credential"]["present"], Value::Bool(true));
+        // Unsupported snapshot fields stay out of the snapshot even when
+        // legacy rows exist; the raw credential row is preserved in
+        // storage and never rewritten or cleared.
+        for absent in [
+            "forgejo_api_base",
+            "forgejo_repository",
+            "forgejo_credential",
+        ] {
+            assert!(
+                executor.get(absent).is_none(),
+                "snapshot must not expose {absent}: {executor:?}"
+            );
+        }
+        assert!(
+            !text.contains("forgejo_api_base")
+                && !text.contains("forgejo_repository")
+                && !text.contains("forgejo_credential"),
+            "snapshot must not name unsupported fields: {text}"
+        );
+        let stored_legacy = storage
+            .load_credential(Role::Executor, PROVIDER_FORGEJO)
+            .unwrap();
+        assert_eq!(
+            stored_legacy.as_deref(),
+            Some("forgejo-secret-token"),
+            "legacy credential row must be preserved"
+        );
         assert_eq!(executor["redmine_credential"]["present"], Value::Bool(true));
-        // Verify legacy stored project_id was ignored, not leaked.
+        // Verify the stored project_id was ignored, not leaked.
         let stored = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
         assert_eq!(
             stored.project_id, None,
             "legacy gitlab project_id must be inert (load returns None)"
         );
 
-        // Simulate a legacy database where project ids were persisted by
-        // writing directly via SQL before the migration runs.
+        // Simulate stored project ids persisted directly via SQL.
         storage
             .connection
             .execute(
@@ -127,7 +160,7 @@ fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
                 rusqlite::params!["executor", "https://gitlab.example", 99_i64],
             )
             .unwrap();
-        // Re-open to trigger the migration that clears legacy values.
+        // Re-open to trigger the migration that clears stored values.
         let reopened = Storage::open_at(db_path).unwrap();
         let redmine = reopened
             .load_redmine_config(Role::Executor)
@@ -174,9 +207,9 @@ fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
             "raw gitlab project_id column must be NULL: {gitlab_raw:?}"
         );
 
-        // Provider resolution must not use legacy values: Redmine without
+        // Provider resolution must not use stored values: Redmine without
         // explicit --project-id must have None, GitLab without explicit
-        // must error even though legacy row existed.
+        // must error even though a stored row existed.
         let _env_redmine = EnvGuard::set("PHASEGENT_REDMINE_PROJECT_ID", "env-id");
         let _env_gitlab = EnvGuard::set("PHASEGENT_GITLAB_PROJECT_ID", "123");
         let _env_generic = EnvGuard::set("PHASEGENT_PROJECT_ID", "generic-id");
@@ -191,7 +224,7 @@ fn config_snapshot_omits_project_id_surface_and_legacy_values_stay_inert() {
         .unwrap();
         assert_eq!(
             redmine_config.project_id, None,
-            "redmine env must be ignored after Phase 1"
+            "redmine env must be ignored"
         );
         // GitLab: explicit None, env present, must still error.
         let gitlab_err = crate::providers::config::GitlabConfig::resolve(

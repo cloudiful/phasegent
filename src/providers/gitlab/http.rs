@@ -33,8 +33,8 @@ use url::Url;
 pub(crate) const PAGE_SIZE: usize = 50;
 
 /// Hard upper bound on the number of pages the paginated helper will
-/// walk before bailing out. Mirrors the Forgejo / Redmine defaults
-/// (each provider uses the same constant for the same reason: a
+/// walk before bailing out. Mirrors the Redmine default
+/// (both providers use the same constant for the same reason: a
 /// pathological server response that never advances pagination must
 /// not turn into an infinite loop).
 pub(crate) const MAX_PAGES: usize = 10_000;
@@ -414,8 +414,7 @@ impl GitlabHttp {
     }
 
     /// Issue a `DELETE` against the GitLab API, used for issue link
-    /// deletes (`/links/:id`) and any future endpoint that follows the
-    /// same shape. The method is tolerant of an empty body so a
+    /// deletes (`/links/:id`). The method is tolerant of an empty body so a
     /// successful `204 No Content` surfaces as `Ok(None)` instead of a
     /// decode error.
     pub(crate) fn delete<T: DeserializeOwned>(

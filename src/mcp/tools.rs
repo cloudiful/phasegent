@@ -30,7 +30,6 @@ pub struct McpConfig {
     pub role: Role,
     pub provider: Option<ProviderKind>,
     pub api_base: Option<String>,
-    pub repository: Option<String>,
     pub project_id: Option<String>,
     pub close_status_id: Option<String>,
     /// Explicit server-side opt-in for `comment_create`. Mirrors the
@@ -44,7 +43,6 @@ impl McpConfig {
         role: Role,
         provider: Option<ProviderKind>,
         api_base: Option<String>,
-        repository: Option<String>,
         project_id: Option<String>,
         close_status_id: Option<String>,
         authorized: bool,
@@ -53,7 +51,6 @@ impl McpConfig {
             role,
             provider,
             api_base,
-            repository,
             project_id,
             close_status_id,
             authorized,
@@ -82,7 +79,6 @@ impl PhasegentMcpServer {
             self.config.role,
             self.config.provider,
             self.config.api_base.as_deref(),
-            self.config.repository.as_deref(),
             self.config.project_id.as_deref(),
             self.config.close_status_id.as_deref(),
         )

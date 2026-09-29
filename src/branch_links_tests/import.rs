@@ -161,12 +161,12 @@ fn import_does_not_resurrect_explicit_detach() {
 }
 
 #[test]
-fn stored_repository_scopes_forgejo_migration_without_flags() {
+fn stored_stale_provider_fails_closed_and_preserves_rows() {
     use crate::infra::storage::test_support::lock_workflow_tests;
     use crate::policy::Role;
     let _lock = lock_workflow_tests();
     let _env = clear_provider_env();
-    let (dir, _db) = pin_db("scope-stored");
+    let (dir, _db) = pin_db("scope-stale");
     let storage = crate::infra::storage::Storage::open_at(&dir.join("phasegent.sqlite3"))
         .expect("temp storage must open");
     storage
@@ -180,11 +180,27 @@ fn stored_repository_scopes_forgejo_migration_without_flags() {
         )
         .expect("role config must save");
     drop(storage);
-    // Role-less resolves stored config as orchestrator for scope only,
-    // so a stored forgejo checkout migrates without explicit flags.
-    let scope = branch_links::resolve_link_scope(None, None, None, None)
-        .expect("resolution must not fail")
-        .expect("stored scope must resolve");
-    assert_eq!(scope.provider, "forgejo");
-    assert_eq!(scope.project, "owner/repo");
+    // A stale stored provider fails with the same actionable config
+    // guidance as the other resolver paths instead of scoping the
+    // link to a removed provider; nothing is guessed. Role-less
+    // resolves stored config as orchestrator for scope only.
+    let error = branch_links::resolve_link_scope(None, None, None, None)
+        .expect_err("stale stored provider must fail closed");
+    assert!(
+        error.contains("forgejo"),
+        "guidance must name the stale value: {error}"
+    );
+    assert!(
+        error.contains("admin config provider clear"),
+        "guidance must name the explicit remedy: {error}"
+    );
+    // The legacy rows are preserved verbatim for explicit
+    // clear/replace; resolution never rewrites them.
+    let storage = crate::infra::storage::Storage::open().expect("pinned storage must open");
+    let stored = storage
+        .load_role_config(Role::Orchestrator)
+        .expect("read must work")
+        .expect("legacy row must survive");
+    assert_eq!(stored.provider.as_deref(), Some("forgejo"));
+    assert_eq!(stored.repository.as_deref(), Some("owner/repo"));
 }

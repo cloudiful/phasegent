@@ -63,7 +63,7 @@ fn provider_kind_gitlab_round_trips_and_rejects_unknown_values() {
         "parse error must enumerate the supported providers: {error}"
     );
 
-    // A stale `forgejo` value fails with migration guidance, never a
+    // A stale value fails with migration guidance, never a
     // silent mapping to another provider.
     let stale = "forgejo".parse::<ProviderKind>().unwrap_err();
     assert!(stale.contains("forgejo"), "got: {stale}");

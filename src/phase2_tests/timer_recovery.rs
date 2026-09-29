@@ -149,9 +149,9 @@ fn timer_recover_with_stale_provider_marks_failed_and_returns_config_error() {
             1_700_000_000,
         )
         .unwrap();
-    // The stale selection arrives via env (explicit `--provider forgejo`
-    // no longer parses). Recover still marks FAILED locally, then
-    // surfaces the structured config error from the projection.
+    // The stale selection arrives via env. Recover still marks FAILED
+    // locally, then surfaces the structured config error from the
+    // projection.
     let _stale = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
     let err = crate::time_tracking_cli::execute_recovery(
         Some(Role::Orchestrator),

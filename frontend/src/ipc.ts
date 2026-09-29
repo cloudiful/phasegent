@@ -168,7 +168,6 @@ export function mapIssueStateToTaskStatus(state: string): TaskStatus {
 export function capitalizeProvider(raw: string): string {
   const lower = raw.toLowerCase()
   if (lower === 'gitlab') return 'GitLab'
-  if (lower === 'forgejo') return 'Forgejo'
   if (lower === 'redmine') return 'Redmine'
   return raw
 }
@@ -333,12 +332,9 @@ export interface CredentialSummaryRaw {
 export interface RoleSnapshotRaw {
   role: string
   provider?: string | null
-  forgejo_api_base?: string | null
-  forgejo_repository?: string | null
   redmine_api_base?: string | null
   redmine_close_status_id?: number | null
   gitlab_api_base?: string | null
-  forgejo_credential: CredentialSummaryRaw
   redmine_credential: CredentialSummaryRaw
   gitlab_credential: CredentialSummaryRaw
 }
@@ -376,7 +372,7 @@ export function snapshotRoleEntry(snapshot: ConfigSnapshotRaw | null, role: stri
 export function snapshotEndpointForRole(snapshot: ConfigSnapshotRaw | null, role: string): string {
   const entry = snapshotRoleEntry(snapshot, role)
   if (!entry) return ''
-  return entry.redmine_api_base ?? entry.forgejo_api_base ?? entry.gitlab_api_base ?? ''
+  return entry.redmine_api_base ?? entry.gitlab_api_base ?? ''
 }
 
 export function snapshotProviderForRole(snapshot: ConfigSnapshotRaw | null, role: string): string {

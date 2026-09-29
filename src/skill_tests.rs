@@ -280,8 +280,12 @@ fn readmes_carry_provider_neutral_tracking_and_current_surface() {
             "{relative} must document the current issue update and worktree prune surface"
         );
         assert!(
-            text.contains("--provider") && text.contains("Forgejo"),
-            "{relative} must document that the provider is resolved from configuration with a Forgejo fallback"
+            text.contains("--provider") && text.contains("redmine") && text.contains("gitlab"),
+            "{relative} must document that the provider is resolved from configuration across the current provider set"
+        );
+        assert!(
+            !text.contains("Forgejo"),
+            "{relative} must not advertise the removed provider"
         );
     }
 }

@@ -44,7 +44,7 @@ fn toml_malformed_and_unknown_fields_fail_clearly() {
 #[test]
 fn toml_legacy_provider_fields_and_values_are_rejected() {
     let _lock = lock_workflow_tests();
-    // A stale `forgejo` provider value fails with migration guidance,
+    // A stale provider value fails with migration guidance,
     // never a silent fallback.
     for content in [
         "default_provider = \"forgejo\"\n",

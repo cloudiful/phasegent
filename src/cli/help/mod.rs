@@ -15,6 +15,7 @@ pub mod notify;
 pub mod plugin;
 pub mod project;
 pub mod relation;
+pub mod repo;
 pub mod root;
 pub mod status;
 pub mod timer;
@@ -40,6 +41,7 @@ use notify::{print_notify_command_help, print_notify_help};
 use plugin::{print_plugin_command_help, print_plugin_help};
 use project::{print_project_command_help, print_project_help};
 use relation::{print_relation_command_help, print_relation_help};
+use repo::{print_repo_command_help, print_repo_help};
 use root::{print_mcp_command_help, print_mcp_help, print_root_help};
 use status::{print_status_command_help, print_status_help};
 use timer::{print_timer_command_help, print_timer_help};
@@ -159,7 +161,7 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
             if provider == Some(ProviderKind::Redmine) {
                 print_not_supported_help("repo")
             } else {
-                crate::repo_cli::print_help(role)
+                print_repo_help(role)
             }
         }
         HelpTopic::IssueCommand(command) => print_issue_command_help(role, &command),
@@ -178,7 +180,7 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
             if provider == Some(ProviderKind::Redmine) {
                 print_not_supported_help(&format!("repo {command}"))
             } else {
-                crate::repo_cli::print_command_help(role, &command, provider)
+                print_repo_command_help(role, &command, provider)
             }
         }
         HelpTopic::Hooks => print_hooks_help(),

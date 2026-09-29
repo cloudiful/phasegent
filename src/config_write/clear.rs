@@ -105,22 +105,6 @@ fn persist_clear_value(
             }
             Ok(cleared)
         }
-        "PHASEGENT_REPOSITORY" => {
-            let role = role.expect("role required");
-            let current = storage.load_role_config(role)?;
-            if current
-                .as_ref()
-                .and_then(|c| c.repository.as_deref())
-                .is_none()
-            {
-                Ok(false)
-            } else {
-                let mut cfg = current.unwrap_or_default();
-                cfg.repository = None;
-                storage.save_role_config(role, &cfg)?;
-                Ok(true)
-            }
-        }
         "PHASEGENT_REDMINE_API_BASE" => {
             let role = role.expect("role required");
             let current = storage.load_redmine_config(role)?;

@@ -89,10 +89,10 @@ fn explicit_scope_needs_only_cli_args_and_rejects_guesses() {
 }
 
 #[test]
-fn create_switch_forgejo_scope_links_and_moves() {
-    // The scoped link/switch helper is provider-agnostic: a Forgejo
-    // scope links under ("forgejo", "acme/widgets") and the safe
-    // switch gates apply unchanged.
+fn create_switch_opaque_scope_links_and_moves() {
+    // The scoped link/switch helper is provider-agnostic: a historical
+    // scope links under opaque strings and the safe switch gates apply
+    // unchanged.
     let _lock = lock_workflow_tests();
     let Some((repo, db)) = switch_repo("forgejo-scope") else {
         return;

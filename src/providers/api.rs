@@ -18,7 +18,7 @@ pub struct IssueSummary {
     pub html_url: Option<String>,
     /// Owning-project passthrough for the Redmine single-number scope
     /// guard (issue 394 P2). Redmine sets `Some` from the issue DTO's
-    /// `project` ref; Forgejo/GitLab/Local set `None` so their stdout
+    /// `project` ref; GitLab and Local set `None` so their stdout
     /// JSON stays byte-identical (omitted via `skip_serializing_if`).
     /// Search items stay `None` (see `from_summary`) so search output
     /// convergence is unchanged; only single-number `get` documents

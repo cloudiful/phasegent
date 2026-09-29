@@ -236,8 +236,8 @@ fn config_provider_get_rejects_stale_invalid_row() {
 }
 
 #[test]
-fn stale_forgejo_global_default_fails_closed_and_preserves_row() {
-    // A legacy `forgejo` default must fail with actionable migration
+fn stale_global_default_fails_closed_and_preserves_row() {
+    // A stale persisted default must fail with actionable migration
     // guidance instead of silently selecting another provider, and the
     // stored row must stay intact for explicit clear/replace.
     with_isolated_storage("global-default-forgejo-stale", |_db_path, storage| {

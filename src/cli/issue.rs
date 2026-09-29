@@ -41,7 +41,6 @@ pub(crate) fn execute_issue(
             super::required_role(role_value),
             provider_kind,
             api_base,
-            repository,
             project_id,
             close_status_id,
             *all,
@@ -170,7 +169,6 @@ pub(crate) fn execute_issue(
         role,
         Some(provider_kind),
         api_base,
-        repository,
         project_id.as_deref(),
         close_status_id.as_deref(),
     ) {
@@ -385,8 +383,7 @@ pub(crate) fn execute_issue(
                     // Phase 2 tool-driven auto (issue 443): a successful
                     // create implies `In Progress` via `auto_route_next`.
                     // Best-effort timer only; failures stay on stderr so
-                    // the stdout issue JSON is byte-identical. Forgejo
-                    // stays a silent `Skipped` inside the helper.
+                    // the stdout issue JSON is byte-identical.
                     if let Some(target) = crate::lifecycle_auto::auto_route_next(
                         summary.number,
                         crate::lifecycle_auto::ToolSignal::IssueCreated,
@@ -542,11 +539,9 @@ pub(crate) fn execute_issue(
                         );
                     }
                     // Auto-accounting side effect: finish any running
-                    // auto-run for the issue. The helper is gated for
-                    // Forgejo internally and returns `Noop` so a
-                    // Forgejo close never mutates the Redmine or
-                    // GitLab ledger rows; for Redmine and GitLab it
-                    // finishes every running row for the issue. The
+                    // auto-run for the issue. The helper finishes
+                    // every running auto-run for the issue locally;
+                    // an empty ledger is a best-effort `Noop`. The
                     // branch-context `unbind_closed_issue` above is a
                     // Redmine-only sibling helper and is unaffected by
                     // this hook.

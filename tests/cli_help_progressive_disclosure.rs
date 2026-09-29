@@ -197,7 +197,7 @@ fn root_help_remains_short_with_provider_filter() {
 /// primary entry point, so the help surface must advertise it and must not
 /// claim a provider set the dispatcher does not serve: Redmine and local
 /// implement `next`/`advance`/`transition`, while GitLab only serves
-/// `list`/`set` and Forgejo rejects the whole status surface.
+/// `list`/`set` and rejects the rest of the status surface.
 #[test]
 fn status_help_advertises_transition_with_the_real_provider_set() {
     let output = run_help(&["--help", "status"]);

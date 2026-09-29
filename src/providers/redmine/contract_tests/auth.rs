@@ -72,7 +72,6 @@ fn parser_auth_config_and_provider_selection_regressions() {
             provider: None,
             ref api_base,
             ref close_status_id,
-            repository: None,
         } if api_base.as_deref() == Some("https://redmine.example")
             && close_status_id.as_deref() == Some("37")
     ));
@@ -113,19 +112,22 @@ fn parser_auth_config_and_provider_selection_regressions() {
     let key_path =
         std::path::Path::new("/tmp/phasegent-test").join(crate::infra::storage::DB_FILENAME);
     assert!(key_path.ends_with("phasegent.sqlite3"));
+    // Option validation still runs before any credential access: a
+    // provider-inapplicable option fails closed without reading stdin.
+    // (`auth setup` takes no repository input since P3b.4, so the
+    // obsolete-option case is covered at parse time instead.)
     assert_eq!(
         auth::setup_provider(
             Role::Orchestrator,
-            "redmine",
+            "gitlab",
             auth::SetupOptions {
                 read_stdin: false,
                 api_base: None,
-                repository: Some("owner/repo".to_owned()),
-                close_status_id: None,
+                close_status_id: Some("1".to_owned()),
             },
         )
         .unwrap_err(),
-        "--repository requires the forgejo provider"
+        "--close-status-id requires the redmine provider"
     );
 }
 

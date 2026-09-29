@@ -22,7 +22,7 @@ fn credentials_for_different_providers_are_stored_separately() {
     assert_eq!(forgejo, "forgejo-token");
     assert_eq!(redmine, "redmine-key");
 
-    // Overwriting the forgejo credential must not touch the redmine one.
+    // Overwriting the legacy credential must not touch the redmine one.
     storage
         .save_credential(Role::Executor, PROVIDER_FORGEJO, "forgejo-token-v2")
         .unwrap();
@@ -102,7 +102,7 @@ fn mirror_environment_variables_are_never_persisted() {
 fn credentials_for_all_three_providers_are_isolated_per_role() {
     // The role_credential table uses (role, provider) as a composite
     // primary key so the same role can keep three independent
-    // credentials. Confirm the new gitlab row coexists with forgejo and
+    // credentials. Confirm the new gitlab row coexists with legacy and
     // redmine values without any cross-write or leak, and that
     // overwriting one credential never touches another.
     let (temp_dir, storage) = open_at_temp("credential-coexistence");

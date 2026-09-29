@@ -118,7 +118,7 @@ fn dispatcher_routes_hierarchy_to_redmine() {
     server.join().unwrap();
 
     // GitLab Work Item hierarchy lives in its own contract module
-    // (`gitlab::contract_tests::hierarchy`); Local/Forgejo stay on their
-    // existing arms (owned by #642 / future work) and are not constructed
-    // here so this contract never touches credentials or SQLite.
+    // (`gitlab::contract_tests::hierarchy`); Local stays on its
+    // existing arm and is not constructed here so this contract never
+    // touches credentials or SQLite.
 }

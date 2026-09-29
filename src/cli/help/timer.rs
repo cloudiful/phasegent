@@ -85,7 +85,7 @@ pub(crate) fn timer_command_help_text(role: Option<Role>, command: &str) -> Stri
     match command {
         "start" => orchestrator_help(
             role,
-            "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer|tester --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nManual fallback for opening a local ledger row. The lifecycle path opens runs automatically on status transitions, so AI workflows should not call timer start directly; this command exists so an operator can recover after a missed auto-start or a crashed orchestrator. The orchestrator writes a local ledger row before any remote operation. --agent-role is executor, reviewer, or tester (tester is a first-class role with its own Redmine credential; timers remain orchestrator-only and tester project membership is optional during bootstrap); --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). Redmine-only when --agent-role is set; Forgejo rejects timer start.",
+            "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer|tester --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nManual fallback for opening a local ledger row. The lifecycle path opens runs automatically on status transitions, so AI workflows should not call timer start directly; this command exists so an operator can recover after a missed auto-start or a crashed orchestrator. The orchestrator writes a local ledger row before any remote operation. --agent-role is executor, reviewer, or tester (tester is a first-class role with its own Redmine credential; timers remain orchestrator-only and tester project membership is optional during bootstrap); --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). Redmine-only when --agent-role is set; timer start itself only writes the local ledger row.",
         ),
         "finish" => orchestrator_help(
             role,
@@ -157,7 +157,6 @@ mod tests {
     fn overview_sinks_contract_prose_to_detail_pages_without_loss() {
         let overview = timer_help_text(Some(Role::Orchestrator));
         for sunk in [
-            "Forgejo rejects",
             "never echoes secrets",
             "never infers success",
             "without reopening it",
@@ -175,7 +174,7 @@ mod tests {
         let start = timer_command_help_text(Some(Role::Orchestrator), "start");
         assert!(
             start.contains("writes a local ledger row before any remote operation")
-                && start.contains("Forgejo rejects timer start"),
+                && start.contains("only writes the local ledger row"),
             "start detail keeps ledger order + provider boundary; got: {start}"
         );
         assert!(

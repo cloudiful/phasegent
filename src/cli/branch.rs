@@ -23,6 +23,12 @@ fn restricted_operation(command: &IssueCommand) -> Option<&'static str> {
     }
 }
 
+/// Structured `scope` error envelope shared by the branch-context
+/// commands when link-scope selection fails closed.
+pub(crate) fn scope_error(message: String) -> serde_json::Value {
+    serde_json::json!({"kind": "scope", "message": message})
+}
+
 /// Structured `permission` denial for an explicit non-orchestrator role on
 /// `bind`/`unbind`. `None` means "let it through": `orchestrator` is allowed,
 /// `status-branch` is unrestricted, and a role-less call keeps the historical

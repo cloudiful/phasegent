@@ -22,7 +22,6 @@ pub(crate) fn execute_hierarchy(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
-    repository: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     command: HierarchyCommand,
@@ -51,17 +50,11 @@ pub(crate) fn execute_hierarchy(
         }
         Err(error) => return super::provider_error(error),
     }
-    let provider = match super::provider_for(
-        role,
-        provider_kind,
-        api_base,
-        repository,
-        project_id,
-        close_status_id,
-    ) {
-        Ok(provider) => provider,
-        Err(error) => return super::provider_error(error),
-    };
+    let provider =
+        match super::provider_for(role, provider_kind, api_base, project_id, close_status_id) {
+            Ok(provider) => provider,
+            Err(error) => return super::provider_error(error),
+        };
     if !provider.supports(capability) {
         return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),

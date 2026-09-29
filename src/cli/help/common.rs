@@ -1,7 +1,7 @@
 use crate::policy::Role;
 
 pub(crate) fn print_not_supported_help(operation: &str) {
-    println!("No command available for Redmine: {operation} is Forgejo-only.");
+    println!("No command available for Redmine: {operation} is GitLab-only.");
 }
 
 /// One row in a help group: command name, one-line description, and the

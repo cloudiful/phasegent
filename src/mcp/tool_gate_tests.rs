@@ -19,9 +19,7 @@ const ALL_ROLES: &[Role] = &[
 ];
 
 fn server(role: Role, authorized: bool) -> PhasegentMcpServer {
-    PhasegentMcpServer::new(McpConfig::new(
-        role, None, None, None, None, None, authorized,
-    ))
+    PhasegentMcpServer::new(McpConfig::new(role, None, None, None, None, authorized))
 }
 
 /// The generated rmcp router and the descriptor table must expose exactly

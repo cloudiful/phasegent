@@ -262,14 +262,14 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
     );
 
     // A stale selection through the resolver default (an environment or
-    // persisted `forgejo` default) fails closed with an actionable
+    // persisted stale default) fails closed with an actionable
     // config error: no other provider is selected implicitly and no
     // credential is read. The stored row is left for explicit
     // clear/replace.
     let _environment_lock = lock_workflow_tests();
     let _default_env = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "forgejo");
-    let error = match crate::cli::provider_for(Role::Orchestrator, None, None, None, None, None) {
-        Ok(_) => panic!("a defaulted forgejo selection must fail closed"),
+    let error = match crate::cli::provider_for(Role::Orchestrator, None, None, None, None) {
+        Ok(_) => panic!("a defaulted stale selection must fail closed"),
         Err(error) => error,
     };
     assert_eq!(error.json()["kind"], "config");

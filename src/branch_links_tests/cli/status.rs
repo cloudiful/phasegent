@@ -69,3 +69,61 @@ fn unscoped_status_leaves_cross_scope_same_number_unresolved() {
         "rows untouched: {links:?}"
     );
 }
+
+#[test]
+fn stale_stored_provider_fails_closed_without_mutating_rows() {
+    // A stale stored provider selection fails `issue status` with a
+    // structured actionable error instead of collapsing into the
+    // unscoped legacy read (the legitimate no-provider case still
+    // succeeds above). Legacy link rows and the stored config row are
+    // never rewritten by the failure.
+    let _lock = lock_workflow_tests();
+    let repo = TempRepo::init("stale-status");
+    repo.checkout_branch(BRANCH);
+    let (dir, _db, _index, _env) = scoped_env("stale-status");
+    let key = local_key(&repo);
+    seed_scoped_link(&dir, &key, BRANCH, "redmine", "tools-phasegent", 628);
+    let storage = crate::infra::storage::Storage::open_at(&dir.join("phasegent.sqlite3"))
+        .expect("temp storage must open");
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &crate::auth::StoredConfig {
+                provider: Some("forgejo".to_owned()),
+                api_base: None,
+                repository: Some("owner/repo".to_owned()),
+            },
+        )
+        .expect("role config must save");
+    drop(storage);
+
+    let exit = in_temp_repo(&repo, || {
+        crate::cli::branch::execute_branch_context_scoped(
+            Some(Role::Orchestrator),
+            None,
+            None,
+            None,
+            IssueCommand::StatusBranch,
+        )
+    });
+    assert_eq!(exit, 1, "stale stored provider must fail the scoped read");
+    // No legacy key written and no durable row touched.
+    assert_eq!(repo.get_binding(BRANCH), None);
+    let links = db_links(&dir, &key, BRANCH);
+    assert_eq!(links.len(), 1, "seeded link row must survive");
+    assert!(
+        links
+            .iter()
+            .all(|entry| entry.status == "linked" && entry.issue_number == 628),
+        "rows untouched: {links:?}"
+    );
+    // Stored config row preserved verbatim for explicit clear/replace.
+    let storage = crate::infra::storage::Storage::open_at(&dir.join("phasegent.sqlite3"))
+        .expect("temp storage must open");
+    let stored = storage
+        .load_role_config(Role::Orchestrator)
+        .expect("read must work")
+        .expect("config row must survive");
+    assert_eq!(stored.provider.as_deref(), Some("forgejo"));
+    assert_eq!(stored.repository.as_deref(), Some("owner/repo"));
+}

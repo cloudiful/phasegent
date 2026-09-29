@@ -40,7 +40,7 @@ pub(crate) fn print_relation_command_help(role: Option<Role>, command: &str) {
         "create" => {
             if role.is_none_or(|role| role == Role::Orchestrator) {
                 println!(
-                    "Usage: relation create <ISSUE> --to <ISSUE> --type blocks|precedes|relates [--delay N]\n\nCreates an issue relation from <ISSUE> to --to of the given type. `blocks`/`blocked` and `precedes`/`follows` are inverse directions; only the forward canonical names (blocks, precedes, relates) are accepted as --type. `--delay N` (a non-negative integer lag) is only valid with --type precedes. Redmine honours every flag. GitLab currently accepts only --type relates for create; --type blocks and --type precedes are rejected with structured not-supported / config errors before any network traffic, and --delay is rejected as a structured config error. GitLab relation list still maps every server-returned direction (blocks, is_blocked_by) so listing an issue reflects whatever the server already recorded. Forgejo always rejects relation operations. Orchestrator-only."
+                    "Usage: relation create <ISSUE> --to <ISSUE> --type blocks|precedes|relates [--delay N]\n\nCreates an issue relation from <ISSUE> to --to of the given type. `blocks`/`blocked` and `precedes`/`follows` are inverse directions; only the forward canonical names (blocks, precedes, relates) are accepted as --type. `--delay N` (a non-negative integer lag) is only valid with --type precedes. Redmine honours every flag. GitLab currently accepts only --type relates for create; --type blocks and --type precedes are rejected with structured not-supported / config errors before any network traffic, and --delay is rejected as a structured config error. GitLab relation list still maps every server-returned direction (blocks, is_blocked_by) so listing an issue reflects whatever the server already recorded. Orchestrator-only."
                 );
             } else {
                 println!(
@@ -52,7 +52,7 @@ pub(crate) fn print_relation_command_help(role: Option<Role>, command: &str) {
         "delete" => {
             if role.is_none_or(|role| role == Role::Orchestrator) {
                 println!(
-                    "Usage: relation delete <RELATION_ID> [--issue <SOURCE_ISSUE_IID>]\n\nDeletes a Redmine, GitLab, or Forgejo-rejected issue relation by its numeric id. Orchestrator-only. GitLab additionally requires --issue <SOURCE_ISSUE_IID> because the DELETE endpoint is scoped per source issue; Redmine and Forgejo ignore the flag."
+                    "Usage: relation delete <RELATION_ID> [--issue <SOURCE_ISSUE_IID>]\n\nDeletes a Redmine or GitLab issue relation by its numeric id. Orchestrator-only. GitLab additionally requires --issue <SOURCE_ISSUE_IID> because the DELETE endpoint is scoped per source issue; Redmine ignores the flag."
                 );
             } else {
                 println!(

@@ -9,9 +9,13 @@
 
 pub(crate) const DB_FILENAME: &str = "phasegent.sqlite3";
 
-/// Role provider kinds we persist. Mirrors `provider_config::ProviderKind`
-/// without pulling in that module to keep this layer transport-agnostic.
+/// Legacy stale-value sentinel, not a currently persisted provider kind.
+/// This literal is never written by new code (setup and provider-set
+/// validation reject it); rows that still carry it fail closed with
+/// migration guidance and are left intact for explicit clear/replace.
 pub(crate) const PROVIDER_FORGEJO: &str = "forgejo";
+/// Currently persisted provider kinds. Mirrors `provider_config::ProviderKind`
+/// without pulling in that module to keep this layer transport-agnostic.
 pub(crate) const PROVIDER_REDMINE: &str = "redmine";
 /// The literal is duplicated here so the storage layer never depends on
 /// `provider_config` while still holding the same string the resolver
@@ -28,16 +32,16 @@ pub(crate) const PROVIDER_LOCAL: &str = "local";
 /// The schema is intentionally split across five small tables:
 ///
 /// * `role_config` stores the per-role provider preference plus the
-///   Forgejo `api_base` and `repository` fields.
+///   legacy `api_base` and `repository` fields.
 /// * `role_redmine_config` stores the Redmine-only fields so loading a
 ///   Redmine config never has to guess whether a missing `project_id`
-///   belongs to the legacy Forgejo row or to Redmine. The `project_id`
+///   belongs to a legacy provider row or to Redmine. The `project_id`
 ///   column is legacy: new code never reads or writes it and the
 ///   `Storage::open` migration clears any legacy values, but the column
 ///   remains for non-destructive compatibility with old databases.
 /// * `role_credential` stores per-(role, provider) credentials; the
-///   composite primary key lets the same role keep both a Forgejo token
-///   and a Redmine API key without collision.
+///   composite primary key lets the same role keep a credential per
+///   provider without collision.
 /// * `role_redmine_user` stores the admin-provisioned Redmine identity
 ///   (`user_id`, `login`) for each agent role. Written when a
 ///   deterministic service user is found or created via the admin REST
@@ -72,7 +76,7 @@ CREATE TABLE IF NOT EXISTS role_redmine_config (
 );
 
 -- The table mirrors the Redmine-only split so GitLab credentials and
--- configuration never collide with the existing Forgejo/Redmine rows, and
+-- configuration never collide with the existing role_config/role_redmine_config rows, and
 -- the resolver can distinguish a GitLab row from a missing row without
 -- inspecting either legacy table. The `project_id` column is INTEGER
 -- because GitLab identifiers are numeric project ids, unlike Redmine's

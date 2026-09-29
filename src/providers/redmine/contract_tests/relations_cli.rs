@@ -154,7 +154,7 @@ fn relation_help_prints_usage_and_exits_cleanly() {
 fn relation_commands_enforce_role_and_provider_boundaries() {
     // relation list is allowed for orchestrator/executor/reviewer (the
     // permission check passes and parsing succeeds); admin is denied and
-    // Forgejo is rejected before any provider is built.
+    // a removed provider value is rejected before any provider is built.
     for role in ["orchestrator", "executor", "reviewer"] {
         let parsed = command::parse_with_role_env(
             &strings(["--provider", "redmine", "relation", "list", "10"]),

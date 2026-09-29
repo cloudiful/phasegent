@@ -138,9 +138,7 @@ impl Capability {
             Self::CommentFindMarker => "Find a comment by marker",
             Self::Notify => "Send one bounded agent notification",
             Self::ProjectRead => "List projects (Redmine, GitLab, or local)",
-            Self::ProjectCreate => {
-                "Create a project (Redmine or local; Forgejo/GitLab use `repo create`)"
-            }
+            Self::ProjectCreate => "Create a project (Redmine or local; GitLab uses `repo create`)",
             Self::IssueStatusRead => "List issue statuses (Redmine, GitLab catalogue, or local)",
             Self::VersionRead => "List project versions (Redmine or GitLab milestones)",
             Self::RelationRead => "List issue relations (Redmine or GitLab)",

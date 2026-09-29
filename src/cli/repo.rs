@@ -12,7 +12,6 @@ pub(crate) fn execute_repo_or_gitlab(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
-    repository: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     command: crate::command::RepoCommand,
@@ -27,13 +26,12 @@ pub(crate) fn execute_repo_or_gitlab(
             role,
             Some(ProviderKind::Gitlab),
             api_base,
-            repository,
             project_id,
             close_status_id,
         ) {
-            Ok(provider) => super::print_result(
-                provider.create_repo_for_command(&command, role, api_base, repository),
-            ),
+            Ok(provider) => {
+                super::print_result(provider.create_repo_for_command(&command, role, api_base))
+            }
             Err(error) => super::provider_error(error),
         },
         Ok(ProviderKind::Redmine) => {

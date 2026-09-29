@@ -390,7 +390,7 @@ pub fn build_chunks(
 }
 
 /// Optional scope filter for transparent-fallback lexical search.
-/// `source` is the provider literal (`forgejo`/`redmine`/`gitlab`),
+/// `source` is the provider literal (`redmine`/`gitlab`/`local`),
 /// `project` is the stable project identifier for that provider
 /// (`owner/repo`, Redmine project id, or GitLab numeric id as string),
 /// and `state` is `open`/`closed` (`all`/`None` means no state filter).

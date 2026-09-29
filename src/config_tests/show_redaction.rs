@@ -47,10 +47,20 @@ fn config_show_redacts_credentials_and_sanitises_url() {
         assert_eq!(roles.len(), 1);
         let executor = &roles[0];
         assert_eq!(executor["role"], "executor");
-        assert_eq!(executor["forgejo_credential"]["present"], Value::Bool(true));
+        // The snapshot exposes no credential slot for unsupported
+        // selections even though the legacy row exists in storage; the
+        // row itself is preserved and never rewritten or cleared.
+        assert!(
+            executor.get("forgejo_credential").is_none(),
+            "snapshot must not expose forgejo_credential: {executor:?}"
+        );
+        let stored_legacy = storage
+            .load_credential(Role::Executor, PROVIDER_FORGEJO)
+            .unwrap();
         assert_eq!(
-            executor["forgejo_credential"]["length"],
-            Value::from("forgejo-secret-token".len())
+            stored_legacy.as_deref(),
+            Some("forgejo-secret-token"),
+            "legacy credential row must be preserved"
         );
         assert_eq!(executor["redmine_credential"]["present"], Value::Bool(true));
         assert_eq!(

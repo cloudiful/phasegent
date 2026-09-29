@@ -48,17 +48,11 @@ pub(crate) fn execute_comment(
         }
         None => None,
     };
-    let provider = match super::provider_for(
-        role,
-        provider_kind,
-        api_base,
-        repository,
-        project_id,
-        close_status_id,
-    ) {
-        Ok(provider) => provider,
-        Err(error) => return super::provider_error(error),
-    };
+    let provider =
+        match super::provider_for(role, provider_kind, api_base, project_id, close_status_id) {
+            Ok(provider) => provider,
+            Err(error) => return super::provider_error(error),
+        };
     if !provider.supports(capability) {
         return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
@@ -121,8 +115,7 @@ pub(crate) fn execute_comment(
                 // Phase 2 tool-driven auto (issue 443): a successful
                 // comment implies `In Review` via `auto_route_next`.
                 // Best-effort timer only; failures stay on stderr so
-                // the stdout comment JSON is byte-identical. Forgejo
-                // stays a silent `Skipped` inside the helper.
+                // the stdout comment JSON is byte-identical.
                 if let Some(target) = crate::lifecycle_auto::auto_route_next(
                     issue,
                     crate::lifecycle_auto::ToolSignal::CommentCreated,

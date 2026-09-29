@@ -1,6 +1,6 @@
 //! Local-only link scope resolution: provider literal plus project.
 //!
-//! No network, no provider discovery, and no Forgejo-default fallback: a
+//! No network, no provider discovery, and no provider-default fallback: a
 //! scope that cannot be selected explicitly or read from stored config is
 //! reported as unresolved so callers keep legacy behavior (or a structured
 //! BLOCKED-style error) instead of assigning issues to an unrelated
@@ -17,7 +17,7 @@ use crate::providers::ProviderKind;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkScope {
     /// Provider literal for [`crate::branch_links::IssueKey`]
-    /// (`forgejo`/`redmine`/`gitlab`/`local`).
+    /// (`redmine`/`gitlab`/`local`).
     pub provider: String,
     /// Stable project identifier for that provider (`owner/repo`,
     /// Redmine project id, GitLab numeric id as string, or `default`).
@@ -32,7 +32,9 @@ pub struct LinkScope {
 pub fn resolve_link_scope(
     role: Option<Role>,
     explicit_provider: Option<ProviderKind>,
-    repository: Option<&str>,
+    // Retained for call-site compatibility; repository scoping lives
+    // in the issue-branch origin check, not the link scope.
+    _repository: Option<&str>,
     project_id: Option<&str>,
 ) -> Result<Option<LinkScope>, String> {
     let effective = role.unwrap_or(Role::Orchestrator);
@@ -41,26 +43,6 @@ pub fn resolve_link_scope(
         None => return Ok(None),
     };
     match literal.as_str() {
-        "forgejo" => {
-            let repo = match repository.map(str::trim).filter(|v| !v.is_empty()) {
-                Some(repo) => repo.to_owned(),
-                None => match stored_repository(effective)? {
-                    Some(repo) => repo,
-                    None => {
-                        return Err("cannot scope branch link: forgejo links need --repository \
-                            OWNER/REPO or a stored role repository; refusing to guess a project"
-                            .to_owned());
-                    }
-                },
-            };
-            crate::remote::validate_repository(&repo).map_err(|error| {
-                format!("cannot scope branch link: invalid repository: {error}")
-            })?;
-            Ok(Some(LinkScope {
-                provider: "forgejo".to_owned(),
-                project: repo,
-            }))
-        }
         "redmine" => match project_id.map(str::trim).filter(|v| !v.is_empty()) {
             Some(project) => Ok(Some(LinkScope {
                 provider: "redmine".to_owned(),
@@ -100,7 +82,7 @@ pub fn resolve_link_scope(
     }
 }
 
-/// Select the provider literal without the Forgejo-default fallback:
+/// Select the provider literal without a provider-default fallback:
 /// explicit flag, then `PHASEGENT_PROVIDER` / `PHASEGENT_DEFAULT_PROVIDER`
 /// env, then stored effective role config. `Ok(None)` means nothing
 /// selected the provider, so the caller must not guess one.
@@ -134,22 +116,19 @@ fn stored_provider(role: Role) -> Result<Option<String>, String> {
     let config = crate::auth::load_config(role, &storage).map_err(|error| {
         format!("cannot scope branch link: could not read stored config: {error}")
     })?;
-    Ok(config
+    let literal = config
         .and_then(|config| config.provider)
         .map(|provider| provider.trim().to_owned())
-        .filter(|provider| !provider.is_empty()))
-}
-
-fn stored_repository(role: Role) -> Result<Option<String>, String> {
-    let storage = match crate::infra::storage::Storage::open() {
-        Ok(storage) => storage,
-        Err(_) => return Ok(None),
+        .filter(|provider| !provider.is_empty());
+    let Some(literal) = literal else {
+        return Ok(None);
     };
-    let config = crate::auth::load_config(role, &storage).map_err(|error| {
-        format!("cannot scope branch link: could not read stored config: {error}")
-    })?;
-    Ok(config
-        .and_then(|config| config.repository)
-        .map(|repository| repository.trim().to_owned())
-        .filter(|repository| !repository.is_empty()))
+    // A stale stored literal fails closed with the same actionable
+    // guidance as the provider resolver instead of scoping the link
+    // to an unsupported value. The row is left intact for explicit
+    // clear/replace; link rows stay opaque strings.
+    let kind: ProviderKind = literal
+        .parse()
+        .map_err(|error: String| format!("cannot scope branch link: {error}"))?;
+    Ok(Some(kind.as_str().to_owned()))
 }

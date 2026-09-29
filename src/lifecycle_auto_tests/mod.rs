@@ -17,7 +17,6 @@
 //! - the close path finishes every running row for the issue;
 //! - cumulative sum across multiple same-state segments equals the
 //!   `elapsed_seconds` sum of the individual finished rows;
-//! - Forgejo is a no-op and the helper never touches the ledger.
 
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::infra::storage::{Storage, TIMER_STATUS_RUNNING, TimerRun, TimerStatusFilter};

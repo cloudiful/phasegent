@@ -365,8 +365,8 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
 }
 
 #[test]
-fn resolve_kind_rejects_stale_forgejo_at_every_layer_without_erasing() {
-    // A legacy `forgejo` selection at any layer (env, persisted
+fn resolve_kind_rejects_stale_selection_at_every_layer_without_erasing() {
+    // A stale selection at any layer (env, persisted
     // global default, role-scoped row) must fail with actionable
     // migration guidance and leave the stored rows untouched for
     // explicit clear/replace.

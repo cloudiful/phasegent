@@ -62,7 +62,7 @@ impl GitlabProvider {
     /// resolve lazily: when the orchestrator passes a bare `REPOSITORY`
     /// (no `OWNER/` prefix), this method fetches the current user via
     /// `/user` and returns its numeric id so the project lands in the
-    /// caller's personal namespace, matching the Forgejo behaviour.
+    /// caller's personal namespace.
     ///
     /// `operation` labels the request so `issue create` self-assignment and
     /// `repo create` namespace resolution report the right operation in
@@ -159,7 +159,7 @@ impl GitlabProvider {
     /// function never returns a guessed namespace id; when the
     /// caller passes a bare `REPOSITORY` (no slash) the function
     /// returns the user's namespace id so a project lands in the
-    /// caller's personal namespace, matching Forgejo's behaviour.
+    /// caller's personal namespace.
     ///
     /// The `(Some(namespace), None)` arm leaves `namespace_id`
     /// unset so the caller (currently [`GitlabProvider::create_repo`])

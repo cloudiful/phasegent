@@ -159,12 +159,6 @@ fn persist_set_value(
                 c.api_base = Some(trimmed.to_owned());
             })?;
         }
-        "PHASEGENT_REPOSITORY" => {
-            let role = role.expect("role required");
-            update_role_config_field(storage, role, |c| {
-                c.repository = Some(trimmed.to_owned());
-            })?;
-        }
         "PHASEGENT_REDMINE_API_BASE" => {
             let role = role.expect("role required");
             update_redmine_config_field(storage, role, |c| {

@@ -1,7 +1,7 @@
 //! Shared HTTP client policy for all provider transports.
 //!
 //! Centralizes connect/request timeouts, user-agent, gzip negotiation, and
-//! safe-read retry policy so Forgejo, Redmine REST, Redmine git-mirror, and
+//! safe-read retry policy so Redmine REST, Redmine git-mirror, and
 //! GitLab share identical wire behaviour.
 
 use std::time::Duration;

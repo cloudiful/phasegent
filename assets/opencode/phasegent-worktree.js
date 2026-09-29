@@ -1178,8 +1178,9 @@ Source of truth: \`src/cli/help/\` role-filter plus \`src/policy.rs\`.
 hand, filtered by the session's role; this section records role gates and
 boundaries, never flag tables. The provider resolves from configuration at
 runtime — an explicit override wins, then the configured default (role or
-global setting, \`phasegent.toml\`, or environment), with Forgejo as the final
-fallback — and a session never hard-codes one.
+global setting, \`phasegent.toml\`, or environment); a missing or stale
+selection fails closed with actionable configuration guidance and never
+falls through to another provider — and a session never hard-codes one.
 
 ### Role gates
 

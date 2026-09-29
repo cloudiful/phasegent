@@ -176,7 +176,6 @@ pub(crate) fn execute_sync(
     role: Role,
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
-    repository: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     all: bool,
@@ -187,14 +186,7 @@ pub(crate) fn execute_sync(
     }
     let provider =
         match crate::providers::config::resolve_kind(role, provider_kind).and_then(|kind| {
-            crate::cli::provider_for(
-                role,
-                Some(kind),
-                api_base,
-                repository,
-                project_id,
-                close_status_id,
-            )
+            crate::cli::provider_for(role, Some(kind), api_base, project_id, close_status_id)
         }) {
             Ok(provider) => provider,
             Err(error) => return crate::cli::provider_error(error),

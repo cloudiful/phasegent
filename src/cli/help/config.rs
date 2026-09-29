@@ -89,7 +89,6 @@ Persists a single setting in the local SQLite database. The value is never echoe
 Supported settings (canonical name and kebab-case alias):
   PHASEGENT_PROVIDER / provider
   PHASEGENT_API_BASE / api-base
-  PHASEGENT_REPOSITORY / repository
   PHASEGENT_REDMINE_API_BASE / redmine-api-base
   PHASEGENT_REDMINE_CLOSE_STATUS_ID / redmine-close-status-id
   PHASEGENT_GITLAB_API_BASE / gitlab-api-base

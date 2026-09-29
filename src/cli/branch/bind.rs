@@ -20,10 +20,6 @@ fn now_secs() -> i64 {
     crate::worktree::now_unix_secs().max(1)
 }
 
-fn scope_error(message: String) -> serde_json::Value {
-    serde_json::json!({"kind": "scope", "message": message})
-}
-
 fn storage_error(message: String) -> serde_json::Value {
     serde_json::json!({"kind": "storage", "message": message})
 }
@@ -45,7 +41,7 @@ fn repo_key(
 ) -> Result<crate::branch_links::ResolvedRepo, serde_json::Value> {
     let origin = read_origin_url(runner);
     resolve_repo_key(origin.as_deref(), &checkout_root(runner))
-        .map_err(|error| scope_error(format!("cannot scope branch link: {error}")))
+        .map_err(|error| super::scope_error(format!("cannot scope branch link: {error}")))
 }
 
 /// Idempotent legacy import under a redmine scope. Legacy keys are
@@ -101,7 +97,7 @@ pub(crate) fn execute_bind(
                 },
             );
         }
-        Err(message) => return crate::cli::structured_error(scope_error(message), 1),
+        Err(message) => return crate::cli::structured_error(super::scope_error(message), 1),
     };
     let branch = match current_branch(&runner) {
         Ok(branch) => branch,
@@ -159,7 +155,7 @@ pub(crate) fn execute_bind(
     }
     let issue = match IssueKey::from_number(&scope.provider, &scope.project, issue_id) {
         Ok(issue) => issue,
-        Err(error) => return crate::cli::structured_error(scope_error(error), 1),
+        Err(error) => return crate::cli::structured_error(super::scope_error(error), 1),
     };
     let outcome = match link(
         &storage.connection,
@@ -218,7 +214,7 @@ pub(crate) fn execute_unbind(
         Ok(None) => {
             return super::execute_branch_context(role, IssueCommand::Unbind);
         }
-        Err(message) => return crate::cli::structured_error(scope_error(message), 1),
+        Err(message) => return crate::cli::structured_error(super::scope_error(message), 1),
     };
     let branch = match current_branch(&runner) {
         Ok(branch) => branch,
