@@ -1,7 +1,6 @@
 pub mod api;
 pub mod config;
 pub mod dispatch;
-pub mod forgejo;
 pub mod gitlab;
 pub mod hierarchy;
 pub mod index;

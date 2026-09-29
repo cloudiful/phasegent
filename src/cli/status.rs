@@ -1,7 +1,7 @@
 use crate::command::StatusCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::providers::redmine::model::StatusNextReport;
 use crate::providers::redmine::model::status::{STATUS_POLICY_SOURCE, structured_forbidden_json};
 use crate::providers::{
@@ -331,10 +331,6 @@ pub(crate) fn execute_status(
                 }
                 super::print_result(result)
             }
-            other => super::provider_error(ProviderError::not_supported(
-                other.kind().as_str(),
-                "issue status update",
-            )),
         },
     }
 }

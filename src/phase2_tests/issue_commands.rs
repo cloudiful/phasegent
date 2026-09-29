@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::providers::{RedmineConfig, RedmineProvider};
 
 #[test]
 fn issue_create_and_update_accept_optional_tracker_selection() {
@@ -59,11 +60,11 @@ fn issue_create_and_update_accept_optional_tracker_selection() {
 #[test]
 fn comment_get_uses_the_requested_issue_scope() {
     let (base, requests, server) = mock_server_with_headers(
-        r#"[{"id":42,"body":"<!-- marker --> comment","html_url":"https://forgejo.example/comment/42"}]"#,
-        &["X-Total-Count: 1"],
+        r#"{"issue":{"id":7,"subject":"Title","description":"","status":{"name":"New","is_closed":false},"journals":[{"id":42,"notes":"<!-- marker --> comment"}]}}"#,
+        &[],
     );
-    let provider = ForgejoProvider::new(
-        ForgejoConfig::new(base, "owner", "repo"),
+    let provider = RedmineProvider::new(
+        RedmineConfig::new(base, "tools-phasegent", 2),
         "token".to_owned(),
     )
     .unwrap();
@@ -71,16 +72,18 @@ fn comment_get_uses_the_requested_issue_scope() {
     assert_eq!(comment.id, 42);
     assert_eq!(comment.marker.as_deref(), Some("<!-- marker -->"));
     let request = requests.recv().unwrap();
-    assert!(request.starts_with("GET /api/v1/repos/owner/repo/issues/7/comments?"));
+    assert!(request.starts_with("GET /api/v1/issues/7.json?include=journals"));
     server.join().unwrap();
 }
 
 #[test]
 fn comment_get_does_not_return_an_id_missing_from_issue_comments() {
-    let (base, requests, server) =
-        mock_server_with_headers(r#"[{"id":99,"body":"other"}]"#, &["X-Total-Count: 1"]);
-    let provider = ForgejoProvider::new(
-        ForgejoConfig::new(base, "owner", "repo"),
+    let (base, requests, server) = mock_server_with_headers(
+        r#"{"issue":{"id":7,"subject":"Title","description":"","status":{"name":"New","is_closed":false},"journals":[{"id":99,"notes":"other"}]}}"#,
+        &[],
+    );
+    let provider = RedmineProvider::new(
+        RedmineConfig::new(base, "tools-phasegent", 2),
         "token".to_owned(),
     )
     .unwrap();
@@ -90,7 +93,7 @@ fn comment_get_does_not_return_an_id_missing_from_issue_comments() {
         requests
             .recv()
             .unwrap()
-            .starts_with("GET /api/v1/repos/owner/repo/issues/7/comments?")
+            .starts_with("GET /api/v1/issues/7.json?include=journals")
     );
     server.join().unwrap();
 }

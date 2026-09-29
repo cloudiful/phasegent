@@ -523,15 +523,15 @@ fn planning_create_unknown_username_errors_before_any_post() {
 
 #[test]
 fn planning_create_rejects_explicit_assignee_on_non_gitlab_provider() {
-    let forgejo = ProviderDispatcher::Forgejo(
-        crate::providers::forgejo::ForgejoProvider::new(
-            crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
+    let redmine = ProviderDispatcher::Redmine(
+        crate::providers::RedmineProvider::new(
+            crate::providers::RedmineConfig::new("http://redmine.test", "42", 2),
             "token".to_owned(),
         )
         .unwrap(),
     );
     let error = planning::create_issue(
-        &forgejo,
+        &redmine,
         "Title",
         "Body",
         None,

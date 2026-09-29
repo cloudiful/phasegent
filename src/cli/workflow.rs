@@ -1,8 +1,8 @@
 use crate::command::WorkflowCommand;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::workflow;
 
 pub(crate) fn execute_workflow(

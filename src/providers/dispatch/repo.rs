@@ -6,10 +6,6 @@ use crate::policy::Capability;
 use crate::providers::ProviderDispatcher;
 #[allow(unused_imports)]
 use crate::providers::api::{CommentOutput, IssueSummary, ProviderError, RepoSummary};
-#[allow(unused_imports)]
-use crate::providers::forgejo::ForgejoConfig;
-#[allow(unused_imports)]
-use crate::providers::forgejo::ForgejoProvider;
 use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
@@ -34,20 +30,6 @@ impl RepoProvider for GitlabProvider {
         // for GitLab and supplied `--private`; private enforcement
         // and the namespace resolver live inside the provider.
         GitlabProvider::create_repo(self, target, private, description, auto_init)
-    }
-}
-
-impl RepoProvider for ForgejoProvider {
-    type Error = ProviderError;
-
-    fn create_repo(
-        &self,
-        target: &str,
-        private: bool,
-        description: &str,
-        auto_init: bool,
-    ) -> Result<RepoSummary, Self::Error> {
-        ForgejoProvider::create_repo(self, target, private, description, auto_init)
     }
 }
 
@@ -76,9 +58,6 @@ impl RepoProvider for ProviderDispatcher {
         auto_init: bool,
     ) -> Result<RepoSummary, Self::Error> {
         match self {
-            Self::Forgejo(provider) => {
-                provider.create_repo(target, private, description, auto_init)
-            }
             Self::Redmine(provider) => {
                 provider.create_repo(target, private, description, auto_init)
             }

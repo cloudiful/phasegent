@@ -1,7 +1,7 @@
 use crate::infra::storage::{
     Storage, TIMER_SYNC_PROJECTING, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED, TimerRun,
 };
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::GitlabProvider;
 
 /// Stable marker prefix used as the GitLab `add_spent_time` summary

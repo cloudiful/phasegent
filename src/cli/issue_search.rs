@@ -1,8 +1,8 @@
 use crate::infra::issue_index_backend::{IssueIndexBackend, block_on};
 use crate::policy::{Capability, Role};
+use crate::providers::api::ProviderError;
 use crate::providers::api::{IssueSearchItem, IssueSearchResult, IssueSummary};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore};
 use crate::providers::index_store::{explicit_scope, lexical_scope_for_state, provider_scope};
 use crate::providers::{IssueProvider, ProviderDispatcher, ProviderKind};

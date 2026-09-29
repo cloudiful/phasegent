@@ -13,22 +13,10 @@ use crate::lifecycle;
 #[test]
 fn provider_scope_comes_from_local_config_without_requests() {
     use crate::providers::ProviderDispatcher;
-    use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
     use crate::providers::gitlab::GitlabProvider;
     use crate::providers::gitlab::http::GitlabHttp;
     use crate::providers::index_store::provider_scope;
     use crate::providers::{GitlabConfig, RedmineConfig, RedmineProvider};
-
-    let forgejo = ProviderDispatcher::Forgejo(
-        ForgejoProvider::new(
-            ForgejoConfig::new("https://forge.example", "acme", "widgets"),
-            "test-key".to_owned(),
-        )
-        .expect("forgejo provider builds without I/O"),
-    );
-    let scope = provider_scope(&forgejo).expect("forgejo scope");
-    assert_eq!(scope.source, "forgejo");
-    assert_eq!(scope.project, "acme/widgets");
 
     let redmine = ProviderDispatcher::Redmine(
         RedmineProvider::new(

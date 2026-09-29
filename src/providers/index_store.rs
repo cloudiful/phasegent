@@ -91,22 +91,14 @@ impl IssueIndexScope {
 }
 
 /// Derive a stable scope from a resolved dispatcher.
-/// Forgejo uses `owner/repo`, Redmine uses the explicit project id (required),
-/// GitLab uses the numeric project id as a string. Returns a config error
-/// when Redmine project id is missing so callers never silently index all
-/// projects.
+/// Redmine uses the explicit project id (required), GitLab uses the numeric
+/// project id as a string. Returns a config error when Redmine project id is
+/// missing so callers never silently index all projects.
 pub fn provider_scope(
     dispatcher: &crate::providers::ProviderDispatcher,
 ) -> Result<IssueIndexScope, crate::providers::api::ProviderError> {
     use crate::providers::api::ProviderError;
     match dispatcher {
-        crate::providers::ProviderDispatcher::Forgejo(provider) => {
-            let project = format!("{}/{}", provider.config.owner, provider.config.repository);
-            Ok(IssueIndexScope {
-                source: "forgejo".to_owned(),
-                project,
-            })
-        }
         crate::providers::ProviderDispatcher::Redmine(provider) => {
             let project = provider
                 .config

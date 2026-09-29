@@ -1,7 +1,7 @@
 use crate::command::RelationCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 /// Redmine or GitLab issue relations. `list` is available to every non-admin

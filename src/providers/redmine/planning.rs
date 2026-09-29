@@ -17,9 +17,7 @@ use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
 /// version name or numeric id within the configured project. Numeric
 /// ranges and date shapes are rejected before any write; version
 /// resolution is a read-only lookup, so a rejected value never reaches an
-/// issue write. Forgejo providers reject every Redmine-only planning
-/// flag with a structured not-supported error before any network
-/// access. GitLab accepts the `--tracker` and `--estimated-hours`
+/// issue write. GitLab accepts the `--tracker` and `--estimated-hours`
 /// flags (the latter maps to GitLab's native `time_estimate` endpoint)
 /// but rejects every other Redmine planning field.
 pub(crate) fn resolve_planning(
@@ -72,12 +70,6 @@ pub(crate) fn resolve_planning(
             // through the `time_estimate` endpoint after the issue
             // body is written.
         }
-        ProviderDispatcher::Forgejo(_) => {
-            return Err(ProviderError::not_supported(
-                "forgejo",
-                "issue planning fields",
-            ));
-        }
         ProviderDispatcher::Redmine(_) => {}
         // Local is handled by the early return above; kept for exhaustiveness.
         ProviderDispatcher::Local(_) => {}
@@ -126,8 +118,7 @@ pub(crate) fn resolve_planning(
 }
 
 /// Create an issue with optional tracker plus native planning fields.
-/// Forgejo keeps its original plain path when no provider-specific
-/// flag is set. GitLab supports the tracker-only path (which becomes
+/// GitLab supports the tracker-only path (which becomes
 /// a `type::bug` / `type::feature` label) and accepts
 /// `--estimated-hours` (forwarded through the native `time_estimate`
 /// endpoint) but rejects every other Redmine planning flag with a
@@ -201,16 +192,6 @@ pub(crate) fn create_issue(
             };
             Ok((summary, None))
         }
-        ProviderDispatcher::Forgejo(_) => {
-            reject_explicit_assignee(provider, assignee)?;
-            if !needs_provider_specific {
-                return Ok((provider.create_issue(title, body)?, None));
-            }
-            Err(ProviderError::not_supported(
-                "forgejo",
-                "issue tracker / planning fields",
-            ))
-        }
         // Local ignores tracker/planning/assignee and uses the plain path.
         ProviderDispatcher::Local(_) => {
             reject_explicit_assignee(provider, assignee)?;
@@ -236,8 +217,7 @@ fn reject_explicit_assignee(
 }
 
 /// Update an issue body with optional tracker re-target plus native
-/// planning fields in one atomic PUT. Forgejo keeps its original
-/// plain path when no provider-specific flag is set. GitLab
+/// planning fields in one atomic PUT. GitLab
 /// supports the tracker-only path (which becomes a `type::bug` /
 /// `type::feature` label add) and accepts `--estimated-hours`
 /// (forwarded through the native `time_estimate` endpoint) but
@@ -287,10 +267,6 @@ pub(crate) fn update_body(
             }
             Ok(summary)
         }
-        ProviderDispatcher::Forgejo(_) => Err(ProviderError::not_supported(
-            "forgejo",
-            "issue tracker / planning fields",
-        )),
         // Local ignores tracker/planning and uses the plain path.
         ProviderDispatcher::Local(_) => provider.update_body(number, body),
     }
@@ -301,10 +277,6 @@ pub(crate) fn update_body(
 fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, ProviderError> {
     match provider {
         ProviderDispatcher::Redmine(redmine) => Ok(redmine),
-        ProviderDispatcher::Forgejo(_) => Err(ProviderError::not_supported(
-            "forgejo",
-            "issue planning fields",
-        )),
         // The GitLab planning surface is narrower than Redmine's (only
         // `--tracker` and `--estimated-hours` are supported), and the
         // dispatch above already validated every other flag before

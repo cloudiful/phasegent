@@ -3,7 +3,6 @@ use crate::command;
 use crate::infra::storage::Storage;
 use crate::policy::{Capability, Role};
 use crate::providers::ProviderKind;
-use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::redmine::model::{
     TransitionVerdict, canonical_allowed_next, canonical_status_name, evaluate_transition,
 };

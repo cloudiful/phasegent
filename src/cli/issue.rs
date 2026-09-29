@@ -1,8 +1,8 @@
 use crate::command::IssueCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::api::IssueSummary;
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 #[path = "issue_search.rs"]

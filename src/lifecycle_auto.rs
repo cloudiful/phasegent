@@ -365,7 +365,7 @@ fn close_issue_runs(issue: u64) -> Result<Vec<String>, String> {
 /// bounded stderr line via `cli::report_local_warnings`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoRelationOutcome {
-    /// Provider has no relation surface (Forgejo) or no parent
+    /// Provider has no relation surface (Local) or no parent
     /// linkage was supplied at the call site. Silent success — the
     /// caller should not surface anything.
     Skipped { reason: String },
@@ -433,9 +433,6 @@ pub fn auto_create_parent_child_relation(
         };
     }
     match provider {
-        ProviderDispatcher::Forgejo(_) => AutoRelationOutcome::Skipped {
-            reason: "forgejo has no relation surface; auto relation is a no-op".to_owned(),
-        },
         ProviderDispatcher::Local(_) => AutoRelationOutcome::Skipped {
             reason: "local has no relation surface; auto relation is a no-op".to_owned(),
         },
@@ -454,41 +451,23 @@ pub fn auto_create_parent_child_relation(
 #[cfg(test)]
 mod relation_auto_tests {
     use super::*;
-    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
-    fn forgejo_provider_with_token() -> ProviderDispatcher {
-        // The Forgejo provider reads the orchestrator token from
-        // the SQLite credential store. The tests pin a fresh
-        // `PHASEGENT_DB_PATH` and seed the credential so
-        // `for_role` succeeds; `lock_workflow_tests` keeps the
-        // process-wide env mutation serialised so parallel runs do
-        // not race, and the EnvGuard restores the prior value on
-        // drop so the host shell is never left pointing at a
-        // synthetic DB.
-        let _lock = lock_workflow_tests();
+    fn local_provider() -> ProviderDispatcher {
+        // The Local backend has no relation surface. Each call opens its own
+        // throwaway database so the parallel tests never share a file, and no
+        // credential or provider call is involved.
+        use crate::providers::local::LocalProvider;
         let dir = crate::test_scratch::root().join(format!(
-            "phasegent-auto-rel-forgejo-{}-{}",
+            "phasegent-auto-rel-local-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join(crate::infra::storage::DB_FILENAME);
-        let _guard = EnvGuard::set(
-            "PHASEGENT_DB_PATH",
-            db.as_os_str().to_string_lossy().as_ref(),
-        );
-        let storage = crate::infra::storage::Storage::open_at(&db).unwrap();
-        storage
-            .save_credential(crate::policy::Role::Orchestrator, "forgejo", "test-token")
-            .unwrap();
-        use crate::policy::Role;
-        use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
-        let config = ForgejoConfig::new("https://forgejo.example.test", "owner", "repo");
-        let provider = ForgejoProvider::for_role(Role::Orchestrator, config).unwrap();
-        ProviderDispatcher::Forgejo(provider)
+        ProviderDispatcher::local(
+            LocalProvider::open_at(&dir.join("local.sqlite3")).expect("local provider opens"),
+        )
     }
 
     fn parent_linked_outcome(child: u64, parent: u64) -> bool {
@@ -549,24 +528,13 @@ mod relation_auto_tests {
     }
 
     #[test]
-    fn auto_relation_skips_forgejo_and_local_without_warning() {
-        // Forgejo/Local have no relation surface. The outcome must
-        // be `Skipped` (no warning) so the hook call site does not
-        // emit anything to stderr.
-        use crate::providers::local::LocalProvider;
-
-        let forgejo_provider = forgejo_provider_with_token();
-        let forgejo_outcome = auto_create_parent_child_relation(&forgejo_provider, 10, Some(20));
-        assert!(matches!(
-            forgejo_outcome,
-            AutoRelationOutcome::Skipped { .. }
-        ));
-        assert!(forgejo_outcome.warning().is_none());
-
-        let local_provider = ProviderDispatcher::local(LocalProvider::open().unwrap());
-        let local_outcome = auto_create_parent_child_relation(&local_provider, 10, Some(20));
-        assert!(matches!(local_outcome, AutoRelationOutcome::Skipped { .. }));
-        assert!(local_outcome.warning().is_none());
+    fn auto_relation_skips_local_without_warning() {
+        // Local has no relation surface. The outcome must be `Skipped` (no
+        // warning) so the hook call site does not emit anything to stderr.
+        let provider = local_provider();
+        let outcome = auto_create_parent_child_relation(&provider, 10, Some(20));
+        assert!(matches!(outcome, AutoRelationOutcome::Skipped { .. }));
+        assert!(outcome.warning().is_none());
     }
 
     #[test]
@@ -577,7 +545,7 @@ mod relation_auto_tests {
         // site emits nothing to stderr; the helper stays idempotent
         // and silent on the common path.
 
-        let provider = forgejo_provider_with_token();
+        let provider = local_provider();
         let outcome = auto_create_parent_child_relation(&provider, 10, None);
         match &outcome {
             AutoRelationOutcome::Skipped { reason } => {
@@ -598,7 +566,7 @@ mod relation_auto_tests {
         // attempted. The Warning must carry a bounded reason so the
         // operator sees what the auto path rejected.
 
-        let provider = forgejo_provider_with_token();
+        let provider = local_provider();
 
         let zero = auto_create_parent_child_relation(&provider, 10, Some(0));
         match zero {

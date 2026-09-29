@@ -141,26 +141,6 @@ fn planning_validation_rejects_malformed_values_before_any_write() {
 }
 
 #[test]
-fn planning_flags_are_forgejo_not_supported_and_empty_planning_stays_plain() {
-    use crate::command::PlanningOptions;
-    use crate::providers::redmine::planning::resolve_planning;
-    let forgejo = ProviderDispatcher::Forgejo(
-        crate::providers::forgejo::ForgejoProvider::new(
-            crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-            "token".to_owned(),
-        )
-        .unwrap(),
-    );
-    let options = PlanningOptions {
-        fixed_version: Some("Sprint 1".to_owned()),
-        ..Default::default()
-    };
-    let error = resolve_planning(&forgejo, &options).unwrap_err();
-    assert_eq!(error.json()["kind"], "not_supported");
-    assert!(!error.to_string().contains("Sprint 1"));
-}
-
-#[test]
 fn done_ratio_accepts_zero_and_serializes_the_boundary_value() {
     use crate::command::PlanningOptions;
     use crate::providers::redmine::planning::resolve_planning;

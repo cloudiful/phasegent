@@ -2,7 +2,7 @@ use crate::command::TimerCommand;
 use crate::infra::storage::{Storage, TimerRun, TimerStatusFilter};
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 use serde::Serialize;
 
 /// JSON returned by `timer start` and `timer finish`. The run fields are

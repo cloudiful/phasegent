@@ -2,8 +2,8 @@ use crate::auth;
 use crate::command::{self, Command, IssueCommand};
 use crate::infra::storage::Storage;
 use crate::policy::{Capability, Role};
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::{ForgejoConfig, ProviderError};
 use crate::providers::{GitlabConfig, ProviderDispatcher, ProviderKind, RedmineConfig};
 use serde::Serialize;
 
@@ -337,6 +337,10 @@ pub(crate) fn report_local_warnings(operation: &str, warnings: Option<String>) {
     }
 }
 
+/// Legacy `repo create` route. It requests the removed Forgejo provider
+/// explicitly, so it now fails closed with the structured unsupported
+/// error instead of selecting another provider; P3 owns the replacement
+/// routing.
 pub(crate) fn provider(
     role: Role,
     api_base: Option<&str>,
@@ -361,23 +365,14 @@ pub(crate) fn provider_for(
     close_status_id: Option<&str>,
 ) -> Result<ProviderDispatcher, ProviderError> {
     match resolve_kind(role, provider_kind)? {
-        ProviderKind::Forgejo => {
-            let config = ForgejoConfig::resolve(role, api_base, repository)?;
-            match config.provider() {
-                ProviderKind::Forgejo => ProviderDispatcher::for_role(role, config),
-                ProviderKind::Redmine => Err(ProviderError::config(
-                    "Forgejo configuration selected an unsupported provider",
-                )),
-                ProviderKind::Gitlab => Err(ProviderError::config(
-                    "Forgejo configuration selected an unsupported provider",
-                )),
-                // Local is not a valid Forgejo configuration; kept for
-                // exhaustiveness.
-                ProviderKind::Local => Err(ProviderError::config(
-                    "Forgejo configuration selected an unsupported provider",
-                )),
-            }
-        }
+        // A persisted `forgejo` selection is unsupported: the provider was
+        // removed and no other provider is selected implicitly (no Local,
+        // Redmine, or GitLab fallback). Stored credentials and configuration
+        // rows stay untouched.
+        ProviderKind::Forgejo => Err(ProviderError::not_supported(
+            "forgejo",
+            "provider selection",
+        )),
         ProviderKind::Redmine => {
             let config = RedmineConfig::resolve(role, api_base, project_id, close_status_id)?;
             ProviderDispatcher::redmine(role, config)
@@ -385,10 +380,9 @@ pub(crate) fn provider_for(
         ProviderKind::Gitlab => {
             // The CLI shares the Redmine flag namespace for the project
             // id; the GitLab resolver is numeric and rejects a Redmine
-            // close status id or a Forgejo repository. The dispatcher
-            // still hands the resolved config to GitlabProvider so the
-            // not-supported stubs receive the exact URL and project id
-            // the caller asked for.
+            // close status id. The dispatcher still hands the resolved
+            // config to GitlabProvider so the not-supported stubs receive
+            // the exact URL and project id the caller asked for.
             let _ = repository;
             let _ = close_status_id;
             let config = GitlabConfig::resolve(role, api_base, project_id)?;
@@ -396,7 +390,7 @@ pub(crate) fn provider_for(
         }
         // Local needs no credentials or remote config: open the
         // independent SQLite store directly. Auth stays passwordless
-        // and the forgejo/redmine/gitlab paths are untouched.
+        // and the redmine/gitlab paths are untouched.
         ProviderKind::Local => {
             crate::providers::local::LocalProvider::open().map(ProviderDispatcher::local)
         }

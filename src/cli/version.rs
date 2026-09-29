@@ -1,7 +1,7 @@
 use crate::command::VersionCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 
 /// Redmine or local project version discovery. Every role may read

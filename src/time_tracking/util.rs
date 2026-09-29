@@ -1,4 +1,4 @@
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 

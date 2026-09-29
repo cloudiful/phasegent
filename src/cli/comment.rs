@@ -1,6 +1,6 @@
 use crate::command::CommentCommand;
 use crate::policy::{Capability, Role};
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 pub(crate) fn execute_comment(

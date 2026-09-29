@@ -17,7 +17,7 @@ use super::validate::{
 };
 
 #[allow(dead_code)]
-fn redact_provider_error(error: crate::providers::forgejo::ProviderError) -> String {
+fn redact_provider_error(error: crate::providers::api::ProviderError) -> String {
     let json = error.json();
     let kind = json
         .get("kind")
@@ -39,12 +39,12 @@ fn build_dispatcher(
 ) -> Result<crate::providers::ProviderDispatcher, String> {
     use crate::providers::config::ProviderKind;
     match kind {
-        ProviderKind::Forgejo => {
-            let config = crate::providers::forgejo::ForgejoConfig::resolve(role, None, None)
-                .map_err(redact_provider_error)?;
-            crate::providers::ProviderDispatcher::for_role(role, config)
-                .map_err(redact_provider_error)
-        }
+        // The provider was removed: a stale selection fails closed with the
+        // structured unsupported envelope instead of selecting another
+        // provider.
+        ProviderKind::Forgejo => Err(redact_provider_error(
+            crate::providers::api::ProviderError::not_supported("forgejo", "provider dispatch"),
+        )),
         ProviderKind::Redmine => {
             let config = crate::providers::RedmineConfig::resolve(role, None, None, None)
                 .map_err(redact_provider_error)?;
@@ -61,7 +61,7 @@ fn build_dispatcher(
         // arms' redacted not_supported envelope so the GUI treats
         // `local` uniformly (kind "not_supported", not a bare string).
         ProviderKind::Local => Err(redact_provider_error(
-            crate::providers::forgejo::ProviderError::not_supported(
+            crate::providers::api::ProviderError::not_supported(
                 "local",
                 "provider dispatch is not wired in this phase",
             ),
@@ -103,6 +103,8 @@ fn endpoint_for_role(
 ) -> Option<String> {
     use crate::providers::config::ProviderKind;
     let raw: Option<String> = match kind {
+        // Legacy configuration read: a stale selection keeps surfacing its
+        // stored endpoint; credentials and rows are never erased.
         ProviderKind::Forgejo => crate::auth::load_config(role, storage)
             .ok()
             .flatten()

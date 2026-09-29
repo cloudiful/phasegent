@@ -5,7 +5,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::infra::http_client;
-use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::gitlab::http::GitlabHttp;
 use crate::providers::redmine::http::{RedmineGitMirrorHttp, RedmineHttp};
 
@@ -189,12 +188,7 @@ fn shared_factory_constants_are_authoritative() {
     assert!(!http_client::is_retryable_status(
         reqwest::StatusCode::from_u16(400).unwrap()
     ));
-    // All four construction sites build via the shared factory without panic.
-    let _ = ForgejoProvider::new(
-        ForgejoConfig::new("http://example.com/api/v1", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
+    // Every construction site builds via the shared factory without panic.
     let _ = RedmineHttp::new("http://example.com".into(), "key".into()).unwrap();
     let _ = RedmineGitMirrorHttp::new("http://example.com".into(), "bearer".into()).unwrap();
     let _ = GitlabHttp::new("http://example.com/api/v4".into(), "glpat-test".into()).unwrap();
@@ -232,20 +226,11 @@ fn timeout_with_short_deadline_is_bounded() {
 #[test]
 fn gzip_json_and_text_are_transparently_decoded() {
     let (base, requests, server) = sequence(vec![MockResponse::gzip_json()]);
-    let provider = ForgejoProvider::new(
-        ForgejoConfig::new(base.clone(), "owner", "repo"),
-        "token".into(),
-    )
-    .unwrap();
-    let issue: serde_json::Value = provider
-        .get(
-            &format!("{base}/repos/owner/repo/issues/1"),
-            &[],
-            "gzip json",
-        )
-        .unwrap();
+    let redmine = RedmineHttp::new(base.clone(), "key".into()).unwrap();
+    let issue: serde_json::Value = redmine.get("issues/1.json", &[], "gzip json").unwrap();
     assert_eq!(issue["title"], "gzipped");
     let req = requests.recv().unwrap().remove(0);
+    assert!(req.contains("/issues/1.json"), "unexpected path: {req}");
     assert!(
         req.to_ascii_lowercase().contains("accept-encoding"),
         "gzip feature must negotiate Accept-Encoding, got: {req}"

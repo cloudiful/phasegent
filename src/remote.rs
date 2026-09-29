@@ -236,6 +236,7 @@ fn valid_name(value: &str) -> bool {
         })
 }
 
+#[allow(dead_code)]
 pub fn normalize_api_base(value: &str) -> Result<String, String> {
     let mut url = Url::parse(value).map_err(|error| format!("invalid API base URL: {error}"))?;
     if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {

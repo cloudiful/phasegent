@@ -3,7 +3,7 @@
 //! This module keeps the relation list/create/delete paths out of `cli.rs`:
 //! it validates the raw `--to`, `--type`, and `--delay` values, enforces
 //! provider-specific direction and inverse semantics, and issues a single
-//! request per operation. Forgejo providers reject every relation
+//! request per operation. Local dispatchers reject every relation
 //! operation with a structured not-supported error before any network
 //! access.
 
@@ -23,7 +23,7 @@ pub(crate) enum RelationResult {
 
 /// Validate the raw relation inputs, enforce role-independent invariants
 /// (positive ids, no self-relation, delay only with `precedes`), and dispatch
-/// to the concrete provider. Forgejo dispatchers never reach the
+/// to the concrete provider. Local dispatchers never reach the
 /// network: this returns a structured not-supported error instead.
 pub(crate) fn execute(
     provider: &ProviderDispatcher,
@@ -32,9 +32,6 @@ pub(crate) fn execute(
     match provider {
         ProviderDispatcher::Redmine(redmine) => execute_redmine(redmine, command),
         ProviderDispatcher::Gitlab(gitlab) => execute_gitlab(gitlab, command),
-        ProviderDispatcher::Forgejo(_) => {
-            Err(ProviderError::not_supported("forgejo", "issue relations"))
-        }
         // Local backend has no relations.
         ProviderDispatcher::Local(_) => {
             Err(ProviderError::not_supported("local", "issue relations"))
@@ -149,7 +146,7 @@ fn execute_gitlab(
             }
             // GitLab requires the source issue iid in the DELETE
             // URL (the endpoint is scoped per source issue); Redmine
-            // and Forgejo ignore the flag. The parser now accepts an
+            // ignores the flag. The parser now accepts an
             // explicit `--issue <SOURCE_ISSUE_IID>` so a caller who
             // targets GitLab must supply the source. A missing or
             // zero source on GitLab is rejected by the provider as

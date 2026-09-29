@@ -4,7 +4,6 @@ use crate::command::RepoCommand;
 use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::api::{CommentOutput, IssueSummary, ProviderError, RepoSummary};
-use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::hierarchy::HierarchyPage;
 use crate::providers::hierarchy::WorkItemRef;
 use crate::providers::local::LocalProvider;
@@ -16,20 +15,12 @@ use crate::providers::{
 };
 
 pub enum ProviderDispatcher {
-    Forgejo(ForgejoProvider),
     Redmine(RedmineProvider),
     Gitlab(GitlabProvider),
     /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),
 }
 impl ProviderDispatcher {
-    pub fn for_role(
-        role: crate::policy::Role,
-        config: ForgejoConfig,
-    ) -> Result<Self, ProviderError> {
-        Ok(Self::Forgejo(ForgejoProvider::for_role(role, config)?))
-    }
-
     pub fn redmine(
         role: crate::policy::Role,
         config: crate::providers::config::RedmineConfig,
@@ -73,7 +64,6 @@ impl ProviderDispatcher {
 
     pub const fn kind(&self) -> ProviderKind {
         match self {
-            Self::Forgejo(_) => ProviderKind::Forgejo,
             Self::Redmine(_) => ProviderKind::Redmine,
             Self::Gitlab(_) => ProviderKind::Gitlab,
             Self::Local(_) => ProviderKind::Local,

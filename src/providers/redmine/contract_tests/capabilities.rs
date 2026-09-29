@@ -147,7 +147,7 @@ fn redmine_keeps_repo_command_unsupported() {
 }
 
 #[test]
-fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
+fn project_creation_is_admin_only_and_read_is_role_invariant() {
     assert!(Role::Admin.allows(Capability::ProjectCreate));
     assert!(Role::Admin.allows(Capability::ProjectRead));
     assert!(Role::Admin.allows(Capability::IssueStatusRead));
@@ -157,20 +157,6 @@ fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
         assert!(role.allows(Capability::ProjectRead));
         assert!(role.allows(Capability::IssueStatusRead));
     }
-
-    let forgejo = crate::providers::forgejo::ForgejoProvider::new(
-        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
-    assert_eq!(
-        forgejo.list_projects().unwrap_err().json()["kind"],
-        "not_supported"
-    );
-    assert_eq!(
-        forgejo.list_issue_statuses().unwrap_err().json()["kind"],
-        "not_supported"
-    );
 
     assert_eq!(
         crate::cli::run_with_role(
@@ -253,7 +239,8 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         );
     }
 
-    // status set is Redmine-only: Forgejo is rejected as unsupported.
+    // status set is Redmine-only: a stale `forgejo` selection is rejected as
+    // unsupported.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -270,62 +257,35 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         1
     );
 
-    // Tracker selection on create/update is Redmine-only. A stored
-    // forgejo token lets the dispatcher build so the rejection comes from
-    // tracker resolution, not from missing credentials; no request is made.
+    // The removed provider fails closed: a legacy selection yields the
+    // structured unsupported error instead of silently selecting another
+    // provider, and no credential or configuration row is read for it.
     let _environment_lock = lock_workflow_tests();
-    let directory = crate::test_scratch::root().join(format!(
-        "phasegent-tracker-boundary-{}-{}",
-        std::process::id(),
-        time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
-    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
-    let storage = Storage::open_at(&db_path).unwrap();
-    storage
-        .save_credential(Role::Orchestrator, "forgejo", "test-forgejo-token")
-        .unwrap();
+    let error = match crate::cli::provider_for(
+        Role::Orchestrator,
+        Some(ProviderKind::Forgejo),
+        Some("http://forgejo.test"),
+        Some("owner/repo"),
+        None,
+        None,
+    ) {
+        Ok(_) => panic!("a legacy forgejo selection must fail closed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.json()["kind"], "not_supported");
+    assert_eq!(error.json()["provider"], "forgejo");
+    assert_eq!(error.json()["operation"], "provider selection");
 
-    assert_eq!(
-        crate::cli::run_with_role(
-            strings([
-                "--api-base",
-                "http://forgejo.test",
-                "--repository",
-                "owner/repo",
-                "issue",
-                "create",
-                "--title",
-                "Plan",
-                "--tracker",
-                "Bug",
-            ]),
-            Some("orchestrator")
-        ),
-        1
-    );
-    assert_eq!(
-        crate::cli::run_with_role(
-            strings([
-                "--api-base",
-                "http://forgejo.test",
-                "--repository",
-                "owner/repo",
-                "issue",
-                "update",
-                "9",
-                "--body",
-                "Updated",
-                "--tracker",
-                "Bug",
-            ]),
-            Some("orchestrator")
-        ),
-        1
-    );
+    // The same selection through the resolver default (an environment or
+    // persisted `forgejo` default) fails closed identically: no other
+    // provider is selected implicitly and no credential is read.
+    let _default_env = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "forgejo");
+    let error = match crate::cli::provider_for(Role::Orchestrator, None, None, None, None, None) {
+        Ok(_) => panic!("a defaulted forgejo selection must fail closed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.json()["kind"], "not_supported");
+    assert_eq!(error.json()["provider"], "forgejo");
 }
 
 #[test]
@@ -354,17 +314,6 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     // override.
     let redmine = provider("http://redmine.test".to_owned());
     assert!(!redmine.supports(Capability::IssueAttachmentUpload));
-    let forgejo = crate::providers::forgejo::ForgejoProvider::new(
-        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
-    assert!(
-        !<crate::providers::forgejo::ForgejoProvider as crate::providers::IssueProvider>::supports(
-            &forgejo,
-            Capability::IssueAttachmentUpload
-        )
-    );
     let gitlab = crate::providers::gitlab::GitlabProvider::new(
         crate::providers::config::GitlabConfig::new("https://gitlab.example/api/v4", 42),
         "token".to_owned(),
@@ -377,13 +326,6 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     let redmine_dispatcher =
         ProviderDispatcher::Redmine(provider("http://redmine.test".to_owned()));
     assert!(!redmine_dispatcher.supports(Capability::IssueAttachmentUpload));
-    let forgejo_provider = crate::providers::forgejo::ForgejoProvider::new(
-        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
-    let forgejo_dispatcher = ProviderDispatcher::Forgejo(forgejo_provider);
-    assert!(!forgejo_dispatcher.supports(Capability::IssueAttachmentUpload));
     let gitlab_dispatcher = ProviderDispatcher::Gitlab(
         crate::providers::gitlab::GitlabProvider::new(
             crate::providers::config::GitlabConfig::new("https://gitlab.example/api/v4", 42),

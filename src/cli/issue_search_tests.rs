@@ -2,14 +2,12 @@ use super::issue_search::{fallback_or_provider_error, warm_single_summary};
 use crate::infra::issue_index::SqliteIssueIndex;
 use crate::infra::issue_index_backend::block_on;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::providers::api::{IssueSearchItem, IssueSummary};
-use crate::providers::forgejo::ProviderError;
-use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::api::{IssueSearchItem, IssueSummary, ProviderError};
 use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore, LexicalScope};
 use crate::providers::index_store::{
     IssueIndexSearchItem, explicit_scope, lexical_scope_for_state,
 };
-use crate::providers::{ProviderDispatcher, ProviderKind};
+use crate::providers::{ProviderDispatcher, ProviderKind, RedmineConfig, RedmineProvider};
 
 fn tmp_index_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let dir = crate::test_scratch::root().join(format!(
@@ -24,10 +22,10 @@ fn tmp_index_path(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (dir, path)
 }
 
-fn forgejo_dispatcher(owner: &str, repo: &str) -> ProviderDispatcher {
-    let config = ForgejoConfig::new("https://forgejo.example/api/v1", owner, repo);
-    let provider = ForgejoProvider::new(config, "test-token".to_owned()).unwrap();
-    ProviderDispatcher::Forgejo(provider)
+fn redmine_dispatcher(project_id: &str) -> ProviderDispatcher {
+    let config = RedmineConfig::new("https://redmine.example/api/v1", project_id, 2);
+    let provider = RedmineProvider::new(config, "test-token".to_owned()).unwrap();
+    ProviderDispatcher::Redmine(provider)
 }
 
 #[test]
@@ -39,7 +37,7 @@ fn remote_page_warms_full_body_while_output_stays_compact() {
         title: "Title".to_owned(),
         body: long_body.clone(),
         state: "open".to_owned(),
-        html_url: Some("https://forgejo.example/issues/7".to_owned()),
+        html_url: Some("https://redmine.example/issues/7".to_owned()),
         project: None,
     };
     let compact = IssueSearchItem::from_summary(summary.clone(), false);
@@ -53,12 +51,12 @@ fn remote_page_warms_full_body_while_output_stays_compact() {
     let _guard_db = EnvGuard::set("PHASEGENT_DB_PATH", storage_path.to_str().unwrap());
     let _guard_pg = EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
-    let dispatcher = forgejo_dispatcher("owner", "repo");
+    let dispatcher = redmine_dispatcher("42");
     warm_single_summary(&dispatcher, &summary, "issue search");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
     // Warming is visible via scoped lexical search; output bodies stay capped.
     let scope = lexical_scope_for_state(
-        explicit_scope(Some(ProviderKind::Forgejo), Some("owner/repo"), None).as_ref(),
+        explicit_scope(Some(ProviderKind::Redmine), None, Some("42")).as_ref(),
         "all",
     );
     let res = block_on(idx.lexical_search("Title", 10, 0, true)).unwrap();
@@ -85,7 +83,7 @@ fn index_failure_is_warning_only_and_never_fails_remote() {
     let _guard_db = EnvGuard::set("PHASEGENT_DB_PATH", storage_path.to_str().unwrap());
     let _guard_pg = EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
-    let dispatcher = forgejo_dispatcher("owner", "repo");
+    let dispatcher = redmine_dispatcher("42");
     let bad = IssueSummary {
         id: 1,
         number: 1,
@@ -342,7 +340,7 @@ fn mutation_write_through_covers_get_create_update_close() {
     let _guard_db = EnvGuard::set("PHASEGENT_DB_PATH", storage_path.to_str().unwrap());
     let _guard_pg = EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
-    let dispatcher = forgejo_dispatcher("owner", "repo");
+    let dispatcher = redmine_dispatcher("42");
     for (num, title, state) in [
         (11u64, "get title", "open"),
         (12u64, "create title", "open"),

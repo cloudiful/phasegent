@@ -216,6 +216,7 @@ fn read_credential(provider: &str, label: &str, read_stdin: bool) -> Result<Stri
     }
 }
 
+#[allow(dead_code)]
 pub fn token(role: Role, storage: &Storage) -> Result<String, String> {
     let value = storage
         .load_credential(role, PROVIDER_FORGEJO)?

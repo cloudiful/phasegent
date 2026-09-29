@@ -1,4 +1,4 @@
-use super::{ForgejoConfig, ForgejoProvider, GitlabHttp, MockResponse, sequence};
+use super::{GitlabHttp, MockResponse, sequence};
 use crate::infra::http_client;
 use crate::providers::redmine::http::RedmineHttp;
 use std::time::{Duration, Instant};
@@ -6,19 +6,18 @@ use std::time::{Duration, Instant};
 pub(super) fn safe_get_retries_on_503_then_succeeds() {
     let (base, requests, server) = sequence(vec![
         MockResponse::status(503, r#"{"message":"try again"}"#),
-        MockResponse::json(r#"{"id":7,"number":7,"title":"ok","body":"","state":"open"}"#),
+        MockResponse::json(r#"{"issue":{"id":7,"subject":"ok","description":""}}"#),
     ]);
-    let provider =
-        ForgejoProvider::new(ForgejoConfig::new(base, "owner", "repo"), "token".into()).unwrap();
+    let redmine = RedmineHttp::new(base, "secret-key".into()).unwrap();
     let start = Instant::now();
-    let issue = provider.get_issue(7).unwrap();
+    let issue: serde_json::Value = redmine.get("issues/7.json", &[], "issue get").unwrap();
     let elapsed = start.elapsed();
-    assert_eq!(issue.number, 7);
+    assert_eq!(issue["issue"]["id"], 7);
     assert!(elapsed < Duration::from_secs(2), "elapsed={elapsed:?}");
     let reqs = requests.recv().unwrap();
     assert_eq!(reqs.len(), 2, "must have retried once, got {:?}", reqs);
-    assert!(reqs[0].contains("/repos/owner/repo/issues/7"));
-    assert!(reqs[1].contains("/repos/owner/repo/issues/7"));
+    assert!(reqs[0].contains("/issues/7.json"));
+    assert!(reqs[1].contains("/issues/7.json"));
     server.join().unwrap();
 }
 
@@ -46,14 +45,13 @@ pub(super) fn safe_get_retries_on_429_with_retry_after() {
 pub(super) fn retry_after_is_capped_at_2s() {
     let (base, _requests, server) = sequence(vec![
         MockResponse::status(429, r#"{"message":"rate"}"#).with_header("Retry-After", "10"),
-        MockResponse::json(r#"{"id":1,"number":7,"title":"ok","body":"","state":"open"}"#),
+        MockResponse::json(r#"{"issue":{"id":7,"subject":"ok","description":""}}"#),
     ]);
-    let provider =
-        ForgejoProvider::new(ForgejoConfig::new(base, "owner", "repo"), "token".into()).unwrap();
+    let redmine = RedmineHttp::new(base, "secret-key".into()).unwrap();
     let start = Instant::now();
-    let issue = provider.get_issue(7).unwrap();
+    let issue: serde_json::Value = redmine.get("issues/7.json", &[], "issue get").unwrap();
     let elapsed = start.elapsed();
-    assert_eq!(issue.number, 7);
+    assert_eq!(issue["issue"]["id"], 7);
     assert!(elapsed < Duration::from_secs(4), "elapsed={elapsed:?}");
     assert!(
         elapsed >= Duration::from_millis(1900),
@@ -75,10 +73,11 @@ pub(super) fn post_and_4xx_are_not_retried() {
     server.join().unwrap();
 
     let (base, requests, server) =
-        sequence(vec![MockResponse::status(400, r#"{"message":"bad"}"#)]);
-    let provider =
-        ForgejoProvider::new(ForgejoConfig::new(base, "owner", "repo"), "token".into()).unwrap();
-    let err = provider.get_issue(7).unwrap_err();
+        sequence(vec![MockResponse::status(400, r#"{"errors":["bad"]}"#)]);
+    let redmine = RedmineHttp::new(base, "secret-key".into()).unwrap();
+    let err = redmine
+        .get::<serde_json::Value>("issues/7.json", &[], "issue get")
+        .unwrap_err();
     assert_eq!(err.json()["kind"], "http");
     assert_eq!(err.json()["status"], 400);
     assert_eq!(requests.recv().unwrap().len(), 1);

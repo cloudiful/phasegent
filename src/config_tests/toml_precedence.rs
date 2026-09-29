@@ -248,13 +248,11 @@ fn toml_role_precedence_is_env_over_toml_over_sqlite() {
     assert_eq!(redmine.close_status_id, Some(9));
     // Env still wins over TOML.
     let _env_api = EnvGuard::set("PHASEGENT_API_BASE", "https://env.example");
-    let _env_repo = EnvGuard::set("PHASEGENT_REPOSITORY", "env-owner/env-repo");
-    let resolved = crate::providers::forgejo::ForgejoConfig::resolve(Role::Executor, None, None);
-    // Forgejo resolve prefers env over the TOML-effective stored row.
-    // It needs a git origin fallback guard: with env set it must not touch git.
-    let forgejo = resolved.expect("env-backed forgejo resolve must succeed");
-    assert_eq!(forgejo.base_url, "https://env.example/api/v1");
-    assert_eq!(forgejo.owner, "env-owner");
-    assert_eq!(forgejo.repository, "env-repo");
+    let _env_close = EnvGuard::set("PHASEGENT_REDMINE_CLOSE_STATUS_ID", "7");
+    let resolved = crate::providers::RedmineConfig::resolve(Role::Executor, None, None, None);
+    // The Redmine resolver prefers env over the TOML-effective stored row.
+    let redmine = resolved.expect("env-backed redmine resolve must succeed");
+    assert_eq!(redmine.api_base, "https://env.example");
+    assert_eq!(redmine.close_status_id, Some(7));
     let _ = fs::remove_dir_all(dir);
 }

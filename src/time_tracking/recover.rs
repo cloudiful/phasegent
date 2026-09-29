@@ -1,5 +1,5 @@
 use crate::infra::storage::{Storage, TIMER_STATUS_RUNNING};
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 
 use super::dispatch::TimerListOutput;
 use super::finish::project_run;

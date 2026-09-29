@@ -1,7 +1,7 @@
 use crate::infra::storage::{Storage, TimerRunOwner};
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 
 use super::dispatch::TimerOutput;
 use super::util::{generate_run_id, generate_run_id_with_prefix, now_epoch_seconds};

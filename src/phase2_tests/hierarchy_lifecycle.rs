@@ -76,16 +76,15 @@ fn hierarchy_rejects_unsupported_providers_before_any_access() {
 }
 
 #[test]
-fn hierarchy_dispatcher_rejects_forgejo_without_network() {
-    // The dispatcher Forgejo arm returns structured not_supported for every
-    // hierarchy operation before touching the provider, so a closed-port
-    // base proves no request leaves the process.
-    let provider = ForgejoProvider::new(
-        ForgejoConfig::new("http://127.0.0.1:1", "owner", "repo"),
-        "token".to_owned(),
+fn hierarchy_dispatcher_rejects_local_without_network() {
+    // The dispatcher Local arm returns structured not_supported for every
+    // hierarchy operation before touching the provider, so a store with no
+    // Redmine/GitLab credentials proves no request leaves the process.
+    let provider = crate::providers::local::LocalProvider::open_at(
+        &close_cli_root("hierarchy-local").join("local.sqlite3"),
     )
     .unwrap();
-    let dispatcher = crate::providers::ProviderDispatcher::Forgejo(provider);
+    let dispatcher = crate::providers::ProviderDispatcher::local(provider);
     let get = dispatcher.get_hierarchy_page(641).unwrap_err();
     assert_eq!(get.json()["kind"], "not_supported");
     assert_eq!(get.json()["operation"], "issue hierarchy get");

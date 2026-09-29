@@ -1,7 +1,7 @@
 use crate::infra::storage::{Storage, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED, TimerRun};
 use crate::policy::Role;
+use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ProviderError;
 use crate::providers::gitlab::GitlabProvider;
 use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
 

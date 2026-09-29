@@ -1,4 +1,5 @@
 use super::*;
+use crate::providers::{RedmineConfig, RedmineProvider};
 
 #[test]
 fn inline_form_accepts_leading_dash_values_for_required_options() {
@@ -230,8 +231,9 @@ fn empty_marker_is_rejected_by_parser_and_provider() {
         .collect::<Vec<_>>();
     assert!(command::parse_with_role_env(&args, Some("orchestrator")).is_err());
 
-    let provider = ForgejoProvider::new(
-        ForgejoConfig::new("http://127.0.0.1:1/api/v1", "owner", "repo"),
+    // A closed-port base proves the rejection happens before any request.
+    let provider = RedmineProvider::new(
+        RedmineConfig::new("http://127.0.0.1:1", "tools-phasegent", 2),
         "token".to_owned(),
     )
     .unwrap();

@@ -1,7 +1,7 @@
 use crate::infra::storage::{Storage, TimerRun};
 use crate::infra::storage::{TIMER_SYNC_PROJECTING, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED};
 use crate::providers::RedmineProvider;
-use crate::providers::forgejo::ProviderError;
+use crate::providers::api::ProviderError;
 
 use super::util::format_unix_date;
 
