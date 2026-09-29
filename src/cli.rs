@@ -3,7 +3,7 @@ use crate::command::{self, Command, IssueCommand};
 use crate::infra::storage::Storage;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::{ForgejoConfig, ForgejoError};
+use crate::providers::forgejo::{ForgejoConfig, ProviderError};
 use crate::providers::{GitlabConfig, ProviderDispatcher, ProviderKind, RedmineConfig};
 use serde::Serialize;
 
@@ -341,7 +341,7 @@ pub(crate) fn provider(
     role: Role,
     api_base: Option<&str>,
     repository: Option<&str>,
-) -> Result<ProviderDispatcher, ForgejoError> {
+) -> Result<ProviderDispatcher, ProviderError> {
     provider_for(
         role,
         Some(ProviderKind::Forgejo),
@@ -359,21 +359,21 @@ pub(crate) fn provider_for(
     repository: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<ProviderDispatcher, ForgejoError> {
+) -> Result<ProviderDispatcher, ProviderError> {
     match resolve_kind(role, provider_kind)? {
         ProviderKind::Forgejo => {
             let config = ForgejoConfig::resolve(role, api_base, repository)?;
             match config.provider() {
                 ProviderKind::Forgejo => ProviderDispatcher::for_role(role, config),
-                ProviderKind::Redmine => Err(ForgejoError::config(
+                ProviderKind::Redmine => Err(ProviderError::config(
                     "Forgejo configuration selected an unsupported provider",
                 )),
-                ProviderKind::Gitlab => Err(ForgejoError::config(
+                ProviderKind::Gitlab => Err(ProviderError::config(
                     "Forgejo configuration selected an unsupported provider",
                 )),
                 // Local is not a valid Forgejo configuration; kept for
                 // exhaustiveness.
-                ProviderKind::Local => Err(ForgejoError::config(
+                ProviderKind::Local => Err(ProviderError::config(
                     "Forgejo configuration selected an unsupported provider",
                 )),
             }
@@ -434,7 +434,7 @@ fn permission_denial(role: Role, operation: &str) -> i32 {
     )
 }
 
-pub(crate) fn print_result<T: Serialize>(result: Result<T, ForgejoError>) -> i32 {
+pub(crate) fn print_result<T: Serialize>(result: Result<T, ProviderError>) -> i32 {
     match result {
         Ok(value) => print_json(&value),
         Err(error) => provider_error(error),
@@ -454,7 +454,7 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> i32 {
     }
 }
 
-pub(crate) fn provider_error(error: ForgejoError) -> i32 {
+pub(crate) fn provider_error(error: ProviderError) -> i32 {
     structured_error(error.json(), 1)
 }
 

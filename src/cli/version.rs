@@ -1,7 +1,7 @@
 use crate::command::VersionCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 
 /// Redmine or local project version discovery. Every role may read
@@ -24,7 +24,7 @@ pub(crate) fn execute_version(
     }
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ForgejoError::not_supported(
+            return super::provider_error(ProviderError::not_supported(
                 "forgejo",
                 capability.operation(),
             ));
@@ -67,7 +67,7 @@ pub(crate) fn execute_version(
                 let origin = crate::remote::resolve_origin()
                     .map(|remote| remote.repository)
                     .unwrap_or_else(|_| "current Git origin".to_owned());
-                return super::provider_error(ForgejoError::config(format!(
+                return super::provider_error(ProviderError::config(format!(
                     "no Redmine project matches the current Git origin '{}'; pass --project-id or run 'PHASEGENT_ROLE=admin phasegent --provider redmine admin workflow bootstrap'",
                     origin
                 )));
@@ -87,7 +87,7 @@ pub(crate) fn execute_version(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));

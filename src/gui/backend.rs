@@ -17,7 +17,7 @@ use super::validate::{
 };
 
 #[allow(dead_code)]
-fn redact_provider_error(error: crate::providers::forgejo::ForgejoError) -> String {
+fn redact_provider_error(error: crate::providers::forgejo::ProviderError) -> String {
     let json = error.json();
     let kind = json
         .get("kind")
@@ -61,7 +61,7 @@ fn build_dispatcher(
         // arms' redacted not_supported envelope so the GUI treats
         // `local` uniformly (kind "not_supported", not a bare string).
         ProviderKind::Local => Err(redact_provider_error(
-            crate::providers::forgejo::ForgejoError::not_supported(
+            crate::providers::forgejo::ProviderError::not_supported(
                 "local",
                 "provider dispatch is not wired in this phase",
             ),

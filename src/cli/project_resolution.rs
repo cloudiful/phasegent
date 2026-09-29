@@ -16,7 +16,7 @@
 //!   discovery and never persists the discovered id.
 
 use crate::policy::Role;
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, ProviderError};
 use crate::providers::{IssueProvider, ProviderKind, RedmineConfig, RedmineProvider};
 
 /// Resolve a Redmine project id for the current invocation.
@@ -41,7 +41,7 @@ pub(crate) fn resolve_redmine_project(
     repository: Option<&str>,
     explicit_project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<Option<String>, ForgejoError> {
+) -> Result<Option<String>, ProviderError> {
     if let Some(id) = explicit_project_id {
         let trimmed = id.trim();
         if !trimmed.is_empty() {
@@ -61,7 +61,7 @@ pub(crate) fn resolve_redmine_project(
             if repository.is_some() {
                 return Ok(None);
             }
-            return Err(ForgejoError::config(error));
+            return Err(ProviderError::config(error));
         }
     };
 
@@ -86,7 +86,7 @@ pub(crate) fn resolve_with_origin(
     explicit_project_id: Option<&str>,
     close_status_id: Option<&str>,
     origin: &crate::remote::RemoteRepository,
-) -> Result<Option<String>, ForgejoError> {
+) -> Result<Option<String>, ProviderError> {
     if let Some(id) = explicit_project_id {
         let trimmed = id.trim();
         if !trimmed.is_empty() {
@@ -126,7 +126,7 @@ pub(crate) fn resolve_with_origin(
                     message.push_str(&format!(" (and {} more)", projects.len() - limit));
                 }
                 message.push_str("; pass --project-id to select one");
-                Err(ForgejoError::config(message))
+                Err(ProviderError::config(message))
             }
         },
         Err(error) => Err(error),
@@ -147,7 +147,7 @@ pub(crate) fn resolve_expected_redmine_project(
     repository: Option<&str>,
     explicit_project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<String, ForgejoError> {
+) -> Result<String, ProviderError> {
     match resolve_redmine_project(
         role,
         api_base,
@@ -156,7 +156,7 @@ pub(crate) fn resolve_expected_redmine_project(
         close_status_id,
     ) {
         Ok(Some(id)) => Ok(id),
-        Ok(None) => Err(ForgejoError::config(
+        Ok(None) => Err(ProviderError::config(
             "cannot determine the expected Redmine project for this single-number operation: \
              no Redmine project matches the current Git checkout; pass --project-id to select \
              explicitly (single-number operations never auto-create a project)",
@@ -174,10 +174,10 @@ fn guard_project_parts(
     actual_identifier: Option<&str>,
     expected_project: &str,
     number: u64,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     let expected = expected_project.trim();
     if expected.is_empty() {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "expected Redmine project must be non-empty; pass --project-id to select explicitly",
         ));
     }
@@ -185,7 +185,7 @@ fn guard_project_parts(
         if actual_id == expected_id {
             return Ok(());
         }
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "Redmine issue {number} belongs to project {actual_id} ('{actual_name}'), not expected project \
              '{expected}' for the current Git checkout; pass --project-id '{actual_id}' to allow \
              cross-project access or correct the number",
@@ -195,7 +195,7 @@ fn guard_project_parts(
     if matches_identifier || actual_name == expected {
         return Ok(());
     }
-    Err(ForgejoError::config(format!(
+    Err(ProviderError::config(format!(
         "Redmine issue {number} belongs to project {actual_id} ('{actual_name}'), not expected project \
          '{expected}' for the current Git checkout; pass --project-id to select explicitly",
     )))
@@ -212,10 +212,10 @@ pub(crate) fn guard_issue_summary_project(
     summary: &IssueSummary,
     expected_project: &str,
     number: u64,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     let Some(project) = summary.project.as_ref() else {
         let expected = expected_project.trim();
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "Redmine issue {number} response omits project; cannot verify it belongs to expected \
              project '{expected}'; pass --project-id to select explicitly"
         )));
@@ -244,7 +244,7 @@ pub(crate) fn enforce_redmine_single_number_scope(
     provider_kind: ProviderKind,
     summary: &IssueSummary,
     number: u64,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     if provider_kind != ProviderKind::Redmine {
         return Ok(());
     }
@@ -275,9 +275,9 @@ pub(crate) fn verify_redmine_scope_before_write<P>(
     provider_kind: ProviderKind,
     provider: &P,
     number: u64,
-) -> Result<(), ForgejoError>
+) -> Result<(), ProviderError>
 where
-    P: IssueProvider<Error = ForgejoError>,
+    P: IssueProvider<Error = ProviderError>,
 {
     if provider_kind != ProviderKind::Redmine {
         return Ok(());
@@ -306,7 +306,7 @@ pub(crate) fn resolve_redmine_project_for_search_or_create(
     repository: Option<&str>,
     explicit_project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<(Option<String>, Option<String>), ForgejoError> {
+) -> Result<(Option<String>, Option<String>), ProviderError> {
     match resolve_redmine_project(
         role,
         api_base,

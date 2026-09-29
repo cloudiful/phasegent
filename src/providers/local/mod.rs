@@ -21,7 +21,7 @@ mod status_impl;
 mod contract_tests;
 
 use crate::policy::Capability;
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 #[cfg(test)]
 use std::path::Path;
 use std::sync::Mutex;
@@ -41,16 +41,17 @@ impl std::fmt::Debug for LocalProvider {
 }
 
 impl LocalProvider {
-    pub fn open() -> Result<Self, ForgejoError> {
-        let store = crate::infra::local_store::open_local().map_err(ForgejoError::config)?;
+    pub fn open() -> Result<Self, ProviderError> {
+        let store = crate::infra::local_store::open_local().map_err(ProviderError::config)?;
         Ok(Self {
             conn: Mutex::new(store.connection),
         })
     }
 
     #[cfg(test)]
-    pub fn open_at(path: &Path) -> Result<Self, ForgejoError> {
-        let store = crate::infra::local_store::open_local_at(path).map_err(ForgejoError::config)?;
+    pub fn open_at(path: &Path) -> Result<Self, ProviderError> {
+        let store =
+            crate::infra::local_store::open_local_at(path).map_err(ProviderError::config)?;
         Ok(Self {
             conn: Mutex::new(store.connection),
         })
@@ -60,9 +61,9 @@ impl LocalProvider {
         &self,
         operation: &'static str,
         f: impl FnOnce(&rusqlite::Connection) -> Result<R, rusqlite::Error>,
-    ) -> Result<R, ForgejoError> {
+    ) -> Result<R, ProviderError> {
         let guard = self.conn.lock().map_err(|_| {
-            ForgejoError::request(operation, "local database lock was poisoned".to_owned())
+            ProviderError::request(operation, "local database lock was poisoned".to_owned())
         })?;
         f(&guard).map_err(|error| model::db_error(operation, error))
     }

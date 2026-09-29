@@ -1,7 +1,7 @@
 use crate::auth;
 use crate::infra::storage::Storage;
 use crate::policy::Role;
-use crate::providers::api::{ForgejoError, RepoSummary};
+use crate::providers::api::{ProviderError, RepoSummary};
 use crate::providers::redmine::http::RedmineHttp;
 use crate::remote;
 use std::str::FromStr;
@@ -82,32 +82,32 @@ impl FromStr for ProviderKind {
 pub fn resolve_kind(
     role: Role,
     explicit: Option<ProviderKind>,
-) -> Result<ProviderKind, ForgejoError> {
+) -> Result<ProviderKind, ProviderError> {
     if let Some(provider) = explicit {
         return Ok(provider);
     }
     if let Ok(provider) = std::env::var("PHASEGENT_PROVIDER") {
         return provider
             .parse()
-            .map_err(|error: String| ForgejoError::config(error));
+            .map_err(|error: String| ProviderError::config(error));
     }
     if let Ok(provider) = std::env::var("PHASEGENT_DEFAULT_PROVIDER") {
         let trimmed = provider.trim();
         if !trimmed.is_empty() {
             return trimmed
                 .parse()
-                .map_err(|error: String| ForgejoError::config(error));
+                .map_err(|error: String| ProviderError::config(error));
         }
     }
     // TOML overlay sits between env and SQLite. A malformed/secret TOML
     // fails here instead of falling back so misconfiguration is visible.
     if let Some(overlay) =
-        crate::infra::config_overlay::load_overlay().map_err(ForgejoError::config)?
+        crate::infra::config_overlay::load_overlay().map_err(ProviderError::config)?
         && let Some(value) = overlay.default_provider_value()
     {
         return value
             .parse()
-            .map_err(|error: String| ForgejoError::config(error));
+            .map_err(|error: String| ProviderError::config(error));
     }
     // Persisted global default lives in `global_setting`. Read it
     // directly so the resolver never writes — the schema-level
@@ -117,16 +117,16 @@ pub fn resolve_kind(
     {
         return value
             .parse()
-            .map_err(|error: String| ForgejoError::config(error));
+            .map_err(|error: String| ProviderError::config(error));
     }
-    let storage = Storage::open().map_err(ForgejoError::config)?;
-    let stored = auth::load_config(role, &storage).map_err(ForgejoError::config)?;
+    let storage = Storage::open().map_err(ProviderError::config)?;
+    let stored = auth::load_config(role, &storage).map_err(ProviderError::config)?;
     stored
         .and_then(|config| config.provider)
         .map_or(Ok(ProviderKind::Forgejo), |provider| {
             provider
                 .parse()
-                .map_err(|error: String| ForgejoError::config(error))
+                .map_err(|error: String| ProviderError::config(error))
         })
 }
 
@@ -160,7 +160,7 @@ impl RedmineConfig {
         api_base: Option<&str>,
         project_id: Option<&str>,
         close_status_id: Option<&str>,
-    ) -> Result<Self, ForgejoError> {
+    ) -> Result<Self, ProviderError> {
         // Resolution precedence per field: explicit CLI > env
         // (`PHASEGENT_REDMINE_API_BASE` / `PHASEGENT_API_BASE` for the base,
         // `PHASEGENT_REDMINE_CLOSE_STATUS_ID` /
@@ -168,8 +168,8 @@ impl RedmineConfig {
         // (`[roles.<role>] redmine_api_base` /
         // `redmine_close_status_id` via `auth::load_redmine_config`,
         // which returns TOML-over-SQLite) > legacy SQLite row.
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let stored = auth::load_redmine_config(role, &storage).map_err(ForgejoError::config)?;
+        let storage = Storage::open().map_err(ProviderError::config)?;
+        let stored = auth::load_redmine_config(role, &storage).map_err(ProviderError::config)?;
         let explicit_base = api_base
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_REDMINE_API_BASE").ok())
@@ -183,7 +183,7 @@ impl RedmineConfig {
         let base = explicit_base
             .or_else(|| stored.as_ref().and_then(|config| config.api_base.clone()))
             .ok_or_else(|| {
-                ForgejoError::config(
+                ProviderError::config(
                     "Redmine API base is not configured; use --api-base or auth setup",
                 )
             })?;
@@ -198,16 +198,16 @@ impl RedmineConfig {
             .map(|value| {
                 value
                     .parse::<u64>()
-                    .map_err(|_| ForgejoError::config("Redmine close status id must be numeric"))
+                    .map_err(|_| ProviderError::config("Redmine close status id must be numeric"))
             })
             .transpose()?;
         if close_status_id == Some(0) {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine close status id must be greater than zero",
             ));
         }
 
-        let api_base = remote::normalize_redmine_api_base(&base).map_err(ForgejoError::config)?;
+        let api_base = remote::normalize_redmine_api_base(&base).map_err(ProviderError::config)?;
         Ok(Self {
             api_base,
             project_id,
@@ -215,22 +215,22 @@ impl RedmineConfig {
         })
     }
 
-    pub fn require_project_id(&self) -> Result<&str, ForgejoError> {
+    pub fn require_project_id(&self) -> Result<&str, ProviderError> {
         self.project_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| {
-                ForgejoError::config("Redmine project id is not configured; use --project-id")
+                ProviderError::config("Redmine project id is not configured; use --project-id")
             })
     }
 
-    pub fn require_close_status_id(&self) -> Result<u64, ForgejoError> {
+    pub fn require_close_status_id(&self) -> Result<u64, ProviderError> {
         match self.close_status_id {
             Some(value) if value > 0 => Ok(value),
-            Some(_) => Err(ForgejoError::config(
+            Some(_) => Err(ProviderError::config(
                 "Redmine close status id must be greater than zero",
             )),
-            None => Err(ForgejoError::config(
+            None => Err(ProviderError::config(
                 "Redmine close status id is not configured; use --close-status-id or auth setup",
             )),
         }
@@ -244,23 +244,23 @@ pub struct RedmineProvider {
 }
 
 impl RedmineProvider {
-    pub fn for_role(role: Role, config: RedmineConfig) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let api_key = auth::redmine_api_key(role, &storage).map_err(ForgejoError::auth)?;
+    pub fn for_role(role: Role, config: RedmineConfig) -> Result<Self, ProviderError> {
+        let storage = Storage::open().map_err(ProviderError::config)?;
+        let api_key = auth::redmine_api_key(role, &storage).map_err(ProviderError::auth)?;
         Self::new(config, api_key)
     }
 
-    pub fn new(config: RedmineConfig, api_key: String) -> Result<Self, ForgejoError> {
+    pub fn new(config: RedmineConfig, api_key: String) -> Result<Self, ProviderError> {
         let api_key = api_key.trim().to_owned();
         if api_key.is_empty() {
-            return Err(ForgejoError::auth("Redmine API key is empty"));
+            return Err(ProviderError::auth("Redmine API key is empty"));
         }
         let http = RedmineHttp::new(config.api_base.clone(), api_key)?;
         Ok(Self { config, http })
     }
 
-    fn unsupported<T>(&self, operation: &str) -> Result<T, ForgejoError> {
-        Err(ForgejoError::not_supported("redmine", operation))
+    fn unsupported<T>(&self, operation: &str) -> Result<T, ProviderError> {
+        Err(ProviderError::not_supported("redmine", operation))
     }
 
     pub fn create_repo(
@@ -269,7 +269,7 @@ impl RedmineProvider {
         _private: bool,
         _description: &str,
         _auto_init: bool,
-    ) -> Result<RepoSummary, ForgejoError> {
+    ) -> Result<RepoSummary, ProviderError> {
         self.unsupported("repo create")
     }
 }
@@ -319,9 +319,9 @@ impl GitlabConfig {
         role: Role,
         api_base: Option<&str>,
         project_id: Option<&str>,
-    ) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let stored = auth::load_gitlab_config(role, &storage).map_err(ForgejoError::config)?;
+    ) -> Result<Self, ProviderError> {
+        let storage = Storage::open().map_err(ProviderError::config)?;
+        let stored = auth::load_gitlab_config(role, &storage).map_err(ProviderError::config)?;
         let explicit_base = api_base
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_GITLAB_API_BASE").ok())
@@ -331,7 +331,7 @@ impl GitlabConfig {
         let base = explicit_base
             .or_else(|| stored.as_ref().and_then(|config| config.api_base.clone()))
             .ok_or_else(|| {
-                ForgejoError::config(
+                ProviderError::config(
                     "GitLab API base is not configured; use --api-base or auth setup",
                 )
             })?;
@@ -345,24 +345,24 @@ impl GitlabConfig {
             .map(|value| {
                 value
                     .parse::<u64>()
-                    .map_err(|_| ForgejoError::config("GitLab project id must be numeric"))
+                    .map_err(|_| ProviderError::config("GitLab project id must be numeric"))
             })
             .transpose()?
         {
             Some(value) => value,
             None => {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab project id is not configured; use --project-id",
                 ));
             }
         };
         if parsed_project == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab project id must be greater than zero",
             ));
         }
 
-        let api_base = normalize_gitlab_api_base(&base).map_err(ForgejoError::config)?;
+        let api_base = normalize_gitlab_api_base(&base).map_err(ProviderError::config)?;
         Ok(Self {
             api_base,
             project_id: parsed_project,

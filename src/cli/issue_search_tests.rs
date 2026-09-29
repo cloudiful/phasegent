@@ -3,7 +3,7 @@ use crate::infra::issue_index::SqliteIssueIndex;
 use crate::infra::issue_index_backend::block_on;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::providers::api::{IssueSearchItem, IssueSummary};
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore, LexicalScope};
 use crate::providers::index_store::{
@@ -152,7 +152,7 @@ fn provider_failure_returns_local_item_with_markers_scoped() {
         include_body: false,
         all: false,
     };
-    let original = ForgejoError::auth("bad credentials");
+    let original = ProviderError::auth("bad credentials");
     // Explicit forgejo scope must filter to owner/repo only.
     let code = fallback_or_provider_error(
         &original,
@@ -190,7 +190,7 @@ fn provider_failure_with_no_local_match_preserves_error() {
         include_body: false,
         all: false,
     };
-    let original = ForgejoError::auth("bad credentials");
+    let original = ProviderError::auth("bad credentials");
     let code = fallback_or_provider_error(
         &original,
         &options,
@@ -236,7 +236,7 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
         include_body: false,
         all: true,
     };
-    let original = ForgejoError::auth("bad credentials");
+    let original = ProviderError::auth("bad credentials");
     let code = fallback_or_provider_error(
         &original,
         &all_options,
@@ -247,7 +247,7 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
     );
     assert_eq!(code, 1);
     // Not-supported and argument errors never fallback.
-    let not_supported = ForgejoError::not_supported("forgejo", "issue search");
+    let not_supported = ProviderError::not_supported("forgejo", "issue search");
     let query_options = crate::providers::IssueSearchOptions {
         query: Some("alpha".to_owned()),
         state: "all".to_owned(),
@@ -267,7 +267,7 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
         ),
         1
     );
-    let arg_error = ForgejoError::config("issue search limit must be between 1 and 100");
+    let arg_error = ProviderError::config("issue search limit must be between 1 and 100");
     assert_eq!(
         fallback_or_provider_error(
             &arg_error,
@@ -319,7 +319,7 @@ fn local_fallback_needs_no_provider_network_or_credentials() {
         include_body: false,
         all: false,
     };
-    let original = ForgejoError::request("issue search", "network down".to_owned());
+    let original = ProviderError::request("issue search", "network down".to_owned());
     // Explicit redmine scope, no provider lookup performed.
     let code = fallback_or_provider_error(
         &original,

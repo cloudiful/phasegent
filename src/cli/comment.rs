@@ -1,6 +1,6 @@
 use crate::command::CommentCommand;
 use crate::policy::{Capability, Role};
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 pub(crate) fn execute_comment(
@@ -60,7 +60,7 @@ pub(crate) fn execute_comment(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));

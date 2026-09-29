@@ -2,7 +2,7 @@ use crate::auth;
 use crate::branch_context;
 use crate::lifecycle;
 use crate::policy::Role;
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::redmine;
 use crate::providers::redmine::model::{
     DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR,
@@ -64,7 +64,7 @@ pub(crate) fn bootstrap(
     repository: Option<&str>,
     close_status_id: Option<&str>,
     close_status_name: Option<&str>,
-) -> Result<BootstrapResult, ForgejoError> {
+) -> Result<BootstrapResult, ProviderError> {
     let repository = resolve_repository(repository)?;
     let explicit_repository = repository_was_explicit(repository.as_str());
     let config = resolve_bootstrap_config(role, api_base, close_status_id)?;
@@ -91,7 +91,7 @@ pub(crate) fn ensure_issue_workflow(
     api_base: Option<&str>,
     repository: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<WorkflowState, ForgejoError> {
+) -> Result<WorkflowState, ProviderError> {
     let repository = resolve_repository(repository)?;
     let explicit_repository = repository_was_explicit(repository.as_str());
     let config = resolve_bootstrap_config(Role::Admin, api_base, close_status_id)?;
@@ -99,7 +99,7 @@ pub(crate) fn ensure_issue_workflow(
     let completed = completed_bootstraps();
     let mut completed = completed
         .lock()
-        .map_err(|_| ForgejoError::config("workflow bootstrap state lock is poisoned"))?;
+        .map_err(|_| ProviderError::config("workflow bootstrap state lock is poisoned"))?;
     if let Some(state) = completed.get(&key) {
         return Ok(state.clone());
     }
@@ -122,7 +122,7 @@ pub(crate) fn ensure_issue_workflow(
             .iter()
             .find_map(|outcome| outcome.warning.clone())
             .unwrap_or_else(|| "Redmine direct user memberships could not be ensured".to_owned());
-        return Err(ForgejoError::config(detail));
+        return Err(ProviderError::config(detail));
     }
     let state = result.state();
     completed.insert(key, state.clone());
@@ -137,8 +137,8 @@ fn bootstrap_resolved(
     config: RedmineConfig,
     close_status_id: Option<&str>,
     close_status_name: Option<&str>,
-) -> Result<BootstrapResult, ForgejoError> {
-    let identifier = remote::redmine_identifier(&repository).map_err(ForgejoError::config)?;
+) -> Result<BootstrapResult, ProviderError> {
+    let identifier = remote::redmine_identifier(&repository).map_err(ProviderError::config)?;
     // Admin-only provisioning: the administrator credential is sufficient
     // for the entire bootstrap. Project lookup/creation, service-user
     // lookup/creation, API-key retrieval, and membership writes all use
@@ -146,7 +146,7 @@ fn bootstrap_resolved(
     // providers but never read for identity, and a missing admin key
     // never falls back to another role key.
     if roles.provider != Role::Admin {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "workflow bootstrap requires the admin Redmine API key; missing admin credential cannot fall back to another role key",
         ));
     }
@@ -166,7 +166,7 @@ fn bootstrap_resolved(
         || executor_user.id == tester_user.id
         || reviewer_user.id == tester_user.id
     {
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "Redmine role-scoped API keys must identify distinct users; got orchestrator={}, executor={}, reviewer={}, tester={}",
             describe_user(orchestrator_user),
             describe_user(executor_user),
@@ -201,7 +201,7 @@ fn bootstrap_resolved(
         && reviewer.status != "warning"
         && tester.status != "warning";
     if all_memberships_ok {
-        let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
+        let storage = crate::infra::storage::Storage::open().map_err(ProviderError::config)?;
         for (role, _) in &provisioned {
             auth::persist_redmine_bootstrap(
                 *role,
@@ -210,7 +210,7 @@ fn bootstrap_resolved(
                 bootstrap.close_status.id,
                 &storage,
             )
-            .map_err(ForgejoError::config)?;
+            .map_err(ProviderError::config)?;
         }
         if !provisioned.iter().any(|(role, _)| *role == roles.persist) {
             auth::persist_redmine_bootstrap(
@@ -220,7 +220,7 @@ fn bootstrap_resolved(
                 bootstrap.close_status.id,
                 &storage,
             )
-            .map_err(ForgejoError::config)?;
+            .map_err(ProviderError::config)?;
         }
     }
 
@@ -229,9 +229,9 @@ fn bootstrap_resolved(
     // `mirror_<project_id>_<owner>_<repo>` identifier short-circuits the
     // POST when the mirror already exists. Mirror HTTP errors and a
     // `failed` status fail bootstrap clearly so operators see the cause.
-    let (owner, repo_name) = split_repository(&repository).map_err(ForgejoError::config)?;
+    let (owner, repo_name) = split_repository(&repository).map_err(ProviderError::config)?;
     let mirror_url =
-        resolve_mirror_url(&repository, explicit_repository).map_err(ForgejoError::config)?;
+        resolve_mirror_url(&repository, explicit_repository).map_err(ProviderError::config)?;
     let git_mirror = redmine::register_git_mirror(
         config.api_base.as_str(),
         bootstrap.project.id,
@@ -262,12 +262,12 @@ fn bootstrap_resolved(
 /// reruns and legacy databases never create duplicates.
 fn provision_agent_users(
     admin: &RedmineProvider,
-) -> Result<Vec<(Role, RedmineCurrentUser)>, ForgejoError> {
-    let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
+) -> Result<Vec<(Role, RedmineCurrentUser)>, ProviderError> {
+    let storage = crate::infra::storage::Storage::open().map_err(ProviderError::config)?;
     let mut provisioned = Vec::with_capacity(4);
     for role in provisioned_roles() {
         let metadata = provisioning_metadata(role).ok_or_else(|| {
-            ForgejoError::config(format!(
+            ProviderError::config(format!(
                 "no provisioning metadata for role {}",
                 role.as_str()
             ))
@@ -281,13 +281,13 @@ fn provision_agent_users(
 fn find_provisioned(
     provisioned: &[(Role, RedmineCurrentUser)],
     role: Role,
-) -> Result<&RedmineCurrentUser, ForgejoError> {
+) -> Result<&RedmineCurrentUser, ProviderError> {
     provisioned
         .iter()
         .find(|(candidate, _)| *candidate == role)
         .map(|(_, user)| user)
         .ok_or_else(|| {
-            ForgejoError::config(format!(
+            ProviderError::config(format!(
                 "provisioned user for role {} is missing",
                 role.as_str()
             ))
@@ -308,13 +308,13 @@ fn provision_single_role(
     storage: &crate::infra::storage::Storage,
     role: Role,
     metadata: &crate::providers::redmine::model::RoleProvisioningMetadata,
-) -> Result<RedmineCurrentUser, ForgejoError> {
+) -> Result<RedmineCurrentUser, ProviderError> {
     use crate::infra::storage::PROVIDER_REDMINE;
 
-    let persisted_user = auth::load_redmine_user(role, storage).map_err(ForgejoError::config)?;
+    let persisted_user = auth::load_redmine_user(role, storage).map_err(ProviderError::config)?;
     let persisted_key = storage
         .load_credential(role, PROVIDER_REDMINE)
-        .map_err(ForgejoError::config)?;
+        .map_err(ProviderError::config)?;
     if let (Some((user_id, login)), Some(api_key)) = (persisted_user, persisted_key)
         && user_id > 0
         && !login.trim().is_empty()
@@ -330,7 +330,7 @@ fn provision_single_role(
     }
 
     if let Some(existing) = admin.find_user_by_login(metadata.login).map_err(|error| {
-        ForgejoError::config(format!(
+        ProviderError::config(format!(
             "could not lookup the {} user '{}': {}",
             role.as_str(),
             metadata.login,
@@ -338,17 +338,17 @@ fn provision_single_role(
         ))
     })? {
         let api_key = admin.get_user_api_key(existing.id).map_err(|error| {
-            ForgejoError::config(format!(
+            ProviderError::config(format!(
                 "could not retrieve the {} user API key: {}",
                 role.as_str(),
                 describe(&error)
             ))
         })?;
         auth::save_redmine_user(role, existing.id, &existing.login, storage)
-            .map_err(ForgejoError::config)?;
+            .map_err(ProviderError::config)?;
         storage
             .save_credential(role, PROVIDER_REDMINE, &api_key)
-            .map_err(ForgejoError::config)?;
+            .map_err(ProviderError::config)?;
         return Ok(RedmineCurrentUser {
             id: existing.id,
             login: existing.login,
@@ -367,7 +367,7 @@ fn provision_single_role(
         Ok(user) => user,
         Err(error) if is_duplicate_login(&error) => {
             let recovered = admin.find_user_by_login(metadata.login).map_err(|inner| {
-                ForgejoError::config(format!(
+                ProviderError::config(format!(
                     "could not lookup the {} user '{}' after duplicate: {}",
                     role.as_str(),
                     metadata.login,
@@ -375,23 +375,23 @@ fn provision_single_role(
                 ))
             })?;
             let existing = recovered.ok_or_else(|| {
-                ForgejoError::config(format!(
+                ProviderError::config(format!(
                     "Redmine user '{}' already exists but lookup found nothing",
                     metadata.login
                 ))
             })?;
             let api_key = admin.get_user_api_key(existing.id).map_err(|inner| {
-                ForgejoError::config(format!(
+                ProviderError::config(format!(
                     "could not retrieve the {} user API key: {}",
                     role.as_str(),
                     describe(&inner)
                 ))
             })?;
             auth::save_redmine_user(role, existing.id, &existing.login, storage)
-                .map_err(ForgejoError::config)?;
+                .map_err(ProviderError::config)?;
             storage
                 .save_credential(role, PROVIDER_REDMINE, &api_key)
-                .map_err(ForgejoError::config)?;
+                .map_err(ProviderError::config)?;
             return Ok(RedmineCurrentUser {
                 id: existing.id,
                 login: existing.login,
@@ -401,7 +401,7 @@ fn provision_single_role(
             });
         }
         Err(error) => {
-            return Err(ForgejoError::config(format!(
+            return Err(ProviderError::config(format!(
                 "could not create the {} user '{}': {}",
                 role.as_str(),
                 metadata.login,
@@ -410,17 +410,17 @@ fn provision_single_role(
         }
     };
     let api_key = admin.get_user_api_key(created.id).map_err(|error| {
-        ForgejoError::config(format!(
+        ProviderError::config(format!(
             "could not retrieve the {} user API key: {}",
             role.as_str(),
             describe(&error)
         ))
     })?;
     auth::save_redmine_user(role, created.id, &created.login, storage)
-        .map_err(ForgejoError::config)?;
+        .map_err(ProviderError::config)?;
     storage
         .save_credential(role, PROVIDER_REDMINE, &api_key)
-        .map_err(ForgejoError::config)?;
+        .map_err(ProviderError::config)?;
     Ok(RedmineCurrentUser {
         id: created.id,
         login: created.login,
@@ -430,9 +430,9 @@ fn provision_single_role(
     })
 }
 
-fn is_duplicate_login(error: &ForgejoError) -> bool {
+fn is_duplicate_login(error: &ProviderError) -> bool {
     match error {
-        ForgejoError::Http {
+        ProviderError::Http {
             status: 422,
             message,
             ..
@@ -468,12 +468,12 @@ fn attach_local_hooks(mut result: BootstrapResult) -> BootstrapResult {
     result
 }
 
-fn resolve_repository(repository: Option<&str>) -> Result<String, ForgejoError> {
+fn resolve_repository(repository: Option<&str>) -> Result<String, ProviderError> {
     match repository {
-        Some(repository) => remote::validate_repository(repository).map_err(ForgejoError::config),
+        Some(repository) => remote::validate_repository(repository).map_err(ProviderError::config),
         None => remote::resolve_origin()
             .map(|remote| remote.repository)
-            .map_err(ForgejoError::config),
+            .map_err(ProviderError::config),
     }
 }
 
@@ -537,13 +537,13 @@ fn resolve_bootstrap_config(
     role: Role,
     api_base: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<RedmineConfig, ForgejoError> {
+) -> Result<RedmineConfig, ProviderError> {
     let mut config = RedmineConfig::resolve(role, api_base, None, close_status_id)?;
     config.project_id = None;
     Ok(config)
 }
 
-fn describe(error: &ForgejoError) -> String {
+fn describe(error: &ProviderError) -> String {
     let json = error.json();
     json.get("message")
         .and_then(serde_json::Value::as_str)

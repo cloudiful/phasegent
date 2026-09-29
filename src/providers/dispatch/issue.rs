@@ -4,7 +4,7 @@ use crate::policy::Capability;
 use crate::providers::ProviderDispatcher;
 #[allow(unused_imports)]
 use crate::providers::api::{
-    CommentOutput, ForgejoError, IssueSearchOptions, IssueSearchResult, IssueSummary, RepoSummary,
+    CommentOutput, IssueSearchOptions, IssueSearchResult, IssueSummary, ProviderError, RepoSummary,
 };
 #[allow(unused_imports)]
 use crate::providers::forgejo::ForgejoConfig;
@@ -18,7 +18,7 @@ use crate::providers::{
 };
 
 impl IssueProvider for ForgejoProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn capabilities(&self) -> ProviderCapabilities {
         // Phase 1 parity matrix (issue 257): Forgejo stays native on
@@ -115,7 +115,7 @@ impl IssueProvider for ForgejoProvider {
 }
 
 impl IssueProvider for RedmineProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
@@ -182,7 +182,7 @@ impl IssueProvider for RedmineProvider {
 }
 
 impl IssueProvider for GitlabProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn capabilities(&self) -> ProviderCapabilities {
         GitlabProvider::capabilities(self)
@@ -254,7 +254,7 @@ impl IssueProvider for GitlabProvider {
 }
 
 impl IssueProvider for ProviderDispatcher {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn capabilities(&self) -> ProviderCapabilities {
         match self {
@@ -377,7 +377,7 @@ impl IssueProvider for ProviderDispatcher {
 }
 
 impl IssueProvider for LocalProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn capabilities(&self) -> ProviderCapabilities {
         LocalProvider::capabilities(self)

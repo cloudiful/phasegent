@@ -7,7 +7,7 @@
 //! resolve native kinds live in the adjacent `hierarchy` module; hierarchy
 //! never falls back to a REST issue relation.
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::model::work_items;
 use crate::providers::hierarchy::{HierarchyEdge, WorkItemRef, supported_parent_child};
 
@@ -29,14 +29,14 @@ impl GitlabProvider {
         &self,
         child: &WorkItemRef,
         parent: &WorkItemRef,
-    ) -> Result<(), ForgejoError> {
+    ) -> Result<(), ProviderError> {
         let edge = HierarchyEdge {
             parent: parent.clone(),
             child: child.clone(),
         };
-        edge.validate().map_err(ForgejoError::config)?;
+        edge.validate().map_err(ProviderError::config)?;
         if !supported_parent_child(&parent.kind, &child.kind) {
-            return Err(ForgejoError::not_supported("gitlab", HIERARCHY_UPDATE));
+            return Err(ProviderError::not_supported("gitlab", HIERARCHY_UPDATE));
         }
         let variables = serde_json::json!({
             "id": work_items::work_item_gid(child.id),
@@ -53,14 +53,14 @@ impl GitlabProvider {
         &self,
         child_id: u64,
         parent_id: u64,
-    ) -> Result<(), ForgejoError> {
+    ) -> Result<(), ProviderError> {
         if child_id == 0 || parent_id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab work item id must be greater than zero",
             ));
         }
         if child_id == parent_id {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "hierarchy parent cannot be the same item as the child",
             ));
         }
@@ -72,9 +72,9 @@ impl GitlabProvider {
     /// Clear the parent of one Work Item via the native hierarchy widget
     /// with an explicit null parent. No kind resolution is needed: the
     /// mutation carries only the child GID and never touches relations.
-    pub fn unset_hierarchy_parent_by_id(&self, child_id: u64) -> Result<(), ForgejoError> {
+    pub fn unset_hierarchy_parent_by_id(&self, child_id: u64) -> Result<(), ProviderError> {
         if child_id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab work item id must be greater than zero",
             ));
         }
@@ -92,14 +92,14 @@ impl GitlabProvider {
         &self,
         mutation: &str,
         variables: serde_json::Value,
-    ) -> Result<(), ForgejoError> {
+    ) -> Result<(), ProviderError> {
         let data: work_items::WorkItemUpdateData = crate::providers::gitlab::graphql::execute(
             &self.http,
             mutation,
             variables,
             HIERARCHY_UPDATE,
         )?;
-        let payload = data.work_item_update.ok_or_else(|| ForgejoError::Decode {
+        let payload = data.work_item_update.ok_or_else(|| ProviderError::Decode {
             operation: HIERARCHY_UPDATE.to_owned(),
             message: self
                 .http
@@ -112,12 +112,12 @@ impl GitlabProvider {
             .filter(|message| !message.is_empty())
             .collect();
         if !errors.is_empty() {
-            return Err(ForgejoError::Request {
+            return Err(ProviderError::Request {
                 operation: HIERARCHY_UPDATE.to_owned(),
                 message: self.http.redact(&errors.join("; ")),
             });
         }
-        payload.work_item.ok_or_else(|| ForgejoError::Decode {
+        payload.work_item.ok_or_else(|| ProviderError::Decode {
             operation: HIERARCHY_UPDATE.to_owned(),
             message: self
                 .http

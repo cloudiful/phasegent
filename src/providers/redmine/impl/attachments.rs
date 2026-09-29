@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::issue::{
     AttachmentUploadOutput, RedmineIssueUploadFields, RedmineIssueUploadUpdate, RedmineUploadEntry,
@@ -23,43 +23,43 @@ impl RedmineProvider {
         issue: u64,
         path: &str,
         description: Option<&str>,
-    ) -> Result<AttachmentUploadOutput, ForgejoError> {
+    ) -> Result<AttachmentUploadOutput, ProviderError> {
         const OPERATION: &str = "issue upload-attachment";
         if issue == 0 {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 "issue number must be greater than zero".to_owned(),
             ));
         }
         let trimmed_path = path.trim();
         if trimmed_path.is_empty() {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 "attachment --path requires a non-empty value".to_owned(),
             ));
         }
         let file_path = Path::new(trimmed_path);
         let metadata = std::fs::metadata(file_path).map_err(|_| {
-            ForgejoError::request(
+            ProviderError::request(
                 OPERATION,
                 "attachment file not found or not accessible".to_owned(),
             )
         })?;
         if !metadata.is_file() {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 "attachment path is not a regular file".to_owned(),
             ));
         }
         let size = metadata.len();
         if size == 0 {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 "attachment file is empty".to_owned(),
             ));
         }
         if size > MAX_ATTACHMENT_BYTES {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 format!(
                     "attachment file too large: {size} bytes exceeds 25 MiB cap ({} bytes)",
@@ -68,10 +68,10 @@ impl RedmineProvider {
             ));
         }
         let filename_os = file_path.file_name().ok_or_else(|| {
-            ForgejoError::request(OPERATION, "attachment filename is invalid".to_owned())
+            ProviderError::request(OPERATION, "attachment filename is invalid".to_owned())
         })?;
         let filename = filename_os.to_str().ok_or_else(|| {
-            ForgejoError::request(
+            ProviderError::request(
                 OPERATION,
                 "attachment filename is not valid UTF-8".to_owned(),
             )
@@ -79,16 +79,16 @@ impl RedmineProvider {
         validate_filename(filename, OPERATION)?;
         // Read after metadata checks so an oversized file never reaches memory.
         let bytes = std::fs::read(file_path).map_err(|_| {
-            ForgejoError::request(OPERATION, "failed to read attachment file".to_owned())
+            ProviderError::request(OPERATION, "failed to read attachment file".to_owned())
         })?;
         if bytes.is_empty() {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 "attachment file is empty".to_owned(),
             ));
         }
         if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 OPERATION,
                 format!(
                     "attachment file too large: {} bytes exceeds 25 MiB cap ({} bytes)",
@@ -123,34 +123,34 @@ impl RedmineProvider {
     }
 }
 
-fn validate_filename(filename: &str, operation: &str) -> Result<(), ForgejoError> {
+fn validate_filename(filename: &str, operation: &str) -> Result<(), ProviderError> {
     let trimmed = filename.trim();
     if trimmed.is_empty() {
-        return Err(ForgejoError::request(
+        return Err(ProviderError::request(
             operation,
             "attachment filename is invalid".to_owned(),
         ));
     }
     if trimmed == "." || trimmed == ".." {
-        return Err(ForgejoError::request(
+        return Err(ProviderError::request(
             operation,
             "attachment filename is invalid".to_owned(),
         ));
     }
     if trimmed.len() > MAX_FILENAME_BYTES {
-        return Err(ForgejoError::request(
+        return Err(ProviderError::request(
             operation,
             "attachment filename too long".to_owned(),
         ));
     }
     if trimmed.chars().any(char::is_control) {
-        return Err(ForgejoError::request(
+        return Err(ProviderError::request(
             operation,
             "attachment filename contains invalid characters".to_owned(),
         ));
     }
     if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(ForgejoError::request(
+        return Err(ProviderError::request(
             operation,
             "attachment filename contains invalid characters".to_owned(),
         ));

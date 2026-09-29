@@ -5,7 +5,7 @@ use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::ProviderDispatcher;
 #[allow(unused_imports)]
-use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+use crate::providers::api::{CommentOutput, IssueSummary, ProviderError, RepoSummary};
 #[allow(unused_imports)]
 use crate::providers::forgejo::ForgejoConfig;
 #[allow(unused_imports)]
@@ -18,7 +18,7 @@ use crate::providers::{
 };
 
 impl RepoProvider for GitlabProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn create_repo(
         &self,
@@ -38,7 +38,7 @@ impl RepoProvider for GitlabProvider {
 }
 
 impl RepoProvider for ForgejoProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn create_repo(
         &self,
@@ -52,7 +52,7 @@ impl RepoProvider for ForgejoProvider {
 }
 
 impl RepoProvider for RedmineProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn create_repo(
         &self,
@@ -66,7 +66,7 @@ impl RepoProvider for RedmineProvider {
 }
 
 impl RepoProvider for ProviderDispatcher {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn create_repo(
         &self,
@@ -89,7 +89,7 @@ impl RepoProvider for ProviderDispatcher {
 }
 
 impl RepoProvider for LocalProvider {
-    type Error = ForgejoError;
+    type Error = ProviderError;
 
     fn create_repo(
         &self,
@@ -98,6 +98,6 @@ impl RepoProvider for LocalProvider {
         _description: &str,
         _auto_init: bool,
     ) -> Result<RepoSummary, Self::Error> {
-        Err(ForgejoError::not_supported("local", "repo create"))
+        Err(ProviderError::not_supported("local", "repo create"))
     }
 }

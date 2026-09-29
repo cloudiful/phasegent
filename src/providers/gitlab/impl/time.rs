@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::model::{
     ApiSpentTimeSummary, NewSpentTime, NewTimeEstimate, format_gitlab_duration,
 };
@@ -18,14 +18,14 @@ impl GitlabProvider {
         iid: u64,
         duration_seconds: i64,
         summary: Option<&str>,
-    ) -> Result<ApiSpentTimeSummary, ForgejoError> {
+    ) -> Result<ApiSpentTimeSummary, ProviderError> {
         if iid == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab issue iid must be greater than zero",
             ));
         }
         if duration_seconds <= 0 {
-            return Err(ForgejoError::config("GitLab spent time must be positive"));
+            return Err(ProviderError::config("GitLab spent time must be positive"));
         }
         let duration = format_gitlab_duration(duration_seconds);
         let payload = NewSpentTime {
@@ -44,14 +44,14 @@ impl GitlabProvider {
         &self,
         iid: u64,
         duration_seconds: i64,
-    ) -> Result<ApiSpentTimeSummary, ForgejoError> {
+    ) -> Result<ApiSpentTimeSummary, ProviderError> {
         if iid == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab issue iid must be greater than zero",
             ));
         }
         if duration_seconds <= 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab time estimate must be positive",
             ));
         }

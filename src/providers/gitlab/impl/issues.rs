@@ -1,6 +1,6 @@
 use crate::command::AssigneeOption;
 use crate::providers::api::{
-    ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
+    IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary, ProviderError,
 };
 use crate::providers::gitlab::model::dto::ApiUser;
 use crate::providers::gitlab::model::{
@@ -15,16 +15,16 @@ use super::core::GitlabProvider;
 pub(crate) fn parse_optional_issue(
     option: Option<ApiIssue>,
     operation: &'static str,
-) -> Result<ApiIssue, ForgejoError> {
+) -> Result<ApiIssue, ProviderError> {
     option.ok_or_else(|| {
-        ForgejoError::not_found(operation, "GitLab did not return the updated issue")
+        ProviderError::not_found(operation, "GitLab did not return the updated issue")
     })
 }
 
 impl GitlabProvider {
     /// `GET /projects/:id/issues/:iid` - one issue by its project-
     /// scoped `iid`.
-    pub(crate) fn get_issue(&self, iid: u64) -> Result<IssueSummary, ForgejoError> {
+    pub(crate) fn get_issue(&self, iid: u64) -> Result<IssueSummary, ProviderError> {
         let issue: ApiIssue = self.http.get(&self.issue_path(iid), &[], "issue get")?;
         Ok(issue.into_summary(self))
     }
@@ -35,7 +35,7 @@ impl GitlabProvider {
     /// network call. Used by the label-replacement path in
     /// [`Self::update_body_with_labels`] to
     /// detect the opposite managed tracker label.
-    pub(crate) fn get_raw_issue(&self, iid: u64) -> Result<ApiIssue, ForgejoError> {
+    pub(crate) fn get_raw_issue(&self, iid: u64) -> Result<ApiIssue, ProviderError> {
         self.http.get(&self.issue_path(iid), &[], "issue get")
     }
 
@@ -46,7 +46,7 @@ impl GitlabProvider {
     pub(crate) fn search_issues(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<IssueSearchResult, ForgejoError> {
+    ) -> Result<IssueSearchResult, ProviderError> {
         options.validate()?;
         let state_filter = state_query_filter(&options.state)?;
         let path = self.issues_path();
@@ -107,7 +107,7 @@ impl GitlabProvider {
     pub(crate) fn search_issue_page(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<crate::providers::api::IssueSummaryPage, ForgejoError> {
+    ) -> Result<crate::providers::api::IssueSummaryPage, ProviderError> {
         options.validate()?;
         let state_filter = state_query_filter(&options.state)?;
         let path = self.issues_path();
@@ -168,7 +168,7 @@ impl GitlabProvider {
         description: &str,
         labels: &[String],
         assignee_ids: &[u64],
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let payload = NewIssue {
             title,
             description,
@@ -194,7 +194,7 @@ impl GitlabProvider {
     pub(crate) fn resolve_assignee_ids(
         &self,
         assignee: &AssigneeOption,
-    ) -> Result<(Option<Vec<u64>>, Option<String>), ForgejoError> {
+    ) -> Result<(Option<Vec<u64>>, Option<String>), ProviderError> {
         match assignee {
             AssigneeOption::Unassigned => Ok((None, None)),
             AssigneeOption::Unset => match self.current_user_id("issue create") {
@@ -210,7 +210,7 @@ impl GitlabProvider {
             AssigneeOption::Explicit(raw) => {
                 if let Ok(id) = raw.parse::<u64>() {
                     if id == 0 {
-                        return Err(ForgejoError::config(
+                        return Err(ProviderError::config(
                             "issue create --assignee must be a positive user id or a username",
                         ));
                     }
@@ -220,7 +220,7 @@ impl GitlabProvider {
                     self.http
                         .get("users", &[("username", raw.clone())], "issue create")?;
                 let user = users.first().ok_or_else(|| {
-                    ForgejoError::config(format!(
+                    ProviderError::config(format!(
                         "GitLab user '{raw}' was not found; pass a numeric user id or a valid username"
                     ))
                 })?;
@@ -238,7 +238,7 @@ impl GitlabProvider {
         &self,
         title: &str,
         body: &str,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         self.create_issue_with_labels(title, body, &[], &[])
     }
 
@@ -255,7 +255,7 @@ impl GitlabProvider {
         iid: u64,
         description: &str,
         labels: &[String],
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         // Ensure every label we are about to add already exists in
         // the project before referencing it; GitLab rejects a PUT
         // for an unknown label.
@@ -291,7 +291,7 @@ impl GitlabProvider {
     /// Plain body update; no label delta. Used when a caller only
     /// updates the description and explicitly does not want to
     /// disturb the current label set.
-    pub(crate) fn update_body(&self, iid: u64, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub(crate) fn update_body(&self, iid: u64, body: &str) -> Result<IssueSummary, ProviderError> {
         let payload = UpdateIssue {
             description: Some(body),
             state_event: None,
@@ -307,7 +307,7 @@ impl GitlabProvider {
     /// Close an issue via the native `state_event=close` field plus
     /// the `workflow::closed` label so the orchestrator's existing
     /// status invariants still hold.
-    pub(crate) fn close_issue(&self, iid: u64) -> Result<IssueSummary, ForgejoError> {
+    pub(crate) fn close_issue(&self, iid: u64) -> Result<IssueSummary, ProviderError> {
         self.apply_status(iid, Some("workflow::closed"), true)
     }
 }

@@ -16,5 +16,5 @@ pub(crate) use super::{
 };
 pub(crate) use crate::policy::Role;
 pub(crate) use crate::providers::ProviderKind;
-pub(crate) use crate::providers::api::ForgejoError;
+pub(crate) use crate::providers::api::ProviderError;
 pub(crate) use crate::providers::redmine::model::RedmineRelationType;

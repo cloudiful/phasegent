@@ -8,7 +8,7 @@
 //! access.
 
 use crate::command::RelationCommand;
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::redmine::model::{RedmineRelationType, RelationSummary};
 use crate::providers::{ProviderDispatcher, RedmineProvider};
 
@@ -28,16 +28,16 @@ pub(crate) enum RelationResult {
 pub(crate) fn execute(
     provider: &ProviderDispatcher,
     command: &RelationCommand,
-) -> Result<RelationResult, ForgejoError> {
+) -> Result<RelationResult, ProviderError> {
     match provider {
         ProviderDispatcher::Redmine(redmine) => execute_redmine(redmine, command),
         ProviderDispatcher::Gitlab(gitlab) => execute_gitlab(gitlab, command),
         ProviderDispatcher::Forgejo(_) => {
-            Err(ForgejoError::not_supported("forgejo", "issue relations"))
+            Err(ProviderError::not_supported("forgejo", "issue relations"))
         }
         // Local backend has no relations.
         ProviderDispatcher::Local(_) => {
-            Err(ForgejoError::not_supported("local", "issue relations"))
+            Err(ProviderError::not_supported("local", "issue relations"))
         }
     }
 }
@@ -45,7 +45,7 @@ pub(crate) fn execute(
 fn execute_redmine(
     redmine: &RedmineProvider,
     command: &RelationCommand,
-) -> Result<RelationResult, ForgejoError> {
+) -> Result<RelationResult, ProviderError> {
     match command {
         RelationCommand::List { issue } => {
             validate_issue(*issue, "relation list")?;
@@ -60,12 +60,12 @@ fn execute_redmine(
         } => {
             validate_issue(*issue, "relation create")?;
             if *to == 0 {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation create --to requires a positive issue id",
                 ));
             }
             if *to == *issue {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation create cannot relate an issue to itself",
                 ));
             }
@@ -73,7 +73,7 @@ fn execute_redmine(
             // other canonical types keeps the serialized payload minimal and
             // prevents a contradictory `blocks` + `delay` request.
             if *relation_type != RedmineRelationType::Precedes && delay.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation create --delay is only valid with --type precedes",
                 ));
             }
@@ -85,7 +85,7 @@ fn execute_redmine(
             issue: _,
         } => {
             if *relation_id == 0 {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation delete requires a positive relation id",
                 ));
             }
@@ -100,7 +100,7 @@ fn execute_redmine(
 fn execute_gitlab(
     gitlab: &crate::providers::gitlab::GitlabProvider,
     command: &RelationCommand,
-) -> Result<RelationResult, ForgejoError> {
+) -> Result<RelationResult, ProviderError> {
     match command {
         RelationCommand::List { issue } => {
             validate_issue(*issue, "relation list")?;
@@ -115,12 +115,12 @@ fn execute_gitlab(
         } => {
             validate_issue(*issue, "relation create")?;
             if *to == 0 {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation create --to requires a positive issue id",
                 ));
             }
             if *to == *issue {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation create cannot relate an issue to itself",
                 ));
             }
@@ -129,12 +129,12 @@ fn execute_gitlab(
             // a structured config error rather than silently dropping it
             // or mapping it to a different link type.
             if *relation_type == RedmineRelationType::Precedes {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issue links do not support --type precedes",
                 ));
             }
             if delay.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issue links do not support --delay",
                 ));
             }
@@ -143,7 +143,7 @@ fn execute_gitlab(
         }
         RelationCommand::Delete { relation_id, issue } => {
             if *relation_id == 0 {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "relation delete requires a positive relation id",
                 ));
             }
@@ -160,9 +160,9 @@ fn execute_gitlab(
     }
 }
 
-fn validate_issue(issue: u64, operation: &str) -> Result<(), ForgejoError> {
+fn validate_issue(issue: u64, operation: &str) -> Result<(), ProviderError> {
     if issue == 0 {
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "{operation} requires a positive issue id"
         )));
     }

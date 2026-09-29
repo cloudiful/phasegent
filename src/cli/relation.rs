@@ -1,7 +1,7 @@
 use crate::command::RelationCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 /// Redmine or GitLab issue relations. `list` is available to every non-admin
@@ -35,7 +35,7 @@ pub(crate) fn execute_relation(
     // `redmine_relations_cli` validates provider-specific flags.
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ForgejoError::not_supported(
+            return super::provider_error(ProviderError::not_supported(
                 "forgejo",
                 capability.operation(),
             ));
@@ -45,7 +45,7 @@ pub(crate) fn execute_relation(
         // not-supported error before any provider build so the only side
         // effect is the structured error.
         Ok(ProviderKind::Local) => {
-            return super::provider_error(ForgejoError::not_supported(
+            return super::provider_error(ProviderError::not_supported(
                 "local",
                 capability.operation(),
             ));
@@ -64,7 +64,7 @@ pub(crate) fn execute_relation(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));

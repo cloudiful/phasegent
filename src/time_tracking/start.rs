@@ -1,27 +1,27 @@
 use crate::infra::storage::{Storage, TimerRunOwner};
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 
 use super::dispatch::TimerOutput;
 use super::util::{generate_run_id, generate_run_id_with_prefix, now_epoch_seconds};
 
-fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, ForgejoError> {
+fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, ProviderError> {
     let role = role_value.ok_or_else(|| {
-        ForgejoError::config(format!(
+        ProviderError::config(format!(
             "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
         ))
     })?;
     if role != Role::Orchestrator {
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
     Ok(role)
 }
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ProviderError + 'a {
+    move |message| ProviderError::request(operation, message)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -34,10 +34,10 @@ pub(crate) fn execute_start(
     attempt: u64,
     run_id: Option<&str>,
     owner: &TimerRunOwner,
-) -> Result<TimerOutput, ForgejoError> {
+) -> Result<TimerOutput, ProviderError> {
     let _role = timer_orchestrator(role_value, "timer start")?;
     if provider_kind == Some(ProviderKind::Forgejo) {
-        return Err(ForgejoError::not_supported("forgejo", "timer start"));
+        return Err(ProviderError::not_supported("forgejo", "timer start"));
     }
     let effective_role = normalise_agent_role(&agent_role)?;
     let run_id = run_id.map(str::to_owned).unwrap_or_else(generate_run_id);
@@ -97,18 +97,18 @@ pub(crate) fn auto_start_run(
     Ok(run_id)
 }
 
-fn normalise_agent_role(agent_role: &str) -> Result<String, ForgejoError> {
+fn normalise_agent_role(agent_role: &str) -> Result<String, ProviderError> {
     if agent_role == "tester" {
         return Ok("tester".to_owned());
     }
-    let parsed = agent_role.parse::<Role>().map_err(ForgejoError::config)?;
+    let parsed = agent_role.parse::<Role>().map_err(ProviderError::config)?;
     if parsed == Role::Orchestrator || parsed == Role::Admin {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "timer start --agent-role must be executor, reviewer, or tester",
         ));
     }
     if !matches!(parsed, Role::Executor | Role::Reviewer) {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "timer start --agent-role must be executor, reviewer, or tester",
         ));
     }

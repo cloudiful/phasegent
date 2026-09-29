@@ -21,7 +21,7 @@
 //! No fields are written back: the read path is the only Phase 2
 //! contract; future write automation lives in a later phase.
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::model::ApiMilestone;
 use crate::providers::redmine::model::RedmineVersion;
 
@@ -37,7 +37,7 @@ impl GitlabProvider {
     /// `RedmineVersion` shape so the existing `version list` CLI
     /// command (and future planning flows) work against GitLab
     /// without a separate code path.
-    pub(crate) fn list_milestones(&self) -> Result<Vec<RedmineVersion>, ForgejoError> {
+    pub(crate) fn list_milestones(&self) -> Result<Vec<RedmineVersion>, ProviderError> {
         let path = self.milestones_path();
         let milestones: Vec<ApiMilestone> =
             self.http.paginate("milestone list", |http, page| {

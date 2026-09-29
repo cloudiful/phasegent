@@ -1,4 +1,4 @@
-use crate::providers::api::{CommentOutput, ForgejoError};
+use crate::providers::api::{CommentOutput, ProviderError};
 use crate::providers::gitlab::model::{ApiNote, NewNote};
 
 use super::core::GitlabProvider;
@@ -7,7 +7,7 @@ impl GitlabProvider {
     /// `POST /projects/:id/issues/:iid/notes` with the caller's body.
     /// GitLab note ids and URLs are stable, so the returned
     /// `CommentOutput` carries both.
-    pub(crate) fn create_note(&self, iid: u64, body: &str) -> Result<CommentOutput, ForgejoError> {
+    pub(crate) fn create_note(&self, iid: u64, body: &str) -> Result<CommentOutput, ProviderError> {
         let payload = NewNote { body };
         let note: ApiNote = self
             .http
@@ -22,7 +22,7 @@ impl GitlabProvider {
     }
 
     /// `GET /projects/:id/issues/:iid/notes/:note_id` for one note.
-    pub(crate) fn get_note(&self, iid: u64, note_id: u64) -> Result<CommentOutput, ForgejoError> {
+    pub(crate) fn get_note(&self, iid: u64, note_id: u64) -> Result<CommentOutput, ProviderError> {
         let note: ApiNote = self
             .http
             .get(&self.note_path(iid, note_id), &[], "comment get")?;
@@ -41,7 +41,7 @@ impl GitlabProvider {
     /// Backs `comment list` through the trait forwarder. System notes
     /// are included (unlike marker lookup, which only matches them by
     /// accident): the list is a faithful read, not a search.
-    pub(crate) fn list_notes(&self, iid: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+    pub(crate) fn list_notes(&self, iid: u64) -> Result<Vec<CommentOutput>, ProviderError> {
         let issue_web_url = self.get_issue(iid)?.html_url;
         let path = self.notes_path(iid);
         let notes = self.http.paginate("comment list", |http, page| {
@@ -57,9 +57,9 @@ impl GitlabProvider {
         &self,
         iid: u64,
         marker: &str,
-    ) -> Result<CommentOutput, ForgejoError> {
+    ) -> Result<CommentOutput, ProviderError> {
         if marker.is_empty() {
-            return Err(ForgejoError::config("marker cannot be empty"));
+            return Err(ProviderError::config("marker cannot be empty"));
         }
         // Resolve the parent issue once so every returned note can
         // carry a browsable `<issue_web_url>#note_<id>` URL.
@@ -75,7 +75,7 @@ impl GitlabProvider {
                 note.into_output(issue_web_url.as_deref())
                     .with_marker(marker.to_owned())
             })
-            .ok_or_else(|| ForgejoError::not_found("comment find-marker", "marker was not found"))
+            .ok_or_else(|| ProviderError::not_found("comment find-marker", "marker was not found"))
     }
 }
 

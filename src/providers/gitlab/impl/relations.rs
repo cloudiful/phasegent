@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::model::{
     ApiIssueLink, gitlab_create_supports_relation_type, gitlab_link_type_from_relation_type,
 };
@@ -14,9 +14,9 @@ impl GitlabProvider {
     /// summaries are rendered from the queried issue's viewpoint so
     /// `is_blocked_by` shows up as `blocked` (the inverse Redmine
     /// name).
-    pub(crate) fn list_issue_links(&self, iid: u64) -> Result<Vec<RelationSummary>, ForgejoError> {
+    pub(crate) fn list_issue_links(&self, iid: u64) -> Result<Vec<RelationSummary>, ProviderError> {
         if iid == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab issue iid must be greater than zero",
             ));
         }
@@ -49,7 +49,7 @@ impl GitlabProvider {
     /// parameters are correct. We gate the create path locally via
     /// [`crate::providers::gitlab::model::gitlab_create_supports_relation_type`] so
     /// the unsupported directions fail with a structured
-    /// [`ForgejoError::NotSupported`] error before any network
+    /// [`ProviderError::NotSupported`] error before any network
     /// traffic. The list mapping still decodes every
     /// server-returned direction (`blocks`, `is_blocked_by`).
     pub(crate) fn create_issue_link(
@@ -57,19 +57,19 @@ impl GitlabProvider {
         issue_iid: u64,
         target_iid: u64,
         relation_type: RedmineRelationType,
-    ) -> Result<RelationSummary, ForgejoError> {
+    ) -> Result<RelationSummary, ProviderError> {
         if issue_iid == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab issue iid must be greater than zero",
             ));
         }
         if target_iid == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab target issue iid must be greater than zero",
             ));
         }
         if issue_iid == target_iid {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab issue link cannot target the same issue",
             ));
         }
@@ -81,7 +81,7 @@ impl GitlabProvider {
             // direction the caller asked for, and so the read path
             // remains the only place that decodes `blocks` /
             // `is_blocked_by` from a server response.
-            return Err(ForgejoError::not_supported(
+            return Err(ProviderError::not_supported(
                 "gitlab",
                 "relation create with the requested link_type",
             ));
@@ -112,9 +112,9 @@ impl GitlabProvider {
         &self,
         source_issue_iid: Option<u64>,
         link_id: u64,
-    ) -> Result<u64, ForgejoError> {
+    ) -> Result<u64, ProviderError> {
         let source_issue_iid = source_issue_iid.ok_or_else(|| {
-            ForgejoError::config(
+            ProviderError::config(
                 "GitLab relation delete requires the source issue iid; \
                   the DELETE endpoint is scoped per source issue and the \
                   GitLab REST v4 API exposes no single-link GET that \
@@ -124,12 +124,12 @@ impl GitlabProvider {
             )
         })?;
         if source_issue_iid == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab source issue iid must be greater than zero",
             ));
         }
         if link_id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab issue link id must be greater than zero",
             ));
         }

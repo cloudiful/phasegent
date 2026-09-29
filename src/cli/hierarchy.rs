@@ -1,7 +1,7 @@
 use crate::command::HierarchyCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::hierarchy::HierarchyPage;
 use crate::providers::{IssueProvider, ProviderKind};
 
@@ -47,7 +47,7 @@ pub(crate) fn execute_hierarchy(
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Redmine) | Ok(ProviderKind::Gitlab) => {}
         Ok(kind) => {
-            return super::provider_error(ForgejoError::not_supported(kind.as_str(), operation));
+            return super::provider_error(ProviderError::not_supported(kind.as_str(), operation));
         }
         Err(error) => return super::provider_error(error),
     }
@@ -63,7 +63,7 @@ pub(crate) fn execute_hierarchy(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             operation,
         ));

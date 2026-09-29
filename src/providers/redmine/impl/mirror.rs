@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::redmine::model::{
     RedmineGitMirrorOutcome, RedmineGitMirrorRequest, RedmineGitMirrorResponse,
 };
@@ -24,14 +24,14 @@ pub fn register_git_mirror(
     owner: &str,
     repo: &str,
     remote_url: &str,
-) -> Result<RedmineGitMirrorOutcome, ForgejoError> {
+) -> Result<RedmineGitMirrorOutcome, ProviderError> {
     if project_id == 0 {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "Redmine project id must be greater than zero to register a git mirror",
         ));
     }
     if remote_url.trim().is_empty() {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "git mirror remote URL must not be empty",
         ));
     }
@@ -72,12 +72,12 @@ pub(crate) fn mirror_identifier(project_id: u64, owner: &str, repo: &str) -> Str
 /// dedup). Opens [`Storage`] once and maps a missing key to the
 /// actionable config error so the three mirror call sites share one
 /// open instead of three duplicate blocks.
-fn mirror_bearer_key() -> Result<String, ForgejoError> {
-    let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
+fn mirror_bearer_key() -> Result<String, ProviderError> {
+    let storage = crate::infra::storage::Storage::open().map_err(ProviderError::config)?;
     let bearer_key =
-        crate::auth::redmine_git_mirror_api_key(&storage).map_err(ForgejoError::config)?;
+        crate::auth::redmine_git_mirror_api_key(&storage).map_err(ProviderError::config)?;
     bearer_key.ok_or_else(|| {
-        ForgejoError::config(
+        ProviderError::config(
             "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \
              set the Redmine git mirror plugin key in the environment to queue mirrors",
         )
@@ -116,7 +116,7 @@ impl crate::providers::config::RedmineProvider {
     pub fn discover_matching_projects(
         &self,
         remote: &crate::remote::RemoteRepository,
-    ) -> Result<crate::providers::redmine::RedmineDiscovery, crate::providers::api::ForgejoError>
+    ) -> Result<crate::providers::redmine::RedmineDiscovery, crate::providers::api::ProviderError>
     {
         self.discover_matching_projects_for_urls(&remote.repository, &remote.repository_url)
     }
@@ -128,38 +128,38 @@ impl crate::providers::config::RedmineProvider {
         &self,
         repository: &str,
         repository_url: &str,
-    ) -> Result<crate::providers::redmine::RedmineDiscovery, crate::providers::api::ForgejoError>
+    ) -> Result<crate::providers::redmine::RedmineDiscovery, crate::providers::api::ProviderError>
     {
-        use crate::providers::api::ForgejoError;
+        use crate::providers::api::ProviderError;
         use crate::providers::redmine::{RedmineDiscoveredProject, RedmineDiscovery};
 
         let repository = repository.trim();
         if repository.is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "repository must use OWNER/REPOSITORY form",
             ));
         }
         let mut parts = repository.split('/');
         let owner = parts
             .next()
-            .ok_or_else(|| ForgejoError::config("repository must use OWNER/REPOSITORY form"))?
+            .ok_or_else(|| ProviderError::config("repository must use OWNER/REPOSITORY form"))?
             .trim();
         let repo = parts
             .next()
-            .ok_or_else(|| ForgejoError::config("repository must use OWNER/REPOSITORY form"))?
+            .ok_or_else(|| ProviderError::config("repository must use OWNER/REPOSITORY form"))?
             .trim();
         if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "repository must use OWNER/REPOSITORY form",
             ));
         }
         if repository_url.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "git mirror remote URL must not be empty",
             ));
         }
         let canonical_local =
-            crate::remote::canonical_git_url(repository_url).map_err(ForgejoError::config)?;
+            crate::remote::canonical_git_url(repository_url).map_err(ProviderError::config)?;
 
         let projects = self.list_projects()?;
         if projects.is_empty() {
@@ -215,7 +215,7 @@ impl crate::providers::config::RedmineProvider {
 
 fn outcome_from_response(
     response: RedmineGitMirrorResponse,
-) -> Result<RedmineGitMirrorOutcome, ForgejoError> {
+) -> Result<RedmineGitMirrorOutcome, ProviderError> {
     let status = response.status.trim().to_ascii_lowercase();
     if status == "failed" {
         let detail = response
@@ -223,7 +223,7 @@ fn outcome_from_response(
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "the plugin reported a failed mirror status".to_owned());
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "Redmine git mirror plugin reported a failed status for {}: {}",
             response.identifier, detail
         )));

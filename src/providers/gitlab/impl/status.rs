@@ -16,7 +16,7 @@
 //! `status next` policy still resolves names case-insensitively, so
 //! the static ids are advisory and not persisted anywhere.
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::redmine::model::RedmineIssueStatus;
 
 use super::core::GitlabProvider;
@@ -31,7 +31,7 @@ impl GitlabProvider {
     /// Cancelled); callers that need a stable iteration order rely
     /// on this so a `status list` printout is reproducible across
     /// runs.
-    pub(crate) fn list_workflow_statuses(&self) -> Result<Vec<RedmineIssueStatus>, ForgejoError> {
+    pub(crate) fn list_workflow_statuses(&self) -> Result<Vec<RedmineIssueStatus>, ProviderError> {
         Ok(static_workflow_statuses())
     }
 }

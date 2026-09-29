@@ -1,7 +1,7 @@
 use crate::command::StatusCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::redmine::model::StatusNextReport;
 use crate::providers::redmine::model::status::{STATUS_POLICY_SOURCE, structured_forbidden_json};
 use crate::providers::{
@@ -13,7 +13,7 @@ use crate::providers::{
 /// policy preflight rejects the transition. Every other outcome keeps
 /// its legacy shape, so success JSON and non-policy errors stay
 /// byte-compatible.
-fn print_advance_result<T: serde::Serialize>(result: Result<T, ForgejoError>) -> i32 {
+fn print_advance_result<T: serde::Serialize>(result: Result<T, ProviderError>) -> i32 {
     if let Err(error) = &result
         && let Some(payload) = structured_forbidden_json(error)
     {
@@ -92,7 +92,7 @@ pub(crate) fn execute_status(
     }
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ForgejoError::not_supported(
+            return super::provider_error(ProviderError::not_supported(
                 "forgejo",
                 capability.operation(),
             ));
@@ -114,7 +114,7 @@ pub(crate) fn execute_status(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));
@@ -141,7 +141,7 @@ pub(crate) fn execute_status(
                 super::print_result(redmine.status_next(number))
             }
             ProviderDispatcher::Local(local) => super::print_result(local.status_next(number)),
-            other => super::provider_error(ForgejoError::not_supported(
+            other => super::provider_error(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue status next",
             )),
@@ -233,7 +233,7 @@ pub(crate) fn execute_status(
                 }
                 print_advance_result(result)
             }
-            other => super::provider_error(ForgejoError::not_supported(
+            other => super::provider_error(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue status advance",
             )),
@@ -331,7 +331,7 @@ pub(crate) fn execute_status(
                 }
                 super::print_result(result)
             }
-            other => super::provider_error(ForgejoError::not_supported(
+            other => super::provider_error(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue status update",
             )),

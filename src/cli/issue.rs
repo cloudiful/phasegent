@@ -2,7 +2,7 @@ use crate::command::IssueCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::api::IssueSummary;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 #[path = "issue_search.rs"]
@@ -137,7 +137,7 @@ pub(crate) fn execute_issue(
     if let IssueCommand::UploadAttachment { .. } = &command
         && provider_kind != ProviderKind::Redmine
     {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider_kind.as_str(),
             capability.operation(),
         ));
@@ -178,7 +178,7 @@ pub(crate) fn execute_issue(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));
@@ -202,7 +202,7 @@ pub(crate) fn execute_issue(
                     Err(error) => super::provider_error(error),
                 }
             }
-            _ => super::provider_error(ForgejoError::not_supported(
+            _ => super::provider_error(ProviderError::not_supported(
                 provider.kind().as_str(),
                 capability.operation(),
             )),
@@ -639,7 +639,7 @@ pub(crate) fn batch_fetch_issues<P>(
     numbers: &[u64],
 ) -> (Vec<IssueSummary>, Vec<serde_json::Value>)
 where
-    P: IssueProvider<Error = ForgejoError>,
+    P: IssueProvider<Error = ProviderError>,
 {
     let mut issues = Vec::with_capacity(numbers.len());
     let mut errors = Vec::new();

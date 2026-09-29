@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use serde::Deserialize;
 
 /// Response payload returned by `GET /projects/:id/issues/:iid/links`
@@ -78,7 +78,7 @@ pub(crate) struct ApiIssueLinkIssue {
 /// even when the request is sent with the documented query
 /// parameters. The decision is made locally (no network probe) so
 /// the unsupported directions fail with a structured
-/// [`crate::providers::api::ForgejoError::NotSupported`] error
+/// [`crate::providers::api::ProviderError::NotSupported`] error
 /// before any HTTP traffic. The read path still maps every
 /// server-returned link type (`blocks`, `is_blocked_by`) so the
 /// list output reflects whatever the server already recorded.
@@ -101,17 +101,17 @@ pub(crate) fn gitlab_create_supports_relation_type(
 /// mapping only matters when normalising server responses.
 pub(crate) fn gitlab_link_type_from_relation_type(
     relation_type: crate::providers::redmine::model::RedmineRelationType,
-) -> Result<&'static str, ForgejoError> {
+) -> Result<&'static str, ProviderError> {
     use crate::providers::redmine::model::RedmineRelationType;
     match relation_type {
         RedmineRelationType::Relates => Ok("relates_to"),
         RedmineRelationType::Blocks => Ok("blocks"),
-        RedmineRelationType::Precedes => Err(ForgejoError::config(
+        RedmineRelationType::Precedes => Err(ProviderError::config(
             "GitLab issue links do not support --type precedes",
         )),
         // Inverse direction accepted only on the read path; calling
         // code never passes Blocked/Follows through the CLI parser.
-        RedmineRelationType::Blocked | RedmineRelationType::Follows => Err(ForgejoError::config(
+        RedmineRelationType::Blocked | RedmineRelationType::Follows => Err(ProviderError::config(
             "GitLab issue links accept only the forward canonical names blocks and relates",
         )),
     }

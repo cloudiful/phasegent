@@ -1,12 +1,12 @@
 use crate::infra::storage::{Storage, TIMER_STATUS_RUNNING};
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 
 use super::dispatch::TimerListOutput;
 use super::finish::project_run;
 use super::util::{bounded_error_message, generate_projection_token, now_epoch_seconds};
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ProviderError + 'a {
+    move |message| ProviderError::request(operation, message)
 }
 
 pub(crate) fn handle_recover(
@@ -16,11 +16,11 @@ pub(crate) fn handle_recover(
     api_base: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<TimerListOutput, ForgejoError> {
+) -> Result<TimerListOutput, ProviderError> {
     let existing = storage
         .load_timer_run(run_id)
         .map_err(timer_storage_error("timer recover"))?
-        .ok_or_else(|| ForgejoError::config(format!("timer run '{run_id}' was not found")))?;
+        .ok_or_else(|| ProviderError::config(format!("timer run '{run_id}' was not found")))?;
     if existing.status != TIMER_STATUS_RUNNING {
         // Terminal rows: a `projecting` row is a lease. Only a
         // stale lease (expired or legacy NULL claimed_at) may be
@@ -49,7 +49,7 @@ pub(crate) fn handle_recover(
                     .load_timer_run(run_id)
                     .map_err(timer_storage_error("timer recover"))?
                     .ok_or_else(|| {
-                        ForgejoError::config(format!("timer run '{run_id}' was not found"))
+                        ProviderError::config(format!("timer run '{run_id}' was not found"))
                     })?;
                 let token = generate_projection_token();
                 match project_run(
@@ -68,7 +68,7 @@ pub(crate) fn handle_recover(
                             .load_timer_run(run_id)
                             .map_err(timer_storage_error("timer recover"))?
                             .ok_or_else(|| {
-                                ForgejoError::config(format!("timer run '{run_id}' was not found"))
+                                ProviderError::config(format!("timer run '{run_id}' was not found"))
                             })?;
                         return Ok(TimerListOutput::Single {
                             run: Box::new(final_run),
@@ -92,7 +92,7 @@ pub(crate) fn handle_recover(
                     }
                 }
             }
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 "timer recover",
                 "projection already in progress for this run".to_owned(),
             ));
@@ -102,7 +102,7 @@ pub(crate) fn handle_recover(
                 .sync_error
                 .clone()
                 .unwrap_or_else(|| "timer recover: previous projection failed".to_owned());
-            return Err(ForgejoError::request("timer recover", message));
+            return Err(ProviderError::request("timer recover", message));
         }
         return Ok(TimerListOutput::Single {
             run: Box::new(existing),
@@ -122,17 +122,17 @@ pub(crate) fn handle_recover(
                 .load_timer_run(run_id)
                 .map_err(timer_storage_error("timer recover"))?
                 .ok_or_else(|| {
-                    ForgejoError::config(format!("timer run '{run_id}' was not found"))
+                    ProviderError::config(format!("timer run '{run_id}' was not found"))
                 })?;
             if row.sync_status == crate::infra::storage::TIMER_SYNC_FAILED {
                 let msg = row
                     .sync_error
                     .clone()
                     .unwrap_or_else(|| "timer recover: previous projection failed".to_owned());
-                return Err(ForgejoError::request("timer recover", msg));
+                return Err(ProviderError::request("timer recover", msg));
             }
             if row.sync_status == crate::infra::storage::TIMER_SYNC_PROJECTING {
-                return Err(ForgejoError::request(
+                return Err(ProviderError::request(
                     "timer recover",
                     "concurrent recovery already claimed this run".to_owned(),
                 ));
@@ -140,7 +140,7 @@ pub(crate) fn handle_recover(
             return Ok(TimerListOutput::Single { run: Box::new(row) });
         }
         Err(message) => {
-            return Err(ForgejoError::request("timer recover", message));
+            return Err(ProviderError::request("timer recover", message));
         }
     };
     // Provider projection with caller-bound lease token. The token is
@@ -156,7 +156,7 @@ pub(crate) fn handle_recover(
     let mut run_mut = storage
         .load_timer_run(run_id)
         .map_err(timer_storage_error("timer recover"))?
-        .ok_or_else(|| ForgejoError::config(format!("timer run '{run_id}' was not found")))?;
+        .ok_or_else(|| ProviderError::config(format!("timer run '{run_id}' was not found")))?;
     // If the row is already terminal synced, `project_run` will
     // short-circuit; otherwise it will attempt the lease claim with
     // `token`. A hard-crash stale lease is handled via the
@@ -177,10 +177,10 @@ pub(crate) fn handle_recover(
                 .load_timer_run(run_id)
                 .map_err(timer_storage_error("timer recover"))?
                 .ok_or_else(|| {
-                    ForgejoError::config(format!("timer run '{run_id}' was not found"))
+                    ProviderError::config(format!("timer run '{run_id}' was not found"))
                 })?;
             if final_run.status == TIMER_STATUS_RUNNING {
-                return Err(ForgejoError::request(
+                return Err(ProviderError::request(
                     "timer recover",
                     "recovery left row running".to_owned(),
                 ));

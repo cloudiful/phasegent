@@ -1,4 +1,4 @@
-use crate::providers::api::{ForgejoError, RepoSummary};
+use crate::providers::api::{ProviderError, RepoSummary};
 use crate::providers::gitlab::model::{ApiNamespace, ApiProject, NewProject};
 use crate::providers::redmine::model::RedmineProject;
 
@@ -67,7 +67,7 @@ impl GitlabProvider {
     /// `operation` labels the request so `issue create` self-assignment and
     /// `repo create` namespace resolution report the right operation in
     /// their structured errors.
-    pub(crate) fn current_user_id(&self, operation: &'static str) -> Result<u64, ForgejoError> {
+    pub(crate) fn current_user_id(&self, operation: &'static str) -> Result<u64, ProviderError> {
         #[derive(serde::Deserialize)]
         struct CurrentUser {
             id: u64,
@@ -92,9 +92,9 @@ impl GitlabProvider {
     ///   * any other combination (multiple groups, multiple users,
     ///     or a mix of both kinds) → structured config error
     ///     instructing the operator to disambiguate.
-    pub(crate) fn resolve_owner_namespace_id(&self, owner: &str) -> Result<u64, ForgejoError> {
+    pub(crate) fn resolve_owner_namespace_id(&self, owner: &str) -> Result<u64, ProviderError> {
         if owner.is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab repo create requires a non-empty OWNER",
             ));
         }
@@ -110,7 +110,7 @@ impl GitlabProvider {
             .filter(|namespace| namespace.path.as_deref() == Some(owner))
             .collect();
         if exact.is_empty() {
-            return Err(ForgejoError::config(format!(
+            return Err(ProviderError::config(format!(
                 "GitLab namespace '{owner}' was not found; pass a different OWNER \
                   or supply an explicit namespace id"
             )));
@@ -129,7 +129,7 @@ impl GitlabProvider {
             if groups.len() == 1 {
                 return Ok(groups[0]);
             }
-            return Err(ForgejoError::config(format!(
+            return Err(ProviderError::config(format!(
                 "GitLab group namespace '{owner}' is ambiguous \
                   (matched {} groups); pass an explicit namespace id",
                 groups.len()
@@ -139,13 +139,13 @@ impl GitlabProvider {
             if users.len() == 1 {
                 return Ok(users[0]);
             }
-            return Err(ForgejoError::config(format!(
+            return Err(ProviderError::config(format!(
                 "GitLab user namespace '{owner}' is ambiguous \
                   (matched {} users); pass an explicit namespace id",
                 users.len()
             )));
         }
-        Err(ForgejoError::config(format!(
+        Err(ProviderError::config(format!(
             "GitLab namespace '{owner}' is ambiguous (matched {} group(s) and {} user(s)); \
               pass an explicit namespace id to disambiguate",
             groups.len(),
@@ -170,9 +170,9 @@ impl GitlabProvider {
         target: &str,
         explicit_namespace_id: Option<u64>,
         current_user_id: u64,
-    ) -> Result<ResolvedNamespace, ForgejoError> {
+    ) -> Result<ResolvedNamespace, ProviderError> {
         if target.is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab repo create requires a non-empty target",
             ));
         }
@@ -202,9 +202,9 @@ impl GitlabProvider {
         private: bool,
         description: &str,
         auto_init: bool,
-    ) -> Result<RepoSummary, ForgejoError> {
+    ) -> Result<RepoSummary, ProviderError> {
         if !private {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "repo create requires a private repository",
             ));
         }
@@ -248,7 +248,7 @@ impl GitlabProvider {
     /// to `path` when the API omitted it, and `description` defaults
     /// to an empty string (GitLab returns `null` when the project has
     /// no description).
-    pub(crate) fn list_projects(&self) -> Result<Vec<RedmineProject>, ForgejoError> {
+    pub(crate) fn list_projects(&self) -> Result<Vec<RedmineProject>, ProviderError> {
         let path = self.projects_path();
         let projects: Vec<ApiProject> = self.http.paginate("project list", |http, page| {
             http.get_page::<ApiProject>(&path, &[("page", page.to_string())], "project list")

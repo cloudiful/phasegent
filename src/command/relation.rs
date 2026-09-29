@@ -42,7 +42,7 @@ pub(crate) fn parse_relation(args: &[String]) -> Result<Command, String> {
                 Ok(relation_type) => relation_type,
                 Err(error) => {
                     return Err(match error {
-                        ForgejoError::Config(message) => message,
+                        ProviderError::Config(message) => message,
                         other => other.to_string(),
                     });
                 }

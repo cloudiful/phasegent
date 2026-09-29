@@ -9,7 +9,7 @@
 //! fail explicitly; hierarchy never falls back to a REST issue relation.
 //! Parent writes live in the adjacent `hierarchy_write` module.
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::model::work_items;
 use crate::providers::hierarchy::{HierarchyNode, HierarchyPage, WorkItemRef};
 
@@ -27,7 +27,7 @@ impl GitlabProvider {
     /// Fetch the native hierarchy view for one Work Item global ID.
     /// Truncation is dropped here; callers that project the bounded child
     /// list use [`Self::get_hierarchy_page`].
-    pub fn get_hierarchy(&self, id: u64) -> Result<HierarchyNode, ForgejoError> {
+    pub fn get_hierarchy(&self, id: u64) -> Result<HierarchyNode, ProviderError> {
         Ok(self.get_hierarchy_page(id)?.node)
     }
 
@@ -35,9 +35,9 @@ impl GitlabProvider {
     /// indicator for one Work Item global ID. The child list never grows
     /// past 50 entries; `children_truncated` reports the child connection
     /// `pageInfo.hasNextPage` so callers surface it instead of fetching on.
-    pub fn get_hierarchy_page(&self, id: u64) -> Result<HierarchyPage, ForgejoError> {
+    pub fn get_hierarchy_page(&self, id: u64) -> Result<HierarchyPage, ProviderError> {
         if id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab work item id must be greater than zero",
             ));
         }
@@ -49,14 +49,14 @@ impl GitlabProvider {
             HIERARCHY_GET,
         )?;
         let node = data.work_item.ok_or_else(|| {
-            ForgejoError::not_found(HIERARCHY_GET, "GitLab work item was not found")
+            ProviderError::not_found(HIERARCHY_GET, "GitLab work item was not found")
         })?;
         let item_project = work_items::scope_of(&node.namespace, self.configured_project());
         let kind = work_items::parse_work_item_kind(&node.work_item_type.name, HIERARCHY_GET)?;
         let item_id = work_items::parse_work_item_id(&node.id, HIERARCHY_GET)?;
         let widget = node
             .hierarchy_widget()
-            .ok_or_else(|| ForgejoError::not_supported("gitlab", HIERARCHY_GET))?;
+            .ok_or_else(|| ProviderError::not_supported("gitlab", HIERARCHY_GET))?;
         let parent = widget
             .parent
             .as_ref()

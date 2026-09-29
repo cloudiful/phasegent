@@ -15,9 +15,9 @@
 //! The token is held by value but redacted in every error message via
 //! a single `redact` helper. The token is never logged, never
 //! formatted via `Debug`, and never appears in the returned
-//! `ForgejoError::Http` payload.
+//! `ProviderError::Http` payload.
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::model::ApiError;
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -61,21 +61,21 @@ impl std::fmt::Debug for GitlabHttp {
 }
 
 impl GitlabHttp {
-    pub(crate) fn new(api_base: String, token: String) -> Result<Self, ForgejoError> {
+    pub(crate) fn new(api_base: String, token: String) -> Result<Self, ProviderError> {
         let api_base = api_base.trim_end_matches('/').to_owned();
         let token = token.trim().to_owned();
         if token.is_empty() {
-            return Err(ForgejoError::auth("GitLab PRIVATE-TOKEN is empty"));
+            return Err(ProviderError::auth("GitLab PRIVATE-TOKEN is empty"));
         }
         reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
             // Never include the offending bytes in the error message:
             // the value is the credential we are about to reject, and
             // surfacing it would leak the token to whatever caller
             // (or test) renders the error.
-            ForgejoError::auth("GitLab PRIVATE-TOKEN contains invalid header characters")
+            ProviderError::auth("GitLab PRIVATE-TOKEN contains invalid header characters")
         })?;
         let client = crate::infra::http_client::build_client()
-            .map_err(|error| ForgejoError::request("client build", error))?;
+            .map_err(|error| ProviderError::request("client build", error))?;
         Ok(Self {
             client,
             api_base,
@@ -88,7 +88,7 @@ impl GitlabHttp {
         path: &str,
         query: &[(&str, String)],
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         // Safe GET: retry on transient transport failures and
         // 429/502/503/504.
         let (status, text) = self.response_with_retry(
@@ -98,7 +98,7 @@ impl GitlabHttp {
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })
@@ -109,7 +109,7 @@ impl GitlabHttp {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         let (status, text) = self.response(
             self.client
                 .post(self.endpoint(path)?)
@@ -120,7 +120,7 @@ impl GitlabHttp {
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })
@@ -148,7 +148,7 @@ impl GitlabHttp {
         body: Option<&B>,
         query: &[(&str, String)],
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         let mut builder = self.client.post(self.endpoint(path)?).query(query);
         if let Some(body) = body {
             builder = builder.header(CONTENT_TYPE, "application/json").json(body);
@@ -157,7 +157,7 @@ impl GitlabHttp {
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })
@@ -172,7 +172,7 @@ impl GitlabHttp {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         let (status, text) = self.response(
             self.client
                 .put(self.endpoint(path)?)
@@ -188,7 +188,7 @@ impl GitlabHttp {
         }
         serde_json::from_str(&text)
             .map(Some)
-            .map_err(|error| ForgejoError::Decode {
+            .map_err(|error| ProviderError::Decode {
                 operation: operation.to_owned(),
                 message: self.redact(&error.to_string()),
             })
@@ -210,16 +210,16 @@ impl GitlabHttp {
         &self,
         operation: &str,
         mut fetch: F,
-    ) -> Result<Vec<T>, ForgejoError>
+    ) -> Result<Vec<T>, ProviderError>
     where
-        F: FnMut(&Self, usize) -> Result<(Vec<T>, HeaderMap, String), ForgejoError>,
+        F: FnMut(&Self, usize) -> Result<(Vec<T>, HeaderMap, String), ProviderError>,
     {
         let mut items = Vec::new();
         let mut previous_signature: Option<String> = None;
         for page in (1_usize..).take(MAX_PAGES) {
             let (page_items, headers, signature) = fetch(self, page)?;
             if previous_signature.as_deref() == Some(signature.as_str()) && !page_items.is_empty() {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     operation,
                     "GitLab returned the same non-empty page repeatedly",
                 ));
@@ -254,7 +254,7 @@ impl GitlabHttp {
             }
             previous_signature = Some(signature);
         }
-        Err(ForgejoError::pagination(
+        Err(ProviderError::pagination(
             operation,
             "pagination exceeded the safety limit",
         ))
@@ -265,9 +265,9 @@ impl GitlabHttp {
     /// `/projects/1/issues/` interchangeably. The api_base path
     /// (`/api/v4` or `/gitlab/api/v4`) is preserved so the URL lands
     /// on the right GitLab endpoint even with deployment prefixes.
-    pub(crate) fn endpoint(&self, path: &str) -> Result<Url, ForgejoError> {
+    pub(crate) fn endpoint(&self, path: &str) -> Result<Url, ProviderError> {
         let mut url = Url::parse(&self.api_base).map_err(|error| {
-            ForgejoError::config(format!("invalid GitLab API base URL: {error}"))
+            ProviderError::config(format!("invalid GitLab API base URL: {error}"))
         })?;
         let base_path = url.path().trim_end_matches('/');
         let trimmed = path.trim_start_matches('/').trim_end_matches('/');
@@ -288,9 +288,9 @@ impl GitlabHttp {
     /// (for example `https://host/gitlab/api/v4` becomes
     /// `https://host/gitlab/api/graphql`). Lives here so the adjacent
     /// GraphQL transport stays cohesive without widening `api_base`.
-    pub(crate) fn graphql_endpoint(&self) -> Result<Url, ForgejoError> {
+    pub(crate) fn graphql_endpoint(&self) -> Result<Url, ProviderError> {
         let mut url = Url::parse(&self.api_base).map_err(|error| {
-            ForgejoError::config(format!("invalid GitLab API base URL: {error}"))
+            ProviderError::config(format!("invalid GitLab API base URL: {error}"))
         })?;
         let base_path = url.path().trim_end_matches('/');
         let graphql_path = if let Some(prefix) = base_path.strip_suffix("/api/v4") {
@@ -314,17 +314,17 @@ impl GitlabHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<(StatusCode, String), ForgejoError> {
+    ) -> Result<(StatusCode, String), ProviderError> {
         // Mutation path: no retry.
         let response = request
             .header(ACCEPT, "application/json")
             .header("PRIVATE-TOKEN", self.token.as_str())
             .send()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+            .map_err(|error| ProviderError::request(operation, self.redact(&error.to_string())))?;
         let status = response.status();
         let text = response
             .text()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+            .map_err(|error| ProviderError::request(operation, self.redact(&error.to_string())))?;
         Ok((status, text))
     }
 
@@ -332,7 +332,7 @@ impl GitlabHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<(StatusCode, String), ForgejoError> {
+    ) -> Result<(StatusCode, String), ProviderError> {
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
@@ -348,7 +348,7 @@ impl GitlabHttp {
         status: StatusCode,
         text: &str,
         operation: &str,
-    ) -> ForgejoError {
+    ) -> ProviderError {
         let message = serde_json::from_str::<ApiError>(text)
             .ok()
             .and_then(|error| error.message.or(error.error).or(error.error_description))
@@ -360,7 +360,7 @@ impl GitlabHttp {
                     "GitLab returned an error".to_owned()
                 }
             });
-        ForgejoError::Http {
+        ProviderError::Http {
             operation: operation.to_owned(),
             status: status.as_u16(),
             message: self.redact(&message),
@@ -377,7 +377,7 @@ impl GitlabHttp {
         path: &str,
         extra_query: &[(&str, String)],
         operation: &str,
-    ) -> Result<(Vec<T>, HeaderMap, String), ForgejoError> {
+    ) -> Result<(Vec<T>, HeaderMap, String), ProviderError> {
         let mut params: Vec<(&str, String)> = extra_query.to_vec();
         if !params.iter().any(|(key, _)| *key == "per_page") {
             params.push(("per_page", PAGE_SIZE.to_string()));
@@ -394,7 +394,7 @@ impl GitlabHttp {
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        let items: Vec<T> = serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        let items: Vec<T> = serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })?;
@@ -422,7 +422,7 @@ impl GitlabHttp {
         &self,
         path: &str,
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         let (status, text) = self.response(self.client.delete(self.endpoint(path)?), operation)?;
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
@@ -432,7 +432,7 @@ impl GitlabHttp {
         }
         serde_json::from_str(&text)
             .map(Some)
-            .map_err(|error| ForgejoError::Decode {
+            .map_err(|error| ProviderError::Decode {
                 operation: operation.to_owned(),
                 message: self.redact(&error.to_string()),
             })

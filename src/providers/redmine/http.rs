@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::redmine::model::{
     RedmineCurrentUserResponse, RedmineErrorResponse, RedmineMembershipCollection, RedmineNewUser,
     RedmineNewUserFields, RedmineNewUserMembership, RedmineNewUserMembershipFields,
@@ -24,13 +24,13 @@ pub(crate) struct RedmineHttp {
 }
 
 impl RedmineHttp {
-    pub(crate) fn new(api_base: String, api_key: String) -> Result<Self, ForgejoError> {
+    pub(crate) fn new(api_base: String, api_key: String) -> Result<Self, ProviderError> {
         let api_key = api_key.trim().to_owned();
         HeaderValue::from_str(&api_key).map_err(|_| {
-            ForgejoError::auth("Redmine API key contains invalid header characters")
+            ProviderError::auth("Redmine API key contains invalid header characters")
         })?;
         let client = crate::infra::http_client::build_client()
-            .map_err(|error| ForgejoError::request("client build", error))?;
+            .map_err(|error| ProviderError::request("client build", error))?;
         Ok(Self {
             client,
             api_base,
@@ -43,7 +43,7 @@ impl RedmineHttp {
         path: &str,
         query: &[(&str, String)],
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         // Safe GET: retry on 429/502/503/504 and transport timeouts.
         let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
@@ -52,7 +52,7 @@ impl RedmineHttp {
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })
@@ -63,7 +63,7 @@ impl RedmineHttp {
         path: &str,
         query: &[(&str, String)],
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         // Safe GET with optional 404: retry policy applies, 404 is terminal.
         let (status, text) = self.response_with_retry(
             self.client.get(self.endpoint(path)?).query(query),
@@ -77,7 +77,7 @@ impl RedmineHttp {
         }
         serde_json::from_str(&text)
             .map(Some)
-            .map_err(|error| ForgejoError::Decode {
+            .map_err(|error| ProviderError::Decode {
                 operation: operation.to_owned(),
                 message: self.redact(&error.to_string()),
             })
@@ -88,7 +88,7 @@ impl RedmineHttp {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         self.send(
             self.client
                 .post(self.endpoint(path)?)
@@ -103,7 +103,7 @@ impl RedmineHttp {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         self.send_optional(
             self.client
                 .post(self.endpoint(path)?)
@@ -118,7 +118,7 @@ impl RedmineHttp {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         self.send_optional(
             self.client
                 .put(self.endpoint(path)?)
@@ -138,7 +138,7 @@ impl RedmineHttp {
         filename: &str,
         bytes: &[u8],
         operation: &str,
-    ) -> Result<String, ForgejoError> {
+    ) -> Result<String, ProviderError> {
         let endpoint = self.endpoint("uploads.json")?;
         let (status, text) = self.response(
             self.client
@@ -160,13 +160,13 @@ impl RedmineHttp {
             token: String,
         }
         let decoded: UploadResponse =
-            serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+            serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
                 operation: operation.to_owned(),
                 message: self.redact(&error.to_string()),
             })?;
         let token = decoded.upload.token.trim().to_owned();
         if token.is_empty() || token.chars().any(char::is_control) {
-            return Err(ForgejoError::Decode {
+            return Err(ProviderError::Decode {
                 operation: operation.to_owned(),
                 message: self.redact("Redmine upload response missing token"),
             });
@@ -178,7 +178,7 @@ impl RedmineHttp {
         &self,
         path: &str,
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         self.send_optional(self.client.delete(self.endpoint(path)?), operation)
     }
 
@@ -195,7 +195,7 @@ impl RedmineHttp {
     #[allow(dead_code)]
     pub(crate) fn current_user(
         &self,
-    ) -> Result<crate::providers::redmine::model::RedmineCurrentUser, ForgejoError> {
+    ) -> Result<crate::providers::redmine::model::RedmineCurrentUser, ProviderError> {
         let response: RedmineCurrentUserResponse =
             self.get("users/current.json", &[], "user current")?;
         Ok(response.user)
@@ -213,7 +213,7 @@ impl RedmineHttp {
     pub(crate) fn create_user(
         &self,
         payload: &RedmineNewUser<'_>,
-    ) -> Result<RedmineUser, ForgejoError> {
+    ) -> Result<RedmineUser, ProviderError> {
         let response: RedmineUserResponse = self.post("users.json", payload, "user create")?;
         Ok(response.user)
     }
@@ -226,7 +226,7 @@ impl RedmineHttp {
     ///
     /// Used by contract tests and admin provisioning.
     #[allow(dead_code)]
-    pub(crate) fn get_user(&self, id: u64) -> Result<RedmineUser, ForgejoError> {
+    pub(crate) fn get_user(&self, id: u64) -> Result<RedmineUser, ProviderError> {
         let response: RedmineUserResponse =
             self.get(&format!("users/{id}.json"), &[], "user get")?;
         Ok(response.user)
@@ -247,7 +247,7 @@ impl RedmineHttp {
         firstname: &str,
         lastname: &str,
         mail: &str,
-    ) -> Result<RedmineUser, ForgejoError> {
+    ) -> Result<RedmineUser, ProviderError> {
         let payload = RedmineNewUser {
             user: RedmineNewUserFields {
                 login,
@@ -270,7 +270,7 @@ impl RedmineHttp {
     /// repeated-page and non-advancing-offset safeguards as the other
     /// list helpers. Used by provisioning scans; prefer
     /// [`Self::find_user_by_login`] when only one login is needed.
-    pub(crate) fn list_users(&self) -> Result<Vec<RedmineUser>, ForgejoError> {
+    pub(crate) fn list_users(&self) -> Result<Vec<RedmineUser>, ProviderError> {
         self.paginate("user list", |http, offset| {
             let params = [
                 ("limit", PAGE_SIZE.to_string()),
@@ -299,10 +299,10 @@ impl RedmineHttp {
     pub(crate) fn find_user_by_login(
         &self,
         login: &str,
-    ) -> Result<Option<RedmineUser>, ForgejoError> {
+    ) -> Result<Option<RedmineUser>, ProviderError> {
         let target = login.trim();
         if target.is_empty() {
-            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+            return Err(ProviderError::config("Redmine user login cannot be empty"));
         }
         let mut offset: usize = 0;
         let mut previous_signature: Option<String> = None;
@@ -322,7 +322,7 @@ impl RedmineHttp {
                 .collect::<Vec<_>>()
                 .join(",");
             if previous_signature.as_deref() == Some(signature.as_str()) && !page.users.is_empty() {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     "user list",
                     "Redmine returned the same non-empty page repeatedly",
                 ));
@@ -339,7 +339,7 @@ impl RedmineHttp {
             }
             let next_offset = offset.saturating_add(count);
             if next_offset <= offset {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     "user list",
                     "Redmine pagination offset did not advance",
                 ));
@@ -347,7 +347,7 @@ impl RedmineHttp {
             offset = next_offset;
             previous_signature = Some(signature);
         }
-        Err(ForgejoError::pagination(
+        Err(ProviderError::pagination(
             "user list",
             "pagination exceeded the safety limit",
         ))
@@ -365,7 +365,7 @@ impl RedmineHttp {
         project_id: u64,
         user: &crate::providers::redmine::model::RedmineCurrentUser,
         role_name: &str,
-    ) -> Result<RedmineUserMembershipOutcome, ForgejoError> {
+    ) -> Result<RedmineUserMembershipOutcome, ProviderError> {
         let roles = self.list_roles()?;
         let roles = roles
             .into_iter()
@@ -448,7 +448,7 @@ impl RedmineHttp {
 
     fn list_roles(
         &self,
-    ) -> Result<Vec<crate::providers::redmine::model::RedmineRole>, ForgejoError> {
+    ) -> Result<Vec<crate::providers::redmine::model::RedmineRole>, ProviderError> {
         self.paginate("role list", |http, offset| {
             let params = [
                 ("limit", PAGE_SIZE.to_string()),
@@ -468,7 +468,7 @@ impl RedmineHttp {
     fn list_memberships(
         &self,
         project_id: u64,
-    ) -> Result<Vec<crate::providers::redmine::model::RedmineMembership>, ForgejoError> {
+    ) -> Result<Vec<crate::providers::redmine::model::RedmineMembership>, ProviderError> {
         self.paginate("membership list", |http, offset| {
             let params = [
                 ("limit", PAGE_SIZE.to_string()),
@@ -493,12 +493,12 @@ impl RedmineHttp {
         &self,
         operation: &str,
         mut fetch: F,
-    ) -> Result<Vec<T>, ForgejoError>
+    ) -> Result<Vec<T>, ProviderError>
     where
         F: FnMut(
             &Self,
             usize,
-        ) -> Result<(Vec<T>, Option<usize>, Option<usize>, String), ForgejoError>,
+        ) -> Result<(Vec<T>, Option<usize>, Option<usize>, String), ProviderError>,
     {
         let mut items = Vec::new();
         let mut offset = 0;
@@ -506,7 +506,7 @@ impl RedmineHttp {
         for _ in 0..MAX_PAGES {
             let (page_items, total_count, limit, signature) = fetch(self, offset)?;
             if previous_signature.as_deref() == Some(signature.as_str()) && !page_items.is_empty() {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     operation,
                     "Redmine returned the same non-empty page repeatedly",
                 ));
@@ -522,7 +522,7 @@ impl RedmineHttp {
             }
             let next_offset = offset.saturating_add(count);
             if next_offset <= offset {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     operation,
                     "Redmine pagination offset did not advance",
                 ));
@@ -530,15 +530,15 @@ impl RedmineHttp {
             offset = next_offset;
             previous_signature = Some(signature);
         }
-        Err(ForgejoError::pagination(
+        Err(ProviderError::pagination(
             operation,
             "pagination exceeded the safety limit",
         ))
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url, ForgejoError> {
+    fn endpoint(&self, path: &str) -> Result<Url, ProviderError> {
         let mut url = Url::parse(&self.api_base).map_err(|error| {
-            ForgejoError::config(format!("invalid Redmine API base URL: {error}"))
+            ProviderError::config(format!("invalid Redmine API base URL: {error}"))
         })?;
         let base_path = url.path().trim_end_matches('/');
         let endpoint = path.trim_start_matches('/');
@@ -557,12 +557,12 @@ impl RedmineHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         let (status, text) = self.response(request, operation)?;
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })
@@ -572,7 +572,7 @@ impl RedmineHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<Option<T>, ForgejoError> {
+    ) -> Result<Option<T>, ProviderError> {
         let (status, text) = self.response(request, operation)?;
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
@@ -582,7 +582,7 @@ impl RedmineHttp {
         }
         serde_json::from_str(&text)
             .map(Some)
-            .map_err(|error| ForgejoError::Decode {
+            .map_err(|error| ProviderError::Decode {
                 operation: operation.to_owned(),
                 message: self.redact(&error.to_string()),
             })
@@ -592,17 +592,17 @@ impl RedmineHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<(StatusCode, String), ForgejoError> {
+    ) -> Result<(StatusCode, String), ProviderError> {
         // Mutation path: no retry.
         let response = request
             .header(ACCEPT, "application/json")
             .header("X-Redmine-API-Key", self.api_key.as_str())
             .send()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+            .map_err(|error| ProviderError::request(operation, self.redact(&error.to_string())))?;
         let status = response.status();
         let text = response
             .text()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+            .map_err(|error| ProviderError::request(operation, self.redact(&error.to_string())))?;
         Ok((status, text))
     }
 
@@ -610,7 +610,7 @@ impl RedmineHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<(StatusCode, String), ForgejoError> {
+    ) -> Result<(StatusCode, String), ProviderError> {
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")
@@ -621,7 +621,7 @@ impl RedmineHttp {
         Ok((status, text))
     }
 
-    fn http_error(&self, status: StatusCode, text: &str, operation: &str) -> ForgejoError {
+    fn http_error(&self, status: StatusCode, text: &str, operation: &str) -> ProviderError {
         let message = serde_json::from_str::<RedmineErrorResponse>(text)
             .ok()
             .map(|error| {
@@ -640,7 +640,7 @@ impl RedmineHttp {
                     "Redmine returned an error".to_owned()
                 }
             });
-        ForgejoError::Http {
+        ProviderError::Http {
             operation: operation.to_owned(),
             status: status.as_u16(),
             message: cap(&self.redact(&message)),
@@ -695,15 +695,17 @@ pub(crate) enum RedmineGitMirrorLookup<T> {
 }
 
 impl RedmineGitMirrorHttp {
-    pub(crate) fn new(base_url: String, bearer_key: String) -> Result<Self, ForgejoError> {
+    pub(crate) fn new(base_url: String, bearer_key: String) -> Result<Self, ProviderError> {
         let bearer_key = bearer_key.trim().to_owned();
         if bearer_key.is_empty() {
-            return Err(ForgejoError::auth("Redmine git mirror plugin key is empty"));
+            return Err(ProviderError::auth(
+                "Redmine git mirror plugin key is empty",
+            ));
         }
         let mut parsed = Url::parse(&base_url)
-            .map_err(|error| ForgejoError::config(format!("invalid Redmine base URL: {error}")))?;
+            .map_err(|error| ProviderError::config(format!("invalid Redmine base URL: {error}")))?;
         if parsed.host_str().is_none() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine git mirror plugin URL must include a host",
             ));
         }
@@ -718,7 +720,7 @@ impl RedmineGitMirrorHttp {
         parsed.set_fragment(None);
         let base_url = parsed.to_string().trim_end_matches('/').to_owned();
         let client = crate::infra::http_client::build_client()
-            .map_err(|error| ForgejoError::request("mirror client build", error))?;
+            .map_err(|error| ProviderError::request("mirror client build", error))?;
         Ok(Self {
             client,
             base_url,
@@ -735,7 +737,7 @@ impl RedmineGitMirrorHttp {
         &self,
         path: &str,
         operation: &str,
-    ) -> Result<RedmineGitMirrorLookup<T>, ForgejoError> {
+    ) -> Result<RedmineGitMirrorLookup<T>, ProviderError> {
         let request = self
             .client
             .get(self.endpoint(path)?)
@@ -747,7 +749,7 @@ impl RedmineGitMirrorHttp {
         if !status.is_success() {
             return Err(self.http_error(status, &text, operation));
         }
-        let decoded = serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        let decoded = serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })?;
@@ -763,7 +765,7 @@ impl RedmineGitMirrorHttp {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         let request = self
             .client
             .post(self.endpoint(path)?)
@@ -774,15 +776,15 @@ impl RedmineGitMirrorHttp {
         if status != StatusCode::OK && status != StatusCode::ACCEPTED {
             return Err(self.http_error(status, &text, operation));
         }
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: self.redact(&error.to_string()),
         })
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url, ForgejoError> {
+    fn endpoint(&self, path: &str) -> Result<Url, ProviderError> {
         let mut url = Url::parse(&self.base_url)
-            .map_err(|error| ForgejoError::config(format!("invalid Redmine base URL: {error}")))?;
+            .map_err(|error| ProviderError::config(format!("invalid Redmine base URL: {error}")))?;
         let base_path = url.path().trim_end_matches('/');
         let endpoint = path.trim_start_matches('/');
         let full_path = if base_path.is_empty() {
@@ -800,16 +802,16 @@ impl RedmineGitMirrorHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<(StatusCode, String), ForgejoError> {
+    ) -> Result<(StatusCode, String), ProviderError> {
         // Mutation POST: no retry.
         let response = request
             .header(ACCEPT, "application/json")
             .send()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+            .map_err(|error| ProviderError::request(operation, self.redact(&error.to_string())))?;
         let status = response.status();
         let text = response
             .text()
-            .map_err(|error| ForgejoError::request(operation, self.redact(&error.to_string())))?;
+            .map_err(|error| ProviderError::request(operation, self.redact(&error.to_string())))?;
         Ok((status, text))
     }
 
@@ -817,7 +819,7 @@ impl RedmineGitMirrorHttp {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<(StatusCode, String), ForgejoError> {
+    ) -> Result<(StatusCode, String), ProviderError> {
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
             request.header(ACCEPT, "application/json"),
             operation,
@@ -826,7 +828,7 @@ impl RedmineGitMirrorHttp {
         Ok((status, text))
     }
 
-    fn http_error(&self, status: StatusCode, text: &str, operation: &str) -> ForgejoError {
+    fn http_error(&self, status: StatusCode, text: &str, operation: &str) -> ProviderError {
         let message = serde_json::from_str::<RedmineErrorResponse>(text)
             .ok()
             .map(|error| {
@@ -848,7 +850,7 @@ impl RedmineGitMirrorHttp {
                     "Redmine git mirror plugin returned an error".to_owned()
                 }
             });
-        ForgejoError::Http {
+        ProviderError::Http {
             operation: operation.to_owned(),
             status: status.as_u16(),
             message: cap(&self.redact(&message)),

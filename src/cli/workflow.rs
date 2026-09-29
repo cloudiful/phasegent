@@ -2,7 +2,7 @@ use crate::command::WorkflowCommand;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::workflow;
 
 pub(crate) fn execute_workflow(
@@ -31,7 +31,7 @@ pub(crate) fn execute_workflow(
         Err(error) => return super::provider_error(error),
     };
     if provider != ProviderKind::Redmine {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(ProviderError::not_supported(
             provider.as_str(),
             "admin workflow bootstrap",
         ));

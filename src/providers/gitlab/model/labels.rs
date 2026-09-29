@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 
 /// Workflow labels that map orchestrator workflow statuses to GitLab
 /// project labels. These are managed by this CLI: an issue update
@@ -44,13 +44,13 @@ pub(crate) const TRACKER_LABEL_FEATURE: &str = "type::feature";
 /// ids are rejected because the GitLab label convention is name-based
 /// and a project can have multiple `type::*` labels; mapping an id to
 /// a label would require a separate metadata round trip.
-pub(crate) fn tracker_label_from_name(value: &str) -> Result<&'static str, ForgejoError> {
+pub(crate) fn tracker_label_from_name(value: &str) -> Result<&'static str, ProviderError> {
     if value.eq_ignore_ascii_case("Bug") {
         Ok(TRACKER_LABEL_BUG)
     } else if value.eq_ignore_ascii_case("Feature") {
         Ok(TRACKER_LABEL_FEATURE)
     } else {
-        Err(ForgejoError::config(format!(
+        Err(ProviderError::config(format!(
             "GitLab tracker name '{value}' must be Bug or Feature"
         )))
     }
@@ -66,13 +66,13 @@ pub(crate) fn tracker_name_from_label(label: &str) -> Option<&'static str> {
     }
 }
 
-/// `Err(ForgejoError::config(...))` for unknown statuses so a typo
+/// `Err(ProviderError::config(...))` for unknown statuses so a typo
 /// never lands as a silent no-op update.
 ///
 /// Names are case-insensitive so a caller that lower-cases the
 /// orchestrator's status value still resolves; the label returned is
 /// the canonical lowercase form GitLab receives.
-pub(crate) fn workflow_label_from_status(status: &str) -> Result<&'static str, ForgejoError> {
+pub(crate) fn workflow_label_from_status(status: &str) -> Result<&'static str, ProviderError> {
     let normalised = status.trim();
     if normalised.eq_ignore_ascii_case("New") {
         Ok(WORKFLOW_LABEL_NEW)
@@ -99,7 +99,7 @@ pub(crate) fn workflow_label_from_status(status: &str) -> Result<&'static str, F
     {
         Ok(WORKFLOW_LABEL_CANCELLED)
     } else {
-        Err(ForgejoError::config(format!(
+        Err(ProviderError::config(format!(
             "GitLab workflow status '{status}' is not recognised; expected \
               New, InProgress, InReview, ChangesRequested, Blocked, Resolved, \
               Closed, or Cancelled"
@@ -122,12 +122,12 @@ pub(crate) fn state_from_gitlab(state: &str) -> &'static str {
 /// Map the orchestrator's `open` / `closed` / `all` state selector to
 /// the GitLab issue state filter. `all` is signalled via `None` so the
 /// caller knows not to send `state=opened` or `state=closed`.
-pub(crate) fn state_query_filter(state: &str) -> Result<Option<&'static str>, ForgejoError> {
+pub(crate) fn state_query_filter(state: &str) -> Result<Option<&'static str>, ProviderError> {
     match state {
         "open" => Ok(Some("opened")),
         "closed" => Ok(Some("closed")),
         "all" => Ok(None),
-        other => Err(ForgejoError::config(format!(
+        other => Err(ProviderError::config(format!(
             "issue state '{other}' must be open, closed, or all"
         ))),
     }
@@ -139,7 +139,7 @@ mod tests {
         WORKFLOW_LABELS, state_from_gitlab, state_query_filter, tracker_label_from_name,
         tracker_name_from_label, workflow_label_from_status,
     };
-    use crate::providers::api::ForgejoError;
+    use crate::providers::api::ProviderError;
 
     #[test]
     fn tracker_label_round_trip_for_bug_and_feature() {
@@ -157,7 +157,7 @@ mod tests {
     fn tracker_label_rejects_other_values() {
         let error = tracker_label_from_name("Task").unwrap_err();
         match error {
-            ForgejoError::Config(message) => {
+            ProviderError::Config(message) => {
                 assert!(message.contains("GitLab tracker name 'Task'"));
             }
             other => panic!("unexpected error variant: {other:?}"),
@@ -169,7 +169,7 @@ mod tests {
         // Numeric ids are explicitly unsupported: the label-based
         // convention is name-only.
         let error = tracker_label_from_name("2").unwrap_err();
-        assert!(matches!(error, ForgejoError::Config(_)));
+        assert!(matches!(error, ProviderError::Config(_)));
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests {
     fn workflow_label_rejects_unknown_status() {
         let error = workflow_label_from_status("Reviewing").unwrap_err();
         match error {
-            ForgejoError::Config(message) => assert!(message.contains("not recognised")),
+            ProviderError::Config(message) => assert!(message.contains("not recognised")),
             other => panic!("unexpected error variant: {other:?}"),
         }
     }

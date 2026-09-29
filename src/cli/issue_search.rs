@@ -2,7 +2,7 @@ use crate::infra::issue_index_backend::{IssueIndexBackend, block_on};
 use crate::policy::{Capability, Role};
 use crate::providers::api::{IssueSearchItem, IssueSearchResult, IssueSummary};
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::index::{IssueIndexDocument, IssueIndexKey, IssueIndexStore};
 use crate::providers::index_store::{explicit_scope, lexical_scope_for_state, provider_scope};
 use crate::providers::{IssueProvider, ProviderDispatcher, ProviderKind};
@@ -241,7 +241,7 @@ pub(crate) fn execute_search_transparent(
         }
     };
     if !provider.supports(Capability::IssueSearch) {
-        return crate::cli::provider_error(ForgejoError::not_supported(
+        return crate::cli::provider_error(ProviderError::not_supported(
             provider.kind().as_str(),
             Capability::IssueSearch.operation(),
         ));
@@ -282,7 +282,7 @@ pub(crate) fn execute_search_transparent(
 /// `resolve_kind`/provider construction again; scope prefers the live
 /// dispatcher, then explicit CLI args, then global stale.
 pub(crate) fn fallback_or_provider_error(
-    original: &ForgejoError,
+    original: &ProviderError,
     options: &crate::providers::IssueSearchOptions,
     provider: Option<&ProviderDispatcher>,
     explicit_kind: Option<ProviderKind>,

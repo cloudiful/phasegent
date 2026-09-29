@@ -3,7 +3,7 @@ use crate::command::RepoCommand;
 #[allow(unused_imports)]
 use crate::policy::Capability;
 #[allow(unused_imports)]
-use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
+use crate::providers::api::{CommentOutput, IssueSummary, ProviderError, RepoSummary};
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::hierarchy::HierarchyPage;
 use crate::providers::hierarchy::WorkItemRef;
@@ -26,21 +26,21 @@ impl ProviderDispatcher {
     pub fn for_role(
         role: crate::policy::Role,
         config: ForgejoConfig,
-    ) -> Result<Self, ForgejoError> {
+    ) -> Result<Self, ProviderError> {
         Ok(Self::Forgejo(ForgejoProvider::for_role(role, config)?))
     }
 
     pub fn redmine(
         role: crate::policy::Role,
         config: crate::providers::config::RedmineConfig,
-    ) -> Result<Self, ForgejoError> {
+    ) -> Result<Self, ProviderError> {
         Ok(Self::Redmine(RedmineProvider::for_role(role, config)?))
     }
 
     pub fn gitlab(
         role: crate::policy::Role,
         config: crate::providers::config::GitlabConfig,
-    ) -> Result<Self, ForgejoError> {
+    ) -> Result<Self, ProviderError> {
         Ok(Self::Gitlab(GitlabProvider::for_role(role, config)?))
     }
 
@@ -61,7 +61,7 @@ impl ProviderDispatcher {
         _role: crate::policy::Role,
         _api_base: Option<&str>,
         _repository: Option<&str>,
-    ) -> Result<RepoSummary, ForgejoError> {
+    ) -> Result<RepoSummary, ProviderError> {
         let RepoCommand::Create {
             target,
             private,
@@ -85,11 +85,11 @@ impl ProviderDispatcher {
     /// providers return structured `not_supported`. Never falls back to
     /// relations.
     #[allow(dead_code)]
-    pub fn get_hierarchy(&self, number: u64) -> Result<HierarchyNode, ForgejoError> {
+    pub fn get_hierarchy(&self, number: u64) -> Result<HierarchyNode, ProviderError> {
         match self {
             Self::Redmine(redmine) => redmine.get_hierarchy(number),
             Self::Gitlab(gitlab) => gitlab.get_hierarchy(number),
-            other => Err(ForgejoError::not_supported(
+            other => Err(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy get",
             )),
@@ -100,11 +100,11 @@ impl ProviderDispatcher {
     /// indicator. Redmine reports the complete child list (`false`); GitLab
     /// reports the child connection `pageInfo.hasNextPage`. Other providers
     /// return structured `not_supported`. Never falls back to relations.
-    pub fn get_hierarchy_page(&self, number: u64) -> Result<HierarchyPage, ForgejoError> {
+    pub fn get_hierarchy_page(&self, number: u64) -> Result<HierarchyPage, ProviderError> {
         match self {
             Self::Redmine(redmine) => redmine.get_hierarchy_page(number),
             Self::Gitlab(gitlab) => gitlab.get_hierarchy_page(number),
-            other => Err(ForgejoError::not_supported(
+            other => Err(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy get",
             )),
@@ -115,11 +115,11 @@ impl ProviderDispatcher {
     /// `parent_issue_id`; GitLab resolves both items' native kind/scope
     /// through hierarchy reads before issuing the widget mutation. Other
     /// providers return structured `not_supported`.
-    pub fn set_hierarchy_parent_by_id(&self, child: u64, parent: u64) -> Result<(), ForgejoError> {
+    pub fn set_hierarchy_parent_by_id(&self, child: u64, parent: u64) -> Result<(), ProviderError> {
         match self {
             Self::Redmine(redmine) => redmine.set_hierarchy_parent(child, parent),
             Self::Gitlab(gitlab) => gitlab.set_hierarchy_parent_by_id(child, parent),
-            other => Err(ForgejoError::not_supported(
+            other => Err(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy update",
             )),
@@ -136,11 +136,11 @@ impl ProviderDispatcher {
         &self,
         child: WorkItemRef,
         parent: WorkItemRef,
-    ) -> Result<(), ForgejoError> {
+    ) -> Result<(), ProviderError> {
         match self {
             Self::Redmine(redmine) => redmine.set_hierarchy_parent(child.id, parent.id),
             Self::Gitlab(gitlab) => gitlab.set_hierarchy_parent(&child, &parent),
-            other => Err(ForgejoError::not_supported(
+            other => Err(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy update",
             )),
@@ -151,11 +151,11 @@ impl ProviderDispatcher {
     /// explicit null `parent_issue_id`; GitLab issues the widget mutation
     /// with a null parent. Other providers return structured
     /// `not_supported`. Never touches relations.
-    pub fn unset_hierarchy_parent_by_id(&self, child: u64) -> Result<(), ForgejoError> {
+    pub fn unset_hierarchy_parent_by_id(&self, child: u64) -> Result<(), ProviderError> {
         match self {
             Self::Redmine(redmine) => redmine.unset_hierarchy_parent(child),
             Self::Gitlab(gitlab) => gitlab.unset_hierarchy_parent_by_id(child),
-            other => Err(ForgejoError::not_supported(
+            other => Err(ProviderError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy update",
             )),

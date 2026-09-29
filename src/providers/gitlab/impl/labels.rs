@@ -1,4 +1,4 @@
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, ProviderError};
 use crate::providers::gitlab::model::{
     ApiLabel, NewLabel, TRACKER_LABEL_BUG, TRACKER_LABEL_FEATURE, UpdateIssue, WORKFLOW_LABELS,
     tracker_label_from_name, tracker_name_from_label, workflow_label_from_status,
@@ -15,7 +15,7 @@ impl GitlabProvider {
     /// labels) and for the workflow update path (so the managed
     /// labels are guaranteed to exist before they are referenced by
     /// the issue update payload).
-    pub(crate) fn ensure_labels(&self, labels: &[&str]) -> Result<Vec<String>, ForgejoError> {
+    pub(crate) fn ensure_labels(&self, labels: &[&str]) -> Result<Vec<String>, ProviderError> {
         let existing = self.list_project_labels()?;
         let mut ensured = Vec::with_capacity(labels.len());
         for name in labels {
@@ -29,14 +29,14 @@ impl GitlabProvider {
         Ok(ensured)
     }
 
-    pub(crate) fn list_project_labels(&self) -> Result<Vec<ApiLabel>, ForgejoError> {
+    pub(crate) fn list_project_labels(&self) -> Result<Vec<ApiLabel>, ProviderError> {
         let path = self.labels_path();
         self.http.paginate("label list", |http, page| {
             http.get_page::<ApiLabel>(&path, &[("page", page.to_string())], "label list")
         })
     }
 
-    pub(crate) fn create_label(&self, name: &str) -> Result<ApiLabel, ForgejoError> {
+    pub(crate) fn create_label(&self, name: &str) -> Result<ApiLabel, ProviderError> {
         let payload = NewLabel {
             name,
             color: label_color(name),
@@ -55,7 +55,7 @@ impl GitlabProvider {
         &self,
         iid: u64,
         status: &str,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let label = workflow_label_from_status(status)?;
         let is_closed = label == "workflow::closed";
         self.apply_status(iid, Some(label), is_closed)
@@ -66,7 +66,7 @@ impl GitlabProvider {
         iid: u64,
         label: Option<&str>,
         is_closed: bool,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         // Ensure the target label exists before referencing it.
         if let Some(label) = label {
             self.ensure_labels(&[label])?;
@@ -107,10 +107,10 @@ impl GitlabProvider {
     /// Resolve a raw `--tracker` value to a GitLab label and ensure
     /// the label exists in the project. Returns the label name ready
     /// for inclusion in a create or update payload.
-    pub(crate) fn tracker_label(&self, value: &str) -> Result<String, ForgejoError> {
+    pub(crate) fn tracker_label(&self, value: &str) -> Result<String, ProviderError> {
         let label = tracker_label_from_name(value)?;
         if tracker_name_from_label(label).is_none() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab tracker label mapping is incomplete",
             ));
         }
@@ -119,7 +119,7 @@ impl GitlabProvider {
     }
 
     /// Resolve `--tracker Bug|Feature` to a label list (one element).
-    pub(crate) fn tracker_label_list(&self, value: &str) -> Result<Vec<String>, ForgejoError> {
+    pub(crate) fn tracker_label_list(&self, value: &str) -> Result<Vec<String>, ProviderError> {
         Ok(vec![self.tracker_label(value)?])
     }
 

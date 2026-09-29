@@ -1,5 +1,5 @@
 use crate::providers::api::{
-    ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
+    IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary, ProviderError,
 };
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
@@ -8,7 +8,7 @@ use crate::providers::redmine::model::{
 };
 
 impl RedmineProvider {
-    pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
+    pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ProviderError> {
         let issue = self.issue_with_journals(number, "issue get")?;
         Ok(self.issue_summary(issue))
     }
@@ -16,7 +16,7 @@ impl RedmineProvider {
     pub fn search_issues(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<IssueSearchResult, ForgejoError> {
+    ) -> Result<IssueSearchResult, ProviderError> {
         options.validate()?;
         let project_id = self
             .config
@@ -29,7 +29,7 @@ impl RedmineProvider {
             "closed" => "closed",
             "all" => "*",
             _ => {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "issue state must be open, closed, or all",
                 ));
             }
@@ -75,7 +75,7 @@ impl RedmineProvider {
     pub fn search_issue_page(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<crate::providers::api::IssueSummaryPage, ForgejoError> {
+    ) -> Result<crate::providers::api::IssueSummaryPage, ProviderError> {
         options.validate()?;
         let project_id = self
             .config
@@ -88,7 +88,7 @@ impl RedmineProvider {
             "closed" => "closed",
             "all" => "*",
             _ => {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "issue state must be open, closed, or all",
                 ));
             }
@@ -128,7 +128,7 @@ impl RedmineProvider {
         })
     }
 
-    pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ProviderError> {
         self.create_issue_with_planning(title, body, None, &IssuePlanning::default())
     }
 
@@ -139,7 +139,7 @@ impl RedmineProvider {
         title: &str,
         body: &str,
         tracker_id: u64,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         self.create_issue_with_planning(title, body, Some(tracker_id), &IssuePlanning::default())
     }
 
@@ -152,7 +152,7 @@ impl RedmineProvider {
         body: &str,
         tracker_id: Option<u64>,
         planning: &IssuePlanning,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let project_id = self.config.require_project_id()?;
         let payload = RedmineNewIssue::new(project_id, title, body)
             .with_tracker_option(tracker_id)
@@ -162,7 +162,7 @@ impl RedmineProvider {
         Ok(self.issue_summary(response.issue))
     }
 
-    pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ProviderError> {
         let payload = RedmineUpdateIssue::description(body);
         self.put_issue_update(number, payload, "issue update")
     }
@@ -175,7 +175,7 @@ impl RedmineProvider {
         number: u64,
         body: &str,
         tracker_id: u64,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let payload = RedmineUpdateIssue::description_with_tracker(body, tracker_id);
         self.put_issue_update(number, payload, "issue update")
     }
@@ -190,7 +190,7 @@ impl RedmineProvider {
         body: &str,
         tracker_id: Option<u64>,
         planning: &IssuePlanning,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let payload = match tracker_id {
             Some(tracker_id) => RedmineUpdateIssue::description_with_tracker(body, tracker_id),
             None => RedmineUpdateIssue::description(body),
@@ -204,7 +204,7 @@ impl RedmineProvider {
         number: u64,
         payload: RedmineUpdateIssue<'_>,
         operation: &'static str,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let response: Option<RedmineIssueResponse> =
             self.http
                 .put(&self.issue_path(number), &payload, operation)?;
@@ -217,7 +217,7 @@ impl RedmineProvider {
         &self,
         number: u64,
         operation: &str,
-    ) -> Result<RedmineIssue, ForgejoError> {
+    ) -> Result<RedmineIssue, ProviderError> {
         let params = [("include", "journals".to_owned())];
         let response: RedmineIssueResponse =
             self.http

@@ -1,7 +1,7 @@
 use crate::infra::storage::{
     Storage, TIMER_SYNC_PROJECTING, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED, TimerRun,
 };
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::gitlab::GitlabProvider;
 
 /// Stable marker prefix used as the GitLab `add_spent_time` summary
@@ -22,8 +22,8 @@ pub(crate) fn gitlab_time_entry_summary(run: &TimerRun) -> String {
     format!("{TIMER_GITLAB_MARKER_PREFIX}{}", run.run_id)
 }
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ProviderError + 'a {
+    move |message| ProviderError::request(operation, message)
 }
 
 /// Project a finished run to GitLab using `add_spent_time` with the
@@ -52,7 +52,7 @@ pub(crate) fn project_run_with_gitlab_provider(
     run: &mut TimerRun,
     provider: &GitlabProvider,
     token: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     // Idempotency: the local ledger is the source of truth. A run
     // whose sync_status is already `synced` (set by a previous
     // successful projection) is treated as already-projected and
@@ -68,15 +68,15 @@ pub(crate) fn project_run_with_gitlab_provider(
     if let Err(error) = storage.begin_projection() {
         let lower = error.to_ascii_lowercase();
         if lower.contains("busy") || lower.contains("locked") || lower.contains("acquire") {
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 "timer finish",
                 "projection already in progress for this run".to_owned(),
             ));
         }
-        return Err(ForgejoError::request("timer finish", error));
+        return Err(ProviderError::request("timer finish", error));
     }
 
-    let outcome: Result<(), ForgejoError> = (|| {
+    let outcome: Result<(), ProviderError> = (|| {
         // Caller-bound lease for GitLab as well.
         if run.sync_status == TIMER_SYNC_PROJECTING
             && run.projection_token.as_deref() == Some(token)
@@ -90,18 +90,18 @@ pub(crate) fn project_run_with_gitlab_provider(
                 let current = storage
                     .load_timer_run(&run.run_id)
                     .map_err(timer_storage_error("timer finish claim"))?
-                    .ok_or_else(|| ForgejoError::config("timer run disappeared during claim"))?;
+                    .ok_or_else(|| ProviderError::config("timer run disappeared during claim"))?;
                 if current.sync_status == TIMER_SYNC_SYNCED {
                     *run = current;
                     return Ok(());
                 }
                 if current.sync_status == TIMER_SYNC_PROJECTING {
-                    return Err(ForgejoError::request(
+                    return Err(ProviderError::request(
                         "timer finish",
                         "projection already in progress for this run".to_owned(),
                     ));
                 }
-                return Err(ForgejoError::request(
+                return Err(ProviderError::request(
                     "timer finish",
                     "could not claim projection; another operation is in progress".to_owned(),
                 ));
@@ -109,13 +109,13 @@ pub(crate) fn project_run_with_gitlab_provider(
             *run = storage
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish claim"))?
-                .ok_or_else(|| ForgejoError::config("timer run disappeared after claim"))?;
+                .ok_or_else(|| ProviderError::config("timer run disappeared after claim"))?;
         }
         let elapsed = run
             .elapsed_seconds
-            .ok_or_else(|| ForgejoError::config("finished timer run has no elapsed seconds"))?;
+            .ok_or_else(|| ProviderError::config("finished timer run has no elapsed seconds"))?;
         if elapsed <= 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "GitLab spent time requires a positive elapsed duration",
             ));
         }
@@ -142,7 +142,7 @@ pub(crate) fn project_run_with_gitlab_provider(
                 )
                 .map_err(timer_storage_error("timer finish projection"))?;
             if !ok {
-                return Err(ForgejoError::request(
+                return Err(ProviderError::request(
                     "timer finish",
                     "projection lease lost before marking synced".to_owned(),
                 ));
@@ -150,7 +150,7 @@ pub(crate) fn project_run_with_gitlab_provider(
             *run = storage
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish projection"))?
-                .ok_or_else(|| ForgejoError::config("timer run disappeared after projection"))?;
+                .ok_or_else(|| ProviderError::config("timer run disappeared after projection"))?;
         } else {
             let ok = storage
                 .mark_timer_sync_with_token(
@@ -163,7 +163,7 @@ pub(crate) fn project_run_with_gitlab_provider(
                 )
                 .map_err(timer_storage_error("timer finish unconfirmed projection"))?;
             if !ok {
-                return Err(ForgejoError::request(
+                return Err(ProviderError::request(
                     "timer finish",
                     "projection lease lost before marking unconfirmed".to_owned(),
                 ));
@@ -171,7 +171,7 @@ pub(crate) fn project_run_with_gitlab_provider(
             *run = storage
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish unconfirmed projection"))?
-                .ok_or_else(|| ForgejoError::config("timer run disappeared after unconfirmed"))?;
+                .ok_or_else(|| ProviderError::config("timer run disappeared after unconfirmed"))?;
         }
         Ok(())
     })();

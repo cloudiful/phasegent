@@ -57,23 +57,23 @@ impl IssueSearchOptions {
             .filter(|value| !value.is_empty())
     }
 
-    pub fn validate(&self) -> Result<(), ForgejoError> {
+    pub fn validate(&self) -> Result<(), ProviderError> {
         if !matches!(self.state.as_str(), "open" | "closed" | "all") {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue state must be open, closed, or all",
             ));
         }
         if self.page == 0 {
-            return Err(ForgejoError::config("issue search page must be >= 1"));
+            return Err(ProviderError::config("issue search page must be >= 1"));
         }
         if self.limit == 0 || self.limit > ISSUE_SEARCH_MAX_LIMIT {
-            return Err(ForgejoError::config(format!(
+            return Err(ProviderError::config(format!(
                 "issue search limit must be between 1 and {ISSUE_SEARCH_MAX_LIMIT}"
             )));
         }
         let has_query = self.effective_query().is_some();
         if !has_query && !self.all {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue search requires --query TEXT or --all for a bounded all-issues listing (empty queries are rejected)",
             ));
         }
@@ -229,7 +229,7 @@ pub struct RepoSummary {
 }
 
 #[derive(Debug, Clone)]
-pub enum ForgejoError {
+pub enum ProviderError {
     Config(String),
     Auth(String),
     Request {
@@ -260,7 +260,7 @@ pub enum ForgejoError {
     },
 }
 
-impl ForgejoError {
+impl ProviderError {
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config(message.into())
     }
@@ -356,7 +356,7 @@ impl ForgejoError {
     }
 }
 
-impl fmt::Display for ForgejoError {
+impl fmt::Display for ProviderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.json().to_string())
     }

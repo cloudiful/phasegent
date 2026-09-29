@@ -13,7 +13,7 @@
 
 use serde::Deserialize;
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::hierarchy::{WorkItemKind, WorkItemRef};
 
 /// Global ID for a work item, e.g. `gid://gitlab/WorkItem/123`.
@@ -22,12 +22,12 @@ pub(crate) fn work_item_gid(id: u64) -> String {
 }
 
 /// Parse the trailing numeric ID from a `gid://gitlab/WorkItem/<id>` value.
-pub(crate) fn parse_work_item_id(gid: &str, operation: &str) -> Result<u64, ForgejoError> {
+pub(crate) fn parse_work_item_id(gid: &str, operation: &str) -> Result<u64, ProviderError> {
     gid.rsplit('/')
         .next()
         .and_then(|tail| tail.parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .ok_or_else(|| ForgejoError::Decode {
+        .ok_or_else(|| ProviderError::Decode {
             operation: operation.to_owned(),
             message: format!("unknown GitLab work item id shape: {gid}"),
         })
@@ -37,12 +37,12 @@ pub(crate) fn parse_work_item_id(gid: &str, operation: &str) -> Result<u64, Forg
 pub(crate) fn parse_work_item_kind(
     name: &str,
     operation: &str,
-) -> Result<WorkItemKind, ForgejoError> {
+) -> Result<WorkItemKind, ProviderError> {
     match name.trim().to_ascii_lowercase().as_str() {
         "epic" => Ok(WorkItemKind::GitLabEpic),
         "issue" => Ok(WorkItemKind::GitLabIssue),
         "task" => Ok(WorkItemKind::GitLabTask),
-        _ => Err(ForgejoError::Decode {
+        _ => Err(ProviderError::Decode {
             operation: operation.to_owned(),
             message: format!("unknown GitLab work item type: {name}"),
         }),
@@ -55,7 +55,7 @@ pub(crate) fn link_ref(
     gid: &str,
     type_name: &str,
     operation: &str,
-) -> Result<WorkItemRef, ForgejoError> {
+) -> Result<WorkItemRef, ProviderError> {
     Ok(WorkItemRef::gitlab(
         project,
         parse_work_item_id(gid, operation)?,

@@ -11,7 +11,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::gitlab::http::GitlabHttp;
 
 #[derive(Debug, Serialize)]
@@ -38,7 +38,7 @@ pub(crate) fn execute<T: DeserializeOwned>(
     query: &str,
     variables: serde_json::Value,
     operation: &str,
-) -> Result<T, ForgejoError> {
+) -> Result<T, ProviderError> {
     use reqwest::header::{ACCEPT, CONTENT_TYPE};
 
     let url = http.graphql_endpoint()?;
@@ -51,16 +51,16 @@ pub(crate) fn execute<T: DeserializeOwned>(
         .header("PRIVATE-TOKEN", http.token.as_str())
         .json(&body)
         .send()
-        .map_err(|error| ForgejoError::request(operation, http.redact(&error.to_string())))?;
+        .map_err(|error| ProviderError::request(operation, http.redact(&error.to_string())))?;
     let status = response.status();
     let text = response
         .text()
-        .map_err(|error| ForgejoError::request(operation, http.redact(&error.to_string())))?;
+        .map_err(|error| ProviderError::request(operation, http.redact(&error.to_string())))?;
     if !status.is_success() {
         return Err(http.http_error(status, &text, operation));
     }
     let envelope: GraphqlEnvelope =
-        serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+        serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
             operation: operation.to_owned(),
             message: http.redact(&error.to_string()),
         })?;
@@ -71,17 +71,17 @@ pub(crate) fn execute<T: DeserializeOwned>(
             .filter(|message| !message.is_empty())
             .collect();
         if !messages.is_empty() {
-            return Err(ForgejoError::Request {
+            return Err(ProviderError::Request {
                 operation: operation.to_owned(),
                 message: http.redact(&messages.join("; ")),
             });
         }
     }
-    let data = envelope.data.ok_or_else(|| ForgejoError::Decode {
+    let data = envelope.data.ok_or_else(|| ProviderError::Decode {
         operation: operation.to_owned(),
         message: http.redact("GitLab GraphQL response contained no data"),
     })?;
-    serde_json::from_value(data).map_err(|error| ForgejoError::Decode {
+    serde_json::from_value(data).map_err(|error| ProviderError::Decode {
         operation: operation.to_owned(),
         message: http.redact(&error.to_string()),
     })

@@ -9,7 +9,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::config::RedmineProvider;
 use crate::providers::hierarchy::{HierarchyEdge, HierarchyNode, HierarchyPage, WorkItemRef};
 
@@ -46,7 +46,7 @@ struct RedmineChildRef {
 #[allow(dead_code)]
 impl RedmineProvider {
     /// Fetch the native hierarchy view for one issue.
-    pub fn get_hierarchy(&self, number: u64) -> Result<HierarchyNode, ForgejoError> {
+    pub fn get_hierarchy(&self, number: u64) -> Result<HierarchyNode, ProviderError> {
         let params = [("include", "children".to_owned())];
         let response: RedmineHierarchyResponse =
             self.http
@@ -58,7 +58,7 @@ impl RedmineProvider {
     /// complete child list, so the truncation indicator is always false
     /// here; callers that project the bounded child list cap it at
     /// [`HIERARCHY_MAX_CHILDREN`](crate::providers::hierarchy::HIERARCHY_MAX_CHILDREN).
-    pub fn get_hierarchy_page(&self, number: u64) -> Result<HierarchyPage, ForgejoError> {
+    pub fn get_hierarchy_page(&self, number: u64) -> Result<HierarchyPage, ProviderError> {
         Ok(HierarchyPage {
             node: self.get_hierarchy(number)?,
             children_truncated: false,
@@ -67,14 +67,14 @@ impl RedmineProvider {
 
     /// Assign the native parent for one issue via `parent_issue_id`. Ids are
     /// validated before any network; Redmine rejects unknown ids itself.
-    pub fn set_hierarchy_parent(&self, child: u64, parent: u64) -> Result<(), ForgejoError> {
+    pub fn set_hierarchy_parent(&self, child: u64, parent: u64) -> Result<(), ProviderError> {
         let project = self.configured_project();
         HierarchyEdge {
             parent: WorkItemRef::redmine(project.clone(), parent),
             child: WorkItemRef::redmine(project, child),
         }
         .validate()
-        .map_err(ForgejoError::config)?;
+        .map_err(ProviderError::config)?;
         let payload = RedmineParentUpdate::some(parent);
         let _: Option<serde_json::Value> =
             self.http
@@ -84,9 +84,9 @@ impl RedmineProvider {
 
     /// Clear the native parent for one issue by writing an explicit null
     /// `parent_issue_id`. Never touches relations.
-    pub fn unset_hierarchy_parent(&self, child: u64) -> Result<(), ForgejoError> {
+    pub fn unset_hierarchy_parent(&self, child: u64) -> Result<(), ProviderError> {
         if child == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine hierarchy ids must be greater than zero",
             ));
         }

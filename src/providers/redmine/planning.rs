@@ -9,7 +9,7 @@
 //! path so legacy payloads stay byte-identical.
 
 use crate::command::{AssigneeOption, PlanningOptions};
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, ProviderError};
 use crate::providers::redmine::model::IssuePlanning;
 use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
 
@@ -25,7 +25,7 @@ use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
 pub(crate) fn resolve_planning(
     provider: &ProviderDispatcher,
     options: &PlanningOptions,
-) -> Result<IssuePlanning, ForgejoError> {
+) -> Result<IssuePlanning, ProviderError> {
     if options.is_empty() {
         return Ok(IssuePlanning::default());
     }
@@ -41,27 +41,27 @@ pub(crate) fn resolve_planning(
             // operation that goes through the existing label path,
             // not through `resolve_planning`.
             if options.parent_issue.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issues do not support --parent-issue",
                 ));
             }
             if options.fixed_version.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issues do not support --fixed-version",
                 ));
             }
             if options.start_date.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issues do not support --start-date",
                 ));
             }
             if options.due_date.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issues do not support --due-date",
                 ));
             }
             if options.done_ratio.is_some() {
-                return Err(ForgejoError::config(
+                return Err(ProviderError::config(
                     "GitLab issues do not support --done-ratio",
                 ));
             }
@@ -73,7 +73,7 @@ pub(crate) fn resolve_planning(
             // body is written.
         }
         ProviderDispatcher::Forgejo(_) => {
-            return Err(ForgejoError::not_supported(
+            return Err(ProviderError::not_supported(
                 "forgejo",
                 "issue planning fields",
             ));
@@ -147,7 +147,7 @@ pub(crate) fn create_issue(
     tracker: Option<&str>,
     planning_options: &PlanningOptions,
     assignee: &AssigneeOption,
-) -> Result<(IssueSummary, Option<String>), ForgejoError> {
+) -> Result<(IssueSummary, Option<String>), ProviderError> {
     let planning = resolve_planning(provider, planning_options)?;
     let needs_provider_specific = tracker.is_some() || !planning.is_empty();
     match provider {
@@ -206,7 +206,7 @@ pub(crate) fn create_issue(
             if !needs_provider_specific {
                 return Ok((provider.create_issue(title, body)?, None));
             }
-            Err(ForgejoError::not_supported(
+            Err(ProviderError::not_supported(
                 "forgejo",
                 "issue tracker / planning fields",
             ))
@@ -225,9 +225,9 @@ pub(crate) fn create_issue(
 fn reject_explicit_assignee(
     provider: &ProviderDispatcher,
     assignee: &AssigneeOption,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     if matches!(assignee, AssigneeOption::Explicit(_)) {
-        return Err(ForgejoError::not_supported(
+        return Err(ProviderError::not_supported(
             provider.kind().as_str(),
             "--assignee",
         ));
@@ -249,7 +249,7 @@ pub(crate) fn update_body(
     body: &str,
     tracker: Option<&str>,
     planning_options: &PlanningOptions,
-) -> Result<IssueSummary, ForgejoError> {
+) -> Result<IssueSummary, ProviderError> {
     let planning = resolve_planning(provider, planning_options)?;
     let needs_provider_specific = tracker.is_some() || !planning.is_empty();
     if !needs_provider_specific {
@@ -287,7 +287,7 @@ pub(crate) fn update_body(
             }
             Ok(summary)
         }
-        ProviderDispatcher::Forgejo(_) => Err(ForgejoError::not_supported(
+        ProviderDispatcher::Forgejo(_) => Err(ProviderError::not_supported(
             "forgejo",
             "issue tracker / planning fields",
         )),
@@ -298,10 +298,10 @@ pub(crate) fn update_body(
 
 /// Extract the concrete Redmine provider from the dispatcher for
 /// Redmine-only operations that are not part of the shared issue trait.
-fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, ForgejoError> {
+fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, ProviderError> {
     match provider {
         ProviderDispatcher::Redmine(redmine) => Ok(redmine),
-        ProviderDispatcher::Forgejo(_) => Err(ForgejoError::not_supported(
+        ProviderDispatcher::Forgejo(_) => Err(ProviderError::not_supported(
             "forgejo",
             "issue planning fields",
         )),
@@ -311,51 +311,51 @@ fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, F
         // reaching this helper. Reaching this branch means the caller
         // asked for a Redmine-only field; surface a structured
         // not-supported error so the failure mode stays symmetric.
-        ProviderDispatcher::Gitlab(_) => Err(ForgejoError::not_supported(
+        ProviderDispatcher::Gitlab(_) => Err(ProviderError::not_supported(
             "gitlab",
             "issue planning fields",
         )),
         // Local never reaches here: resolve_planning returns early for
         // Local providers, so this wildcard only documents exhaustiveness.
-        other => Err(ForgejoError::not_supported(
+        other => Err(ProviderError::not_supported(
             other.kind().as_str(),
             "issue planning fields",
         )),
     }
 }
 
-fn parse_positive(value: &str, field: &'static str) -> Result<u64, ForgejoError> {
-    let parsed = value
-        .parse::<u64>()
-        .map_err(|_| ForgejoError::config(format!("Redmine {field} must be a positive integer")))?;
+fn parse_positive(value: &str, field: &'static str) -> Result<u64, ProviderError> {
+    let parsed = value.parse::<u64>().map_err(|_| {
+        ProviderError::config(format!("Redmine {field} must be a positive integer"))
+    })?;
     if parsed == 0 {
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "Redmine {field} must be greater than zero"
         )));
     }
     Ok(parsed)
 }
 
-fn parse_estimated_hours(value: &str) -> Result<f64, ForgejoError> {
+fn parse_estimated_hours(value: &str) -> Result<f64, ProviderError> {
     let parsed = value.parse::<f64>().map_err(|_| {
-        ForgejoError::config("Redmine estimated hours must be a non-negative number")
+        ProviderError::config("Redmine estimated hours must be a non-negative number")
     })?;
     if !parsed.is_finite() || parsed < 0.0 {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "Redmine estimated hours must be a non-negative number",
         ));
     }
     Ok(parsed)
 }
 
-fn parse_done_ratio(value: &str) -> Result<u64, ForgejoError> {
+fn parse_done_ratio(value: &str) -> Result<u64, ProviderError> {
     // done_ratio is a 0-100 percentage; 0% is a valid default state, so
     // only values above 100 are rejected.
     let parsed = value
         .parse::<u64>()
-        .map_err(|_| ForgejoError::config("Redmine done ratio must be between 0 and 100"))?;
+        .map_err(|_| ProviderError::config("Redmine done ratio must be between 0 and 100"))?;
     if parsed > 100 {
-        return Err(ForgejoError::config(
+        return Err(ProviderError::config(
             "Redmine done ratio must be between 0 and 100",
         ));
     }
@@ -365,9 +365,9 @@ fn parse_done_ratio(value: &str) -> Result<u64, ForgejoError> {
 /// Validate the strict zero-padded `YYYY-MM-DD` shape Redmine expects for
 /// date fields, including real calendar rules (month lengths and leap
 /// years) so impossible dates are rejected locally before any write.
-fn parse_date(value: &str, field: &'static str) -> Result<String, ForgejoError> {
+fn parse_date(value: &str, field: &'static str) -> Result<String, ProviderError> {
     let invalid =
-        || ForgejoError::config(format!("Redmine {field} must use the YYYY-MM-DD format"));
+        || ProviderError::config(format!("Redmine {field} must use the YYYY-MM-DD format"));
     let parts = value.split('-').collect::<Vec<_>>();
     let [year, month, day] = parts.as_slice() else {
         return Err(invalid());

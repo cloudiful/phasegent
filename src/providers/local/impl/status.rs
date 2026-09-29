@@ -1,7 +1,7 @@
 use super::LocalProvider;
 use super::model::{is_closed_status, local_sql, local_statuses, now_epoch_seconds};
 use crate::providers::RedmineIssueStatus;
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, ProviderError};
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
     STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, StatusNextReport, StatusRef,
@@ -31,13 +31,13 @@ pub(crate) fn is_transition_allowed(from: &str, to: &str) -> bool {
 }
 
 impl LocalProvider {
-    pub fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, ForgejoError> {
+    pub fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, ProviderError> {
         Ok(local_statuses())
     }
 
-    fn current_status_name(&self, number: u64) -> Result<String, ForgejoError> {
+    fn current_status_name(&self, number: u64) -> Result<String, ProviderError> {
         if number == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -51,7 +51,7 @@ impl LocalProvider {
         .map_err(|error| {
             let message = error.to_string();
             if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-                ForgejoError::not_found(
+                ProviderError::not_found(
                     "issue status next",
                     &format!("issue {number} was not found"),
                 )
@@ -63,7 +63,7 @@ impl LocalProvider {
 
     /// Answer "where can this issue go next" from the canonical policy,
     /// resolved against the static local catalogue. Read-only.
-    pub fn status_next(&self, number: u64) -> Result<StatusNextReport, ForgejoError> {
+    pub fn status_next(&self, number: u64) -> Result<StatusNextReport, ProviderError> {
         let statuses = self.list_issue_statuses()?;
         let current_name = self.current_status_name(number)?;
         let current = status_ref_for_name(&statuses, &current_name);
@@ -98,9 +98,9 @@ impl LocalProvider {
         &self,
         number: u64,
         status_id: u64,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         if number == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -109,7 +109,7 @@ impl LocalProvider {
             .iter()
             .find(|status| status.id == status_id)
             .ok_or_else(|| {
-                ForgejoError::config(format!("local status id {status_id} was not found"))
+                ProviderError::config(format!("local status id {status_id} was not found"))
             })?;
         let target_name = target.name.clone();
         let target_closed = target.is_closed;
@@ -117,7 +117,7 @@ impl LocalProvider {
         self.current_status_name(number).map_err(|error| {
             let message = error.to_string();
             if message.contains("was not found") {
-                ForgejoError::not_found(
+                ProviderError::not_found(
                     "issue status update",
                     &format!("issue {number} was not found"),
                 )
@@ -141,7 +141,7 @@ impl LocalProvider {
         .map_err(|error| {
             let message = error.to_string();
             if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-                ForgejoError::not_found(
+                ProviderError::not_found(
                     "issue status update",
                     &format!("issue {number} was not found"),
                 )
@@ -158,14 +158,14 @@ impl LocalProvider {
         &self,
         number: u64,
         target_value: &str,
-    ) -> Result<StatusTransitionOutcome, ForgejoError> {
+    ) -> Result<StatusTransitionOutcome, ProviderError> {
         let operation = "issue status advance";
         let statuses = self.list_issue_statuses()?;
         let target = RedmineProvider::select_status_by_value(&statuses, target_value)?;
         let current_name = self.current_status_name(number).map_err(|error| {
             let message = error.to_string();
             if message.contains("was not found") {
-                ForgejoError::not_found(operation, &format!("issue {number} was not found"))
+                ProviderError::not_found(operation, &format!("issue {number} was not found"))
             } else {
                 error
             }
@@ -188,7 +188,7 @@ impl LocalProvider {
                 });
             }
             TransitionVerdict::Forbidden { allowed_next } => {
-                return Err(ForgejoError::request(
+                return Err(ProviderError::request(
                     operation,
                     forbidden_message(number, &current_name, &target.name, allowed_next),
                 ));

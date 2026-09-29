@@ -1,29 +1,29 @@
 use crate::infra::storage::{Storage, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED, TimerRun};
 use crate::policy::Role;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 use crate::providers::gitlab::GitlabProvider;
 use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
 
 use super::dispatch::TimerOutput;
 use super::util::{bounded_error_message, generate_projection_token, now_epoch_seconds};
 
-fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, ForgejoError> {
+fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, ProviderError> {
     let role = role_value.ok_or_else(|| {
-        ForgejoError::config(format!(
+        ProviderError::config(format!(
             "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
         ))
     })?;
     if role != Role::Orchestrator {
-        return Err(ForgejoError::config(format!(
+        return Err(ProviderError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
     Ok(role)
 }
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ProviderError + 'a {
+    move |message| ProviderError::request(operation, message)
 }
 
 pub(crate) fn execute_finish(
@@ -34,10 +34,10 @@ pub(crate) fn execute_finish(
     close_status_id: Option<&str>,
     run_id: &str,
     result: &str,
-) -> Result<TimerOutput, ForgejoError> {
+) -> Result<TimerOutput, ProviderError> {
     let _role = timer_orchestrator(role_value, "timer finish")?;
     if provider_kind == Some(ProviderKind::Forgejo) {
-        return Err(ForgejoError::not_supported("forgejo", "timer finish"));
+        return Err(ProviderError::not_supported("forgejo", "timer finish"));
     }
 
     // This local transition deliberately precedes every provider/key lookup
@@ -139,7 +139,7 @@ pub(crate) fn project_run(
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     token: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     let resolved = resolve_kind(Role::Orchestrator, provider_kind)?;
     match resolved {
         ProviderKind::Redmine => {
@@ -153,7 +153,7 @@ pub(crate) fn project_run(
                 storage, run, &provider, token,
             )
         }
-        ProviderKind::Forgejo => Err(ForgejoError::not_supported("forgejo", "timer finish")),
+        ProviderKind::Forgejo => Err(ProviderError::not_supported("forgejo", "timer finish")),
         // Local keeps the timer ledger in `Storage` and has no remote
         // time-entry projection, so the finish transition above is the
         // whole record. The projection arm is a no-op: the run keeps the
@@ -166,10 +166,10 @@ pub(crate) fn project_run(
 fn require_redmine_provider(
     provider_kind: Option<ProviderKind>,
     operation: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     let resolved_provider = resolve_kind(Role::Orchestrator, provider_kind)?;
     if resolved_provider != ProviderKind::Redmine {
-        return Err(ForgejoError::not_supported("forgejo", operation));
+        return Err(ProviderError::not_supported("forgejo", operation));
     }
     Ok(())
 }
@@ -177,10 +177,10 @@ fn require_redmine_provider(
 fn require_gitlab_provider(
     provider_kind: Option<ProviderKind>,
     operation: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), ProviderError> {
     let resolved_provider = resolve_kind(Role::Orchestrator, provider_kind)?;
     if resolved_provider != ProviderKind::Gitlab {
-        return Err(ForgejoError::not_supported(
+        return Err(ProviderError::not_supported(
             resolved_provider.as_str(),
             operation,
         ));
@@ -193,7 +193,7 @@ fn redmine_provider_for_finish(
     api_base: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<RedmineProvider, ForgejoError> {
+) -> Result<RedmineProvider, ProviderError> {
     // Provider and API-base arguments are resolved here, after the local
     // finish transition, so no remote call can occur before durable state.
     // The caller has already selected the orchestrator role.
@@ -206,7 +206,7 @@ fn gitlab_provider_for_finish(
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
     project_id: Option<&str>,
-) -> Result<GitlabProvider, ForgejoError> {
+) -> Result<GitlabProvider, ProviderError> {
     // The provider and api-base arguments are resolved here, after the
     // local finish transition, so no remote call can occur before
     // durable state. The caller has already selected the orchestrator

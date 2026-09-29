@@ -9,8 +9,8 @@ use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
 pub use crate::providers::api::{
-    CommentOutput, ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult,
-    IssueSummary, RepoSummary,
+    CommentOutput, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
+    ProviderError, RepoSummary,
 };
 use crate::providers::forgejo::http::{Page, decode};
 use crate::providers::forgejo::model::{
@@ -52,9 +52,9 @@ impl ForgejoConfig {
         role: Role,
         api_base: Option<&str>,
         repository: Option<&str>,
-    ) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let stored = auth::load_config(role, &storage).map_err(ForgejoError::config)?;
+    ) -> Result<Self, ProviderError> {
+        let storage = Storage::open().map_err(ProviderError::config)?;
+        let stored = auth::load_config(role, &storage).map_err(ProviderError::config)?;
         let explicit_base = api_base
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_API_BASE").ok());
@@ -66,22 +66,24 @@ impl ForgejoConfig {
         let needs_remote = explicit_base.is_none() && stored_base.is_none()
             || explicit_repository.is_none() && stored_repository.is_none();
         let remote = needs_remote.then(remote::resolve_origin);
-        let remote = remote.transpose().map_err(ForgejoError::config)?;
+        let remote = remote.transpose().map_err(ProviderError::config)?;
 
         let base = explicit_base
             .or(stored_base)
             .or_else(|| remote.as_ref().map(|value| value.api_base.clone()))
             .ok_or_else(|| {
-                ForgejoError::config("API base is not configured; use --api-base or auth setup")
+                ProviderError::config("API base is not configured; use --api-base or auth setup")
             })?;
         let repository = explicit_repository
             .or(stored_repository)
             .or_else(|| remote.as_ref().map(|value| value.repository.clone()))
             .ok_or_else(|| {
-                ForgejoError::config("repository is not configured; use --repository or auth setup")
+                ProviderError::config(
+                    "repository is not configured; use --repository or auth setup",
+                )
             })?;
-        let base = remote::normalize_api_base(&base).map_err(ForgejoError::config)?;
-        let repository = remote::validate_repository(&repository).map_err(ForgejoError::config)?;
+        let base = remote::normalize_api_base(&base).map_err(ProviderError::config)?;
+        let repository = remote::validate_repository(&repository).map_err(ProviderError::config)?;
         let (owner, repository) = repository.split_once('/').expect("validated repository");
         Ok(Self::new(base, owner, repository))
     }
@@ -94,15 +96,15 @@ pub struct ForgejoProvider {
 }
 
 impl ForgejoProvider {
-    pub fn for_role(role: Role, config: ForgejoConfig) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let token = auth::token(role, &storage).map_err(ForgejoError::auth)?;
+    pub fn for_role(role: Role, config: ForgejoConfig) -> Result<Self, ProviderError> {
+        let storage = Storage::open().map_err(ProviderError::config)?;
+        let token = auth::token(role, &storage).map_err(ProviderError::auth)?;
         Self::new(config, token)
     }
 
-    pub fn new(config: ForgejoConfig, token: String) -> Result<Self, ForgejoError> {
+    pub fn new(config: ForgejoConfig, token: String) -> Result<Self, ProviderError> {
         let client = crate::infra::http_client::build_client()
-            .map_err(|error| ForgejoError::request("client build", error))?;
+            .map_err(|error| ProviderError::request("client build", error))?;
         Ok(Self {
             config,
             client,
@@ -110,7 +112,7 @@ impl ForgejoProvider {
         })
     }
 
-    pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
+    pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ProviderError> {
         let issue: ApiIssue = self.get(&self.issue_path(number), &[], "issue get")?;
         Ok(issue.into())
     }
@@ -118,7 +120,7 @@ impl ForgejoProvider {
     pub fn search_issues(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<IssueSearchResult, ForgejoError> {
+    ) -> Result<IssueSearchResult, ProviderError> {
         options.validate()?;
         let query = options.effective_query();
         let mut query_params = vec![
@@ -165,7 +167,7 @@ impl ForgejoProvider {
     pub fn search_issue_page(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<crate::providers::api::IssueSummaryPage, ForgejoError> {
+    ) -> Result<crate::providers::api::IssueSummaryPage, ProviderError> {
         options.validate()?;
         let query = options.effective_query();
         let mut query_params = vec![
@@ -201,7 +203,7 @@ impl ForgejoProvider {
         })
     }
 
-    pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ProviderError> {
         let issue: ApiIssue = self.post(
             &self.issues_path(),
             &NewIssue { title, body },
@@ -216,14 +218,14 @@ impl ForgejoProvider {
         private: bool,
         description: &str,
         auto_init: bool,
-    ) -> Result<RepoSummary, ForgejoError> {
+    ) -> Result<RepoSummary, ProviderError> {
         if !private {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "repo create requires a private repository",
             ));
         }
         let target =
-            remote::validate_repository_create_target(target).map_err(ForgejoError::config)?;
+            remote::validate_repository_create_target(target).map_err(ProviderError::config)?;
         let (owner, name) = target.split_once('/').expect("validated repository target");
         let path = if owner == self.config.owner {
             format!("{}/user/repos", self.config.base_url)
@@ -243,7 +245,7 @@ impl ForgejoProvider {
         Ok(repository.into_summary(owner))
     }
 
-    pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ProviderError> {
         let issue: ApiIssue = self.patch(
             &self.issue_path(number),
             &UpdateIssue {
@@ -255,7 +257,7 @@ impl ForgejoProvider {
         Ok(issue.into())
     }
 
-    pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
+    pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ProviderError> {
         let issue: ApiIssue = self.patch(
             &self.issue_path(number),
             &UpdateIssue {
@@ -272,7 +274,7 @@ impl ForgejoProvider {
         issue: u64,
         body: &str,
         marker: &str,
-    ) -> Result<CommentOutput, ForgejoError> {
+    ) -> Result<CommentOutput, ProviderError> {
         let comment: ApiComment = self.post(
             &self.comments_path(issue),
             &NewComment { body },
@@ -285,34 +287,34 @@ impl ForgejoProvider {
         ))
     }
 
-    pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, ForgejoError> {
+    pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, ProviderError> {
         self.list_comments(issue)?
             .into_iter()
             .find(|candidate| candidate.id == comment)
             .map(|candidate| CommentOutput::from_api(candidate, None, true))
             .ok_or_else(|| {
-                ForgejoError::not_found(
+                ProviderError::not_found(
                     "comment get",
                     "comment was not found in the specified issue",
                 )
             })
     }
 
-    pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ForgejoError> {
+    pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ProviderError> {
         if marker.is_empty() {
-            return Err(ForgejoError::config("marker cannot be empty"));
+            return Err(ProviderError::config("marker cannot be empty"));
         }
         let comments = self.list_comments(issue)?;
         comments
             .into_iter()
             .find(|comment| comment.body.contains(marker))
             .map(|comment| CommentOutput::from_api(comment, Some(marker.to_owned()), false))
-            .ok_or_else(|| ForgejoError::not_found("comment find-marker", "marker was not found"))
+            .ok_or_else(|| ProviderError::not_found("comment find-marker", "marker was not found"))
     }
 
     /// Full bodies of every comment on the issue, in API order.
     /// Backs `comment list` through the trait forwarder.
-    pub fn list_all_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+    pub fn list_all_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ProviderError> {
         self.list_comments(issue).map(|comments| {
             comments
                 .into_iter()
@@ -321,14 +323,14 @@ impl ForgejoProvider {
         })
     }
 
-    fn list_comments(&self, issue: u64) -> Result<Vec<ApiComment>, ForgejoError> {
+    fn list_comments(&self, issue: u64) -> Result<Vec<ApiComment>, ProviderError> {
         let mut comments = Vec::new();
         let mut page = 1;
         let mut previous_signature = None;
         let mut total_count = None;
         loop {
             if page > MAX_PAGES {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     "comment list",
                     "pagination exceeded the safety limit",
                 ));
@@ -339,7 +341,7 @@ impl ForgejoProvider {
             if previous_signature.as_deref() == Some(response.signature.as_str())
                 && !response.items.is_empty()
             {
-                return Err(ForgejoError::pagination(
+                return Err(ProviderError::pagination(
                     "comment list",
                     "Forgejo returned the same non-empty page repeatedly",
                 ));
@@ -383,7 +385,7 @@ impl ForgejoProvider {
         path: &str,
         query: &[(&str, String)],
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         // Safe GET read: bounded retry on transient transport failures and
         // 429/502/503/504 with capped backoff/Retry-After.
         let (status, _headers, text) = crate::infra::http_client::fetch_with_retry(
@@ -403,7 +405,7 @@ impl ForgejoProvider {
         path: &str,
         query: &[(&str, String)],
         operation: &str,
-    ) -> Result<Page<T>, ForgejoError> {
+    ) -> Result<Page<T>, ProviderError> {
         self.send_page(self.client.get(path).query(query), operation)
     }
 
@@ -412,7 +414,7 @@ impl ForgejoProvider {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         self.send(self.client.post(path).json(body), operation)
     }
 
@@ -421,7 +423,7 @@ impl ForgejoProvider {
         path: &str,
         body: &B,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         self.send(self.client.patch(path).json(body), operation)
     }
 
@@ -429,7 +431,7 @@ impl ForgejoProvider {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<T, ForgejoError> {
+    ) -> Result<T, ProviderError> {
         // `send` is used for both safe GET reads and mutations. Only GET
         // paths are wired through `get`/`get_page` (which are the retry
         // paths). POST/PATCH reuse this helper without retry by design:
@@ -438,7 +440,7 @@ impl ForgejoProvider {
             .header(ACCEPT, "application/json")
             .bearer_auth(&self.token)
             .send()
-            .map_err(|error| ForgejoError::request(operation, error.to_string()))?;
+            .map_err(|error| ProviderError::request(operation, error.to_string()))?;
         decode(response, operation)
     }
 
@@ -446,7 +448,7 @@ impl ForgejoProvider {
         &self,
         request: RequestBuilder,
         operation: &str,
-    ) -> Result<Page<T>, ForgejoError> {
+    ) -> Result<Page<T>, ProviderError> {
         let (status, headers, text) = crate::infra::http_client::fetch_with_retry(
             request
                 .header(ACCEPT, "application/json")

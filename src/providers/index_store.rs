@@ -97,8 +97,8 @@ impl IssueIndexScope {
 /// projects.
 pub fn provider_scope(
     dispatcher: &crate::providers::ProviderDispatcher,
-) -> Result<IssueIndexScope, crate::providers::api::ForgejoError> {
-    use crate::providers::api::ForgejoError;
+) -> Result<IssueIndexScope, crate::providers::api::ProviderError> {
+    use crate::providers::api::ProviderError;
     match dispatcher {
         crate::providers::ProviderDispatcher::Forgejo(provider) => {
             let project = format!("{}/{}", provider.config.owner, provider.config.repository);
@@ -114,7 +114,7 @@ pub fn provider_scope(
                 .as_deref()
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| {
-                    ForgejoError::config(
+                    ProviderError::config(
                         "Redmine project id is required for issue index operations; use --project-id",
                     )
                 })?;

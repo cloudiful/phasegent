@@ -1,4 +1,4 @@
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, ProviderError};
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
     RedmineErrorKind, RedmineIssue, RedmineIssueResponse, RedmineIssueStatus,
@@ -26,7 +26,7 @@ enum CloseVerification {
 }
 
 impl RedmineProvider {
-    pub fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, ForgejoError> {
+    pub fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, ProviderError> {
         let response: RedmineIssueStatusCollection =
             self.http
                 .get("issue_statuses.json", &[], "issue status list")?;
@@ -36,7 +36,7 @@ impl RedmineProvider {
     /// List every tracker visible to this API key (`/trackers.json`). The
     /// configured workflow only uses Bug and Feature, but resolution stays
     /// generic so the server remains the source of truth.
-    pub fn list_trackers(&self) -> Result<Vec<RedmineTracker>, ForgejoError> {
+    pub fn list_trackers(&self) -> Result<Vec<RedmineTracker>, ProviderError> {
         let response: RedmineTrackerCollection =
             self.http.get("trackers.json", &[], "tracker list")?;
         Ok(response.trackers)
@@ -60,7 +60,7 @@ impl RedmineProvider {
         &self,
         number: u64,
         status_id: u64,
-    ) -> Result<IssueSummary, ForgejoError> {
+    ) -> Result<IssueSummary, ProviderError> {
         let payload = crate::providers::redmine::model::RedmineUpdateIssue::status(status_id);
         let response: Option<RedmineIssueResponse> =
             self.http
@@ -73,7 +73,7 @@ impl RedmineProvider {
                     if observed == status_id {
                         return Ok(self.issue_summary(response.issue));
                     }
-                    return Err(ForgejoError::request(
+                    return Err(ProviderError::request(
                         "issue status update",
                         format!(
                             "Redmine did not confirm status_id={status_id}; observed status_id={observed} ('{}')",
@@ -94,7 +94,7 @@ impl RedmineProvider {
                     && let Some(observed) = status.known_id()
                     && observed != status_id
                 {
-                    return Err(ForgejoError::request(
+                    return Err(ProviderError::request(
                         "issue status update",
                         format!(
                             "Redmine did not confirm status_id={status_id}; observed status_id={observed} ('{}')",
@@ -109,10 +109,10 @@ impl RedmineProvider {
 
     /// Read the issue's current status without the surrounding summary
     /// so status policy checks can run before any write.
-    fn current_status(&self, number: u64, operation: &str) -> Result<RedmineStatus, ForgejoError> {
+    fn current_status(&self, number: u64, operation: &str) -> Result<RedmineStatus, ProviderError> {
         let issue = self.issue_with_journals(number, operation)?;
         issue.status.ok_or_else(|| {
-            ForgejoError::request(
+            ProviderError::request(
                 operation,
                 format!("Redmine issue {number} response carried no status"),
             )
@@ -122,7 +122,7 @@ impl RedmineProvider {
     /// Answer "where can this issue go next" from the centralized
     /// canonical policy, resolving policy names to this installation's
     /// status ids. Read-only: no transition is attempted.
-    pub fn status_next(&self, number: u64) -> Result<StatusNextReport, ForgejoError> {
+    pub fn status_next(&self, number: u64) -> Result<StatusNextReport, ProviderError> {
         let operation = "issue status next";
         let statuses = self.list_issue_statuses()?;
         let current = self.current_status(number, operation)?;
@@ -167,7 +167,7 @@ impl RedmineProvider {
         &self,
         number: u64,
         target_value: &str,
-    ) -> Result<StatusTransitionOutcome, ForgejoError> {
+    ) -> Result<StatusTransitionOutcome, ProviderError> {
         let operation = "issue status advance";
         let statuses = self.list_issue_statuses()?;
         let target = RedmineProvider::select_status_by_value(&statuses, target_value)?;
@@ -232,7 +232,7 @@ impl RedmineProvider {
     /// a failed climb returns a structured `Forbidden`-style `issue
     /// close` error with `allowed_next` and a `status next` recovery
     /// hint.
-    pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
+    pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ProviderError> {
         let status_id = self.config.require_close_status_id()?;
         match self.try_direct_close(number, status_id) {
             Ok(summary) => Ok(summary),
@@ -247,7 +247,7 @@ impl RedmineProvider {
 
     /// Single direct `PUT close_id` plus the shared close verification.
     /// Used by both the fast path and the final retry after a climb.
-    fn try_direct_close(&self, number: u64, status_id: u64) -> Result<IssueSummary, ForgejoError> {
+    fn try_direct_close(&self, number: u64, status_id: u64) -> Result<IssueSummary, ProviderError> {
         let payload = crate::providers::redmine::model::RedmineUpdateIssue::status(status_id);
         let response: Option<RedmineIssueResponse> =
             self.http
@@ -297,8 +297,8 @@ impl RedmineProvider {
         &self,
         number: u64,
         status_id: u64,
-        direct_error: ForgejoError,
-    ) -> Result<IssueSummary, ForgejoError> {
+        direct_error: ProviderError,
+    ) -> Result<IssueSummary, ProviderError> {
         let statuses = match self.list_issue_statuses() {
             Ok(statuses) => statuses,
             Err(_) => return Err(direct_error),
@@ -376,8 +376,8 @@ impl RedmineProvider {
         }
     }
 
-    fn close_mismatch_error(status: &RedmineStatus, expected_status_id: u64) -> ForgejoError {
-        ForgejoError::request(
+    fn close_mismatch_error(status: &RedmineStatus, expected_status_id: u64) -> ProviderError {
+        ProviderError::request(
             "issue close",
             format!(
                 "Redmine did not confirm close (status_id={expected_status_id}); observed status_id={:?} ('{}', is_closed={:?})",
@@ -405,8 +405,8 @@ fn forbidden_error(
     current: &str,
     target: &str,
     allowed_next: &[&'static str],
-) -> ForgejoError {
-    ForgejoError::request(
+) -> ProviderError {
+    ProviderError::request(
         operation,
         forbidden_message(number, current, target, allowed_next),
     )
@@ -438,15 +438,15 @@ fn close_workflow_forbidden(
     number: u64,
     current: &str,
     target: &str,
-    cause: &ForgejoError,
-) -> ForgejoError {
+    cause: &ProviderError,
+) -> ProviderError {
     let allowed = match canonical_allowed_next(current) {
         Some([]) => "<none: terminal status>".to_owned(),
         Some(next) => next.join(", "),
         None => "<unknown: server decides>".to_owned(),
     };
     let cause_text = bounded(&cause.to_string());
-    ForgejoError::request(
+    ProviderError::request(
         "issue close",
         format!(
             "close rejected by server workflow: current status '{current}' -> target status '{target}' is not allowed by the Redmine server workflow (policy {STATUS_POLICY_SOURCE}); allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}; server: {cause_text}",
@@ -461,27 +461,27 @@ fn close_workflow_forbidden(
 /// appended text is length-bounded so no full remote response or
 /// credential can be echoed.
 fn annotate_transition_error(
-    error: ForgejoError,
+    error: ProviderError,
     current: &str,
     target: &str,
     number: u64,
-) -> ForgejoError {
+) -> ProviderError {
     let context = bounded(&format!(
         "current status '{current}' -> target status '{target}'; server rejected a policy-allowed or custom transition, so the Redmine workflow is authoritative; recovery: {}",
         recovery_hint(number)
     ));
     match error {
-        ForgejoError::Http {
+        ProviderError::Http {
             operation,
             status,
             message,
-        } => ForgejoError::Http {
+        } => ProviderError::Http {
             operation,
             status,
             message: format!("{}; {context}", bounded(&message)),
         },
-        ForgejoError::Request { operation, message } => {
-            ForgejoError::request(&operation, format!("{}; {context}", bounded(&message)))
+        ProviderError::Request { operation, message } => {
+            ProviderError::request(&operation, format!("{}; {context}", bounded(&message)))
         }
         other => other,
     }

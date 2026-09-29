@@ -1,6 +1,6 @@
 use crate::infra::storage::Storage;
 use crate::policy::Capability;
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::config::GitlabConfig;
 use crate::providers::gitlab::http::GitlabHttp;
 
@@ -37,13 +37,13 @@ impl GitlabProvider {
     pub(crate) fn for_role(
         role: crate::policy::Role,
         config: GitlabConfig,
-    ) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let token = crate::auth::gitlab_token(role, &storage).map_err(ForgejoError::auth)?;
+    ) -> Result<Self, ProviderError> {
+        let storage = Storage::open().map_err(ProviderError::config)?;
+        let token = crate::auth::gitlab_token(role, &storage).map_err(ProviderError::auth)?;
         Self::new(config, token)
     }
 
-    pub(crate) fn new(config: GitlabConfig, token: String) -> Result<Self, ForgejoError> {
+    pub(crate) fn new(config: GitlabConfig, token: String) -> Result<Self, ProviderError> {
         let http = GitlabHttp::new(config.api_base.clone(), token)?;
         Ok(Self { config, http })
     }

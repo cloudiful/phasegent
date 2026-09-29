@@ -1,6 +1,6 @@
 use super::LocalProvider;
 use super::model::{LocalCommentRow, is_unique_violation, local_sql, now_epoch_seconds};
-use crate::providers::api::{CommentOutput, ForgejoError};
+use crate::providers::api::{CommentOutput, ProviderError};
 
 fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalCommentRow, rusqlite::Error> {
     Ok(LocalCommentRow {
@@ -17,21 +17,21 @@ impl LocalProvider {
         issue: u64,
         body: &str,
         marker: &str,
-    ) -> Result<CommentOutput, ForgejoError> {
+    ) -> Result<CommentOutput, ProviderError> {
         if issue == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
         if marker.is_empty() {
-            return Err(ForgejoError::config("marker cannot be empty"));
+            return Err(ProviderError::config("marker cannot be empty"));
         }
         // Friendly existence check before the UNIQUE insert so a missing
         // issue surfaces as not-found instead of a foreign-key error.
         self.get_issue(issue).map_err(|error| {
             let message = error.to_string();
             if message.contains("was not found") {
-                ForgejoError::not_found("comment create", &format!("issue {issue} was not found"))
+                ProviderError::not_found("comment create", &format!("issue {issue} was not found"))
             } else {
                 error
             }
@@ -62,7 +62,7 @@ impl LocalProvider {
             })
             .map_err(|error| {
                 if error.to_string().contains("FOREIGN KEY") {
-                    ForgejoError::not_found(
+                    ProviderError::not_found(
                         "comment create",
                         &format!("issue {issue} was not found"),
                     )
@@ -80,9 +80,9 @@ impl LocalProvider {
         .to_create_output())
     }
 
-    pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, ForgejoError> {
+    pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, ProviderError> {
         if issue == 0 || comment == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue and comment ids must be greater than zero",
             ));
         }
@@ -97,7 +97,7 @@ impl LocalProvider {
         .map_err(|error| {
             let message = error.to_string();
             if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-                ForgejoError::not_found(
+                ProviderError::not_found(
                     "comment get",
                     "comment was not found in the specified issue",
                 )
@@ -109,9 +109,9 @@ impl LocalProvider {
 
     /// Full bodies of every comment on the issue, in id order.
     /// Backs `comment list` through the trait forwarder.
-    pub fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+    pub fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ProviderError> {
         if issue == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -126,12 +126,12 @@ impl LocalProvider {
         })
     }
 
-    pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ForgejoError> {
+    pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ProviderError> {
         if marker.is_empty() {
-            return Err(ForgejoError::config("marker cannot be empty"));
+            return Err(ProviderError::config("marker cannot be empty"));
         }
         if issue == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -147,7 +147,7 @@ impl LocalProvider {
         .map_err(|error| {
             let message = error.to_string();
             if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-                ForgejoError::not_found("comment find-marker", "marker was not found")
+                ProviderError::not_found("comment find-marker", "marker was not found")
             } else {
                 error
             }
@@ -156,9 +156,12 @@ impl LocalProvider {
 }
 
 /// Map a raw rusqlite UNIQUE failure to the friendly marker error.
-pub(crate) fn friendly_marker_error(marker: &str, error: &rusqlite::Error) -> Option<ForgejoError> {
+pub(crate) fn friendly_marker_error(
+    marker: &str,
+    error: &rusqlite::Error,
+) -> Option<ProviderError> {
     if is_unique_violation(error) {
-        Some(ForgejoError::request(
+        Some(ProviderError::request(
             "comment create",
             format!("marker '{marker}' already exists; markers must be unique"),
         ))

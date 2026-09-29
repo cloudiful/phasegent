@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 
 /// Server-side failure classification for Redmine PUT rejections.
 ///
@@ -22,13 +22,13 @@ pub enum RedmineErrorKind {
 /// after a `200 OK`) is a server workflow refusal without an HTTP error
 /// status, so it classifies as `WorkflowNotAllowed` and drives the same
 /// stepwise close climb as a 403/422 workflow rejection.
-pub fn classify_redmine_error(error: &ForgejoError) -> RedmineErrorKind {
+pub fn classify_redmine_error(error: &ProviderError) -> RedmineErrorKind {
     match error {
-        ForgejoError::Auth(_) => RedmineErrorKind::Auth,
-        ForgejoError::Http {
+        ProviderError::Auth(_) => RedmineErrorKind::Auth,
+        ProviderError::Http {
             status, message, ..
         } => classify_http(*status, message),
-        ForgejoError::Request { operation, message } if is_close_mismatch(operation, message) => {
+        ProviderError::Request { operation, message } if is_close_mismatch(operation, message) => {
             RedmineErrorKind::WorkflowNotAllowed
         }
         _ => RedmineErrorKind::Other,
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn silent_200_close_mismatch_classifies_as_workflow() {
-        let mismatch = ForgejoError::request(
+        let mismatch = ProviderError::request(
             "issue close",
             "Redmine did not confirm close (status_id=5); observed status_id=Some(1) ('New', is_closed=Some(false))".to_owned(),
         );
@@ -142,13 +142,13 @@ mod tests {
             classify_redmine_error(&mismatch),
             RedmineErrorKind::WorkflowNotAllowed
         );
-        let unrelated = ForgejoError::request("issue close", "boom".to_owned());
+        let unrelated = ProviderError::request("issue close", "boom".to_owned());
         assert_eq!(classify_redmine_error(&unrelated), RedmineErrorKind::Other);
     }
 
     #[test]
     fn error_classifier_maps_variants() {
-        let workflow = ForgejoError::Http {
+        let workflow = ProviderError::Http {
             operation: "issue close".to_owned(),
             status: 422,
             message: "Status is invalid".to_owned(),
@@ -158,11 +158,11 @@ mod tests {
             RedmineErrorKind::WorkflowNotAllowed
         );
         assert_eq!(
-            classify_redmine_error(&ForgejoError::auth("x")),
+            classify_redmine_error(&ProviderError::auth("x")),
             RedmineErrorKind::Auth
         );
         assert_eq!(
-            classify_redmine_error(&ForgejoError::config("x")),
+            classify_redmine_error(&ProviderError::config("x")),
             RedmineErrorKind::Other
         );
     }

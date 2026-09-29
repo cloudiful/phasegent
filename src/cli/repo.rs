@@ -1,7 +1,7 @@
 use crate::policy::{Capability, Role};
 use crate::providers::ProviderKind;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::forgejo::ProviderError;
 
 /// Route `repo create` to either Forgejo or GitLab. GitLab repository
 /// creation reaches the GitLab provider; Redmine still rejects the
@@ -38,13 +38,13 @@ pub(crate) fn execute_repo_or_gitlab(
             Err(error) => super::provider_error(error),
         },
         Ok(ProviderKind::Redmine) => {
-            super::provider_error(ForgejoError::not_supported("redmine", "repo create"))
+            super::provider_error(ProviderError::not_supported("redmine", "repo create"))
         }
         // Local has no first-class repository endpoint, so repo
         // creation stays a structured not-supported error (mirrors the
         // Redmine arm).
         Ok(ProviderKind::Local) => {
-            super::provider_error(ForgejoError::not_supported("local", "repo create"))
+            super::provider_error(ProviderError::not_supported("local", "repo create"))
         }
         Err(error) => super::provider_error(error),
     }

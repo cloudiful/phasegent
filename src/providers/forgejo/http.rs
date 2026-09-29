@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::forgejo::model::ApiError;
 use reqwest::StatusCode;
 use reqwest::blocking::Response;
@@ -21,12 +21,12 @@ impl<T> Page<T> {
 pub(crate) fn decode<T: DeserializeOwned>(
     response: Response,
     operation: &str,
-) -> Result<T, ForgejoError> {
+) -> Result<T, ProviderError> {
     let (status, _, text) = response_parts(response, operation)?;
     if !status.is_success() {
         return Err(http_error(status, &text, operation));
     }
-    serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+    serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
         operation: operation.to_owned(),
         message: error.to_string(),
     })
@@ -36,11 +36,11 @@ pub(crate) fn decode_from_parts<T: DeserializeOwned>(
     status: StatusCode,
     text: &str,
     operation: &str,
-) -> Result<T, ForgejoError> {
+) -> Result<T, ProviderError> {
     if !status.is_success() {
         return Err(http_error(status, text, operation));
     }
-    serde_json::from_str(text).map_err(|error| ForgejoError::Decode {
+    serde_json::from_str(text).map_err(|error| ProviderError::Decode {
         operation: operation.to_owned(),
         message: error.to_string(),
     })
@@ -51,11 +51,11 @@ pub(crate) fn decode_page_from_parts<T: DeserializeOwned>(
     headers: &HeaderMap,
     text: String,
     operation: &str,
-) -> Result<Page<T>, ForgejoError> {
+) -> Result<Page<T>, ProviderError> {
     if !status.is_success() {
         return Err(http_error(status, &text, operation));
     }
-    let items = serde_json::from_str(&text).map_err(|error| ForgejoError::Decode {
+    let items = serde_json::from_str(&text).map_err(|error| ProviderError::Decode {
         operation: operation.to_owned(),
         message: error.to_string(),
     })?;
@@ -82,21 +82,21 @@ pub(crate) fn decode_page_from_parts<T: DeserializeOwned>(
 fn response_parts(
     response: Response,
     operation: &str,
-) -> Result<(StatusCode, HeaderMap, String), ForgejoError> {
+) -> Result<(StatusCode, HeaderMap, String), ProviderError> {
     let status = response.status();
     let headers = response.headers().clone();
     let text = response
         .text()
-        .map_err(|error| ForgejoError::request(operation, error.to_string()))?;
+        .map_err(|error| ProviderError::request(operation, error.to_string()))?;
     Ok((status, headers, text))
 }
 
-pub(crate) fn http_error(status: StatusCode, text: &str, operation: &str) -> ForgejoError {
+pub(crate) fn http_error(status: StatusCode, text: &str, operation: &str) -> ProviderError {
     let message = serde_json::from_str::<ApiError>(text)
         .ok()
         .and_then(|error| error.message)
         .unwrap_or_else(|| "Forgejo returned an error".to_owned());
-    ForgejoError::Http {
+    ProviderError::Http {
         operation: operation.to_owned(),
         status: status.as_u16(),
         message: message.chars().take(512).collect(),

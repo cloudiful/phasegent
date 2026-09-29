@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::ProviderError;
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
     RedmineTimeEntry, RedmineTimeEntryActivity, RedmineTimeEntryActivityCollection,
@@ -12,7 +12,7 @@ impl RedmineProvider {
     /// configuration errors so hours cannot be silently misclassified.
     pub fn select_time_entry_activity(
         activities: &[RedmineTimeEntryActivity],
-    ) -> Result<&RedmineTimeEntryActivity, ForgejoError> {
+    ) -> Result<&RedmineTimeEntryActivity, ProviderError> {
         for name in ["AI automation", "Development"] {
             let matches = activities
                 .iter()
@@ -22,14 +22,14 @@ impl RedmineProvider {
                 [] => {}
                 [activity] => {
                     if activity.id == 0 {
-                        return Err(ForgejoError::config(format!(
+                        return Err(ProviderError::config(format!(
                             "Redmine time-entry activity name '{name}' has id zero"
                         )));
                     }
                     return Ok(activity);
                 }
                 _ => {
-                    return Err(ForgejoError::config(format!(
+                    return Err(ProviderError::config(format!(
                         "Redmine time-entry activity name '{name}' is ambiguous"
                     )));
                 }
@@ -42,10 +42,10 @@ impl RedmineProvider {
             .collect::<Vec<_>>();
         match defaults.as_slice() {
             [activity] if activity.id > 0 => Ok(activity),
-            [] => Err(ForgejoError::config(
+            [] => Err(ProviderError::config(
                 "Redmine has no exact AI automation or Development activity and no default time-entry activity",
             )),
-            _ => Err(ForgejoError::config(
+            _ => Err(ProviderError::config(
                 "Redmine has multiple default time-entry activities; set an exact AI automation or Development activity",
             )),
         }
@@ -54,7 +54,7 @@ impl RedmineProvider {
     /// List time-entry activities from Redmine's enumeration endpoint.
     pub fn list_time_entry_activities(
         &self,
-    ) -> Result<Vec<RedmineTimeEntryActivity>, ForgejoError> {
+    ) -> Result<Vec<RedmineTimeEntryActivity>, ProviderError> {
         let response: RedmineTimeEntryActivityCollection = self.http.get(
             "enumerations/time_entry_activities.json",
             &[],
@@ -72,29 +72,29 @@ impl RedmineProvider {
         spent_on: &str,
         activity_id: u64,
         comments: &str,
-    ) -> Result<Option<RedmineTimeEntry>, ForgejoError> {
+    ) -> Result<Option<RedmineTimeEntry>, ProviderError> {
         if issue_id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry issue id must be greater than zero",
             ));
         }
         if activity_id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry activity id must be greater than zero",
             ));
         }
         if !hours.is_finite() || hours <= 0.0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry hours must be positive",
             ));
         }
         if spent_on.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry spent_on date cannot be empty",
             ));
         }
         if comments.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry comments cannot be empty",
             ));
         }
@@ -123,9 +123,9 @@ impl RedmineProvider {
         issue_id: u64,
         from: Option<&str>,
         to: Option<&str>,
-    ) -> Result<Vec<RedmineTimeEntry>, ForgejoError> {
+    ) -> Result<Vec<RedmineTimeEntry>, ProviderError> {
         if issue_id == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry issue id must be greater than zero",
             ));
         }
@@ -163,9 +163,9 @@ impl RedmineProvider {
         issue_id: u64,
         spent_on: &str,
         comments: &str,
-    ) -> Result<Option<RedmineTimeEntry>, ForgejoError> {
+    ) -> Result<Option<RedmineTimeEntry>, ProviderError> {
         if comments.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "Redmine time entry marker cannot be empty",
             ));
         }
@@ -185,7 +185,7 @@ impl RedmineProvider {
             })
             .collect::<Vec<_>>();
         if matches.len() > 1 {
-            return Err(ForgejoError::config(format!(
+            return Err(ProviderError::config(format!(
                 "multiple Redmine Time Entries match run marker '{}'",
                 comments
             )));

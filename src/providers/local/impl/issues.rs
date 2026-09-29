@@ -2,8 +2,8 @@ use super::LocalProvider;
 use super::model::{LocalIssueRow, local_sql, now_epoch_seconds};
 use super::status_impl::{allowed_next_for, is_transition_allowed};
 use crate::providers::api::{
-    ForgejoError, IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary,
-    IssueSummaryPage,
+    IssueSearchItem, IssueSearchOptions, IssueSearchResult, IssueSummary, IssueSummaryPage,
+    ProviderError,
 };
 
 fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalIssueRow, rusqlite::Error> {
@@ -30,9 +30,9 @@ fn fetch_one(conn: &rusqlite::Connection, id: u64) -> Result<LocalIssueRow, rusq
 }
 
 impl LocalProvider {
-    pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
+    pub fn get_issue(&self, number: u64) -> Result<IssueSummary, ProviderError> {
         if number == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -44,7 +44,7 @@ impl LocalProvider {
     pub fn search_issues(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<IssueSearchResult, ForgejoError> {
+    ) -> Result<IssueSearchResult, ProviderError> {
         options.validate()?;
         let query = options.effective_query().unwrap_or_default().to_owned();
         let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
@@ -85,7 +85,7 @@ impl LocalProvider {
     pub fn search_issue_page(
         &self,
         options: &IssueSearchOptions,
-    ) -> Result<IssueSummaryPage, ForgejoError> {
+    ) -> Result<IssueSummaryPage, ProviderError> {
         options.validate()?;
         let query = options.effective_query().unwrap_or_default().to_owned();
         let offset = (options.page.saturating_sub(1)).saturating_mul(options.limit);
@@ -116,13 +116,13 @@ impl LocalProvider {
         })
     }
 
-    pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, ProviderError> {
         let title = title.trim();
         if title.is_empty() {
-            return Err(ForgejoError::config("issue title cannot be empty"));
+            return Err(ProviderError::config("issue title cannot be empty"));
         }
         if title.len() > 1024 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue title must be at most 1024 bytes",
             ));
         }
@@ -148,9 +148,9 @@ impl LocalProvider {
         self.get_issue(id as u64)
     }
 
-    pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ForgejoError> {
+    pub fn update_body(&self, number: u64, body: &str) -> Result<IssueSummary, ProviderError> {
         if number == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -167,7 +167,7 @@ impl LocalProvider {
             Ok(changed)
         });
         match changed {
-            Err(error) if is_no_rows(&error) => Err(ForgejoError::not_found(
+            Err(error) if is_no_rows(&error) => Err(ProviderError::not_found(
                 "issue update",
                 &format!("issue {number} was not found"),
             )),
@@ -176,9 +176,9 @@ impl LocalProvider {
         }
     }
 
-    pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
+    pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ProviderError> {
         if number == 0 {
-            return Err(ForgejoError::config(
+            return Err(ProviderError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -195,7 +195,7 @@ impl LocalProvider {
             } else {
                 allowed.join(", ")
             };
-            return Err(ForgejoError::request(
+            return Err(ProviderError::request(
                 "issue close",
                 format!(
                     "transition rejected before any write: current status '{}' -> 'Closed' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[{hint}]",
@@ -219,14 +219,14 @@ impl LocalProvider {
     }
 }
 
-fn is_no_rows(error: &ForgejoError) -> bool {
+fn is_no_rows(error: &ProviderError) -> bool {
     error.to_string().contains("QueryReturnedNoRows") || error.to_string().contains("no rows")
 }
 
-fn match_not_found(error: ForgejoError, number: u64, operation: &str) -> ForgejoError {
+fn match_not_found(error: ProviderError, number: u64, operation: &str) -> ProviderError {
     let message = error.to_string();
     if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-        ForgejoError::not_found(operation, &format!("issue {number} was not found"))
+        ProviderError::not_found(operation, &format!("issue {number} was not found"))
     } else {
         error
     }
