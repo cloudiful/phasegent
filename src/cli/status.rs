@@ -182,19 +182,7 @@ pub(crate) fn execute_status(
                 };
                 let result = redmine.advance_issue_status(number, &effective);
                 if result.is_ok() {
-                    // Phase 3 write-side relation auto (issue 257):
-                    // the trigger point for the parent-child
-                    // `relates` auto-link is the successful status
-                    // transition. The shared issue DTO is narrow
-                    // and does not surface the parent linkage
-                    // without a server fetch, so the call site
-                    // passes `None` today; the helper stays
-                    // idempotent and silent. The create path
-                    // (cli/issue.rs) fires the helper with the
-                    // resolved `parent_issue_id` and is the only
-                    // branch that actually creates a relation in
-                    // Phase 3. See Remaining in the audit note
-                    // for the deferred lookup shape.
+                    // Hierarchy is separate from relations; silent here.
                     super::report_local_warnings(
                         "status advance",
                         crate::lifecycle_auto::auto_create_parent_child_relation(
@@ -254,12 +242,7 @@ pub(crate) fn execute_status(
             ProviderDispatcher::Gitlab(gitlab) => {
                 let result = gitlab.set_workflow_status(number, &status);
                 if result.is_ok() {
-                    // See the `Advance` arm above for the
-                    // Phase 3 relation-auto wiring rationale:
-                    // the trigger lives at status transitions
-                    // but the parent linkage is only resolvable
-                    // through the create arm today. The helper
-                    // stays silent here.
+                    // Hierarchy is separate from relations; silent here.
                     super::report_local_warnings(
                         "status set",
                         crate::lifecycle_auto::auto_create_parent_child_relation(
@@ -304,8 +287,7 @@ pub(crate) fn execute_status(
                 };
                 let result = redmine.set_issue_status(number, target.id);
                 if result.is_ok() {
-                    // See the `Advance` arm above for the
-                    // Phase 3 relation-auto wiring rationale.
+                    // Hierarchy is separate from relations; silent here.
                     super::report_local_warnings(
                         "status set",
                         crate::lifecycle_auto::auto_create_parent_child_relation(

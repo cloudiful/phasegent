@@ -200,3 +200,66 @@ fn version_list_parses_and_rejects_unexpected_arguments() {
         .collect::<Vec<_>>();
     assert!(command::parse_with_role_env(&args, Some("executor")).is_err());
 }
+
+#[test]
+fn redmine_native_subtask_skips_relates_auto_without_network() {
+    // Issue 641 P2: a Redmine child created with native `--parent-issue`
+    // must not attempt a `relates` edge (Redmine answers 422 for
+    // parent/subtask pairs). The helper returns `Skipped` before any
+    // list/create call, so a closed-port base proves no network happens.
+    let redmine = crate::providers::RedmineProvider::new(
+        crate::providers::RedmineConfig::new("http://127.0.0.1:1", "42", 37),
+        "test-key".to_owned(),
+    )
+    .unwrap();
+    let provider = crate::providers::ProviderDispatcher::Redmine(redmine);
+    let outcome =
+        crate::lifecycle_auto::auto_create_parent_child_relation(&provider, 641, Some(640));
+    match &outcome {
+        crate::lifecycle_auto::AutoRelationOutcome::Skipped { reason } => {
+            assert!(
+                reason.contains("native") || reason.contains("hierarchy"),
+                "reason must name native hierarchy: {reason}"
+            );
+        }
+        other => panic!("expected Skipped for Redmine native subtask, got {other:?}"),
+    }
+    assert!(outcome.warning().is_none());
+}
+
+#[test]
+fn hierarchy_contract_stays_distinct_from_relations() {
+    // Provider-neutral hierarchy never collapses into `relates`: Redmine
+    // nesting is supported, self-parent is rejected, and Local has no
+    // hierarchy surface in P2.
+    use crate::providers::hierarchy::{
+        HierarchyEdge, HierarchyNode, WorkItemKind, WorkItemRef, supported_parent_child,
+    };
+    assert!(supported_parent_child(
+        &WorkItemKind::RedmineIssue,
+        &WorkItemKind::RedmineIssue
+    ));
+    assert!(!supported_parent_child(
+        &WorkItemKind::LocalIssue,
+        &WorkItemKind::LocalIssue
+    ));
+    let parent = WorkItemRef::redmine(Some("42".to_owned()), 640);
+    let child = WorkItemRef::redmine(Some("42".to_owned()), 641);
+    let edge = HierarchyEdge {
+        parent: parent.clone(),
+        child: child.clone(),
+    };
+    assert!(edge.validate().is_ok());
+    let looped = HierarchyEdge {
+        parent: parent.clone(),
+        child: parent.clone(),
+    };
+    assert!(looped.validate().is_err());
+    let node = HierarchyNode {
+        item: child,
+        parent: Some(parent),
+        children: Vec::new(),
+    };
+    assert_eq!(node.parent_id(), Some(640));
+    assert!(node.children_ids().is_empty());
+}

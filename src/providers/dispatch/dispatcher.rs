@@ -8,8 +8,9 @@ use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
 use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
-    GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
-    RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
+    GitlabProvider, HierarchyNode, IssueProvider, ProviderCapabilities, ProviderKind,
+    RedmineIssueStatus, RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion,
+    RepoProvider,
 };
 
 pub enum ProviderDispatcher {
@@ -74,6 +75,20 @@ impl ProviderDispatcher {
             Self::Redmine(_) => ProviderKind::Redmine,
             Self::Gitlab(_) => ProviderKind::Gitlab,
             Self::Local(_) => ProviderKind::Local,
+        }
+    }
+
+    /// Read-only native hierarchy view. Redmine serves parent/children from
+    /// native fields; other providers return structured `not_supported`
+    /// (GitLab Work Items land in P3). Never falls back to relations.
+    #[allow(dead_code)]
+    pub fn get_hierarchy(&self, number: u64) -> Result<HierarchyNode, ForgejoError> {
+        match self {
+            Self::Redmine(redmine) => redmine.get_hierarchy(number),
+            other => Err(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue hierarchy get",
+            )),
         }
     }
 }

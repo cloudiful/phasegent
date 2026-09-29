@@ -303,22 +303,8 @@ pub(crate) fn execute_issue(
             base,
             session,
         } => {
-            // Phase 3 write-side relation auto (issue 257): the
-            // auto-relation fires ONLY on the parent-child split
-            // path, so we resolve the planning up front here, keep
-            // the freshly validated `parent_issue_id` for the hook
-            // below, and pass the original `PlanningOptions` to
-            // `planning::create_issue` so the create payload stays
-            // byte-identical with the pre-Phase-3 path. The cost
-            // of resolving twice (once here, once inside
-            // `planning::create_issue`) is one extra
-            // GET /versions.json only when `--fixed-version` is
-            // supplied alongside `--parent-issue`, which is the
-            // rare Phase 3 combination; we accept that so the
-            // allowlist stays inside `src/cli/issue.rs` /
-            // `src/lifecycle_auto.rs` / relation dispatch +
-            // tests. AI agents never run `relation create` by
-            // hand for the parent-child split.
+            // Resolve planning up front to keep `parent_issue_id` for the
+            // post-create hook; the create payload stays byte-identical.
             let resolved_planning =
                 match crate::providers::redmine::planning::resolve_planning(&provider, &planning) {
                     Ok(resolved) => resolved,
@@ -379,24 +365,20 @@ pub(crate) fn execute_issue(
                             session.as_deref(),
                         ),
                     );
-                    // Phase 3 relation auto: fire the helper
-                    // after a successful create when the parent
-                    // linkage was supplied. The helper is
-                    // idempotent (skips on Forgejo/Local, skips
-                    // silently when parent linkage is absent),
-                    // so callers that never use `--parent-issue`
-                    // stay unaffected. Any failure degrades to a
-                    // bounded Warning on stderr so the JSON
-                    // contract on stdout is preserved.
-                    super::report_local_warnings(
-                        "issue create",
-                        crate::lifecycle_auto::auto_create_parent_child_relation(
-                            &provider,
-                            summary.number,
-                            parent_issue_id,
-                        )
-                        .warning(),
-                    );
+                    // Native hierarchy (issue 641 P2): Redmine `--parent-issue`
+                    // already creates a native subtask, so no `relates` edge
+                    // is attempted for Redmine (Redmine rejects it with 422).
+                    if provider_kind != ProviderKind::Redmine {
+                        super::report_local_warnings(
+                            "issue create",
+                            crate::lifecycle_auto::auto_create_parent_child_relation(
+                                &provider,
+                                summary.number,
+                                parent_issue_id,
+                            )
+                            .warning(),
+                        );
+                    }
                     // Phase 2 tool-driven auto (issue 443): a successful
                     // create implies `In Progress` via `auto_route_next`.
                     // Best-effort timer only; failures stay on stderr so
@@ -619,16 +601,8 @@ pub(crate) fn execute_issue(
                     {
                         super::report_local_warnings("issue close", Some(warning));
                     }
-                    // Phase 3 relation auto: fire the helper after a
-                    // successful close. The shared issue DTO does not
-                    // surface the parent linkage without a server
-                    // fetch so the call site passes `None`; the
-                    // helper is silent on the common path. The create
-                    // arm fires the helper with the resolved
-                    // `parent_issue_id` and is the only branch that
-                    // actually creates a relation in Phase 3. See
-                    // Remaining in the audit note for the deferred
-                    // lookup shape.
+                    // Hierarchy is separate from relations; this hook stays
+                    // silent (`None` linkage) on the close path.
                     super::report_local_warnings(
                         "issue close",
                         crate::lifecycle_auto::auto_create_parent_child_relation(

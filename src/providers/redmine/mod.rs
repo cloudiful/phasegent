@@ -1,3 +1,4 @@
+pub mod hierarchy;
 pub mod http;
 pub mod model;
 pub mod planning;

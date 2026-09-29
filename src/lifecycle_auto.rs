@@ -72,7 +72,7 @@
 
 use crate::infra::storage::Storage;
 use crate::providers::redmine::model::RedmineRelationType;
-use crate::providers::{ProviderDispatcher, ProviderKind, RedmineProvider};
+use crate::providers::{ProviderDispatcher, ProviderKind};
 use crate::time_tracking::{finish, start};
 
 const MAX_AUTO_WARNING_CHARS: usize = 200;
@@ -355,18 +355,9 @@ fn close_issue_runs(issue: u64) -> Result<Vec<String>, String> {
     Ok(finished)
 }
 
-// The auto-relation fires ONLY on the parent-child split path: when an
-// issue is created with `--parent-issue <PARENT>`, the CLI hands the
-// freshly resolved `parent_issue_id` to this helper so it can
-// auto-create a `relates` link between the new child and its parent.
-// AI agents never run `relation create` by hand for this case.
-//
-// The hook call sites are the `status set` / `status advance` /
-// `issue close` paths in `src/cli/status.rs` and `src/cli/issue.rs`,
-// matching the lifecycle_auto timer pattern: the helper is invoked
-// only after the upstream status change has succeeded, never before,
-// and any failure degrades to a bounded `Warning` so stdout JSON
-// stays byte-compatible with the plain provider output.
+// Native hierarchy (issue 641 P2) replaces the old parent-child `relates`
+// auto-link for Redmine: `--parent-issue` already creates a native subtask,
+// so no `relates` edge is attempted. Hierarchy never implies a relation.
 
 /// Outcome of the parent-child relation auto-create call. The hook
 /// call sites translate `Skipped` into silence, `Created` and
@@ -408,25 +399,10 @@ impl AutoRelationOutcome {
 
 /// Run the parent-child relation auto-create for `child_issue_id`.
 ///
-/// The helper takes an explicit `parent_issue_id: Option<u64>` so
-/// the call site controls when the linkage is observable:
-///
-/// * The `issue create` CLI arm resolves `--parent-issue` up front
-///   and passes the freshly validated id; this is the only path
-///   that can fire a real `Created` outcome in Phase 3.
-/// * The `status set` / `status advance` / `issue close` arms pass
-///   `None` today because the shared issue DTO does not surface
-///   the parent linkage; the helper returns `Skipped` silently.
-///   Phase 4 may extend this once the read-side widening lands.
-///
-/// Forgejo and Local are gated to `Skipped` because neither exposes
-/// a relation surface. Redmine and GitLab both support `relates`:
-/// Redmine's `relates` is symmetric, GitLab's `relates_to` is the
-/// same link type translated via the existing
-/// `gitlab_link_type_from_relation_type` mapper. The helper is
-/// idempotent: a pre-existing `relates` link to the same parent is
-/// recognised by listing the child's relations before the create
-/// call so repeated invocations never produce duplicate rows.
+/// Redmine always returns `Skipped`: native `--parent-issue` already
+/// establishes the subtask, and a `relates` edge between parent and child is
+/// rejected by Redmine (422). GitLab keeps its `relates` path until P3 maps
+/// native Work Item hierarchy.
 pub fn auto_create_parent_child_relation(
     provider: &ProviderDispatcher,
     child_issue_id: u64,
@@ -461,64 +437,13 @@ pub fn auto_create_parent_child_relation(
         ProviderDispatcher::Local(_) => AutoRelationOutcome::Skipped {
             reason: "local has no relation surface; auto relation is a no-op".to_owned(),
         },
-        ProviderDispatcher::Redmine(redmine) => {
-            auto_relation_redmine(redmine, child_issue_id, parent_issue_id)
-        }
+        ProviderDispatcher::Redmine(_) => AutoRelationOutcome::Skipped {
+            reason: "redmine native parent/subtask already establishes hierarchy; no relates edge"
+                .to_owned(),
+        },
         ProviderDispatcher::Gitlab(gitlab) => {
             auto_relation_gitlab(gitlab, child_issue_id, parent_issue_id)
         }
-    }
-}
-
-fn auto_relation_redmine(
-    redmine: &RedmineProvider,
-    child_issue_id: u64,
-    parent_issue_id: u64,
-) -> AutoRelationOutcome {
-    // Idempotency: list the child's relations and check whether a
-    // `relates` link to the parent already exists. The mapping is
-    // done against `RelationSummary::relation_type == "relates"`
-    // and `issue_to_id == parent_issue_id`. We do not match the
-    // inverse direction (`relates` is symmetric on Redmine so the
-    // other side is rendered the same way).
-    match redmine.list_relations(child_issue_id) {
-        Ok(existing) => {
-            if existing.iter().any(|summary| {
-                summary.relation_type == "relates"
-                    && (summary.issue_to_id == parent_issue_id
-                        || summary.issue_id == parent_issue_id)
-            }) {
-                return AutoRelationOutcome::Idempotent {
-                    child: child_issue_id,
-                    parent: parent_issue_id,
-                };
-            }
-        }
-        Err(error) => {
-            return AutoRelationOutcome::Warning {
-                reason: format!(
-                    "auto relation: list relations for issue {child_issue_id} failed: {error}"
-                ),
-            };
-        }
-    }
-    match redmine.create_relation(
-        child_issue_id,
-        parent_issue_id,
-        RedmineRelationType::Relates,
-        None,
-    ) {
-        Ok(summary) => AutoRelationOutcome::Created {
-            child: child_issue_id,
-            parent: parent_issue_id,
-            relation_id: summary.id,
-        },
-        Err(error) => AutoRelationOutcome::Warning {
-            reason: format!(
-                "auto relation: create relates from issue {child_issue_id} \
-                 to parent {parent_issue_id} failed: {error}"
-            ),
-        },
     }
 }
 

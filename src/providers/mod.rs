@@ -3,6 +3,7 @@ pub mod config;
 pub mod dispatch;
 pub mod forgejo;
 pub mod gitlab;
+pub mod hierarchy;
 pub mod index;
 pub mod index_store;
 pub mod local;
@@ -13,6 +14,7 @@ use crate::policy::Capability;
 pub use api::{CommentOutput, IssueSearchOptions, IssueSearchResult, IssueSummary, RepoSummary};
 pub use config::{GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider};
 pub use dispatch::ProviderDispatcher;
+pub use hierarchy::HierarchyNode;
 pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
