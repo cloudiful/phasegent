@@ -1,11 +1,11 @@
 use crate::providers::api::{ForgejoError, IssueSummary};
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{
-    RedmineErrorKind, RedmineIssue, RedmineIssueResponse, RedmineIssueStatus,
-    RedmineIssueStatusCollection, RedmineStatus, RedmineTracker, RedmineTrackerCollection,
-    STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, StatusNextReport, StatusRef,
-    StatusTransitionOutcome, TransitionVerdict, canonical_allowed_next, classify_redmine_error,
-    close_climb_steps, evaluate_transition,
+    RedmineErrorKind, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse,
+    RedmineIssueStatus, RedmineIssueStatusCollection, RedmineStatus, RedmineTracker,
+    RedmineTrackerCollection, STATUS_POLICY_CAVEAT, STATUS_POLICY_SOURCE, StatusNextReport,
+    StatusRef, StatusTransitionOutcome, TransitionVerdict, canonical_allowed_next,
+    classify_redmine_error, close_climb_steps, evaluate_transition,
 };
 
 /// Outcome of a close-status verification step. The provider turns an
@@ -61,6 +61,15 @@ impl RedmineProvider {
         number: u64,
         status_id: u64,
     ) -> Result<IssueSummary, ForgejoError> {
+        // P2 (issue 649): the explicit status-to-Closed path shares the
+        // native open-child preflight with `close_issue` so users cannot
+        // bypass the diagnostic through a second CLI path. Only the
+        // configured close status triggers; other statuses keep the
+        // legacy single-PUT shape. `advance` to Closed lands here via
+        // `set_issue_status`, so one guard covers both spellings.
+        if self.config.close_status_id == Some(status_id) {
+            self.fail_on_open_children(number, status_id, "issue status update")?;
+        }
         let payload = crate::providers::redmine::model::RedmineUpdateIssue::status(status_id);
         let response: Option<RedmineIssueResponse> =
             self.http
@@ -117,6 +126,59 @@ impl RedmineProvider {
                 format!("Redmine issue {number} response carried no status"),
             )
         })
+    }
+
+    /// List direct native open children via the `parent_id` filter plus
+    /// `status_id=open`. Native hierarchy only; never reads `relations`.
+    /// Returns the open issues with their total when the server reports
+    /// one. Callers treat an empty list as "no known open child".
+    fn list_open_children(
+        &self,
+        number: u64,
+        operation: &str,
+    ) -> Result<(Vec<RedmineIssue>, Option<usize>), ForgejoError> {
+        let params = [
+            ("parent_id", number.to_string()),
+            ("status_id", "open".to_owned()),
+            ("limit", OPEN_CHILDREN_QUERY_LIMIT.to_string()),
+        ];
+        let page: RedmineIssueCollection = self.http.get("issues.json", &params, operation)?;
+        let total = page.total_count;
+        let open = page
+            .issues
+            .into_iter()
+            .filter(|issue| issue.matches_state("open"))
+            .collect();
+        Ok((open, total))
+    }
+
+    /// Fail-closed preflight shared by `close_issue` and the explicit
+    /// status-to-Closed path. When native open children are known, no
+    /// parent `PUT` is sent and a bounded diagnostic is returned. An
+    /// already-closed parent keeps its idempotent close; a failed
+    /// children read proceeds to the legacy path so a transient read
+    /// never blocks a close (the server guard still applies). Never
+    /// cascade-closes: children keep their own states.
+    fn fail_on_open_children(
+        &self,
+        number: u64,
+        close_status_id: u64,
+        operation: &'static str,
+    ) -> Result<(), ForgejoError> {
+        let (children, total) = match self.list_open_children(number, operation) {
+            Ok(page) => page,
+            Err(_) => return Ok(()),
+        };
+        if children.is_empty() {
+            return Ok(());
+        }
+        if let Ok(issue) = self.issue_with_journals(number, operation)
+            && let Some(status) = issue.status.as_ref()
+            && (status.is_closed.unwrap_or(false) || status.known_id() == Some(close_status_id))
+        {
+            return Ok(());
+        }
+        Err(open_children_error(number, &children, total, operation))
     }
 
     /// Answer "where can this issue go next" from the centralized
@@ -234,6 +296,11 @@ impl RedmineProvider {
     /// hint.
     pub fn close_issue(&self, number: u64) -> Result<IssueSummary, ForgejoError> {
         let status_id = self.config.require_close_status_id()?;
+        // P2 (issue 649): native open-child preflight before any parent
+        // PUT. A known open child fails closed with a bounded diagnostic;
+        // no cascade ever occurs. Empty children, already-closed parents,
+        // and unreadable preflights keep the legacy close path.
+        self.fail_on_open_children(number, status_id, "issue close")?;
         match self.try_direct_close(number, status_id) {
             Ok(summary) => Ok(summary),
             Err(error) => {
@@ -427,6 +494,79 @@ fn forbidden_message(
         "transition rejected before any write: current status '{current}' -> target status '{target}' is not allowed by policy {STATUS_POLICY_SOURCE}; allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}",
         recovery_hint(number)
     )
+}
+
+/// Server-side bound for the open-children preflight query; the error
+/// display is capped separately at [`OPEN_CHILDREN_DISPLAY`].
+const OPEN_CHILDREN_QUERY_LIMIT: u64 = 25;
+/// Maximum open children listed in the preflight diagnostic; the
+/// remainder is reported as `+N more` with the server total when known.
+const OPEN_CHILDREN_DISPLAY: usize = 10;
+/// Per-child subject cap so one long title cannot flood the diagnostic.
+const OPEN_CHILD_SUBJECT_BOUND: usize = 80;
+
+/// Structured preflight failure for a parent with known native open
+/// children. Keeps the caller's operation (`issue close` or
+/// `issue status update`) and `request` kind, lists bounded child
+/// identity/title/status, orders children closed individually first,
+/// and states no cascade occurs and no parent write was sent.
+fn open_children_error(
+    number: u64,
+    children: &[RedmineIssue],
+    total: Option<usize>,
+    operation: &str,
+) -> ForgejoError {
+    let listed: Vec<String> = children
+        .iter()
+        .take(OPEN_CHILDREN_DISPLAY)
+        .map(|child| {
+            let status = child
+                .status
+                .as_ref()
+                .map(|status| status.name.as_str())
+                .unwrap_or("open");
+            format!(
+                "#{} '{}' ('{}')",
+                child.id,
+                bound_subject(&child.subject),
+                status
+            )
+        })
+        .collect();
+    let hidden = children.len().saturating_sub(listed.len());
+    let mut suffix = String::new();
+    if hidden > 0 {
+        suffix.push_str(&format!(" +{hidden} more"));
+    }
+    if let Some(total) = total
+        && total > children.len()
+    {
+        suffix.push_str(&format!(
+            " (server reports {total} total open children; query bounded at {OPEN_CHILDREN_QUERY_LIMIT})"
+        ));
+    }
+    ForgejoError::request(
+        operation,
+        format!(
+            "cannot close issue {number}: {} open child issue(s) must be closed first: {}{}; close each child individually (for example `issue close <child>`), then retry the parent; phasegent never cascade-closes children and sent no parent status update; recovery: {}",
+            children.len(),
+            listed.join(", "),
+            suffix,
+            recovery_hint(number)
+        ),
+    )
+}
+
+/// Collapse whitespace and cap one child subject for the diagnostic so
+/// the bounded list stays short and never echoes raw newlines.
+fn bound_subject(subject: &str) -> String {
+    let collapsed = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > OPEN_CHILD_SUBJECT_BOUND {
+        let truncated: String = collapsed.chars().take(OPEN_CHILD_SUBJECT_BOUND).collect();
+        format!("{truncated}...")
+    } else {
+        collapsed
+    }
 }
 
 /// Structured close failure after a workflow refusal: the legacy

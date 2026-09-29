@@ -114,7 +114,10 @@ fn workflow_classification_drives_close_climb_to_success() {
         RedmineErrorKind::WorkflowNotAllowed
     );
     // In Review climbs one step to Resolved, then the close PUT succeeds.
+    // P2 (issue 649): the native open-child preflight runs first with an
+    // empty page, so the close proceeds to the legacy direct PUT + climb.
     let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_empty()),
         MockResponse::error(422, r#"{"errors":["Status is invalid"]}"#),
         MockResponse::ok(climb_statuses()),
         MockResponse::ok(issue_with_named_status(20, "In Review", false)),
@@ -128,20 +131,35 @@ fn workflow_classification_drives_close_climb_to_success() {
     let summary = redmine.close_issue(20).expect("climb must close");
     assert_eq!(summary.state, "closed");
     let seen = requests.recv().unwrap();
-    assert_eq!(seen.len(), 7, "direct + climb reads + step PUT + retry");
-    support::assert_request(&seen[0], "PUT", "/issues/20.json", None);
-    assert!(seen[0].contains(r#""issue":{"status_id":37}"#));
-    support::assert_request(&seen[5], "PUT", "/issues/20.json", None);
-    assert!(seen[5].contains(r#""issue":{"status_id":4}"#));
+    assert_eq!(
+        seen.len(),
+        8,
+        "preflight + direct + climb reads + step PUT + retry"
+    );
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(
+        seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"),
+        "preflight must query native open children: {seen:?}"
+    );
+    assert!(
+        !seen[0].contains("relations"),
+        "preflight must never read relations: {seen:?}"
+    );
+    support::assert_request(&seen[1], "PUT", "/issues/20.json", None);
+    assert!(seen[1].contains(r#""issue":{"status_id":37}"#));
     support::assert_request(&seen[6], "PUT", "/issues/20.json", None);
-    assert!(seen[6].contains(r#""issue":{"status_id":37}"#));
+    assert!(seen[6].contains(r#""issue":{"status_id":4}"#));
+    support::assert_request(&seen[7], "PUT", "/issues/20.json", None);
+    assert!(seen[7].contains(r#""issue":{"status_id":37}"#));
     server.join().unwrap();
 }
 
 #[test]
 fn close_climb_failure_returns_structured_forbidden_with_recovery() {
     // Direct close rejected, climb step rejected: structured Forbidden.
+    // P2 (issue 649): empty preflight first, then the legacy sequence.
     let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_empty()),
         MockResponse::error(422, r#"{"errors":["Status is invalid"]}"#),
         MockResponse::ok(climb_statuses()),
         MockResponse::ok(issue_with_named_status(20, "New", false)),
@@ -165,7 +183,13 @@ fn close_climb_failure_returns_structured_forbidden_with_recovery() {
         assert!(message.contains(expected), "missing {expected}: {message}");
     }
     let seen = requests.recv().unwrap();
-    assert_eq!(seen.len(), 6, "direct + climb reads + failed step");
+    assert_eq!(
+        seen.len(),
+        7,
+        "preflight + direct + climb reads + failed step"
+    );
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"));
     server.join().unwrap();
 }
 
@@ -182,13 +206,36 @@ fn issue_with_status_id(id: u64, status_id: u64, name: &str) -> String {
     .to_string()
 }
 
+/// Empty native open-children page for the `parent_id` + `status_id=open`
+/// preflight: the issue has no known open child.
+fn open_children_empty() -> String {
+    serde_json::json!({"issues": [], "total_count": 0}).to_string()
+}
+
+/// Native open-children page: each child carries id/subject/open status
+/// so the diagnostic can list bounded identity/title/status.
+fn open_children_list(children: &[(u64, &str, &str)]) -> String {
+    serde_json::json!({
+        "issues": children.iter().map(|(id, subject, status)| serde_json::json!({
+            "id": id,
+            "subject": subject,
+            "description": "Child body",
+            "status": {"id": 1, "name": status, "is_closed": false},
+        })).collect::<Vec<_>>(),
+        "total_count": children.len(),
+    })
+    .to_string()
+}
+
 #[test]
 fn silent_200_close_mismatch_climbs_to_success() {
     // Dogfood `issue close 443`: the direct PUT returns 200 but the
     // observed status stays New. The mismatch classifies as
     // WorkflowNotAllowed, so close climbs New -> In Progress ->
     // In Review -> Resolved and retries the close PUT.
+    // P2 (issue 649): empty preflight first, then the legacy sequence.
     let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_empty()),
         MockResponse::ok(issue_with_status_id(20, 1, "New")),
         MockResponse::ok(climb_statuses()),
         MockResponse::ok(issue_with_named_status(20, "New", false)),
@@ -208,24 +255,35 @@ fn silent_200_close_mismatch_climbs_to_success() {
     let summary = redmine.close_issue(20).expect("mismatch must climb");
     assert_eq!(summary.state, "closed");
     let seen = requests.recv().unwrap();
-    assert_eq!(seen.len(), 13, "mismatch PUT + climb reads + steps + retry");
-    support::assert_request(&seen[0], "PUT", "/issues/20.json", None);
-    assert!(seen[0].contains(r#""issue":{"status_id":37}"#));
-    support::assert_request(&seen[5], "PUT", "/issues/20.json", None);
-    assert!(seen[5].contains(r#""issue":{"status_id":2}"#));
-    support::assert_request(&seen[8], "PUT", "/issues/20.json", None);
-    assert!(seen[8].contains(r#""issue":{"status_id":3}"#));
-    support::assert_request(&seen[11], "PUT", "/issues/20.json", None);
-    assert!(seen[11].contains(r#""issue":{"status_id":4}"#));
+    assert_eq!(
+        seen.len(),
+        14,
+        "preflight + mismatch PUT + climb reads + steps + retry"
+    );
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"));
+    support::assert_request(&seen[1], "PUT", "/issues/20.json", None);
+    assert!(seen[1].contains(r#""issue":{"status_id":37}"#));
+    support::assert_request(&seen[6], "PUT", "/issues/20.json", None);
+    assert!(seen[6].contains(r#""issue":{"status_id":2}"#));
+    support::assert_request(&seen[9], "PUT", "/issues/20.json", None);
+    assert!(seen[9].contains(r#""issue":{"status_id":3}"#));
     support::assert_request(&seen[12], "PUT", "/issues/20.json", None);
-    assert!(seen[12].contains(r#""issue":{"status_id":37}"#));
+    assert!(seen[12].contains(r#""issue":{"status_id":4}"#));
+    support::assert_request(&seen[13], "PUT", "/issues/20.json", None);
+    assert!(seen[13].contains(r#""issue":{"status_id":37}"#));
     server.join().unwrap();
 }
 
 #[test]
 fn close_preserves_non_workflow_refusal_without_climb() {
-    // Empty 403 has no workflow marker: single PUT, legacy shape.
-    let (base, requests, server) = sequence(vec![MockResponse::error(403, "")]);
+    // Empty 403 has no workflow marker: preflight (empty) + single PUT,
+    // legacy shape. The preflight proves the empty-child success path
+    // reaches the PUT; the refusal itself never climbs.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_empty()),
+        MockResponse::error(403, ""),
+    ]);
     let redmine =
         RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
     let error = redmine.close_issue(20).unwrap_err();
@@ -234,6 +292,190 @@ fn close_preserves_non_workflow_refusal_without_climb() {
     assert_eq!(json["status"], 403);
     assert!(!json["message"].as_str().unwrap().contains("allowed_next"));
     let seen = requests.recv().unwrap();
-    assert_eq!(seen.len(), 1, "non-workflow refusal must not climb");
+    assert_eq!(
+        seen.len(),
+        2,
+        "empty preflight + non-workflow refusal must not climb"
+    );
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"));
+    support::assert_request(&seen[1], "PUT", "/issues/20.json", None);
+    server.join().unwrap();
+}
+
+#[test]
+fn close_blocked_when_native_open_children_exist() {
+    // P2 (issue 649): known open children fail before any parent PUT.
+    // Preflight children GET + parent status GET, then the structured
+    // diagnostic; no PUT is ever sent and no cascade occurs.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_list(&[
+            (641, "Child alpha", "New"),
+            (642, "Child beta", "In Progress"),
+        ])),
+        MockResponse::ok(issue_with_status_id(20, 4, "Resolved")),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let error = redmine.close_issue(20).unwrap_err();
+    let json = error.json();
+    assert_eq!(json["kind"], "request");
+    assert_eq!(json["operation"], "issue close");
+    let message = json["message"].as_str().unwrap();
+    for expected in [
+        "cannot close issue 20",
+        "2 open child",
+        "#641",
+        "Child alpha",
+        "New",
+        "#642",
+        "Child beta",
+        "In Progress",
+        "close each child individually",
+        "never cascade",
+        "sent no parent status update",
+        "status next 20",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+    let seen = requests.recv().unwrap();
+    assert_eq!(
+        seen.len(),
+        2,
+        "children preflight + parent status; no parent PUT"
+    );
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"));
+    assert!(
+        !seen[0].contains("relations"),
+        "preflight must never read relations"
+    );
+    support::assert_request(&seen[1], "GET", "/issues/20.json", None);
+    assert!(
+        seen.iter().all(|request| !request.starts_with("PUT")),
+        "no parent PUT may fire when open children are known: {seen:?}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn status_to_closed_blocked_when_native_open_children_exist() {
+    // P2 (issue 649): the explicit status-to-Closed path shares the
+    // preflight with identical query shape and operation-preserving
+    // `issue status update` contract. No parent PUT fires.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_list(&[(641, "Child alpha", "New")])),
+        MockResponse::ok(issue_with_status_id(20, 4, "Resolved")),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let error = redmine.set_issue_status(20, 37).unwrap_err();
+    let json = error.json();
+    assert_eq!(json["kind"], "request");
+    assert_eq!(json["operation"], "issue status update");
+    let message = json["message"].as_str().unwrap();
+    for expected in [
+        "cannot close issue 20",
+        "#641",
+        "Child alpha",
+        "close each child individually",
+        "never cascade",
+        "sent no parent status update",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+    let seen = requests.recv().unwrap();
+    assert_eq!(
+        seen.len(),
+        2,
+        "children preflight + parent status; no parent PUT"
+    );
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"));
+    assert!(
+        seen.iter().all(|request| !request.starts_with("PUT")),
+        "no parent PUT may fire on the explicit Closed path: {seen:?}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn open_children_diagnostic_is_bounded() {
+    // P2 (issue 649): twelve open children list ten plus `+2 more`.
+    let children: Vec<(u64, String, String)> = (1..=12)
+        .map(|index| (600 + index, format!("Child {index}"), "New".to_owned()))
+        .collect();
+    let borrowed: Vec<(u64, &str, &str)> = children
+        .iter()
+        .map(|(id, subject, status)| (*id, subject.as_str(), status.as_str()))
+        .collect();
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_list(&borrowed)),
+        MockResponse::ok(issue_with_status_id(20, 4, "Resolved")),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let error = redmine.close_issue(20).unwrap_err();
+    let message = error.json()["message"].as_str().unwrap().to_owned();
+    assert!(
+        message.contains("12 open child"),
+        "count must be exact: {message}"
+    );
+    assert!(
+        message.contains("+2 more"),
+        "remainder must be reported: {message}"
+    );
+    assert!(
+        message.contains("#601") && message.contains("#610"),
+        "first ten listed: {message}"
+    );
+    assert!(
+        !message.contains("#611") && !message.contains("#612"),
+        "tail hidden: {message}"
+    );
+    let seen = requests.recv().unwrap();
+    assert!(seen.iter().all(|request| !request.starts_with("PUT")));
+    server.join().unwrap();
+}
+
+#[test]
+fn already_closed_parent_with_open_children_still_closes() {
+    // P2 (issue 649): an already-closed parent keeps its idempotent
+    // close even when open children are known.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(open_children_list(&[(641, "Child alpha", "New")])),
+        MockResponse::ok(issue_with_status_id(20, 37, "Closed")),
+        MockResponse::ok(issue_with_status_id(20, 37, "Closed")),
+    ]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let summary = redmine
+        .close_issue(20)
+        .expect("already-closed parent must close");
+    assert_eq!(summary.number, 20);
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 3, "preflight + parent status + direct PUT");
+    support::assert_request(&seen[2], "PUT", "/issues/20.json", None);
+    server.join().unwrap();
+}
+
+#[test]
+fn non_close_status_set_skips_preflight() {
+    // Other statuses keep the legacy single-PUT shape: no children GET.
+    let (base, requests, server) = sequence(vec![MockResponse::ok(issue_with_status_id(
+        20,
+        2,
+        "In Progress",
+    ))]);
+    let redmine =
+        RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
+    let summary = redmine
+        .set_issue_status(20, 2)
+        .expect("non-close set must succeed");
+    assert_eq!(summary.number, 20);
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 1, "non-close set must not preflight");
+    support::assert_request(&seen[0], "PUT", "/issues/20.json", None);
+    assert!(seen[0].contains(r#""issue":{"status_id":2}"#));
     server.join().unwrap();
 }

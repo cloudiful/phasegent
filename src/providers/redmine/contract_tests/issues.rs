@@ -70,20 +70,22 @@ fn update_body_uses_put_and_description_wrapper() {
 
 #[test]
 fn close_uses_the_configured_status_id() {
-    let (base, requests, server) = sequence(vec![MockResponse::ok(issue_response(
-        20,
-        "Title",
-        "Body",
-        true,
-        &[],
-    ))]);
+    // P2 (issue 649): the native open-child preflight runs first with an
+    // empty page, so the close proceeds to the legacy direct PUT.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(r#"{"issues":[],"total_count":0}"#),
+        MockResponse::ok(issue_response(20, "Title", "Body", true, &[])),
+    ]);
     let redmine =
         RedmineProvider::new(RedmineConfig::new(base, "42", 37), TEST_API_KEY.to_owned()).unwrap();
     assert!(redmine.close_issue(20).is_ok());
-    let request = requests.recv().unwrap().remove(0);
-    support::assert_request(&request, "PUT", "/issues/20.json", None);
-    assert!(request.contains(r#""issue":{"status_id":37}"#));
-    assert!(!request.contains(r#""status_id":5"#));
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 2, "empty preflight + direct PUT");
+    support::assert_request(&seen[0], "GET", "/issues.json", None);
+    assert!(seen[0].contains("parent_id=20") && seen[0].contains("status_id=open"));
+    support::assert_request(&seen[1], "PUT", "/issues/20.json", None);
+    assert!(seen[1].contains(r#""issue":{"status_id":37}"#));
+    assert!(!seen[1].contains(r#""status_id":5"#));
     server.join().unwrap();
 }
 

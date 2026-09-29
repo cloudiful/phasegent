@@ -12,7 +12,8 @@ use support::{
     CLOSE_STATUS_ID, ISSUE_ID, MockResponse, ORCHESTRATOR_KEY, PROJECT_ID, STATUS_BLOCKED,
     STATUS_CANCELLED, STATUS_CHANGES_REQUESTED, STATUS_CLOSED, STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW, STATUS_NEW, STATUS_RESOLVED, issue_response_with_status, make_test_db,
-    run_cli, start_mock_server, statuses_response, stderr_text, stdout_text,
+    open_children_empty_response, open_children_response, run_cli, start_mock_server,
+    statuses_response, stderr_text, stdout_text,
 };
 
 /// Walk through the canonical Redmine status chain. Every transition
@@ -38,12 +39,18 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
     // issue (scope guard), GET statuses, PUT issue. The mock returns the
     // issue with the *requested* status id so the verification logic accepts
     // the PUT response as authoritative; the guard only checks project.
-    let mut responses = Vec::with_capacity(transitions.len() * 3);
+    // P2 (issue 649): the Closed transition (the configured close status)
+    // fires the native open-child preflight, so it needs one extra empty
+    // children page between the status list and the PUT.
+    let mut responses = Vec::with_capacity(transitions.len() * 3 + 1);
     for (_name, status_id, is_closed) in transitions {
         responses.push(MockResponse::ok(issue_response_with_status(
             ISSUE_ID, *status_id, _name, *is_closed,
         )));
         responses.push(MockResponse::ok(statuses_response()));
+        if *_name == "Closed" {
+            responses.push(MockResponse::ok(open_children_empty_response()));
+        }
         responses.push(MockResponse::ok(issue_response_with_status(
             ISSUE_ID, *status_id, _name, *is_closed,
         )));
@@ -82,47 +89,71 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
         assert_eq!(json["state"], expected_state, "expected state for {name}");
     }
 
-    // The lifecycle ran through every status and each transition
+    // The lifecycle ran through every status; seven transitions
     // produced exactly three requests (pre-write GET issue scope guard +
-    // status list + status update PUT) because the close path runs through
-    // `status set` rather than `issue close` here.
+    // status list + status update PUT) while the Closed transition
+    // produced four (guard + status list + empty open-child preflight +
+    // PUT) because the close path runs through `status set` here.
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        transitions.len() * 3,
+        transitions.len() * 3 + 1,
         "expected {} requests, got {}",
-        transitions.len() * 3,
+        transitions.len() * 3 + 1,
         requests.len()
     );
-    for (i, request) in requests.iter().enumerate() {
-        if i % 3 == 0 {
+    // Requests 0..17 cover the first six transitions (3 each); requests
+    // 18..21 cover Closed (guard + statuses + preflight + PUT); the rest
+    // cover the final two transitions (3 each).
+    let mut index = 0;
+    for (name, _status_id, _) in transitions {
+        assert!(
+            requests[index].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+            "request {index} ({name}) should be a pre-write scope-guard GET, got: {}",
+            requests[index]
+        );
+        assert!(
+            requests[index].contains(&format!("x-redmine-api-key: {ORCHESTRATOR_KEY}")),
+            "scope guard must use the orchestrator key (request {index}): {}",
+            requests[index]
+        );
+        index += 1;
+        assert!(
+            requests[index].starts_with("GET /issue_statuses.json"),
+            "request {index} ({name}) should be a status list GET, got: {}",
+            requests[index]
+        );
+        index += 1;
+        if *name == "Closed" {
             assert!(
-                request.starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
-                "request {i} should be a pre-write scope-guard GET, got: {request}"
+                requests[index].starts_with("GET /issues.json"),
+                "request {index} ({name}) should be the open-child preflight GET, got: {}",
+                requests[index]
             );
             assert!(
-                request.contains(&format!("x-redmine-api-key: {ORCHESTRATOR_KEY}")),
-                "scope guard must use the orchestrator key (request {i}): {request}"
-            );
-        } else if i % 3 == 1 {
-            assert!(
-                request.starts_with("GET /issue_statuses.json"),
-                "request {i} should be a status list GET, got: {request}"
+                requests[index].contains(&format!("parent_id={ISSUE_ID}"))
+                    && requests[index].contains("status_id=open"),
+                "preflight must query native open children (request {index}): {}",
+                requests[index]
             );
             assert!(
-                request.contains(&format!("x-redmine-api-key: {ORCHESTRATOR_KEY}")),
-                "status list must use the orchestrator key (request {i}): {request}"
+                !requests[index].contains("relations"),
+                "preflight must never read relations (request {index}): {}",
+                requests[index]
             );
-        } else {
-            assert!(
-                request.starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
-                "request {i} should be a status update PUT, got: {request}"
-            );
-            assert!(
-                request.contains(&format!("x-redmine-api-key: {ORCHESTRATOR_KEY}")),
-                "status update must use the orchestrator key (request {i}): {request}"
-            );
+            index += 1;
         }
+        assert!(
+            requests[index].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
+            "request {index} ({name}) should be a status update PUT, got: {}",
+            requests[index]
+        );
+        assert!(
+            requests[index].contains(&format!("x-redmine-api-key: {ORCHESTRATOR_KEY}")),
+            "status update must use the orchestrator key (request {index}): {}",
+            requests[index]
+        );
+        index += 1;
     }
 
     // Drop the server first so the background thread shuts down before
@@ -137,6 +168,8 @@ fn lifecycle_status_chain_drives_every_canonical_status() {
 #[test]
 fn issue_close_verifies_remote_state_through_subprocess() {
     // P3 pre-write: GET issue (scope guard) + PUT issue.
+    // P2 (issue 649): the native open-child preflight runs between them
+    // with an empty page, so the close proceeds to the PUT.
     let server = start_mock_server(vec![
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -144,6 +177,7 @@ fn issue_close_verifies_remote_state_through_subprocess() {
             "Closed",
             true,
         )),
+        MockResponse::ok(open_children_empty_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
             CLOSE_STATUS_ID,
@@ -182,15 +216,31 @@ fn issue_close_verifies_remote_state_through_subprocess() {
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        2,
-        "close should produce pre-write GET + PUT: {requests:?}"
+        3,
+        "close should produce pre-write GET + preflight GET + PUT: {requests:?}"
     );
     assert!(
         requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
         "first request must be the scope-guard GET: {}",
         requests[0]
     );
-    let request = &requests[1];
+    assert!(
+        requests[1].starts_with("GET /issues.json"),
+        "second request must be the open-child preflight GET: {}",
+        requests[1]
+    );
+    assert!(
+        requests[1].contains(&format!("parent_id={ISSUE_ID}"))
+            && requests[1].contains("status_id=open"),
+        "preflight must query native open children: {}",
+        requests[1]
+    );
+    assert!(
+        !requests[1].contains("relations"),
+        "preflight must never read relations: {}",
+        requests[1]
+    );
+    let request = &requests[2];
     assert!(
         request.starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
         "close request: {request}"
@@ -291,10 +341,12 @@ fn status_set_fails_when_remote_state_remains_stale() {
 #[test]
 fn issue_close_fails_when_remote_state_remains_open() {
     // P3 pre-write: leading GET passes the guard, PUT returns stale open.
+    // P2 (issue 649): the empty open-child preflight runs between them.
     let server = start_mock_server(vec![
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID, STATUS_NEW, "New", false,
         )),
+        MockResponse::ok(open_children_empty_response()),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID, STATUS_NEW, "New", false,
         )),
@@ -338,8 +390,8 @@ fn issue_close_fails_when_remote_state_remains_open() {
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        4,
-        "close should produce scope-guard GET + PUT + climb status list + climb current-issue GET: {requests:?}"
+        5,
+        "close should produce scope-guard GET + preflight GET + PUT + climb status list + climb current-issue GET: {requests:?}"
     );
     assert!(
         requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
@@ -347,19 +399,25 @@ fn issue_close_fails_when_remote_state_remains_open() {
         requests[0]
     );
     assert!(
-        requests[1].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
-        "second request must be the direct close PUT: {}",
+        requests[1].starts_with("GET /issues.json")
+            && requests[1].contains(&format!("parent_id={ISSUE_ID}")),
+        "second request must be the open-child preflight GET: {}",
         requests[1]
     );
     assert!(
-        requests[2].starts_with("GET /issue_statuses.json"),
-        "third request must be the climb status list: {}",
+        requests[2].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")),
+        "third request must be the direct close PUT: {}",
         requests[2]
     );
     assert!(
-        requests[3].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
-        "fourth request must be the climb current-issue read: {}",
+        requests[3].starts_with("GET /issue_statuses.json"),
+        "fourth request must be the climb status list: {}",
         requests[3]
+    );
+    assert!(
+        requests[4].starts_with(&format!("GET /issues/{ISSUE_ID}.json")),
+        "fifth request must be the climb current-issue read: {}",
+        requests[4]
     );
 }
 
@@ -373,6 +431,7 @@ fn issue_close_fails_when_follow_up_get_shows_open_status() {
     // The binary will re-read on an empty PUT body; the follow-up GET
     // returns the issue still in an open state, so close fails.
     // P3 pre-write adds a leading GET (scope guard) before the PUT.
+    // P2 (issue 649): the empty open-child preflight runs between them.
     let responses = vec![
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -380,6 +439,7 @@ fn issue_close_fails_when_follow_up_get_shows_open_status() {
             "In Progress",
             false,
         )),
+        MockResponse::ok(open_children_empty_response()),
         MockResponse::ok(""),
         MockResponse::ok(issue_response_with_status(
             ISSUE_ID,
@@ -415,12 +475,193 @@ fn issue_close_fails_when_follow_up_get_shows_open_status() {
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        5,
-        "scope-guard GET + PUT + follow-up GET + climb status list + climb current-issue GET"
+        6,
+        "scope-guard GET + preflight GET + PUT + follow-up GET + climb status list + climb current-issue GET"
     );
     assert!(requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
-    assert!(requests[1].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")));
+    assert!(
+        requests[1].starts_with("GET /issues.json")
+            && requests[1].contains(&format!("parent_id={ISSUE_ID}")),
+        "second request must be the open-child preflight GET: {}",
+        requests[1]
+    );
+    assert!(requests[2].starts_with(&format!("PUT /issues/{ISSUE_ID}.json")));
+    assert!(requests[3].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(requests[4].starts_with("GET /issue_statuses.json"));
+    assert!(requests[5].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+}
+
+/// P2 (issue 649): `issue close` with known native open children fails
+/// before any parent PUT with a bounded diagnostic. The mock serves the
+/// scope-guard GET, the preflight children page, and the parent status
+/// GET; no PUT may fire and no cascade occurs.
+#[test]
+fn issue_close_blocked_by_open_children_lists_them_without_parent_put() {
+    let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            false,
+        )),
+        MockResponse::ok(open_children_response(&[
+            (5101, "Child alpha", "New", false),
+            (5102, "Child beta", "In Progress", false),
+        ])),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            false,
+        )),
+    ]);
+    let db = make_test_db(&server.base_url);
+
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &[
+            "--provider",
+            "redmine",
+            "--project-id",
+            PROJECT_ID,
+            "issue",
+            "close",
+            &ISSUE_ID.to_string(),
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "close with open children must fail\nstdout: {}\nstderr: {}",
+        stdout_text(&output),
+        stderr_text(&output),
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_str(stderr_text(&output).trim()).expect("structured error on stderr");
+    assert_eq!(envelope["error"]["kind"], "request");
+    assert_eq!(envelope["error"]["operation"], "issue close");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    for expected in [
+        "2 open child",
+        "5101",
+        "Child alpha",
+        "5102",
+        "Child beta",
+        "close each child individually",
+        "never cascade",
+        "sent no parent status update",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "guard + preflight + parent status; no PUT: {requests:?}"
+    );
+    assert!(requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(
+        requests[1].starts_with("GET /issues.json")
+            && requests[1].contains(&format!("parent_id={ISSUE_ID}"))
+            && requests[1].contains("status_id=open"),
+        "preflight must query native open children: {}",
+        requests[1]
+    );
+    assert!(!requests[1].contains("relations"));
     assert!(requests[2].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
-    assert!(requests[3].starts_with("GET /issue_statuses.json"));
-    assert!(requests[4].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(
+        requests.iter().all(|request| !request.starts_with("PUT")),
+        "no parent PUT may fire when open children are known: {requests:?}"
+    );
+}
+
+/// P2 (issue 649): `status set --status Closed` (the explicit
+/// status-to-Closed path) shares the preflight with the
+/// `issue status update` operation contract. No parent PUT fires.
+#[test]
+fn status_set_to_closed_blocked_by_open_children_without_parent_put() {
+    let server = start_mock_server(vec![
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            false,
+        )),
+        MockResponse::ok(statuses_response()),
+        MockResponse::ok(open_children_response(&[(
+            5101,
+            "Child alpha",
+            "New",
+            false,
+        )])),
+        MockResponse::ok(issue_response_with_status(
+            ISSUE_ID,
+            STATUS_RESOLVED,
+            "Resolved",
+            false,
+        )),
+    ]);
+    let db = make_test_db(&server.base_url);
+
+    let output = run_cli(
+        &db.path,
+        &server.base_url,
+        Some("orchestrator"),
+        &[
+            "--provider",
+            "redmine",
+            "--project-id",
+            PROJECT_ID,
+            "status",
+            "set",
+            &ISSUE_ID.to_string(),
+            "--status",
+            "Closed",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "status set to Closed with open children must fail\nstdout: {}\nstderr: {}",
+        stdout_text(&output),
+        stderr_text(&output),
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_str(stderr_text(&output).trim()).expect("structured error on stderr");
+    assert_eq!(envelope["error"]["kind"], "request");
+    assert_eq!(envelope["error"]["operation"], "issue status update");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    for expected in [
+        "5101",
+        "Child alpha",
+        "close each child individually",
+        "never cascade",
+        "sent no parent status update",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "guard + statuses + preflight + parent status; no PUT: {requests:?}"
+    );
+    assert!(requests[0].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(requests[1].starts_with("GET /issue_statuses.json"));
+    assert!(
+        requests[2].starts_with("GET /issues.json")
+            && requests[2].contains(&format!("parent_id={ISSUE_ID}"))
+            && requests[2].contains("status_id=open"),
+        "preflight must query native open children: {}",
+        requests[2]
+    );
+    assert!(requests[3].starts_with(&format!("GET /issues/{ISSUE_ID}.json")));
+    assert!(
+        requests.iter().all(|request| !request.starts_with("PUT")),
+        "no parent PUT may fire on the explicit Closed path: {requests:?}"
+    );
 }

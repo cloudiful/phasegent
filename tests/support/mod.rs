@@ -370,6 +370,32 @@ pub fn issue_response_with_status(
     .to_string()
 }
 
+/// Empty native open-children page for the P2 (issue 649) preflight
+/// (`GET /issues.json?parent_id=<id>&status_id=open`): the issue has no
+/// known open child, so close paths proceed to the legacy PUT.
+pub fn open_children_empty_response() -> String {
+    serde_json::json!({"issues": [], "total_count": 0}).to_string()
+}
+
+/// Native open-children page: each `(id, subject, status_name,
+/// is_closed)` row carries the identity/title/status the preflight
+/// diagnostic lists. Callers pass `is_closed=false` rows for the
+/// blocked path.
+pub fn open_children_response(children: &[(u64, &str, &str, bool)]) -> String {
+    serde_json::json!({
+        "issues": children.iter().map(|(id, subject, status_name, is_closed)| serde_json::json!({
+            "id": id,
+            "subject": subject,
+            "description": "Child body",
+            "status": {"id": 1, "name": status_name, "is_closed": is_closed},
+            "project": {"id": 4242, "name": "Test Project", "identifier": "test-project"},
+            "journals": []
+        })).collect::<Vec<_>>(),
+        "total_count": children.len(),
+    })
+    .to_string()
+}
+
 /// Canonical status list returned by the mock `/issue_statuses.json`
 /// endpoint. Ids match the constants above.
 pub fn statuses_response() -> String {
