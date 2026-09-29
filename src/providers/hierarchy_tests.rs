@@ -104,3 +104,26 @@ fn gitlab_refs_carry_provider_project_and_kind() {
     assert!(!supported_parent_child(&epic.kind, &task.kind));
     assert!(!supported_parent_child(&issue.kind, &issue.kind));
 }
+
+#[test]
+fn hierarchy_page_reports_truncation_explicitly() {
+    let node = HierarchyNode {
+        item: WorkItemRef::redmine(Some("42".to_owned()), 7),
+        parent: None,
+        children: Vec::new(),
+    };
+    let complete = HierarchyPage {
+        node: node.clone(),
+        children_truncated: false,
+    };
+    assert!(!complete.children_truncated);
+    assert!(complete.node.children_ids().is_empty());
+    let truncated = HierarchyPage {
+        node,
+        children_truncated: true,
+    };
+    assert!(truncated.children_truncated);
+    let json = serde_json::to_value(&truncated).unwrap();
+    assert_eq!(json["children_truncated"], true);
+    assert!(json.get("node").is_some());
+}

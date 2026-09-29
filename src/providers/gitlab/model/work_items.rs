@@ -1,12 +1,15 @@
 //! GitLab Work Item hierarchy DTOs and kind/ref mapping (issue 641 P3).
 //!
-//! Decodes the `workItem(id:)` hierarchy widget (`parent` plus bounded
-//! `children(first: 50)`) and the `workItemUpdate` mutation payload. Global
-//! IDs look like `gid://gitlab/WorkItem/123`; the trailing number is the
-//! external ID carried by [`WorkItemRef`]. Type names map exactly to
-//! [`WorkItemKind`]: `Epic`/`Issue`/`Task`; anything else is a decode error.
-//! Nested Epic-to-Epic is out of scope and fails as `not_supported` at the
-//! caller via [`supported_parent_child`].
+//! Decodes the `workItem(id:)` hierarchy widget through the `widgets`
+//! collection (`... on WorkItemWidgetHierarchy` with `parent` plus bounded
+//! `children(first: 50)` and its `pageInfo.hasNextPage`), plus each item's
+//! `namespace.fullPath` for true group/project scope, and the
+//! `workItemUpdate` mutation payload. Global IDs look like
+//! `gid://gitlab/WorkItem/123`; the trailing number is the external ID
+//! carried by [`WorkItemRef`]. Type names map exactly to [`WorkItemKind`]:
+//! `Epic`/`Issue`/`Task`; anything else is a decode error. Nested Epic-to-Epic
+//! is out of scope and fails as `not_supported` at the caller via
+//! [`supported_parent_child`].
 
 use serde::Deserialize;
 
@@ -60,6 +63,20 @@ pub(crate) fn link_ref(
     ))
 }
 
+/// Resolve the true group/project scope for one item: the wire
+/// `namespace.fullPath` when present, otherwise the caller's configured
+/// project (legacy tolerance for payloads that omit the namespace).
+pub(crate) fn scope_of(
+    namespace: &Option<NamespaceRef>,
+    fallback: Option<String>,
+) -> Option<String> {
+    namespace
+        .as_ref()
+        .and_then(|namespace| namespace.full_path.clone())
+        .filter(|path| !path.trim().is_empty())
+        .or(fallback)
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct WorkItemQueryData {
     #[serde(rename = "workItem")]
@@ -72,7 +89,23 @@ pub(crate) struct WorkItemNode {
     #[serde(rename = "workItemType")]
     pub work_item_type: WorkItemTypeRef,
     #[serde(default)]
-    pub hierarchy: Option<HierarchyWidget>,
+    pub namespace: Option<NamespaceRef>,
+    #[serde(default)]
+    pub widgets: Option<Vec<WorkItemWidget>>,
+}
+
+impl WorkItemNode {
+    /// Find the hierarchy widget by its GraphQL type name. Every other
+    /// widget (description, labels, ...) decodes with no parent/children
+    /// and is skipped; a missing entry means the instance exposes no
+    /// hierarchy support for this item.
+    pub(crate) fn hierarchy_widget(&self) -> Option<&WorkItemWidget> {
+        self.widgets
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .find(|widget| widget.typename == "WorkItemWidgetHierarchy")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,7 +115,15 @@ pub(crate) struct WorkItemTypeRef {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct HierarchyWidget {
+pub(crate) struct NamespaceRef {
+    #[serde(rename = "fullPath", default)]
+    pub full_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WorkItemWidget {
+    #[serde(rename = "__typename", default)]
+    pub typename: String,
     #[serde(default)]
     pub parent: Option<WorkItemLink>,
     #[serde(default)]
@@ -93,6 +134,14 @@ pub(crate) struct HierarchyWidget {
 pub(crate) struct WorkItemChildren {
     #[serde(default)]
     pub nodes: Vec<WorkItemLink>,
+    #[serde(rename = "pageInfo", default)]
+    pub page_info: Option<PageInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PageInfo {
+    #[serde(rename = "hasNextPage", default)]
+    pub has_next_page: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +149,8 @@ pub(crate) struct WorkItemLink {
     pub id: String,
     #[serde(rename = "workItemType")]
     pub work_item_type: WorkItemTypeRef,
+    #[serde(default)]
+    pub namespace: Option<NamespaceRef>,
 }
 
 #[derive(Debug, Deserialize)]

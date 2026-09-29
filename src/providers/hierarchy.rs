@@ -109,6 +109,10 @@ impl HierarchyEdge {
 
 /// Bounded read-only parent-with-children view. The parent artifact stays a
 /// concise umbrella; each child keeps its own focused plan and status.
+///
+/// Reads are bounded: GitLab returns at most 50 direct children in one call
+/// (see [`HierarchyPage`] for the explicit truncation indicator); Redmine
+/// returns the complete child list.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct HierarchyNode {
@@ -129,6 +133,18 @@ impl HierarchyNode {
     pub fn children_ids(&self) -> Vec<u64> {
         self.children.iter().map(|child| child.id).collect()
     }
+}
+
+/// Bounded hierarchy view with an explicit truncation indicator. The child
+/// list never grows past the provider bound; callers must surface
+/// `children_truncated` instead of silently dropping children or fetching
+/// further pages. Redmine always reports false (complete list); GitLab
+/// reports the child connection `pageInfo.hasNextPage`.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct HierarchyPage {
+    pub node: HierarchyNode,
+    pub children_truncated: bool,
 }
 
 /// Native parent/child type support. Redmine issues nest; GitLab allows only
