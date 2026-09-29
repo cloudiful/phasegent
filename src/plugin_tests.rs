@@ -398,8 +398,8 @@ fn install_at_handles_dir_at_target_path() {
 fn status_at_reports_both_slots_when_nothing_is_installed() {
     let _lock = lock_workflow_tests();
     let (_temp, _home, _xdg) = override_home("status-empty");
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let report = status_at(&cwd).expect("status resolves");
+    let project = TempDir::new("status-empty-project");
+    let report = status_at(project.path()).expect("status resolves");
     assert!(!report.global.exists);
     assert!(!report.global.managed);
     assert!(!report.project.exists);
