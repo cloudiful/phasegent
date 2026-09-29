@@ -71,7 +71,6 @@
 //! per `(issue, phase)` segment.
 
 use crate::infra::storage::Storage;
-use crate::providers::redmine::model::RedmineRelationType;
 use crate::providers::{ProviderDispatcher, ProviderKind};
 use crate::time_tracking::{finish, start};
 
@@ -355,9 +354,10 @@ fn close_issue_runs(issue: u64) -> Result<Vec<String>, String> {
     Ok(finished)
 }
 
-// Native hierarchy (issue 641 P2) replaces the old parent-child `relates`
-// auto-link for Redmine: `--parent-issue` already creates a native subtask,
-// so no `relates` edge is attempted. Hierarchy never implies a relation.
+// Native hierarchy (issue 641) replaces the old parent-child `relates`
+// auto-link: Redmine `--parent-issue` already creates a native subtask and
+// GitLab hierarchy uses native Work Item widgets, so no `relates` edge is
+// attempted. Hierarchy never implies a relation.
 
 /// Outcome of the parent-child relation auto-create call. The hook
 /// call sites translate `Skipped` into silence, `Created` and
@@ -373,6 +373,7 @@ pub enum AutoRelationOutcome {
     /// server-assigned id (Redmine relation id / GitLab issue link
     /// id) so the operator can spot the new auto-link via
     /// `relation list`.
+    #[allow(dead_code)]
     Created {
         child: u64,
         parent: u64,
@@ -381,6 +382,7 @@ pub enum AutoRelationOutcome {
     /// A `relates` link to the parent already exists. The auto path
     /// is idempotent so repeated calls (e.g. status set then status
     /// advance on the same child) never produce duplicate links.
+    #[allow(dead_code)]
     Idempotent { child: u64, parent: u64 },
     /// The helper could not create the link (storage open failure,
     /// server validation, network). The upstream status change is
@@ -399,10 +401,10 @@ impl AutoRelationOutcome {
 
 /// Run the parent-child relation auto-create for `child_issue_id`.
 ///
-/// Redmine always returns `Skipped`: native `--parent-issue` already
-/// establishes the subtask, and a `relates` edge between parent and child is
-/// rejected by Redmine (422). GitLab keeps its `relates` path until P3 maps
-/// native Work Item hierarchy.
+/// Redmine and GitLab always return `Skipped`: Redmine native `--parent-issue`
+/// already establishes the subtask (a `relates` edge is rejected with 422)
+/// and GitLab hierarchy uses native Work Item widgets (typed parent writes
+/// land in a dedicated command). No `relates` edge is attempted.
 pub fn auto_create_parent_child_relation(
     provider: &ProviderDispatcher,
     child_issue_id: u64,
@@ -441,58 +443,10 @@ pub fn auto_create_parent_child_relation(
             reason: "redmine native parent/subtask already establishes hierarchy; no relates edge"
                 .to_owned(),
         },
-        ProviderDispatcher::Gitlab(gitlab) => {
-            auto_relation_gitlab(gitlab, child_issue_id, parent_issue_id)
-        }
-    }
-}
-
-fn auto_relation_gitlab(
-    gitlab: &crate::providers::gitlab::GitlabProvider,
-    child_issue_id: u64,
-    parent_issue_id: u64,
-) -> AutoRelationOutcome {
-    // Idempotency on GitLab mirrors the Redmine path: list the
-    // child's links and look for any existing `relates_to` link
-    // targeting the parent. `RelationSummary::relation_type` is the
-    // viewpoint-resolved canonical name (`relates` for both
-    // directions on the symmetric link).
-    match gitlab.list_issue_links(child_issue_id) {
-        Ok(existing) => {
-            if existing.iter().any(|summary| {
-                summary.relation_type == "relates"
-                    && (summary.issue_to_id == parent_issue_id
-                        || summary.issue_id == parent_issue_id)
-            }) {
-                return AutoRelationOutcome::Idempotent {
-                    child: child_issue_id,
-                    parent: parent_issue_id,
-                };
-            }
-        }
-        Err(error) => {
-            return AutoRelationOutcome::Warning {
-                reason: format!(
-                    "auto relation: list issue links for issue {child_issue_id} failed: {error}"
-                ),
-            };
-        }
-    }
-    match gitlab.create_issue_link(
-        child_issue_id,
-        parent_issue_id,
-        RedmineRelationType::Relates,
-    ) {
-        Ok(summary) => AutoRelationOutcome::Created {
-            child: child_issue_id,
-            parent: parent_issue_id,
-            relation_id: summary.id,
-        },
-        Err(error) => AutoRelationOutcome::Warning {
-            reason: format!(
-                "auto relation: create relates_to from issue {child_issue_id} \
-                 to parent {parent_issue_id} failed: {error}"
-            ),
+        ProviderDispatcher::Gitlab(_) => AutoRelationOutcome::Skipped {
+            reason:
+                "gitlab native Work Item hierarchy already covers parent/child; no relates edge"
+                    .to_owned(),
         },
     }
 }
@@ -671,12 +625,9 @@ mod relation_auto_tests {
 
     #[test]
     fn auto_relation_skips_silently_for_gitlab_when_parent_linkage_absent() {
-        // GitLab wires into the same Phase 3 helper; the
+        // GitLab hierarchy uses native Work Item widgets; the
         // `parent_issue_id: None` path returns `Skipped` so the
-        // status/close hooks stay silent. This test pins the
-        // GitLab-side outcome shape against a freshly built
-        // provider (no network) so a future provider re-route
-        // cannot silently regress this branch.
+        // status/close hooks stay silent.
         use crate::providers::config::GitlabConfig;
         use crate::providers::gitlab::GitlabProvider;
 
@@ -696,6 +647,34 @@ mod relation_auto_tests {
                 );
             }
             other => panic!("expected Skipped, got {other:?}"),
+        }
+        assert!(outcome.warning().is_none());
+    }
+
+    #[test]
+    fn auto_relation_skips_silently_for_gitlab_with_parent_linkage() {
+        // Issue 641 P3: GitLab never attempts a `relates` edge for a
+        // parent linkage; native Work Item hierarchy covers it. A
+        // closed-port base proves no list/create call happens.
+        use crate::providers::config::GitlabConfig;
+        use crate::providers::gitlab::GitlabProvider;
+
+        let provider = ProviderDispatcher::Gitlab(
+            GitlabProvider::new(
+                GitlabConfig::new("http://127.0.0.1:1", 42),
+                "test-token".to_owned(),
+            )
+            .unwrap(),
+        );
+        let outcome = auto_create_parent_child_relation(&provider, 11, Some(10));
+        match &outcome {
+            AutoRelationOutcome::Skipped { reason } => {
+                assert!(
+                    reason.contains("Work Item") || reason.contains("hierarchy"),
+                    "reason must name native hierarchy: {reason}"
+                );
+            }
+            other => panic!("expected Skipped for GitLab parent linkage, got {other:?}"),
         }
         assert!(outcome.warning().is_none());
     }

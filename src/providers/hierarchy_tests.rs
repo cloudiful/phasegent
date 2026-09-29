@@ -1,8 +1,7 @@
-//! Focused unit tests for the typed hierarchy contract (issue 641 P2).
+//! Focused unit tests for the typed hierarchy contract (issue 641).
 //!
 //! Lives adjacent to `hierarchy.rs` so the production module stays under the
-//! file-size budget; behavior and coverage are unchanged from the inline
-//! tests this file replaces.
+//! file-size budget.
 
 use super::*;
 
@@ -80,4 +79,28 @@ fn same_scope_identical_refs_compare_equal() {
         child: right,
     };
     assert!(looped.validate().is_err());
+}
+
+#[test]
+fn gitlab_refs_carry_provider_project_and_kind() {
+    let epic = WorkItemRef::gitlab(Some("42".to_owned()), 100, WorkItemKind::GitLabEpic);
+    let issue = WorkItemRef::gitlab(Some("42".to_owned()), 101, WorkItemKind::GitLabIssue);
+    let task = WorkItemRef::gitlab(Some("42".to_owned()), 102, WorkItemKind::GitLabTask);
+    for item in [&epic, &issue, &task] {
+        assert_eq!(item.provider, "gitlab");
+        assert_eq!(item.project.as_deref(), Some("42"));
+    }
+    assert_eq!(epic.kind, WorkItemKind::GitLabEpic);
+    assert_eq!(issue.kind, WorkItemKind::GitLabIssue);
+    assert_eq!(task.kind, WorkItemKind::GitLabTask);
+    assert!(!epic.is_same_item(&issue));
+    let supported = HierarchyEdge {
+        parent: epic.clone(),
+        child: issue.clone(),
+    };
+    assert!(supported.validate().is_ok());
+    assert!(supported_parent_child(&epic.kind, &issue.kind));
+    assert!(supported_parent_child(&issue.kind, &task.kind));
+    assert!(!supported_parent_child(&epic.kind, &task.kind));
+    assert!(!supported_parent_child(&issue.kind, &issue.kind));
 }

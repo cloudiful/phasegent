@@ -365,10 +365,13 @@ pub(crate) fn execute_issue(
                             session.as_deref(),
                         ),
                     );
-                    // Native hierarchy (issue 641 P2): Redmine `--parent-issue`
-                    // already creates a native subtask, so no `relates` edge
-                    // is attempted for Redmine (Redmine rejects it with 422).
-                    if provider_kind != ProviderKind::Redmine {
+                    // Native hierarchy (issue 641): Redmine `--parent-issue`
+                    // already creates a native subtask and GitLab hierarchy
+                    // uses native Work Item widgets, so no `relates` edge is
+                    // attempted for either (Redmine rejects it with 422;
+                    // GitLab `--parent-issue` stays unsupported until a
+                    // typed hierarchy command exists).
+                    if !matches!(provider_kind, ProviderKind::Redmine | ProviderKind::Gitlab) {
                         super::report_local_warnings(
                             "issue create",
                             crate::lifecycle_auto::auto_create_parent_child_relation(

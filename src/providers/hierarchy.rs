@@ -1,8 +1,8 @@
-//! Provider-neutral typed hierarchy contract (issue 641 P2).
+//! Provider-neutral typed hierarchy contract (issue 641).
 //!
 //! Hierarchy is a directed parent-child tree edge backed by provider-native
-//! fields (Redmine `parent_issue_id` / subtasks, GitLab Work Item widgets in
-//! P3). It is never a graph relation (`relates` / `blocks`), never Kanban
+//! fields (Redmine `parent_issue_id` / subtasks, GitLab Work Item hierarchy
+//! widget). It is never a graph relation (`relates` / `blocks`), never Kanban
 //! board membership, and never inferred from `@user` mentions or `#N`
 //! cross-references. Closing a parent never cascades to children.
 
@@ -10,7 +10,7 @@ use serde::Serialize;
 
 /// Native work-item kind. Redmine has a single issue kind; GitLab kinds stay
 /// distinct so Epic/Issue/Task identities never collapse. Local has no native
-/// hierarchy surface in P2.
+/// hierarchy surface.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +57,17 @@ impl WorkItemRef {
             project,
             id,
             kind: WorkItemKind::RedmineIssue,
+        }
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn gitlab(project: Option<String>, id: u64, kind: WorkItemKind) -> Self {
+        Self {
+            provider: "gitlab".to_owned(),
+            project,
+            id,
+            kind,
         }
     }
 
@@ -121,9 +132,9 @@ impl HierarchyNode {
 }
 
 /// Native parent/child type support. Redmine issues nest; GitLab allows only
-/// Epic-to-Issue and Issue-to-Task (wired in P3). Every other combination,
-/// including any Local nesting in P2, reports false so callers return a
-/// structured `not_supported` instead of a relation fallback.
+/// Epic-to-Issue and Issue-to-Task. Every other combination, including any
+/// Local nesting, reports false so callers return a structured
+/// `not_supported` instead of a relation fallback.
 #[allow(dead_code)]
 #[must_use]
 pub const fn supported_parent_child(parent: &WorkItemKind, child: &WorkItemKind) -> bool {

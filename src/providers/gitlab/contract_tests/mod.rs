@@ -1,5 +1,9 @@
 //! GitLab contract tests aggregator.
 
+mod graphql;
+mod hierarchy;
+mod hierarchy_read;
+mod hierarchy_write;
 mod issues;
 mod issues_update;
 mod labels;

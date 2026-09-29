@@ -5,6 +5,7 @@ use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::hierarchy::WorkItemRef;
 use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
@@ -79,15 +80,35 @@ impl ProviderDispatcher {
     }
 
     /// Read-only native hierarchy view. Redmine serves parent/children from
-    /// native fields; other providers return structured `not_supported`
-    /// (GitLab Work Items land in P3). Never falls back to relations.
+    /// native fields; GitLab serves Work Item hierarchy via GraphQL. Other
+    /// providers return structured `not_supported`. Never falls back to
+    /// relations.
     #[allow(dead_code)]
     pub fn get_hierarchy(&self, number: u64) -> Result<HierarchyNode, ForgejoError> {
         match self {
             Self::Redmine(redmine) => redmine.get_hierarchy(number),
+            Self::Gitlab(gitlab) => gitlab.get_hierarchy(number),
             other => Err(ForgejoError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy get",
+            )),
+        }
+    }
+
+    /// Typed GitLab parent write (Epic-to-Issue, Issue-to-Task). Other
+    /// providers return structured `not_supported`. Unwired until the P4 CLI
+    /// hierarchy command lands.
+    #[allow(dead_code)]
+    pub fn set_hierarchy_parent(
+        &self,
+        child: WorkItemRef,
+        parent: WorkItemRef,
+    ) -> Result<(), ForgejoError> {
+        match self {
+            Self::Gitlab(gitlab) => gitlab.set_hierarchy_parent(&child, &parent),
+            other => Err(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue hierarchy update",
             )),
         }
     }

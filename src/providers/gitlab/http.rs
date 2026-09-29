@@ -283,6 +283,33 @@ impl GitlabHttp {
         Ok(url)
     }
 
+    /// Build the absolute URL for the GraphQL endpoint (`/api/graphql`),
+    /// preserving any deployment prefix from the normalized `/api/v4` base
+    /// (for example `https://host/gitlab/api/v4` becomes
+    /// `https://host/gitlab/api/graphql`). Lives here so the adjacent
+    /// GraphQL transport stays cohesive without widening `api_base`.
+    pub(crate) fn graphql_endpoint(&self) -> Result<Url, ForgejoError> {
+        let mut url = Url::parse(&self.api_base).map_err(|error| {
+            ForgejoError::config(format!("invalid GitLab API base URL: {error}"))
+        })?;
+        let base_path = url.path().trim_end_matches('/');
+        let graphql_path = if let Some(prefix) = base_path.strip_suffix("/api/v4") {
+            if prefix.is_empty() {
+                "/api/graphql".to_owned()
+            } else {
+                format!("{prefix}/api/graphql")
+            }
+        } else if base_path.is_empty() {
+            "/api/graphql".to_owned()
+        } else {
+            format!("{base_path}/api/graphql")
+        };
+        url.set_path(&graphql_path);
+        url.set_query(None);
+        url.set_fragment(None);
+        Ok(url)
+    }
+
     fn response(
         &self,
         request: RequestBuilder,

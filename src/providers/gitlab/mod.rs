@@ -15,6 +15,7 @@
 //!     caller that asks for one against GitLab gets a structured
 //!     not-supported error before any network access.
 
+pub mod graphql;
 pub mod http;
 pub mod r#impl;
 pub mod model;

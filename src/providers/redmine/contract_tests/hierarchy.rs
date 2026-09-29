@@ -1,4 +1,4 @@
-//! Redmine native hierarchy wire contracts (issue 641 P2).
+//! Redmine native hierarchy wire contracts (issue 641).
 //!
 //! Verifies `GET /issues/:id.json?include=children` maps native `parent` /
 //! `children` fields into the provider-neutral [`HierarchyNode`] without
@@ -103,7 +103,7 @@ fn hierarchy_never_reads_relations() {
 }
 
 #[test]
-fn dispatcher_routes_hierarchy_to_redmine_and_rejects_gitlab() {
+fn dispatcher_routes_hierarchy_to_redmine() {
     let (base, requests, server) = sequence(vec![MockResponse::ok(hierarchy_response(
         641,
         Some(640),
@@ -117,17 +117,8 @@ fn dispatcher_routes_hierarchy_to_redmine_and_rejects_gitlab() {
     support::assert_request(&seen[0], "GET", "/issues/641.json?include=children", None);
     server.join().unwrap();
 
-    // GitLab Work Item mapping lands in P3; P2 returns `not_supported`
-    // without any network. Local/Forgejo stay on their existing arms
-    // (owned by #642 / future work) and are not constructed here so this
-    // contract never touches credentials or SQLite.
-    let gitlab = crate::providers::ProviderDispatcher::Gitlab(
-        crate::providers::gitlab::GitlabProvider::new(
-            crate::providers::GitlabConfig::new("https://gitlab.example/api/v4", 42),
-            "test-token".to_owned(),
-        )
-        .unwrap(),
-    );
-    let error = gitlab.get_hierarchy(1).unwrap_err();
-    assert_eq!(error.json()["kind"], "not_supported");
+    // GitLab Work Item hierarchy lives in its own contract module
+    // (`gitlab::contract_tests::hierarchy`); Local/Forgejo stay on their
+    // existing arms (owned by #642 / future work) and are not constructed
+    // here so this contract never touches credentials or SQLite.
 }

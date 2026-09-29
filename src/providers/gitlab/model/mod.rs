@@ -10,6 +10,7 @@ pub mod duration;
 pub mod labels;
 pub mod relations;
 pub mod time;
+pub mod work_items;
 #[cfg(test)]
 pub(crate) use dto::ApiProjectNamespace;
 pub(crate) use dto::{
