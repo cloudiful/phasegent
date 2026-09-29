@@ -141,3 +141,38 @@ fn cli_heartbeat_uses_environment_session() {
         .expect("row");
     assert!(row.heartbeat_at > old, "heartbeat must advance");
 }
+
+#[test]
+fn cli_heartbeat_without_identity_fails_clearly() {
+    // Issue 651 P4: heartbeat extends a lease the caller owns, so a
+    // missing identity fails fast with exit 2 instead of refreshing
+    // under a fabricated shared owner. The row is left untouched.
+    let _lock = lock_workflow_tests();
+    let (_temp, storage, _env) = open_temp_db("cli-heartbeat-no-identity");
+    ensure_schema(&storage).expect("schema");
+    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "");
+    let old = now_unix_secs() - 1000;
+    insert_lease_for_identity(
+        &storage,
+        "lease-hb",
+        "/tmp/repo",
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/repo",
+    );
+    let exit = execute_worktree(
+        Some(Role::Orchestrator),
+        WorktreeCommand::Heartbeat {
+            lease: "lease-hb".to_owned(),
+            session: None,
+        },
+    );
+    assert_eq!(exit, 2, "a missing session identity must fail fast");
+    let row = list_for_repo(&storage, "/tmp/repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-hb")
+        .expect("row");
+    assert_eq!(row.heartbeat_at, old, "a refused heartbeat must not mutate");
+}

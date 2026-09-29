@@ -1,3 +1,14 @@
+//! Reuse-preference acquisition (issue 651 P3).
+//!
+//! The coherent reuse/isolate pair replaced the boolean `worktree-auto`
+//! switch and the implicit `reuse_only` gate: `reuse` states the reuse
+//! preference explicitly (or implicitly, for the create/bind hook),
+//! `--isolate` forces a fresh worktree, and passing both is a
+//! structured `argument` error. A `reuse` caller never creates: an
+//! occupied checkout path resolves to `isolation` guidance instead,
+//! while dirt, bindings, and leases on other paths reuse exactly like
+//! the default table.
+
 use super::support::*;
 use super::*;
 
@@ -27,20 +38,19 @@ fn seed_active_lease(identity: &str, issue: u64, session: &str, worktree_path: &
     .expect("seed lease");
 }
 
-fn reuse_only_options<'a>(cache_base: &'a Path) -> AcquireOptions<'a> {
+fn reuse_options<'a>(cache_base: &'a Path) -> AcquireOptions<'a> {
     AcquireOptions {
         cache_base: Some(cache_base),
         isolate: false,
-        auto: false,
         base: None,
-        reuse_only: true,
+        reuse: true,
     }
 }
 
 #[test]
-fn reuse_only_reuses_the_current_checkout_and_records_the_lease() {
-    // Safe reuse and automatic lease bookkeeping continue: only directory
-    // creation is opt-in (issue 616).
+fn reuse_prefers_the_current_checkout_and_records_the_lease() {
+    // The reuse preference keeps safe reuse and automatic lease
+    // bookkeeping: only directory creation is off the table.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("opt-in-reuse") else {
         return;
@@ -53,7 +63,7 @@ fn reuse_only_reuses_the_current_checkout_and_records_the_lease() {
         repo.dir.path(),
         616,
         "session-A",
-        reuse_only_options(cache.path()),
+        reuse_options(cache.path()),
     )
     .expect("a safe checkout must still be reused");
     assert!(!outcome.created);
@@ -82,7 +92,10 @@ fn reuse_only_reuses_the_current_checkout_and_records_the_lease() {
 }
 
 #[test]
-fn reuse_only_refuses_a_dirty_foreign_bound_checkout_with_guidance() {
+fn reuse_ignores_dirt_and_foreign_binding_with_an_advisory_warning() {
+    // Dirt and bindings are advisory only: a dirty checkout bound to
+    // another issue reuses under the reuse preference, warns about the
+    // dirt, and leaves the foreign binding untouched.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("opt-in-dirty-foreign") else {
         return;
@@ -93,30 +106,89 @@ fn reuse_only_refuses_a_dirty_foreign_bound_checkout_with_guidance() {
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 241);
-    let error = acquire_lease_with(
+    let outcome = acquire_lease_with(
         &runner,
         repo.dir.path(),
         245,
         "session-A",
-        reuse_only_options(cache.path()),
+        reuse_options(cache.path()),
     )
-    .expect_err("a dirty foreign checkout must not be created into implicitly");
+    .expect("a dirty foreign checkout must reuse under the reuse preference");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
+    let joined = outcome.warnings.join(" ");
+    assert!(
+        joined.contains("dirty") && joined.contains("advisory only"),
+        "the advisory dirty warning must survive: {joined}"
+    );
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let rows = leases_for_repo(&identity).expect("list leases");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the reuse must still book the checkout: {rows:?}"
+    );
+    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
+    let bound =
+        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
+    assert_eq!(bound, Some(241), "the foreign binding must survive reuse");
+    assert!(
+        !cache.path().join("worktrees").exists(),
+        "reuse must not create a worktree directory"
+    );
+    assert!(
+        repo.dir.path().exists(),
+        "reuse must never delete the current checkout"
+    );
+    let _ = std::fs::remove_file(&scratch);
+    drop(cache);
+    drop(db_temp);
+}
+
+#[test]
+fn reuse_refuses_an_occupied_path_with_guidance() {
+    // The reuse preference never bypasses an active lease on the
+    // checkout path itself: the occupant is named, the explicit
+    // `--isolate` command is given, and nothing is booked or created.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("opt-in-occupied") else {
+        return;
+    };
+    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-occupied");
+    let cache = unique_cache("opt-in-occupied");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    seed_active_lease(
+        &identity,
+        245,
+        "session-A",
+        &repo.dir.path().to_string_lossy(),
+    );
+    let error = acquire_lease_with(
+        &runner,
+        repo.dir.path(),
+        246,
+        "session-B",
+        reuse_options(cache.path()),
+    )
+    .expect_err("an occupied checkout path must refuse the reuse preference");
     assert_eq!(error.kind, "isolation");
     assert!(
-        error.message.contains("dirty")
-            && error.message.contains("241")
+        error.message.contains("session-A")
+            && error.message.contains("245")
             && error.message.contains("--isolate")
-            && error.message.contains("issue 245"),
-        "guidance must name the trigger and the explicit command: {error}"
+            && error.message.contains("issue 246"),
+        "guidance must name the occupant and the explicit command: {error}"
     );
     assert!(
         error.message.chars().count() <= 200,
         "the bounded message must keep the whole command: {error}"
     );
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let rows = leases_for_repo(&identity).expect("list leases");
-    assert!(
-        rows.is_empty(),
+    assert_eq!(
+        rows.len(),
+        1,
         "a refused conflict must not book the checkout: {rows:?}"
     );
     assert!(
@@ -127,100 +199,61 @@ fn reuse_only_refuses_a_dirty_foreign_bound_checkout_with_guidance() {
         repo.dir.path().exists(),
         "a refused conflict must never delete the current checkout"
     );
-    let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);
 }
 
 #[test]
-fn reuse_only_refuses_a_parallel_session_on_a_dirty_checkout() {
+fn reuse_reuses_despite_a_foreign_lease_elsewhere() {
+    // Path scope applies to the reuse preference too: an active lease
+    // on another checkout never blocks a free primary.
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("opt-in-parallel") else {
+    let Some(repo) = TempRepo::init("opt-in-foreign-lease") else {
         return;
     };
-    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-parallel");
-    let cache = unique_cache("opt-in-parallel");
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let scratch = repo.dir.path().join("scratch.txt");
-    std::fs::write(&scratch, "scratch\n").expect("write scratch");
-    bind_current_branch(&repo, 245);
-    seed_active_lease(&identity, 245, "session-A", "/tmp/phasegent-parallel");
-    let error = acquire_lease_with(
-        &runner,
-        repo.dir.path(),
-        245,
-        "session-B",
-        reuse_only_options(cache.path()),
-    )
-    .expect_err("a parallel session's lease must refuse implicit creation");
-    assert_eq!(error.kind, "isolation");
-    assert!(
-        error.message.contains("--isolate") && error.message.contains("issue 245"),
-        "guidance must name the explicit command: {error}"
-    );
-    let rows = leases_for_repo(&identity).expect("list leases");
-    assert_eq!(rows.len(), 1, "only the seeded lease may exist: {rows:?}");
-    assert!(
-        !cache.path().join("worktrees").exists(),
-        "a refused conflict must not create a worktree directory"
-    );
-    let _ = std::fs::remove_file(&scratch);
-    drop(cache);
-    drop(db_temp);
-}
-
-#[test]
-fn reuse_only_refuses_while_another_active_lease_exists() {
-    let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("opt-in-repo-lease") else {
-        return;
-    };
-    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-repo-lease");
-    let cache = unique_cache("opt-in-repo-lease");
+    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-foreign-lease");
+    let cache = unique_cache("opt-in-foreign-lease");
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     seed_active_lease(&identity, 999, "other-session", "/tmp/phasegent-foreign");
-    let error = acquire_lease_with(
+    let outcome = acquire_lease_with(
         &runner,
         repo.dir.path(),
         616,
         "session-A",
-        reuse_only_options(cache.path()),
+        reuse_options(cache.path()),
     )
-    .expect_err("another active lease must refuse implicit creation");
-    assert_eq!(error.kind, "isolation");
-    assert!(
-        error
-            .message
-            .contains("another active lease exists for this repository")
-            && error.message.contains("--isolate"),
-        "unexpected guidance: {error}"
-    );
+    .expect("a foreign lease elsewhere must not block reuse");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
     let rows = leases_for_repo(&identity).expect("list leases");
-    assert_eq!(rows.len(), 1, "only the seeded lease may exist: {rows:?}");
-    assert_eq!(rows[0].issue, 999);
+    assert_eq!(rows.len(), 2, "both leases stay live: {rows:?}");
     assert!(
         !cache.path().join("worktrees").exists(),
-        "a refused conflict must not create a worktree directory"
+        "reuse must not create a worktree directory"
     );
     drop(cache);
     drop(db_temp);
 }
 
 #[test]
-fn reuse_only_still_creates_when_explicit_isolation_opts_in() {
+fn isolate_and_reuse_together_are_rejected() {
+    // Forcing a fresh worktree while stating the reuse preference is
+    // contradictory: the table fails fast with a structured `argument`
+    // error before any storage or git work, mirroring the CLI parser's
+    // mutual-exclusion rejection.
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("opt-in-isolate") else {
+    let Some(repo) = TempRepo::init("opt-in-contradiction") else {
         return;
     };
-    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-isolate");
-    let cache = unique_cache("opt-in-isolate");
+    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-contradiction");
+    let cache = unique_cache("opt-in-contradiction");
     let runner = ProcessWorktreeRunner::new();
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
     bind_current_branch(&repo, 241);
-    let outcome = acquire_lease_with(
+    let error = acquire_lease_with(
         &runner,
         repo.dir.path(),
         245,
@@ -228,62 +261,35 @@ fn reuse_only_still_creates_when_explicit_isolation_opts_in() {
         AcquireOptions {
             cache_base: Some(cache.path()),
             isolate: true,
-            auto: false,
             base: None,
-            reuse_only: true,
+            reuse: true,
         },
     )
-    .expect("explicit --isolate must win over the reuse-only gate");
-    assert!(outcome.created);
-    assert_eq!(outcome.reason, "new_worktree");
+    .expect_err("isolate + reuse must fail fast");
+    assert_eq!(error.kind, "argument");
     assert!(
-        outcome
-            .path
-            .starts_with(cache.path().to_string_lossy().as_ref()),
-        "the opted-in worktree must live under the cache base"
+        error.message.contains("--isolate")
+            && error.message.contains("--reuse")
+            && error.message.contains("mutually exclusive"),
+        "the rejection must name both spellings: {error}"
     );
-    assert!(Path::new(&outcome.path).exists());
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let rows = leases_for_repo(&identity).expect("list leases");
+    assert!(
+        rows.is_empty(),
+        "a rejected combination must not book the checkout: {rows:?}"
+    );
+    assert!(
+        !cache.path().join("worktrees").exists(),
+        "a rejected combination must not create a worktree directory"
+    );
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);
 }
 
 #[test]
-fn reuse_only_still_creates_when_worktree_auto_is_enabled() {
-    let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("opt-in-auto") else {
-        return;
-    };
-    let (db_temp, _storage, _env) = open_temp_db("acquire-opt-in-auto");
-    let cache = unique_cache("opt-in-auto");
-    let runner = ProcessWorktreeRunner::new();
-    let scratch = repo.dir.path().join("scratch.txt");
-    std::fs::write(&scratch, "scratch\n").expect("write scratch");
-    bind_current_branch(&repo, 241);
-    let outcome = acquire_lease_with(
-        &runner,
-        repo.dir.path(),
-        245,
-        "session-A",
-        AcquireOptions {
-            cache_base: Some(cache.path()),
-            isolate: false,
-            auto: true,
-            base: None,
-            reuse_only: true,
-        },
-    )
-    .expect("the resolved worktree-auto switch must win over the reuse-only gate");
-    assert!(outcome.created);
-    assert_eq!(outcome.reason, "new_worktree");
-    assert!(Path::new(&outcome.path).exists());
-    let _ = std::fs::remove_file(&scratch);
-    drop(cache);
-    drop(db_temp);
-}
-
-#[test]
-fn reuse_only_keeps_the_idempotent_home_coming() {
+fn reuse_keeps_the_idempotent_home_coming() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("opt-in-idempotent") else {
         return;
@@ -296,7 +302,7 @@ fn reuse_only_keeps_the_idempotent_home_coming() {
         repo.dir.path(),
         616,
         "session-A",
-        reuse_only_options(cache.path()),
+        reuse_options(cache.path()),
     )
     .expect("first reuse");
     let second = acquire_lease_with(
@@ -304,7 +310,7 @@ fn reuse_only_keeps_the_idempotent_home_coming() {
         repo.dir.path(),
         616,
         "session-A",
-        reuse_only_options(cache.path()),
+        reuse_options(cache.path()),
     )
     .expect("second acquire must hit the idempotent home-coming");
     assert_eq!(second.reason, "idempotent");

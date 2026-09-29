@@ -494,24 +494,26 @@ pub(crate) fn execute_issue(
         } => {
             // Resolve the worktree session before the remote close so a
             // blank or overlong value fails fast without closing the
-            // issue. The resolved context is optional for the local lease
-            // release (issue 575 Phase 1) and only attributes its reason
-            // when a session is known (issue 305 Task 3, widened by issue
-            // 537 Phase 2); it also identifies the legacy fallback, whose
-            // migration warning goes to stderr.
-            let session = match crate::worktree::resolve_session(worktree_session.as_deref()) {
-                Ok(context) => context,
-                Err(error) => {
-                    return super::structured_error(
-                        serde_json::json!({
-                            "kind": error.kind,
-                            "operation": "issue close",
-                            "message": error.message,
-                        }),
-                        2,
-                    );
-                }
-            };
+            // issue. The attribution stays intentionally optional
+            // (issue 575 Phase 1, issue 651 P4): when neither
+            // `--worktree-session` nor `PHASEGENT_SESSION_ID` names a
+            // session, the close still succeeds and the leases flip
+            // with the plain `issue closed` reason — no owner is ever
+            // guessed and the removed literal fallback is gone.
+            let session =
+                match crate::worktree::resolve_session_optional(worktree_session.as_deref()) {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return super::structured_error(
+                            serde_json::json!({
+                                "kind": error.kind,
+                                "operation": "issue close",
+                                "message": error.message,
+                            }),
+                            2,
+                        );
+                    }
+                };
             // Single-number scope guard (issue 394 P3 pre-write): fails
             // before the PUT so a cross-project number never closes
             // remotely and never triggers local side-effects.
@@ -529,9 +531,6 @@ pub(crate) fn execute_issue(
             }
             match provider.close_issue(number) {
                 Ok(summary) => {
-                    // Legacy fallback is never silent: warn on stderr only
-                    // so the stdout close document stays byte-identical.
-                    super::report_local_warnings("issue close", session.legacy_warning());
                     // Issue 628 P3: closing retains every durable branch
                     // association — database links are never detached, and
                     // this checkout's legacy keys are imported best-effort
@@ -573,19 +572,14 @@ pub(crate) fn execute_issue(
                     // Release every active worktree lease the closed issue
                     // holds across all sessions (issue 305 Task 3, widened
                     // by issue 537 Phase 2, session-independent since issue
-                    // 575 Phase 1). The release needs no session identity;
-                    // the legacy fallback never guesses a closer, so it is
-                    // passed as `None` and the leases flip with the plain
-                    // `issue closed` reason. An explicit or environment
-                    // session only names the closer in the release_reason.
-                    // The hook runs after the remote close succeeded, so a
-                    // failed close never mutates local lease state, and
-                    // warnings stay on stderr.
-                    let release_session = match session.source {
-                        crate::worktree::SessionSource::Explicit
-                        | crate::worktree::SessionSource::Environment => Some(session.id.as_str()),
-                        crate::worktree::SessionSource::LegacyFallback => None,
-                    };
+                    // 575 Phase 1). The release needs no session identity:
+                    // an unknown closer flips the leases with the plain
+                    // `issue closed` reason, while a known one only names
+                    // the closer in the release_reason. The hook runs after
+                    // the remote close succeeded, so a failed close never
+                    // mutates local lease state, and warnings stay on
+                    // stderr.
+                    let release_session = session.as_ref().map(|context| context.id.as_str());
                     let repo_path =
                         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     super::report_local_warnings(

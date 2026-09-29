@@ -226,9 +226,8 @@ fn cli_issue_close_provider_failure_leaves_worktree_directory() {
 // `(repo, issue)` flips to `retained` and the guarded removal runs on the
 // same command, while `--worktree-session` stays optional and only names the
 // closer in the release reason. These tests drive the real CLI from a
-// checkout with `PHASEGENT_SESSION_ID` removed, so the legacy fallback (the
-// no-session path that used to leave every lease and every directory alone)
-// is the one under test.
+// checkout with `PHASEGENT_SESSION_ID` removed, so the ownerless path
+// (plain `issue closed` reason, no guessed closer) is the one under test.
 // ---------------------------------------------------------------------------
 
 /// RAII helper that removes `PHASEGENT_SESSION_ID` for the duration of a

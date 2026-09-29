@@ -6,7 +6,7 @@
 // `PHASEGENT_ROLE` environment entry, so the host process environment is never
 // mutated (issue #588 phase 2).
 
-import { phasegentCommand, safeText } from "./runtime.js";
+import { phasegentCommand, safeText, warn } from "./runtime.js";
 
 // `worktree acquire` is orchestrator-only; the lease reads are executor-scoped.
 const ORCHESTRATOR_ENV = { PHASEGENT_ROLE: "orchestrator" };
@@ -26,6 +26,19 @@ export async function readBranchBinding(cwd) {
 }
 
 export async function acquireWorktree(issueId, sessionId, cwd, options) {
+  // Lease-owned operations need an explicit identity (issue 651 P4):
+  // the CLI removed its fabricated fallback owner, so an anonymous
+  // acquire would hard-error. Refuse upfront with an actionable warning
+  // instead of spending a CLI round-trip on a guaranteed failure; the
+  // caller falls back to its ownerless path.
+  if (!sessionId) {
+    warn(
+      `phasegent: cannot acquire a worktree for issue ${issueId} without a session identity; ` +
+        "the lease must be owned, so pass the host session id or run " +
+        `\`phasegent worktree acquire --issue ${issueId} --isolate\` by hand`,
+    );
+    return null;
+  }
   const args = [
     "worktree", "acquire",
     "--issue", String(issueId),
@@ -35,7 +48,7 @@ export async function acquireWorktree(issueId, sessionId, cwd, options) {
   // forces a fresh directory; a caller that only wants the reuse decision
   // leaves it unset.
   if (options && options.isolate) args.push("--isolate");
-  if (sessionId) args.push("--session", String(sessionId));
+  args.push("--session", String(sessionId));
   const result = await safeText(phasegentCommand(args, cwd, ORCHESTRATOR_ENV));
   if (!result.ok || !result.value) return null;
   try {

@@ -25,11 +25,11 @@
 //!
 //! * `acquire_lease` may create a fresh worktree under
 //!   `~/.cache/phasegent/worktrees/<fingerprint>/<slug>` (or reuse the
-//!   current checkout when no other lease is active for the repo).
-//!   Creation is gated by issue #247: it only happens when `--isolate`
-//!   or the resolved `worktree-auto` switch is on, so the default path
-//!   reuses the current checkout and warns on a conflict. It never
-//!   deletes a worktree or branch.
+//!   current checkout when its path carries no conflicting active
+//!   lease). Creation happens on a path conflict or an explicit
+//!   `--isolate`; the default path reuses the current checkout.
+//!   `--reuse` states the reuse preference explicitly and is mutually
+//!   exclusive with `--isolate`. It never deletes a worktree or branch.
 //! * `release_lease` flips the row to `retained` (default) or
 //!   `released`. Directory and branch pruning is a Phase 2 concern and
 //!   is intentionally not implemented here.
@@ -53,7 +53,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::infra::storage::Storage;
 
 mod acquire;
-pub(crate) mod active_link;
 mod create_hook;
 pub(crate) mod git;
 pub(super) mod lease_schema;
@@ -69,8 +68,8 @@ mod session;
 // positive here.
 #[allow(unused_imports)]
 pub use acquire::{
-    AcquireOptions, WORKTREE_AUTO_SETTING, acquire_lease, acquire_lease_with, heartbeat_lease,
-    release_active_leases_for_issue, release_lease, release_lease_forced, resolve_worktree_auto,
+    AcquireOptions, acquire_lease, acquire_lease_with, heartbeat_lease,
+    release_active_leases_for_issue, release_lease, release_lease_forced,
 };
 #[allow(unused_imports)]
 pub use git::{
@@ -87,8 +86,8 @@ pub use naming::{
 pub use probe::{MAX_PROBE_ERRORS, ProbeError, ProbeFacts, probe_path};
 #[allow(unused_imports)]
 pub(crate) use session::{
-    LEGACY_SESSION_ID, MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource,
-    resolve_session, resolve_session_with,
+    MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource, resolve_session,
+    resolve_session_optional, resolve_session_with,
 };
 
 /// Best-effort worktree acquisition after `issue create` / `issue bind`
@@ -126,8 +125,8 @@ pub struct LeaseRow {
 }
 
 /// Outcome of a successful `acquire_lease`. `created == false` means
-/// the caller is reusing the current checkout because no other lease
-/// is active for the repo; `created == true` means a fresh worktree
+/// the caller is reusing the current checkout because no other active
+/// lease occupies its path; `created == true` means a fresh worktree
 /// was added.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AcquireOutcome {
@@ -141,11 +140,10 @@ pub struct AcquireOutcome {
     /// pre-existing `(repo, issue, session)` lease was reused.
     pub reason: String,
     /// Best-effort, stderr-bound warnings collected while deciding the
-    /// outcome (e.g. a dirty checkout reused because it is not bound
-    /// to a task, or the trigger detail behind a `new_worktree`
-    /// decision). Never changes `created` / `reason`; the CLI JSON
-    /// envelope deliberately does not carry this field, so consumers
-    /// that key on `created` need no changes.
+    /// outcome (e.g. an advisory dirty checkout that was reused, or the
+    /// trigger detail behind a `new_worktree` decision). Never changes
+    /// `created` / `reason`; the CLI JSON envelope deliberately does not
+    /// carry this field, so consumers that key on `created` need no changes.
     pub warnings: Vec<String>,
 }
 

@@ -127,6 +127,41 @@ pub(super) fn find_active_lease(
     Ok(None)
 }
 
+/// The `active` lease occupying `worktree_path` under `identity`, if
+/// any (issue 651 P2).
+///
+/// Path-scoped conflict lookup for the lease-first acquire table: at
+/// most one row can match because the active-only
+/// `(repo_identity, worktree_path)` partial index enforces it, so the
+/// newest row wins defensively and `None` means the checkout path is
+/// free. Only `active` rows match — terminal history never conflicts,
+/// and a lease on any other path is invisible here by construction.
+#[allow(dead_code)]
+pub(super) fn find_active_lease_for_path(
+    storage: &Storage,
+    identity: &str,
+    worktree_path: &str,
+) -> Result<Option<LeaseRow>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT lease_id, repo_identity, issue, session, checkout_path, worktree_path, \
+                    branch, status, created_at, heartbeat_at, release_reason \
+              FROM worktree_leases \
+              WHERE repo_identity = ?1 AND worktree_path = ?2 AND status = ?3 \
+              ORDER BY created_at DESC LIMIT 1",
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("prepare path lookup: {error}")))?;
+    let row: Option<LeaseRow> = statement
+        .query_row(
+            rusqlite::params![identity, worktree_path, LEASE_STATUS_ACTIVE],
+            decode_lease_row,
+        )
+        .optional()
+        .map_err(|error| WorktreeError::new("storage", format!("path lookup: {error}")))?;
+    Ok(row)
+}
+
 /// The active lease a read-only `worktree probe` resolves for
 /// `(repo_identity, issue)`. When `session` is `Some` the row must match
 /// it; otherwise the newest active row for the issue is used. `None`

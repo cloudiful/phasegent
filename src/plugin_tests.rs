@@ -746,6 +746,12 @@ fn adapter_template_is_well_formed_for_opencode_v2_api() {
     assert!(source.contains("worktree acquire"));
     assert!(source.contains("--format"));
     assert!(source.contains("json"));
+    // Issue 651 P4: the adapter guarantees the session identity on every
+    // managed acquire — `--session` travels with the call — and refuses
+    // an anonymous acquire before any CLI round-trip instead of booking
+    // under a fabricated owner.
+    assert!(source.contains("args.push(\"--session\", String(sessionId))"));
+    assert!(source.contains("without a session identity"));
     // The acquired worktree becomes the session directory (v2 session.move).
     assert!(source.contains("session.move"));
     // Graceful degradation keeps the original directory on any failure.

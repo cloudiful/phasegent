@@ -39,7 +39,7 @@ use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
     ProcessWorktreeRunner, WorktreeRunner, acquire_lease, auto_acquire_after_bind, ensure_schema,
-    list_for_repo, now_unix_secs, repo_identity, resolve_worktree_auto, worktree_add,
+    list_for_repo, now_unix_secs, repo_identity, worktree_add,
 };
 use std::path::PathBuf;
 

@@ -1,8 +1,9 @@
-//! Acquire flows driven by durable branch links (issue 628 P4).
+//! Acquire flows in the presence of durable branch links (issue 628
+//! P4, lease-first since issue 651 P2).
 //!
-//! A single unambiguous link decides dirty-tree ownership like the
-//! legacy binding did; ambiguous links never reuse a dirty tree; and
-//! a missing link store degrades to the legacy binding byte-for-byte.
+//! Links never decide: single, foreign, ambiguous, and missing-store
+//! states all reuse a free checkout, and only an active lease on the
+//! checkout path (or an explicit `--isolate`) creates a worktree.
 
 use super::support::*;
 use super::*;
@@ -38,13 +39,12 @@ fn dirty(repo: &TempRepo) -> PathBuf {
     scratch
 }
 
-fn reuse_only(cache: &TempDir) -> AcquireOptions<'_> {
+fn reuse_options(cache: &TempDir) -> AcquireOptions<'_> {
     AcquireOptions {
         cache_base: Some(cache.path()),
         isolate: false,
-        auto: false,
         base: None,
-        reuse_only: true,
+        reuse: true,
     }
 }
 
@@ -64,14 +64,15 @@ fn dirty_db_single_same_issue_reuses_checkout() {
         repo.dir.path(),
         245,
         "session-A",
-        reuse_only(&cache),
+        reuse_options(&cache),
     )
-    .expect("dirty tree owned by this issue must reuse");
+    .expect("dirty tree with a same-issue link must reuse");
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
+    let joined = outcome.warnings.join(" ");
     assert!(
-        outcome.warnings.is_empty(),
-        "owned dirty reuse stays quiet: {:?}",
+        joined.contains("dirty") && joined.contains("advisory only"),
+        "owned dirty reuse carries only the advisory warning: {:?}",
         outcome.warnings
     );
     let _ = std::fs::remove_file(&scratch);
@@ -80,7 +81,10 @@ fn dirty_db_single_same_issue_reuses_checkout() {
 }
 
 #[test]
-fn dirty_db_single_foreign_issue_isolates() {
+fn dirty_db_single_foreign_issue_reuses_checkout() {
+    // Issue 651 P2: a durable link to another issue is advisory
+    // context, not an isolation trigger. With no active lease on the
+    // checkout path the dirty tree reuses.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("links-foreign") else {
         return;
@@ -90,26 +94,27 @@ fn dirty_db_single_foreign_issue_isolates() {
     drop(storage);
     let cache = unique_cache("links-foreign");
     let scratch = dirty(&repo);
-    let error = crate::worktree::acquire_lease_with(
+    let outcome = crate::worktree::acquire_lease_with(
         &ProcessWorktreeRunner::new(),
         repo.dir.path(),
         245,
         "session-A",
-        reuse_only(&cache),
+        reuse_options(&cache),
     )
-    .expect_err("dirty tree owned by another issue must not reuse");
-    assert_eq!(error.kind, "isolation");
-    assert!(
-        error.message.contains("241"),
-        "the owner must be named: {error}"
-    );
+    .expect("a foreign link must not block reuse");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);
 }
 
 #[test]
-fn dirty_db_ambiguous_links_never_reuse() {
+fn dirty_db_ambiguous_links_reuse_checkout() {
+    // Ambiguous links are never guessed — and never isolate either.
+    // Reuse wins on a free checkout; explicit isolation still creates
+    // (with no link detail in its warnings, since links are not
+    // consulted).
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("links-ambiguous") else {
         return;
@@ -120,24 +125,24 @@ fn dirty_db_ambiguous_links_never_reuse() {
     drop(storage);
     let cache = unique_cache("links-ambiguous");
     let scratch = dirty(&repo);
-    let error = crate::worktree::acquire_lease_with(
+    let outcome = crate::worktree::acquire_lease_with(
         &ProcessWorktreeRunner::new(),
         repo.dir.path(),
         241,
         "session-A",
-        reuse_only(&cache),
+        reuse_options(&cache),
     )
-    .expect_err("ambiguous ownership must not reuse, even for a linked issue");
-    assert_eq!(error.kind, "isolation");
-    assert!(
-        error.message.contains("multiple issues"),
-        "ambiguity must be explained: {error}"
-    );
+    .expect("ambiguous links must not block reuse");
+    assert!(!outcome.created);
+    assert_eq!(outcome.reason, "no_conflict");
+    // A different session forcing isolation still creates: the first
+    // acquire booked the path, so this exercises the occupant warning
+    // (with no link detail, since links are not consulted).
     let outcome = acquire_lease(
         &ProcessWorktreeRunner::new(),
         repo.dir.path(),
         241,
-        "session-A",
+        "session-B",
         Some(cache.path()),
         true,
         false,
@@ -149,8 +154,8 @@ fn dirty_db_ambiguous_links_never_reuse() {
         outcome
             .warnings
             .iter()
-            .any(|w| w.contains("multiple issues")),
-        "isolation trigger belongs in warnings: {:?}",
+            .all(|w| !w.contains("multiple issues")),
+        "links are not consulted, so no link detail appears: {:?}",
         outcome.warnings
     );
     let _ = std::fs::remove_file(&scratch);
@@ -159,13 +164,17 @@ fn dirty_db_ambiguous_links_never_reuse() {
 }
 
 #[test]
-fn durable_link_beats_a_stale_legacy_binding() {
+fn durable_link_and_legacy_binding_are_advisory_only() {
+    // Neither the durable store nor the legacy binding decides: the
+    // store says 245 while legacy says 241, and both issues reuse the
+    // same free checkout.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("links-authoritative") else {
         return;
     };
     let (db_temp, storage, _env) = open_temp_db("links-authoritative");
-    // Legacy says 241, the durable store says 245: the store wins.
+    // Legacy says 241, the durable store says 245: neither wins
+    // because neither is consulted.
     seed_link(&storage, &local_key(&repo), &repo.head_branch, 245);
     drop(storage);
     bind_current_branch(&repo, 241);
@@ -176,19 +185,22 @@ fn durable_link_beats_a_stale_legacy_binding() {
         repo.dir.path(),
         245,
         "session-A",
-        reuse_only(&cache),
+        reuse_options(&cache),
     )
-    .expect("durable ownership must reuse");
+    .expect("durable same-issue link must reuse");
     assert_eq!(outcome.reason, "no_conflict");
-    let error = crate::worktree::acquire_lease_with(
+    // The first acquire booked the checkout path, so release it before
+    // proving the legacy-bound issue reuses the same free checkout.
+    release_lease(&outcome.lease_id, true).expect("release first lease");
+    let outcome = crate::worktree::acquire_lease_with(
         &ProcessWorktreeRunner::new(),
         repo.dir.path(),
         241,
-        "session-A",
-        reuse_only(&cache),
+        "session-B",
+        reuse_options(&cache),
     )
-    .expect_err("legacy agreement must not override the store");
-    assert_eq!(error.kind, "isolation");
+    .expect("legacy agreement must not force isolation either");
+    assert_eq!(outcome.reason, "no_conflict");
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);
@@ -196,8 +208,9 @@ fn durable_link_beats_a_stale_legacy_binding() {
 
 #[test]
 fn missing_link_store_keeps_legacy_behavior() {
-    // No `branch_issue_links` table at all (pre-P3 database): the
-    // legacy binding decides exactly as before.
+    // No `branch_issue_links` table at all (pre-P3 database): the free
+    // checkout still reuses. Links are never required for the reuse
+    // path, so a missing store changes nothing.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("links-missing-table") else {
         return;

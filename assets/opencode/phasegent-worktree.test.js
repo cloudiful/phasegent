@@ -33,6 +33,7 @@ const {
   ensureSessionWorktree,
   readSessionInfo,
   inheritedWorktree,
+  acquireWorktree,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   registerSkill,
@@ -1818,6 +1819,56 @@ describe("v2 worktree strategy registration", () => {
     });
     expect(await definition.remove({ directory: WORKTREE, force: true })).toBeUndefined();
   });
+
+describe("acquireWorktree session guarantee (issue #651 P4)", () => {
+  test("refuses an anonymous acquire without invoking the CLI and warns", async () => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      // Null, undefined, and empty session ids all refuse before any
+      // CLI round-trip: the CLI removed its fabricated fallback owner,
+      // so an anonymous acquire would hard-error there instead.
+      expect(await acquireWorktree(532, null, "/repo", { isolate: true })).toBeNull();
+      expect(await acquireWorktree(532, undefined, "/repo", {})).toBeNull();
+      expect(await acquireWorktree(532, "", "/repo", {})).toBeNull();
+    } finally {
+      console.warn = original;
+    }
+    expect(warnings).toHaveLength(3);
+    for (const warning of warnings) {
+      expect(warning).toContain("without a session identity");
+      expect(warning).toContain("--isolate");
+    }
+  });
+
+  test("a host create without a session degrades to the plain git worktree", async () => {
+    // The host create action carries no session, so the refused acquire
+    // resolves to null and the strategy keeps its designed fallback.
+    const fallbacks = [];
+    const definition = worktreeStrategyDefinition({
+      issueId: 532,
+      directory: "/repo",
+      acquire: acquireWorktree,
+      gitAdd: async (input) => {
+        fallbacks.push(input);
+        return { directory: input.directory };
+      },
+      readLeases: async () => [],
+    });
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const input = { sourceDirectory: "/repo", directory: "/wt/new" };
+      expect(await definition.create(input)).toEqual({ directory: "/wt/new" });
+    } finally {
+      console.warn = original;
+    }
+    expect(fallbacks).toHaveLength(1);
+    expect(warnings.join("\n")).toContain("without a session identity");
+  });
+});
 
   test("list reports the root plus the bound issue's leases", async () => {
     const definition = worktreeStrategyDefinition({

@@ -45,8 +45,9 @@ pub enum WorktreeCommand {
     Acquire {
         issue: u64,
         /// Explicit `--session` value as supplied by the caller. `None`
-        /// defers to `PHASEGENT_SESSION_ID` and then the legacy
-        /// `phasegent` fallback at execution time (issue 305 Task 1).
+        /// defers to `PHASEGENT_SESSION_ID`; without either, execution
+        /// fails with a structured `argument` error instead of guessing
+        /// an owner (issue 305 Task 1, fallback removed by issue 651 P4).
         session: Option<String>,
         /// Explicit `--base REF` request (issue 595). After the
         /// idempotent `(repo, issue, session)` home-coming, a fresh
@@ -56,10 +57,13 @@ pub enum WorktreeCommand {
         /// decision table.
         base: Option<String>,
         format: String,
-        /// Per-call isolation override (issue #247). `--isolate` forces
-        /// a fresh branch/worktree on a conflict; the resolved
-        /// `worktree-auto` switch is OR-ed with it, so the default
-        /// (both off) reuses the current checkout with a warning.
+        /// Force a fresh worktree (issue #509): `--isolate` skips every
+        /// reuse path and acquires an isolated worktree directly, and an
+        /// occupied checkout path isolates by default. The default is
+        /// reuse-current-unless-the-target-path-is-actively-occupied
+        /// (issue 651). `--reuse` states that default explicitly at the
+        /// parser layer and is mutually exclusive with `--isolate`; it
+        /// never bypasses an active lease on the checkout path.
         isolate: bool,
         no_sync: bool,
     },
@@ -99,7 +103,8 @@ pub enum WorktreeCommand {
     Heartbeat {
         lease: String,
         /// Explicit `--session`; `None` defers to
-        /// `PHASEGENT_SESSION_ID` and then the legacy fallback.
+        /// `PHASEGENT_SESSION_ID`, and a missing identity fails instead
+        /// of refreshing under a guessed owner (issue 651 P4).
         session: Option<String>,
     },
 }

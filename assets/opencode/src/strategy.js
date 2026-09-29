@@ -39,7 +39,10 @@ export function worktreeStrategyDefinition(options) {
         : fallbackDirectory;
       // A host "create worktree" action is the explicit opt-in (issue 616):
       // without `--isolate` the acquire may reuse the current checkout, which
-      // would not honour the create request.
+      // would not honour the create request. The host action carries no
+      // session, and anonymous acquisition is refused since issue 651 P4, so
+      // this always degrades to the plain git worktree below — no lease is
+      // ever booked without an owner.
       const acquired = await options.acquire(issueId, null, sourceDirectory, { isolate: true });
       if (acquired && typeof acquired.path === "string" && acquired.path.length > 0) {
         return { directory: acquired.path };

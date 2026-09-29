@@ -59,8 +59,10 @@ pub enum IssueCommand {
     Close {
         number: u64,
         /// Optional explicit worktree session id (`--worktree-session`).
-        /// `None` defers to `PHASEGENT_SESSION_ID` and then the legacy
-        /// `phasegent` fallback at execution time (issue 305 Task 1).
+        /// `None` defers to `PHASEGENT_SESSION_ID`; without either, the
+        /// close still succeeds and the leases flip with the plain
+        /// `issue closed` reason — no closer is ever guessed
+        /// (issue 575 Phase 1, issue 651 P4).
         worktree_session: Option<String>,
     },
     /// Redmine-only orchestrator attachment upload. Validates the local

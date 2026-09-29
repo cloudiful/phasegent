@@ -155,3 +155,53 @@ fn cli_simultaneous_active_checkout_still_conflicts() {
     );
     drop(db_temp);
 }
+
+#[test]
+fn cli_acquire_reuses_free_primary_despite_active_lease_elsewhere() {
+    // Issue 651 P2 acceptance criterion 2 through the CLI: an active
+    // lease on a linked worktree path does not force isolation of a
+    // free primary checkout. The acquire exits 0 and books the primary
+    // path while the foreign lease stays untouched.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-free-primary") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("cli-free-primary");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let storage = Storage::open().expect("temp storage");
+    ensure_schema(&storage).expect("schema");
+    insert_lease_for_identity(
+        &storage,
+        "lease-linked",
+        &identity,
+        "other-session",
+        LEASE_STATUS_ACTIVE,
+        now_unix_secs(),
+        &cache_temp.path().join("linked-worktree").to_string_lossy(),
+    );
+    drop(storage);
+    assert_eq!(
+        acquire(&repo, 245, "session-A"),
+        0,
+        "a free primary must reuse despite a live lease elsewhere"
+    );
+    let storage = Storage::open().expect("temp storage");
+    let rows = list_for_repo(&storage, &identity).expect("repo list");
+    assert_eq!(rows.len(), 2, "both the foreign and the new lease stay");
+    let live = rows
+        .iter()
+        .find(|row| row.status == LEASE_STATUS_ACTIVE && row.session == "session-A")
+        .expect("new live row");
+    assert_eq!(live.issue, 245);
+    assert_eq!(
+        live.worktree_path,
+        repo.dir.path().to_string_lossy().to_string(),
+        "the new lease books the primary checkout, not a worktree"
+    );
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "reuse must not create a worktree directory"
+    );
+    drop(db_temp);
+}

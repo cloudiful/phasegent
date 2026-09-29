@@ -5,9 +5,11 @@ use super::*;
 fn acquire_second_session_isolates_instead_of_colliding_on_reuse() {
     // Issue 437 symptom: with the old default, two acquires for different
     // sessions both reused the same checkout, so the second lease insert
-    // hit the `(repo_identity, worktree_path)` unique index. Issue #436
-    // flips the default: the second session now gets its own isolated
-    // worktree, so the collision (and any raw SQLite text) never happens.
+    // hit the `(repo_identity, worktree_path)` unique index. The
+    // lease-first table (issue 651 P2) removes the scenario: the second
+    // session sees the active lease on the checkout path and gets its
+    // own isolated worktree, so the collision (and any raw SQLite text)
+    // never happens.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("reuse-conflict") else {
         return;
@@ -151,8 +153,9 @@ fn acquire_new_worktree_conflict_reports_guidance_and_compensates() {
 
 #[test]
 fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
-    // Issue #246 replica: empty lease table + dirty checkout bound to
-    // issue 241, acquiring issue 245 must NOT reuse the dirty tree.
+    // Explicit `--isolate` forces a fresh worktree even for a dirty
+    // checkout bound to another issue: the flag skips every reuse
+    // path, and ownership is never consulted to decide.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("dirty-foreign-bound") else {
         return;
@@ -172,10 +175,10 @@ fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
         true,
         false,
     )
-    .expect("dirty + foreign-bound must isolate, not error");
+    .expect("explicit --isolate must create, not error");
     assert!(
         outcome.created,
-        "dirty + bound-to-241 must create a worktree for 245"
+        "explicit --isolate must create a worktree for 245"
     );
     assert_eq!(outcome.reason, "new_worktree");
     assert!(
@@ -187,8 +190,8 @@ fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
     assert!(outcome.branch.starts_with("phasegent/245-"));
     assert!(Path::new(&outcome.path).exists(), "worktree dir must exist");
     assert!(
-        outcome.warnings.iter().any(|w| w.contains("241")),
-        "trigger detail (dirty + bound #N) belongs in warnings: {:?}",
+        outcome.warnings.iter().any(|w| w.contains("--isolate")),
+        "the explicit-isolation trigger belongs in warnings: {:?}",
         outcome.warnings
     );
     let _ = std::fs::remove_file(&scratch);
@@ -197,14 +200,11 @@ fn acquire_dirty_foreign_bound_creates_isolated_worktree_on_empty_table() {
 }
 
 #[test]
-fn acquire_dirty_foreign_bound_isolates_by_default_without_isolate_flag() {
-    // Issue #436 behavior change: a dirty checkout bound to another issue
-    // isolates even when neither `--isolate` nor `worktree-auto` is set.
-    // This is the explicit `worktree acquire` / `acquire_lease` contract;
-    // the implicit create/bind hook runs in the `reuse_only` no-create mode
-    // (issue 616) and returns isolation guidance instead (see
-    // `acquire_opt_in`). The warning must name the new default and the
-    // retained flag.
+fn acquire_dirty_foreign_bound_reuses_by_default_without_isolate_flag() {
+    // Issue 651 P2 behavior change: a dirty checkout bound to another
+    // issue reuses by default when `--isolate` is not set. Dirt and
+    // bindings are advisory only; only an active lease on the checkout
+    // path forces isolation.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("dirty-default-isolate") else {
         return;
@@ -224,25 +224,21 @@ fn acquire_dirty_foreign_bound_isolates_by_default_without_isolate_flag() {
         false,
         false,
     )
-    .expect("dirty + foreign-bound must isolate by default, not reuse");
+    .expect("dirty + foreign-bound must reuse by default, not isolate");
     assert!(
-        outcome.created,
-        "a dirty foreign-bound checkout must not be reused by default"
+        !outcome.created,
+        "a dirty foreign-bound checkout must be reused by default"
     );
-    assert_eq!(outcome.reason, "new_worktree");
-    assert!(
-        outcome
-            .path
-            .starts_with(cache.path().to_string_lossy().as_ref()),
-        "the isolated worktree must live under the cache base"
-    );
-    assert!(Path::new(&outcome.path).exists(), "worktree dir must exist");
+    assert_eq!(outcome.reason, "no_conflict");
+    assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
     let joined = outcome.warnings.join(" ");
     assert!(
-        joined.contains("241")
-            && joined.contains("auto-isolation now defaults on")
-            && joined.contains("--isolate"),
-        "the warning must document the new default and the retained flag: {joined}"
+        joined.contains("dirty") && joined.contains("advisory only"),
+        "the warning must document the advisory-only dirt: {joined}"
+    );
+    assert!(
+        !cache.path().join("worktrees").exists(),
+        "reuse must not create a worktree directory"
     );
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
@@ -251,8 +247,8 @@ fn acquire_dirty_foreign_bound_isolates_by_default_without_isolate_flag() {
 
 #[test]
 fn acquire_auto_binds_new_worktree_branch_and_installs_hooks() {
-    // Issue #436 single-command closure: after an isolated acquire the
-    // fresh branch is bound to the requested issue and the managed commit
+    // Single-command closure: after an `--isolate` acquire the fresh
+    // branch is bound to the requested issue and the managed commit
     // hooks are installed, while the main checkout's branch stays
     // untouched. The origin gate of `lifecycle::auto_install_hooks` is
     // satisfied by giving the temp repo an origin.
@@ -273,10 +269,10 @@ fn acquire_auto_binds_new_worktree_branch_and_installs_hooks() {
         245,
         "session-A",
         Some(cache.path()),
-        false,
+        true,
         false,
     )
-    .expect("dirty checkout must acquire an isolated worktree");
+    .expect("explicit --isolate must acquire an isolated worktree");
     assert!(outcome.created);
     assert!(outcome.branch.starts_with("phasegent/245-"));
     let checkout = Path::new(&outcome.path);

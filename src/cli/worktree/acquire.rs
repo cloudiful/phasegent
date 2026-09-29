@@ -10,13 +10,11 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::cli::{print_json, report_local_warnings, structured_error};
+use crate::cli::{print_json, structured_error};
 use crate::worktree::{
     AcquireOutcome, ProcessWorktreeRunner, ReleaseOutcome, heartbeat_lease, now_unix_secs,
-    resolve_session, resolve_worktree_auto,
+    resolve_session,
 };
-
-use super::open_storage;
 
 /// One row of the JSON envelope returned by `acquire`. Field order
 /// is stable for downstream parsing.
@@ -94,10 +92,11 @@ pub(super) fn execute_acquire(
     base: Option<&str>,
 ) -> i32 {
     let _ = format; // only "json" is accepted at the parser layer
-    // Resolve the session before any storage / git work so a blank or
-    // overlong `PHASEGENT_SESSION_ID` fails fast with exit 2. The legacy
-    // fallback emits a migration warning on stderr only; the stdout JSON
-    // envelope is unchanged (issue 305 Task 1).
+    // Resolve the session before any storage / git work so a missing,
+    // blank, or overlong identity fails fast with exit 2 and a clear
+    // message naming `--session` / `PHASEGENT_SESSION_ID` (issue 651
+    // P4). There is no fabricated fallback owner: unrelated callers
+    // must never collapse onto one shared session.
     let session = match resolve_session(session) {
         Ok(context) => context,
         Err(error) => {
@@ -111,27 +110,8 @@ pub(super) fn execute_acquire(
             );
         }
     };
-    report_local_warnings("worktree acquire", session.legacy_warning());
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let runner = ProcessWorktreeRunner::new();
-    // Resolve the persisted `worktree-auto` switch (env over SQLite,
-    // default false) so `--isolate` and the setting share one gate.
-    let storage = match open_storage() {
-        Ok(storage) => storage,
-        Err(message) => return super::config_error(&message),
-    };
-    let auto = match resolve_worktree_auto(&storage) {
-        Ok(auto) => auto,
-        Err(error) => {
-            return structured_error(
-                serde_json::json!({
-                    "kind": error.kind,
-                    "message": error.message,
-                }),
-                1,
-            );
-        }
-    };
     match crate::worktree::acquire_lease_with(
         &runner,
         &repo_path,
@@ -140,12 +120,14 @@ pub(super) fn execute_acquire(
         crate::worktree::AcquireOptions {
             cache_base: None,
             isolate,
-            auto,
             base,
-            // The explicit `worktree acquire` command keeps the issue #436
-            // conflict isolation; only the implicit create/bind hook runs in
-            // the `reuse_only` no-create mode (issue 616).
-            reuse_only: false,
+            // The explicit `worktree acquire` command keeps the default
+            // conflict isolation: an occupied checkout path creates a
+            // dedicated worktree. `--reuse` states that default
+            // explicitly at the parser layer (it is mutually exclusive
+            // with `--isolate` there) and needs no separate gate here
+            // because the default table never bypasses an active lease.
+            reuse: false,
         },
     ) {
         Ok(outcome) => {
@@ -210,6 +192,9 @@ pub(super) fn execute_release(
 }
 
 pub(super) fn execute_heartbeat(lease: &str, session: Option<&str>) -> i32 {
+    // Heartbeat extends a lease the caller owns, so it needs the same
+    // explicit identity as acquire: a missing identity fails fast with
+    // exit 2 instead of refreshing under a fabricated shared owner.
     let session = match resolve_session(session) {
         Ok(context) => context,
         Err(error) => {
@@ -223,7 +208,6 @@ pub(super) fn execute_heartbeat(lease: &str, session: Option<&str>) -> i32 {
             );
         }
     };
-    report_local_warnings("worktree heartbeat", session.legacy_warning());
     match heartbeat_lease(lease, &session.id, now_unix_secs()) {
         Ok(row) => print_json(&HeartbeatJson::from(row)),
         Err(error) => structured_error(

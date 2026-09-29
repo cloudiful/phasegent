@@ -43,6 +43,45 @@ fn parse_acquire_isolate_flag_round_trips() {
 }
 
 #[test]
+fn parse_acquire_reuse_flag_is_accepted_as_the_explicit_default() {
+    // Issue 651 P3: `--reuse` states the default reuse preference
+    // explicitly. It parses to the same acquire command (the default
+    // table never bypasses an occupied checkout, so no separate gate
+    // travels with it); only the contradictory combination is rejected.
+    let invocation = crate::command::parse_with_role_env(
+        &strings(["worktree", "acquire", "--issue", "651", "--reuse"]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Acquire { isolate, .. }) => {
+            assert!(!isolate, "--reuse must not imply --isolate");
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+#[test]
+fn parse_acquire_reuse_and_isolate_together_are_rejected() {
+    let err = crate::command::parse_with_role_env(
+        &strings([
+            "worktree",
+            "acquire",
+            "--issue",
+            "651",
+            "--reuse",
+            "--isolate",
+        ]),
+        Some("orchestrator"),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("--reuse") && err.contains("--isolate"),
+        "the rejection must name both spellings, got {err}"
+    );
+}
+
+#[test]
 fn parse_acquire_rejects_missing_issue() {
     let err = crate::command::parse_with_role_env(
         &strings(["worktree", "acquire"]),

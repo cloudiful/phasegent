@@ -90,6 +90,19 @@ async function readBranchBinding(cwd) {
 }
 
 async function acquireWorktree(issueId, sessionId, cwd, options) {
+  // Lease-owned operations need an explicit identity (issue 651 P4):
+  // the CLI removed its fabricated fallback owner, so an anonymous
+  // acquire would hard-error. Refuse upfront with an actionable warning
+  // instead of spending a CLI round-trip on a guaranteed failure; the
+  // caller falls back to its ownerless path.
+  if (!sessionId) {
+    warn(
+      `phasegent: cannot acquire a worktree for issue ${issueId} without a session identity; ` +
+        "the lease must be owned, so pass the host session id or run " +
+        `\`phasegent worktree acquire --issue ${issueId} --isolate\` by hand`,
+    );
+    return null;
+  }
   const args = [
     "worktree", "acquire",
     "--issue", String(issueId),
@@ -99,7 +112,7 @@ async function acquireWorktree(issueId, sessionId, cwd, options) {
   // forces a fresh directory; a caller that only wants the reuse decision
   // leaves it unset.
   if (options && options.isolate) args.push("--isolate");
-  if (sessionId) args.push("--session", String(sessionId));
+  args.push("--session", String(sessionId));
   const result = await safeText(phasegentCommand(args, cwd, ORCHESTRATOR_ENV));
   if (!result.ok || !result.value) return null;
   try {
@@ -1246,9 +1259,9 @@ original directory.
 
 Creating a worktree is opt-in: \`issue create\` / \`issue bind\` and the adapter's
 lazy path reuse an existing lease, an inherited worktree, or the current
-checkout, and a conflict surfaces the explicit choices instead of a new
-directory — \`phasegent worktree acquire --issue N --isolate\` (or enabling
-\`worktree-auto\`) is how a dedicated worktree is requested.
+checkout, and a conflict surfaces the explicit choice instead of a new
+directory — \`phasegent worktree acquire --issue N --isolate\` is how a dedicated
+worktree is requested.
 
 Boundaries:
 
@@ -1286,7 +1299,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a fallback repair when the name cannot resolve. A successful \`issue create\`/\`bind\` reuses or books the current checkout; it only auto-acquires a worktree when the \`worktree-auto\` setting opted in, and a conflict otherwise surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\`, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases). \`issue status\` shows the current branch with its compatible single issue (only when unambiguous and not the detected default), the durable linked issues with last-known local-index state/source/indexed time (\`unknown\` when missing), the reverse branches of the active issue, and the legacy binding; \`issue branches N\` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set \`ambiguous=true\`. Both reads are read-only, never call a provider, and never guess (\`phasegent --help issue\` owns the exact flags).
+Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a fallback repair when the name cannot resolve. A successful \`issue create\`/\`bind\` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\` instead, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases). \`issue status\` shows the current branch with its compatible single issue (only when unambiguous and not the detected default), the durable linked issues with last-known local-index state/source/indexed time (\`unknown\` when missing), the reverse branches of the active issue, and the legacy binding; \`issue branches N\` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set \`ambiguous=true\`. Both reads are read-only, never call a provider, and never guess (\`phasegent --help issue\` owns the exact flags).
 
 ## Marker protocol
 
@@ -1419,7 +1432,7 @@ five-token vocabulary.
 
 \`acquire\`, \`release\`, \`heartbeat\`, and \`prune\` are orchestrator-only; children
 inherit your worktree automatically and never hold a lease of their own. A
-dedicated worktree is opt-in — \`worktree acquire --isolate\` (or \`worktree-auto\`)
+dedicated worktree is opt-in — \`worktree acquire --isolate\`
 is the explicit request, and \`issue create\`/\`bind\` never create one silently.
 Never delete a lease row, a branch, or a dirty worktree to force cleanup, and
 never pass a worktree path between sessions — the lease safety rules live in the
@@ -1805,7 +1818,10 @@ function worktreeStrategyDefinition(options) {
         : fallbackDirectory;
       // A host "create worktree" action is the explicit opt-in (issue 616):
       // without `--isolate` the acquire may reuse the current checkout, which
-      // would not honour the create request.
+      // would not honour the create request. The host action carries no
+      // session, and anonymous acquisition is refused since issue 651 P4, so
+      // this always degrades to the plain git worktree below — no lease is
+      // ever booked without an owner.
       const acquired = await options.acquire(issueId, null, sourceDirectory, { isolate: true });
       if (acquired && typeof acquired.path === "string" && acquired.path.length > 0) {
         return { directory: acquired.path };

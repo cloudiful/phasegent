@@ -99,7 +99,6 @@ Supported settings (canonical name and kebab-case alias):
   PHASEGENT_DEFAULT_PROVIDER / default-provider      (validated through ProviderKind)
   PHASEGENT_INDEX_BACKEND / index-backend            (legacy, ignored for selection)
   PHASEGENT_INDEX_PG_URL / index-pg-url              (secret; presence selects PostgreSQL)
-  PHASEGENT_WORKTREE_AUTO / worktree-auto           (boolean, default false; gates worktree acquire auto-isolation, see issue #247)
 
 Notify channel fields (one row per field; secrets need --stdin):
   PHASEGENT_NOTIFY_ENABLED / notify-enabled, PHASEGENT_NOTIFY_CHANNEL / notify-channel,

@@ -3,7 +3,11 @@ use super::support::*;
 use super::*;
 
 #[test]
-fn cli_surface_acquire_dirty_foreign_bound_isolates_by_default() {
+fn cli_surface_acquire_dirty_foreign_bound_reuses_by_default() {
+    // Issue 651 P2 through the CLI surface: dirty + bound-to-241 +
+    // acquiring 245 with no `--isolate` reuses the primary checkout.
+    // The lease row names the current branch (not a generated one)
+    // and no worktree directory is created.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("p2-cli-default-isolate") else {
         return;
@@ -19,7 +23,7 @@ fn cli_surface_acquire_dirty_foreign_bound_isolates_by_default() {
         run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
     assert_eq!(
         exit, 0,
-        "the issue #436 default acquire through the CLI surface must succeed"
+        "the lease-first default acquire through the CLI surface must succeed"
     );
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     let rows = list_for_repo(&storage, &identity).expect("list temp db");
@@ -29,19 +33,18 @@ fn cli_surface_acquire_dirty_foreign_bound_isolates_by_default() {
         "the default CLI acquire must record one lease"
     );
     assert_eq!(rows[0].issue, 245);
-    assert!(
-        rows[0].branch.starts_with("phasegent/245-"),
-        "a dirty foreign-bound checkout must isolate without --isolate"
+    assert_eq!(
+        rows[0].worktree_path,
+        repo.dir.path().to_string_lossy().to_string(),
+        "a dirty foreign-bound checkout must reuse the primary without --isolate"
+    );
+    assert_eq!(
+        rows[0].branch, repo.head_branch,
+        "reuse keeps the current branch instead of a generated one"
     );
     assert!(
-        rows[0]
-            .worktree_path
-            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
-        "the isolated worktree must land under the temp cache"
-    );
-    assert!(
-        std::path::Path::new(&rows[0].worktree_path).exists(),
-        "the default CLI acquire must create the worktree directory on disk"
+        !cache_temp.path().join("worktrees").exists(),
+        "the default CLI acquire must not create a worktree directory"
     );
     let _ = std::fs::remove_file(&scratch);
 }
@@ -82,7 +85,11 @@ fn cli_surface_acquire_isolate_flag_creates_new_worktree_in_temp_cache() {
 }
 
 #[test]
-fn cli_surface_acquire_env_worktree_auto_true_creates_new_worktree_in_temp_cache() {
+fn cli_surface_acquire_ignores_worktree_auto_env_and_reuses() {
+    // Issue 651 P5: the removed `PHASEGENT_WORKTREE_AUTO` setting is
+    // inert at the CLI surface too. With it set, a dirty foreign-bound
+    // checkout on a free path still reuses: exit 0, one lease on the
+    // primary checkout under the current branch, no worktree directory.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("p2-cli-env-auto") else {
         return;
@@ -96,24 +103,23 @@ fn cli_surface_acquire_env_worktree_auto_true_creates_new_worktree_in_temp_cache
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let exit =
         run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
-    assert_eq!(exit, 0, "env-true CLI acquire must succeed");
+    assert_eq!(exit, 0, "inert-env CLI acquire must succeed");
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1, "env-true CLI acquire must record one lease");
+    assert_eq!(rows.len(), 1, "inert-env CLI acquire must record one lease");
     assert_eq!(rows[0].issue, 245);
-    assert!(
-        rows[0].branch.starts_with("phasegent/245-"),
-        "env-true CLI acquire must use the new-issue branch slug"
+    assert_eq!(
+        rows[0].worktree_path,
+        repo.dir.path().to_string_lossy().to_string(),
+        "a removed switch must not isolate a free checkout"
+    );
+    assert_eq!(
+        rows[0].branch, repo.head_branch,
+        "reuse keeps the current branch instead of a generated one"
     );
     assert!(
-        rows[0]
-            .worktree_path
-            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
-        "env-true CLI acquire must land under the temp cache, not the operator's real cache"
-    );
-    assert!(
-        std::path::Path::new(&rows[0].worktree_path).exists(),
-        "env-true CLI acquire must create the worktree directory on disk"
+        !cache_temp.path().join("worktrees").exists(),
+        "inert-env CLI acquire must not create a worktree directory"
     );
     let _ = std::fs::remove_file(&scratch);
 }
@@ -162,11 +168,45 @@ fn cli_acquire_uses_environment_session_when_flag_absent() {
 }
 
 #[test]
+fn cli_acquire_without_identity_fails_clearly() {
+    // Issue 651 P4: with no `--session` and no usable
+    // `PHASEGENT_SESSION_ID`, acquire fails fast with exit 2 instead of
+    // booking the checkout under a fabricated shared owner. A blank
+    // environment value counts as missing, which keeps the test
+    // deterministic however the host environment looks. Nothing is
+    // recorded and no worktree is created.
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p4-cli-no-identity") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p4-cli-no-identity");
+    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit = run_cli_acquire_with_session(&repo, false, None);
+    assert_eq!(
+        exit, 2,
+        "a missing session identity must fail with a usage error"
+    );
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert!(
+        rows.is_empty(),
+        "a refused acquire must not book the checkout: {rows:?}"
+    );
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "a refused acquire must not create a worktree directory"
+    );
+}
+
+#[test]
 fn cli_acquire_second_session_isolates_and_avoids_the_duplicate_lease() {
     // Issue 437 surfaced the raw `(repo_identity, worktree_path)` unique
-    // violation when two sessions reused one checkout. Issue #436 removes
-    // the scenario: the second session now isolates and exits 0, so the
-    // CLI never reports a storage error for a legitimate parallel
+    // violation when two sessions reused one checkout. The lease-first
+    // table (issue 651 P2) removes the scenario: the second session sees
+    // the active lease on the checkout path and isolates with exit 0, so
+    // the CLI never reports a storage error for a legitimate parallel
     // acquire. The guidance translation itself stays covered by the
     // storage-level regression tests.
     let _lock = lock_workflow_tests();
@@ -174,7 +214,6 @@ fn cli_acquire_second_session_isolates_and_avoids_the_duplicate_lease() {
         return;
     };
     let (db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-dup-reuse");
-    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
     let first = run_cli_acquire_with_session(&repo, false, Some("session-A"));
     assert_eq!(first, 0, "the first reuse-current acquire must succeed");
     let second = run_cli_acquire_with_session(&repo, false, Some("session-B"));
@@ -204,26 +243,24 @@ fn cli_acquire_second_session_isolates_and_avoids_the_duplicate_lease() {
 // A corrupt `.git/index` makes `git status --porcelain` fail while
 // `git rev-parse --git-common-dir` and `git worktree add` keep working,
 // so the real `execute_worktree` path can be driven into the `Unknown`
-// dirty state. Auto-isolation on must create an isolated worktree;
-// auto-isolation off must reuse the current checkout, never silently
+// dirty state. Explicit `--isolate` must create an isolated worktree;
+// the default must reuse the current checkout, never silently
 // treating the checkout as clean.
 
 #[test]
-fn cli_surface_acquire_unknown_status_auto_isolation_creates_worktree() {
+fn cli_surface_acquire_unknown_status_with_isolate_creates_worktree() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("t4-cli-unknown-auto") else {
         return;
     };
     let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("t4-cli-unknown-auto");
-    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "true");
     corrupt_git_index(&repo);
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit =
-        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
+    let exit = run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), true);
     assert_eq!(
         exit, 0,
-        "unknown status + auto-isolation CLI acquire must succeed"
+        "unknown status + --isolate CLI acquire must succeed"
     );
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     let rows = list_for_repo(&storage, &identity).expect("list temp db");
@@ -252,7 +289,6 @@ fn cli_surface_acquire_unknown_status_default_off_reuses_checkout() {
         return;
     };
     let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("t4-cli-unknown-off");
-    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "false");
     corrupt_git_index(&repo);
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");

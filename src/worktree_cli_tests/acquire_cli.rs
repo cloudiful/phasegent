@@ -3,10 +3,11 @@ use super::*;
 
 #[test]
 fn cli_acquire_dirty_foreign_bound_returns_new_worktree_envelope_with_warning() {
-    // Issue #246 replica through the CLI-facing contract: empty lease
-    // table + dirty checkout bound to 241 + acquiring 245 -> the CLI
-    // envelope must say created:true / reason:"new_worktree" and the
-    // stderr-bound warning must carry the bound-issue detail.
+    // Explicit `--isolate` through the CLI-facing contract: dirty
+    // checkout bound to 241 + acquiring 245 -> the CLI envelope must
+    // say created:true / reason:"new_worktree" and the stderr-bound
+    // warning must carry the explicit-isolation trigger. Ownership is
+    // never consulted, so no bound-issue detail appears.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("cli-dirty-foreign") else {
         return;
@@ -25,10 +26,10 @@ fn cli_acquire_dirty_foreign_bound_returns_new_worktree_envelope_with_warning() 
         true,
         false,
     )
-    .expect("dirty + foreign-bound must isolate, not error");
+    .expect("explicit --isolate must create, not error");
     assert!(
         outcome.created,
-        "dirty + bound-to-241 must create a worktree for 245"
+        "explicit --isolate must create a worktree for 245"
     );
     assert_eq!(outcome.reason, "new_worktree");
     assert!(
@@ -40,8 +41,8 @@ fn cli_acquire_dirty_foreign_bound_returns_new_worktree_envelope_with_warning() 
     assert!(outcome.branch.starts_with("phasegent/245-"));
     let warning_text = outcome.warnings.join(" ");
     assert!(
-        outcome.warnings.iter().any(|w| w.contains("241")),
-        "trigger detail must reach the stderr warning payload: {warning_text}"
+        outcome.warnings.iter().any(|w| w.contains("--isolate")),
+        "explicit-isolation trigger must reach the stderr warning payload: {warning_text}"
     );
     assert_cli_envelope(outcome, true, "new_worktree");
     let _ = std::fs::remove_file(&scratch);
@@ -49,9 +50,10 @@ fn cli_acquire_dirty_foreign_bound_returns_new_worktree_envelope_with_warning() 
 
 #[test]
 fn cli_acquire_dirty_unbound_returns_reuse_envelope_with_warning() {
-    // Dirty + unbound: no task evidence -> the CLI envelope must say
-    // created:false / reason:"no_conflict" (reuse) and the stderr-bound
-    // warning must explain the reused tree is not pristine.
+    // Dirty + unbound: dirt is advisory only -> the CLI envelope must
+    // say created:false / reason:"no_conflict" (reuse) and the
+    // stderr-bound warning must explain the reused tree is not
+    // pristine without claiming anything about bindings.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("cli-dirty-unbound") else {
         return;
@@ -75,8 +77,8 @@ fn cli_acquire_dirty_unbound_returns_reuse_envelope_with_warning() {
     assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
     let joined = outcome.warnings.join(" ");
     assert!(
-        joined.contains("dirty") && joined.contains("not bound"),
-        "reuse of a dirty unbound checkout must carry a warning: {joined}"
+        joined.contains("dirty") && joined.contains("advisory only"),
+        "reuse of a dirty checkout must carry the advisory warning: {joined}"
     );
     assert_cli_envelope(outcome, false, "no_conflict");
     let _ = std::fs::remove_file(&scratch);
@@ -196,13 +198,12 @@ fn cli_acquire_dirty_foreign_bound_recorded_in_temp_db_only() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #247: worktree-auto switch + `--isolate` gating, updated by
-// issue #436
+// Issue 651 P3/P5: coherent reuse/isolate gating
 // ---------------------------------------------------------------------------
 //
-// Issue #436 flips the acquire default: a dirty checkout (or any other
-// active lease) isolates even when `--isolate`/`worktree-auto` are off,
-// while `--isolate` and the resolved switch stay accepted and keep
-// working. The switch itself still decides the `Unknown` `git status`
-// probe state, and its env-over-SQLite resolution is unchanged. All
+// Acquisition is lease-first: only an active lease on the target
+// checkout path isolates when `--isolate` is off, while `--isolate`
+// stays accepted and keeps working. `--reuse` states the default
+// explicitly at the parser layer and is mutually exclusive with
+// `--isolate`. The removed `worktree-auto` switch is inert. All
 // tests pin their DB and cache to temp dirs.

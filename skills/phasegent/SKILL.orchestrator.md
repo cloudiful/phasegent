@@ -54,7 +54,7 @@ five-token vocabulary.
 
 `acquire`, `release`, `heartbeat`, and `prune` are orchestrator-only; children
 inherit your worktree automatically and never hold a lease of their own. A
-dedicated worktree is opt-in — `worktree acquire --isolate` (or `worktree-auto`)
+dedicated worktree is opt-in — `worktree acquire --isolate`
 is the explicit request, and `issue create`/`bind` never create one silently.
 Never delete a lease row, a branch, or a dirty worktree to force cleanup, and
 never pass a worktree path between sessions — the lease safety rules live in the

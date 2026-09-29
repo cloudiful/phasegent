@@ -50,7 +50,7 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         args,
         0,
         &["--issue", "--session", "--base", "--format"],
-        &["--isolate", "--no-sync"],
+        &["--isolate", "--reuse", "--no-sync"],
         "worktree acquire",
     )?;
     let issue_raw = required_nonempty_option(args, "--issue", "worktree acquire")?;
@@ -72,6 +72,17 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         return Err("worktree acquire --format must be 'json'".to_owned());
     }
     let isolate = has_flag(args, "--isolate");
+    // `--reuse` states the default reuse preference explicitly (issue
+    // 651 P3): it is accepted and otherwise a no-op, because the
+    // default table never bypasses an occupied checkout path. Stating
+    // both preferences at once is contradictory, so it fails fast here
+    // instead of reaching the decision table.
+    if isolate && has_flag(args, "--reuse") {
+        return Err(
+            "worktree acquire --reuse and --isolate are mutually exclusive; pass one or neither"
+                .to_owned(),
+        );
+    }
     Ok(Command::Worktree(WorktreeCommand::Acquire {
         issue,
         session,

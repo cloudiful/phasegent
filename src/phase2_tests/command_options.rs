@@ -38,14 +38,15 @@ fn issue_close_parses_worktree_session_option() {
 
 #[test]
 fn issue_close_worktree_session_defaults_to_none() {
-    // Legacy `issue close N` keeps parsing with no explicit session; the
-    // CLI resolves PHASEGENT_SESSION_ID / legacy fallback at execution.
+    // A bare `issue close N` keeps parsing with no explicit session; at
+    // execution the close resolves `PHASEGENT_SESSION_ID` optionally and
+    // converges with the plain reason when neither names a session.
     let args = ["issue", "close", "42"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let invocation =
-        command::parse_with_role_env(&args, Some("orchestrator")).expect("legacy close parses");
+        command::parse_with_role_env(&args, Some("orchestrator")).expect("bare close parses");
     match invocation.command {
         command::Command::Issue(command::IssueCommand::Close {
             number,

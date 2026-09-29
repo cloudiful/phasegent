@@ -31,38 +31,40 @@ fn auto_acquire_after_bind_reuses_current_checkout_silently() {
 
 #[test]
 fn auto_acquire_after_bind_warns_with_isolation_guidance_instead_of_creating() {
-    // Issue 616: the implicit create/bind hook never creates a worktree on
-    // its own. A conflict surfaces the explicit isolation command instead,
-    // and the create/bind stays successful.
+    // Issue 616 + 651 P3: the implicit create/bind hook states the
+    // reuse preference, so it never creates a worktree on its own. An
+    // occupied checkout path surfaces the explicit isolation command
+    // instead, and the create/bind stays successful.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("auto-bind-opt-in") else {
         return;
     };
     let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("auto-bind-opt-in");
-    // Seed a foreign active lease for the repo so rule 4 refuses creation.
+    // Seed an occupant on the checkout path itself so the hook refuses
+    // creation. A lease on any other path would reuse instead.
     let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     ensure_schema(&storage).expect("schema");
-    let mut foreign = fresh_lease_row(
-        "lease-foreign",
+    let mut occupant = fresh_lease_row(
+        "lease-occupant",
         999,
         "other-session",
-        "/tmp/phasegent-foreign",
+        &repo.dir.path().to_string_lossy(),
         "main",
         LEASE_STATUS_ACTIVE,
         now_unix_secs(),
     );
-    foreign.repo_identity = identity.clone();
-    insert_row(&storage, &foreign);
+    occupant.repo_identity = identity.clone();
+    insert_row(&storage, &occupant);
     drop(storage);
 
     let warning = in_temp_repo(&repo, || auto_acquire_after_bind(311, Some("session-b")));
-    let warning = warning.expect("a refused conflict must surface the isolation guidance");
+    let warning = warning.expect("an occupied checkout must surface the isolation guidance");
     assert!(
         warning.contains("isolation is opt-in")
             && warning.contains("--isolate")
             && warning.contains("issue 311")
-            && warning.contains("another active lease exists for this repository"),
+            && warning.contains("other-session"),
         "unexpected warning: {warning}"
     );
     let storage = Storage::open().expect("storage");
@@ -70,7 +72,7 @@ fn auto_acquire_after_bind_warns_with_isolation_guidance_instead_of_creating() {
     assert_eq!(
         rows.len(),
         1,
-        "only the seeded foreign lease may exist; the refusal must not book the checkout: {rows:?}"
+        "only the seeded occupant may exist; the refusal must not book the checkout: {rows:?}"
     );
     assert_eq!(rows[0].session, "other-session");
     assert!(
@@ -84,9 +86,11 @@ fn auto_acquire_after_bind_warns_with_isolation_guidance_instead_of_creating() {
 }
 
 #[test]
-fn auto_acquire_after_bind_creates_when_worktree_auto_is_enabled() {
-    // `worktree-auto` remains the global opt-in: with it on, the same
-    // conflict creates the dedicated worktree and reports the redirect.
+fn auto_acquire_after_bind_ignores_worktree_auto_and_reuses() {
+    // Issue 651 P3: the removed `worktree-auto` setting is inert. With
+    // it set, the same free checkout still reuses silently instead of
+    // creating a worktree — the hook states the reuse preference and
+    // never creates.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("auto-bind-auto-on") else {
         return;
@@ -96,6 +100,10 @@ fn auto_acquire_after_bind_creates_when_worktree_auto_is_enabled() {
     let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     ensure_schema(&storage).expect("schema");
+    storage
+        .save_global_setting("PHASEGENT_WORKTREE_AUTO", "true")
+        .expect("leftover row must persist");
+    // A foreign lease on another path never blocks the free primary.
     let mut foreign = fresh_lease_row(
         "lease-foreign",
         999,
@@ -110,34 +118,30 @@ fn auto_acquire_after_bind_creates_when_worktree_auto_is_enabled() {
     drop(storage);
 
     let warning = in_temp_repo(&repo, || auto_acquire_after_bind(311, Some("session-b")));
-    let warning = warning.expect("a created worktree must surface a bounded warning");
-    assert!(
-        warning.contains("phasegent: acquired worktree")
-            && warning.contains("issue 311")
-            && warning.contains("reason=new_worktree"),
-        "unexpected warning: {warning}"
+    assert_eq!(
+        warning, None,
+        "a free checkout reuses silently despite the leftover setting: {warning:?}"
     );
     let rows = {
         let storage = Storage::open().expect("storage");
         list_for_repo(&storage, &identity).expect("list")
     };
-    let created = rows
+    let booked = rows
         .iter()
         .find(|row| row.session == "session-b")
-        .expect("created lease");
-    assert!(
-        created
-            .worktree_path
-            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
-        "the opted-in worktree must land under the temp cache"
+        .expect("reuse lease");
+    assert_eq!(
+        booked.worktree_path,
+        repo.dir.path().to_string_lossy().to_string(),
+        "the hook books the current checkout, never a worktree"
     );
     assert!(
-        std::path::Path::new(&created.worktree_path).exists(),
-        "the helper must create the worktree directory on disk"
+        !cache_temp.path().join("worktrees").exists(),
+        "the implicit hook must not create a worktree directory"
     );
     assert!(
         repo.dir.path().exists(),
-        "isolation must never delete the current checkout"
+        "reuse must never delete the current checkout"
     );
 }
 
@@ -155,7 +159,8 @@ fn auto_acquire_after_bind_is_silent_for_zero_issue_and_unknown_session() {
 fn cli_bind_stays_successful_when_implicit_isolation_is_unavailable() {
     // Issue 616 constraint: a rejected isolation is a stderr warning, never a
     // bind failure. The binding is written, the process exits 0, and no
-    // worktree or lease is created by the implicit hook.
+    // worktree or lease is created by the implicit hook. The hook refuses
+    // only when the checkout path itself is occupied.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("p616-bind-refused") else {
         return;
@@ -164,17 +169,17 @@ fn cli_bind_stays_successful_when_implicit_isolation_is_unavailable() {
     let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
     let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
     ensure_schema(&storage).expect("schema");
-    let mut foreign = fresh_lease_row(
-        "lease-foreign",
+    let mut occupant = fresh_lease_row(
+        "lease-occupant",
         999,
         "other-session",
-        "/tmp/phasegent-foreign",
+        &repo.dir.path().to_string_lossy(),
         "main",
         LEASE_STATUS_ACTIVE,
         now_unix_secs(),
     );
-    foreign.repo_identity = identity.clone();
-    insert_row(&storage, &foreign);
+    occupant.repo_identity = identity.clone();
+    insert_row(&storage, &occupant);
     drop(storage);
 
     let exit = in_temp_repo(&repo, || {

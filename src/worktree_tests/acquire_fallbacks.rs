@@ -3,11 +3,10 @@ use super::*;
 
 #[test]
 fn acquire_binding_read_failure_falls_through_without_error() {
-    // Binding resolution is best-effort: when the fake runner reports
-    // the checkout dirty and the real binding read then fails (the
-    // path is not a git checkout), acquire falls through to reuse
-    // instead of hard-erroring, and the failure is surfaced as a
-    // warning.
+    // Binding resolution is gone from the decision table (issue 651
+    // P5): a dirty checkout reuses with the advisory warning, and the
+    // post-acquire bind lifecycle still degrades its own failure to a
+    // warning instead of hard-erroring the acquire.
     let _lock = lock_workflow_tests();
     let (db_temp, _storage, _env) = open_temp_db("acquire-binding-failure");
     let cache = unique_cache("binding-failure");
@@ -55,8 +54,8 @@ fn acquire_binding_read_failure_falls_through_without_error() {
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
     assert!(
-        outcome.warnings.iter().any(|w| w.contains("unbound")),
-        "binding read failure must be surfaced as a warning: {:?}",
+        outcome.warnings.iter().any(|w| w.contains("advisory only")),
+        "the dirty advisory warning must survive: {:?}",
         outcome.warnings
     );
     let _ = std::fs::remove_dir_all(&no_repo);
@@ -65,9 +64,9 @@ fn acquire_binding_read_failure_falls_through_without_error() {
 }
 
 #[test]
-fn acquire_git_status_failure_with_auto_isolation_creates_isolated_worktree() {
+fn acquire_git_status_failure_with_isolate_creates_isolated_worktree() {
     // Issue 305 Task 4: a failing `git status` is an unknown state, not
-    // a clean tree. With auto-isolation on we must not reuse the
+    // a clean tree. With explicit `--isolate` we must not reuse the
     // untrusted checkout, so a fresh worktree is created.
     let _lock = lock_workflow_tests();
     let (db_temp, _storage, _env) = open_temp_db("acquire-unknown-auto");
@@ -99,7 +98,7 @@ fn acquire_git_status_failure_with_auto_isolation_creates_isolated_worktree() {
         true,
         false,
     )
-    .expect("unknown state + auto-isolation must isolate, not error");
+    .expect("unknown state + explicit --isolate must isolate, not error");
     assert!(outcome.created, "unknown checkout must not be reused");
     assert_eq!(outcome.reason, "new_worktree");
     assert!(
@@ -111,7 +110,7 @@ fn acquire_git_status_failure_with_auto_isolation_creates_isolated_worktree() {
     let joined = outcome.warnings.join(" ");
     assert!(
         joined.contains("dirty probe failed")
-            && joined.contains("auto-isolation is enabled")
+            && joined.contains("explicit --isolate requested")
             && joined.contains("unknown"),
         "unknown probe must be surfaced as a warning: {joined}"
     );
@@ -120,8 +119,8 @@ fn acquire_git_status_failure_with_auto_isolation_creates_isolated_worktree() {
 }
 
 #[test]
-fn acquire_git_status_failure_with_auto_isolation_disabled_reuses_with_warning() {
-    // Issue 305 Task 4: with isolation off the unknown checkout is
+fn acquire_git_status_failure_without_isolate_reuses_with_warning() {
+    // Issue 305 Task 4: without `--isolate` the unknown checkout is
     // reused, but the operator must be warned rather than told the tree
     // is clean.
     let _lock = lock_workflow_tests();
@@ -166,7 +165,7 @@ fn acquire_git_status_failure_with_auto_isolation_disabled_reuses_with_warning()
     let joined = outcome.warnings.join(" ");
     assert!(
         joined.contains("dirty probe failed")
-            && joined.contains("auto-isolation is disabled")
+            && joined.contains("no --isolate")
             && joined.contains("unknown"),
         "default-off unknown state must warn instead of staying silent: {joined}"
     );

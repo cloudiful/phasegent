@@ -237,7 +237,7 @@ fn persist_set_value(
             }
             storage.save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_ENABLED" | "PHASEGENT_WORKTREE_AUTO" => {
+        "PHASEGENT_NOTIFY_ENABLED" => {
             let normalised = crate::config_write::parse_bool_literal(trimmed).ok_or_else(|| {
                 format!("invalid {canonical} '{trimmed}'; expected true or false")
             })?;

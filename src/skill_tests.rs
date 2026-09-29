@@ -338,8 +338,8 @@ fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
         "lifecycle one-liner must keep bind as a background fallback; got: {section}"
     );
     assert!(
-        section.contains("issue create") && section.contains("auto-acquires a worktree"),
-        "lifecycle one-liner must state that create/bind auto-acquires a worktree; got: {section}"
+        section.contains("issue create") && section.contains("never creates a worktree implicitly"),
+        "lifecycle one-liner must state that create/bind never creates a worktree implicitly; got: {section}"
     );
     assert!(
         !section.contains("- "),
