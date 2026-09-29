@@ -71,6 +71,34 @@ Use `--provider redmine` or `--provider gitlab` on a command when the selected
 provider is not the default. Use `--repository OWNER/REPOSITORY` and
 `--project-id ID` to override repository or project discovery when required.
 
+## Issue Hierarchy
+
+Parent/child links are provider-native: Redmine subtasks
+(`parent_issue_id`) and GitLab Work Item hierarchy (Epic→Issue,
+Issue→Task). Hierarchy is never an issue relation, and closing a parent
+never closes its children — each child keeps its own status and audit
+trail.
+
+```sh
+# Read the parent and at most 50 direct children of one item
+PHASEGENT_ROLE=executor phasegent hierarchy get 641
+
+# Assign / clear the native parent (orchestrator-only)
+PHASEGENT_ROLE=orchestrator phasegent hierarchy set --parent 640 --child 641
+PHASEGENT_ROLE=orchestrator phasegent hierarchy unset --child 641
+```
+
+IDs are provider-specific: Redmine IDs are issue IDs, GitLab IDs are the
+numeric global Work Item IDs shown in hierarchy output. `hierarchy get`
+reports `children_truncated: true` when the 50-child bound drops children.
+The Redmine-only `issue create/update --parent-issue` flag sets the same
+native field at write time; the typed `hierarchy` commands are the
+provider-aware surface covering GitLab too.
+
+Treat a parent issue as an umbrella: it carries the overall goal and
+acceptance criteria, while each child carries its own focused goal,
+constraints, acceptance criteria, and audit notes.
+
 Provisioning (`auth setup`, config writes, `workflow bootstrap`) lives under
 the human-operator `admin` group (`phasegent admin ...`) and is never invoked
 by AI roles.

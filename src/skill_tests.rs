@@ -539,3 +539,52 @@ fn skill_does_not_reproduce_the_command_catalogue() {
         "SKILL.md must carry exactly the capability table (header + separator + 18 rows)"
     );
 }
+
+/// Issue 641 P4b: the shared skill carries the focused parent/child
+/// planning guidance — parents are umbrellas, children own focused
+/// goals/acceptance/audits, child roles read the child plan plus only the
+/// relevant parent context, and hierarchy never cascades on close.
+#[test]
+fn skill_keeps_the_focused_parent_child_planning_guidance() {
+    let shared = read_skill("SKILL.md");
+    let marker = "## Parent/child planning (hierarchy)";
+    let start = shared
+        .find(marker)
+        .expect("SKILL.md must keep the parent/child planning section");
+    let body = &shared[start + marker.len()..];
+    let section = body.find("## ").map(|end| &body[..end]).unwrap_or(body);
+    let normalised: String = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalised.contains("Parent issues are umbrellas"),
+        "the section must state the umbrella role of parents; got: {section}"
+    );
+    assert!(
+        normalised.contains("owns a focused goal")
+            && normalised.contains("acceptance criteria")
+            && normalised.contains("audit notes"),
+        "the section must keep the child-owned goal/acceptance/audit split; got: {section}"
+    );
+    assert!(
+        normalised.contains("child plan plus only the relevant parent context"),
+        "the section must scope child-role context to the child plan plus relevant parent context; got: {section}"
+    );
+    assert!(
+        normalised.contains("never cascade-closes its children"),
+        "the section must pin the no-cascade-on-close rule; got: {section}"
+    );
+    assert!(
+        normalised.contains("50-child bound") && normalised.contains("truncation"),
+        "the section must preserve the documented 50-child truncation bound; got: {section}"
+    );
+    assert!(
+        normalised.contains("`@username`")
+            && normalised.contains("`#N`")
+            && normalised.contains("never hierarchy"),
+        "the section must keep mentions/cross-references/relations out of hierarchy; got: {section}"
+    );
+    // The section stays planning-focused: command flags live in help.
+    assert!(
+        !section.contains("--parent"),
+        "the skill must not copy command flags; got: {section}"
+    );
+}

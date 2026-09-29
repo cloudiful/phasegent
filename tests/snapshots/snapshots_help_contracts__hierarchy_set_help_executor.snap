@@ -1,0 +1,5 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, Some(\"executor\"), &[\"--help\", \"hierarchy\", \"set\"])"
+---
+No command available for executor.

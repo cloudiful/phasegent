@@ -1,0 +1,9 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, None, &[\"--help\", \"hierarchy\", \"get\"])"
+---
+Usage: hierarchy get <ID>
+
+Read the native parent/child hierarchy for one work item. IDs are provider-specific: Redmine IDs are issue IDs; GitLab IDs are the numeric global Work Item IDs shown in hierarchy output, so the same number never implies the same item across providers, projects, or kinds. Returns the item with its parent and at most 50 direct children plus an explicit children_truncated indicator. Hierarchy is never a relation and closing a parent never closes its children.
+
+Read one issue

@@ -256,6 +256,24 @@ Boundaries:
 
 Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a fallback repair when the name cannot resolve. A successful `issue create`/`bind` reuses or books the current checkout; it only auto-acquires a worktree when the `worktree-auto` setting opted in, and a conflict otherwise surfaces guidance naming `phasegent worktree acquire --issue N --isolate`, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases). `issue status` shows the current branch with its compatible single issue (only when unambiguous and not the detected default), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), the reverse branches of the active issue, and the legacy binding; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
 
+## Parent/child planning (hierarchy)
+
+Parent issues are umbrellas: they carry the overall goal, shared constraints,
+and overall acceptance criteria, and stay a concise index of their children.
+Each child issue owns a focused goal, its own constraints and acceptance
+criteria, its own status, and its own audit notes. Native hierarchy is a
+typed parent-child edge (`hierarchy` commands; Redmine `parent_issue_id`,
+GitLab Work Item hierarchy); `@username` mentions, `#N` cross-references,
+and `relates`/`blocks` relations are never hierarchy.
+
+Executors and reviewers work from the child plan plus only the relevant
+parent context (usually the parent's goal and the shared constraints the
+delegation names) — never the parent's entire phase history. A child's
+audit markers and status stay on the child; the parent is closed only after
+its verified child outcomes plus its own acceptance criteria are met.
+Closing a parent never cascade-closes its children, and the 50-child bound
+on `hierarchy get` reports truncation instead of hiding children.
+
 ## Marker protocol
 
 One HTML-comment marker at the top of the note body; the parent-supplied value

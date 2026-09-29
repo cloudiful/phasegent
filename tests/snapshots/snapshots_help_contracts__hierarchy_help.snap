@@ -1,0 +1,11 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, None, &[\"--help\", \"hierarchy\"])"
+---
+Hierarchy commands for all roles:
+
+  get            Read the native parent/child hierarchy for one work item
+  set            Set the native parent for one work item (orchestrator-only)
+  unset          Remove the native parent from one work item (orchestrator-only)
+
+Use 'phasegent --help hierarchy <command>' for options.

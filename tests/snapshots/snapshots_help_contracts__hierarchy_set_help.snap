@@ -1,0 +1,9 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, None, &[\"--help\", \"hierarchy\", \"set\"])"
+---
+Usage: hierarchy set --parent <ID> --child <ID>
+
+Assign the native parent for one work item. Redmine writes parent_issue_id; GitLab resolves both items' native kind/scope through hierarchy reads first (only Epic-to-Issue and Issue-to-Task) and then issues the Work Item hierarchy widget mutation. Unsupported pairs fail with a structured not-supported error and never fall back to a relation. `issue create/update --parent-issue` stays the Redmine-only planning flag for the same native field; the typed hierarchy commands are the provider-aware surface covering GitLab too. Closing a parent never closes its children. Orchestrator-only.
+
+Update an issue

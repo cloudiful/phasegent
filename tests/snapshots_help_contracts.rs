@@ -1,5 +1,5 @@
 //! Snapshot coverage for the CLI help surface that carries the
-//! close/sync/worktree contracts.
+//! close/sync/worktree/hierarchy contracts.
 //!
 //! The help texts have rotted twice — a flag renamed without the page
 //! following and a pointer naming a page that no longer resolved — and both
@@ -117,5 +117,55 @@ fn worktree_prune_help_snapshot() {
     assert_snapshot!(
         "worktree_prune_help",
         help(&scratch, None, &["--help", "worktree", "prune"])
+    );
+}
+
+/// Issue 641 P4b: the native hierarchy help pages are snapshot-pinned like
+/// the other deep pages. The role-less group view is the superset a
+/// documentation reader sees.
+#[test]
+fn hierarchy_help_snapshot() {
+    let scratch = Scratch::new("help-hierarchy");
+    assert_snapshot!(
+        "hierarchy_help",
+        help(&scratch, None, &["--help", "hierarchy"])
+    );
+}
+
+#[test]
+fn hierarchy_get_help_snapshot() {
+    let scratch = Scratch::new("help-hierarchy-get");
+    assert_snapshot!(
+        "hierarchy_get_help",
+        help(&scratch, None, &["--help", "hierarchy", "get"])
+    );
+}
+
+#[test]
+fn hierarchy_set_help_snapshot() {
+    let scratch = Scratch::new("help-hierarchy-set");
+    assert_snapshot!(
+        "hierarchy_set_help",
+        help(&scratch, None, &["--help", "hierarchy", "set"])
+    );
+}
+
+#[test]
+fn hierarchy_unset_help_snapshot() {
+    let scratch = Scratch::new("help-hierarchy-unset");
+    assert_snapshot!(
+        "hierarchy_unset_help",
+        help(&scratch, None, &["--help", "hierarchy", "unset"])
+    );
+}
+
+/// The orchestrator-only hierarchy writes stay hidden from the executor
+/// role view, mirroring the `issue sync` executor snapshot.
+#[test]
+fn hierarchy_set_help_hides_the_orchestrator_only_command_from_executor() {
+    let scratch = Scratch::new("help-hierarchy-set-executor");
+    assert_snapshot!(
+        "hierarchy_set_help_executor",
+        help(&scratch, Some("executor"), &["--help", "hierarchy", "set"])
     );
 }

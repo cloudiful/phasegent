@@ -1,0 +1,9 @@
+---
+source: tests/snapshots_help_contracts.rs
+expression: "help(&scratch, None, &[\"--help\", \"hierarchy\", \"unset\"])"
+---
+Usage: hierarchy unset --child <ID>
+
+Remove the native parent from one work item. Redmine writes an explicit null parent_issue_id; GitLab issues the Work Item hierarchy widget mutation with a null parent. Never touches relations and never closes the item. Orchestrator-only.
+
+Update an issue

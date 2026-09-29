@@ -68,6 +68,30 @@ phasegent doctor
 `--provider gitlab`。可以使用 `--repository OWNER/REPOSITORY` 和
 `--project-id ID` 覆盖仓库或 project 的自动发现。
 
+## Issue 层级
+
+父子关联使用 provider 原生机制：Redmine 子任务（`parent_issue_id`）和
+GitLab Work Item 层级（Epic→Issue、Issue→Task）。层级不是 issue relation，
+关闭父 issue 永不级联关闭子 issue——每个子 issue 保留自己的状态与审计记录。
+
+```sh
+# 读取一个条目的父 issue 和至多 50 个直接子 issue
+PHASEGENT_ROLE=executor phasegent hierarchy get 641
+
+# 设置 / 清除原生父级（仅 orchestrator）
+PHASEGENT_ROLE=orchestrator phasegent hierarchy set --parent 640 --child 641
+PHASEGENT_ROLE=orchestrator phasegent hierarchy unset --child 641
+```
+
+ID 是 provider 特定的：Redmine ID 是 issue ID，GitLab ID 是层级输出中显示的
+数字全局 Work Item ID。当 50 个子条目的上限截断了子列表时，`hierarchy get`
+会报告 `children_truncated: true`。Redmine 专用的
+`issue create/update --parent-issue` 旗标在写入时设置同一原生字段；类型化的
+`hierarchy` 命令是覆盖 GitLab 的 provider 感知入口。
+
+父 issue 是伞形索引：承载总体目标与验收标准；每个子 issue 承载自己的聚焦
+目标、约束、验收标准与审计记录。
+
 Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。
 
