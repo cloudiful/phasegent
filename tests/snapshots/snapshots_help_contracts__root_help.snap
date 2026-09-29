@@ -1,5 +1,6 @@
 ---
 source: tests/snapshots_help_contracts.rs
+assertion_line: 47
 expression: "help(&scratch, None, &[\"--help\"])"
 ---
 phasegent [VERSION]
@@ -32,6 +33,7 @@ Commands:
   mcp                    MCP server over stdio or streamable HTTP
   plugin                 Managed OpenCode plugin installation
   repo                   Repository operations
+  hierarchy              Native issue hierarchy (parent/child)
   worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)
 
 Use 'phasegent --help <command>' for the next level.

@@ -1,5 +1,6 @@
 pub mod core;
 pub mod hierarchy;
+pub mod hierarchy_write;
 pub mod issues;
 pub mod labels;
 pub mod milestones;

@@ -65,6 +65,13 @@ pub(crate) fn help_topic(
             }
             Some(value) => Err(format!("unknown relation help topic '{value}'")),
         },
+        "hierarchy" => match subcommand {
+            None => Ok(HelpTopic::Hierarchy),
+            Some(value) if ["get", "set", "unset"].contains(&value) => {
+                Ok(HelpTopic::HierarchyCommand(value.to_owned()))
+            }
+            Some(value) => Err(format!("unknown hierarchy help topic '{value}'")),
+        },
         "timer" => match subcommand {
             None => Ok(HelpTopic::Timer),
             Some(value) if ["start", "finish", "list", "get", "recover"].contains(&value) => {

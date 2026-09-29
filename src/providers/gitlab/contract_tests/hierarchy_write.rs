@@ -9,6 +9,28 @@ use super::hierarchy::update_ok;
 use super::support::{MockResponse, TEST_TOKEN, one, sequence, zero_request};
 use crate::providers::hierarchy::{WorkItemKind, WorkItemRef};
 
+fn issue_page() -> String {
+    serde_json::json!({
+        "data": {"workItem": {
+            "id": "gid://gitlab/WorkItem/101",
+            "workItemType": {"name": "Issue"},
+            "namespace": {"fullPath": "acme/app"},
+            "widgets": [{"__typename": "WorkItemWidgetHierarchy", "parent": null,
+                "children": {"nodes": [], "pageInfo": {"hasNextPage": false}}}]}}})
+    .to_string()
+}
+
+fn epic_page() -> String {
+    serde_json::json!({
+        "data": {"workItem": {
+            "id": "gid://gitlab/WorkItem/100",
+            "workItemType": {"name": "Epic"},
+            "namespace": {"fullPath": "acme"},
+            "widgets": [{"__typename": "WorkItemWidgetHierarchy", "parent": null,
+                "children": {"nodes": [], "pageInfo": {"hasNextPage": false}}}]}}})
+    .to_string()
+}
+
 #[test]
 fn set_parent_epic_to_issue_posts_hierarchy_mutation() {
     let (base, requests, server) = sequence(vec![MockResponse::ok(update_ok(101))]);
@@ -91,4 +113,63 @@ fn set_parent_mutation_errors_are_request_and_redacted() {
     let error = result.unwrap_err();
     assert_eq!(error.json()["kind"], "request");
     assert!(!error.json().to_string().contains(TEST_TOKEN));
+}
+
+#[test]
+fn set_parent_by_id_resolves_native_kinds_before_mutation() {
+    // Bare numeric IDs resolve through hierarchy reads first: the child
+    // page yields the Issue kind, the parent page the Epic kind, and only
+    // then does the widget mutation run. No REST relation is involved.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(issue_page()),
+        MockResponse::ok(epic_page()),
+        MockResponse::ok(update_ok(101)),
+    ]);
+    let provider = super::support::provider(base);
+    provider.set_hierarchy_parent_by_id(101, 100).unwrap();
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 3);
+    super::support::assert_request(&seen[0], "POST", "/api/graphql", Some("workItem"));
+    super::support::assert_request(&seen[1], "POST", "/api/graphql", Some("workItem"));
+    super::support::assert_request(&seen[2], "POST", "/api/graphql", Some("workItemUpdate"));
+    assert!(seen[2].contains("hierarchyWidget"), "widget missing");
+    assert!(
+        seen[2].contains("gid://gitlab/WorkItem/101"),
+        "child GID missing"
+    );
+    assert!(
+        seen[2].contains("gid://gitlab/WorkItem/100"),
+        "parent GID missing"
+    );
+    assert!(!seen[2].contains("/links"), "must not use relations");
+    server.join().unwrap();
+}
+
+#[test]
+fn set_parent_by_id_rejects_unsupported_pair_after_resolution() {
+    // An Issue cannot parent an Epic: both reads happen, then the pair
+    // fails as not_supported with no mutation issued.
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(epic_page()),
+        MockResponse::ok(issue_page()),
+    ]);
+    let provider = super::support::provider(base);
+    let error = provider.set_hierarchy_parent_by_id(100, 101).unwrap_err();
+    assert_eq!(error.json()["kind"], "not_supported");
+    let seen = requests.recv().unwrap();
+    assert_eq!(seen.len(), 2);
+    server.join().unwrap();
+}
+
+#[test]
+fn set_parent_by_id_rejects_zero_and_self_before_network() {
+    for (child, parent) in [(0, 100), (101, 0), (101, 101)] {
+        let error = zero_request(|provider| provider.set_hierarchy_parent_by_id(child, parent))
+            .unwrap_err();
+        assert_eq!(
+            error.json()["kind"],
+            "config",
+            "child={child} parent={parent}"
+        );
+    }
 }

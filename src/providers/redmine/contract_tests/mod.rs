@@ -7,6 +7,7 @@ mod bootstrap_status;
 mod capabilities;
 mod errors;
 mod hierarchy;
+mod hierarchy_write;
 mod issues;
 mod membership;
 mod mirror;

@@ -11,6 +11,7 @@ mod comment;
 mod config;
 mod global_options;
 mod help_topic;
+mod hierarchy;
 mod hooks;
 mod issue;
 mod issue_args;
@@ -45,6 +46,7 @@ pub(crate) use argv::parse_outcome_with_role_env;
 #[cfg(test)]
 pub(crate) use argv::parse_with_role_env;
 pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
+pub use hierarchy::HierarchyCommand;
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
 pub use local_args::{McpCommand, McpTransport, NotifyCommand, PluginCommand};
 pub(crate) use parse_helpers::{has_flag, optional_option, validate_options};
@@ -107,6 +109,10 @@ pub enum Command {
     Hooks(HooksCommand),
     Plugin(PluginCommand),
     Relation(RelationCommand),
+    /// Provider-native parent/child hierarchy. Reads project the bounded
+    /// hierarchy view; writes assign or clear the native parent field.
+    /// Hierarchy is never a graph relation and never cascades on close.
+    Hierarchy(HierarchyCommand),
     /// Orchestrator-owned local phase timer and Redmine Time Entry
     /// projection. The child executor/reviewer roles do not call this CLI.
     Timer(TimerCommand),
@@ -180,6 +186,8 @@ pub enum HelpTopic {
     PluginCommand(String),
     Relation,
     RelationCommand(String),
+    Hierarchy,
+    HierarchyCommand(String),
     Timer,
     TimerCommand(String),
     Worktree,

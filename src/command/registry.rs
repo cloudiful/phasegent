@@ -246,6 +246,12 @@ const ACCESS_VERSION_READ: RoleAccess = RoleAccess::Capability(Capability::Versi
 const ACCESS_RELATION_READ: RoleAccess = RoleAccess::Capability(Capability::RelationRead);
 const ACCESS_RELATION_CREATE: RoleAccess = RoleAccess::Capability(Capability::RelationCreate);
 const ACCESS_RELATION_DELETE: RoleAccess = RoleAccess::Capability(Capability::RelationDelete);
+// Hierarchy reads ride the issue-read permission; hierarchy writes ride the
+// issue-update permission, so reads stay open to child roles while writes
+// stay orchestrator-only without growing the capability set (P4b owns skill
+// content and help snapshots).
+const ACCESS_HIERARCHY_READ: RoleAccess = RoleAccess::Capability(Capability::IssueRead);
+const ACCESS_HIERARCHY_WRITE: RoleAccess = RoleAccess::Capability(Capability::IssueUpdateBody);
 const ACCESS_REPO_CREATE: RoleAccess = RoleAccess::Capability(Capability::RepoCreate);
 const ACCESS_ORCHESTRATOR: RoleAccess = RoleAccess::Only(ORCHESTRATOR_ONLY);
 const ACCESS_WORKTREE_READ: RoleAccess = RoleAccess::Only(WORKTREE_READ_ROLES);

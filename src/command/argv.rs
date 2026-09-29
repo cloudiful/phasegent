@@ -1,9 +1,9 @@
 use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
-    Command, HelpTopic, Invocation, IssueCommand, admin, auth, comment, config, help_topic, hooks,
-    issue, mcp, notify, plugin, project, registry, relation, status, timer, version, workflow,
-    worktree,
+    Command, HelpTopic, Invocation, IssueCommand, admin, auth, comment, config, help_topic,
+    hierarchy, hooks, issue, mcp, notify, plugin, project, registry, relation, status, timer,
+    version, workflow, worktree,
 };
 use crate::policy::Role;
 
@@ -303,6 +303,7 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
         "status" => status::parse_status(rest)?,
         "version" => version::parse_version(rest)?,
         "relation" => relation::parse_relation(rest)?,
+        "hierarchy" => hierarchy::parse_hierarchy(rest)?,
         "timer" => timer::parse_timer(rest)?,
         "workflow" => match workflow::parse_workflow(rest)? {
             help @ Command::Help(_) => help,

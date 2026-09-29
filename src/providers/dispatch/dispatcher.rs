@@ -5,6 +5,7 @@ use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
 use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::hierarchy::HierarchyPage;
 use crate::providers::hierarchy::WorkItemRef;
 use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
@@ -95,9 +96,41 @@ impl ProviderDispatcher {
         }
     }
 
-    /// Typed GitLab parent write (Epic-to-Issue, Issue-to-Task). Other
-    /// providers return structured `not_supported`. Unwired until the P4 CLI
-    /// hierarchy command lands.
+    /// Bounded read-only native hierarchy view plus an explicit truncation
+    /// indicator. Redmine reports the complete child list (`false`); GitLab
+    /// reports the child connection `pageInfo.hasNextPage`. Other providers
+    /// return structured `not_supported`. Never falls back to relations.
+    pub fn get_hierarchy_page(&self, number: u64) -> Result<HierarchyPage, ForgejoError> {
+        match self {
+            Self::Redmine(redmine) => redmine.get_hierarchy_page(number),
+            Self::Gitlab(gitlab) => gitlab.get_hierarchy_page(number),
+            other => Err(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue hierarchy get",
+            )),
+        }
+    }
+
+    /// Typed parent write from bare numeric ids. Redmine assigns the native
+    /// `parent_issue_id`; GitLab resolves both items' native kind/scope
+    /// through hierarchy reads before issuing the widget mutation. Other
+    /// providers return structured `not_supported`.
+    pub fn set_hierarchy_parent_by_id(&self, child: u64, parent: u64) -> Result<(), ForgejoError> {
+        match self {
+            Self::Redmine(redmine) => redmine.set_hierarchy_parent(child, parent),
+            Self::Gitlab(gitlab) => gitlab.set_hierarchy_parent_by_id(child, parent),
+            other => Err(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue hierarchy update",
+            )),
+        }
+    }
+
+    /// Typed parent write from already-resolved refs (Epic-to-Issue,
+    /// Issue-to-Task). The CLI resolves bare ids through
+    /// [`Self::set_hierarchy_parent_by_id`]; this entry stays for callers
+    /// that already hold native refs. Other providers return structured
+    /// `not_supported`.
     #[allow(dead_code)]
     pub fn set_hierarchy_parent(
         &self,
@@ -105,7 +138,23 @@ impl ProviderDispatcher {
         parent: WorkItemRef,
     ) -> Result<(), ForgejoError> {
         match self {
+            Self::Redmine(redmine) => redmine.set_hierarchy_parent(child.id, parent.id),
             Self::Gitlab(gitlab) => gitlab.set_hierarchy_parent(&child, &parent),
+            other => Err(ForgejoError::not_supported(
+                other.kind().as_str(),
+                "issue hierarchy update",
+            )),
+        }
+    }
+
+    /// Clear the native parent from bare numeric ids. Redmine writes an
+    /// explicit null `parent_issue_id`; GitLab issues the widget mutation
+    /// with a null parent. Other providers return structured
+    /// `not_supported`. Never touches relations.
+    pub fn unset_hierarchy_parent_by_id(&self, child: u64) -> Result<(), ForgejoError> {
+        match self {
+            Self::Redmine(redmine) => redmine.unset_hierarchy_parent(child),
+            Self::Gitlab(gitlab) => gitlab.unset_hierarchy_parent_by_id(child),
             other => Err(ForgejoError::not_supported(
                 other.kind().as_str(),
                 "issue hierarchy update",

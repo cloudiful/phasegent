@@ -1,30 +1,23 @@
-//! GitLab Work Item hierarchy reads and typed parent writes (issue 641 P3).
+//! GitLab Work Item hierarchy reads (issue 641 P3).
 //!
 //! Reads use `workItem(id:)` plus its hierarchy widget from the `widgets`
 //! collection (`... on WorkItemWidgetHierarchy` with `parent` and bounded
 //! `children(first: 50)`); each item's `namespace.fullPath` provides its true
 //! group/project scope. The child connection `pageInfo.hasNextPage` is
-//! reported as truncation without fetching beyond the 50-item bound. Writes
-//! use `workItemUpdate` with `hierarchyWidget.parentId`. Only Epic-to-Issue
-//! and Issue-to-Task are supported (nested Epic-to-Epic is out of scope);
-//! every other pair fails as `not_supported` before any network. A missing
-//! hierarchy widget, an unknown type name, and permission failures fail
-//! explicitly; hierarchy never falls back to a REST issue relation.
+//! reported as truncation without fetching beyond the 50-item bound. A
+//! missing hierarchy widget, an unknown type name, and permission failures
+//! fail explicitly; hierarchy never falls back to a REST issue relation.
+//! Parent writes live in the adjacent `hierarchy_write` module.
 
 use crate::providers::api::ForgejoError;
 use crate::providers::gitlab::model::work_items;
-use crate::providers::hierarchy::{
-    HierarchyEdge, HierarchyNode, HierarchyPage, WorkItemRef, supported_parent_child,
-};
+use crate::providers::hierarchy::{HierarchyNode, HierarchyPage, WorkItemRef};
 
 use super::core::GitlabProvider;
 
 const HIERARCHY_GET: &str = "issue hierarchy get";
-const HIERARCHY_UPDATE: &str = "issue hierarchy update";
 
 const WORK_ITEM_QUERY: &str = "query($id: WorkItemID!) { workItem(id: $id) { id workItemType { name } namespace { fullPath } widgets { __typename ... on WorkItemWidgetHierarchy { parent { id workItemType { name } namespace { fullPath } } children(first: 50) { nodes { id workItemType { name } namespace { fullPath } } pageInfo { hasNextPage } } } } } }";
-
-const WORK_ITEM_UPDATE: &str = "mutation($id: WorkItemID!, $parentId: WorkItemID!) { workItemUpdate(input: {id: $id, hierarchyWidget: {parentId: $parentId}}) { errors workItem { id } } }";
 
 impl GitlabProvider {
     fn configured_project(&self) -> Option<String> {
@@ -101,57 +94,5 @@ impl GitlabProvider {
             },
             children_truncated,
         })
-    }
-
-    /// Set the typed parent for one Work Item. Only Epic-to-Issue and
-    /// Issue-to-Task are supported; validation runs before any network.
-    pub fn set_hierarchy_parent(
-        &self,
-        child: &WorkItemRef,
-        parent: &WorkItemRef,
-    ) -> Result<(), ForgejoError> {
-        let edge = HierarchyEdge {
-            parent: parent.clone(),
-            child: child.clone(),
-        };
-        edge.validate().map_err(ForgejoError::config)?;
-        if !supported_parent_child(&parent.kind, &child.kind) {
-            return Err(ForgejoError::not_supported("gitlab", HIERARCHY_UPDATE));
-        }
-        let variables = serde_json::json!({
-            "id": work_items::work_item_gid(child.id),
-            "parentId": work_items::work_item_gid(parent.id),
-        });
-        let data: work_items::WorkItemUpdateData = crate::providers::gitlab::graphql::execute(
-            &self.http,
-            WORK_ITEM_UPDATE,
-            variables,
-            HIERARCHY_UPDATE,
-        )?;
-        let payload = data.work_item_update.ok_or_else(|| ForgejoError::Decode {
-            operation: HIERARCHY_UPDATE.to_owned(),
-            message: self
-                .http
-                .redact("GitLab work item update contained no data"),
-        })?;
-        let errors: Vec<String> = payload
-            .errors
-            .into_iter()
-            .map(|message| message.trim().to_owned())
-            .filter(|message| !message.is_empty())
-            .collect();
-        if !errors.is_empty() {
-            return Err(ForgejoError::Request {
-                operation: HIERARCHY_UPDATE.to_owned(),
-                message: self.http.redact(&errors.join("; ")),
-            });
-        }
-        payload.work_item.ok_or_else(|| ForgejoError::Decode {
-            operation: HIERARCHY_UPDATE.to_owned(),
-            message: self
-                .http
-                .redact("GitLab did not return the updated work item"),
-        })?;
-        Ok(())
     }
 }

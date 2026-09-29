@@ -19,6 +19,8 @@ mod close_cli;
 mod close_cli_cleanup;
 mod command_inline_options;
 mod command_options;
+mod hierarchy_cli;
+mod hierarchy_lifecycle;
 mod issue_commands;
 mod issue_search;
 mod policy;
@@ -33,3 +35,9 @@ mod timer_cli;
 mod timer_recovery;
 mod workflow;
 mod worktree_taxi;
+
+/// Build owned argv for the focused hierarchy CLI tests, which share the
+/// same slice-to-`Vec<String>` construction in every case.
+pub(crate) fn owned_args(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}

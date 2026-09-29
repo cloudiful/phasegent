@@ -127,3 +127,30 @@ fn hierarchy_page_reports_truncation_explicitly() {
     assert_eq!(json["children_truncated"], true);
     assert!(json.get("node").is_some());
 }
+
+#[test]
+fn bounded_page_caps_children_at_fifty_and_reports_truncation() {
+    let children = (1..=52)
+        .map(|id| WorkItemRef::redmine(Some("42".to_owned()), id))
+        .collect::<Vec<_>>();
+    let node = HierarchyNode {
+        item: WorkItemRef::redmine(Some("42".to_owned()), 7),
+        parent: None,
+        children,
+    };
+    let page = HierarchyPage::bounded(node, false);
+    assert_eq!(page.node.children.len(), HIERARCHY_MAX_CHILDREN);
+    assert_eq!(page.node.children_ids().len(), HIERARCHY_MAX_CHILDREN);
+    assert!(page.children_truncated);
+    let json = serde_json::to_value(&page).unwrap();
+    assert_eq!(json["children_truncated"], true);
+
+    let small = HierarchyNode {
+        item: WorkItemRef::redmine(Some("42".to_owned()), 7),
+        parent: None,
+        children: vec![WorkItemRef::redmine(Some("42".to_owned()), 8)],
+    };
+    let page = HierarchyPage::bounded(small, false);
+    assert_eq!(page.node.children_ids(), vec![8]);
+    assert!(!page.children_truncated);
+}

@@ -3,6 +3,7 @@
 mod graphql;
 mod hierarchy;
 mod hierarchy_read;
+mod hierarchy_unset;
 mod hierarchy_write;
 mod issues;
 mod issues_update;

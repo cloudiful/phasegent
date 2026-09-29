@@ -147,6 +147,30 @@ pub struct HierarchyPage {
     pub children_truncated: bool,
 }
 
+/// Maximum direct children projected by `hierarchy get`. Reads are bounded
+/// at the provider (GitLab `children(first: 50)`); longer native lists
+/// (Redmine subtasks) are truncated to this bound at projection time with
+/// the truncation indicator set.
+#[allow(dead_code)]
+pub const HIERARCHY_MAX_CHILDREN: usize = 50;
+
+#[allow(dead_code)]
+impl HierarchyPage {
+    /// Cap the child list at [`HIERARCHY_MAX_CHILDREN`], setting the
+    /// truncation indicator when the cap drops children. A page already at
+    /// or under the bound (or already marked truncated) passes through
+    /// with its indicator preserved.
+    #[must_use]
+    pub fn bounded(mut node: HierarchyNode, children_truncated: bool) -> Self {
+        let truncated = children_truncated || node.children.len() > HIERARCHY_MAX_CHILDREN;
+        node.children.truncate(HIERARCHY_MAX_CHILDREN);
+        Self {
+            node,
+            children_truncated: truncated,
+        }
+    }
+}
+
 /// Native parent/child type support. Redmine issues nest; GitLab allows only
 /// Epic-to-Issue and Issue-to-Task. Every other combination, including any
 /// Local nesting, reports false so callers return a structured

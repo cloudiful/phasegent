@@ -8,6 +8,7 @@ pub mod comment;
 pub mod common;
 pub mod config;
 pub mod doctor;
+pub mod hierarchy;
 pub mod hooks;
 pub mod issue;
 pub mod notify;
@@ -32,6 +33,7 @@ use config::{
     print_config_provider_help,
 };
 use doctor::print_doctor_help;
+use hierarchy::{print_hierarchy_command_help, print_hierarchy_help};
 use hooks::{print_hooks_command_help, print_hooks_help};
 use issue::{print_issue_command_help, print_issue_help};
 use notify::{print_notify_command_help, print_notify_help};
@@ -97,6 +99,8 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
         HelpTopic::PluginCommand(command) => vec!["plugin", command.as_str()],
         HelpTopic::Relation => vec!["relation"],
         HelpTopic::RelationCommand(command) => vec!["relation", command.as_str()],
+        HelpTopic::Hierarchy => vec!["hierarchy"],
+        HelpTopic::HierarchyCommand(command) => vec!["hierarchy", command.as_str()],
         HelpTopic::Timer => vec!["timer"],
         HelpTopic::TimerCommand(command) => vec!["timer", command.as_str()],
         HelpTopic::Notify => vec!["notify"],
@@ -166,6 +170,8 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::WorkflowCommand(command) => print_workflow_command_help(role, &command),
         HelpTopic::Relation => print_relation_help(role),
         HelpTopic::RelationCommand(command) => print_relation_command_help(role, &command),
+        HelpTopic::Hierarchy => print_hierarchy_help(role),
+        HelpTopic::HierarchyCommand(command) => print_hierarchy_command_help(role, &command),
         HelpTopic::Timer => print_timer_help(role),
         HelpTopic::TimerCommand(command) => print_timer_command_help(role, &command),
         HelpTopic::RepoCommand(command) => {

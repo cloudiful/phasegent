@@ -7,8 +7,8 @@
 //! `--version` toggle carry no command surface and map to `None`.
 
 use super::{
-    Command, CommentCommand, IssueCommand, ProjectCommand, RelationCommand, StatusCommand,
-    TimerCommand, VersionCommand, WorkflowCommand, WorktreeCommand,
+    Command, CommentCommand, HierarchyCommand, IssueCommand, ProjectCommand, RelationCommand,
+    StatusCommand, TimerCommand, VersionCommand, WorkflowCommand, WorktreeCommand,
 };
 use super::{HooksCommand, McpCommand, NotifyCommand, PluginCommand, RepoCommand};
 
@@ -39,6 +39,7 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::Plugin(PluginCommand::Status) => &["plugin", "status"],
         Command::Plugin(PluginCommand::Uninstall { .. }) => &["plugin", "uninstall"],
         Command::Relation(command) => &["relation", relation_name(command)],
+        Command::Hierarchy(command) => &["hierarchy", hierarchy_name(command)],
         Command::Timer(command) => &["timer", timer_name(command)],
         Command::Worktree(command) => &["worktree", worktree_name(command)],
         Command::Notify(NotifyCommand::Send { .. }) => &["notify", "send"],
@@ -93,6 +94,14 @@ fn relation_name(command: &RelationCommand) -> &'static str {
         RelationCommand::List { .. } => "list",
         RelationCommand::Create { .. } => "create",
         RelationCommand::Delete { .. } => "delete",
+    }
+}
+
+fn hierarchy_name(command: &HierarchyCommand) -> &'static str {
+    match command {
+        HierarchyCommand::Get { .. } => "get",
+        HierarchyCommand::Set { .. } => "set",
+        HierarchyCommand::Unset { .. } => "unset",
     }
 }
 

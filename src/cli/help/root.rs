@@ -30,8 +30,24 @@ fn root_usage() -> String {
 /// top-level `auth`/`workflow` redirect leaves, which exist so the parser can
 /// resolve their moved-error help topics. A test keeps the two in sync.
 const ROOT_OVERVIEW: &[&str] = &[
-    "gui", "issue", "comment", "admin", "config", "doctor", "hooks", "notify", "mcp", "plugin",
-    "repo", "project", "status", "version", "relation", "timer", "worktree",
+    "gui",
+    "issue",
+    "comment",
+    "admin",
+    "config",
+    "doctor",
+    "hooks",
+    "notify",
+    "mcp",
+    "plugin",
+    "repo",
+    "project",
+    "status",
+    "version",
+    "relation",
+    "hierarchy",
+    "timer",
+    "worktree",
 ];
 
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {

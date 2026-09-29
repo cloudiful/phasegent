@@ -11,6 +11,7 @@ pub(crate) mod branch;
 mod comment;
 pub(crate) mod doctor;
 mod help;
+pub(crate) mod hierarchy;
 mod hooks;
 pub(crate) mod issue;
 pub(crate) mod issue_branches;
@@ -260,6 +261,15 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             command,
         ),
         Command::Relation(command) => relation::execute_relation(
+            invocation.role,
+            invocation.provider,
+            invocation.api_base.as_deref(),
+            invocation.repository.as_deref(),
+            invocation.project_id.as_deref(),
+            invocation.close_status_id.as_deref(),
+            command,
+        ),
+        Command::Hierarchy(command) => hierarchy::execute_hierarchy(
             invocation.role,
             invocation.provider,
             invocation.api_base.as_deref(),
