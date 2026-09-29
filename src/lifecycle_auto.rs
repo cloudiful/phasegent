@@ -11,15 +11,13 @@
 //!
 //! ## Provider coverage
 //!
-//! - **Forgejo** — no status surface, no auto-run. The helper returns
-//!   [`AutoTimerOutcome::Skipped`] so the caller can distinguish
-//!   "no-op because no status" from "could not start".
 //! - **Redmine** — full auto-accounting; `status set` and
 //!   `status advance` both flow through the helper.
 //! - **GitLab** — `status set` flows through (label-based); `status
 //!   advance` is Redmine-only upstream so the helper is not reached
 //!   on that path. The provider branch is gated inside the helper
 //!   itself for defensive parity.
+//! - **Local** — full auto-accounting on the local ledger.
 //!
 //! ## Single-running invariant
 //!
@@ -139,18 +137,14 @@ pub fn auto_route_next(_issue: u64, signal: ToolSignal) -> Option<&'static str> 
 }
 
 /// Outcome of a lifecycle auto-accounting call. Callers translate
-/// `Skipped` into silence (no warning), and either `Started` (when
-/// its `warning` field is `Some`) or `Warning` into a bounded
-/// stderr line via `cli::report_local_warnings`. The `Started`
-/// variant carries a `warning` field so the fallback mapping
+/// `Started` (when its `warning` field is `Some`) or `Warning` into
+/// a bounded stderr line via `cli::report_local_warnings`. The
+/// `Started` variant carries a `warning` field so the fallback mapping
 /// (custom Redmine status with no canonical role) and the
 /// close-sweep partial-failure path can be surfaced to the operator
 /// even when the new segment was opened successfully.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoTimerOutcome {
-    /// Forgejo: no status surface, no auto-run. This is the only
-    /// outcome that produces no row activity.
-    Skipped { reason: String },
     /// The transition produced a new auto-run and zero or more
     /// finished pre-existing runs. `warning` is `Some` when a
     /// non-fatal signal needs to reach the operator: the status
@@ -175,7 +169,6 @@ impl AutoTimerOutcome {
         match self {
             Self::Warning { reason } => Some(bounded(reason)),
             Self::Started { warning, .. } => warning.as_ref().map(|w| bounded(w)),
-            _ => None,
         }
     }
 }
@@ -209,10 +202,9 @@ impl AutoCloseOutcome {
 }
 
 /// Run the auto-accounting side effect for a successful
-/// `status set` / `status advance`. Forgejo is a no-op (no status,
-/// no timer). For Redmine and GitLab we finish every running
-/// auto-run for the issue, then open a new run whose phase is
-/// `status_name` and whose role comes from
+/// `status set` / `status advance`. For Redmine, GitLab, and Local we
+/// finish every running auto-run for the issue, then open a new run
+/// whose phase is `status_name` and whose role comes from
 /// [`status_to_agent_role`]. Failures degrade to a `Warning` so
 /// the orchestrator's status change still returns success.
 ///
@@ -224,14 +216,9 @@ impl AutoCloseOutcome {
 /// `report_local_warnings`.
 pub fn auto_transition_timer(
     issue: u64,
-    provider_kind: ProviderKind,
+    _provider_kind: ProviderKind,
     status_name: &str,
 ) -> AutoTimerOutcome {
-    if provider_kind == ProviderKind::Forgejo {
-        return AutoTimerOutcome::Skipped {
-            reason: "forgejo has no status surface; auto timer is a no-op".to_owned(),
-        };
-    }
     let (role, fallback) = status_to_agent_role(status_name);
     let phase = status_name.to_owned();
     let mut finished_runs: Vec<String> = Vec::new();
@@ -297,20 +284,10 @@ fn build_transition_warning(
 /// `unbind_closed_issue` is a separate sibling helper and is
 /// untouched by this module.
 ///
-/// Forgejo is gated to [`AutoCloseOutcome::Noop`] for parity with
-/// [`auto_transition_timer`]'s [`AutoTimerOutcome::Skipped`]:
-/// Forgejo has no first-class status surface, and the auto-run
-/// set is provider-local bookkeeping so a Forgejo close should
-/// not retroactively mutate Redmine or GitLab rows. An empty
-/// ledger also returns `Noop`. The branch-context unbind is
-/// provider-agnostic at its own layer and is unaffected by this
-/// gate.
-pub fn auto_close_issue_timer(issue: u64, provider_kind: ProviderKind) -> AutoCloseOutcome {
-    if provider_kind == ProviderKind::Forgejo {
-        return AutoCloseOutcome::Noop {
-            reason: "forgejo has no status surface; auto timer close is a no-op".to_owned(),
-        };
-    }
+/// An empty ledger returns [`AutoCloseOutcome::Noop`]. The
+/// branch-context unbind is provider-agnostic at its own layer and is
+/// unaffected by this gate.
+pub fn auto_close_issue_timer(issue: u64, _provider_kind: ProviderKind) -> AutoCloseOutcome {
     match close_issue_runs(issue) {
         Ok(finished_runs) if finished_runs.is_empty() => AutoCloseOutcome::Noop {
             reason: format!("no running auto-runs to finish for issue {issue}"),

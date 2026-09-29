@@ -188,7 +188,8 @@ fn provider_scopes_match_the_root_help_conditions() {
     }
     assert!(ProviderScope::Redmine.visible(Some(ProviderKind::Redmine)));
     assert!(!ProviderScope::Redmine.visible(None));
-    assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Forgejo)));
+    assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Gitlab)));
+    assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Local)));
     assert!(ProviderScope::NonRedmine.visible(None));
     assert!(ProviderScope::NonRedmine.visible(Some(ProviderKind::Gitlab)));
     assert!(ProviderScope::NonRedmine.visible(Some(ProviderKind::Local)));

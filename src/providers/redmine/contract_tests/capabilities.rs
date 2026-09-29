@@ -158,12 +158,14 @@ fn project_creation_is_admin_only_and_read_is_role_invariant() {
         assert!(role.allows(Capability::IssueStatusRead));
     }
 
+    // A removed `--provider` value never reaches execution: the parser
+    // rejects it with a usage error before any provider or role check.
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "project", "list"]),
             Some("orchestrator")
         ),
-        1
+        2
     );
     assert_eq!(
         crate::cli::run_with_role(
@@ -199,6 +201,8 @@ fn project_creation_is_admin_only_and_read_is_role_invariant() {
             3
         );
     }
+    // A removed `--provider` value is rejected at parse time (exit 2),
+    // before the admin role gate.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -212,7 +216,7 @@ fn project_creation_is_admin_only_and_read_is_role_invariant() {
             ]),
             Some("orchestrator")
         ),
-        3
+        2
     );
 }
 
@@ -239,8 +243,8 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         );
     }
 
-    // status set is Redmine-only: a stale `forgejo` selection is rejected as
-    // unsupported.
+    // A removed `--provider` value is rejected at parse time (exit 2),
+    // before any role or provider check.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -254,38 +258,28 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
             ]),
             Some("orchestrator")
         ),
-        1
+        2
     );
 
-    // The removed provider fails closed: a legacy selection yields the
-    // structured unsupported error instead of silently selecting another
-    // provider, and no credential or configuration row is read for it.
+    // A stale selection through the resolver default (an environment or
+    // persisted `forgejo` default) fails closed with an actionable
+    // config error: no other provider is selected implicitly and no
+    // credential is read. The stored row is left for explicit
+    // clear/replace.
     let _environment_lock = lock_workflow_tests();
-    let error = match crate::cli::provider_for(
-        Role::Orchestrator,
-        Some(ProviderKind::Forgejo),
-        Some("http://forgejo.test"),
-        Some("owner/repo"),
-        None,
-        None,
-    ) {
-        Ok(_) => panic!("a legacy forgejo selection must fail closed"),
-        Err(error) => error,
-    };
-    assert_eq!(error.json()["kind"], "not_supported");
-    assert_eq!(error.json()["provider"], "forgejo");
-    assert_eq!(error.json()["operation"], "provider selection");
-
-    // The same selection through the resolver default (an environment or
-    // persisted `forgejo` default) fails closed identically: no other
-    // provider is selected implicitly and no credential is read.
     let _default_env = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "forgejo");
     let error = match crate::cli::provider_for(Role::Orchestrator, None, None, None, None, None) {
         Ok(_) => panic!("a defaulted forgejo selection must fail closed"),
         Err(error) => error,
     };
-    assert_eq!(error.json()["kind"], "not_supported");
-    assert_eq!(error.json()["provider"], "forgejo");
+    assert_eq!(error.json()["kind"], "config");
+    assert!(
+        error.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forgejo"),
+        "stale default must name the value: {error:?}"
+    );
 }
 
 #[test]
@@ -337,7 +331,7 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
 
     // Role gate still fires before the dispatcher guard.
     for role in ["admin", "executor", "reviewer"] {
-        for provider in ["redmine", "forgejo", "gitlab"] {
+        for provider in ["redmine", "gitlab"] {
             assert_eq!(
                 crate::cli::run_with_role(
                     strings([
@@ -360,7 +354,7 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     // Every provider reports not-supported (exit 1). Tester is
     // allowed by the role gate but the inherent provider rejects
     // uniformly.
-    for provider in ["redmine", "forgejo", "gitlab"] {
+    for provider in ["redmine", "gitlab"] {
         let exit = crate::cli::run_with_role(
             strings([
                 "--provider",

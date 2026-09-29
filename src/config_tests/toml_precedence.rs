@@ -50,7 +50,7 @@ fn toml_valid_direct_edits_affect_resolvers() {
     let storage = Storage::open_at(&db_path).unwrap();
     write_toml_file(
         &toml_path,
-        "default_provider = \"gitlab\"\nredmine_repository_url = \"https://toml.example/owner/repo.git\"\nindex_backend = \"sqlite\"\n\n[roles.executor]\nprovider = \"redmine\"\nredmine_api_base = \"https://redmine-toml.example\"\nredmine_close_status_id = 7\nforgejo_api_base = \"https://forgejo-toml.example\"\nforgejo_repository = \"acme/widgets\"\ngitlab_api_base = \"https://gitlab-toml.example\"\n",
+        "default_provider = \"gitlab\"\nredmine_repository_url = \"https://toml.example/owner/repo.git\"\nindex_backend = \"sqlite\"\n\n[roles.executor]\nprovider = \"redmine\"\nredmine_api_base = \"https://redmine-toml.example\"\nredmine_close_status_id = 7\ngitlab_api_base = \"https://gitlab-toml.example\"\n",
     );
     let _cfg = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
@@ -85,11 +85,10 @@ fn toml_valid_direct_edits_affect_resolvers() {
         .unwrap()
         .expect("TOML-only role row");
     assert_eq!(role.provider.as_deref(), Some("redmine"));
-    assert_eq!(
-        role.api_base.as_deref(),
-        Some("https://forgejo-toml.example")
-    );
-    assert_eq!(role.repository.as_deref(), Some("acme/widgets"));
+    // Legacy endpoint/repository columns stay SQLite-backed: TOML no
+    // longer merges endpoint fields into the generic role row.
+    assert!(role.api_base.is_none());
+    assert!(role.repository.is_none());
     let redmine = auth::load_redmine_config(Role::Executor, &storage)
         .unwrap()
         .expect("TOML redmine row");
@@ -189,8 +188,8 @@ fn toml_role_precedence_is_env_over_toml_over_sqlite() {
         .save_role_config(
             Role::Executor,
             &crate::auth::StoredConfig {
-                provider: Some(PROVIDER_FORGEJO.to_owned()),
-                api_base: Some("https://sqlite-forgejo.example".to_owned()),
+                provider: Some(PROVIDER_REDMINE.to_owned()),
+                api_base: Some("https://sqlite-legacy.example".to_owned()),
                 repository: Some("sqlite-owner/sqlite-repo".to_owned()),
             },
         )
@@ -209,7 +208,7 @@ fn toml_role_precedence_is_env_over_toml_over_sqlite() {
         .unwrap();
     write_toml_file(
         &toml_path,
-        "[roles.executor]\nprovider = \"gitlab\"\nforgejo_api_base = \"https://toml-forgejo.example\"\nforgejo_repository = \"toml-owner/toml-repo\"\nredmine_api_base = \"https://toml-redmine.example\"\nredmine_close_status_id = 9\n",
+        "[roles.executor]\nprovider = \"gitlab\"\nredmine_api_base = \"https://toml-redmine.example\"\nredmine_close_status_id = 9\n",
     );
     let _cfg = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
@@ -225,18 +224,20 @@ fn toml_role_precedence_is_env_over_toml_over_sqlite() {
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
         "PHASEGENT_CLOSE_STATUS_ID",
     ]);
-    // Without env, TOML shadows SQLite.
+    // Without env, TOML shadows SQLite for the provider selection;
+    // legacy endpoint/repository columns stay SQLite-backed and are
+    // never merged from TOML.
     let effective = auth::load_config(Role::Executor, &storage)
         .unwrap()
         .unwrap();
     assert_eq!(effective.provider.as_deref(), Some("gitlab"));
     assert_eq!(
         effective.api_base.as_deref(),
-        Some("https://toml-forgejo.example")
+        Some("https://sqlite-legacy.example")
     );
     assert_eq!(
         effective.repository.as_deref(),
-        Some("toml-owner/toml-repo")
+        Some("sqlite-owner/sqlite-repo")
     );
     let redmine = auth::load_redmine_config(Role::Executor, &storage)
         .unwrap()

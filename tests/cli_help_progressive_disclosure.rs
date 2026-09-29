@@ -270,7 +270,7 @@ fn config_provider_help_carries_the_resolver_chain() {
         stdout.contains("PHASEGENT_PROVIDER")
             && stdout.contains("PHASEGENT_DEFAULT_PROVIDER")
             && stdout.contains("role_config.provider")
-            && stdout.contains("forgejo fallback"),
+            && stdout.contains("no default provider"),
         "config provider help must carry the resolver chain; got:\n{stdout}",
     );
     assert!(
@@ -631,7 +631,7 @@ fn admin_config_write_help_is_denied_for_ai_roles_and_absent_from_read_only_page
             "PHASEGENT_PROVIDER",
             "PHASEGENT_DEFAULT_PROVIDER",
             "role_config.provider",
-            "forgejo fallback",
+            "no default provider",
         ] {
             assert!(
                 provider.contains(needle),

@@ -91,12 +91,6 @@ pub(crate) fn execute_status(
         );
     }
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ProviderError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
         Ok(ProviderKind::Redmine) => {}
         Ok(ProviderKind::Gitlab) => {}
         Ok(ProviderKind::Local) => {}
@@ -205,7 +199,7 @@ pub(crate) fn execute_status(
             ProviderDispatcher::Local(local) => {
                 // Phase 2 bare auto on the static local catalogue plus
                 // the timer hook for Local parity (stderr-only, stdout
-                // unchanged; Forgejo/GitLab arms below are untouched).
+                // unchanged).
                 let effective = if status.is_empty() {
                     match local.status_next(number) {
                         Ok(report) => match auto_target_from_report(&report) {

@@ -5,7 +5,7 @@ use crate::providers::config::resolve_kind;
 use crate::providers::hierarchy::HierarchyPage;
 use crate::providers::{IssueProvider, ProviderKind};
 
-/// Operation labels for the structured Local/Forgejo rejection. They match
+/// Operation labels for the structured Local rejection. They match
 /// the dispatcher hierarchy operations so provider and CLI surfaces stay
 /// byte-identical on the same failure.
 pub(crate) const HIERARCHY_GET_OPERATION: &str = "issue hierarchy get";
@@ -15,8 +15,8 @@ pub(crate) const HIERARCHY_UPDATE_OPERATION: &str = "issue hierarchy update";
 /// hierarchy view and is available to every non-admin role;
 /// `set`/`unset` assign or clear the native parent and are
 /// orchestrator-only. Redmine uses `parent_issue_id`; GitLab uses the Work
-/// Item hierarchy widget with provider-resolved kinds. Local and Forgejo
-/// reject with a structured not-supported error before any provider build
+/// Item hierarchy widget with provider-resolved kinds. Local
+/// rejects with a structured not-supported error before any provider build
 /// or network access. Hierarchy never reads or writes relations.
 pub(crate) fn execute_hierarchy(
     role_value: Option<Role>,
@@ -41,7 +41,7 @@ pub(crate) fn execute_hierarchy(
         HierarchyCommand::Get { .. } => HIERARCHY_GET_OPERATION,
         HierarchyCommand::Set { .. } | HierarchyCommand::Unset { .. } => HIERARCHY_UPDATE_OPERATION,
     };
-    // Local and Forgejo expose no native hierarchy surface; reject before
+    // Local exposes no native hierarchy surface; reject before
     // any provider build or network access so the structured not-supported
     // error is the only side effect.
     match resolve_kind(role, provider_kind) {

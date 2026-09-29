@@ -14,9 +14,9 @@ Role resolution:
   Managed sessions supply the role; other hosts set PHASEGENT_ROLE.
 
 Options:
-  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)
+  --provider <NAME>      redmine, gitlab, or local (no default; must be configured)
   --api-base <URL>       Override the provider API base
-  --repository <O/R>     Override the Forgejo owner/repository
+  --repository <O/R>     Legacy repository override (ignored; use --project-id)
   --project-id <ID>      Override the Redmine or GitLab project id
   --close-status-id <ID> Override the Redmine closed status
   -h, --help             Print help

@@ -39,12 +39,6 @@ fn build_dispatcher(
 ) -> Result<crate::providers::ProviderDispatcher, String> {
     use crate::providers::config::ProviderKind;
     match kind {
-        // The provider was removed: a stale selection fails closed with the
-        // structured unsupported envelope instead of selecting another
-        // provider.
-        ProviderKind::Forgejo => Err(redact_provider_error(
-            crate::providers::api::ProviderError::not_supported("forgejo", "provider dispatch"),
-        )),
         ProviderKind::Redmine => {
             let config = crate::providers::RedmineConfig::resolve(role, None, None, None)
                 .map_err(redact_provider_error)?;
@@ -103,12 +97,6 @@ fn endpoint_for_role(
 ) -> Option<String> {
     use crate::providers::config::ProviderKind;
     let raw: Option<String> = match kind {
-        // Legacy configuration read: a stale selection keeps surfacing its
-        // stored endpoint; credentials and rows are never erased.
-        ProviderKind::Forgejo => crate::auth::load_config(role, storage)
-            .ok()
-            .flatten()
-            .and_then(|c| c.api_base),
         ProviderKind::Redmine => crate::auth::load_redmine_config(role, storage)
             .ok()
             .flatten()

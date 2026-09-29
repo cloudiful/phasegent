@@ -157,13 +157,13 @@ fn version_list_enforces_role_and_provider_boundaries() {
             Command::VersionCommand(crate::command::VersionCommand::List)
         ));
     }
-    // ...while Forgejo is rejected with a not-supported error before any
-    // provider is built.
+    // A removed `--provider` value is rejected at parse time (exit 2),
+    // before any role or provider check.
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "version", "list",]),
             Some("orchestrator")
         ),
-        1
+        2
     );
 }

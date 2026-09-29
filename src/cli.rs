@@ -337,23 +337,23 @@ pub(crate) fn report_local_warnings(operation: &str, warnings: Option<String>) {
     }
 }
 
-/// Legacy `repo create` route. It requests the removed Forgejo provider
-/// explicitly, so it now fails closed with the structured unsupported
-/// error instead of selecting another provider; P3 owns the replacement
-/// routing.
+/// Legacy `repo create` route. The removed provider no longer exists, so
+/// this entry point always fails closed with an actionable structured
+/// config error instead of selecting another provider; the GitLab route
+/// lives in `repo::execute_repo_or_gitlab`. P3 owns the replacement
+/// routing. Kept for the legacy `repo_cli` call path until P3b removes
+/// it.
+#[allow(dead_code)]
 pub(crate) fn provider(
     role: Role,
-    api_base: Option<&str>,
-    repository: Option<&str>,
+    _api_base: Option<&str>,
+    _repository: Option<&str>,
 ) -> Result<ProviderDispatcher, ProviderError> {
-    provider_for(
-        role,
-        Some(ProviderKind::Forgejo),
-        api_base,
-        repository,
-        None,
-        None,
-    )
+    let _ = role;
+    Err(ProviderError::config(
+        "repo create needs an explicit provider; use `--provider gitlab` \
+         (Redmine and local have no repository endpoint)",
+    ))
 }
 
 pub(crate) fn provider_for(
@@ -365,14 +365,6 @@ pub(crate) fn provider_for(
     close_status_id: Option<&str>,
 ) -> Result<ProviderDispatcher, ProviderError> {
     match resolve_kind(role, provider_kind)? {
-        // A persisted `forgejo` selection is unsupported: the provider was
-        // removed and no other provider is selected implicitly (no Local,
-        // Redmine, or GitLab fallback). Stored credentials and configuration
-        // rows stay untouched.
-        ProviderKind::Forgejo => Err(ProviderError::not_supported(
-            "forgejo",
-            "provider selection",
-        )),
         ProviderKind::Redmine => {
             let config = RedmineConfig::resolve(role, api_base, project_id, close_status_id)?;
             ProviderDispatcher::redmine(role, config)

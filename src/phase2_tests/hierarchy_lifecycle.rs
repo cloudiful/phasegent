@@ -10,26 +10,15 @@ use super::*;
 
 #[test]
 fn hierarchy_rejects_unsupported_providers_before_any_access() {
-    // Local and Forgejo expose no native hierarchy surface: the CLI rejects
-    // with a structured not-supported error (exit 1) before any provider
-    // build, credential lookup, or network access, so no storage setup is
-    // needed for these cases.
+    // Local exposes no native hierarchy surface: the CLI rejects with a
+    // structured not-supported error (exit 1) before any provider build,
+    // credential lookup, or network access, so no storage setup is needed
+    // for these cases.
     for argv in [
         vec!["--provider", "local", "hierarchy", "get", "641"],
-        vec!["--provider", "forgejo", "hierarchy", "get", "641"],
         vec![
             "--provider",
             "local",
-            "hierarchy",
-            "set",
-            "--parent",
-            "640",
-            "--child",
-            "641",
-        ],
-        vec![
-            "--provider",
-            "forgejo",
             "hierarchy",
             "set",
             "--parent",
@@ -42,6 +31,30 @@ fn hierarchy_rejects_unsupported_providers_before_any_access() {
             "local",
             "hierarchy",
             "unset",
+            "--child",
+            "641",
+        ],
+    ] {
+        let args = owned_args(&argv);
+        assert_eq!(
+            crate::cli::run_with_role(args, Some("orchestrator")),
+            1,
+            "unsupported provider must fail with not-supported"
+        );
+    }
+    // A removed `--provider` value never reaches execution: the parser
+    // rejects it with a structured argument error (exit 2) carrying the
+    // stale-provider guidance, before any role, provider, or credential
+    // access.
+    for argv in [
+        vec!["--provider", "forgejo", "hierarchy", "get", "641"],
+        vec![
+            "--provider",
+            "forgejo",
+            "hierarchy",
+            "set",
+            "--parent",
+            "640",
             "--child",
             "641",
         ],
@@ -57,8 +70,8 @@ fn hierarchy_rejects_unsupported_providers_before_any_access() {
         let args = owned_args(&argv);
         assert_eq!(
             crate::cli::run_with_role(args, Some("orchestrator")),
-            1,
-            "unsupported provider must fail with not-supported"
+            2,
+            "removed provider must fail at parse time with the stale-provider guidance"
         );
     }
     // Role denials keep the permission exit code without provider access.

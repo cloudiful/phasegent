@@ -113,12 +113,12 @@ fn timer_recovery_marks_orphan_failed_and_is_idempotent_for_terminal_rows() {
 }
 
 #[test]
-fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() {
+fn timer_recover_with_stale_provider_marks_failed_and_returns_config_error() {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
     use crate::infra::storage::{Storage, TIMER_SYNC_FAILED};
     let _lock = lock_workflow_tests();
     let home = crate::test_scratch::root().join(format!(
-        "phasegent-timer-recover-forgejo-{}-{}",
+        "phasegent-timer-recover-stale-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -130,10 +130,18 @@ fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() 
         "PHASEGENT_DB_PATH",
         db_path.as_os_str().to_string_lossy().as_ref(),
     );
+    // Neutralise the TOML overlay and any host provider default so
+    // resolution observes the stale env value below.
+    let missing_toml = home.join("phasegent-missing.toml");
+    let _toml_guard = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        missing_toml.to_string_lossy().as_ref(),
+    );
+    let _clear_provider = EnvGuard::set("PHASEGENT_PROVIDER", "");
     let storage = Storage::open_at(&db_path).unwrap();
     storage
         .start_timer_run(
-            "recover-forgejo",
+            "recover-stale",
             28,
             "implementation",
             "executor",
@@ -141,21 +149,33 @@ fn timer_recover_with_explicit_forgejo_marks_failed_and_returns_not_supported() 
             1_700_000_000,
         )
         .unwrap();
+    // The stale selection arrives via env (explicit `--provider forgejo`
+    // no longer parses). Recover still marks FAILED locally, then
+    // surfaces the structured config error from the projection.
+    let _stale = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
     let err = crate::time_tracking_cli::execute_recovery(
         Some(Role::Orchestrator),
-        Some(ProviderKind::Forgejo),
+        None,
         None,
         None,
         None,
         command::TimerCommand::Recover {
-            run_id: "recover-forgejo".to_owned(),
+            run_id: "recover-stale".to_owned(),
         },
     )
     .unwrap_err();
-    assert_eq!(err.json()["kind"], "not_supported");
+    assert_eq!(err.json()["kind"], "config");
+    assert!(
+        err.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forgejo"),
+        "stale provider error must name the value: {:?}",
+        err.json()
+    );
     let row = Storage::open_at(&db_path)
         .unwrap()
-        .load_timer_run("recover-forgejo")
+        .load_timer_run("recover-stale")
         .unwrap()
         .unwrap();
     assert_eq!(row.status, "FAILED");
@@ -231,12 +251,12 @@ fn timer_list_and_get_return_local_only_payloads_without_network() {
         other => panic!("expected single envelope, got {other:?}"),
     }
 
-    // The same calls against Forgejo remain available so an operator
-    // listing or inspecting an orphan does not require a provider
-    // switch; recover is still Redmine/GitLab-only.
-    let list_forgejo = crate::time_tracking_cli::execute_recovery(
+    // The same calls against the local provider remain available so an
+    // operator listing or inspecting an orphan does not require a
+    // provider switch; recover still projects via Redmine/GitLab.
+    let list_local = crate::time_tracking_cli::execute_recovery(
         Some(Role::Orchestrator),
-        Some(ProviderKind::Forgejo),
+        Some(ProviderKind::Local),
         None,
         None,
         None,
@@ -246,7 +266,7 @@ fn timer_list_and_get_return_local_only_payloads_without_network() {
         },
     )
     .unwrap();
-    match list_forgejo {
+    match list_local {
         crate::time_tracking_cli::TimerListOutput::Many { runs, .. } => {
             // Only one row exists and it is finished, so the running
             // filter must surface an empty list.

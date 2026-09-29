@@ -42,6 +42,35 @@ fn toml_malformed_and_unknown_fields_fail_clearly() {
 }
 
 #[test]
+fn toml_legacy_provider_fields_and_values_are_rejected() {
+    let _lock = lock_workflow_tests();
+    // A stale `forgejo` provider value fails with migration guidance,
+    // never a silent fallback.
+    for content in [
+        "default_provider = \"forgejo\"\n",
+        "[roles.executor]\nprovider = \"forgejo\"\n",
+    ] {
+        let err =
+            crate::infra::config_overlay::parse_overlay_str(content, "test.toml").unwrap_err();
+        assert!(err.contains("forgejo"), "got: {err}");
+        assert!(err.contains("redmine, gitlab, or local"), "got: {err}");
+    }
+    // Removed endpoint/repository fields are unknown to the overlay;
+    // legacy files fail clearly instead of being silently ignored.
+    for content in [
+        "[roles.executor]\nforgejo_api_base = \"https://example.test\"\n",
+        "[roles.executor]\nforgejo_repository = \"acme/widgets\"\n",
+    ] {
+        let err =
+            crate::infra::config_overlay::parse_overlay_str(content, "test.toml").unwrap_err();
+        assert!(
+            err.contains("unknown") || err.contains("could not parse"),
+            "got: {err}"
+        );
+    }
+}
+
+#[test]
 fn toml_secret_and_runtime_fields_are_rejected_without_echo() {
     let _lock = lock_workflow_tests();
     for (label, content, secret) in [
@@ -72,7 +101,7 @@ fn toml_secret_and_runtime_fields_are_rejected_without_echo() {
         ),
         (
             "api-base-creds",
-            "[roles.executor]\nforgejo_api_base = \"https://user:s3cret@host.example\"\n",
+            "[roles.executor]\nredmine_api_base = \"https://user:s3cret@host.example\"\n",
             "s3cret",
         ),
     ] {

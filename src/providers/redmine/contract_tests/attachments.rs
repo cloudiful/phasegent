@@ -203,7 +203,7 @@ fn upload_output_never_contains_token_or_file_content() {
     let _ = fs::remove_dir_all(dir);
 }
 #[test]
-fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
+fn gitlab_upload_is_not_supported_without_file_access() {
     let missing = crate::test_scratch::root().join(format!(
         "phasegent-missing-for-not-supported-{}-{}",
         std::process::id(),
@@ -212,12 +212,13 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
             .unwrap()
             .as_nanos()
     ));
-    for prov in ["forgejo", "gitlab"] {
+    {
+        let prov = "gitlab";
         let _lock = lock_workflow_tests();
         let tmp = crate::test_scratch::root().join(format!(
             "phasegent-not-supported-{prov}-{}",
             time::SystemTime::now()
-                .duration_since(time::UNIX_EPOCH)
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
@@ -251,8 +252,6 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
                 prov,
                 "--api-base",
                 "http://example.test",
-                "--repository",
-                "owner/repo",
                 "issue",
                 "upload-attachment",
                 "42",

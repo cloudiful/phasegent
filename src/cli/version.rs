@@ -5,7 +5,7 @@ use crate::providers::config::resolve_kind;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 
 /// Redmine or local project version discovery. Every role may read
-/// versions (planning is read-mostly), while Forgejo/GitLab reject the
+/// versions (planning is read-mostly), while GitLab rejects the
 /// operation with a structured not-supported error before any network
 /// access. Local returns the empty catalogue without project discovery.
 pub(crate) fn execute_version(
@@ -23,18 +23,12 @@ pub(crate) fn execute_version(
         return super::permission_error(role, capability);
     }
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ProviderError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
         Ok(ProviderKind::Redmine) => {}
         // Phase 2 parity matrix (issue 257): GitLab now reports
         // `VersionRead = true` (via `GET /projects/:id/milestones`),
         // so the version list flows through the dispatcher and
         // renders the shared `RedmineVersion` shape (milestones map
-        // onto Redmine versions). Forgejo stays not-supported.
+        // onto Redmine versions).
         Ok(ProviderKind::Gitlab) => {}
         Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),

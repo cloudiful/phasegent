@@ -27,7 +27,7 @@ fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> Pr
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_start(
     role_value: Option<Role>,
-    provider_kind: Option<ProviderKind>,
+    _provider_kind: Option<ProviderKind>,
     issue: u64,
     phase: &str,
     agent_role: String,
@@ -36,9 +36,6 @@ pub(crate) fn execute_start(
     owner: &TimerRunOwner,
 ) -> Result<TimerOutput, ProviderError> {
     let _role = timer_orchestrator(role_value, "timer start")?;
-    if provider_kind == Some(ProviderKind::Forgejo) {
-        return Err(ProviderError::not_supported("forgejo", "timer start"));
-    }
     let effective_role = normalise_agent_role(&agent_role)?;
     let run_id = run_id.map(str::to_owned).unwrap_or_else(generate_run_id);
     let storage = Storage::open().map_err(timer_storage_error("timer start"))?;

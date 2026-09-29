@@ -7,10 +7,8 @@ use crate::remote;
 use std::str::FromStr;
 use url::Url;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderKind {
-    #[default]
-    Forgejo,
     Redmine,
     /// GitLab provider. Recognised by the resolver, dispatcher, config
     /// snapshot, and env-import paths.
@@ -24,7 +22,6 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Forgejo => "forgejo",
             Self::Redmine => "redmine",
             Self::Gitlab => "gitlab",
             Self::Local => "local",
@@ -43,12 +40,21 @@ impl FromStr for ProviderKind {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "forgejo" => Ok(Self::Forgejo),
             "redmine" => Ok(Self::Redmine),
             "gitlab" => Ok(Self::Gitlab),
             "local" => Ok(Self::Local),
+            // A stale stored selection names a provider that is no longer
+            // supported. Fail with migration guidance instead of silently
+            // mapping it to another provider; the stored row is left
+            // untouched so `config provider clear` / `config provider set`
+            // can replace it explicitly.
+            "forgejo" => Err("unsupported provider 'forgejo': support was removed; \
+                 expected redmine, gitlab, or local; \
+                 clear the stored selection with `admin config provider clear` \
+                 or set `--provider redmine|gitlab|local`"
+                .to_owned()),
             _ => Err(format!(
-                "invalid provider '{value}'; expected forgejo, redmine, gitlab, or local"
+                "invalid provider '{value}'; expected redmine, gitlab, or local"
             )),
         }
     }
@@ -71,14 +77,21 @@ impl FromStr for ProviderKind {
 ///   6. Role-scoped `role_config.provider` as returned by
 ///      `auth::load_config` (effective TOML-over-SQLite per role, so a
 ///      `[roles.<role>] provider` TOML value shadows the SQLite row).
-///   7. Forgejo fallback.
+///   7. Missing configuration fails with an actionable error; there is
+///      no implicit default provider.
 ///
-/// Steps 1 and 2 already existed; steps 3 through 7 add the TOML
+/// Steps 1 and 2 already existed; steps 3 through 6 add the TOML
 /// overlay. The resolver is read-only: it never persists anything and
 /// never writes TOML, so a stray `--provider` omission cannot silently
 /// overwrite either store. `config set`/`clear` and `config provider
 /// set`/`clear` continue to touch SQLite only; a TOML value shadows
 /// SQLite until the file (or env) is removed.
+///
+/// A stale stored value (for example a legacy selection that no longer
+/// parses) surfaces as a structured config error naming the offending
+/// value; the stored row is never auto-cleared or rewritten. An absent
+/// selection also fails explicitly instead of silently choosing
+/// another provider.
 pub fn resolve_kind(
     role: Role,
     explicit: Option<ProviderKind>,
@@ -121,13 +134,18 @@ pub fn resolve_kind(
     }
     let storage = Storage::open().map_err(ProviderError::config)?;
     let stored = auth::load_config(role, &storage).map_err(ProviderError::config)?;
-    stored
-        .and_then(|config| config.provider)
-        .map_or(Ok(ProviderKind::Forgejo), |provider| {
-            provider
-                .parse()
-                .map_err(|error: String| ProviderError::config(error))
-        })
+    match stored.and_then(|config| config.provider) {
+        Some(provider) => provider
+            .parse()
+            .map_err(|error: String| ProviderError::config(error)),
+        // No provider was selected by any source: fail explicitly with
+        // actionable guidance instead of silently choosing a provider.
+        // Stored credential and configuration rows stay untouched.
+        None => Err(ProviderError::config(
+            "no provider is configured; set --provider to redmine, gitlab, or local, \
+             or persist a default with `admin config provider set <redmine|gitlab|local>`",
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,7 +432,18 @@ mod tests {
             ProviderKind::Gitlab
         );
         let error = "wrong".parse::<ProviderKind>().unwrap_err();
-        assert!(error.contains("forgejo, redmine, gitlab, or local"));
+        assert!(error.contains("redmine, gitlab, or local"));
+    }
+
+    #[test]
+    fn stale_forgejo_selection_fails_with_migration_guidance() {
+        // A persisted `forgejo` value must fail with an actionable error
+        // that names the stale value and points at the explicit
+        // clear/replace path; it must never silently map to another
+        // provider.
+        let error = "forgejo".parse::<ProviderKind>().unwrap_err();
+        assert!(error.contains("forgejo"), "got: {error}");
+        assert!(error.contains("redmine, gitlab, or local"), "got: {error}");
     }
 
     #[test]
@@ -428,8 +457,7 @@ mod tests {
         );
         assert_eq!(format!("{}", ProviderKind::Local), "local");
         // Existing providers keep their mappings so the
-        // forgejo/redmine/gitlab CLI paths are unaffected.
-        assert_eq!(ProviderKind::Forgejo.as_str(), "forgejo");
+        // redmine/gitlab CLI paths are unaffected.
         assert_eq!(ProviderKind::Redmine.as_str(), "redmine");
         assert_eq!(ProviderKind::Gitlab.as_str(), "gitlab");
         assert_eq!(

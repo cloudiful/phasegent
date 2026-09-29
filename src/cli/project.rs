@@ -23,12 +23,6 @@ pub(crate) fn execute_project(
         return super::permission_error(role, capability);
     }
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ProviderError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
         Ok(ProviderKind::Redmine) => {}
         Ok(ProviderKind::Gitlab) => {
             if matches!(command, ProjectCommand::List) {

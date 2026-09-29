@@ -131,21 +131,6 @@ fn auto_transition_reconciles_legacy_multi_running_state() {
 }
 
 #[test]
-fn auto_transition_is_a_noop_for_forgejo() {
-    let _lock = lock_workflow_tests();
-    let (temp, storage, _env) = open_temp_storage("forgejo-noop");
-    let issue = 104;
-
-    let outcome = auto_transition_timer(issue, ProviderKind::Forgejo, "In Progress");
-    match outcome {
-        AutoTimerOutcome::Skipped { .. } => {}
-        other => panic!("expected Skipped for Forgejo, got {other:?}"),
-    }
-    assert!(running_for(&storage, issue).is_empty());
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
 fn auto_transition_routes_to_tester_for_qa_status() {
     let _lock = lock_workflow_tests();
     let (temp, _storage, _env) = open_temp_storage("qa-route");

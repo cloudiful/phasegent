@@ -188,17 +188,6 @@ fn explicit_scopes_resolve_without_network_or_storage() {
 
     let scope = crate::branch_links::resolve_link_scope(
         Some(Role::Orchestrator),
-        Some(ProviderKind::Forgejo),
-        Some("owner/repo"),
-        None,
-    )
-    .expect("forgejo scope must resolve")
-    .expect("forgejo scope must be some");
-    assert_eq!(scope.provider, "forgejo");
-    assert_eq!(scope.project, "owner/repo");
-
-    let scope = crate::branch_links::resolve_link_scope(
-        Some(Role::Orchestrator),
         Some(ProviderKind::Gitlab),
         None,
         Some("42"),
@@ -242,30 +231,12 @@ fn missing_project_is_blocked_not_guessed() {
 
     let error = crate::branch_links::resolve_link_scope(
         Some(Role::Orchestrator),
-        Some(ProviderKind::Forgejo),
-        None,
-        None,
-    )
-    .expect_err("forgejo without repository must be blocked");
-    assert!(error.contains("--repository"), "got: {error}");
-
-    let error = crate::branch_links::resolve_link_scope(
-        Some(Role::Orchestrator),
         Some(ProviderKind::Gitlab),
         None,
         Some("nope"),
     )
     .expect_err("gitlab with non-numeric project must be blocked");
     assert!(error.contains("numeric"), "got: {error}");
-
-    let error = crate::branch_links::resolve_link_scope(
-        Some(Role::Orchestrator),
-        Some(ProviderKind::Forgejo),
-        Some("not-a-repo"),
-        None,
-    )
-    .expect_err("malformed repository must be blocked");
-    assert!(error.contains("OWNER/REPO"), "got: {error}");
 }
 
 #[test]
@@ -288,6 +259,6 @@ fn unselected_provider_stays_unresolved() {
         .expect("resolution must not fail");
     assert_eq!(
         scope, None,
-        "no selection means no scope: the Forgejo default must never be guessed for links"
+        "no selection means no scope: no provider default is ever guessed for links"
     );
 }

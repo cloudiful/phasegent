@@ -124,8 +124,8 @@ fn provider_failure_returns_local_item_with_markers_scoped() {
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
     for (source, project, num, title) in [
-        ("forgejo", "owner/repo", 1u64, "alpha scoped"),
-        ("forgejo", "other/repo", 2u64, "alpha unrelated"),
+        ("redmine", "owner/repo", 1u64, "alpha scoped"),
+        ("redmine", "other/repo", 2u64, "alpha unrelated"),
     ] {
         let key = IssueIndexKey::new(source, project, num.to_string()).unwrap();
         let doc = IssueIndexDocument::new(
@@ -151,18 +151,18 @@ fn provider_failure_returns_local_item_with_markers_scoped() {
         all: false,
     };
     let original = ProviderError::auth("bad credentials");
-    // Explicit forgejo scope must filter to owner/repo only.
+    // Explicit redmine scope must filter to owner/repo only.
     let code = fallback_or_provider_error(
         &original,
         &options,
         None,
-        Some(ProviderKind::Forgejo),
-        Some("owner/repo"),
+        Some(ProviderKind::Redmine),
         None,
+        Some("owner/repo"),
     );
     assert_eq!(code, 0, "scoped fallback with match must succeed");
     let idx2 = SqliteIssueIndex::open_at(&path).unwrap();
-    let explicit = explicit_scope(Some(ProviderKind::Forgejo), Some("owner/repo"), None);
+    let explicit = explicit_scope(Some(ProviderKind::Redmine), None, Some("owner/repo"));
     let scope = lexical_scope_for_state(explicit.as_ref(), "all");
     let res = block_on(idx2.lexical_search_scoped("alpha", 10, 0, false, &scope)).unwrap();
     assert_eq!(res.total_count, 1);
@@ -193,9 +193,9 @@ fn provider_failure_with_no_local_match_preserves_error() {
         &original,
         &options,
         None,
-        Some(ProviderKind::Forgejo),
-        Some("owner/repo"),
+        Some(ProviderKind::Redmine),
         None,
+        Some("owner/repo"),
     );
     assert_eq!(code, 1, "no local match must preserve provider error");
     let _ = std::fs::remove_dir_all(dir);
@@ -211,7 +211,7 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
     let _guard_pg = EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
     let _guard_backend = EnvGuard::set("PHASEGENT_INDEX_BACKEND", "");
     let idx = SqliteIssueIndex::open_at(&path).unwrap();
-    let key = IssueIndexKey::new("forgejo", "owner/repo", "1").unwrap();
+    let key = IssueIndexKey::new("redmine", "owner/repo", "1").unwrap();
     let doc = IssueIndexDocument::new(
         key,
         1,
@@ -239,13 +239,13 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
         &original,
         &all_options,
         None,
-        Some(ProviderKind::Forgejo),
-        Some("owner/repo"),
+        Some(ProviderKind::Redmine),
         None,
+        Some("owner/repo"),
     );
     assert_eq!(code, 1);
     // Not-supported and argument errors never fallback.
-    let not_supported = ProviderError::not_supported("forgejo", "issue search");
+    let not_supported = ProviderError::not_supported("redmine", "issue search");
     let query_options = crate::providers::IssueSearchOptions {
         query: Some("alpha".to_owned()),
         state: "all".to_owned(),
@@ -259,9 +259,9 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
             &not_supported,
             &query_options,
             None,
-            Some(ProviderKind::Forgejo),
-            Some("owner/repo"),
+            Some(ProviderKind::Redmine),
             None,
+            Some("owner/repo"),
         ),
         1
     );
@@ -271,9 +271,9 @@ fn queryless_all_has_no_fallback_and_argument_errors_not_masked() {
             &arg_error,
             &query_options,
             None,
-            Some(ProviderKind::Forgejo),
-            Some("owner/repo"),
+            Some(ProviderKind::Redmine),
             None,
+            Some("owner/repo"),
         ),
         1
     );
@@ -412,19 +412,12 @@ fn fallback_items_retain_scope_without_invented_ids() {
 fn explicit_scope_needs_no_provider_lookup_and_is_bounded() {
     // Pure function: no Storage, no env provider defaults, no network.
     assert_eq!(
-        explicit_scope(Some(ProviderKind::Forgejo), Some("owner/repo"), None)
+        explicit_scope(Some(ProviderKind::Redmine), None, Some("owner/repo"))
             .unwrap()
             .project,
         "owner/repo"
     );
-    assert!(explicit_scope(Some(ProviderKind::Forgejo), None, None).is_none());
-    assert!(explicit_scope(Some(ProviderKind::Forgejo), Some("bad"), None).is_none());
-    assert_eq!(
-        explicit_scope(Some(ProviderKind::Redmine), None, Some("42"))
-            .unwrap()
-            .source,
-        "redmine"
-    );
+    assert!(explicit_scope(Some(ProviderKind::Redmine), None, None).is_none());
     assert!(explicit_scope(Some(ProviderKind::Redmine), None, Some("  ")).is_none());
     assert_eq!(
         explicit_scope(Some(ProviderKind::Gitlab), None, Some("77"))
@@ -437,9 +430,9 @@ fn explicit_scope_needs_no_provider_lookup_and_is_bounded() {
     // State mapping is bounded to open/closed/all.
     let global = lexical_scope_for_state(None, "all");
     assert!(global.is_global());
-    let explicit = explicit_scope(Some(ProviderKind::Forgejo), Some("owner/repo"), None);
+    let explicit = explicit_scope(Some(ProviderKind::Redmine), None, Some("owner/repo"));
     let scoped = lexical_scope_for_state(explicit.as_ref(), "open");
-    assert_eq!(scoped.source.as_deref(), Some("forgejo"));
+    assert_eq!(scoped.source.as_deref(), Some("redmine"));
     assert_eq!(scoped.state.as_deref(), Some("open"));
     assert!(LexicalScope::global().is_global());
 }

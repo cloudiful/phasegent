@@ -68,7 +68,8 @@ pub struct IssueIndexSearchResult {
 }
 
 /// Deterministic scope that keys every index document.
-/// `source` is the provider kind literal (`forgejo`/`redmine`/`gitlab`),
+/// `source` is the provider kind literal (`redmine`/`gitlab`/`local`
+/// for live scopes; historical rows may carry other string keys),
 /// `project` is the stable project identifier for that provider.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct IssueIndexScope {
@@ -135,25 +136,11 @@ pub fn provider_scope(
 /// Never reads Storage, env provider defaults, or the network.
 pub fn explicit_scope(
     provider_kind: Option<crate::providers::ProviderKind>,
-    repository: Option<&str>,
+    _repository: Option<&str>,
     project_id: Option<&str>,
 ) -> Option<IssueIndexScope> {
     let kind = provider_kind?;
     match kind {
-        crate::providers::ProviderKind::Forgejo => {
-            let repo = repository?.trim();
-            if repo.is_empty() || !repo.contains('/') {
-                return None;
-            }
-            // Basic `owner/repo` shape check without network or config.
-            let mut parts = repo.split('/');
-            let owner = parts.next()?.trim();
-            let name = parts.next()?.trim();
-            if owner.is_empty() || name.is_empty() || parts.next().is_some() {
-                return None;
-            }
-            IssueIndexScope::new("forgejo", format!("{owner}/{name}")).ok()
-        }
         crate::providers::ProviderKind::Redmine => {
             let pid = project_id?.trim();
             if pid.is_empty() {

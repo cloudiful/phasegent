@@ -227,11 +227,10 @@ fn issue_sync_reports_remote_failure_with_non_zero_exit() {
     );
     let api_base = sync_cli_dead_api_base();
     let _api_guard = EnvGuard::set("PHASEGENT_API_BASE", &api_base);
-    let _repo_guard = EnvGuard::set("PHASEGENT_REPOSITORY", "owner/repo");
     Storage::open()
         .expect("storage")
-        .save_credential(Role::Orchestrator, "forgejo", "sync-test-token")
-        .expect("store forgejo token");
+        .save_credential(Role::Orchestrator, "redmine", "sync-test-token")
+        .expect("store redmine token");
 
     let repo = root.join("repo");
     close_cli_init_repo(&repo);
@@ -240,7 +239,7 @@ fn issue_sync_reports_remote_failure_with_non_zero_exit() {
     let identity = sync_cli_identity(&repo);
     let lease = close_cli_seed_lease_at(&identity, number, "session-remote", "active", &worktree);
 
-    let exit = sync_cli_run_cli(ProviderKind::Forgejo, false, false, &repo);
+    let exit = sync_cli_run_cli(ProviderKind::Redmine, false, false, &repo);
 
     assert_ne!(
         exit, 0,

@@ -3,11 +3,11 @@ use crate::providers::ProviderKind;
 use crate::providers::api::ProviderError;
 use crate::providers::config::resolve_kind;
 
-/// Route `repo create` by resolved provider kind. The legacy arm delegates
-/// to [`crate::repo_cli::execute`], which fails closed because it requests
-/// the removed provider; GitLab reaches the GitLab provider; Redmine and
-/// Local reject the operation because they have no first-class repository
-/// endpoint.
+/// Route `repo create` by resolved provider kind. GitLab reaches the
+/// GitLab provider; Redmine and Local reject the operation because
+/// they have no first-class repository endpoint. A missing provider
+/// selection fails with the resolver's actionable config error; no
+/// other provider is selected implicitly.
 pub(crate) fn execute_repo_or_gitlab(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -23,11 +23,6 @@ pub(crate) fn execute_repo_or_gitlab(
         return super::permission_error(role, capability);
     }
     match resolve_kind(role, provider_kind) {
-        // The legacy route requests the removed provider explicitly, so it
-        // fails closed instead of selecting another provider.
-        Ok(ProviderKind::Forgejo) => {
-            crate::repo_cli::execute(role_value, api_base, repository, command)
-        }
         Ok(ProviderKind::Gitlab) => match super::provider_for(
             role,
             Some(ProviderKind::Gitlab),

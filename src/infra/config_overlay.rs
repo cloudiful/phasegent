@@ -10,7 +10,7 @@
 //!   2. Environment variables (`PHASEGENT_*`).
 //!   3. TOML file (`phasegent.toml`).
 //!   4. Legacy SQLite settings (`global_setting`, `role_*_config`).
-//!   5. Built-in defaults (forgejo fallback, absent optionals).
+//!   5. Built-in defaults (absent optionals).
 //!
 //! Default path is `<ProjectDirs config_dir>/phasegent.toml` (same
 //! directory as `phasegent.sqlite3`). `PHASEGENT_CONFIG_PATH` overrides
@@ -24,8 +24,8 @@
 //!   `default_provider`, `redmine_repository_url`, `index_backend`
 //!   (`sqlite`/`postgres`, validated but ignored for backend selection
 //!   which remains URL-driven), plus per-role `[roles.<role>]` with
-//!   `provider`, `forgejo_api_base`, `forgejo_repository`,
-//!   `redmine_api_base`, `redmine_close_status_id`, `gitlab_api_base`.
+//!   `provider`, `redmine_api_base`, `redmine_close_status_id`,
+//!   `gitlab_api_base`.
 //! Bearer credentials, role API keys, provisioned identities, timer
 //! state, index state, `PHASEGENT_INDEX_PG_URL`, and any
 //! credential-bearing URL are never accepted in TOML and fail with a
@@ -58,10 +58,6 @@ pub struct ConfigOverlay {
 pub struct RoleOverlay {
     #[serde(default)]
     pub provider: Option<String>,
-    #[serde(default)]
-    pub forgejo_api_base: Option<String>,
-    #[serde(default)]
-    pub forgejo_repository: Option<String>,
     #[serde(default)]
     pub redmine_api_base: Option<String>,
     #[serde(default)]
@@ -162,10 +158,10 @@ impl ConfigOverlay {
                 ));
             }
             match trimmed.as_str() {
-                "forgejo" | "redmine" | "gitlab" | "local" => {}
+                "redmine" | "gitlab" | "local" => {}
                 _ => {
                     return Err(format!(
-                        "TOML config at {origin}: invalid default_provider '{trimmed}'; expected forgejo, redmine, gitlab, or local"
+                        "TOML config at {origin}: invalid default_provider '{trimmed}'; expected redmine, gitlab, or local"
                     ));
                 }
             }
@@ -218,29 +214,14 @@ impl RoleOverlay {
                 ));
             }
             match trimmed.as_str() {
-                "forgejo" | "redmine" | "gitlab" | "local" => {}
+                "redmine" | "gitlab" | "local" => {}
                 _ => {
                     return Err(format!(
-                        "TOML config at {origin}: invalid provider '{trimmed}'; expected forgejo, redmine, gitlab, or local"
+                        "TOML config at {origin}: invalid provider '{trimmed}'; expected redmine, gitlab, or local"
                     ));
                 }
             }
             self.provider = Some(trimmed);
-        }
-        if let Some(value) = self.forgejo_api_base.take() {
-            self.forgejo_api_base = Some(validate_api_base("forgejo_api_base", &value, origin)?);
-        }
-        if let Some(value) = self.forgejo_repository.take() {
-            let trimmed = value.trim().to_owned();
-            if trimmed.is_empty() {
-                return Err(format!(
-                    "TOML config at {origin}: field 'forgejo_repository' cannot be empty"
-                ));
-            }
-            validate_owner_repo(&trimmed).map_err(|error| {
-                format!("TOML config at {origin}: invalid forgejo_repository: {error}")
-            })?;
-            self.forgejo_repository = Some(trimmed);
         }
         if let Some(value) = self.redmine_api_base.take() {
             self.redmine_api_base = Some(validate_api_base("redmine_api_base", &value, origin)?);
@@ -255,18 +236,6 @@ impl RoleOverlay {
         }
         Ok(())
     }
-}
-
-fn validate_owner_repo(value: &str) -> Result<(), String> {
-    let parts: Vec<_> = value.split('/').collect();
-    if parts.len() != 2
-        || parts
-            .iter()
-            .any(|part| part.is_empty() || *part == "." || *part == "..")
-    {
-        return Err("repository must use OWNER/REPOSITORY form".to_owned());
-    }
-    Ok(())
 }
 
 fn validate_api_base(key: &str, value: &str, origin: &str) -> Result<String, String> {

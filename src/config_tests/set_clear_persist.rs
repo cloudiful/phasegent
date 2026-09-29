@@ -46,26 +46,26 @@ fn config_set_role_scoped_persists_and_output_canonical() {
         let outcome = config_write::set_setting_value(
             Some(Role::Executor),
             "PHASEGENT_API_BASE",
-            "https://forgejo.example",
+            "https://redmine.example",
             storage,
         )
         .unwrap();
         let text = serde_json::to_string(&outcome).unwrap();
         assert!(text.contains("PHASEGENT_API_BASE"));
         assert!(
-            !text.contains("https://forgejo.example"),
+            !text.contains("https://redmine.example"),
             "value must not be echoed: {text}"
         );
         // Verify storage: generic api-base writes to three rows
-        let forgejo = storage.load_role_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(forgejo.api_base.as_deref(), Some("https://forgejo.example"));
+        let generic = storage.load_role_config(Role::Executor).unwrap().unwrap();
+        assert_eq!(generic.api_base.as_deref(), Some("https://redmine.example"));
         let redmine = storage
             .load_redmine_config(Role::Executor)
             .unwrap()
             .unwrap();
-        assert_eq!(redmine.api_base.as_deref(), Some("https://forgejo.example"));
+        assert_eq!(redmine.api_base.as_deref(), Some("https://redmine.example"));
         let gitlab = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(gitlab.api_base.as_deref(), Some("https://forgejo.example"));
+        assert_eq!(gitlab.api_base.as_deref(), Some("https://redmine.example"));
 
         // Project-id aliases are now rejected; verify they do not persist.
         assert!(config_write::canonical_setting_name("redmine-project-id").is_none());
@@ -77,7 +77,7 @@ fn config_set_role_scoped_persists_and_output_canonical() {
 #[test]
 fn config_set_default_provider_reuses_validation() {
     with_isolated_storage("set-default-provider", |_db_path, storage| {
-        for literal in [PROVIDER_FORGEJO, PROVIDER_REDMINE, PROVIDER_GITLAB] {
+        for literal in [PROVIDER_REDMINE, PROVIDER_GITLAB] {
             let outcome = config_write::set_setting_value(
                 None,
                 "PHASEGENT_DEFAULT_PROVIDER",

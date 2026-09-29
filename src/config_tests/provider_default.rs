@@ -31,7 +31,6 @@ fn config_provider_get_parses_with_role() {
 #[test]
 fn config_provider_set_parses_valid_values() {
     for (raw, expected) in [
-        ("forgejo", crate::providers::ProviderKind::Forgejo),
         ("redmine", crate::providers::ProviderKind::Redmine),
         ("gitlab", crate::providers::ProviderKind::Gitlab),
         ("local", crate::providers::ProviderKind::Local),
@@ -176,7 +175,7 @@ fn config_provider_set_get_and_clear_round_trip_through_helpers() {
             "fresh storage must report null default: {initial:?}"
         );
 
-        for literal in [PROVIDER_FORGEJO, PROVIDER_REDMINE, PROVIDER_GITLAB] {
+        for literal in [PROVIDER_REDMINE, PROVIDER_GITLAB] {
             let outcome = config::provider_set(literal, storage).unwrap();
             assert_eq!(outcome.provider, Some(literal));
             let stored = config::provider_get(storage).unwrap();
@@ -233,5 +232,35 @@ fn config_provider_get_rejects_stale_invalid_row() {
             error.contains("wrong"),
             "error must echo the offending value: {error}"
         );
+    });
+}
+
+#[test]
+fn stale_forgejo_global_default_fails_closed_and_preserves_row() {
+    // A legacy `forgejo` default must fail with actionable migration
+    // guidance instead of silently selecting another provider, and the
+    // stored row must stay intact for explicit clear/replace.
+    with_isolated_storage("global-default-forgejo-stale", |_db_path, storage| {
+        storage
+            .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_FORGEJO)
+            .unwrap();
+
+        let error = config::provider_get(storage).unwrap_err();
+        assert!(error.contains("forgejo"), "got: {error}");
+        assert!(error.contains("redmine, gitlab, or local"), "got: {error}");
+        assert_eq!(
+            storage
+                .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+                .unwrap()
+                .as_deref(),
+            Some(PROVIDER_FORGEJO),
+            "stale row must be preserved, never auto-cleared"
+        );
+
+        // Explicit clear/replace still works on the stale row.
+        let cleared = config::provider_clear(storage).unwrap();
+        assert!(cleared.cleared);
+        let outcome = config::provider_set(PROVIDER_REDMINE, storage).unwrap();
+        assert_eq!(outcome.provider, Some(PROVIDER_REDMINE));
     });
 }

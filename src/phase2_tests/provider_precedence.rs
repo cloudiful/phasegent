@@ -140,9 +140,11 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
     //   1. explicit --provider argument
     //   2. PHASEGENT_PROVIDER environment variable
     //   3. PHASEGENT_DEFAULT_PROVIDER environment variable
-    //   4. persisted PHASEGENT_DEFAULT_PROVIDER row in SQLite
-    //   5. role-scoped role_config.provider
-    //   6. forgejo fallback
+    //   4. TOML default_provider overlay
+    //   5. persisted PHASEGENT_DEFAULT_PROVIDER row in SQLite
+    //   6. role-scoped role_config.provider
+    //   7. missing configuration fails with an actionable error;
+    //      there is no implicit default provider.
     // The resolver is read-only: each test fully resets the
     // environment and storage so the order of precedence is the
     // only variable under inspection.
@@ -165,6 +167,13 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
             .to_string_lossy()
             .as_ref(),
     );
+    // Neutralise the TOML overlay so empty-DB cases observe the
+    // SQLite/role layers directly.
+    let missing_toml = home.join("phasegent-missing.toml");
+    let _toml_guard = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        missing_toml.to_string_lossy().as_ref(),
+    );
 
     let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
@@ -178,7 +187,8 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
         )
         .unwrap();
 
-    // 6. Forgejo fallback when nothing else is configured.
+    // 7. Missing configuration fails explicitly instead of silently
+    // choosing a provider; the error names the fix.
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "")
         .unwrap();
@@ -192,14 +202,18 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
             },
         )
         .unwrap();
-    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
-    assert_eq!(
-        resolved,
-        ProviderKind::Forgejo,
-        "empty persisted default + empty role-scoped provider must fall back to forgejo"
+    let error = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap_err();
+    let json = error.json();
+    assert_eq!(json["kind"], "config");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no provider is configured"),
+        "missing provider must fail with actionable guidance: {error:?}"
     );
 
-    // 5. Role-scoped provider beats the forgejo fallback.
+    // 6. Role-scoped provider beats the missing-configuration error.
     storage
         .save_role_config(
             Role::Orchestrator,
@@ -214,10 +228,10 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
     assert_eq!(
         resolved,
         ProviderKind::Redmine,
-        "role-scoped provider must win over the forgejo fallback"
+        "role-scoped provider must win over missing configuration"
     );
 
-    // 4. Persisted global default beats the role-scoped provider.
+    // 5. Persisted global default beats the role-scoped provider.
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_GITLAB)
         .unwrap();
@@ -226,6 +240,25 @@ fn resolve_kind_honours_documented_provider_precedence_chain() {
         resolved,
         ProviderKind::Gitlab,
         "persisted PHASEGENT_DEFAULT_PROVIDER must win over role-scoped provider"
+    );
+
+    // 4. TOML default_provider beats the persisted default.
+    let toml_path = home.join("phasegent.toml");
+    std::fs::write(&toml_path, "default_provider = \"redmine\"\n").unwrap();
+    let _toml_win = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        toml_path.to_string_lossy().as_ref(),
+    );
+    let resolved = crate::providers::config::resolve_kind(Role::Orchestrator, None).unwrap();
+    assert_eq!(
+        resolved,
+        ProviderKind::Redmine,
+        "TOML default_provider must win over persisted default"
+    );
+    drop(_toml_win);
+    let _toml_guard2 = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        missing_toml.to_string_lossy().as_ref(),
     );
 
     // 3. Env default beats the persisted default.
@@ -326,6 +359,108 @@ fn resolve_kind_rejects_invalid_persisted_global_default() {
             .unwrap_or_default()
             .contains("wrong"),
         "error must echo the offending value: {error:?}"
+    );
+
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn resolve_kind_rejects_stale_forgejo_at_every_layer_without_erasing() {
+    // A legacy `forgejo` selection at any layer (env, persisted
+    // global default, role-scoped row) must fail with actionable
+    // migration guidance and leave the stored rows untouched for
+    // explicit clear/replace.
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    let _lock = lock_workflow_tests();
+    let _provider_env = DefaultProviderEnvGuard::neutralise();
+    let home = crate::test_scratch::root().join(format!(
+        "phasegent-resolve-forgejo-stale-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _db_path_guard = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        home.join(crate::infra::storage::DB_FILENAME)
+            .to_string_lossy()
+            .as_ref(),
+    );
+    let missing_toml = home.join("phasegent-missing.toml");
+    let _toml_guard = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        missing_toml.to_string_lossy().as_ref(),
+    );
+
+    let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
+
+    // Stale env default fails closed.
+    let _env_default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "forgejo");
+    let error = crate::providers::config::resolve_kind(Role::Executor, None).unwrap_err();
+    assert_eq!(error.json()["kind"], "config");
+    assert!(
+        error.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forgejo"),
+        "stale env must name the value: {error:?}"
+    );
+    drop(_env_default);
+
+    // Stale persisted global default fails closed and is preserved.
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+        .unwrap();
+    let error = crate::providers::config::resolve_kind(Role::Executor, None).unwrap_err();
+    assert!(
+        error.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forgejo"),
+        "stale global default must name the value: {error:?}"
+    );
+    assert_eq!(
+        storage
+            .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+            .unwrap()
+            .as_deref(),
+        Some("forgejo"),
+        "stale row must be preserved, never auto-cleared"
+    );
+    storage
+        .delete_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+        .unwrap();
+
+    // Stale role-scoped row fails closed and is preserved.
+    storage
+        .save_role_config(
+            Role::Executor,
+            &auth::StoredConfig {
+                provider: Some("forgejo".to_owned()),
+                api_base: None,
+                repository: None,
+            },
+        )
+        .unwrap();
+    let error = crate::providers::config::resolve_kind(Role::Executor, None).unwrap_err();
+    assert!(
+        error.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forgejo"),
+        "stale role row must name the value: {error:?}"
+    );
+    assert_eq!(
+        storage
+            .load_role_config(Role::Executor)
+            .unwrap()
+            .unwrap()
+            .provider
+            .as_deref(),
+        Some("forgejo"),
+        "stale role row must be preserved, never auto-cleared"
     );
 
     let _ = fs::remove_dir_all(home);

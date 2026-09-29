@@ -53,7 +53,7 @@ const ROOT_OVERVIEW: &[&str] = &[
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
     let role_text = role.map_or("all roles", Role::as_str);
     println!(
-        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{}\n\nOptions:\n  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Forgejo owner/repository\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:",
+        "phasegent {VERSION}\n\nProvider-backed workflow CLI ({role_text}).\n\n{}\n\nOptions:\n  --provider <NAME>      redmine, gitlab, or local (no default; must be configured)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Legacy repository override (ignored; use --project-id)\n  --project-id <ID>      Override the Redmine or GitLab project id\n  --close-status-id <ID> Override the Redmine closed status\n  -h, --help             Print help\n  -V, --version          Print version\n\nCommands:",
         root_usage()
     );
     for &name in ROOT_OVERVIEW {

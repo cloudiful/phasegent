@@ -66,22 +66,10 @@ fn explicit_scope_needs_only_cli_args_and_rejects_guesses() {
     use crate::providers::ProviderKind;
     use crate::providers::index_store::explicit_scope;
 
-    let forgejo = explicit_scope(Some(ProviderKind::Forgejo), Some("acme/widgets"), None)
-        .expect("forgejo derives from --repository");
-    assert_eq!(forgejo.source, "forgejo");
-    assert_eq!(forgejo.project, "acme/widgets");
-    assert!(
-        explicit_scope(Some(ProviderKind::Forgejo), Some("bare-repo"), None).is_none(),
-        "malformed owner/repo never yields a scope"
-    );
-    assert!(
-        explicit_scope(Some(ProviderKind::Forgejo), None, None).is_none(),
-        "missing repository never yields a scope"
-    );
-    let redmine = explicit_scope(Some(ProviderKind::Redmine), None, Some("tools-phasegent"))
+    let redmine = explicit_scope(Some(ProviderKind::Redmine), None, Some("acme/widgets"))
         .expect("redmine derives from --project-id");
     assert_eq!(redmine.source, "redmine");
-    assert_eq!(redmine.project, "tools-phasegent");
+    assert_eq!(redmine.project, "acme/widgets");
     assert!(
         explicit_scope(Some(ProviderKind::Redmine), None, None).is_none(),
         "missing project never yields a scope"

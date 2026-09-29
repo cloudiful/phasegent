@@ -6,11 +6,10 @@ use crate::providers::{IssueProvider, ProviderKind};
 
 /// Redmine or GitLab issue relations. `list` is available to every non-admin
 /// role (orchestrator/executor/reviewer), while `create` and `delete` are
-/// orchestrator-only; the admin identity is denied all three. Forgejo
-/// rejects every relation operation with a structured not-supported error
-/// before any network access. The dispatch path handles GitLab's
-/// `/links` endpoint, with `precedes` and `--delay` rejected as
-/// structured config errors rather than silently mapped.
+/// orchestrator-only; the admin identity is denied all three. The
+/// dispatch path handles GitLab's `/links` endpoint, with `precedes`
+/// and `--delay` rejected as structured config errors rather than
+/// silently mapped.
 pub(crate) fn execute_relation(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -29,17 +28,9 @@ pub(crate) fn execute_relation(
     if !role.allows(capability) {
         return super::permission_error(role, capability);
     }
-    // Forgejo has no issue relations; reject before any provider build or
-    // network access so the structured not-supported error is the only side
-    // effect. Redmine and GitLab both continue; the dispatch layer in
+    // Redmine and GitLab both continue; the dispatch layer in
     // `redmine_relations_cli` validates provider-specific flags.
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ProviderError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
         Ok(ProviderKind::Redmine) | Ok(ProviderKind::Gitlab) => {}
         // Local has no issue-relations surface; keep the structured
         // not-supported error before any provider build so the only side

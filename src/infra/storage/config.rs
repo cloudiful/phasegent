@@ -8,7 +8,7 @@ use rusqlite::{OptionalExtension, params};
 
 impl Storage {
     /// Load the role-level configuration (provider preference plus the
-    /// Forgejo api_base/repository). Returns `None` when no row exists
+    /// legacy api_base/repository columns). Returns `None` when no row exists
     /// for `role` so callers can distinguish "never written" from
     /// "written with all fields null".
     pub fn load_role_config(&self, role: Role) -> Result<Option<StoredConfig>, String> {
@@ -226,8 +226,8 @@ impl Storage {
     /// existing provider preference on `role_config`. The `project_id`
     /// argument is retained for backward-compatible call sites but is
     /// ignored: it is no longer persisted. The provider preference is
-    /// still flipped to "gitlab" so the resolver doesn't drift back to
-    /// the default Forgejo path.
+    /// still flipped to "gitlab" so the resolver keeps an explicit
+    /// selection.
     #[cfg(test)]
     pub fn persist_gitlab_bootstrap(
         &self,

@@ -50,12 +50,8 @@ fn provider_kind_gitlab_round_trips_and_rejects_unknown_values() {
         .expect("as_str must parse back to Gitlab");
     assert_eq!(round_trip, ProviderKind::Gitlab);
 
-    // Forgejo and Redmine must continue to parse so the existing CLI
-    // `--provider forgejo|redmine` paths still work.
-    assert_eq!(
-        "forgejo".parse::<ProviderKind>().unwrap(),
-        ProviderKind::Forgejo
-    );
+    // Redmine still parses so the existing CLI `--provider redmine`
+    // path keeps working.
     assert_eq!(
         "redmine".parse::<ProviderKind>().unwrap(),
         ProviderKind::Redmine
@@ -63,9 +59,15 @@ fn provider_kind_gitlab_round_trips_and_rejects_unknown_values() {
 
     let error = "wrong".parse::<ProviderKind>().unwrap_err();
     assert!(
-        error.contains("forgejo, redmine, gitlab, or local"),
+        error.contains("redmine, gitlab, or local"),
         "parse error must enumerate the supported providers: {error}"
     );
+
+    // A stale `forgejo` value fails with migration guidance, never a
+    // silent mapping to another provider.
+    let stale = "forgejo".parse::<ProviderKind>().unwrap_err();
+    assert!(stale.contains("forgejo"), "got: {stale}");
+    assert!(stale.contains("redmine, gitlab, or local"), "got: {stale}");
 }
 
 #[test]

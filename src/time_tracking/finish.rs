@@ -36,9 +36,6 @@ pub(crate) fn execute_finish(
     result: &str,
 ) -> Result<TimerOutput, ProviderError> {
     let _role = timer_orchestrator(role_value, "timer finish")?;
-    if provider_kind == Some(ProviderKind::Forgejo) {
-        return Err(ProviderError::not_supported("forgejo", "timer finish"));
-    }
 
     // This local transition deliberately precedes every provider/key lookup
     // and every network request. A failed projection is recoverable by
@@ -153,7 +150,6 @@ pub(crate) fn project_run(
                 storage, run, &provider, token,
             )
         }
-        ProviderKind::Forgejo => Err(ProviderError::not_supported("forgejo", "timer finish")),
         // Local keeps the timer ledger in `Storage` and has no remote
         // time-entry projection, so the finish transition above is the
         // whole record. The projection arm is a no-op: the run keeps the
@@ -169,7 +165,10 @@ fn require_redmine_provider(
 ) -> Result<(), ProviderError> {
     let resolved_provider = resolve_kind(Role::Orchestrator, provider_kind)?;
     if resolved_provider != ProviderKind::Redmine {
-        return Err(ProviderError::not_supported("forgejo", operation));
+        return Err(ProviderError::not_supported(
+            resolved_provider.as_str(),
+            operation,
+        ));
     }
     Ok(())
 }

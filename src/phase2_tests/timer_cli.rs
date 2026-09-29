@@ -76,6 +76,7 @@ fn timer_parser_accepts_valid_foundation_syntax_and_rejects_malformed_values() {
 
 #[test]
 fn timer_execution_is_orchestrator_and_redmine_only() {
+    let _lock = crate::infra::storage::test_support::lock_workflow_tests();
     let home = crate::test_scratch::root().join(format!(
         "phasegent-timer-boundary-{}-{}",
         std::process::id(),
@@ -85,6 +86,21 @@ fn timer_execution_is_orchestrator_and_redmine_only() {
             .as_nanos()
     ));
     let storage = Storage::open_at(&home.join(crate::infra::storage::DB_FILENAME)).unwrap();
+    // Pin the process database at the temp file so the CLI entry point
+    // (`Storage::open`) observes the seeded row; also neutralise the
+    // TOML overlay so resolution observes storage/env only.
+    let _db_guard = crate::infra::storage::test_support::EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        home.join(crate::infra::storage::DB_FILENAME)
+            .to_string_lossy()
+            .as_ref(),
+    );
+    let _toml_guard = crate::infra::storage::test_support::EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        home.join("phasegent-missing.toml")
+            .to_string_lossy()
+            .as_ref(),
+    );
     storage
         .start_timer_run(
             "boundary-run",
@@ -118,26 +134,34 @@ fn timer_execution_is_orchestrator_and_redmine_only() {
             == "running"
     );
 
-    let forgejo = crate::time_tracking_cli::execute(
-        Some(Role::Orchestrator),
-        Some(ProviderKind::Forgejo),
-        None,
-        None,
-        None,
-        command::TimerCommand::Finish {
-            run_id: "boundary-run".to_owned(),
-            result: "DONE".to_owned(),
-        },
-    )
-    .unwrap_err();
-    assert_eq!(forgejo.json()["kind"], "not_supported");
+    // A stale provider selection fails with a structured config error.
+    // The local finish transition lands first (durable DONE + sync
+    // FAILED), then the projection surfaces the stale-provider error;
+    // nothing is silently routed to another provider.
+    let stale = {
+        let _stale_env =
+            crate::infra::storage::test_support::EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
+        crate::time_tracking_cli::execute(
+            Some(Role::Orchestrator),
+            None,
+            None,
+            None,
+            None,
+            command::TimerCommand::Finish {
+                run_id: "boundary-run".to_owned(),
+                result: "DONE".to_owned(),
+            },
+        )
+        .unwrap_err()
+    };
+    assert_eq!(stale.json()["kind"], "config");
     assert!(
-        storage
-            .load_timer_run("boundary-run")
-            .unwrap()
-            .unwrap()
-            .status
-            == "running"
+        stale.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forgejo"),
+        "stale provider error must name the value: {:?}",
+        stale.json()
     );
     let _ = fs::remove_dir_all(home);
 }
