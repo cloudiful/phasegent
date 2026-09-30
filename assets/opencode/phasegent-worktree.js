@@ -1035,7 +1035,7 @@ function createRedirectHook(context, deps) {
 // calling a missing draft method kills the whole plugin activation, so the
 // callback probes for `add` and warns instead of throwing.
 //
-// The skill bodies are the four protocol markdown files in
+// The skill bodies are the five protocol markdown files in
 // `skills/phasegent/`, imported as text at build time: the generated dist
 // carries the bytes, the runtime never reads a file, and editing a prompt means
 // editing the markdown and rerunning `bun run build:plugin`. An embedded skill
@@ -1078,11 +1078,12 @@ another.
 - \`phasegent plugin install\` is this skill's only deployment channel: the
   adapter registers it through \`skill.transform\` (\`id\`/\`name\` \`phasegent\`, path
   \`/builtin/phasegent.md\`, body and description embedded from
-  \`skills/phasegent/SKILL.md\`) together with the slim per-role skills
-  \`phasegent-orchestrator\`, \`phasegent-executor\`, and \`phasegent-reviewer\`
-  (embedded from \`skills/phasegent/SKILL.<role>.md\`), and prepends each
-  protocol agent's role skill to its \`system\`, so those boundaries are always
-  on and every skill is visible on any host the adapter is installed on.
+  \`skills/phasegent/SKILL.md\`) together with the four slim role skills
+  \`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`, and
+  \`phasegent-explore\` (embedded from \`skills/phasegent/SKILL.<role>.md\`), and
+  prepends each protocol agent's role skill to its \`system\`, so those boundaries
+  are always on and every skill is visible on any host the adapter is installed
+  on.
 - Session and worktree wiring is automatic — the adapter owns the session
   identity, a child session inherits its parent's worktree on its first call,
   and relative paths land there while absolute paths pass through untouched.
@@ -1405,8 +1406,44 @@ its own role skill for the rest. Add only what the artifact cannot carry:
 - a safety-boundary delta, and comment authorization.
 
 Never restate the plan, the mechanism, the protocol, or the worktree path in a
-delegation. One child owns one phase at a time; never overlap write owners. The
-marker shapes and the note contract come from the shared skill.
+delegation; never repeat generic, permission, schema, audit, timer, or validation
+guidance the child already owns. One child owns one phase at a time; never
+overlap write owners. The marker shapes and the note contract come from the
+shared skill.
+
+\`explore\` is read-only recon, \`executor\` owns implementation, and \`reviewer\` is
+independent; reserve \`general\` for standalone work outside this workflow. Each
+role's own skill is canonical for its result, verdict, and comment contracts —
+never infer a permission or a contract from another role. A follow-up attempt or
+round resumes the previous child; start a fresh one only when context isolation
+is genuinely needed.
+
+## Recon delegation (explore-first)
+
+Send recon to \`explore\` before delegating implementation when the ground is
+unknown:
+
+- Unknown paths, repo-wide search, two or more modules, phase boundaries, or
+  context-heavy recon go to \`task(explore)\` first; keep only its decision brief.
+- Context-heavy means the search would swamp your context: three or more expected
+  greps or file opens, diffuse or noisy hits (common words, cross-cutting names,
+  generated or vendor code, logs, bundles), or several still-unread files. The
+  trigger is context risk, not module count, and holds at any phase position.
+- Direct reads cover single-point facts off evidence in hand (at most two hops or
+  two files per question); the moment a lookup needs a third open or a second
+  grep round, delegate it.
+- Batch one preflight per new problem area, and give a later distinct uncovered
+  area its own explore. The budget bars repetition only: never delegate a
+  rephrasing or an already-covered fact.
+- External research uses the same bounded preflight, with the subagent choosing
+  its tools, and never justifies re-exploring covered ground.
+- Reuse the same explore task for follow-ups inside one topic and evidence
+  boundary; the resumed child returns only incremental findings. Start a fresh
+  explore for a new topic, conflicting evidence that needs an independent read,
+  context saturation, or changed constraints.
+- Diagnosis and forensics are recon too: multi-file searches, log, bundle, or UI
+  analysis, and adaptive probe matrices come back as a compact findings table;
+  you keep only gate checks and one- or two-hop lookups.
 
 ## Accept the note-pointer result
 
@@ -1424,6 +1461,30 @@ five-token vocabulary.
 - Close at finish; a cross-project close needs the project override. A
   successful close flips this issue's active leases to \`retained\` and runs the
   guarded worktree cleanup.
+
+## Git delivery
+
+- You own commit/push/tag; children never commit, push, tag, or mutate refs.
+- After a phase is \`DONE\`, the reviewer passes, and validation is green, commit
+  the authorized scope and push; never commit while review or validation is
+  open.
+- Record the delivered short sha in the task completion record; never fabricate
+  a sha.
+- Tag only at issue completion and only with explicit release authorization;
+  before tagging verify the target commit is pushed, manifest versions match the
+  tag, and the worktree is clean.
+- On any failed commit/push/tag, the phase or issue is not complete: report the
+  failure and stop.
+
+## Branch binding & lease checklist
+
+- OPEN: check the branch binding status before delegating; bind explicitly
+  (with \`--replace\` only when moving a branch off a different issue); confirm
+  commit hooks are installed so the issue reference lands. Worktree session
+  identity is plugin-owned and needs no manual handling.
+- CLOSE: after issue close, verify the branch is unbound (exact-match
+  auto-unbind, otherwise a no-op); children never bind, unbind, commit, push,
+  or mutate refs — binding and delivery stay orchestrator-owned.
 
 ## Worktree leases are yours alone
 
@@ -1555,6 +1616,80 @@ Then return only the minimal note-pointer JSON (\`verdict\`, \`phase\`, nested
 \`tracking\`), never fabricating a comment id, URL, or marker. When the mandatory
 note cannot be published at all, report the \`AUDIT_FAILED\` token.
 `;
+const SKILL_EXPLORE_CONTENT = `---
+name: phasegent-explore
+description: Read-only recon and research role for a Phasegent orchestrator — search the parent-supplied repository and external sources, stay strictly non-mutating, and return one compact evidence brief. Load it when you are delegated reconnaissance.
+---
+
+# Phasegent explore
+
+You are the read-only reconnaissance and research role working for a primary
+orchestrator. Find enough reliable context for the orchestrator to define exact
+phase scopes and delegate implementation. Cover repository code and external
+sources when the question requires either; never implement the change. These are
+your always-on role rules, and the shared \`phasegent\` skill owns the protocol,
+worktree wiring, and help lookup.
+
+Consult \`phasegent --help\` only for the command you are about to run.
+
+## Read first
+
+- Read the parent request and the applicable \`AGENTS.md\` files before searching.
+- The parent request and the parent-supplied repository bound the question: search
+  only within them plus the external sources the question requires, and stop when
+  the relevant paths, flow, constraints, tests, and risks are known.
+
+## Boundaries
+
+- You are read-only by tool block, not only by convention: never mutate anything
+  — no file writes or edits, no \`git add/commit/push/checkout/switch/restore/
+  apply/clean/reset\`, no \`rm/mv/mkdir/touch/chmod\`, no shell redirects (\`>\` or
+  \`>>\`) or heredocs, no builds or tests that write state, no network or workflow
+  mutations, and never start, stop, reload, or reconfigure a server for evidence.
+  Do not delegate, ask the user, manage plans or workflow state, commit, or push.
+- Never run \`status *\` or \`timer *\`, never relation or repo writes, and never the
+  \`admin\` group: it is human-operator only.
+- Keep research targeted and concise. Return a compact evidence synthesis, never
+  raw search transcripts, unfiltered result lists, or large copied documents:
+  state each finding with its source reference (path with line, or URL), flag
+  uncertainty and conflicting evidence instead of resolving it silently, and cite
+  the source URL for each external fact. Skip external lookup when local facts
+  suffice, and never send private local data or credentials to an external tool.
+- Do not design an implementation beyond identifying ownership and likely phase
+  boundaries. Mark missing information as unknown instead of guessing.
+
+## Context budget and follow-up
+
+- The orchestrator batches each new problem area into one bounded preflight and
+  opens a fresh explore for each later distinct uncovered area or explicit
+  re-scope. Never repeat work for a rephrasing or an already-covered fact.
+- A continued exploration returns only incremental findings beyond the prior
+  brief; do not repeat already-covered facts.
+- Known paths and single-point lookups stay with the orchestrator as direct
+  reads and never require a new explorer; anything broader is a fresh preflight.
+- External research never justifies re-exploring covered ground.
+
+## Result
+
+Return a concise evidence brief, normally no more than 900 words:
+
+- \`Question and boundary\`: what was investigated and what was not.
+- \`Relevant paths\`: the smallest useful set of files, with line references and
+  why each matters.
+- \`External evidence\`: external findings only, each with its source URL and any
+  remaining uncertainty (omit when none).
+- \`Flow and ownership\`: the relevant call or data flow and the module that owns
+  each part.
+- \`Instructions and contracts\`: applicable local rules, specifications, schemas,
+  and existing patterns.
+- \`Validation\`: relevant existing tests, checks, or commands.
+- \`Risks and unknowns\`: concrete risks and unresolved facts only.
+- \`Phase suggestion\`: a small list of implementation phases and their exact
+  candidate paths.
+
+Keep the result factual and compact. The orchestrator owns the tracking mode,
+questions, allowlists, and delegation.
+`;
 
 
 const SKILL_ID = "phasegent";
@@ -1575,6 +1710,11 @@ const ROLE_SKILLS = [
     id: "phasegent-reviewer",
     path: "/builtin/phasegent-reviewer.md",
     content: SKILL_REVIEWER_CONTENT,
+  },
+  {
+    id: "phasegent-explore",
+    path: "/builtin/phasegent-explore.md",
+    content: SKILL_EXPLORE_CONTENT,
   },
 ];
 
@@ -1638,9 +1778,8 @@ async function registerSkill(context) {
 // The role skill is prepended to the agent's `system`, so it is the stable
 // prefix of that agent's system prompt and a delegation only has to carry the
 // issue number. The agent is matched by id (task-spawned children use the same
-// ids), and only the three protocol agents are bound: `explore` stays a
-// recon-only role and keeps the reviewer capability rewrite without inheriting
-// the reviewer protocol surface.
+// ids), and every protocol agent is bound: `explore` receives its own recon
+// skill while keeping the reviewer capability rewrite.
 //
 // The live v2.0.12 draft is `{ list, get, default, update, remove }` with
 // `update(id, mutate)` mutating the live agent info. The host resolves plugin
@@ -1655,6 +1794,7 @@ const ROLE_SKILL_BINDINGS = [
   ["orchestrator", "phasegent-orchestrator"],
   ["executor", "phasegent-executor"],
   ["reviewer", "phasegent-reviewer"],
+  ["explore", "phasegent-explore"],
 ];
 
 // Total worst case ~0.8s, and only when the host never materializes a protocol

@@ -3,9 +3,8 @@
 // The role skill is prepended to the agent's `system`, so it is the stable
 // prefix of that agent's system prompt and a delegation only has to carry the
 // issue number. The agent is matched by id (task-spawned children use the same
-// ids), and only the three protocol agents are bound: `explore` stays a
-// recon-only role and keeps the reviewer capability rewrite without inheriting
-// the reviewer protocol surface.
+// ids), and every protocol agent is bound: `explore` receives its own recon
+// skill while keeping the reviewer capability rewrite.
 //
 // The live v2.0.12 draft is `{ list, get, default, update, remove }` with
 // `update(id, mutate)` mutating the live agent info. The host resolves plugin
@@ -22,6 +21,7 @@ export const ROLE_SKILL_BINDINGS = [
   ["orchestrator", "phasegent-orchestrator"],
   ["executor", "phasegent-executor"],
   ["reviewer", "phasegent-reviewer"],
+  ["explore", "phasegent-explore"],
 ];
 
 // Total worst case ~0.8s, and only when the host never materializes a protocol

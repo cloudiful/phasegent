@@ -7,7 +7,7 @@
 // calling a missing draft method kills the whole plugin activation, so the
 // callback probes for `add` and warns instead of throwing.
 //
-// The skill bodies are the four protocol markdown files in
+// The skill bodies are the five protocol markdown files in
 // `skills/phasegent/`, imported as text at build time: the generated dist
 // carries the bytes, the runtime never reads a file, and editing a prompt means
 // editing the markdown and rerunning `bun run build:plugin`. An embedded skill
@@ -19,6 +19,7 @@ import SKILL_CONTENT from "../../../skills/phasegent/SKILL.md" with { type: "tex
 import SKILL_ORCHESTRATOR_CONTENT from "../../../skills/phasegent/SKILL.orchestrator.md" with { type: "text" };
 import SKILL_EXECUTOR_CONTENT from "../../../skills/phasegent/SKILL.executor.md" with { type: "text" };
 import SKILL_REVIEWER_CONTENT from "../../../skills/phasegent/SKILL.reviewer.md" with { type: "text" };
+import SKILL_EXPLORE_CONTENT from "../../../skills/phasegent/SKILL.explore.md" with { type: "text" };
 
 import { errorText, warn } from "./runtime.js";
 
@@ -40,6 +41,11 @@ export const ROLE_SKILLS = [
     id: "phasegent-reviewer",
     path: "/builtin/phasegent-reviewer.md",
     content: SKILL_REVIEWER_CONTENT,
+  },
+  {
+    id: "phasegent-explore",
+    path: "/builtin/phasegent-explore.md",
+    content: SKILL_EXPLORE_CONTENT,
   },
 ];
 

@@ -22,16 +22,18 @@
 //!   `tool.execute.before` redirect helpers, and the issue #533
 //!   `skill.transform` embedded skill registration. Issue #572 adds
 //!   the `agent.transform` binding that prepends each protocol
-//!   agent's own slim skill to its system prompt. Issue #616 makes
+//!   agent's own slim skill to its system prompt; issue 665 adds the
+//!   `explore` recon skill so every protocol agent is bound. Issue #616
+//!   makes
 //!   worktree creation opt-in: the lazy path never acquires one, and a
 //!   host create request passes `isolate` so the dedicated directory is
 //!   really created. It must not
 //!   register a slash command: the live v2.0.11 command draft only
 //!   accepts an Effect-returning `execute`, which a promise plugin
 //!   cannot build. The embedded skill body must also match
-//!   `skills/phasegent/SKILL.md` byte-for-byte (issue #544), and the
-//!   three embedded role prompts must match `skills/phasegent/SKILL.<role>.md`
-//!   (issue #602).
+//!   `skills/phasegent/SKILL.md` byte-for-byte (issue #544), and each
+//!   embedded role prompt must match `skills/phasegent/SKILL.<role>.md`
+//!   (issue #602; issue 665 adds `SKILL.explore.md`).
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -826,6 +828,15 @@ fn adapter_template_registers_embedded_skill_without_a_command() {
     // system prefix. The command domain stays untouched.
     assert!(source.contains("agent.transform"));
     assert!(source.contains("draft.add(definition)"));
+    // Issue 665: every protocol agent is bound, explore included, and its recon
+    // prompt ships embedded like the other role skills.
+    assert!(source.contains("[\"orchestrator\", \"phasegent-orchestrator\"]"));
+    assert!(source.contains("[\"executor\", \"phasegent-executor\"]"));
+    assert!(source.contains("[\"reviewer\", \"phasegent-reviewer\"]"));
+    assert!(source.contains("[\"explore\", \"phasegent-explore\"]"));
+    assert!(source.contains("const SKILL_EXPLORE_CONTENT = `"));
+    assert!(source.contains("id: \"phasegent-explore\""));
+    assert!(source.contains("/builtin/phasegent-explore.md"));
     assert!(source.contains("const SKILL_ID = \"phasegent\""));
     assert!(source.contains("/builtin/phasegent.md"));
     assert!(source.contains("PHASEGENT_SESSION_ID"));
@@ -919,7 +930,8 @@ fn embedded_skill_matches_the_repository_copy() {
 
 /// Issue #602 keeps the role prompts slim, so the embedded mirror matters just
 /// as much for them: every `SKILL.<role>.md` the adapter inlines must equal the
-/// repository copy byte-for-byte, and still open with its frontmatter.
+/// repository copy byte-for-byte, and still open with its frontmatter. Issue 665
+/// adds the `explore` recon skill to the same contract.
 #[test]
 fn embedded_role_skills_match_the_repository_copies() {
     let _lock = lock_workflow_tests();
@@ -935,6 +947,10 @@ fn embedded_role_skills_match_the_repository_copies() {
         (
             "const SKILL_REVIEWER_CONTENT = `",
             include_str!("../skills/phasegent/SKILL.reviewer.md"),
+        ),
+        (
+            "const SKILL_EXPLORE_CONTENT = `",
+            include_str!("../skills/phasegent/SKILL.explore.md"),
         ),
     ] {
         let embedded = embedded_prompt(declaration);

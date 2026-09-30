@@ -1921,6 +1921,7 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       "phasegent-orchestrator",
       "phasegent-executor",
       "phasegent-reviewer",
+      "phasegent-explore",
     ]);
     for (const definition of definitions) {
       // The flat Skill.Info contract, plus the synthetic builtin path.
@@ -1936,8 +1937,8 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       expect(definition.content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
       expect(definition.content).not.toMatch(/\bses_[A-Za-z0-9]/);
     }
-    // The generic skill plus the three role variants are what setup registers.
-    expect(skillDefinitions()).toHaveLength(4);
+    // The generic skill plus the four role variants are what setup registers.
+    expect(skillDefinitions()).toHaveLength(5);
     expect(skillDefinitions()[0].id).toBe("phasegent");
   });
 
@@ -1968,11 +1969,17 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       "phasegent-orchestrator",
       "phasegent-executor",
       "phasegent-reviewer",
+      "phasegent-explore",
     ]);
     const skill = skills.get("phasegent");
     expect(skill.path).toBe("/builtin/phasegent.md");
     expect(skill.content).toContain("# Phasegent");
-    for (const id of ["phasegent-orchestrator", "phasegent-executor", "phasegent-reviewer"]) {
+    for (const id of [
+      "phasegent-orchestrator",
+      "phasegent-executor",
+      "phasegent-reviewer",
+      "phasegent-explore",
+    ]) {
       expect(skills.get(id).path).toBe(`/builtin/${id}.md`);
       expect(skills.get(id).content.startsWith("---\n")).toBe(true);
     }
@@ -2012,6 +2019,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     ["orchestrator", "phasegent-orchestrator"],
     ["executor", "phasegent-executor"],
     ["reviewer", "phasegent-reviewer"],
+    ["explore", "phasegent-explore"],
   ];
 
   function agentState() {
@@ -2059,8 +2067,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
       // Exactly one skill body: a second copy only appears if prefixing stacked.
       expect(entry.system.split(content).length - 1).toBe(1);
     }
-    // Recon-only and tester agents keep their own system untouched.
-    expect(state.find((entry) => entry.id === "explore").system).toBe("You recon.");
+    // The tester agent keeps its own system untouched.
     expect(state.find((entry) => entry.id === "tester").system).toBe("You test.");
   });
 
@@ -2113,7 +2120,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     // plugin setup and never re-runs an already-registered callback, so the
     // binding retries: attempt 0 sees only the built-ins, attempt 1 sees the
     // protocol agents.
-    const state = agentState().filter((entry) => ["build", "explore"].includes(entry.id));
+    const state = [{ id: "build", system: "" }];
     const disposals = [];
     const waits = [];
     let attempts = 0;
@@ -2121,7 +2128,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
       agent: {
         transform: async (callback) => {
           attempts += 1;
-          if (attempts >= 2) state.push(...agentState().filter((e) => e.id !== "build"));
+          if (attempts >= 2) state.push(...agentState());
           const byId = new Map(state.map((entry) => [entry.id, entry]));
           await callback({
             list: () => [...byId.values()],
@@ -2189,11 +2196,11 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     }
   });
 
-  test("binds only the three protocol agents", () => {
+  test("binds every protocol agent", () => {
     expect(roleSkillId("orchestrator")).toBe("phasegent-orchestrator");
     expect(roleSkillId("Executor")).toBe("phasegent-executor");
     expect(roleSkillId("build-reviewer-x")).toBe("phasegent-reviewer");
-    expect(roleSkillId("explore")).toBeNull();
+    expect(roleSkillId("explore")).toBe("phasegent-explore");
     expect(roleSkillId("tester")).toBeNull();
     expect(roleSkillId("build")).toBeNull();
     expect(roleSkillId("")).toBeNull();

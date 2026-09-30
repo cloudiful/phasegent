@@ -30,8 +30,44 @@ its own role skill for the rest. Add only what the artifact cannot carry:
 - a safety-boundary delta, and comment authorization.
 
 Never restate the plan, the mechanism, the protocol, or the worktree path in a
-delegation. One child owns one phase at a time; never overlap write owners. The
-marker shapes and the note contract come from the shared skill.
+delegation; never repeat generic, permission, schema, audit, timer, or validation
+guidance the child already owns. One child owns one phase at a time; never
+overlap write owners. The marker shapes and the note contract come from the
+shared skill.
+
+`explore` is read-only recon, `executor` owns implementation, and `reviewer` is
+independent; reserve `general` for standalone work outside this workflow. Each
+role's own skill is canonical for its result, verdict, and comment contracts —
+never infer a permission or a contract from another role. A follow-up attempt or
+round resumes the previous child; start a fresh one only when context isolation
+is genuinely needed.
+
+## Recon delegation (explore-first)
+
+Send recon to `explore` before delegating implementation when the ground is
+unknown:
+
+- Unknown paths, repo-wide search, two or more modules, phase boundaries, or
+  context-heavy recon go to `task(explore)` first; keep only its decision brief.
+- Context-heavy means the search would swamp your context: three or more expected
+  greps or file opens, diffuse or noisy hits (common words, cross-cutting names,
+  generated or vendor code, logs, bundles), or several still-unread files. The
+  trigger is context risk, not module count, and holds at any phase position.
+- Direct reads cover single-point facts off evidence in hand (at most two hops or
+  two files per question); the moment a lookup needs a third open or a second
+  grep round, delegate it.
+- Batch one preflight per new problem area, and give a later distinct uncovered
+  area its own explore. The budget bars repetition only: never delegate a
+  rephrasing or an already-covered fact.
+- External research uses the same bounded preflight, with the subagent choosing
+  its tools, and never justifies re-exploring covered ground.
+- Reuse the same explore task for follow-ups inside one topic and evidence
+  boundary; the resumed child returns only incremental findings. Start a fresh
+  explore for a new topic, conflicting evidence that needs an independent read,
+  context saturation, or changed constraints.
+- Diagnosis and forensics are recon too: multi-file searches, log, bundle, or UI
+  analysis, and adaptive probe matrices come back as a compact findings table;
+  you keep only gate checks and one- or two-hop lookups.
 
 ## Accept the note-pointer result
 
@@ -49,6 +85,30 @@ five-token vocabulary.
 - Close at finish; a cross-project close needs the project override. A
   successful close flips this issue's active leases to `retained` and runs the
   guarded worktree cleanup.
+
+## Git delivery
+
+- You own commit/push/tag; children never commit, push, tag, or mutate refs.
+- After a phase is `DONE`, the reviewer passes, and validation is green, commit
+  the authorized scope and push; never commit while review or validation is
+  open.
+- Record the delivered short sha in the task completion record; never fabricate
+  a sha.
+- Tag only at issue completion and only with explicit release authorization;
+  before tagging verify the target commit is pushed, manifest versions match the
+  tag, and the worktree is clean.
+- On any failed commit/push/tag, the phase or issue is not complete: report the
+  failure and stop.
+
+## Branch binding & lease checklist
+
+- OPEN: check the branch binding status before delegating; bind explicitly
+  (with `--replace` only when moving a branch off a different issue); confirm
+  commit hooks are installed so the issue reference lands. Worktree session
+  identity is plugin-owned and needs no manual handling.
+- CLOSE: after issue close, verify the branch is unbound (exact-match
+  auto-unbind, otherwise a no-op); children never bind, unbind, commit, push,
+  or mutate refs — binding and delivery stay orchestrator-owned.
 
 ## Worktree leases are yours alone
 

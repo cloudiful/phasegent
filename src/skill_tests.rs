@@ -5,8 +5,9 @@
 //! the role capability table's agreement with `src/policy.rs`, the
 //! single-file self-contained shape, and the issue #602 split between the
 //! shared protocol in `SKILL.md` and the always-on role boundaries in
-//! `SKILL.<role>.md`. Pure filesystem + policy reads; no network, credentials,
-//! HOME, or SQLite access.
+//! `SKILL.<role>.md`. Issue 665 adds `SKILL.explore.md` to that role set and
+//! asserts every role skill is embedded by the generated adapter. Pure
+//! filesystem + policy reads; no network, credentials, HOME, or SQLite access.
 
 use crate::policy::{Capability, Role};
 use std::collections::HashMap;
@@ -315,6 +316,83 @@ fn skill_is_a_single_self_contained_file() {
     );
 }
 
+/// Issue 665 adds the `explore` recon skill: every `SKILL.<role>.md` in the
+/// skill directory must be embedded by the generated adapter under its
+/// `phasegent-<role>` id, so a new role prompt cannot ship without its binding.
+#[test]
+fn every_role_skill_ships_embedded_in_the_adapter() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut role_files: Vec<String> = fs::read_dir(root.join("skills/phasegent"))
+        .expect("skills/phasegent must be readable")
+        .map(|entry| {
+            entry
+                .expect("skill entry")
+                .file_name()
+                .to_string_lossy()
+                .to_string()
+        })
+        .filter(|name| name.starts_with("SKILL.") && name.ends_with(".md") && name != "SKILL.md")
+        .collect();
+    role_files.sort();
+    assert_eq!(
+        role_files,
+        vec![
+            "SKILL.executor.md".to_owned(),
+            "SKILL.explore.md".to_owned(),
+            "SKILL.orchestrator.md".to_owned(),
+            "SKILL.reviewer.md".to_owned(),
+        ],
+        "the protocol role skills are the orchestrator/executor/reviewer/explore set"
+    );
+
+    let adapter = fs::read_to_string(root.join("assets/opencode/phasegent-worktree.js"))
+        .expect("the generated adapter must be readable");
+    for file in &role_files {
+        let role = file
+            .trim_start_matches("SKILL.")
+            .trim_end_matches(".md")
+            .to_owned();
+        assert!(
+            adapter.contains(&format!("id: \"phasegent-{role}\"")),
+            "the adapter must embed {file} as phasegent-{role}"
+        );
+    }
+}
+
+/// Issue 665 P2 restores the host-side workflow guidance under Phasegent
+/// ownership: the orchestrator skill carries the explore-first recon delegation
+/// and the delegation-role contract, and the explore skill keeps the
+/// parent-request/applicable-AGENTS read rule.
+#[test]
+fn role_skills_own_recon_delegation_and_explore_read_rule() {
+    let orchestrator = read_skill("SKILL.orchestrator.md");
+    let normalised: String = orchestrator
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for phrase in [
+        "## Recon delegation (explore-first)",
+        "`task(explore)` first",
+        "three or more expected greps or file opens",
+        "at most two hops or two files per question",
+        "reserve `general` for standalone work outside this workflow",
+        "never infer a permission or a contract from another role",
+        "## Git delivery",
+        "## Branch binding & lease checklist",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.orchestrator.md must own the recon delegation guidance {phrase:?}"
+        );
+    }
+
+    let explore = read_skill("SKILL.explore.md");
+    assert!(
+        explore.contains("Read the parent request and the applicable `AGENTS.md` files"),
+        "SKILL.explore.md must keep the parent-request/applicable-AGENTS read rule"
+    );
+}
+
 #[test]
 fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
     let skill = read_skill("SKILL.md");
@@ -372,11 +450,12 @@ fn role_skills_defer_shared_protocol_to_the_general_skill() {
         );
     }
 
-    // (role skill, its own marker family; the orchestrator carries none)
+    // (role skill, its own marker family; the orchestrator and explore carry none)
     let roles: &[(&str, &str)] = &[
         ("SKILL.orchestrator.md", ""),
         ("SKILL.executor.md", "ai-executor"),
         ("SKILL.reviewer.md", "ai-reviewer"),
+        ("SKILL.explore.md", ""),
     ];
     for &(relative, own_marker) in roles {
         let role = read_skill(relative);
@@ -470,6 +549,7 @@ fn help_lookup_is_scoped_and_self_checks_stay_conditional() {
         "SKILL.orchestrator.md",
         "SKILL.executor.md",
         "SKILL.reviewer.md",
+        "SKILL.explore.md",
     ] {
         let role = read_skill(relative);
         assert!(
@@ -495,6 +575,7 @@ fn admin_boundary_is_human_operator_only_in_every_prompt() {
         "SKILL.orchestrator.md",
         "SKILL.executor.md",
         "SKILL.reviewer.md",
+        "SKILL.explore.md",
     ] {
         let text = read_skill(relative);
         assert!(
