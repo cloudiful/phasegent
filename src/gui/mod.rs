@@ -1,8 +1,14 @@
-//! Single-binary desktop shell behind the `gui` Cargo feature.
+//! Desktop backends served to the Electron shell through the hidden
+//! stdio bridge.
 //!
-//! Normal CLI commands never initialize the GUI: only the explicit
-//! `phasegent gui` entry (and the conservative no-argument desktop
-//! heuristic in `main`) calls [`run`]. The GUI reuses the existing
+//! Normal CLI commands never initialize a desktop shell: the Rust binary is
+//! the CLI/MCP executable and the packaged
+//! [`crate::desktop_bridge`] companion for the Electron application, and the
+//! window lifecycle lives in that application. The backends here are the
+//! single source of truth for desktop payloads, redaction, and error text:
+//! [`crate::desktop_bridge`] dispatches the same blocking entry points on its
+//! own worker threads, so the packaged shell gets identical payloads,
+//! redaction, and error text. The GUI reuses the existing
 //! crate modules directly — [`crate::infra::storage::Storage`],
 //! [`crate::config_snapshot`], [`crate::config`],
 //! [`crate::auth`], [`crate::providers::config`],
@@ -18,7 +24,7 @@
 //! - `get_branch_context` reports the current branch-bound issue id.
 //! - `get_tasks` resolves role/provider via existing dispatch and
 //!   fetches a bounded provider page (`search_issue_page`); the
-//!   index `block_on` bridge is never called from the Tauri runtime.
+//!   index `block_on` bridge is never called from a bridge worker.
 //! - `get_status` reports branch, bound issue, sanitised endpoint,
 //!   local timers, and Redmine status support (`not_supported` clean).
 //! - `set_config_setting` / `clear_config_setting` mutate non-secret
@@ -28,17 +34,15 @@
 //! - `get_provisioning_status` reports admin-provisioned Redmine
 //!   identity via existing `auth` APIs without exposing API keys.
 //!
-//! Blocking provider/storage work never runs on the Tauri async
-//! runtime directly; async commands bridge through
-//! `tauri::async_runtime::spawn_blocking`.
+//! Blocking provider/storage work never blocks the bridge's request handling:
+//! [`crate::desktop_bridge`] dispatches the same blocking entry points on its
+//! own worker threads.
 //!
 //! Layout: [`models`] holds the redacted IPC shapes, [`validate`]
 //! the pure input/redaction helpers, [`backend`] the blocking
-//! task/status reads, [`settings`] the config/credential mutations,
-//! and [`commands`] the feature-gated Tauri command set.
+//! task/status reads, and [`settings`] the config/credential mutations.
 
 mod backend;
-mod commands;
 mod models;
 mod settings;
 mod validate;
@@ -48,7 +52,6 @@ mod tests;
 
 #[allow(unused_imports)]
 pub use backend::{read_branch_context, read_status_blocking, read_tasks_blocking};
-pub use commands::run;
 #[allow(unused_imports)]
 pub use models::{
     BranchContextPayload, ClearCredentialRequest, ClearCredentialResponse, ClearSettingRequest,
@@ -81,12 +84,12 @@ use serde::Serialize;
 pub struct AppMetadata {
     pub name: &'static str,
     pub version: &'static str,
-    /// Tauri application identifier (matches `tauri.conf.json`).
+    /// Electron application identifier (matches `electron-builder.yml`).
     pub identifier: &'static str,
 }
 
-/// Shared metadata constructor used by both the CLI stub and the
-/// Tauri command so the value stays in sync with the manifest.
+/// Shared metadata constructor so the reported identity stays in sync with
+/// the packaged application manifest.
 #[allow(dead_code)]
 pub fn app_metadata() -> AppMetadata {
     AppMetadata {
@@ -107,21 +110,18 @@ pub fn read_config_snapshot() -> Result<crate::config_snapshot::ConfigSnapshot, 
     crate::config_snapshot::render(&storage, None).map_err(validate::bound_message)
 }
 
-/// Content hash of the embedded `frontend/dist` tree written by
-/// `build.rs` to `OUT_DIR` during a gui build. Because this is included
-/// via `include_str!` it is a real compile input: any dist change alters
-/// the crate's inputs and busts the Cargo fingerprint, so `cargo install`
-/// re-embeds even when no Rust source changed. Returns a fallback when
-/// the binary was built without gui (no `OUT_DIR` hash) so the field stays
-/// stable and warning-free.
+/// Content hash of the renderer bundle the desktop shell reports on its
+/// Status page.
+///
+/// The Electron application serves the renderer from its own package, so this
+/// binary does not embed `frontend/dist`; a packaging step that knows the
+/// shipped bundle may provide its hash through the
+/// `PHASEGENT_FRONTEND_DIST_HASH` build-time variable. Without one the field
+/// keeps a stable placeholder so it stays serializable and warning-free.
 #[allow(dead_code)]
 pub fn frontend_dist_hash() -> String {
-    #[cfg(feature = "gui")]
-    {
-        include_str!(concat!(env!("OUT_DIR"), "/frontend_dist.hash")).to_owned()
-    }
-    #[cfg(not(feature = "gui"))]
-    {
-        "unavailable".to_owned()
-    }
+    option_env!("PHASEGENT_FRONTEND_DIST_HASH")
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unavailable")
+        .to_owned()
 }

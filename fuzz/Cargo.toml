@@ -47,7 +47,6 @@ fuzz-target = ["dep:libfuzzer-sys"]
 # Mirrors of the root package's features: declared so `cfg(feature = ...)`
 # checks in the included binary sources stay well-formed. None adds a
 # dependency here.
-gui = []
 postgres = []
 notify-dingtalk = []
 notify-email = []

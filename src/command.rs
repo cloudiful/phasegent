@@ -121,12 +121,6 @@ pub enum Command {
     /// Usable without a role; the approved replacement for schema
     /// dumps and raw setting reads.
     Doctor,
-    /// Explicit desktop entry point for the single-binary shell.
-    /// `phasegent gui` opens the Tauri window; every other CLI command
-    /// never initializes the GUI. Usable without a role because the
-    /// shell is an operator-local launcher, not a role-scoped
-    /// provider operation.
-    Gui,
     /// Manual-only agent notifications via `cloudiful-notifier`.
     /// `notify send` delivers a bounded envelope on the configured
     /// channel; there are no automatic triggers and no post-success
@@ -143,7 +137,6 @@ pub enum HelpTopic {
     Root,
     Admin,
     Doctor,
-    Gui,
     Issue,
     Comment,
     Project,
@@ -223,12 +216,6 @@ pub(crate) fn top_level_visible(
 ) -> bool {
     registry::top_level(name)
         .is_some_and(|spec| spec.provider_scope.visible(provider) && spec.visible_for(role))
-}
-
-/// Whether this build compiled the registered top-level command. Used by root
-/// usage so it never advertises a command the binary cannot run.
-pub(crate) fn top_level_compiled(name: &str) -> bool {
-    registry::top_level(name).is_some_and(|spec| spec.is_compiled())
 }
 
 /// The root-help row summary for a registered top-level command.

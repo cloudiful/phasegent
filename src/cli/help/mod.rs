@@ -51,7 +51,6 @@ use worktree::{print_worktree_command_help, print_worktree_help};
 fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
     Some(match topic {
         HelpTopic::Root => return None,
-        HelpTopic::Gui => vec!["gui"],
         HelpTopic::Doctor => vec!["doctor"],
         HelpTopic::Admin => vec!["admin"],
         HelpTopic::Auth => vec!["admin", "auth", "setup"],
@@ -109,27 +108,20 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
 }
 
 pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, topic: HelpTopic) {
-    // Registry-driven detail/group gate: a command whose compile-time feature
-    // was not compiled and, for a resolved role, a command that role may not
-    // run never render their page. A not-compiled page prints the same stable
-    // message the execution layer returns; a role-denied page prints the
-    // existing denial line, so neither leaks its parameters. No role keeps the
-    // compatibility superset pages for compiled commands, and a detail topic
-    // the registry does not describe stays with its owning module.
+    // Registry-driven detail/group gate: for a resolved role, a command that
+    // role may not run never renders its page; the gate prints the existing
+    // denial line, so a denied page never leaks its parameters. No role keeps
+    // the compatibility superset pages, and a detail topic the registry does
+    // not describe stays with its owning module.
     if let Some(path) = topic_registry_path(&topic)
-        && let Some(unavailable) = crate::command::registry_unavailability(role, &path)
+        && let Some(Unavailable::RoleDenied { role, .. }) =
+            crate::command::registry_unavailability(role, &path)
     {
-        match unavailable {
-            Unavailable::NotCompiled(feature) => println!("{}", feature.not_compiled_message()),
-            Unavailable::RoleDenied { role, .. } => {
-                println!("No command available for {}.", role.as_str());
-            }
-        }
+        println!("No command available for {}.", role.as_str());
         return;
     }
     match topic {
         HelpTopic::Root => print_root_help(role, provider),
-        HelpTopic::Gui => print_gui_help(),
         HelpTopic::Issue => print_issue_help(role),
         HelpTopic::Comment => print_comment_help(role),
         HelpTopic::Doctor => print_doctor_help(),
@@ -186,13 +178,4 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::Worktree => print_worktree_help(role),
         HelpTopic::WorktreeCommand(command) => print_worktree_command_help(role, &command),
     }
-}
-
-/// Help for the explicit desktop entry. Kept short and task-oriented
-/// so root help stays compact; documents the single-binary dispatch
-/// and the conservative no-argument desktop heuristic.
-fn print_gui_help() {
-    println!(
-        "Usage: phasegent gui\n\nOpen the desktop GUI in the same binary (Tauri shell).\n\nCLI commands never start the GUI. A bare launch with no arguments shows CLI help in a terminal; an Explorer/Finder-style launch with no console opens the GUI only when a desktop session is detectable, otherwise it also shows CLI help. GUI builds require --features gui; without the feature `phasegent gui` reports a structured gui error."
-    );
 }

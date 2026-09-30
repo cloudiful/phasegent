@@ -17,7 +17,6 @@ use super::{HooksCommand, McpCommand, NotifyCommand, PluginCommand, RepoCommand}
 pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
     let path: &[&'static str] = match command {
         Command::Help(_) | Command::Version => return None,
-        Command::Gui => &["gui"],
         Command::Doctor => &["doctor"],
         Command::AuthSetup { .. } => &["admin", "auth", "setup"],
         Command::ConfigShow => &["config", "show"],

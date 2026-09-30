@@ -4,16 +4,27 @@ name: Release
 # no PR CI workflow.
 #
 # - Trigger is version tags `v*` only; branch pushes never build or publish.
-# - `build` compiles every release binary once with full CLI features
-#   (`postgres,notify-dingtalk,notify-email`; GUI targets additionally add
-#   `gui`). Linux stays CLI-only (no `gui`, no frontend build); Windows and
-#   macOS add `gui` on top of the same CLI feature set. `--all-features` is
-#   intentionally not used so Linux never pulls Tauri GUI dependencies.
+# - `version-check` fails fast unless the tag is strict numeric
+#   MAJOR.MINOR.PATCH and both manifests (`Cargo.toml`, `package.json`) already
+#   carry the stripped tag, so the Electron Builder MSI/DMG versions and the
+#   binary `--version` agree with the release.
+# - `build` compiles every release binary once with the full CLI feature set
+#   (`postgres,notify-dingtalk,notify-email`). The same binary is the CLI/MCP
+#   artifact and the packaged companion of the Electron desktop shell; Linux
+#   stays CLI-only (no renderer, no Electron).
+# - Desktop rows (Windows x64, macOS arm64) additionally build the Vue
+#   renderer and the Electron main/preload bundles with Bun, stage the matching
+#   Rust companion via `scripts/electron-backend.mjs`, and package the unsigned
+#   MSI/DMG with Electron Builder, the only desktop packager.
+# - The raw `phasegent` binaries are still published next to the installers so
+#   the CLI/MCP artifact contract is unchanged.
 # - The MCP image reuses the `build` Linux binaries verbatim (download the
 #   matching `phasegent-<target>` artifact, stage at
 #   `ci-image-input/phasegent`, docker buildx per-arch + multi-arch
 #   manifest). No second `cargo build`, no QEMU Rust compile, and the image
-#   binary is bit-identical to the release asset.
+#   binary is bit-identical to the release asset. `.dockerignore` keeps the
+#   renderer and Electron outputs out of the build context, so the image stays
+#   CLI-only.
 # - Dockerfile stays runtime-only (copies the prebuilt artifact, no Rust
 #   toolchain inside Docker). Per-arch correctness: each arch image copies
 #   the matching arch binary; no cross-arch reuse.
@@ -38,32 +49,74 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
+  version-check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Electron Builder derives the Windows MSI and macOS DMG version from
+      # `package.json`, and the Rust `--version` output derives from
+      # `Cargo.toml`, so a tag that disagrees with either manifest must fail
+      # before anything is built or published.
+      - name: Assert tag and manifest versions agree
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          match = re.fullmatch(r"v(\d+\.\d+\.\d+)", tag)
+          if match is None:
+              raise SystemExit(
+                  f"Tag '{tag}' must be strict numeric MAJOR.MINOR.PATCH (for example v1.2.3)."
+              )
+          expected = match.group(1)
+          with open("Cargo.toml", "rb") as handle:
+              cargo = tomllib.load(handle)["package"]["version"]
+          with open("package.json", encoding="utf-8") as handle:
+              node = json.load(handle)["version"]
+          if cargo != expected or node != expected:
+              raise SystemExit(
+                  f"Tag '{tag}' expects version {expected}: "
+                  f"Cargo.toml={cargo} package.json={node}"
+              )
+          print(f"version-check: {tag} matches Cargo.toml and package.json ({expected})")
+          PY
+
   build:
+    needs: version-check
     permissions:
       contents: read
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Linux stays a plain CLI binary (no GUI, no frontend build),
+          # Linux stays a plain CLI/MCP binary (no renderer, no Electron),
           # but with the full CLI feature set (postgres + notify channels).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
-            gui: false
+            desktop: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-            gui: false
-          # macOS ships the GUI-enabled single binary plus a Tauri-built
-          # unsigned .dmg containing the real `.app` for Finder users.
-          # No signing/notarization secrets are required; the .dmg/.app are
-          # explicitly unsigned and Gatekeeper will warn on first open.
+            desktop: false
+          # macOS ships the CLI/MCP binary plus an unsigned Electron Builder
+          # DMG containing the real `.app` for Finder users. No
+          # signing/notarization secrets are required or set; Gatekeeper will
+          # warn on first open.
           - target: aarch64-apple-darwin
             os: macos-14
-            gui: true
-          # Windows ships exactly one raw exe plus one matching MSI (x64).
-          # No ARM64 Windows package, no portable zip, no .wixpdb upload.
+            desktop: true
+          # Windows ships exactly one raw exe plus one matching Electron
+          # Builder MSI (x64). No ARM64 Windows package, no portable zip.
           - target: x86_64-pc-windows-msvc
             os: windows-2022
-            gui: true
+            desktop: true
     runs-on: ${{ matrix.os }}
     env:
       RUSTC_WRAPPER: sccache
@@ -80,20 +133,18 @@ jobs:
       - name: Enable sccache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # Target-aware system dependencies: Linux stays CLI so no GTK/WebKit
-      # install is needed; Windows runners provide WebView2 and macOS
-      # runners provide system WebKit, so no apt/brew step is required.
-      # Frontend is built with pinned Bun only for GUI targets, before the
-      # Rust GUI build, using the existing package.json scripts. No
-      # bun.lock is committed under repository policy.
-      - name: Setup Bun (GUI builds only)
-        if: matrix.gui
+      # Desktop rows build the renderer and the Electron bundles with the
+      # pinned Bun toolchain through the repository's own scripts. No
+      # bun.lock is committed under repository policy. Linux rows never run
+      # Bun, so the CLI binary and the container image stay renderer-free.
+      - name: Setup Bun (desktop rows only)
+        if: matrix.desktop
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
 
-      - name: Cache Bun installs (GUI builds only)
-        if: matrix.gui
+      - name: Cache Bun installs (desktop rows only)
+        if: matrix.desktop
         uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
@@ -101,38 +152,37 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-1-4-0-
 
-      - name: Install frontend dependencies (GUI builds only)
-        if: matrix.gui
+      - name: Install dependencies (desktop rows only)
+        if: matrix.desktop
         run: bun install
 
-      # `validate` runs `build-only` (vite build -> frontend/dist, the
-      # Tauri `frontendDist`) plus `validate-dist.mjs`, keeping the Tauri
-      # frontendDist/build hooks coherent with the actual frontend output.
-      - name: Build frontend dist (GUI builds only)
-        if: matrix.gui
+      - name: Build Electron main and preload bundles (desktop rows only)
+        if: matrix.desktop
+        run: bun scripts/electron-build.mjs
+
+      # `validate` runs `build-only` (vite build -> frontend/dist) plus
+      # `validate-dist.mjs`, so the renderer Electron Builder embeds is the
+      # same validated output the previous desktop shell used.
+      - name: Build and validate renderer dist (desktop rows only)
+        if: matrix.desktop
         run: bun run validate
 
-      - name: Build release binary (CLI, full CLI features)
-        if: matrix.gui != true
-        run: cargo build --release --bin phasegent --target ${{ matrix.target }} --features postgres,notify-dingtalk,notify-email
-
-      - name: Build release binary (GUI-enabled single binary, Windows)
-        if: matrix.gui && runner.os == 'Windows'
-        run: cargo build --release --features gui,postgres,notify-dingtalk,notify-email --bin phasegent --target ${{ matrix.target }}
-
-      # macOS GUI is built and bundled via the pinned Tauri v2 CLI so the
-      # .dmg contains a real `.app` for Finder users. Unsigned: no
-      # APPLE_SIGNING_IDENTITY and no notarization credentials are set or
-      # required; Gatekeeper will warn on first open. The existing
-      # frontend/dist (Tauri `frontendDist`) is already built above via
-      # `bun run validate`, so no beforeBuildCommand is needed.
-      - name: Build macOS app and dmg via Tauri (unsigned)
-        if: runner.os == 'macOS'
+      # The packaged companion reports the hash of the renderer it ships with,
+      # so `frontend/dist` is hashed before the Rust build and passed through
+      # the existing `PHASEGENT_FRONTEND_DIST_HASH` build-time variable.
+      - name: Record renderer dist hash for the companion build (desktop rows only)
+        if: matrix.desktop
+        shell: bash
         run: |
           set -euo pipefail
-          bun run tauri build --target ${{ matrix.target }} --features gui,postgres,notify-dingtalk,notify-email --bundles app,dmg
-          echo "Tauri bundle outputs:"
-          find target/${{ matrix.target }}/release/bundle -maxdepth 4 | head -n 60
+          HASH="$(bun scripts/dist-hash.mjs)"
+          echo "PHASEGENT_FRONTEND_DIST_HASH=$HASH" >> "$GITHUB_ENV"
+          echo "frontend/dist hash: $HASH"
+
+      # One binary per target: the released CLI/MCP artifact and the Rust
+      # companion Electron Builder stages as an extra resource.
+      - name: Build release binary (CLI/MCP and desktop companion)
+        run: cargo build --release --bin phasegent --target ${{ matrix.target }} --features postgres,notify-dingtalk,notify-email
 
       - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
@@ -142,91 +192,48 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
-      - name: Install WiX Toolset (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+      # Electron Builder packages the matching Rust companion as an extra
+      # resource, then the produced unsigned DMG is staged under the
+      # tag-based release contract name. The `.app` itself is distributed
+      # inside the DMG, not as a separate release file.
+      - name: Package macOS app and dmg with Electron Builder (unsigned)
+        if: matrix.desktop && runner.os == 'macOS'
         run: |
-          dotnet tool install --global wix --version 6.0.2
-          $tools = "$env:USERPROFILE\.dotnet\tools"
-          Add-Content -Path $env:GITHUB_PATH -Value $tools
-          $env:PATH = "$tools;$env:PATH"
-          wix extension add --global WixToolset.UI.wixext/6.0.2
-          wix --version
-          wix extension list --global
+          set -euo pipefail
+          bun scripts/electron-backend.mjs --from target/${{ matrix.target }}/release/phasegent
+          bun x electron-builder --config electron-builder.yml --mac dmg --publish never
+          APP="$(find dist/electron -maxdepth 2 -type d -name 'phasegent.app' | head -n 1)"
+          if [ -z "$APP" ]; then echo "Electron Builder produced no phasegent.app under dist/electron"; exit 1; fi
+          test -f "$APP/Contents/Resources/phasegent-backend" || (echo "companion missing from the packaged .app: $APP"; exit 1)
+          SRC_DMG="$(find dist/electron -maxdepth 1 -name '*.dmg' | head -n 1)"
+          if [ -z "$SRC_DMG" ]; then echo "Electron Builder produced no dmg under dist/electron"; exit 1; fi
+          DEST="phasegent-${{ github.ref_name }}-${{ matrix.target }}.dmg"
+          cp "$SRC_DMG" "$DEST"
+          ls -lh "$DEST"
 
-      # WiX MSI path is kept (no Tauri bundling on Windows). Single x64 MSI
-      # only; portable zip creation was removed. The WiX compiler emits a
-      # `.wixpdb` sidecar next to the MSI; it is deleted and never uploaded.
-      # All three WiX sources (phasegent, Shortcuts, ShortcutOptionsDlg)
-      # compile together so the MSI keeps the per-user Start Menu/Desktop
-      # shortcut options.
-      - name: Build MSI (Windows x64 only)
-        if: runner.os == 'Windows'
+      - name: Package Windows MSI with Electron Builder (unsigned)
+        if: matrix.desktop && runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = $env:GITHUB_REF_NAME
-          $msiVersion = $tag -replace '^v', ''
-          if ($msiVersion -notmatch '^\d+\.\d+\.\d+$') {
-            Write-Error "Tag '$tag' must be strict numeric MAJOR.MINOR.PATCH (for example v1.2.3)."
+          bun scripts/electron-backend.mjs --from "target/${{ matrix.target }}/release/phasegent.exe"
+          bun x electron-builder --config electron-builder.yml --win msi --publish never
+          $companion = 'dist/electron/win-unpacked/resources/phasegent-backend.exe'
+          if (-not (Test-Path $companion)) {
+            Write-Error "companion missing from the packaged app: $companion"
             exit 1
           }
-          $exeName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe'
-          $msiName = 'phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi'
-          New-Item -ItemType Directory -Force -Path msi-stage | Out-Null
-          Copy-Item -Path $exeName -Destination 'msi-stage\phasegent.exe' -Force
-          $wixLog = 'wix-build-${{ matrix.target }}.log'
-          if (Test-Path $wixLog) { Remove-Item $wixLog -Force }
-          wix build wix/phasegent.wxs wix/Shortcuts.wxs wix/ShortcutOptionsDlg.wxs -arch x64 -d SourceDir=msi-stage -d Version=$msiVersion -ext WixToolset.UI.wixext -o $msiName *>&1 | Tee-Object -FilePath $wixLog
-          if ($LASTEXITCODE -ne 0) {
-            $wixExit = $LASTEXITCODE
-            $wixDetail = ''
-            if (Test-Path $wixLog) {
-              $wixLines = Get-Content -Path $wixLog | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 20
-              $wixDetail = ($wixLines -join ' ')
-              if ($wixDetail.Length -gt 2000) { $wixDetail = $wixDetail.Substring($wixDetail.Length - 2000) }
-              $wixDetail = $wixDetail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
-            }
-            if ([string]::IsNullOrWhiteSpace($wixDetail)) { $wixDetail = 'see wix-build log artifact' }
-            Write-Output "::error::wix build failed (exit $wixExit): $wixDetail"
-            exit $wixExit
+          $src = Get-ChildItem -Path dist/electron -Recurse -Filter *.msi | Select-Object -First 1
+          if (-not $src) {
+            Write-Error 'Electron Builder produced no msi under dist/electron'
+            exit 1
           }
-          # Never publish the WiX pdb sidecar or build logs on success.
-          Remove-Item *.wixpdb -Force -ErrorAction SilentlyContinue
-          if (Test-Path $wixLog) { Remove-Item $wixLog -Force }
-          Get-ChildItem $exeName, $msiName
-
-      # Stage the Tauri-built .dmg under the tag-based release contract name.
-      # The raw GUI binary staged above is preserved alongside the .dmg to
-      # keep the existing `phasegent-<tag>-<target>` contract. Only these
-      # two explicit files are uploaded/published; the standalone .app
-      # directory itself is distributed inside the .dmg, not as a separate
-      # release file, and no logs/sidecars are published.
-      - name: Stage macOS dmg to release name (unsigned)
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          TARGET="${{ matrix.target }}"
-          SRC_DMG="$(find "target/$TARGET/release/bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
-          if [ -z "$SRC_DMG" ]; then echo "No Tauri dmg found under target/$TARGET/release/bundle/dmg"; exit 1; fi
-          DEST="phasegent-${TAG}-${TARGET}.dmg"
-          cp "$SRC_DMG" "$DEST"
-          ls -lh "$DEST"
-          echo "Standalone .app bundled inside the dmg source:"
-          find "target/$TARGET/release/bundle/macos" -maxdepth 2 -name '*.app' | head -n 5
-          test -n "$(find "target/$TARGET/release/bundle/macos" -maxdepth 2 -name '*.app' | head -n 1)" || (echo "Tauri .app missing; dmg would not contain a Finder app"; exit 1)
-
-      - name: Upload WiX build log (Windows)
-        if: failure() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v7
-        with:
-          name: wix-build-log-${{ matrix.target }}
-          path: wix-build-${{ matrix.target }}.log
-          if-no-files-found: warn
+          $dest = "phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi"
+          Copy-Item -Path $src.FullName -Destination $dest -Force
+          Get-ChildItem $dest
 
       # Explicit artifact paths only: no wildcards that could pick up
-      # `.wixpdb`, logs, or zip sidecars.
+      # `.wixpdb`, logs, zip sidecars, or Electron Builder metadata.
       - name: Upload artifact (Linux CLI)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
@@ -235,7 +242,7 @@ jobs:
           path: phasegent-${{ github.ref_name }}-${{ matrix.target }}
           if-no-files-found: error
 
-      - name: Upload artifact (macOS GUI)
+      - name: Upload artifact (macOS desktop)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
@@ -245,7 +252,7 @@ jobs:
             phasegent-${{ github.ref_name }}-${{ matrix.target }}.dmg
           if-no-files-found: error
 
-      - name: Upload artifact (Windows GUI)
+      - name: Upload artifact (Windows desktop)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:

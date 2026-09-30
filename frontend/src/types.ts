@@ -1,6 +1,6 @@
 // Shared view-model types for the desktop shell.
-// Phase 3 replaces the mock loaders in mocks.ts with Tauri IPC calls;
-// these interfaces are the contract the pages program against.
+// `ipc.ts` maps the preload API payloads onto these interfaces; the pages
+// program against them.
 
 export type TaskStatus = 'queued' | 'running' | 'paused' | 'done' | 'failed'
 

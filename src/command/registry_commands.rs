@@ -1,6 +1,6 @@
 //! Descriptor table for the command registry: every top-level command and
-//! subcommand the parser accepts, with its role gate, feature, and provider
-//! scope. Gate constants and types live in [`super`]; lookup goes through
+//! subcommand the parser accepts, with its role gate and provider scope. Gate
+//! constants and types live in [`super`]; lookup goes through
 //! [`super::find`] / [`super::top_level`]. The `summary` text is the row
 //! rendered by role-specific root help; command-level gates carry their
 //! permission `operation` label so parser denials name the same operation the
@@ -60,9 +60,9 @@ mod tests {
         assert_eq!(
             names,
             [
-                "gui", "doctor", "admin", "auth", "config", "issue", "comment", "project",
-                "status", "version", "relation", "timer", "workflow", "worktree", "repo", "hooks",
-                "plugin", "notify", "mcp",
+                "doctor", "admin", "auth", "config", "issue", "comment", "project", "status",
+                "version", "relation", "timer", "workflow", "worktree", "repo", "hooks", "plugin",
+                "notify", "mcp",
             ]
         );
     }

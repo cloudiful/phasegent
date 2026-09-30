@@ -305,9 +305,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id,
             command,
         ),
-        // Explicit desktop entry only. Every other branch above stays
-        // GUI-free so normal CLI commands never initialize Tauri.
-        Command::Gui => crate::gui::run(),
     }
 }
 

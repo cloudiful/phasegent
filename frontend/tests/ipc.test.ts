@@ -2,17 +2,22 @@ import { describe, expect, test } from 'bun:test'
 import {
   STALE_AFTER_MS,
   capitalizeProvider,
+  clearNonSecretSetting,
+  clearRoleCredential,
+  desktopErrorMessage,
   fetchConfigSnapshot,
+  fetchProvisioningStatus,
   fetchStatus,
   fetchTasks,
   filterTasks,
   formatClock,
-  invokeErrorMessage,
   isStale,
   mapIssueStateToTaskStatus,
   mapStatusPayload,
   mapTasksPayload,
   payloadFetchedAtMs,
+  setNonSecretSetting,
+  setRoleCredential,
   snapshotEndpointForRole,
   snapshotProviderForRole,
   snapshotRoleEntry,
@@ -87,7 +92,7 @@ describe('mapIssueStateToTaskStatus', () => {
   })
 })
 
-describe('capitalizeProvider / payloadFetchedAtMs / invokeErrorMessage', () => {
+describe('capitalizeProvider / payloadFetchedAtMs / desktopErrorMessage', () => {
   test('capitalizes known providers case-insensitively and passes others through', () => {
     expect(capitalizeProvider('redmine')).toBe('Redmine')
     expect(capitalizeProvider('REDMINE')).toBe('Redmine')
@@ -105,9 +110,9 @@ describe('capitalizeProvider / payloadFetchedAtMs / invokeErrorMessage', () => {
   })
 
   test('redacts error values without leaking structure', () => {
-    expect(invokeErrorMessage(new Error('boom'))).toBe('boom')
-    expect(invokeErrorMessage('plain')).toBe('plain')
-    expect(invokeErrorMessage({ code: 1 })).toBe(JSON.stringify({ code: 1 }))
+    expect(desktopErrorMessage(new Error('boom'))).toBe('boom')
+    expect(desktopErrorMessage('plain')).toBe('plain')
+    expect(desktopErrorMessage({ code: 1 })).toBe(JSON.stringify({ code: 1 }))
   })
 })
 
@@ -233,7 +238,7 @@ describe('snapshot helpers', () => {
   })
 })
 
-describe('non-Tauri stale/error handling (Bun has no window)', () => {
+describe('preload-unavailable fallback (plain browser / Bun has no window)', () => {
   test('fetchTasks returns safe empty state instead of throwing', async () => {
     const result = await fetchTasks()
     expect(result.data.items).toEqual([])
@@ -260,5 +265,260 @@ describe('non-Tauri stale/error handling (Bun has no window)', () => {
     const preview = await testConnection('https://redmine.example.invalid')
     expect(preview.ok).toBe(true)
     expect(preview.message).toContain('browser preview')
+  })
+
+  test('mutations reject with a bounded message instead of a stack trace', async () => {
+    await expect(setNonSecretSetting(null, 'PHASEGENT_PROVIDER', 'forgejo')).rejects.toThrow('Desktop backend is unavailable in this preview.')
+    await expect(clearNonSecretSetting('executor', 'PHASEGENT_API_BASE')).rejects.toThrow('Desktop backend is unavailable in this preview.')
+    await expect(setRoleCredential('executor', 'redmine', 'secret')).rejects.toThrow('Desktop backend is unavailable in this preview.')
+    await expect(clearRoleCredential('executor', 'redmine')).rejects.toThrow('Desktop backend is unavailable in this preview.')
+    expect(await fetchProvisioningStatus('executor')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Preload bridge (`window.phasegent`), the renderer's only backend surface.
+// ---------------------------------------------------------------------------
+
+type DesktopApi = NonNullable<Window['phasegent']>
+
+const BRIDGE_TASKS: TasksPayloadRaw = {
+  branch: 'feat/652',
+  bound_issue: 652,
+  provider: 'redmine',
+  role: 'executor',
+  items: [{ number: 652, title: 'Migrate desktop shell to Electron', state: 'In Progress' }],
+  has_more: false,
+  data_source: 'provider',
+  fetched_at: 1_700_000_000,
+  warning: null,
+}
+
+const BRIDGE_STATUS: StatusPayloadRaw = {
+  branch: 'feat/652',
+  bound_issue: 652,
+  bound_issue_title: 'Migrate desktop shell to Electron',
+  bound_issue_state: 'In Progress',
+  provider: 'redmine',
+  role: 'executor',
+  endpoint: 'https://redmine.example.invalid',
+  connection: 'connected',
+  running_timers: 0,
+  recent_timers: [],
+  fetched_at: 1_700_000_000,
+  warning: null,
+  statuses_unsupported: null,
+}
+
+/** Install a stub preload API; unmocked methods fail loudly. */
+function installDesktopApi(overrides: Partial<DesktopApi>): void {
+  const unexpected = async (): Promise<never> => {
+    throw new Error('unexpected bridge call')
+  }
+  const api: DesktopApi = {
+    getAppMetadata: unexpected,
+    getConfigSnapshot: unexpected,
+    getBranchContext: unexpected,
+    getTasks: unexpected,
+    getStatus: unexpected,
+    setConfigSetting: unexpected,
+    clearConfigSetting: unexpected,
+    setCredential: unexpected,
+    clearCredential: unexpected,
+    getProvisioningStatus: unexpected,
+    ...overrides,
+  }
+  ;(globalThis as unknown as { window?: unknown }).window = { phasegent: api }
+}
+
+function removeDesktopApi(): void {
+  delete (globalThis as unknown as { window?: unknown }).window
+}
+
+describe('preload bridge (window.phasegent)', () => {
+  test('fetchTasks sends the unchanged open-task request and maps the payload', async () => {
+    let seen: unknown = 'unset'
+    installDesktopApi({
+      getTasks: async (request) => {
+        seen = request
+        return BRIDGE_TASKS
+      },
+    })
+    try {
+      const result = await fetchTasks()
+      expect(seen).toEqual({ limit: 20, state: 'open' })
+      expect(result.fetchedAt).toBe(1_700_000_000_000)
+      expect(result.data.items[0]).toMatchObject({ id: '#652', title: 'Migrate desktop shell to Electron', status: 'running' })
+      expect(result.data.branch).toBe('feat/652')
+      expect(result.data.boundIssue).toBe(652)
+    }
+    finally {
+      removeDesktopApi()
+    }
+  })
+
+  test('fetchTasks surfaces the bounded bridge error instead of empty state', async () => {
+    installDesktopApi({
+      getTasks: async () => {
+        throw new Error('get_tasks failed (backend): provider credential missing')
+      },
+    })
+    try {
+      await expect(fetchTasks()).rejects.toThrow('get_tasks failed (backend): provider credential missing')
+    }
+    finally {
+      removeDesktopApi()
+    }
+  })
+
+  test('fetchStatus probes with an empty request and maps the payload', async () => {
+    let seen: unknown = 'unset'
+    installDesktopApi({
+      getStatus: async (request) => {
+        seen = request
+        return BRIDGE_STATUS
+      },
+    })
+    try {
+      const result = await fetchStatus()
+      expect(seen).toEqual({})
+      expect(result.data.summary.connection).toBe('connected')
+      expect(result.data.summary.provider).toBe('Redmine')
+      expect(result.data.boundIssue).toBe(652)
+    }
+    finally {
+      removeDesktopApi()
+    }
+  })
+
+  test('fetchConfigSnapshot returns the redacted snapshot', async () => {
+    installDesktopApi({
+      getConfigSnapshot: async () => ({
+        database_path: '/data/phasegent.sqlite3',
+        roles: [],
+        global_settings: [],
+        global_default_provider: 'redmine',
+      }),
+    })
+    try {
+      const result = await fetchConfigSnapshot()
+      expect(result.data.database_path).toBe('/data/phasegent.sqlite3')
+      expect(result.data.global_default_provider).toBe('redmine')
+      expect(result.data.roles).toEqual([])
+    }
+    finally {
+      removeDesktopApi()
+    }
+  })
+
+  test('setting and credential mutations forward the existing parameter shape', async () => {
+    const settings: unknown[] = []
+    const credentials: unknown[] = []
+    installDesktopApi({
+      setConfigSetting: async (request) => {
+        settings.push(request)
+        return { setting: request.setting, role: request.role ?? null, updated: true }
+      },
+      clearConfigSetting: async request => ({ setting: request.setting, role: request.role ?? null, cleared: true }),
+      setCredential: async (request) => {
+        credentials.push(request)
+        return {
+          role: request.role,
+          provider: request.provider,
+          present: true,
+          length: request.credential.length,
+          source: 'config',
+        }
+      },
+      clearCredential: async request => ({ role: request.role, provider: request.provider, cleared: true }),
+    })
+    try {
+      await setNonSecretSetting('  ', 'PHASEGENT_PROVIDER', 'forgejo')
+      await setNonSecretSetting('executor', 'PHASEGENT_API_BASE', 'https://redmine.example.invalid')
+      expect(settings).toEqual([
+        { role: null, setting: 'PHASEGENT_PROVIDER', value: 'forgejo' },
+        { role: 'executor', setting: 'PHASEGENT_API_BASE', value: 'https://redmine.example.invalid' },
+      ])
+      expect(await clearNonSecretSetting('executor', 'PHASEGENT_API_BASE')).toBe(true)
+
+      const token = 'super-secret-token'
+      const presence = await setRoleCredential('executor', 'redmine', token)
+      expect(credentials).toEqual([{ role: 'executor', provider: 'redmine', credential: token }])
+      expect(presence).toEqual({ present: true, length: token.length })
+      expect(JSON.stringify(presence)).not.toContain(token)
+      expect(await clearRoleCredential('executor', 'redmine')).toBe(true)
+    }
+    finally {
+      removeDesktopApi()
+    }
+  })
+
+  test('fetchProvisioningStatus returns presence metadata and null when the bridge fails', async () => {
+    installDesktopApi({
+      getProvisioningStatus: async () => ({
+        role: 'executor',
+        user_id: 12,
+        login: 'agent-executor',
+        credential_present: true,
+        credential_length: 40,
+      }),
+    })
+    try {
+      expect(await fetchProvisioningStatus('executor')).toMatchObject({
+        role: 'executor',
+        login: 'agent-executor',
+        credential_present: true,
+        credential_length: 40,
+      })
+    }
+    finally {
+      removeDesktopApi()
+    }
+
+    installDesktopApi({
+      getProvisioningStatus: async () => {
+        throw new Error('get_provisioning_status failed (backend): unavailable')
+      },
+    })
+    try {
+      expect(await fetchProvisioningStatus('executor')).toBeNull()
+    }
+    finally {
+      removeDesktopApi()
+    }
+  })
+
+  test('testConnection probes the backend and reports a bounded failure', async () => {
+    let probes = 0
+    installDesktopApi({
+      getStatus: async () => {
+        probes += 1
+        return BRIDGE_STATUS
+      },
+    })
+    try {
+      expect(await testConnection('https://redmine.example.invalid')).toEqual({
+        ok: true,
+        message: 'Connection check passed for https://redmine.example.invalid.',
+      })
+      expect(probes).toBe(1)
+    }
+    finally {
+      removeDesktopApi()
+    }
+
+    installDesktopApi({
+      getStatus: async () => {
+        throw new Error('get_status failed (backend): provider credential missing')
+      },
+    })
+    try {
+      const failed = await testConnection('https://redmine.example.invalid')
+      expect(failed.ok).toBe(false)
+      expect(failed.message).toContain('credential missing')
+    }
+    finally {
+      removeDesktopApi()
+    }
   })
 })

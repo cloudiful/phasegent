@@ -1,9 +1,9 @@
 // Print the FNV-1a 64-bit content hash of the `frontend/dist` tree.
 //
-// Mirrors the byte-for-byte algorithm in `build.rs` (`frontend_dist_hash`)
-// so the operator can compare this value against the embedded hash the
-// running binary reports on the GUI Status page. If the two differ, the
-// installed binary embeds a different bundle than the current `frontend/dist`.
+// The release workflow exports this value as PHASEGENT_FRONTEND_DIST_HASH
+// before building the desktop companion, so the packaged app's Status page
+// reports the hash of the renderer it actually ships with. Compare it with a
+// freshly built `frontend/dist` (`bun run dist:hash`) to spot a stale bundle.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'

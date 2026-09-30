@@ -1,253 +1,259 @@
-//! Contract coverage for the standalone WiX 6.0.2 per-user installer.
+//! Desktop installer contract for the Electron Builder MSI/DMG packages.
 //!
-//! The MSI keeps one installed exe (CLI `PATH` untouched) and offers two
-//! independent shortcut options on their own dialog: Start Menu defaults to
-//! checked, Desktop defaults to unchecked. Both shortcuts invoke the
-//! installed exe with the literal `gui` argument. These tests pin the file
-//! contract without requiring a Windows runner: upgrade identity, explicit
-//! `gui` arguments, per-user cleanup markers, the renamed WixUI sequence,
-//! and the release workflow compile shape.
+//! Electron Builder is the only desktop packager: `electron-builder.yml`
+//! carries the app identity, icons, per-user shortcut options, and the
+//! per-target Rust companion resource, while `.github/workflows/release.yml`
+//! stages that companion and produces the unsigned MSI/DMG. These tests pin the
+//! contract without requiring a Windows or macOS runner: installer identity and
+//! version parity, shortcut behavior, companion staging, CLI artifact names,
+//! and the absence of the retired desktop bundler wiring.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
 
 fn workspace_file(name: &str) -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     std::fs::read_to_string(root.join(name)).unwrap_or_else(|err| panic!("read {name}: {err}"))
 }
 
-fn phasegent_wxs() -> String {
-    workspace_file("wix/phasegent.wxs")
-}
-
-fn shortcuts_wxs() -> String {
-    workspace_file("wix/Shortcuts.wxs")
-}
-
-fn options_dlg_wxs() -> String {
-    workspace_file("wix/ShortcutOptionsDlg.wxs")
+fn builder_yml() -> String {
+    workspace_file("electron-builder.yml")
 }
 
 fn release_yml() -> String {
     workspace_file(".github/workflows/release.yml")
 }
 
+fn package_json() -> String {
+    workspace_file("package.json")
+}
+
+fn cargo_toml() -> String {
+    workspace_file("Cargo.toml")
+}
+
+/// Extract a `"version": "x.y.z"` value from a manifest without a JSON parser.
+fn json_version(manifest: &str) -> String {
+    let start = manifest
+        .find("\"version\"")
+        .expect("manifest must carry a version field");
+    let rest = &manifest[start..];
+    let open = rest.find('"').expect("version key is quoted") + 1;
+    let rest = &rest[open..];
+    let key_end = rest.find('"').expect("version key is closed");
+    let rest = &rest[key_end + 1..];
+    let value_open = rest.find('"').expect("version value is quoted") + 1;
+    let rest = &rest[value_open..];
+    let value_end = rest.find('"').expect("version value is closed");
+    rest[..value_end].to_owned()
+}
+
+fn is_strict_numeric(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+}
+
 #[test]
-fn installer_preserves_upgrade_and_exe_identity() {
-    let wxs = phasegent_wxs();
+fn electron_builder_keeps_desktop_identity_and_version_manifests() {
+    let builder = builder_yml();
+    let root = workspace_root();
 
     assert!(
-        wxs.contains("UpgradeCode=\"51047C29-F895-4705-86DC-0A847258CA61\""),
-        "UpgradeCode must stay stable for MajorUpgrade; got:\n{wxs}"
+        builder.contains("appId: com.cloud1ful.phasegent"),
+        "Electron Builder must keep the existing desktop identity; got:\n{builder}"
     );
     assert!(
-        wxs.contains("Id=\"PhasegentExeComponent\"")
-            && wxs.contains("Guid=\"3D6E603A-65F6-407B-8201-FAFDAFB8AE2A\""),
-        "exe component identity must be preserved; got:\n{wxs}"
+        builder.contains("productName: phasegent"),
+        "Electron Builder must keep the phasegent product name; got:\n{builder}"
     );
     assert!(
-        wxs.contains("Id=\"PhasegentExeFile\""),
-        "exe file id referenced by shortcuts must be preserved; got:\n{wxs}"
+        builder.contains("output: dist/electron") && builder.contains("asar: true"),
+        "Electron Builder output dir and asar packaging must stay pinned; got:\n{builder}"
     );
     assert!(
-        wxs.contains("Scope=\"perUser\""),
-        "installer must stay per-user; got:\n{wxs}"
+        builder.contains("electron/dist/**")
+            && builder.contains("frontend/dist/**")
+            && builder.contains("package.json"),
+        "the packaged app must embed the Electron bundles, renderer dist, and manifest; got:\n{builder}"
+    );
+    // `electron-builder` must not grow a runtime dependency tree: the renderer
+    // is bundled by Vite and the main/preload bundles are self-contained.
+    assert!(
+        builder.contains("!node_modules/**"),
+        "packaging must not ship a runtime node_modules tree; got:\n{builder}"
+    );
+
+    // One upgrade identity across the Rust shell and the packaged app.
+    let gui_mod = std::fs::read_to_string(root.join("src/gui/mod.rs"))
+        .unwrap_or_else(|err| panic!("read src/gui/mod.rs: {err}"));
+    assert!(
+        gui_mod.contains("identifier: \"com.cloud1ful.phasegent\""),
+        "Rust app metadata must keep the packaged appId; got:\n{gui_mod}"
+    );
+
+    // Electron Builder derives the MSI/DMG version from `package.json`, and
+    // the binary `--version` flows from `Cargo.toml`; both must match and stay
+    // strict numeric so the MSI accepts them.
+    let cargo_version = cargo_toml();
+    let package_version = json_version(&package_json());
+    assert!(
+        cargo_version.contains(&format!("version = \"{package_version}\"")),
+        "Cargo.toml must match package.json version {package_version};\n{cargo_version}"
     );
     assert!(
-        wxs.contains("Name=\"PATH\"") && wxs.contains("Part=\"last\""),
-        "CLI PATH environment entry must be preserved; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("<MajorUpgrade") && wxs.contains("AllowDowngrades=\"no\""),
-        "MajorUpgrade downgrade guard must be preserved; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Id=\"MainFeature\""),
-        "MainFeature must be preserved; got:\n{wxs}"
-    );
-    assert!(
-        !wxs.contains("tauri") && !wxs.contains("Tauri"),
-        "Windows MSI must not convert to the Tauri bundler; got:\n{wxs}"
+        is_strict_numeric(&package_version),
+        "packaged installer version must be strict MAJOR.MINOR.PATCH, got {package_version}"
     );
 }
 
 #[test]
-fn installer_wires_custom_shortcut_ui_and_components() {
-    let wxs = phasegent_wxs();
+fn electron_builder_preserves_msi_and_dmg_targets_with_icons() {
+    let builder = builder_yml();
 
     assert!(
-        wxs.contains("Id=\"WixUI_Phasegent\""),
-        "Package must reference the renamed shortcut-options UI set; got:\n{wxs}"
+        builder.contains("icon: icons/icon.icns") && builder.contains("- dmg"),
+        "macOS must keep the DMG target with its icns icon; got:\n{builder}"
     );
     assert!(
-        !wxs.contains("Id=\"WixUI_InstallDir\""),
-        "Package must not reference the stock WixUI_InstallDir set; got:\n{wxs}"
+        builder.contains("icon: icons/icon.ico") && builder.contains("- msi"),
+        "Windows must keep the MSI target with its ico icon; got:\n{builder}"
     );
     assert!(
-        wxs.contains("ComponentGroupRef Id=\"ShortcutComponents\""),
-        "MainFeature must include the shortcut components; got:\n{wxs}"
+        builder.contains("category: public.app-category.developer-tools"),
+        "macOS app category must stay pinned; got:\n{builder}"
     );
     assert!(
-        wxs.contains("ComponentGroupRef Id=\"ProductComponents\""),
-        "MainFeature must keep the exe component group; got:\n{wxs}"
+        builder.contains("title: phasegent"),
+        "the DMG volume title must stay phasegent; got:\n{builder}"
     );
 }
 
 #[test]
-fn shortcut_properties_are_independent_with_documented_defaults() {
-    let wxs = shortcuts_wxs();
+fn electron_builder_stages_the_rust_companion_per_target() {
+    let builder = builder_yml();
 
     assert!(
-        wxs.contains("<Property Id=\"PHASEGENT_STARTMENU_SHORTCUT\" Value=\"1\""),
-        "Start Menu must default to checked (Value=\"1\"); got:\n{wxs}"
-    );
-    let desktop_prop = wxs
-        .lines()
-        .find(|line| line.contains("PHASEGENT_DESKTOP_SHORTCUT"))
-        .expect("Desktop property must exist");
-    assert!(
-        !desktop_prop.contains("Value=\"1\""),
-        "Desktop must default to unchecked (no Value=\"1\"); got:\n{desktop_prop}"
+        builder.contains("from: target/companion/phasegent")
+            && builder.contains("to: phasegent-backend"),
+        "macOS must stage the companion backend resource; got:\n{builder}"
     );
     assert!(
-        wxs.contains("PHASEGENT_STARTMENU_SHORTCUT=1")
-            && wxs.contains("PHASEGENT_DESKTOP_SHORTCUT=1"),
-        "each shortcut component needs its own =1 condition; got:\n{wxs}"
+        builder.contains("from: target/companion/phasegent.exe")
+            && builder.contains("to: phasegent-backend.exe"),
+        "Windows must stage the companion backend resource; got:\n{builder}"
     );
 }
 
 #[test]
-fn shortcuts_invoke_installed_exe_with_gui_and_clean_up() {
-    let wxs = shortcuts_wxs();
-
-    assert_eq!(
-        wxs.matches("Arguments=\"gui\"").count(),
-        2,
-        "both shortcuts must pass the literal gui argument; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Target=\"[!PhasegentExeFile]\""),
-        "shortcuts must target the installed exe file key; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("WorkingDirectory=\"INSTALLFOLDER\""),
-        "shortcuts must run with the install folder as working directory; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Advertise=\"no\""),
-        "shortcuts must be non-advertised shell links; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Id=\"ApplicationProgramsFolder\""),
-        "Start Menu folder directory must exist; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Directory=\"DesktopFolder\""),
-        "Desktop component must install to DesktopFolder; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("<RemoveFolder Directory=\"ApplicationProgramsFolder\" On=\"uninstall\""),
-        "Start Menu folder must be removed on uninstall; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Root=\"HKCU\"") && wxs.matches("KeyPath=\"yes\"").count() >= 2,
-        "each per-user shortcut component needs its own HKCU KeyPath; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Guid=\"932CC295-B320-45AC-AE27-45B5115101CE\"")
-            && wxs.contains("Guid=\"59C3A30A-67EA-4214-8A19-6D3150F6E363\""),
-        "shortcut components need stable distinct GUIDs; got:\n{wxs}"
-    );
-}
-
-#[test]
-fn options_dialog_binds_two_independent_checkboxes() {
-    let wxs = options_dlg_wxs();
+fn electron_builder_preserves_per_user_shortcut_options() {
+    let builder = builder_yml();
 
     assert!(
-        wxs.contains("Dialog Id=\"ShortcutOptionsDlg\""),
-        "custom dialog must exist; got:\n{wxs}"
+        builder.contains("perMachine: false"),
+        "the MSI must stay per-user; got:\n{builder}"
     );
-    for (control, property) in [
-        ("StartMenuShortcutCheckBox", "PHASEGENT_STARTMENU_SHORTCUT"),
-        ("DesktopShortcutCheckBox", "PHASEGENT_DESKTOP_SHORTCUT"),
+    for required in [
+        "shortcutName: phasegent",
+        "createDesktopShortcut: true",
+        "createStartMenuShortcut: true",
+        "runAfterFinish: true",
     ] {
         assert!(
-            wxs.contains(control) && wxs.contains(property),
-            "dialog must bind {control} to {property}; got:\n{wxs}"
+            builder.contains(required),
+            "MSI shortcut option {required:?} must be preserved; got:\n{builder}"
         );
     }
-    assert_eq!(
-        wxs.matches("CheckBoxValue=\"1\"").count(),
-        2,
-        "both checkboxes must set their property to 1; got:\n{wxs}"
-    );
 }
 
 #[test]
-fn options_dialog_uses_wixui_banner_bitmap() {
-    let wxs = options_dlg_wxs();
+fn electron_builder_keeps_the_desktop_release_unsigned() {
+    let builder = builder_yml();
 
     assert!(
-        wxs.contains("Text=\"WixUI_Bmp_Banner\""),
-        "BannerBitmap must reference the WixUI_Bmp_Banner binary; got:\n{wxs}"
+        builder.contains("identity: null"),
+        "macOS packaging must not assume a signing identity; got:\n{builder}"
     );
-    assert!(
-        !wxs.contains("WixUIBannerBmp"),
-        "stale WixUIBannerBmp id must not remain; got:\n{wxs}"
-    );
+    for forbidden in ["CSC_LINK", "CSC_KEY_PASSWORD", "APPLE_ID", "WIN_CSC_LINK"] {
+        assert!(
+            !builder.contains(forbidden),
+            "packaging config must not embed signing credentials ({forbidden}); got:\n{builder}"
+        );
+    }
 }
 
 #[test]
-fn options_dialog_sequence_only_forks_fresh_install() {
-    let wxs = options_dlg_wxs();
-
-    assert!(
-        wxs.contains("Value=\"ShortcutOptionsDlg\""),
-        "InstallDir Next must route to the options dialog; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Dialog=\"ShortcutOptionsDlg\"") && wxs.contains("Value=\"VerifyReadyDlg\""),
-        "options dialog Next must continue to VerifyReadyDlg; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Value=\"ShortcutOptionsDlg\"") && wxs.contains("Condition=\"NOT Installed\""),
-        "VerifyReadyDlg Back on fresh install must return to options; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Value=\"MaintenanceTypeDlg\""),
-        "maintenance Back navigation must be preserved; got:\n{wxs}"
-    );
-    assert!(
-        wxs.contains("Id=\"WixUI_Phasegent"),
-        "renamed WixUI sequence ids must be used; got:\n{wxs}"
-    );
-    assert!(
-        !wxs.contains("Id=\"WixUI_InstallDir\""),
-        "custom sequence must not reuse the stock WixUI_InstallDir id; got:\n{wxs}"
-    );
-}
-
-#[test]
-fn release_workflow_compiles_all_wix_sources_without_changing_shape() {
+fn release_workflow_packages_desktop_with_electron_builder_only() {
     let yml = release_yml();
 
+    for required in [
+        "bun scripts/electron-build.mjs",
+        "bun run validate",
+        "bun scripts/electron-backend.mjs --from target/${{ matrix.target }}/release/phasegent",
+        "bun x electron-builder --config electron-builder.yml --mac dmg",
+        "bun x electron-builder --config electron-builder.yml --win msi",
+        "bun scripts/dist-hash.mjs",
+        "PHASEGENT_FRONTEND_DIST_HASH",
+        "--publish never",
+    ] {
+        assert!(
+            yml.contains(required),
+            "release workflow must contain {required:?}; got:\n{yml}"
+        );
+    }
+    // The former desktop packagers must be gone.
+    for forbidden in [
+        "tauri",
+        "Tauri",
+        "wix build",
+        "WixToolset",
+        "Shortcuts.wxs",
+        "--features gui",
+        "bundle/dmg",
+    ] {
+        assert!(
+            !yml.contains(forbidden),
+            "release workflow must not contain {forbidden:?}; got:\n{yml}"
+        );
+    }
+    // The packaged companion must be verified as an actual resource of the app.
     assert!(
-        yml.contains("wix build wix/phasegent.wxs wix/Shortcuts.wxs wix/ShortcutOptionsDlg.wxs"),
-        "wix build must compile all three sources together; got:\n{yml}"
+        yml.contains("phasegent.app/Contents/Resources/phasegent-backend")
+            || yml.contains("Contents/Resources/phasegent-backend"),
+        "macOS packaging must verify the companion inside the .app; got:\n{yml}"
     );
     assert!(
-        yml.contains("wix --version") && yml.contains("WixToolset.UI.wixext/6.0.2"),
-        "WiX 6.0.2 plus the UI extension must be preserved; got:\n{yml}"
+        yml.contains("win-unpacked/resources/phasegent-backend.exe"),
+        "Windows packaging must verify the companion inside the app; got:\n{yml}"
     );
-    assert!(
-        yml.contains("x86_64-pc-windows-msvc.msi") && yml.contains("x86_64-pc-windows-msvc.exe"),
-        "Windows artifact pair (exe plus MSI) must be preserved; got:\n{yml}"
-    );
+}
+
+#[test]
+fn release_workflow_keeps_cli_artifact_names_and_skips_sidecars() {
+    let yml = release_yml();
+
+    for required in [
+        "phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe",
+        "phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi",
+        "phasegent-${{ github.ref_name }}-${{ matrix.target }}.dmg",
+        "cargo build --release --bin phasegent --target ${{ matrix.target }}",
+        "--features postgres,notify-dingtalk,notify-email",
+    ] {
+        assert!(
+            yml.contains(required),
+            "release workflow must contain {required:?}; got:\n{yml}"
+        );
+    }
+
     // Scope the no-zip/no-pdb check to the Windows upload block: cleanup
-    // commands legitimately mention *.wixpdb and comments mention the
-    // removed portable zip, but those files must never be uploaded.
+    // commands may mention sidecars, but those files must never be uploaded.
     let upload_block = yml
-        .split("Upload artifact (Windows GUI)")
+        .split("Upload artifact (Windows desktop)")
         .nth(1)
         .expect("Windows upload block must exist")
         .split("- name: Show sccache stats")
@@ -257,4 +263,75 @@ fn release_workflow_compiles_all_wix_sources_without_changing_shape() {
         !upload_block.contains(".zip") && !upload_block.contains(".wixpdb"),
         "Windows upload must stay exactly exe plus MSI; got:\n{upload_block}"
     );
+    assert!(
+        upload_block.contains(".exe") && upload_block.contains(".msi"),
+        "Windows upload must publish the exe plus MSI pair; got:\n{upload_block}"
+    );
+
+    let mac_upload_block = yml
+        .split("Upload artifact (macOS desktop)")
+        .nth(1)
+        .expect("macOS upload block must exist")
+        .split("- name: Upload artifact (Windows desktop)")
+        .next()
+        .expect("macOS upload block must end before the Windows block");
+    assert!(
+        mac_upload_block.contains(".dmg"),
+        "macOS upload must publish the DMG; got:\n{mac_upload_block}"
+    );
+}
+
+#[test]
+fn release_workflow_gates_publishing_on_strict_version_parity() {
+    let yml = release_yml();
+
+    assert!(
+        yml.contains("version-check:") && yml.contains("needs: version-check"),
+        "the release build must depend on the version check; got:\n{yml}"
+    );
+    assert!(
+        yml.contains("tomllib") && yml.contains("package.json") && yml.contains("Cargo.toml"),
+        "the version check must compare both manifests; got:\n{yml}"
+    );
+    assert!(
+        yml.contains(r"v(\d+\.\d+\.\d+)") && yml.contains("MAJOR.MINOR.PATCH"),
+        "the version check must enforce a strict numeric tag; got:\n{yml}"
+    );
+    assert!(
+        !yml.contains("package.json.outputs") && !yml.contains("version:bump"),
+        "the workflow must never bump a version; got:\n{yml}"
+    );
+}
+
+#[test]
+fn legacy_wix_desktop_installer_sources_are_removed() {
+    let root = workspace_root();
+    for source in [
+        "wix/phasegent.wxs",
+        "wix/Shortcuts.wxs",
+        "wix/ShortcutOptionsDlg.wxs",
+    ] {
+        assert!(
+            !Path::new(&root.join(source)).exists(),
+            "the legacy WiX installer source {source} must be removed in favour of Electron Builder"
+        );
+    }
+    // No WiX source may remain anywhere under the retired installer directory.
+    assert!(
+        !root.join("wix").exists(),
+        "the retired wix/ directory must be removed with its sources"
+    );
+    let yml = release_yml();
+    for forbidden in [
+        "wix/",
+        "wix build",
+        "WixToolset",
+        "Shortcuts.wxs",
+        "ShortcutOptionsDlg.wxs",
+    ] {
+        assert!(
+            !yml.contains(forbidden),
+            "the release workflow must not reference the retired WiX build ({forbidden}); got:\n{yml}"
+        );
+    }
 }

@@ -6,23 +6,15 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Root usage block. The session role comes from the managed session or
 /// `PHASEGENT_ROLE`, so the common invocation shape never carries a role
 /// flag. `--provider` is resolved from configuration and named only in the
-/// options list, so the common invocation shape never tags it on either. The
-/// `gui` entry belongs to the surface only when the desktop shell was
-/// compiled in, so root help never advertises an uncompiled command.
+/// options list, so the common invocation shape never tags it on either.
 const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]";
-const ROOT_USAGE_GUI: &str = "\n  phasegent gui";
 const ROOT_USAGE_ROLE: &str =
     "\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
 
-/// The root usage block for this build, driven by the registry's feature
-/// boundary.
+/// The root usage block for this build. The desktop shell is the packaged
+/// Electron application, so there is no binary-local entry to advertise.
 fn root_usage() -> String {
-    let gui = if crate::command::top_level_compiled("gui") {
-        ROOT_USAGE_GUI
-    } else {
-        ""
-    };
-    format!("{ROOT_USAGE}{gui}{ROOT_USAGE_ROLE}")
+    format!("{ROOT_USAGE}{ROOT_USAGE_ROLE}")
 }
 
 /// Root-overview order (issue 597 Phase 2). Visibility comes from the command
@@ -30,8 +22,8 @@ fn root_usage() -> String {
 /// top-level `auth`/`workflow` redirect leaves, which exist so the parser can
 /// resolve their moved-error help topics. A test keeps the two in sync.
 const ROOT_OVERVIEW: &[&str] = &[
-    "gui", "issue", "comment", "admin", "config", "doctor", "hooks", "notify", "mcp", "plugin",
-    "repo", "project", "status", "version", "relation", "timer", "worktree",
+    "issue", "comment", "admin", "config", "doctor", "hooks", "notify", "mcp", "plugin", "repo",
+    "project", "status", "version", "relation", "timer", "worktree",
 ];
 
 pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>) {
@@ -129,15 +121,14 @@ mod tests {
         );
     }
 
-    /// The desktop entry is part of the usage block only when the binary
-    /// compiled the shell; the registry owns that boundary.
+    /// The desktop shell is a separate Electron application: no root-usage
+    /// line may advertise a binary-local desktop entry.
     #[test]
-    fn root_usage_follows_the_gui_feature_boundary() {
+    fn root_usage_has_no_desktop_entry() {
         let usage = root_usage();
-        assert_eq!(
-            usage.contains("phasegent gui"),
-            crate::command::top_level_compiled("gui"),
-            "root usage must advertise the desktop entry only when compiled: {usage}"
+        assert!(
+            !usage.contains("gui") && !usage.contains("desktop"),
+            "root usage must not advertise a desktop entry: {usage}"
         );
     }
 

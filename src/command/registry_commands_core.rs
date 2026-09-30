@@ -1,25 +1,16 @@
 //! Descriptor table (part 1): the workflow groups in declaration order, from
-//! `gui` through `timer`/`workflow`. Spliced into `super::COMMANDS` by name, so
-//! command order and every role/provider gate stay exactly as declared.
+//! `doctor` through `timer`/`workflow`. Spliced into `super::COMMANDS` by name,
+//! so command order and every role/provider gate stay exactly as declared.
 
 use super::super::{
     ACCESS_ATTACHMENT, ACCESS_BIND, ACCESS_COMMENT_CREATE, ACCESS_COMMENT_READ, ACCESS_FIND_MARKER,
     ACCESS_ISSUE_CLOSE, ACCESS_ISSUE_CREATE, ACCESS_ISSUE_READ, ACCESS_ISSUE_SEARCH,
     ACCESS_ISSUE_UPDATE, ACCESS_ORCHESTRATOR, ACCESS_PROJECT_CREATE, ACCESS_PROJECT_READ,
     ACCESS_RELATION_CREATE, ACCESS_RELATION_DELETE, ACCESS_RELATION_READ, ACCESS_STATUS_READ,
-    ACCESS_VERSION_READ, CommandSpec, Feature, ProviderScope, RoleAccess, group, leaf, leaf_op,
+    ACCESS_VERSION_READ, CommandSpec, ProviderScope, RoleAccess, group, leaf, leaf_op,
 };
 
 pub(super) const CORE: &[CommandSpec] = &[
-    CommandSpec {
-        name: "gui",
-        summary: "Open the desktop GUI (single-binary shell)",
-        access: RoleAccess::Open,
-        operation: "",
-        feature: Some(Feature::Gui),
-        provider_scope: ProviderScope::Any,
-        children: &[],
-    },
     leaf(
         "doctor",
         "Read-only self-check: credential presence, index backend, masked PG URL (no role needed)",

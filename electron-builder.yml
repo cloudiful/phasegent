@@ -1,0 +1,60 @@
+# Electron packaging for the desktop shell.
+#
+# Inputs, in order: `bun run validate` (Vue bundle -> frontend/dist),
+# `bun run electron:build` (main/preload -> electron/dist), and
+# `bun scripts/electron-backend.mjs --from <cargo output>` (Rust companion ->
+# target/companion). `.github/workflows/release.yml` runs those three steps per
+# desktop target and then stages the produced unsigned MSI/DMG under the
+# tag-based release name; `electron:package` is the local equivalent.
+#
+# The Rust companion is bundled as an extra resource under a non-conflicting
+# backend filename and is resolved from `process.resourcesPath` at runtime.
+# `appId`/`productName` keep the existing desktop identity, and Electron
+# Builder derives the MSI/DMG version from `package.json` (pinned to the
+# release tag by the workflow's `version-check` job).
+
+appId: com.cloud1ful.phasegent
+productName: phasegent
+directories:
+  output: dist/electron
+  buildResources: icons
+files:
+  - electron/dist/**
+  - frontend/dist/**
+  - package.json
+  # The renderer is bundled by Vite and the main/preload bundles are
+  # self-contained, so no runtime `node_modules` tree is packaged.
+  - '!node_modules/**'
+asar: true
+npmRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  icon: icons/icon.icns
+  # Desktop releases stay unsigned unless signing credentials are provided
+  # separately; no identity is assumed or committed.
+  identity: null
+  target:
+    - dmg
+  extraResources:
+    - from: target/companion/phasegent
+      to: phasegent-backend
+
+win:
+  icon: icons/icon.ico
+  target:
+    - msi
+  extraResources:
+    - from: target/companion/phasegent.exe
+      to: phasegent-backend.exe
+
+msi:
+  # Per-user install, matching the previous per-user MSI scope.
+  perMachine: false
+  shortcutName: phasegent
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+
+dmg:
+  title: phasegent

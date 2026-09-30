@@ -1,10 +1,9 @@
-//! Blocking task/status reads for the GUI boundary.
+//! Blocking task/status reads for the desktop bridge.
 //!
-//! Every entry point here is synchronous and runs via
-//! `spawn_blocking` from the Tauri commands, so the async runtime
-//! stays responsive. Provider access reuses the existing dispatch
-//! (`search_issue_page` directly); the issue-index `block_on` bridge
-//! is never called from the Tauri runtime.
+//! Every entry point here is synchronous and runs on the bridge's worker
+//! threads, so request handling stays responsive. Provider access reuses the
+//! existing dispatch (`search_issue_page` directly); the issue-index
+//! `block_on` bridge is never called from a bridge worker.
 
 use super::frontend_dist_hash;
 use super::models::{

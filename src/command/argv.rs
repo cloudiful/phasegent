@@ -213,7 +213,6 @@ pub(crate) fn parse_outcome_with_role_env(
     // the target is a global setting; role-scoped settings still require it.
     let no_role_allowed = match &command {
         Command::Help(_)
-        | Command::Gui
         | Command::Doctor
         | Command::ConfigShow
         | Command::ConfigProviderGet
@@ -266,12 +265,6 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
         return Err(format!("unknown command '{command}'"));
     }
     Ok(match command {
-        "gui" => {
-            if !rest.is_empty() {
-                return Err("gui takes no arguments".to_owned());
-            }
-            Command::Gui
-        }
         "doctor" => {
             if !rest.is_empty() {
                 return Err("doctor takes no arguments".to_owned());

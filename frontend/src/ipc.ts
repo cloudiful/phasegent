@@ -1,10 +1,10 @@
-// Typed Tauri IPC layer for the desktop shell.
-// All backend calls go through `@tauri-apps/api/core` invoke. When Tauri
-// is unavailable (dev browser), loaders return safe empty state so the
-// pages stay in empty/ready without secrets. No credential values are
-// stored or returned here.
+// Typed renderer bridge layer for the Electron desktop shell.
+// All backend calls go through the typed `window.phasegent` API the preload
+// script exposes; the renderer never receives `ipcRenderer`, a channel name,
+// or a CLI command. When the preload API is unavailable (plain browser
+// preview), loaders return safe empty state so the pages stay in empty/ready
+// without secrets. No credential values are stored or returned here.
 
-import { invoke } from '@tauri-apps/api/core'
 import type {
   SettingsState,
   StatusEvent,
@@ -37,7 +37,7 @@ export interface FetchResult<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared view helpers (same contracts as the previous mock boundary).
+// Shared view helpers used by the pages and the payload mappers.
 // ---------------------------------------------------------------------------
 
 export function filterTasks(tasks: TaskItem[], status: TaskStatus | 'all'): TaskItem[] {
@@ -70,11 +70,19 @@ export function validateEndpoint(endpoint: string): string | null {
   return null
 }
 
-function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+/**
+ * The preload bridge, or `undefined` outside the Electron renderer (plain
+ * browser dev preview and tests), where callers fall back to safe empty state.
+ */
+function desktopApi(): Window['phasegent'] {
+  if (typeof window === 'undefined') return undefined
+  return window.phasegent
 }
 
-export function invokeErrorMessage(err: unknown): string {
+/** Rejects mutations that have no safe offline equivalent in a plain browser. */
+const BRIDGE_UNAVAILABLE = 'Desktop backend is unavailable in this preview.'
+
+export function desktopErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message
   if (typeof err === 'string') return err
   try {
@@ -86,7 +94,8 @@ export function invokeErrorMessage(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Raw backend shapes (snake_case, mirrors src/gui.rs serde output).
+// Raw backend shapes (snake_case, mirrors the Rust desktop bridge payloads in
+// src/gui/models.rs).
 // ---------------------------------------------------------------------------
 
 export interface TaskEntryRaw {
@@ -248,33 +257,20 @@ export function mapStatusPayload(payload: StatusPayloadRaw): FetchResult<StatusV
 }
 
 // ---------------------------------------------------------------------------
-// Tasks / status loaders (invoke with safe empty fallback).
+// Tasks / status loaders (preload API call with safe empty fallback).
 // ---------------------------------------------------------------------------
 
-export async function fetchTasks(): Promise<FetchResult<TasksView>> {
-  if (!isTauri()) {
-    return { data: { items: [], branch: null, boundIssue: null, provider: '', role: '', warning: null }, fetchedAt: Date.now() }
-  }
-  try {
-    const payload = await invoke<TasksPayloadRaw>('get_tasks', {
-      request: { limit: 20, state: 'open' },
-    })
-    return mapTasksPayload(payload)
-  }
-  catch (err) {
-    // Browser fallback only when Tauri is unavailable; otherwise surface
-    // the redacted backend error so the page shows error/retry.
-    if (!isTauri()) {
-      return { data: { items: [], branch: null, boundIssue: null, provider: '', role: '', warning: null }, fetchedAt: Date.now() }
-    }
-    throw new Error(invokeErrorMessage(err), { cause: err })
+function emptyTasksResult(): FetchResult<TasksView> {
+  return {
+    data: { items: [], branch: null, boundIssue: null, provider: '', role: '', warning: null },
+    fetchedAt: Date.now(),
   }
 }
 
-export async function fetchStatus(): Promise<FetchResult<StatusView>> {
-  if (!isTauri()) {
-    const now = Date.now()
-    const empty: StatusView = {
+function emptyStatusResult(): FetchResult<StatusView> {
+  const now = Date.now()
+  return {
+    data: {
       summary: {
         connection: 'offline',
         provider: '',
@@ -289,35 +285,34 @@ export async function fetchStatus(): Promise<FetchResult<StatusView>> {
       warning: null,
       unsupported: null,
       frontendDistHash: null,
-    }
-    return { data: empty, fetchedAt: now }
+    },
+    fetchedAt: now,
   }
+}
+
+export async function fetchTasks(): Promise<FetchResult<TasksView>> {
+  const api = desktopApi()
+  if (!api) return emptyTasksResult()
   try {
-    const payload = await invoke<StatusPayloadRaw>('get_status', { request: {} })
-    return mapStatusPayload(payload)
+    return mapTasksPayload(await api.getTasks({ limit: 20, state: 'open' }))
   }
   catch (err) {
-    if (!isTauri()) {
-      const now = Date.now()
-      const empty: StatusView = {
-        summary: {
-          connection: 'offline',
-          provider: '',
-          endpoint: '',
-          lastSyncAt: new Date(now).toISOString(),
-          totals: { queued: 0, running: 0, paused: 0, done: 0, failed: 0 },
-          recent: [],
-        },
-        branch: null,
-        boundIssue: null,
-        boundIssueTitle: null,
-        warning: null,
-        unsupported: null,
-        frontendDistHash: null,
-      }
-      return { data: empty, fetchedAt: now }
-    }
-    throw new Error(invokeErrorMessage(err), { cause: err })
+    // Browser fallback only when the preload API is unavailable; otherwise
+    // surface the redacted backend error so the page shows error/retry.
+    if (!desktopApi()) return emptyTasksResult()
+    throw new Error(desktopErrorMessage(err), { cause: err })
+  }
+}
+
+export async function fetchStatus(): Promise<FetchResult<StatusView>> {
+  const api = desktopApi()
+  if (!api) return emptyStatusResult()
+  try {
+    return mapStatusPayload(await api.getStatus({}))
+  }
+  catch (err) {
+    if (!desktopApi()) return emptyStatusResult()
+    throw new Error(desktopErrorMessage(err), { cause: err })
   }
 }
 
@@ -351,20 +346,21 @@ export interface ConfigSnapshotRaw {
 }
 
 export async function fetchConfigSnapshot(): Promise<FetchResult<ConfigSnapshotRaw>> {
-  if (!isTauri()) {
-    const fallback: ConfigSnapshotRaw = { database_path: '', roles: [], global_settings: [], global_default_provider: null }
-    return { data: fallback, fetchedAt: Date.now() }
-  }
+  const api = desktopApi()
+  if (!api) return emptyConfigSnapshotResult()
   try {
-    const snapshot = await invoke<ConfigSnapshotRaw>('get_config_snapshot')
-    return { data: snapshot, fetchedAt: Date.now() }
+    return { data: await api.getConfigSnapshot(), fetchedAt: Date.now() }
   }
   catch (err) {
-    if (!isTauri()) {
-      const fallback: ConfigSnapshotRaw = { database_path: '', roles: [], global_settings: [], global_default_provider: null }
-      return { data: fallback, fetchedAt: Date.now() }
-    }
-    throw new Error(invokeErrorMessage(err), { cause: err })
+    if (!desktopApi()) return emptyConfigSnapshotResult()
+    throw new Error(desktopErrorMessage(err), { cause: err })
+  }
+}
+
+function emptyConfigSnapshotResult(): FetchResult<ConfigSnapshotRaw> {
+  return {
+    data: { database_path: '', roles: [], global_settings: [], global_default_provider: null },
+    fetchedAt: Date.now(),
   }
 }
 
@@ -387,49 +383,49 @@ export function snapshotProviderForRole(snapshot: ConfigSnapshotRaw | null, role
 export async function setNonSecretSetting(role: string | null, setting: string, value: string): Promise<void> {
   const trimmedRole = (role ?? '').trim()
   try {
-    await invoke('set_config_setting', {
-      request: { role: trimmedRole === '' ? null : trimmedRole, setting, value },
-    })
+    const api = desktopApi()
+    if (!api) throw new Error(BRIDGE_UNAVAILABLE)
+    await api.setConfigSetting({ role: trimmedRole === '' ? null : trimmedRole, setting, value })
   }
   catch (err) {
-    throw new Error(invokeErrorMessage(err), { cause: err })
+    throw new Error(desktopErrorMessage(err), { cause: err })
   }
 }
 
 export async function clearNonSecretSetting(role: string | null, setting: string): Promise<boolean> {
   const trimmedRole = (role ?? '').trim()
   try {
-    const result = await invoke<{ cleared: boolean }>('clear_config_setting', {
-      request: { role: trimmedRole === '' ? null : trimmedRole, setting },
-    })
+    const api = desktopApi()
+    if (!api) throw new Error(BRIDGE_UNAVAILABLE)
+    const result = await api.clearConfigSetting({ role: trimmedRole === '' ? null : trimmedRole, setting })
     return result.cleared
   }
   catch (err) {
-    throw new Error(invokeErrorMessage(err), { cause: err })
+    throw new Error(desktopErrorMessage(err), { cause: err })
   }
 }
 
 export async function setRoleCredential(role: string, provider: string, credential: string): Promise<{ present: boolean, length: number }> {
   try {
-    const result = await invoke<{ present: boolean, length: number }>('set_credential', {
-      request: { role, provider, credential },
-    })
+    const api = desktopApi()
+    if (!api) throw new Error(BRIDGE_UNAVAILABLE)
+    const result = await api.setCredential({ role, provider, credential })
     return { present: result.present, length: result.length }
   }
   catch (err) {
-    throw new Error(invokeErrorMessage(err), { cause: err })
+    throw new Error(desktopErrorMessage(err), { cause: err })
   }
 }
 
 export async function clearRoleCredential(role: string, provider: string): Promise<boolean> {
   try {
-    const result = await invoke<{ cleared: boolean }>('clear_credential', {
-      request: { role, provider },
-    })
+    const api = desktopApi()
+    if (!api) throw new Error(BRIDGE_UNAVAILABLE)
+    const result = await api.clearCredential({ role, provider })
     return result.cleared
   }
   catch (err) {
-    throw new Error(invokeErrorMessage(err), { cause: err })
+    throw new Error(desktopErrorMessage(err), { cause: err })
   }
 }
 
@@ -442,9 +438,10 @@ export interface ProvisioningStatusRaw {
 }
 
 export async function fetchProvisioningStatus(role: string): Promise<ProvisioningStatusRaw | null> {
-  if (!isTauri()) return null
+  const api = desktopApi()
+  if (!api) return null
   try {
-    return await invoke<ProvisioningStatusRaw>('get_provisioning_status', { query: { role } })
+    return await api.getProvisioningStatus({ role })
   }
   catch {
     return null
@@ -454,15 +451,16 @@ export async function fetchProvisioningStatus(role: string): Promise<Provisionin
 export async function testConnection(endpoint: string): Promise<{ ok: boolean, message: string }> {
   const problem = validateEndpoint(endpoint)
   if (problem) return { ok: false, message: problem }
-  if (!isTauri()) {
+  const api = desktopApi()
+  if (!api) {
     return { ok: true, message: `Connection check passed for ${endpoint.trim()} (browser preview, no backend).` }
   }
   try {
-    await invoke('get_status', { request: {} })
+    await api.getStatus({})
     return { ok: true, message: `Connection check passed for ${endpoint.trim()}.` }
   }
   catch (err) {
-    return { ok: false, message: invokeErrorMessage(err) }
+    return { ok: false, message: desktopErrorMessage(err) }
   }
 }
 

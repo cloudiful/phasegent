@@ -1,4 +1,4 @@
-//! Focused GUI boundary tests: input validation and redaction.
+//! Focused desktop bridge backend tests: input validation and redaction.
 //!
 //! Pure helpers are exercised without network or real credentials.
 //! The snapshot test drives an isolated throwaway database via

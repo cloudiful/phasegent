@@ -179,30 +179,18 @@ fn roleless_help_keeps_the_superset_view() {
     }
 }
 
-/// Phase 3: the compile-time boundary is a visibility/explanation gate, not a
-/// parser rejection. `gui` stays parseable without a role so the execution
-/// layer can return its structured not-compiled error; unknown commands and
-/// role denials keep their distinct parse errors.
+/// The desktop shell is a separate Electron application, so it is not a CLI
+/// command: the parser rejects it as unknown and no registry path resolves it.
+/// Unknown commands and role denials keep their distinct parse errors.
 #[test]
-fn gui_feature_boundary_does_not_change_the_parser_contract() {
-    let invocation = parse_with_role_env(&args(&["gui"]), None)
-        .expect("gui must parse without a role even when the shell was not compiled");
-    assert!(invocation.role.is_none());
-    assert!(matches!(invocation.command, Command::Gui));
-
-    if !crate::command::top_level_compiled("gui") {
-        assert!(matches!(
-            crate::command::registry_unavailability(None, &["gui"]),
-            Some(crate::command::Unavailable::NotCompiled(_))
-        ));
+fn desktop_shell_is_not_a_cli_command() {
+    for name in ["gui", "desktop", "desktop-bridge"] {
+        let error = parse_with_role_env(&args(&[name]), None).unwrap_err();
+        assert_eq!(error, format!("unknown command '{name}'"));
         assert!(
-            !crate::command::registry_allows_role(Role::Orchestrator, &["gui"]),
-            "an uncompiled command must not count as runnable for a role"
-        );
-        assert_eq!(
-            crate::command::registry_denied_operation(Role::Orchestrator, &["gui"]),
-            None,
-            "the parser must not turn a not-compiled command into a permission denial"
+            crate::command::registry_unavailability(None, &[name]).is_none()
+                && !crate::command::registry_allows_role(Role::Orchestrator, &[name]),
+            "{name} must not resolve to a registry node"
         );
     }
 

@@ -108,16 +108,12 @@ fn assert_help_parses(spec: &'static CommandSpec, path: &mut Vec<String>) {
 #[test]
 fn every_registered_command_is_accepted_by_the_parser() {
     for spec in COMMANDS {
-        if matches!(spec.name, "gui" | "doctor") {
-            // `gui`/`doctor` take no trailing help token; their bare form is
-            // the accepted invocation.
+        if spec.name == "doctor" {
+            // `doctor` takes no trailing help token; its bare form is the
+            // accepted invocation.
             let invocation =
                 parse_with_role_env(&args(&[spec.name]), None).expect("bare command must parse");
-            match spec.name {
-                "gui" => assert!(matches!(invocation.command, Command::Gui)),
-                "doctor" => assert!(matches!(invocation.command, Command::Doctor)),
-                _ => unreachable!(),
-            }
+            assert!(matches!(invocation.command, Command::Doctor));
             continue;
         }
         let mut path = vec![spec.name.to_owned()];
@@ -214,56 +210,25 @@ fn provider_scopes_match_the_root_help_conditions() {
 }
 
 #[test]
-fn gui_feature_boundary_is_registered() {
-    let gui = find(&["gui"]).unwrap();
-    assert_eq!(gui.feature, Some(Feature::Gui));
-    assert_eq!(Feature::Gui.name(), "gui");
-    // The registry records the boundary; the build decides the answer.
-    assert_eq!(Feature::Gui.is_compiled(), cfg!(feature = "gui"));
-    assert_eq!(gui.is_compiled(), Feature::Gui.is_compiled());
+fn no_registry_node_has_an_optional_feature() {
+    // No registered command is feature-gated: every command is compiled into
+    // the binary and the boundary type has no variants.
     every_node(|node| {
-        if node.name == "gui" {
-            assert_eq!(node.feature, Some(Feature::Gui));
-        } else {
-            assert_eq!(node.feature, None, "{} carries no feature", node.name);
-        }
+        assert_eq!(
+            node.feature, None,
+            "{} must not carry a compile-time feature",
+            node.name
+        );
+        assert!(node.is_compiled(), "{} must stay compiled", node.name);
     });
-    // The feature boundary is part of visibility in every role context: an
-    // uncompiled node is hidden even from the role-less superset view and
-    // reports the stable not-compiled reason instead.
-    assert_eq!(gui.visible_for(None), Feature::Gui.is_compiled());
-    for role in ALL_ROLES {
-        assert_eq!(
-            gui.visible_for(Some(*role)),
-            Feature::Gui.is_compiled(),
-            "gui visibility for {role}"
-        );
-        assert_eq!(
-            allows_role(*role, &["gui"]),
-            Feature::Gui.is_compiled(),
-            "gui acceptance for {role}"
-        );
-    }
-    for role in [None, Some(Role::Executor), Some(Role::Admin)] {
-        assert_eq!(
-            unavailability(role, &["gui"]),
-            (!Feature::Gui.is_compiled()).then_some(Unavailable::NotCompiled(Feature::Gui)),
-            "gui availability for {role:?}"
-        );
-    }
-    assert_eq!(
-        Feature::Gui.not_compiled_message(),
-        "GUI support was not compiled into this binary; rebuild with --features gui to enable the desktop shell"
-    );
 }
 
 #[test]
-fn no_role_context_keeps_the_superset_view_for_compiled_nodes() {
+fn no_role_context_keeps_the_superset_view_for_every_command() {
     every_node(|node| {
-        assert_eq!(
+        assert!(
             node.visible_for(None),
-            node.is_compiled(),
-            "{} superset visibility must follow the compiled boundary",
+            "{} must stay visible in the role-less superset view",
             node.name
         );
     });
@@ -276,8 +241,8 @@ fn role_visibility_covers_at_least_the_gated_roles() {
         for role in ALL_ROLES {
             assert_eq!(
                 node.visible_for(Some(*role)),
-                node.is_compiled() && node.allows_role(*role),
-                "{} visibility must follow its gate and feature boundary",
+                node.allows_role(*role),
+                "{} visibility must follow its gate",
                 node.name
             );
         }
@@ -285,11 +250,8 @@ fn role_visibility_covers_at_least_the_gated_roles() {
 }
 
 #[test]
-fn compiled_nodes_stay_available_for_every_role_and_roleless_view() {
+fn registered_nodes_stay_available_for_every_role_and_roleless_view() {
     for (path, spec) in collect_paths() {
-        if !spec.is_compiled() {
-            continue;
-        }
         let path: Vec<&str> = path.iter().map(String::as_str).collect();
         assert_eq!(unavailability(None, &path), None, "{path:?}");
         for role in ALL_ROLES {

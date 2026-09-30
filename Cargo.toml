@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [features]
 default = []
-gui = ["dep:tauri", "dep:tauri-build"]
 postgres = ["dep:sqlx"]
 notify-dingtalk = ["cloudiful-notifier/dingtalk"]
 notify-email = ["cloudiful-notifier/email"]
@@ -34,10 +33,6 @@ toml = "1.1.6"
 sqlx = { version = "0.9.0", optional = true, default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls"] }
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "io-std", "io-util", "time"] }
 url = "2.5.8"
-tauri = { version = "2", optional = true }
-
-[build-dependencies]
-tauri-build = { version = "2", optional = true }
 
 [dev-dependencies]
 insta = { version = "1.48.0", features = ["filters"] }

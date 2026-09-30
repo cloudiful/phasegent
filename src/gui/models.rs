@@ -1,6 +1,6 @@
-//! Redacted IPC shapes shared by the GUI backend and the frontend.
+//! Redacted IPC shapes shared by the desktop backends and the renderer.
 //!
-//! All structs stay `Serialize`/`Deserialize` so the Tauri `invoke`
+//! All structs stay `Serialize`/`Deserialize` so the desktop bridge
 //! boundary remains typed. No struct carries a credential value:
 //! secrets are write-only inputs and presence/length-only outputs.
 

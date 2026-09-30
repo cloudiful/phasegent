@@ -12,8 +12,9 @@ export const routes: RouteRecordRaw[] = [
   { path: '/:pathMatch(.*)*', redirect: '/tasks' },
 ]
 
-// Hash history: the bundle is served as static files (Tauri frontendDist)
-// with no server-side rewrite, so the route must live in the URL fragment.
+// Hash history: the Electron main process serves the bundle as static files
+// over the app's own scheme, with no server-side rewrite, so the route must
+// live in the URL fragment.
 export const router = createRouter({
   history: createWebHashHistory(),
   routes,

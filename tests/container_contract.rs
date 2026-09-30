@@ -4,7 +4,10 @@
 //! The image is runtime-only: CI builds the release binary per-arch and
 //! stages it at `ci-image-input/phasegent`; the Dockerfile only copies
 //! that prebuilt artifact (no Rust toolchain, no `cargo build` inside
-//! Docker). Static tests never require a Docker daemon or registry
+//! Docker). It is also CLI/MCP-only: the desktop shell is packaged by
+//! Electron Builder on the desktop targets, so no Electron, frontend, or
+//! desktop runtime asset may enter the image (enforced by the negative
+//! checks below). Static tests never require a Docker daemon or registry
 //! credentials: they assert on the committed `Dockerfile` and
 //! `.dockerignore`. The single
 //! build/smoke test runs only when `docker info` succeeds and the staged
@@ -72,7 +75,9 @@ fn dockerfile_is_runtime_only_copying_prebuilt_artifact() {
         has_copy_input,
         "Dockerfile must COPY ci-image-input/phasegent into the image"
     );
-    // The documented CI build stays CLI-only: full CLI features, no `gui`.
+    // The documented CI build stays CLI-only: the desktop shell is packaged
+    // separately by Electron Builder, so no desktop feature is built into the
+    // image binary.
     assert_contains(
         &dockerfile,
         "cargo build --release --bin phasegent",
@@ -105,8 +110,17 @@ fn dockerfile_is_runtime_only_copying_prebuilt_artifact() {
             "Dockerfile runtime-only must not contain {forbidden:?}"
         );
     }
-    // No desktop toolchain may leak into the image build.
-    for forbidden in ["tauri build", "WebKit", "libgtk", "bun run", "npm run"] {
+    // No desktop toolchain or packaged desktop output may leak into the image
+    // build.
+    for forbidden in [
+        "tauri build",
+        "WebKit",
+        "libgtk",
+        "bun run",
+        "npm run",
+        "electron",
+        "frontend/dist",
+    ] {
         assert_not_contains(&dockerfile, forbidden, "Dockerfile runtime-only");
     }
     // Single runtime stage (no builder stage).
@@ -234,8 +248,18 @@ fn dockerfile_runtime_stays_minimal_cli_only() {
         "Dockerfile runtime must use a minimal slim/distroless base"
     );
     assert_contains(&dockerfile, "ca-certificates", "Dockerfile runtime");
-    // No GUI/frontend toolchain in the runtime image.
-    for forbidden in ["tauri", "WebKit", "libgtk", "bun", "node_modules"] {
+    // No GUI/frontend toolchain or packaged desktop output in the runtime
+    // image; the Electron desktop shell is packaged outside this image.
+    for forbidden in [
+        "tauri",
+        "WebKit",
+        "libgtk",
+        "bun",
+        "node_modules",
+        "electron",
+        "frontend/dist",
+        "dist/electron",
+    ] {
         let hit = dockerfile.lines().any(|line| {
             let trimmed = line.trim();
             !trimmed.starts_with('#') && line.contains(forbidden)
@@ -252,6 +276,10 @@ fn dockerignore_keeps_build_context_small() {
     }
     // The prebuilt per-arch binary staged by CI must stay in context.
     assert_contains(&dockerignore, "!ci-image-input", ".dockerignore");
+    // Desktop/Electron build outputs must never reach the image context.
+    for excluded in ["frontend/dist/", "node_modules/", "dist/"] {
+        assert_contains(&dockerignore, excluded, ".dockerignore desktop exclusions");
+    }
     for line in dockerignore.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {

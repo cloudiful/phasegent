@@ -7,6 +7,7 @@ mod command;
 mod config;
 mod config_snapshot;
 mod config_write;
+mod desktop_bridge;
 mod gui;
 mod hooks;
 mod launch;
@@ -82,15 +83,17 @@ mod issue_tests;
 mod test_scratch;
 
 fn main() {
-    // Single-binary dispatch: the conservative no-argument desktop
-    // heuristic lives here so `cli::run` keeps its exact existing
-    // JSON/error contracts (`cli::run([])` still renders root help).
-    // Explicit `gui` is parsed by the shared `command` module and
-    // executed in `cli::run`; every other command never initializes
-    // the GUI.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() && launch::should_open_gui_on_no_args(&launch::current_no_arg_context()) {
-        std::process::exit(gui::run());
+    // Hidden packaged-desktop entry: the Electron main process spawns this
+    // binary with the `desktop-bridge` token and speaks newline-delimited
+    // JSON over stdio. The token is deliberately absent from the command
+    // registry, so it never appears in help and is not reachable as a normal
+    // CLI command.
+    if args.first().map(String::as_str) == Some(desktop_bridge::COMMAND) {
+        std::process::exit(desktop_bridge::run(&args[1..]));
     }
-    std::process::exit(cli::run(args));
+    // A bare launch is always CLI space: the desktop shell is the packaged
+    // Electron application, so this binary never opens a window and needs no
+    // terminal-vs-desktop heuristic.
+    std::process::exit(launch::run_cli(args));
 }
