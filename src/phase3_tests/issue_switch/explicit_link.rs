@@ -7,7 +7,7 @@ use super::super::{canonical_key, current_branch, pin_temp_db, switch_repo};
 use super::{
     bare_repo, branch_exists, explicit_params_for, fallback_key, linked_entries, seed_link,
 };
-use crate::branch_context::GitRunner;
+use crate::git_runner::GitRunner;
 use crate::infra::storage::test_support::lock_workflow_tests;
 use crate::lifecycle::{self, ExplicitLinkOutcome};
 

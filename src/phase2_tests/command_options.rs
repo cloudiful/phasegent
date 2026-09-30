@@ -145,3 +145,69 @@ fn issue_sync_help_routes_to_command_topic() {
         other => panic!("unexpected command {other:?}"),
     }
 }
+
+#[test]
+fn issue_bind_parses_only_a_positive_id() {
+    let args = ["issue", "bind", "23"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let invocation =
+        command::parse_with_role_env(&args, Some("orchestrator")).expect("bind parses");
+    match invocation.command {
+        command::Command::Issue(command::IssueCommand::Bind { issue_id }) => {
+            assert_eq!(issue_id, 23);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    for raw in ["0", "-1", "abc", "12abc"] {
+        let args = ["issue", "bind", raw]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(
+            command::parse_with_role_env(&args, Some("orchestrator")).is_err(),
+            "issue bind accepted invalid id {raw:?}"
+        );
+    }
+}
+
+/// The legacy `--replace` / `--session` compatibility options are gone:
+/// the parser rejects them as unknown options instead of accepting them
+/// inertly.
+#[test]
+fn issue_bind_rejects_the_removed_compat_options() {
+    for flag in [vec!["--replace"], vec!["--session", "s1"]] {
+        let mut args = vec!["issue".to_owned(), "bind".to_owned(), "23".to_owned()];
+        args.extend(flag.iter().map(|value| (*value).to_owned()));
+        let error = command::parse_with_role_env(&args, Some("orchestrator"))
+            .expect_err("removed bind options must be rejected");
+        assert!(
+            error.contains("unknown option"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn issue_unbind_and_status_reject_extra_arguments_and_options() {
+    for operation in ["unbind", "status"] {
+        let args = ["issue", operation, "extra"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(
+            command::parse_with_role_env(&args, Some("executor")).is_err(),
+            "issue {operation} must reject extra arguments"
+        );
+        let args = ["issue", operation, "--unknown"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(
+            command::parse_with_role_env(&args, Some("executor")).is_err(),
+            "issue {operation} must reject unknown options"
+        );
+    }
+}

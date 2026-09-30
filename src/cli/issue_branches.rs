@@ -7,11 +7,11 @@
 //! Same-number rows from distinct scopes stay distinct and set the
 //! top-level `ambiguous` flag instead of being collapsed.
 
-use crate::branch_context::ProcessGitRunner;
 use crate::branch_links::{
     IssueKey, IssueStateLookup, StateSnapshot, checkout_root, ensure_schema, read_origin_url,
     read_snapshot, resolve_repo_key,
 };
+use crate::git_runner::ProcessGitRunner;
 
 fn snapshot_lookup() -> impl IssueStateLookup {
     struct LocalIndex;
@@ -41,9 +41,9 @@ fn project_state(state: &Option<StateSnapshot>) -> (String, String, Option<i64>)
 }
 
 /// Database-backed `issue branches N`. Storage or repository failures
-/// are structured errors (there is no legacy Git fallback for a numeric
-/// reverse lookup); an issue with no links yields an empty `branches`
-/// list instead of an error.
+/// are structured errors (there is no provider or network fallback for a
+/// numeric reverse lookup); an issue with no links yields an empty
+/// `branches` list instead of an error.
 pub(crate) fn execute_branches(number: u64) -> i32 {
     if number == 0 {
         return crate::cli::structured_error(

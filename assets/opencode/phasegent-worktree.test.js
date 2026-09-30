@@ -827,14 +827,14 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     );
   });
 
-  test("keeps an existing role assignment and appends --session to issue bind", () => {
+  test("keeps an existing role assignment and leaves issue bind untouched", () => {
     expect(
       rewritePhasegentCommand(
         "PHASEGENT_ROLE=executor phasegent --provider local issue bind 18",
         "abc",
         { agent: "orchestrator" },
       ),
-    ).toBe("PHASEGENT_ROLE=executor phasegent --provider local issue bind 18 --session abc");
+    ).toBe("PHASEGENT_ROLE=executor phasegent --provider local issue bind 18");
   });
 
   test("skips --session when it is already present", () => {
@@ -1036,7 +1036,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     ).toBe("phasegent issue status");
   });
 
-  test("appends --session only to an issue create/bind segment", () => {
+  test("appends --session only to an issue create segment", () => {
     expect(
       rewritePhasegentCommand("phasegent issue status", "s1", undefined),
     ).toBe("phasegent issue status");
@@ -1044,6 +1044,9 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     expect(
       rewritePhasegentCommand("phasegent worktree acquire --issue 18", "s1", undefined),
     ).toBe("phasegent worktree acquire --issue 18");
+    expect(
+      rewritePhasegentCommand("phasegent issue bind 18", "s1", undefined),
+    ).toBe("phasegent issue bind 18");
   });
 
   test("passes through without a session id", () => {
@@ -1061,7 +1064,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue get 1 && PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --session s9",
+      "PHASEGENT_ROLE=orchestrator phasegent issue get 1 && PHASEGENT_ROLE=orchestrator phasegent issue bind 541",
     );
   });
 
@@ -1277,13 +1280,19 @@ describe("issue close session injection (issue #575 P2)", () => {
     expect(rewritePhasegentCommand(command, "", undefined)).toBe(command);
   });
 
-  test("keeps --session on create/bind segments only", () => {
+  test("keeps --session on create segments only", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue create --title t", "s1", undefined),
+    ).toBe("phasegent issue create --title t --session s1");
     expect(
       rewritePhasegentCommand("phasegent issue bind 575", "s1", undefined),
-    ).toBe("phasegent issue bind 575 --session s1");
+    ).toBe("phasegent issue bind 575");
     expect(rewritePhasegentCommand("phasegent issue close 575", "s1", undefined)).toBe(
       "phasegent issue close 575 --worktree-session s1",
     );
+    expect(
+      rewritePhasegentCommand("phasegent issue status", "s1", undefined),
+    ).toBe("phasegent issue status");
   });
 });
 
@@ -1424,7 +1433,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --note "a && b" --session s9 | tee /tmp/y',
+      'PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --note "a && b" | tee /tmp/y',
     );
   });
 
@@ -2273,7 +2282,7 @@ describe("invocation boundary tightening (issue #544 P1-a)", () => {
     );
     expect(
       rewritePhasegentCommand("./phasegent issue bind 1", "s1", { agent: "orchestrator" }),
-    ).toBe("PHASEGENT_ROLE=orchestrator ./phasegent issue bind 1 --session s1");
+    ).toBe("PHASEGENT_ROLE=orchestrator ./phasegent issue bind 1");
     expect(
       rewritePhasegentCommand("/usr/local/bin/phasegent worktree acquire --issue 1", "s1", {
         agent: "reviewer",
@@ -2294,7 +2303,7 @@ describe("invocation boundary tightening (issue #544 P1-a)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue status && PHASEGENT_ROLE=orchestrator phasegent issue bind 1 --session s1",
+      "PHASEGENT_ROLE=orchestrator phasegent issue status && PHASEGENT_ROLE=orchestrator phasegent issue bind 1",
     );
   });
 });
@@ -2320,7 +2329,7 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
       ],
       [
         "phasegent issue bind 1 >&2",
-        "PHASEGENT_ROLE=orchestrator phasegent issue bind 1 >&2 --session ses_x",
+        "PHASEGENT_ROLE=orchestrator phasegent issue bind 1 >&2",
       ],
       [
         "phasegent issue create --title t &> log",
@@ -2339,7 +2348,7 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
   test("still splits a standalone & and && around redirections", () => {
     expect(
       rewritePhasegentCommand("phasegent issue bind 1 &", "ses_x", { agent: "orchestrator" }),
-    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue bind 1 --session ses_x &");
+    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue bind 1 &");
     expect(
       rewritePhasegentCommand("phasegent issue create --title t 2>&1 && echo done", "ses_x", {
         agent: "orchestrator",

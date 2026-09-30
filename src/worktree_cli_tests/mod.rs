@@ -25,7 +25,6 @@
 //! integration test also uses its own temp git repo so production
 //! worktrees are never mutated.
 
-use crate::cli::branch::execute_branch_context;
 use crate::cli::worktree::{
     AcquireJson, PruneAction, PruneCombinedSummary, PruneDisposition, PruneMode, PruneSummary,
     ReleaseStaleAction, ReleaseStaleSummary, execute_worktree, prune_pass,
@@ -38,7 +37,7 @@ use crate::policy::Role;
 use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
-    ProcessWorktreeRunner, WorktreeRunner, acquire_lease, auto_acquire_after_bind, ensure_schema,
+    ProcessWorktreeRunner, WorktreeRunner, acquire_lease, auto_acquire_after_create, ensure_schema,
     list_for_repo, now_unix_secs, repo_identity, worktree_add,
 };
 use std::path::PathBuf;

@@ -114,13 +114,14 @@ five-token vocabulary.
 
 ## Branch binding & lease checklist
 
-- OPEN: check the branch binding status before delegating; bind explicitly
-  (with `--replace` only when moving a branch off a different issue); confirm
-  commit hooks are installed so the issue reference lands. Worktree session
-  identity is plugin-owned and needs no manual handling.
-- CLOSE: after issue close, verify the branch is unbound (exact-match
-  auto-unbind, otherwise a no-op); children never bind, unbind, commit, push,
-  or mutate refs — binding and delivery stay orchestrator-owned.
+- OPEN: check the branch binding status before delegating; bind the branch to
+  its issue with `phasegent issue bind N` (durable provider/project-scoped
+  link) and confirm commit hooks are installed so the issue reference lands.
+  Worktree session identity is plugin-owned and needs no manual handling.
+- CLOSE: after issue close, verify the branch is detached from the issue
+  (`phasegent issue unbind` when a link must be retired); children never bind,
+  unbind, commit, push, or mutate refs — binding and delivery stay
+  orchestrator-owned.
 
 ## Worktree leases are yours alone
 

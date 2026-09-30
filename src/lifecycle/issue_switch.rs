@@ -13,10 +13,10 @@
 
 use std::path::Path;
 
-use crate::branch_context::GitRunner;
 use crate::branch_links::{
     checkout_root, detect_default_branch, ensure_schema, read_origin_url, resolve_repo_key,
 };
+use crate::git_runner::GitRunner;
 use crate::infra::storage::Storage;
 use crate::worktree::{WorktreeRunner, is_clean};
 
@@ -38,8 +38,8 @@ pub struct IssueSwitchParams<'a> {
     pub base: Option<&'a str>,
     pub scope_provider: &'a str,
     pub scope_project: Option<&'a str>,
-    /// Explicit `--repository` scoping: a mismatch skips silently like
-    /// the legacy create-bind path (this checkout is not the target).
+    /// Explicit `--repository` scoping: a mismatch skips silently (this
+    /// checkout is not the target).
     pub explicit_repository: Option<&'a str>,
     /// Session booking the switch; an active lease under the same
     /// `(issue, session)` triple is ours, anything else live in the
@@ -128,7 +128,7 @@ pub fn create_link_and_switch(
     if let Err(reason) = super::current_checkout_matches(git, params.explicit_repository) {
         return CreateSwitchOutcome::Skipped { reason };
     }
-    let current = match crate::branch_context::current_branch(git) {
+    let current = match crate::git_runner::current_branch(git) {
         Ok(branch) => branch,
         Err(error) if error.kind == "branch" => {
             return CreateSwitchOutcome::Warning {

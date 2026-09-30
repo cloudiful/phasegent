@@ -10,10 +10,6 @@ mod issue_search;
 #[path = "issue_search_tests.rs"]
 #[cfg(test)]
 mod issue_search_tests;
-// Issue 628 P3: branch-link retention for `issue close` lives next to
-// the close arm it belongs to; `execute_issue` only dispatches into it.
-#[path = "issue_branch.rs"]
-pub(crate) mod issue_branch;
 // Issue 628 P4: provider-scoped create/link/switch helpers live next to
 // the create arm they belong to; `execute_issue` only dispatches.
 #[path = "issue/create_branch.rs"]
@@ -352,9 +348,10 @@ pub(crate) fn execute_issue(
                     // surfaces a bounded stderr warning; stdout stays the
                     // normal issue JSON.
                     super::report_local_warnings("issue create", assignee_warning);
-                    // Explicit `--branch` (issue 452 P2) is Redmine-only like
-                    // the legacy auto-bind; the P4 create/link helpers live
-                    // in `create_branch` so this arm stays dispatch-only.
+                    // Explicit `--branch` (issue 452 P2) is Redmine-only
+                    // like the create auto-acquire hook; the create/link
+                    // helpers live in `create_branch` so this arm stays
+                    // dispatch-only.
                     create_branch::report_create_branch_links(&create_branch::CreateBranchLinks {
                         provider: &provider,
                         provider_kind,
@@ -365,16 +362,16 @@ pub(crate) fn execute_issue(
                         repository,
                         session: session.as_deref(),
                     });
-                    // Issue 18: after a successful create and its bind step,
-                    // let the shared conflict table decide whether the current
-                    // checkout can be reused or a conflict needs an isolated
-                    // worktree. Best-effort: the helper never fails the create,
-                    // never deletes a branch or worktree, and reports a created
-                    // worktree as a bounded stderr warning so the stdout issue
-                    // JSON stays byte-identical.
+                    // Issue 18: after a successful create and its branch
+                    // link step, let the shared conflict table decide whether
+                    // the current checkout can be reused or a conflict needs
+                    // an isolated worktree. Best-effort: the helper never
+                    // fails the create, never deletes a branch or worktree,
+                    // and reports a created worktree as a bounded stderr
+                    // warning so the stdout issue JSON stays byte-identical.
                     super::report_local_warnings(
                         "issue create",
-                        crate::worktree::auto_acquire_after_bind(
+                        crate::worktree::auto_acquire_after_create(
                             summary.number,
                             session.as_deref(),
                         ),
@@ -531,39 +528,12 @@ pub(crate) fn execute_issue(
             }
             match provider.close_issue(number) {
                 Ok(summary) => {
-                    // Issue 628 P3: closing retains every durable branch
-                    // association — database links are never detached, and
-                    // this checkout's legacy keys are imported best-effort
-                    // under the close scope so the closed link stays
-                    // queryable afterward. The legacy Git unbind below is
-                    // unchanged; warnings go to stderr.
-                    super::report_local_warnings(
-                        "issue close",
-                        issue_branch::retain_closed_issue_links(&provider, number),
-                    );
-                    // Redmine-only local side effect: unbind only when the current
-                    // branch points at exactly the closed issue. A failed local
-                    // unbind never undoes the remote close; warnings go to stderr.
-                    if provider_kind == ProviderKind::Redmine {
-                        super::report_local_warnings(
-                            "issue close",
-                            crate::lifecycle::unbind_closed_issue(
-                                &crate::branch_context::ProcessGitRunner::new(),
-                                number,
-                                repository,
-                            )
-                            .warning(),
-                        );
-                    }
                     // Auto-accounting side effect: finish any running
                     // auto-run for the issue. The helper is gated for
                     // Forgejo internally and returns `Noop` so a
                     // Forgejo close never mutates the Redmine or
                     // GitLab ledger rows; for Redmine and GitLab it
-                    // finishes every running row for the issue. The
-                    // branch-context `unbind_closed_issue` above is a
-                    // Redmine-only sibling helper and is unaffected by
-                    // this hook.
+                    // finishes every running row for the issue.
                     super::report_local_warnings(
                         "issue close",
                         crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind)

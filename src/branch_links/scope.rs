@@ -2,8 +2,8 @@
 //!
 //! No network, no provider discovery, and no Forgejo-default fallback: a
 //! scope that cannot be selected explicitly or read from stored config is
-//! reported as unresolved so callers keep legacy behavior (or a structured
-//! BLOCKED-style error) instead of assigning issues to an unrelated
+//! reported as unresolved so callers fail closed with a structured
+//! BLOCKED-style error instead of assigning issues to an unrelated
 //! provider/project. Role-less invocations resolve stored config as the
 //! orchestrator for scope purposes only; permission passthrough is
 //! unchanged and lives in the CLI layer.

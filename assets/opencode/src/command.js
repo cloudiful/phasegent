@@ -1,13 +1,17 @@
 // Shell command rewriting for `phasegent` invocations (issue #541; issue #588
 // phase 2): the session role is exported per invocation through
-// `PHASEGENT_ROLE`, `issue create|bind`/`issue close` get their session flag,
-// and a sub-agent's `issue create|bind` is refused.
+// `PHASEGENT_ROLE`, `issue create`/`issue close` get their session flag, and a
+// sub-agent's `issue create|bind` is refused.
 
 import { agentRole, isSubagentSession } from "./roles.js";
 import { phasegentInvocation, shellSegments, transformCodeOnly } from "./scanner.js";
 import { isWindowsHost, warn } from "./runtime.js";
 
+// Sub-agent prohibition: the orchestrator owns issue creation and binding.
 export const PHASEGENT_ISSUE_WRITE = /\bissue\s+(create|bind)\b/;
+// `issue create` names its session through `--session`; `issue bind` takes no
+// session flag, so only a create segment gets one injected.
+export const PHASEGENT_ISSUE_CREATE = /\bissue\s+create\b/;
 // `issue close` names its closer through `--worktree-session`: the parser
 // rejects `--session` there with `unknown option '--session'` (exit 2,
 // src/command/issue.rs), so the segment gets the flag the CLI parses.
@@ -81,11 +85,11 @@ function roleStatusPrefix(source, segment, invocation, windows) {
   return head ? `${head[0]}${base}` : base;
 }
 
-// The session-bearing flag of a segment: `issue create|bind` carry `--session`,
+// The session-bearing flag of a segment: `issue create` carries `--session`,
 // `issue close` carries `--worktree-session`; every other segment stays
-// untouched.
+// untouched (`issue bind` takes no session flag at all).
 function sessionFlagFor(tail) {
-  if (PHASEGENT_ISSUE_WRITE.test(tail)) return { name: "--session", present: SESSION_FLAG };
+  if (PHASEGENT_ISSUE_CREATE.test(tail)) return { name: "--session", present: SESSION_FLAG };
   if (PHASEGENT_ISSUE_CLOSE.test(tail)) {
     return { name: "--worktree-session", present: WORKTREE_SESSION_FLAG };
   }

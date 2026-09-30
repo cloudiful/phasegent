@@ -5,8 +5,8 @@
 
 use super::super::pin_temp_db;
 use super::{bare_repo, fallback_key, seed_link};
-use crate::branch_context::GitRunner;
 use crate::branch_links::identity::{is_protected_branch, validate_not_protected_branch};
+use crate::git_runner::GitRunner;
 use crate::infra::storage::test_support::lock_workflow_tests;
 
 #[test]
@@ -34,8 +34,7 @@ fn protected_branch_rule_table() {
 
 #[test]
 fn hook_ignores_durable_links_on_conventional_default_when_unknown() {
-    // `main` with no cached HEAD: durable rows do not decide (the
-    // explicit legacy binding below still does).
+    // `main` with no cached HEAD: neither durable rows nor the name decide.
     let _lock = lock_workflow_tests();
     let Some((repo, db)) = bare_repo("hook-conventional") else {
         return;
@@ -66,38 +65,6 @@ fn hook_ignores_durable_links_on_conventional_default_when_unknown() {
     assert_eq!(
         std::fs::read(&file).expect("read message"),
         b"Work on main\n"
-    );
-}
-
-#[test]
-fn hook_keeps_legacy_binding_on_conventional_default_when_unknown() {
-    // Same checkout, but the explicit legacy binding (not a durable
-    // guess) still decides.
-    let _lock = lock_workflow_tests();
-    let Some((repo, db)) = bare_repo("hook-legacy-main") else {
-        return;
-    };
-    let _env = pin_temp_db(&db);
-    repo.runner()
-        .run(&["checkout", "-q", "main"])
-        .expect("checkout works");
-    repo.runner()
-        .run(&["config", "--local", "branch.main.redmine-issue-id", "701"])
-        .expect("legacy bind works");
-
-    let file = repo.0.join("COMMIT_MSG");
-    std::fs::write(&file, "Legacy-bound work\n").expect("write message");
-    let value = crate::hooks::run_with(
-        &repo.runner(),
-        crate::hooks::HookKind::PrepareCommitMsg,
-        file.to_str().expect("utf8 path"),
-        Some(""),
-    )
-    .expect("hook runs");
-    assert_eq!(value["action"], "appended");
-    assert_eq!(
-        std::fs::read(&file).expect("read message"),
-        b"Legacy-bound work\n\nRefs #701\n"
     );
 }
 

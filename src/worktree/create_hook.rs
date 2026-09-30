@@ -1,6 +1,6 @@
-//! Auto-acquire hook shared by `issue create` and `issue bind`.
+//! Auto-acquire hook for `issue create`.
 //!
-//! A successful create/bind is the point where a session's task identity
+//! A successful create is the point where a session's task identity
 //! becomes known, so the caller runs this helper to let the shared
 //! conflict table decide whether the current checkout can be reused or a
 //! conflict needs explicit isolation. The helper always runs the table
@@ -20,16 +20,16 @@ use crate::worktree::{AcquireOptions, ProcessWorktreeRunner, acquire_lease_with,
 
 use super::acquire::is_isolation_required;
 
-/// Best-effort worktree acquisition after `issue create` / `issue bind`.
+/// Best-effort worktree acquisition after `issue create`.
 ///
 /// Returns `None` when there is nothing to report (no session, an acquire
 /// error that is not isolation guidance, or a silent reuse of the current
 /// checkout) and otherwise the bounded stderr warning string. A created
 /// worktree appends the `reason=new_worktree` redirect notice so the
 /// operator knows later tool calls land there; a refused conflict returns
-/// the actionable `isolation` guidance instead, and the create/bind itself
+/// the actionable `isolation` guidance instead, and the create itself
 /// stays successful either way.
-pub(crate) fn auto_acquire_after_bind(
+pub(crate) fn auto_acquire_after_create(
     issue: u64,
     explicit_session: Option<&str>,
 ) -> Option<String> {

@@ -15,11 +15,10 @@
 
 use std::path::Path;
 
-use crate::branch_context::GitRunner;
+use crate::git_runner::GitRunner;
 use crate::remote::canonical_git_url;
 
 pub const LOCAL_KEY_PREFIX: &str = "local:";
-pub const LEGACY_SOURCE: &str = "legacy-import";
 
 /// Resolved repository key plus whether it is local-only.
 #[derive(Debug, Clone, PartialEq, Eq)]

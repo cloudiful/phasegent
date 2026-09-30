@@ -85,13 +85,23 @@ fn resolve_dispatcher(
     Ok((dispatcher, kind))
 }
 
+/// Durable links plus the branch-name fallback, with the strict
+/// default-branch protection. A store failure degrades to the branch name.
 #[allow(dead_code)]
 fn branch_snapshot() -> (Option<String>, Option<u64>, Option<String>) {
-    let runner = crate::branch_context::ProcessGitRunner::new();
-    match crate::branch_context::status(&runner) {
-        Ok(status) => (Some(status.branch), status.issue_id, None),
-        Err(error) => (None, None, Some(bound_message(&error.message))),
-    }
+    let runner = crate::git_runner::ProcessGitRunner::new();
+    let branch = match crate::git_runner::current_branch(&runner) {
+        Ok(branch) => branch,
+        Err(error) => return (None, None, Some(bound_message(&error.message))),
+    };
+    let default = crate::branch_links::detect_default_branch(&runner);
+    let rows = crate::branch_links::compat::read_branch_link_rows(&runner, &branch);
+    let issue_id = crate::branch_links::compat::resolve_branch_rows(
+        rows.as_deref(),
+        &branch,
+        default.as_deref(),
+    );
+    (Some(branch), issue_id, None)
 }
 
 #[allow(dead_code)]

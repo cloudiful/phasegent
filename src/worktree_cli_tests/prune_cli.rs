@@ -361,9 +361,9 @@ fn cli_prune_release_stale_and_remove_act_on_separate_candidate_sets() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue 18: shared auto-acquire hook after `issue create` / `issue bind`
+// Issue 18: shared auto-acquire hook after `issue create`
 // ---------------------------------------------------------------------------//
-// `auto_acquire_after_bind` reuses `resolve_session` + `acquire_lease`, so the
+// `auto_acquire_after_create` reuses `resolve_session` + `acquire_lease`, so the
 // focused tests drive it against a temp repo + temp DB + temp cache exactly
 // like the CLI executor does. They assert the three contracts the parent
 // prompt fixes: stdout JSON is never involved (the helper only returns the

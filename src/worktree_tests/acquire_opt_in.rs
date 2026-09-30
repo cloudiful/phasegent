@@ -92,10 +92,9 @@ fn reuse_prefers_the_current_checkout_and_records_the_lease() {
 }
 
 #[test]
-fn reuse_ignores_dirt_and_foreign_binding_with_an_advisory_warning() {
-    // Dirt and bindings are advisory only: a dirty checkout bound to
-    // another issue reuses under the reuse preference, warns about the
-    // dirt, and leaves the foreign binding untouched.
+fn reuse_ignores_dirt_with_an_advisory_warning() {
+    // Dirt is advisory only: a dirty checkout reuses under the reuse
+    // preference and warns about the dirt.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("opt-in-dirty-foreign") else {
         return;
@@ -105,7 +104,6 @@ fn reuse_ignores_dirt_and_foreign_binding_with_an_advisory_warning() {
     let runner = ProcessWorktreeRunner::new();
     let scratch = repo.dir.path().join("scratch.txt");
     std::fs::write(&scratch, "scratch\n").expect("write scratch");
-    bind_current_branch(&repo, 241);
     let outcome = acquire_lease_with(
         &runner,
         repo.dir.path(),
@@ -113,7 +111,7 @@ fn reuse_ignores_dirt_and_foreign_binding_with_an_advisory_warning() {
         "session-A",
         reuse_options(cache.path()),
     )
-    .expect("a dirty foreign checkout must reuse under the reuse preference");
+    .expect("a dirty checkout must reuse under the reuse preference");
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
     assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
@@ -129,10 +127,6 @@ fn reuse_ignores_dirt_and_foreign_binding_with_an_advisory_warning() {
         1,
         "the reuse must still book the checkout: {rows:?}"
     );
-    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
-    let bound =
-        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
-    assert_eq!(bound, Some(241), "the foreign binding must survive reuse");
     assert!(
         !cache.path().join("worktrees").exists(),
         "reuse must not create a worktree directory"

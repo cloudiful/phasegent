@@ -5,10 +5,11 @@
 //! wrappers that call `phasegent hooks run <hook> "$@"`, resolving the
 //! binary through PATH at runtime. Foreign hooks are never clobbered: they
 //! are moved to `.git/hooks/phasegent-original/<name>` and the managed
-//! wrapper chains to them. Issue IDs live only in local Git config; they are
-//! never baked into hook files, and message contents are never printed.
+//! wrapper chains to them. Issue IDs come from the durable branch links in
+//! the local link store; they are never baked into hook files, and message
+//! contents are never printed.
 
-use crate::branch_context::{self, BranchContextError, GitRunner};
+use crate::git_runner::{GitError, GitRunner, ProcessGitRunner};
 use std::path::{Path, PathBuf};
 
 #[path = "hooks/branch_context.rs"]
@@ -70,37 +71,34 @@ pub struct InstallOutcome {
     pub warnings: Vec<String>,
 }
 
-pub fn install() -> Result<InstallOutcome, BranchContextError> {
+pub fn install() -> Result<InstallOutcome, GitError> {
     let working_dir = std::env::current_dir().map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!("cannot resolve working directory: {error}"),
         )
     })?;
-    install_in(&branch_context::ProcessGitRunner::new(), &working_dir)
+    install_in(&ProcessGitRunner::new(), &working_dir)
 }
 
-pub fn install_in(
-    runner: &dyn GitRunner,
-    working_dir: &Path,
-) -> Result<InstallOutcome, BranchContextError> {
+pub fn install_in(runner: &dyn GitRunner, working_dir: &Path) -> Result<InstallOutcome, GitError> {
     let output = runner.run(&["rev-parse", "--git-path", "hooks"])?;
     if output.status != 0 {
-        return Err(BranchContextError::new(
+        return Err(GitError::new(
             "git",
             "git rev-parse --git-path hooks failed; run `phasegent hooks install` inside a Git checkout",
         ));
     }
     let discovered = output.stdout.trim();
     if discovered.is_empty() {
-        return Err(BranchContextError::new(
+        return Err(GitError::new(
             "git",
             "git rev-parse --git-path hooks returned an empty path",
         ));
     }
     let hooks_dir = working_dir.join(discovered);
     std::fs::create_dir_all(&hooks_dir).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!(
                 "cannot create hooks directory {}: {error}",
@@ -109,7 +107,7 @@ pub fn install_in(
         )
     })?;
     let hooks_dir = std::fs::canonicalize(&hooks_dir).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!(
                 "cannot resolve hooks directory {}: {error}",
@@ -128,7 +126,7 @@ fn install_hook(
     hooks_dir: &Path,
     hook: HookKind,
     outcome: &mut InstallOutcome,
-) -> Result<(), BranchContextError> {
+) -> Result<(), GitError> {
     let name = hook.name();
     let path = hooks_dir.join(name);
     // The backup decision is derived from on-disk state, not history, so
@@ -148,14 +146,14 @@ fn install_hook(
             outcome.installed.push(name);
         }
         Err(error) => {
-            return Err(BranchContextError::new(
+            return Err(GitError::new(
                 "filesystem",
                 format!("cannot inspect hook {}: {error}", path.display()),
             ));
         }
         Ok(meta) => {
             if meta.file_type().is_symlink() {
-                return Err(BranchContextError::new(
+                return Err(GitError::new(
                     "conflict",
                     format!(
                         "refusing to manage {}: it is a symlink; remove or repoint it manually, then re-run hooks install",
@@ -164,7 +162,7 @@ fn install_hook(
                 ));
             }
             if !meta.is_file() {
-                return Err(BranchContextError::new(
+                return Err(GitError::new(
                     "conflict",
                     format!(
                         "refusing to manage {}: it is not a regular file; inspect it manually",
@@ -173,7 +171,7 @@ fn install_hook(
                 ));
             }
             let current = std::fs::read(&path).map_err(|error| {
-                BranchContextError::new(
+                GitError::new(
                     "filesystem",
                     format!("cannot read existing hook {}: {error}", path.display()),
                 )
@@ -213,9 +211,9 @@ fn displace_foreign_hook(
     backup_path: &Path,
     name: &str,
     outcome: &mut InstallOutcome,
-) -> Result<(), BranchContextError> {
+) -> Result<(), GitError> {
     if backup_exists(backup_path) {
-        return Err(BranchContextError::new(
+        return Err(GitError::new(
             "conflict",
             format!(
                 "refusing to replace {}: an original {name} hook is already preserved at {}; \
@@ -227,9 +225,9 @@ fn displace_foreign_hook(
     }
     let parent = backup_path
         .parent()
-        .ok_or_else(|| BranchContextError::new("filesystem", "backup path has no parent"))?;
+        .ok_or_else(|| GitError::new("filesystem", "backup path has no parent"))?;
     std::fs::create_dir_all(parent).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!(
                 "cannot create backup directory {}: {error}",
@@ -238,7 +236,7 @@ fn displace_foreign_hook(
         )
     })?;
     std::fs::rename(path, backup_path).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!(
                 "cannot move existing {name} hook to {}: check permissions; {}",
@@ -289,13 +287,13 @@ pub fn render_script_for_tests(hook: HookKind, backup: Option<&Path>) -> String 
     render_script(hook, backup)
 }
 
-fn write_script(path: &Path, contents: &str) -> Result<(), BranchContextError> {
+fn write_script(path: &Path, contents: &str) -> Result<(), GitError> {
     atomic_write(path, contents.as_bytes(), Some(0o755))
 }
 
 /// Writes via a sibling temp file plus rename so readers never observe a
 /// partially written hook or message file.
-fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), BranchContextError> {
+fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), GitError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -310,7 +308,7 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), Bran
         std::process::id()
     ));
     std::fs::write(&temp, bytes).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!("cannot write {}: {error}", temp.display()),
         )
@@ -325,7 +323,7 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), Bran
         });
         std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(resolved)).map_err(
             |error| {
-                BranchContextError::new(
+                GitError::new(
                     "filesystem",
                     format!("cannot set permissions on {}: {error}", temp.display()),
                 )
@@ -333,7 +331,7 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), Bran
         )?;
     }
     std::fs::rename(&temp, path).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "filesystem",
             format!("cannot replace {}: {error}", path.display()),
         )
@@ -345,13 +343,8 @@ pub fn run(
     hook: HookKind,
     message_file: &str,
     source: Option<&str>,
-) -> Result<serde_json::Value, BranchContextError> {
-    run_with(
-        &branch_context::ProcessGitRunner::new(),
-        hook,
-        message_file,
-        source,
-    )
+) -> Result<serde_json::Value, GitError> {
+    run_with(&ProcessGitRunner::new(), hook, message_file, source)
 }
 
 pub fn run_with(
@@ -359,11 +352,11 @@ pub fn run_with(
     hook: HookKind,
     message_file: &str,
     source: Option<&str>,
-) -> Result<serde_json::Value, BranchContextError> {
+) -> Result<serde_json::Value, GitError> {
     if let Some(source) = source
         && !KNOWN_SOURCES.contains(&source)
     {
-        return Err(BranchContextError::new(
+        return Err(GitError::new(
             "argument",
             format!(
                 "unsupported prepare-commit-msg source '{source}'; expected one of: message, template, merge, squash, commit, or empty"
@@ -373,7 +366,7 @@ pub fn run_with(
     let path = PathBuf::from(message_file);
     // Read lossily but never echo the contents anywhere.
     let bytes = std::fs::read(&path).map_err(|error| {
-        BranchContextError::new(
+        GitError::new(
             "argument",
             format!(
                 "message file '{}' is missing or unreadable: {error}",
@@ -389,10 +382,10 @@ pub fn run_with(
 
 /// Detached HEAD carries no branch section, so it behaves like "unbound":
 /// hooks stay silent instead of blocking rebases and cherry-pick workflows.
-/// Resolution prefers durable branch links (single unambiguous number,
-/// never the detected default) with the legacy Git binding as fallback;
-/// any store failure degrades to the legacy read.
-fn bound_issue_id(runner: &dyn GitRunner) -> Result<Option<u64>, BranchContextError> {
+/// Resolution reads the durable branch links (single unambiguous number,
+/// never the detected default) with the branch-name fallback; a store
+/// failure degrades to the branch name.
+fn bound_issue_id(runner: &dyn GitRunner) -> Result<Option<u64>, GitError> {
     link_context::resolve_hook_issue_id(runner)
 }
 
@@ -405,7 +398,7 @@ fn prepare_commit_msg(
     path: &Path,
     bytes: &[u8],
     source: Option<&str>,
-) -> Result<serde_json::Value, BranchContextError> {
+) -> Result<serde_json::Value, GitError> {
     if source.is_some_and(|source| SKIP_SOURCES.contains(&source)) {
         return Ok(noop(HookKind::PrepareCommitMsg, "git-generated source"));
     }
@@ -433,7 +426,7 @@ fn commit_msg(
     runner: &dyn GitRunner,
     _path: &Path,
     bytes: &[u8],
-) -> Result<serde_json::Value, BranchContextError> {
+) -> Result<serde_json::Value, GitError> {
     let Some(issue_id) = bound_issue_id(runner)? else {
         return Ok(noop(HookKind::CommitMsg, "no branch binding"));
     };
@@ -443,7 +436,7 @@ fn commit_msg(
         .filter(|found| *found != issue_id)
         .collect();
     if !conflicts.is_empty() {
-        return Err(BranchContextError::new(
+        return Err(GitError::new(
             "conflict",
             format!(
                 "message references Redmine issue(s) {conflicts:?} but this branch is bound to issue {issue_id}; \
@@ -456,7 +449,7 @@ fn commit_msg(
     let generated = format!("Refs #{issue_id}");
     let duplicates = text.lines().filter(|line| line.trim() == generated).count();
     if duplicates > 1 {
-        return Err(BranchContextError::new(
+        return Err(GitError::new(
             "conflict",
             format!(
                 "message contains {duplicates} identical '{generated}' trailers; keep exactly one"

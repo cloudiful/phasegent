@@ -164,17 +164,14 @@ fn dirty_db_ambiguous_links_reuse_checkout() {
 }
 
 #[test]
-fn durable_link_and_legacy_binding_are_advisory_only() {
-    // Neither the durable store nor the legacy binding decides: the
-    // store says 245 while legacy says 241, and both issues reuse the
-    // same free checkout.
+fn durable_links_are_advisory_only() {
+    // The durable store never decides: a link to 245 while acquiring 241
+    // reuses the same free checkout, and vice versa.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("links-authoritative") else {
         return;
     };
     let (db_temp, storage, _env) = open_temp_db("links-authoritative");
-    // Legacy says 241, the durable store says 245: neither wins
-    // because neither is consulted.
     seed_link(&storage, &local_key(&repo), &repo.head_branch, 245);
     drop(storage);
     bind_current_branch(&repo, 241);
@@ -190,7 +187,7 @@ fn durable_link_and_legacy_binding_are_advisory_only() {
     .expect("durable same-issue link must reuse");
     assert_eq!(outcome.reason, "no_conflict");
     // The first acquire booked the checkout path, so release it before
-    // proving the legacy-bound issue reuses the same free checkout.
+    // proving a second linked issue reuses the same free checkout.
     release_lease(&outcome.lease_id, true).expect("release first lease");
     let outcome = crate::worktree::acquire_lease_with(
         &ProcessWorktreeRunner::new(),
@@ -199,7 +196,7 @@ fn durable_link_and_legacy_binding_are_advisory_only() {
         "session-B",
         reuse_options(&cache),
     )
-    .expect("legacy agreement must not force isolation either");
+    .expect("a link to another issue must not force isolation either");
     assert_eq!(outcome.reason, "no_conflict");
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
@@ -207,7 +204,7 @@ fn durable_link_and_legacy_binding_are_advisory_only() {
 }
 
 #[test]
-fn missing_link_store_keeps_legacy_behavior() {
+fn missing_link_store_keeps_reuse() {
     // No `branch_issue_links` table at all (pre-P3 database): the free
     // checkout still reuses. Links are never required for the reuse
     // path, so a missing store changes nothing.
@@ -218,7 +215,6 @@ fn missing_link_store_keeps_legacy_behavior() {
     let (db_temp, storage, _env) = open_temp_db("links-missing-table");
     crate::worktree::ensure_schema(&storage).expect("lease schema only");
     drop(storage);
-    bind_current_branch(&repo, 241);
     let cache = unique_cache("links-missing-table");
     let scratch = dirty(&repo);
     let outcome = acquire_lease(
@@ -230,11 +226,8 @@ fn missing_link_store_keeps_legacy_behavior() {
         false,
         false,
     )
-    .expect("legacy same-issue ownership must reuse");
-    assert!(
-        !outcome.created,
-        "legacy path must not isolate: {outcome:?}"
-    );
+    .expect("a missing link store must not block reuse");
+    assert!(!outcome.created, "reuse must not isolate: {outcome:?}");
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);

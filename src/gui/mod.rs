@@ -13,7 +13,7 @@
 //! [`crate::config_snapshot`], [`crate::config`],
 //! [`crate::auth`], [`crate::providers::config`],
 //! [`crate::providers::ProviderDispatcher`],
-//! [`crate::branch_context`] — instead of duplicating storage or
+//! [`crate::branch_links`] — instead of duplicating storage or
 //! provider logic.
 //!
 //! Typed IPC surface (all redacted, no credential values):
@@ -21,7 +21,8 @@
 //! - `get_app_metadata` reports binary name/version/identifier.
 //! - `get_config_snapshot` returns the redacted
 //!   [`crate::config_snapshot::ConfigSnapshot`] used by `config show`.
-//! - `get_branch_context` reports the current branch-bound issue id.
+//! - `get_branch_context` reports the current branch's durable-linked (or
+//!   branch-name) issue id.
 //! - `get_tasks` resolves role/provider via existing dispatch and
 //!   fetches a bounded provider page (`search_issue_page`); the
 //!   index `block_on` bridge is never called from a bridge worker.

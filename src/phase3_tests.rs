@@ -1,18 +1,14 @@
 //! Lifecycle tests.
 //!
 //! Covers repository identity matching, bootstrap hook auto-install gating,
-//! Redmine create auto-bind / close auto-unbind, the P4 safe
-//! create/link/switch flow, and the guarantee that local failures never
+//! and branch-name generation, plus the guarantee that local failures never
 //! fail a remote result. Tests run against fake Git runners and real
 //! throwaway temp repositories; no network, credentials, or HOME access
 //! is involved. SQLite access is isolated to temp databases under the
 //! workflow lock for the switch tests.
 
-use crate::branch_context::{GitOutput, GitRunner};
-use crate::lifecycle::{
-    self, AutoBindOutcome, AutoUnbindOutcome, ExplicitBranchOutcome, HookAutoInstall,
-    MAX_WARNING_CHARS,
-};
+use crate::git_runner::{GitError, GitOutput, GitRunner};
+use crate::lifecycle::{self, HookAutoInstall};
 use std::cell::RefCell;
 
 /// P4 attempt-4 focused tests: repo-wide switch gating, explicit-branch
@@ -65,21 +61,10 @@ impl ScriptedRunner {
     fn without_origin(&self) -> &Self {
         self.expect(&["remote", "get-url", "origin"], 128, "")
     }
-
-    fn recorded_writes_to(&self, key: &str) -> Vec<Vec<String>> {
-        self.calls
-            .borrow()
-            .iter()
-            .filter(|args| {
-                args.len() >= 4 && args[0] == "config" && args[1] == "--local" && args[2] == key
-            })
-            .cloned()
-            .collect()
-    }
 }
 
 impl GitRunner for ScriptedRunner {
-    fn run(&self, args: &[&str]) -> Result<GitOutput, crate::branch_context::BranchContextError> {
+    fn run(&self, args: &[&str]) -> Result<GitOutput, GitError> {
         self.calls
             .borrow_mut()
             .push(args.iter().map(|value| value.to_string()).collect());
@@ -95,41 +80,11 @@ impl GitRunner for ScriptedRunner {
                 stdout: stdout.clone(),
             });
         }
-        Err(crate::branch_context::BranchContextError::new(
+        Err(GitError::new(
             "git",
             format!("unexpected git invocation {args:?}"),
         ))
     }
-}
-
-fn branch_and_binding_runner(branch: &str, stored: Option<u64>) -> ScriptedRunner {
-    let runner = ScriptedRunner::new();
-    runner.expect(&["symbolic-ref", "--quiet", "--short", "HEAD"], 0, branch);
-    match stored {
-        Some(id) => runner.expect(
-            &[
-                "config",
-                "--local",
-                "--get",
-                &format!("branch.{branch}.redmine-issue-id"),
-            ],
-            0,
-            &id.to_string(),
-        ),
-        None => runner.expect(
-            &[
-                "config",
-                "--local",
-                "--get",
-                &format!("branch.{branch}.redmine-issue-id"),
-            ],
-            1,
-            "",
-        ),
-    };
-    // Any remaining config write/unset succeeds unless a test overrides it
-    // first; expectations are consumed so overrides must be queued later.
-    runner
 }
 
 #[test]
@@ -207,13 +162,13 @@ impl TempRepo {
                 .ok()?
                 .as_nanos()
         ));
-        let setup = crate::branch_context::ProcessGitRunner::in_directory(&dir);
+        let setup = crate::git_runner::ProcessGitRunner::in_directory(&dir);
         setup.run(&["init", "-q"]).ok()?;
         Some(Self(dir))
     }
 
-    fn runner(&self) -> crate::branch_context::ProcessGitRunner {
-        crate::branch_context::ProcessGitRunner::in_directory(self.0.clone())
+    fn runner(&self) -> crate::git_runner::ProcessGitRunner {
+        crate::git_runner::ProcessGitRunner::in_directory(self.0.clone())
     }
 
     fn set_origin(&self, url: &str) {
@@ -294,218 +249,6 @@ fn hooks_skip_without_origin() {
 }
 
 #[test]
-fn create_binds_issue_to_current_branch_on_success() {
-    let runner = branch_and_binding_runner("feature/one", None);
-    runner.with_origin("acme/widgets");
-    runner.expect(
-        &[
-            "config",
-            "--local",
-            "branch.feature/one.redmine-issue-id",
-            "77",
-        ],
-        0,
-        "",
-    );
-
-    let outcome = lifecycle::bind_created_issue(&runner, 77, None);
-    assert_eq!(
-        outcome,
-        AutoBindOutcome::Bound {
-            branch: "feature/one".to_owned(),
-            issue_id: 77,
-        }
-    );
-    assert!(outcome.warning().is_none());
-}
-
-#[test]
-fn create_same_issue_binding_is_idempotent() {
-    let runner = branch_and_binding_runner("main", Some(42));
-    runner.with_origin("acme/widgets");
-
-    let outcome = lifecycle::bind_created_issue(&runner, 42, None);
-    assert_eq!(
-        outcome,
-        AutoBindOutcome::Idempotent {
-            branch: "main".to_owned(),
-            issue_id: 42,
-        }
-    );
-}
-
-#[test]
-fn create_skips_silently_in_non_git_directory() {
-    let runner = ScriptedRunner::new();
-    let outcome = lifecycle::bind_created_issue(&runner, 9, None);
-    assert!(matches!(outcome, AutoBindOutcome::Skipped { .. }));
-    assert!(outcome.warning().is_none());
-}
-
-#[test]
-fn create_skips_silently_on_mismatched_explicit_repository() {
-    let runner = branch_and_binding_runner("main", None);
-    runner.with_origin("acme/widgets");
-
-    let outcome = lifecycle::bind_created_issue(&runner, 9, Some("other/tools"));
-    assert!(matches!(outcome, AutoBindOutcome::Skipped { .. }));
-    assert!(outcome.warning().is_none());
-}
-
-#[test]
-fn create_detached_head_warns_but_preserves_remote_result() {
-    let runner = ScriptedRunner::new();
-    runner.with_origin("acme/widgets");
-    runner.expect(&["symbolic-ref", "--quiet", "--short", "HEAD"], 1, "");
-
-    let outcome = lifecycle::bind_created_issue(&runner, 12, None);
-    let warning = outcome.warning().expect("detached HEAD warns");
-    assert!(warning.contains("issue 12 created"), "{warning}");
-    assert!(warning.contains("detach"), "{warning}");
-}
-
-#[test]
-fn create_does_not_overwrite_existing_different_binding() {
-    let runner = branch_and_binding_runner("release", Some(5));
-    runner.with_origin("acme/widgets");
-
-    let outcome = lifecycle::bind_created_issue(&runner, 6, None);
-    let warning = outcome.warning().expect("conflicting binding warns");
-    assert!(
-        warning.contains("issue 5") && warning.contains("issue 6"),
-        "{warning}"
-    );
-    // No `git config --local branch.release.redmine-issue-id <id>` write was
-    // attempted beyond the read.
-    assert!(
-        runner
-            .recorded_writes_to("branch.release.redmine-issue-id")
-            .is_empty(),
-        "existing binding must not be rewritten"
-    );
-}
-
-#[test]
-fn create_local_write_failure_warns_with_bounded_message() {
-    let runner = branch_and_binding_runner("main", None);
-    runner.with_origin("acme/widgets");
-    runner.expect(
-        &["config", "--local", "branch.main.redmine-issue-id", "8"],
-        1_000_000,
-        "",
-    ); // absurd status exercises the failure path deterministically
-
-    let outcome = lifecycle::bind_created_issue(&runner, 8, None);
-    let warning = outcome.warning().expect("write failure warns");
-    assert!(warning.chars().count() <= MAX_WARNING_CHARS + 20);
-    assert!(warning.contains("failed"), "{warning}");
-}
-
-#[test]
-fn close_unbinds_only_exact_current_issue() {
-    let runner = branch_and_binding_runner("fix/bug", Some(31));
-    runner.with_origin("acme/widgets");
-    runner.expect(
-        &[
-            "config",
-            "--local",
-            "--unset",
-            "branch.fix/bug.redmine-issue-id",
-        ],
-        0,
-        "",
-    );
-
-    let outcome = lifecycle::unbind_closed_issue(&runner, 31, None);
-    assert_eq!(
-        outcome,
-        AutoUnbindOutcome::Unbound {
-            branch: "fix/bug".to_owned(),
-            issue_id: 31,
-        }
-    );
-}
-
-#[test]
-fn close_never_unbinds_a_different_issue_or_missing_binding() {
-    let bound_other = branch_and_binding_runner("main", Some(10));
-    bound_other.with_origin("acme/widgets");
-    let outcome = lifecycle::unbind_closed_issue(&bound_other, 11, None);
-    match &outcome {
-        AutoUnbindOutcome::Noop { reason } => {
-            assert!(
-                reason.contains("bound to 10") && reason.contains("issue 11"),
-                "{reason}"
-            );
-        }
-        other => panic!("different binding must be a noop, got {other:?}"),
-    }
-    assert!(outcome.warning().is_none());
-
-    let unbound = branch_and_binding_runner("main", None);
-    unbound.with_origin("acme/widgets");
-    assert!(matches!(
-        lifecycle::unbind_closed_issue(&unbound, 11, None),
-        AutoUnbindOutcome::Noop { .. }
-    ));
-}
-
-#[test]
-fn close_detached_head_and_mismatched_repository_are_noops() {
-    let detached = ScriptedRunner::new();
-    detached.with_origin("acme/widgets");
-    detached.expect(&["symbolic-ref", "--quiet", "--short", "HEAD"], 1, "");
-    assert!(matches!(
-        lifecycle::unbind_closed_issue(&detached, 3, None),
-        AutoUnbindOutcome::Noop { .. }
-    ));
-
-    let mismatch = branch_and_binding_runner("main", Some(3));
-    mismatch.with_origin("acme/widgets");
-    assert!(matches!(
-        lifecycle::unbind_closed_issue(&mismatch, 3, Some("other/tools")),
-        AutoUnbindOutcome::Noop { .. }
-    ));
-}
-
-#[test]
-fn close_local_unbind_failure_warns_but_preserves_close_result() {
-    let runner = branch_and_binding_runner("main", Some(55));
-    runner.with_origin("acme/widgets");
-    runner.expect(
-        &[
-            "config",
-            "--local",
-            "--unset",
-            "branch.main.redmine-issue-id",
-        ],
-        7,
-        "",
-    );
-
-    let outcome = lifecycle::unbind_closed_issue(&runner, 55, None);
-    let warning = outcome.warning().expect("unbind failure warns");
-    assert!(warning.contains("closed"), "{warning}");
-}
-
-fn explicit_branch_runner(branch: &str, stored: Option<u64>, exists: bool) -> ScriptedRunner {
-    let runner = ScriptedRunner::new();
-    runner.with_origin("acme/widgets");
-    let branch_ref = format!("refs/heads/{branch}");
-    runner.expect(
-        &["show-ref", "--verify", "--quiet", &branch_ref],
-        if exists { 0 } else { 1 },
-        "",
-    );
-    let key = format!("branch.{branch}.redmine-issue-id");
-    match stored {
-        Some(id) => runner.expect(&["config", "--local", "--get", &key], 0, &id.to_string()),
-        None => runner.expect(&["config", "--local", "--get", &key], 1, ""),
-    };
-    runner
-}
-
-#[test]
 fn branch_prefix_maps_bug_to_fix_and_defaults_to_feat() {
     assert_eq!(lifecycle::branch_prefix_for_tracker(Some("Bug")), "fix");
     assert_eq!(lifecycle::branch_prefix_for_tracker(Some("bug")), "fix");
@@ -524,109 +267,4 @@ fn branch_prefix_maps_bug_to_fix_and_defaults_to_feat() {
         "feat/452"
     );
     assert_eq!(lifecycle::branch_name_for_issue(None, 452), "feat/452");
-}
-
-#[test]
-fn explicit_branch_creates_missing_branch_from_head_and_binds() {
-    let runner = explicit_branch_runner("feat/452", None, false);
-    runner.expect(&["branch", "feat/452", "HEAD"], 0, "");
-    runner.expect(
-        &[
-            "config",
-            "--local",
-            "branch.feat/452.redmine-issue-id",
-            "452",
-        ],
-        0,
-        "",
-    );
-
-    let outcome = lifecycle::ensure_branch_and_bind(&runner, 452, "feat/452", None, None);
-    assert_eq!(
-        outcome,
-        ExplicitBranchOutcome::CreatedAndBound {
-            branch: "feat/452".to_owned(),
-            base: "HEAD".to_owned(),
-            issue_id: 452,
-        }
-    );
-    assert!(outcome.warning().is_none());
-}
-
-#[test]
-fn explicit_branch_uses_explicit_base_and_reuses_existing_branch() {
-    let runner = explicit_branch_runner("fix/9", None, true);
-    runner.expect(
-        &["config", "--local", "branch.fix/9.redmine-issue-id", "9"],
-        0,
-        "",
-    );
-
-    let outcome = lifecycle::ensure_branch_and_bind(&runner, 9, "fix/9", Some("main"), None);
-    assert_eq!(
-        outcome,
-        ExplicitBranchOutcome::ExistedAndBound {
-            branch: "fix/9".to_owned(),
-            issue_id: 9,
-        }
-    );
-    assert!(outcome.warning().is_none());
-}
-
-#[test]
-fn explicit_branch_same_issue_is_idempotent_without_rewrite() {
-    let runner = explicit_branch_runner("feat/77", Some(77), true);
-
-    let outcome = lifecycle::ensure_branch_and_bind(&runner, 77, "feat/77", None, None);
-    assert_eq!(
-        outcome,
-        ExplicitBranchOutcome::Idempotent {
-            branch: "feat/77".to_owned(),
-            issue_id: 77,
-        }
-    );
-    assert!(outcome.warning().is_none());
-    assert!(
-        runner
-            .recorded_writes_to("branch.feat/77.redmine-issue-id")
-            .is_empty(),
-        "idempotent re-bind must not rewrite the key"
-    );
-}
-
-#[test]
-fn explicit_branch_never_overwrites_different_binding() {
-    let runner = explicit_branch_runner("feat/6", Some(5), true);
-
-    let outcome = lifecycle::ensure_branch_and_bind(&runner, 6, "feat/6", None, None);
-    let warning = outcome.warning().expect("conflict warns");
-    assert!(
-        warning.contains("issue 5") && warning.contains("issue 6"),
-        "{warning}"
-    );
-    assert!(
-        runner
-            .recorded_writes_to("branch.feat/6.redmine-issue-id")
-            .is_empty(),
-        "existing binding must not be rewritten"
-    );
-}
-
-#[test]
-fn explicit_branch_creation_failure_warns_but_preserves_remote_result() {
-    let runner = explicit_branch_runner("feat/8", None, false);
-    runner.expect(&["branch", "feat/8", "HEAD"], 128, "");
-
-    let outcome = lifecycle::ensure_branch_and_bind(&runner, 8, "feat/8", None, None);
-    let warning = outcome.warning().expect("creation failure warns");
-    assert!(warning.contains("issue 8 created"), "{warning}");
-}
-
-#[test]
-fn explicit_branch_skips_silently_on_repository_mismatch() {
-    let runner = explicit_branch_runner("feat/9", None, true);
-    let outcome =
-        lifecycle::ensure_branch_and_bind(&runner, 9, "feat/9", None, Some("other/tools"));
-    assert!(matches!(outcome, ExplicitBranchOutcome::Skipped { .. }));
-    assert!(outcome.warning().is_none());
 }

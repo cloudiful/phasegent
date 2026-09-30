@@ -1,19 +1,21 @@
-//! Database-backed `issue status` view (issue 628 P3).
+//! Database-backed `issue status` view.
 //!
-//! Pure read: durable links, the legacy Git binding, and the branch-name
-//! fallback are projected together with each linked issue's last-known
-//! local-index state (explicit unknown when missing) plus the reverse
-//! branches of the active issue. The compatible `issue_id` is populated
-//! only when unambiguous and the branch is not the detected default, so
-//! adapter callers never receive a guessed active issue.
+//! Pure read: active durable links and the branch-name fallback are
+//! projected together with each linked issue's last-known local-index state
+//! (explicit unknown when missing) plus the reverse branches of the active
+//! issue. The compatible `issue_id` is populated only when unambiguous and
+//! the branch is not the detected default, so adapter callers never receive
+//! a guessed active issue.
 
-use crate::branch_context::ProcessGitRunner;
-use crate::branch_links::compat::{ScopedIssueRef, resolve_scoped_compat_issue};
+use crate::branch_links::compat::{
+    CompatIssue, ScopedIssueRef, named_branch_issue, resolve_scoped_compat_issue,
+};
 use crate::branch_links::{
     IssueKey, IssueStateLookup, LinkScope, LinkedBranch, LinkedIssue, StateSnapshot,
     branches_for_issue, checkout_root, detect_default_branch, ensure_schema, is_default_branch,
     issues_for_branch, read_origin_url, read_snapshot, resolve_link_scope, resolve_repo_key,
 };
+use crate::git_runner::ProcessGitRunner;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
 
@@ -76,27 +78,40 @@ fn project_branch(entry: &LinkedBranch) -> serde_json::Value {
     })
 }
 
-fn legacy_source(legacy: Option<u64>, branch: &str) -> &'static str {
-    if legacy.is_some() {
-        "bound"
-    } else if crate::branch_context::parse_issue_id_from_branch_name(branch).is_some() {
-        "named"
-    } else {
-        "none"
+/// The reported active issue and how it resolved. A durable link is
+/// `linked`; the branch name is `named`; no resolution is `none`.
+/// Ambiguity and the detected default suppress both sources.
+fn active_issue(
+    branch: &str,
+    default_branch: Option<&str>,
+    compat: &CompatIssue,
+) -> (Option<u64>, &'static str) {
+    if compat.suppressed_default || compat.ambiguous {
+        return (None, "none");
+    }
+    if let Some(number) = compat.issue_number {
+        return (Some(number), "linked");
+    }
+    match named_branch_issue(branch, default_branch) {
+        Some(number) => (Some(number), "named"),
+        None => (None, "none"),
     }
 }
 
-/// Legacy-only view used when the link store is unreachable. Keeps the
+/// Fallback view used when the link store is unreachable. Keeps the
 /// compatible core (`branch`/`issue_id`/`source`) so adapter callers keep
 /// working; the durable lists stay empty with a note.
-fn legacy_only_view(branch: &str, legacy: Option<u64>, note: String) -> serde_json::Value {
-    let named = crate::branch_context::parse_issue_id_from_branch_name(branch);
+fn store_unavailable_view(
+    branch: &str,
+    default_branch: Option<&str>,
+    note: String,
+) -> serde_json::Value {
+    let named = named_branch_issue(branch, default_branch);
     serde_json::json!({
         "branch": branch,
-        "issue_id": legacy.or(named),
-        "source": legacy_source(legacy, branch),
+        "issue_id": named,
+        "source": if named.is_some() { "named" } else { "none" },
         "scope": null,
-        "legacy_binding": legacy.map(|issue_id| serde_json::json!({"issue_id": issue_id})),
         "linked_issues": [],
         "linked_branches": [],
         "ambiguous": false,
@@ -108,13 +123,12 @@ fn legacy_only_view(branch: &str, legacy: Option<u64>, note: String) -> serde_js
 /// argument-count lint.
 pub(crate) struct StatusView<'a> {
     pub branch: &'a str,
-    pub legacy: Option<u64>,
     pub repo_key: Option<&'a crate::branch_links::ResolvedRepo>,
     pub scope: Option<&'a LinkScope>,
     pub rows: &'a [LinkedIssue],
     pub reverse: &'a [LinkedBranch],
     pub default_branch: Option<&'a str>,
-    pub compat: &'a crate::branch_links::CompatIssue,
+    pub compat: &'a CompatIssue,
 }
 
 /// Pure status document assembly, separated from git/storage IO so
@@ -126,15 +140,15 @@ pub(crate) fn status_document(view: &StatusView<'_>) -> serde_json::Value {
         }
         None => true,
     };
+    let (issue_id, source) = active_issue(view.branch, view.default_branch, view.compat);
     let mut document = serde_json::json!({
         "branch": view.branch,
-        "issue_id": view.compat.issue_number,
-        "source": legacy_source(view.legacy, view.branch),
+        "issue_id": issue_id,
+        "source": source,
         "default_branch": view.default_branch,
         "is_default_branch": is_default_branch(view.branch, view.default_branch),
         "ambiguous": view.compat.ambiguous,
         "suppressed_default": view.compat.suppressed_default,
-        "legacy_binding": view.legacy.map(|issue_id| serde_json::json!({"issue_id": issue_id})),
         "linked_issues": view.rows.iter().filter(|entry| in_scope(entry)).map(project_issue).collect::<Vec<_>>(),
         "linked_branches": view.reverse.iter().map(project_branch).collect::<Vec<_>>(),
     });
@@ -159,7 +173,7 @@ pub(crate) fn status_document(view: &StatusView<'_>) -> serde_json::Value {
 }
 
 /// Database-backed `issue status`. Storage failures degrade to the
-/// legacy-only view (with a note) instead of failing the read.
+/// branch-name-only view (with a note) instead of failing the read.
 pub(crate) fn execute_status(
     role: Option<Role>,
     provider: Option<ProviderKind>,
@@ -167,18 +181,16 @@ pub(crate) fn execute_status(
     project_id: Option<&str>,
 ) -> i32 {
     let runner = ProcessGitRunner::new();
-    let branch = match crate::branch_context::current_branch(&runner) {
+    let branch = match crate::git_runner::current_branch(&runner) {
         Ok(branch) => branch,
         Err(error) => return crate::cli::structured_error(error.json(), 1),
     };
-    // A malformed stored value keeps the legacy structured error.
-    let legacy = match crate::branch_context::read_issue_id(&runner, &branch) {
-        Ok(legacy) => legacy,
-        Err(error) => return crate::cli::structured_error(error.json(), 1),
-    };
+    // Default-branch detection is cached-only (never a network query);
+    // unknown detection keeps the branch-name fallback reporting.
+    let default_branch = detect_default_branch(&runner);
     // The repo key and scope shape the durable read; neither failure is
     // fatal here. An unparseable origin, an unresolvable scope, or an
-    // unreachable store keeps the legacy-compatible core.
+    // unreachable store keeps the branch-name-compatible core.
     let repo_key =
         resolve_repo_key(read_origin_url(&runner).as_deref(), &checkout_root(&runner)).ok();
     let scope: Option<LinkScope> = resolve_link_scope(role, provider, repository, project_id)
@@ -188,17 +200,17 @@ pub(crate) fn execute_status(
         (Some(resolved), Ok(storage)) => match ensure_schema(&storage.connection) {
             Ok(()) => (resolved.clone(), storage),
             Err(error) => {
-                return crate::cli::print_json(&legacy_only_view(
+                return crate::cli::print_json(&store_unavailable_view(
                     &branch,
-                    legacy,
+                    default_branch.as_deref(),
                     format!("branch link store unavailable: {error}"),
                 ));
             }
         },
         _ => {
-            return crate::cli::print_json(&legacy_only_view(
+            return crate::cli::print_json(&store_unavailable_view(
                 &branch,
-                legacy,
+                default_branch.as_deref(),
                 "branch link store unavailable: local repository or database identity unresolved"
                     .to_owned(),
             ));
@@ -208,9 +220,9 @@ pub(crate) fn execute_status(
     let rows = match issues_for_branch(&storage.connection, &resolved.key, &branch, true, &lookup) {
         Ok(rows) => rows,
         Err(error) => {
-            return crate::cli::print_json(&legacy_only_view(
+            return crate::cli::print_json(&store_unavailable_view(
                 &branch,
-                legacy,
+                default_branch.as_deref(),
                 format!("branch link read failed: {error}"),
             ));
         }
@@ -222,31 +234,18 @@ pub(crate) fn execute_status(
         None => true,
     };
     let mut linked: Vec<ScopedIssueRef> = Vec::new();
-    let mut detached: Vec<ScopedIssueRef> = Vec::new();
     for entry in rows.iter().filter(|entry| in_scope(entry)) {
-        let scoped = ScopedIssueRef {
-            provider: &entry.issue.provider,
-            project: &entry.issue.project,
-            issue_number: entry.issue_number,
-        };
         if entry.status == crate::branch_links::store::STATUS_LINKED {
-            linked.push(scoped);
-        } else {
-            detached.push(scoped);
+            linked.push(ScopedIssueRef {
+                provider: &entry.issue.provider,
+                project: &entry.issue.project,
+                issue_number: entry.issue_number,
+            });
         }
     }
-    // Default-branch detection is cached-only (never a network query);
-    // unknown detection keeps legacy-compatible reporting.
-    let default_branch = detect_default_branch(&runner);
-    let compat = resolve_scoped_compat_issue(
-        &linked,
-        &detached,
-        legacy,
-        &branch,
-        default_branch.as_deref(),
-    );
+    let compat = resolve_scoped_compat_issue(&linked, &branch, default_branch.as_deref());
     // Reverse branches come only from durable rows (never constructed
-    // from a legacy-only number, whose scope cannot be asserted here).
+    // from a branch-name number, whose scope cannot be asserted here).
     let mut reverse: Vec<LinkedBranch> = Vec::new();
     if let Some(active) = compat.issue_number
         && let Some(key) = rows.iter().find_map(|entry| {
@@ -260,7 +259,6 @@ pub(crate) fn execute_status(
     }
     crate::cli::print_json(&status_document(&StatusView {
         branch: &branch,
-        legacy,
         repo_key: Some(&resolved),
         scope: scope.as_ref(),
         rows: &rows,

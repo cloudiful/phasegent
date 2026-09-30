@@ -15,7 +15,7 @@
 //!   `CREATE TABLE IF NOT EXISTS` so opening storage is still
 //!   non-destructive against pre-Phase-1 databases.
 //! * **Git wrapper helpers**: thin `git worktree list/add/remove`
-//!   wrappers in `branch_context`-style so the same
+//!   wrappers so the same
 //!   `ProcessWorktreeRunner` / `FakeWorktreeRunner` testability
 //!   pattern covers worktree flows. `add` and `remove` are exercised
 //!   only by tests in Phase 1; the production call site is Phase 2's
@@ -90,10 +90,10 @@ pub(crate) use session::{
     resolve_session_optional, resolve_session_with,
 };
 
-/// Best-effort worktree acquisition after `issue create` / `issue bind`
-/// (issue 18). Exposed crate-internally so both call sites share one hook.
+/// Best-effort worktree acquisition after `issue create` (issue 18).
+/// Exposed crate-internally so the create arm can run it.
 #[allow(unused_imports)]
-pub(crate) use create_hook::auto_acquire_after_bind;
+pub(crate) use create_hook::auto_acquire_after_create;
 
 /// Status of a single lease row. `active` rows are the ones
 /// `acquire_lease` returns; `retained` / `released` are terminal

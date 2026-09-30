@@ -1,16 +1,16 @@
-//! Durable branch-link hook resolution tests (issue 628 P3 and later).
+//! Durable branch-link hook resolution tests.
 //!
 //! Moved verbatim from `hooks_tests.rs` so hook installation coverage
 //! and durable-link coverage live in cohesive modules. Shared fixtures
 //! (`TempRepo`, message runners, file helpers) stay in the parent.
 
 use super::{TempRepo, checkout_main, read_file, run_prepare, write_file};
-use crate::branch_context::{self, GitRunner};
+use crate::git_runner::GitRunner;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Durable branch-link resolution (issue 628 P3).
+// Durable branch-link resolution.
 // ---------------------------------------------------------------------------
 
 fn pin_links_db(tag: &str) -> (PathBuf, EnvGuard) {
@@ -77,7 +77,7 @@ fn checkout_branch(repo: &TempRepo, branch: &str) {
 }
 
 #[test]
-fn prepare_prefers_durable_link_over_legacy_binding() {
+fn prepare_prefers_the_durable_link_over_the_branch_name() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::new("hook-db-first") else {
         return;
@@ -85,8 +85,7 @@ fn prepare_prefers_durable_link_over_legacy_binding() {
     let (_dir, _db) = pin_links_db("db-first");
     checkout_branch(&repo, "feat/700");
     let toplevel = repo_toplevel(&repo);
-    seed_link(&toplevel, "feat/700", 700);
-    branch_context::bind(&repo.runner(), 701, false).unwrap();
+    seed_link(&toplevel, "feat/700", 701);
 
     let file = repo.0.join("COMMIT_MSG");
     write_file(&file, "Work on the linked issue\n");
@@ -94,26 +93,25 @@ fn prepare_prefers_durable_link_over_legacy_binding() {
     assert_eq!(value["action"], "appended");
     assert_eq!(
         read_file(&file),
-        b"Work on the linked issue\n\nRefs #700\n",
-        "the durable link wins over the legacy binding"
+        b"Work on the linked issue\n\nRefs #701\n",
+        "the durable link wins over the branch name"
     );
 }
 
 #[test]
-fn prepare_falls_back_to_legacy_binding_without_links() {
+fn prepare_resolves_the_branch_name_without_links() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::new("hook-legacy") else {
+    let Some(repo) = TempRepo::new("hook-named") else {
         return;
     };
-    let (_dir, _db) = pin_links_db("legacy");
+    let (_dir, _db) = pin_links_db("named");
     checkout_branch(&repo, "feat/701");
-    branch_context::bind(&repo.runner(), 701, false).unwrap();
 
     let file = repo.0.join("COMMIT_MSG");
-    write_file(&file, "Legacy-bound work\n");
+    write_file(&file, "Named-branch work\n");
     let value = run_prepare(&repo, &file, Some("")).unwrap();
     assert_eq!(value["action"], "appended");
-    assert_eq!(read_file(&file), b"Legacy-bound work\n\nRefs #701\n");
+    assert_eq!(read_file(&file), b"Named-branch work\n\nRefs #701\n");
 }
 
 #[test]
@@ -186,7 +184,8 @@ fn prepare_never_resolves_the_detected_default_branch() {
         ])
         .expect("origin HEAD works");
     assert_eq!(output.status, 0);
-    branch_context::bind(&repo.runner(), 701, false).unwrap();
+    let toplevel = repo_toplevel(&repo);
+    seed_link(&toplevel, &branch, 701);
 
     let file = repo.0.join("COMMIT_MSG");
     write_file(&file, "Work on default\n");
@@ -205,51 +204,4 @@ fn current_branch_name(repo: &TempRepo) -> String {
         .expect("branch resolves");
     assert_eq!(output.status, 0);
     output.stdout.trim().to_owned()
-}
-
-#[test]
-fn close_retention_imports_legacy_keys_without_detaching() {
-    use crate::providers::config::RedmineProvider;
-    use crate::providers::{ProviderDispatcher, RedmineConfig};
-    let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::new("hook-retain") else {
-        return;
-    };
-    let (dir, _db) = pin_links_db("retain");
-    checkout_branch(&repo, "feat/628");
-    branch_context::bind(&repo.runner(), 628, false).unwrap();
-
-    let provider = ProviderDispatcher::Redmine(
-        RedmineProvider::new(
-            RedmineConfig {
-                api_base: "http://example.invalid".to_owned(),
-                project_id: Some("tools-phasegent".to_owned()),
-                close_status_id: None,
-            },
-            "dummy-key".to_owned(),
-        )
-        .expect("offline dispatcher must build"),
-    );
-    let previous = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    std::env::set_current_dir(&repo.0).expect("set cwd to temp repo");
-    let warning = crate::cli::issue::issue_branch::retain_closed_issue_links(&provider, 628);
-    let _ = std::env::set_current_dir(&previous);
-    assert!(warning.is_none(), "retention must succeed silently");
-
-    let key = crate::branch_links::resolve_repo_key(None, &repo_toplevel(&repo))
-        .expect("fallback key")
-        .key;
-    let storage = crate::infra::storage::Storage::open_at(&dir.join("phasegent.sqlite3"))
-        .expect("temp storage must open");
-    let rows = crate::branch_links::issues_for_branch(
-        &storage.connection,
-        &key,
-        "feat/628",
-        false,
-        &crate::branch_links::UnknownState,
-    )
-    .expect("read must work");
-    assert_eq!(rows.len(), 1, "closed legacy binding must be retained");
-    assert_eq!(rows[0].issue_number, 628);
-    assert_eq!(rows[0].status, "linked", "close must never detach");
 }

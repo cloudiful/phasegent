@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::branch_context::ProcessGitRunner;
+use crate::git_runner::ProcessGitRunner;
 use crate::infra::storage::Storage;
 use crate::worktree::git::{
     current_branch_for, is_clean, ref_resolves_to_commit, worktree_add_from, worktree_remove,
@@ -47,8 +47,8 @@ pub struct AcquireOptions<'a> {
     /// checkout after the idempotent home-coming and instead creates the
     /// new worktree/branch from `REF` rather than `HEAD`.
     pub base: Option<&'a str>,
-    /// The reuse preference (the implicit `issue create` / `issue bind`
-    /// hook always sets this; direct API callers opt in per call). A
+    /// The reuse preference (the implicit `issue create` hook always sets
+    /// this; direct API callers opt in per call). A
     /// path conflict that would otherwise call for a fresh worktree
     /// returns actionable `isolation` guidance instead of creating one
     /// (issue 616); the preference never bypasses an active lease on
@@ -111,7 +111,7 @@ pub fn acquire_lease(
 /// `--isolate`; it never bypasses an occupied checkout path.
 ///
 /// [`AcquireOptions::reuse`] is the reuse preference: the implicit
-/// `issue create` / `issue bind` hook (issue 616) always sets it, and
+/// `issue create` hook (issue 616) always sets it, and
 /// direct API callers opt in per call. (The CLI `--reuse` spelling
 /// states the same default at the parser layer; the default table
 /// never bypasses an occupied path with or without it.) A path
@@ -151,19 +151,18 @@ pub fn acquire_lease(
 ///    never decides, never stashes, never resets, and never mutates
 ///    branches.
 ///
-/// Branch ownership is deliberately not consulted: durable links and
-/// legacy Git bindings remain available to explicit branch/status
-/// surfaces, but acquire never guesses ownership from them (issue
-/// 651). A branch linked to a historical issue therefore reuses
-/// exactly like an unbound one.
+/// Branch ownership is deliberately not consulted: durable links
+/// remain available to explicit branch/status surfaces, but acquire
+/// never guesses ownership from them (issue 651). A branch linked to a
+/// historical issue therefore reuses exactly like an unlinked one.
 ///
 /// On every successful outcome (including the idempotent and reuse
-/// paths) [`finalize_checkout`] best-effort binds `issue` to the
-/// acquired checkout's branch and installs the managed commit hooks,
-/// so one acquire command leaves the operator ready to work. Both
-/// steps reuse the canonical helpers unchanged and degrade to
-/// warnings: the lease is already durable, so a local binding or hook
-/// failure must never turn a successful acquire into an error.
+/// paths) [`finalize_checkout`] installs the managed commit hooks, so one
+/// acquire command leaves the operator ready to work. The install reuses
+/// the canonical helper unchanged and degrades to a warning: the lease is
+/// already durable, so a local hook failure must never turn a successful
+/// acquire into an error. Acquire never writes a branch/issue
+/// association.
 ///
 /// An explicit `AcquireOptions::base` short-circuits the decision table
 /// after Rule 1: the same `(repo, issue, session)` still returns its
@@ -221,9 +220,9 @@ pub fn acquire_lease_with(
     // conflict below isolates for callers that may create; this gate
     // additionally skips every reuse path below.
     let explicit_isolation = isolate;
-    // Creation gate (issue 616): the implicit `issue create` / `issue
-    // bind` hook runs with the reuse preference, so a path conflict
-    // resolves to guidance instead of a fresh worktree. The explicit
+    // Creation gate (issue 616): the implicit `issue create` hook runs
+    // with the reuse preference, so a path conflict resolves to guidance
+    // instead of a fresh worktree. The explicit
     // `worktree acquire` command keeps creating on a path conflict
     // unless `--reuse` states the preference.
     let may_create = !reuse;
@@ -234,8 +233,7 @@ pub fn acquire_lease_with(
     // Rule 1: idempotent home-coming for the same triple. The dirty
     // probe is deliberately skipped here so a re-entering session is
     // never misjudged against its own tree. The post-acquire lifecycle
-    // still runs so a re-entering session converges on a bound branch
-    // and installed hooks.
+    // still runs so a re-entering session converges on installed hooks.
     if let Some(existing) = find_active_lease(&storage, &identity, issue, session)? {
         refresh_heartbeat(&storage, &existing.lease_id)?;
         return with_warnings(
@@ -316,7 +314,7 @@ pub fn acquire_lease_with(
     // Advisory only (issue 651 P2): a dirty checkout never decides.
     // The warning stays so the orchestrator sees the reused tree is
     // not pristine, but branch ownership is not consulted at all —
-    // durable links and legacy bindings never reach this table.
+    // durable links never reach this table.
     if dirty_state == DirtyState::Dirty {
         warnings.push(
             "checkout is dirty; reusing it (dirty state is advisory only and never forces \
@@ -468,12 +466,12 @@ fn probe_dirty_state(
 /// runs when acquire itself failed.
 fn with_warnings(
     result: Result<AcquireOutcome, WorktreeError>,
-    issue: u64,
+    _issue: u64,
     warnings: Vec<String>,
 ) -> Result<AcquireOutcome, WorktreeError> {
     let outcome = result?;
     let mut warnings = warnings;
-    warnings.extend(finalize_checkout(issue, &outcome.path));
+    warnings.extend(finalize_checkout(&outcome.path));
     for warning in &warnings {
         crate::cli::report_local_warnings("worktree acquire", Some(warning.clone()));
     }
@@ -483,30 +481,22 @@ fn with_warnings(
     })
 }
 
-/// Post-acquire local lifecycle (issue #436): bind `issue` to the
-/// acquired checkout's branch and install the managed commit hooks, so a
-/// single `worktree acquire` leaves the operator ready to work.
+/// Post-acquire local lifecycle (issue #436): install the managed commit
+/// hooks, so a single `worktree acquire` leaves the operator ready to
+/// work. Acquisition never writes a branch/issue association — the
+/// durable link store has no provider/project scope at this point, and
+/// the lease identity plus the generated branch name are the worktree
+/// operation's supported signals.
 ///
-/// Both steps reuse the canonical helpers unchanged
-/// ([`crate::branch_context::bind`] and
-/// [`crate::lifecycle::auto_install_hooks`]), so their semantics are
-/// preserved exactly: an existing binding to a different issue is never
-/// overwritten (the conflict message is surfaced as a warning and names
-/// `--replace`), a detached HEAD or a local git failure degrades to a
-/// warning, and hooks are installed only when the checkout has a
-/// resolvable origin. The lease row is already durable when this runs,
-/// so nothing here may turn a successful acquire into a failure, and no
-/// branch, lease row, or checkout is ever deleted.
-fn finalize_checkout(issue: u64, checkout: &str) -> Vec<String> {
+/// The install reuses the canonical helper unchanged
+/// ([`crate::lifecycle::auto_install_hooks`]) and hooks are installed only
+/// when the checkout has a resolvable origin. The lease row is already
+/// durable when this runs, so nothing here may turn a successful acquire
+/// into a failure, and no branch, lease row, or checkout is ever deleted.
+fn finalize_checkout(checkout: &str) -> Vec<String> {
     let mut warnings = Vec::new();
     let workdir = PathBuf::from(checkout);
     let runner = ProcessGitRunner::in_directory(workdir.clone());
-    if let Err(error) = crate::branch_context::bind(&runner, issue, false) {
-        warnings.push(format!(
-            "issue {issue} was not bound to the acquired checkout: {}",
-            error.message
-        ));
-    }
     if let Some(origin) = crate::lifecycle::origin_identity(&runner) {
         let outcome = crate::lifecycle::auto_install_hooks(&runner, &workdir, &origin);
         if let Some(warning) = outcome.warning() {

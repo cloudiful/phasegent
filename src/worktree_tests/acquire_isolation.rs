@@ -246,12 +246,12 @@ fn acquire_dirty_foreign_bound_reuses_by_default_without_isolate_flag() {
 }
 
 #[test]
-fn acquire_auto_binds_new_worktree_branch_and_installs_hooks() {
-    // Single-command closure: after an `--isolate` acquire the fresh
-    // branch is bound to the requested issue and the managed commit
-    // hooks are installed, while the main checkout's branch stays
-    // untouched. The origin gate of `lifecycle::auto_install_hooks` is
-    // satisfied by giving the temp repo an origin.
+fn acquire_installs_hooks_in_the_new_worktree() {
+    // Single-command closure: after an `--isolate` acquire the managed
+    // commit hooks are installed in the fresh checkout, while the main
+    // checkout is untouched. The origin gate of
+    // `lifecycle::auto_install_hooks` is satisfied by giving the temp
+    // repo an origin. Acquire never writes a branch/issue association.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("auto-bind-hooks") else {
         return;
@@ -276,28 +276,12 @@ fn acquire_auto_binds_new_worktree_branch_and_installs_hooks() {
     assert!(outcome.created);
     assert!(outcome.branch.starts_with("phasegent/245-"));
     let checkout = Path::new(&outcome.path);
-    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(checkout);
-    let bound = crate::branch_context::read_issue_id(&git_runner, &outcome.branch)
-        .expect("binding read in the new worktree");
-    assert_eq!(
-        bound,
-        Some(245),
-        "the fresh branch must be auto-bound to the acquired issue"
-    );
-    let main_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
-    let main_bound = crate::branch_context::read_issue_id(&main_runner, &repo.head_branch)
-        .expect("binding read in the main checkout");
-    assert_eq!(
-        main_bound,
-        Some(241),
-        "auto-bind must target the new checkout, not the origin checkout"
-    );
     assert!(
         outcome
             .warnings
             .iter()
-            .all(|warning| !warning.contains("not bound") && !warning.contains("hook")),
-        "a clean bind + hook install must stay quiet: {:?}",
+            .all(|warning| !warning.contains("hook")),
+        "a clean hook install must stay quiet: {:?}",
         outcome.warnings
     );
     #[cfg(unix)]

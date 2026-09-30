@@ -160,11 +160,10 @@ fn acquire_creates_a_new_worktree_for_a_second_session() {
 }
 
 #[test]
-fn acquire_clean_foreign_bound_reuses_current_checkout_without_overwriting_binding() {
-    // A clean checkout bound to another issue is not contaminated, so it
-    // is still reused (no_conflict). The post-acquire auto-bind must not
-    // overwrite that foreign binding: `branch_context::bind` reports its
-    // usual conflict, which acquire degrades to a warning.
+fn acquire_clean_reuses_current_checkout_and_records_the_lease() {
+    // A clean checkout with an existing durable link to another issue is
+    // still reused (no_conflict); acquisition never consults or clears
+    // link state.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("clean-foreign-bound") else {
         return;
@@ -182,22 +181,14 @@ fn acquire_clean_foreign_bound_reuses_current_checkout_without_overwriting_bindi
         false,
         false,
     )
-    .expect("acquire on a clean foreign-bound checkout");
+    .expect("acquire on a clean linked checkout");
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
     assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
-    let joined = outcome.warnings.join(" ");
     assert!(
-        joined.contains("issue 241") && joined.contains("--replace"),
-        "auto-bind must surface the foreign-binding conflict instead of overwriting: {joined}"
-    );
-    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
-    let bound =
-        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
-    assert_eq!(
-        bound,
-        Some(241),
-        "the foreign binding must survive auto-bind"
+        outcome.warnings.is_empty(),
+        "a clean reuse must stay quiet: {:?}",
+        outcome.warnings
     );
     drop(cache);
     drop(db_temp);
@@ -296,11 +287,10 @@ fn acquire_dirty_same_issue_other_session_lease_creates_new_worktree() {
 }
 
 #[test]
-fn acquire_dirty_bound_same_issue_keeps_stale_branch_binding() {
-    // Issue 305 Task 4: a dirty checkout bound to this issue with no
-    // active lease is a crashed predecessor's work. Acquire reuses it
-    // (bindings never decide under issue 651 P2) and must keep the
-    // stale branch binding as safe evidence instead of clearing it.
+fn acquire_dirty_same_issue_keeps_the_link_untouched() {
+    // A dirty checkout linked to this issue with no active lease is a
+    // crashed predecessor's work. Acquire reuses it (link state never
+    // decides) and must leave the durable link untouched.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("stale-binding") else {
         return;
@@ -323,25 +313,31 @@ fn acquire_dirty_bound_same_issue_keeps_stale_branch_binding() {
     .expect("dirty + same-issue with no other lease must reuse");
     assert!(!outcome.created);
     assert_eq!(outcome.reason, "no_conflict");
-    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
-    let bound =
-        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
-    assert_eq!(
-        bound,
-        Some(245),
-        "stale branch binding must survive acquire"
-    );
+    let repo_key = crate::branch_links::resolve_repo_key(None, repo.dir.path())
+        .expect("fallback key")
+        .key;
+    let storage = Storage::open().expect("storage");
+    let rows = crate::branch_links::issues_for_branch(
+        &storage.connection,
+        &repo_key,
+        &repo.head_branch,
+        true,
+        &crate::branch_links::UnknownState,
+    )
+    .expect("link read");
+    assert_eq!(rows.len(), 1, "the link must survive acquire: {rows:?}");
+    assert_eq!(rows[0].status, "linked");
+    assert_eq!(rows[0].issue_number, 245);
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);
 }
 
 #[test]
-fn acquire_dirty_foreign_bound_reuses_checkout_by_default() {
+fn acquire_dirty_foreign_link_reuses_checkout_by_default() {
     // Issue 651 P2 acceptance criterion 1: with no conflicting active
     // lease on the current checkout path, acquire reuses it whether
-    // the tree is dirty or bound to a historical issue. The foreign
-    // binding is advisory context only and must survive untouched.
+    // the tree is dirty or linked to a historical issue.
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("dirty-foreign-reuse") else {
         return;
@@ -361,10 +357,10 @@ fn acquire_dirty_foreign_bound_reuses_checkout_by_default() {
         false,
         false,
     )
-    .expect("dirty + foreign-bound must reuse, not isolate");
+    .expect("dirty + foreign-linked must reuse, not isolate");
     assert!(
         !outcome.created,
-        "a dirty foreign-bound checkout must be reused by default"
+        "a dirty foreign-linked checkout must be reused by default"
     );
     assert_eq!(outcome.reason, "no_conflict");
     assert_eq!(outcome.path, repo.dir.path().to_string_lossy().to_string());
@@ -377,10 +373,6 @@ fn acquire_dirty_foreign_bound_reuses_checkout_by_default() {
         !cache.path().join("worktrees").exists(),
         "reuse must not create a worktree directory"
     );
-    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(repo.dir.path());
-    let bound =
-        crate::branch_context::read_issue_id(&git_runner, &repo.head_branch).expect("binding read");
-    assert_eq!(bound, Some(241), "the foreign binding must survive acquire");
     let _ = std::fs::remove_file(&scratch);
     drop(cache);
     drop(db_temp);

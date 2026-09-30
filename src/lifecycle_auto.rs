@@ -294,18 +294,14 @@ fn build_transition_warning(
 /// Run the auto-accounting side effect for a successful
 /// `issue close`. Every running auto-run for the issue is
 /// finished locally. This is the close path; no new run is
-/// started because the issue is now closed. The branch-context
-/// `unbind_closed_issue` is a separate sibling helper and is
-/// untouched by this module.
+/// started because the issue is now closed.
 ///
 /// Forgejo is gated to [`AutoCloseOutcome::Noop`] for parity with
 /// [`auto_transition_timer`]'s [`AutoTimerOutcome::Skipped`]:
 /// Forgejo has no first-class status surface, and the auto-run
 /// set is provider-local bookkeeping so a Forgejo close should
 /// not retroactively mutate Redmine or GitLab rows. An empty
-/// ledger also returns `Noop`. The branch-context unbind is
-/// provider-agnostic at its own layer and is unaffected by this
-/// gate.
+/// ledger also returns `Noop`.
 pub fn auto_close_issue_timer(issue: u64, provider_kind: ProviderKind) -> AutoCloseOutcome {
     if provider_kind == ProviderKind::Forgejo {
         return AutoCloseOutcome::Noop {

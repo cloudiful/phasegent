@@ -6,7 +6,7 @@
 //! store is never touched. Only local Git commands run; no network, no
 //! stash, no deletes.
 
-use crate::branch_context::GitRunner;
+use crate::git_runner::GitRunner;
 use crate::infra::storage::test_support::EnvGuard;
 use crate::lifecycle;
 use std::path::{Path, PathBuf};

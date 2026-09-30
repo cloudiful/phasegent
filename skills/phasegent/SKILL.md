@@ -213,11 +213,10 @@ old checkout; the next invocation retries and proceeds once the host confirms
 the session sits in the target. Only ordinary discovery failures keep the
 original directory.
 
-Creating a worktree is opt-in: `issue create` / `issue bind` and the adapter's
-lazy path reuse an existing lease, an inherited worktree, or the current
-checkout, and a conflict surfaces the explicit choice instead of a new
-directory — `phasegent worktree acquire --issue N --isolate` is how a dedicated
-worktree is requested.
+Creating a worktree is opt-in: `issue create` and the adapter's lazy path
+reuse an existing lease, an inherited worktree, or the current checkout, and a
+conflict surfaces the explicit choice instead of a new directory — `phasegent
+worktree acquire --issue N --isolate` is how a dedicated worktree is requested.
 
 Boundaries:
 
@@ -253,7 +252,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on `<type>/<id>` branches (e.g. `feat/452`) and `bind` is only a fallback repair when the name cannot resolve. A successful `issue create`/`bind` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming `phasegent worktree acquire --issue N --isolate` instead, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases). `issue status` shows the current branch with its compatible single issue (only when unambiguous and not the detected default), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), the reverse branches of the active issue, and the legacy binding; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
+Work happens on `<type>/<id>` branches (e.g. `feat/452`) and the durable provider/project-scoped link is the sole branch/issue association; `bind` records that link explicitly and the branch name is the only fallback when the name carries an id and no link resolves. A successful `issue create` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming `phasegent worktree acquire --issue N --isolate` instead, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases). `issue status` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (`linked`/`named`/`none`), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), and the reverse branches of the active issue; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
 
 ## Marker protocol
 

@@ -1,5 +1,5 @@
 use crate::auth;
-use crate::branch_context;
+use crate::git_runner;
 use crate::lifecycle;
 use crate::policy::Role;
 use crate::providers::api::ForgejoError;
@@ -459,7 +459,7 @@ fn attach_local_hooks(mut result: BootstrapResult) -> BootstrapResult {
             return result;
         }
     };
-    let runner = branch_context::ProcessGitRunner::new();
+    let runner = git_runner::ProcessGitRunner::new();
     result.hooks = Some(lifecycle::auto_install_hooks(
         &runner,
         &working_dir,

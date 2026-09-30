@@ -15,7 +15,7 @@
 //   4. apart from insertions (and the sub-agent refusal) the command is
 //      unchanged, so `2>&1` can never be re-joined as `2> --session x&1`;
 //   5. rewriting is idempotent;
-//   6. `--session` is only injected next to a real `issue create|bind`.
+//   6. `--session` is only injected next to a real `issue create` segment.
 //
 // `PHASEGENT_PROPERTY_MODULE` points the same suite at a historical or
 // mutated adapter copy (used to watch the suite fail on the pre-#544 scanner);
@@ -180,7 +180,7 @@ function checkCase(command, event, role) {
   expect(stripInjections(out, role, SESSION), context).toBe(command);
   expect(rewritePhasegentCommand(out, SESSION, event), context).toBe(out);
   if (out.includes(`--session ${SESSION}`)) {
-    expect(issueWrite, context).toBe(true);
+    expect(/\bissue\s+create\b/.test(command), context).toBe(true);
   }
 }
 
@@ -196,7 +196,7 @@ describe("property: scanner invariants over generated commands (issue #558 Phase
     }
   });
 
-  test("no-agent rewriting only injects --session next to issue writes", () => {
+  test("no-agent rewriting only injects --session next to issue create", () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed);
       for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {

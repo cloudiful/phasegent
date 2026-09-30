@@ -158,21 +158,29 @@ pub(crate) fn unique_cache(label: &str) -> TempDir {
     TempDir::new(&format!("cache-{label}"))
 }
 
-/// Bind the temp repo's current branch to `issue` using the same local
-/// git config key `branch_context::read_issue_id` reads
-/// (`branch.<name>.redmine-issue-id`), so binding resolution in the
-/// dirty-tree triggers sees exactly what a hand-written binding sets.
+/// Link the temp repo's current branch to `issue` in the pinned temp
+/// database, so link-aware surfaces see exactly what `issue bind` writes.
+/// Links are advisory to acquire; this only keeps the fixture honest.
 pub(crate) fn bind_current_branch(repo: &TempRepo, issue: u64) {
-    let runner = ProcessWorktreeRunner::new();
-    let key = crate::branch_context::config_key(&repo.head_branch);
-    let issue_text = issue.to_string();
-    let output = runner
-        .run(
-            &["config", "--local", key.as_str(), &issue_text],
-            repo.dir.path(),
-        )
-        .expect("git config binding write");
-    assert_eq!(output.status, 0, "binding write must succeed");
+    let repo_key = crate::branch_links::resolve_repo_key(None, repo.dir.path())
+        .expect("fallback key")
+        .key;
+    let storage = Storage::open().expect("temp storage must open");
+    crate::branch_links::ensure_schema(&storage.connection).expect("link schema");
+    let key = crate::branch_links::IssueKey::from_number("redmine", "tools-phasegent", issue)
+        .expect("issue key");
+    crate::branch_links::store::link(
+        &storage.connection,
+        &crate::branch_links::LinkParams {
+            repo_key: &repo_key,
+            branch: &repo.head_branch,
+            issue: &key,
+            issue_number: issue,
+            source: "test",
+            now: now_unix_secs().max(1),
+        },
+    )
+    .expect("link must insert");
 }
 
 // ---------------------------------------------------------------------------

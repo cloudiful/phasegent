@@ -5,8 +5,8 @@
 //! the internal `hooks run` entry points with plain files. No credentials or
 //! network access is involved.
 
-use crate::branch_context::{self, GitRunner, ProcessGitRunner};
 use crate::command::{self, Command};
+use crate::git_runner::{GitError, GitRunner, ProcessGitRunner};
 use crate::hooks::{self, HookKind, HooksCommand, MANAGED_MARKER, ORIGINAL_BACKUP_DIR};
 use std::path::{Path, PathBuf};
 
@@ -87,9 +87,7 @@ fn parse_args(values: &[&str]) -> Result<command::Invocation, String> {
     )
 }
 
-fn install_in(
-    repo: &TempRepo,
-) -> Result<hooks::InstallOutcome, crate::branch_context::BranchContextError> {
+fn install_in(repo: &TempRepo) -> Result<hooks::InstallOutcome, GitError> {
     hooks::install_in(&repo.runner(), &repo.0)
 }
 
@@ -97,7 +95,7 @@ fn run_prepare(
     repo: &TempRepo,
     file: &Path,
     source: Option<&str>,
-) -> Result<serde_json::Value, crate::branch_context::BranchContextError> {
+) -> Result<serde_json::Value, GitError> {
     hooks::run_with(
         &repo.runner(),
         HookKind::PrepareCommitMsg,
@@ -106,10 +104,7 @@ fn run_prepare(
     )
 }
 
-fn run_commit(
-    repo: &TempRepo,
-    file: &Path,
-) -> Result<serde_json::Value, crate::branch_context::BranchContextError> {
+fn run_commit(repo: &TempRepo, file: &Path) -> Result<serde_json::Value, GitError> {
     hooks::run_with(
         &repo.runner(),
         HookKind::CommitMsg,
@@ -379,9 +374,13 @@ fn install_refuses_to_clobber_foreign_hook_when_backup_already_exists() {
 // prepare-commit-msg behavior.
 // ---------------------------------------------------------------------------
 
+/// A repo whose current branch is `feat/<issue_id>`, so the hook resolves
+/// the issue from the branch name.
 fn bound_repo(tag: &str, issue_id: u64) -> Option<TempRepo> {
     let repo = TempRepo::new(tag)?;
-    branch_context::bind(&repo.runner(), issue_id, false).unwrap();
+    repo.runner()
+        .run(&["checkout", "-q", "-B", &format!("feat/{issue_id}")])
+        .expect("checkout feature works");
     Some(repo)
 }
 
@@ -571,17 +570,15 @@ fn commit_accepts_plain_commit_on_main_like_other_branches() {
 }
 
 #[test]
-fn commit_enforces_binding_consistency_on_main() {
-    let Some(repo) = TempRepo::new("main-bound") else {
+fn commit_enforces_binding_consistency_on_a_named_branch() {
+    let Some(repo) = bound_repo("main-bound", 23) else {
         return;
     };
-    checkout_main(&repo);
-    branch_context::bind(&repo.runner(), 23, false).unwrap();
     let file = repo.0.join("COMMIT_MSG");
     write_file(&file, "Wrong branch\n\nRefs #24\n");
-    let error = run_commit(&repo, &file).expect_err("conflicting reference on main rejected");
+    let error = run_commit(&repo, &file).expect_err("conflicting reference rejected");
     assert_eq!(error.kind, "conflict");
-    write_file(&file, "Work on main\n\nRefs #23\n");
+    write_file(&file, "Work on the branch\n\nRefs #23\n");
     let value = run_commit(&repo, &file).unwrap();
     assert_eq!(value["action"], "valid");
 }

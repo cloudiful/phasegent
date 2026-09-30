@@ -1,13 +1,14 @@
 mod auth;
 mod body_file;
-mod branch_context;
 mod branch_links;
+mod branch_naming;
 mod cli;
 mod command;
 mod config;
 mod config_snapshot;
 mod config_write;
 mod desktop_bridge;
+mod git_runner;
 mod gui;
 mod hooks;
 mod launch;
@@ -35,13 +36,13 @@ mod phase2_tests;
 mod phase3_tests;
 
 #[cfg(test)]
-mod branch_context_tests;
+mod branch_naming_tests;
 
 #[cfg(test)]
 mod branch_links_tests;
 
 #[cfg(test)]
-mod branch_context_prop_tests;
+mod branch_naming_prop_tests;
 
 #[cfg(test)]
 mod hooks_tests;

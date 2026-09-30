@@ -1,10 +1,9 @@
-//! Scoped `issue bind` flows end to end (issue 628 P3): isolated temp
-//! repo plus temp DB under the workflow lock; the live store is never
-//! touched. Shared fixtures live in the parent `cli` module.
+//! Scoped `issue bind` flows end to end: isolated temp repo plus temp DB
+//! under the workflow lock; the live store is never touched. Shared
+//! fixtures live in the parent `cli` module.
 
 use super::{
     BRANCH, TempRepo, db_links, in_temp_repo, local_key, redmine_scope, scoped_bind, scoped_env,
-    scoped_status,
 };
 use crate::branch_links;
 use crate::command::IssueCommand;
@@ -13,21 +12,19 @@ use crate::policy::Role;
 use crate::providers::ProviderKind;
 
 #[test]
-fn scoped_bind_links_without_touching_git_keys() {
+fn scoped_bind_links_durably() {
     let _lock = lock_workflow_tests();
     let repo = TempRepo::init("scoped-bind");
     repo.checkout_branch(BRANCH);
     let (dir, _db, _index, _env) = scoped_env("scoped-bind");
 
     assert_eq!(scoped_bind(&repo, 628), 0, "scoped bind must succeed");
-    // No Git key written: durable links only.
-    assert_eq!(repo.get_binding(BRANCH), None);
     let links = db_links(&dir, &local_key(&repo), BRANCH);
     assert_eq!(links.len(), 1, "exactly one durable link expected");
     assert_eq!(links[0].issue_number, 628);
     assert_eq!(links[0].status, "linked");
 
-    // Repeat bind is the idempotent no-op (hook-safe, like legacy).
+    // Repeat bind is the idempotent no-op.
     assert_eq!(
         scoped_bind(&repo, 628),
         0,
@@ -38,39 +35,31 @@ fn scoped_bind_links_without_touching_git_keys() {
 }
 
 #[test]
-fn scoped_bind_imports_legacy_keys_and_status_shows_both() {
+fn scoped_bind_adds_an_ambiguous_second_link() {
     let _lock = lock_workflow_tests();
-    let repo = TempRepo::init("scoped-import");
+    let repo = TempRepo::init("scoped-ambiguous");
     repo.checkout_branch(BRANCH);
-    repo.set_binding(BRANCH, 628);
-    let (dir, _db, _index, _env) = scoped_env("scoped-import");
+    let (dir, _db, _index, _env) = scoped_env("scoped-ambiguous");
 
-    // Binding another issue migrates the legacy key first, then adds.
-    assert_eq!(
-        scoped_bind(&repo, 616),
-        0,
-        "bind with legacy present must succeed"
-    );
-    // Source Git key untouched by the migration.
-    assert_eq!(repo.get_binding(BRANCH).as_deref(), Some("628"));
-
+    assert_eq!(scoped_bind(&repo, 628), 0);
+    assert_eq!(scoped_bind(&repo, 616), 0);
     let links = db_links(&dir, &local_key(&repo), BRANCH);
-    assert_eq!(links.len(), 2, "legacy import plus new link expected");
-
-    // Two distinct links: status stays successful with no guessed issue.
-    assert_eq!(
-        scoped_status(&repo),
-        0,
-        "ambiguous status must still succeed"
+    assert_eq!(links.len(), 2, "distinct links are both kept");
+    assert!(
+        links.iter().all(|entry| entry.status == "linked"),
+        "history is never replaced: {links:?}"
     );
 }
 
 #[test]
-fn unscoped_bind_keeps_legacy_git_behavior() {
+fn unscoped_bind_fails_closed_with_a_scope_error() {
+    // No explicit scope and no stored provider selection: the bind must
+    // fail with the structured scope error instead of falling back to
+    // Git config or guessing a provider.
     let _lock = lock_workflow_tests();
-    let repo = TempRepo::init("legacy-fallback");
+    let repo = TempRepo::init("unscoped-scope");
     repo.checkout_branch(BRANCH);
-    let (_dir, _db, _index, _env) = scoped_env("legacy-fallback");
+    let (dir, _db, _index, _env) = scoped_env("unscoped-scope");
 
     let exit = in_temp_repo(&repo, || {
         crate::cli::branch::execute_branch_context_scoped(
@@ -78,18 +67,13 @@ fn unscoped_bind_keeps_legacy_git_behavior() {
             None,
             None,
             None,
-            IssueCommand::Bind {
-                issue_id: 541,
-                replace: false,
-                session: None,
-            },
+            IssueCommand::Bind { issue_id: 541 },
         )
     });
-    assert_eq!(exit, 0, "unscoped bind keeps legacy behavior");
-    assert_eq!(
-        repo.get_binding(BRANCH).as_deref(),
-        Some("541"),
-        "legacy path writes the Git key"
+    assert_eq!(exit, 1, "an unselected provider must fail closed");
+    assert!(
+        db_links(&dir, &local_key(&repo), BRANCH).is_empty(),
+        "a refused bind must not write a link"
     );
 }
 
@@ -107,19 +91,10 @@ fn blocked_scope_fails_without_writing_anywhere() {
             Some(ProviderKind::Redmine),
             None,
             None,
-            IssueCommand::Bind {
-                issue_id: 628,
-                replace: false,
-                session: None,
-            },
+            IssueCommand::Bind { issue_id: 628 },
         )
     });
     assert_eq!(exit, 1, "unscoped redmine bind must fail closed");
-    assert_eq!(
-        repo.get_binding(BRANCH),
-        None,
-        "blocked bind must not write Git keys"
-    );
     assert!(
         db_links(&dir, &local_key(&repo), BRANCH).is_empty(),
         "blocked bind must not write durable links"
@@ -149,15 +124,10 @@ fn default_branch_bind_is_rejected_before_any_write() {
             provider,
             repository.as_deref(),
             project.as_deref(),
-            IssueCommand::Bind {
-                issue_id: 700,
-                replace: false,
-                session: None,
-            },
+            IssueCommand::Bind { issue_id: 700 },
         )
     });
     assert_eq!(exit, 1, "default branch bind must be rejected");
-    assert_eq!(repo.get_binding("main"), None);
     let key = branch_links::repo_key_for_origin("https://forge.example.com/owner/repo.git")
         .expect("canonical key");
     assert!(

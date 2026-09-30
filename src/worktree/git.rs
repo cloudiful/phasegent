@@ -1,4 +1,4 @@
-//! Thin `git` wrappers in `branch_context`-style. The functions take
+//! Thin `git` wrappers. The functions take
 //! a [`WorktreeRunner`] (testable via `FakeWorktreeRunner`) and a
 //! per-call working directory, and return structured
 //! [`WorktreeError`] values on non-zero exits. Phase 1 only uses

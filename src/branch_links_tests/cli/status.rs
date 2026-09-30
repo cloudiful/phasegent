@@ -2,12 +2,27 @@
 //! temp repo plus temp DB under the workflow lock; the live store is
 //! never touched. Shared fixtures live in the parent `cli` module.
 
-use super::{BRANCH, TempRepo, db_links, in_temp_repo, local_key, scoped_env};
+use super::{BRANCH, TempRepo, db_links, in_temp_repo, local_key, scoped_env, scoped_status};
 use crate::branch_links;
 use crate::command::IssueCommand;
 use crate::infra::storage::test_support::lock_workflow_tests;
 use crate::policy::Role;
 use std::path::Path;
+
+#[test]
+fn scoped_status_succeeds_with_one_durable_link() {
+    let _lock = lock_workflow_tests();
+    let repo = TempRepo::init("scoped-status-linked");
+    repo.checkout_branch(BRANCH);
+    let (dir, _db, _index, _env) = scoped_env("scoped-status-linked");
+    let key = local_key(&repo);
+    seed_scoped_link(&dir, &key, BRANCH, "redmine", "tools-phasegent", 628);
+
+    assert_eq!(scoped_status(&repo), 0, "a single durable link resolves");
+    let links = db_links(&dir, &key, BRANCH);
+    assert_eq!(links.len(), 1, "status is read-only: {links:?}");
+    assert_eq!(links[0].status, "linked");
+}
 
 fn seed_scoped_link(
     db: &Path,
@@ -58,8 +73,7 @@ fn unscoped_status_leaves_cross_scope_same_number_unresolved() {
         )
     });
     assert_eq!(exit, 0, "ambiguous status must still succeed");
-    // No legacy key written: the durable rows decide, and they disagree.
-    assert_eq!(repo.get_binding(BRANCH), None);
+    // The durable rows decide, and they disagree.
     let links = db_links(&dir, &key, BRANCH);
     assert_eq!(links.len(), 2, "both scoped rows stay linked");
     assert!(

@@ -178,8 +178,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
         }
         // Local branch context commands resolve their durable link
-        // scope locally (no provider construction, no network); the
-        // flows keep legacy Git behavior when no scope is selected.
+        // scope locally (no provider construction, no network); a flow
+        // with no resolvable scope fails closed instead of writing.
         // `issue branches N` is the read-only reverse lookup across all
         // scopes in this repository (no provider, no writes).
         Command::Issue(IssueCommand::Branches { number }) => {

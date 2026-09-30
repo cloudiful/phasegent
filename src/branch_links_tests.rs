@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod identity;
-mod import;
 mod links;
 mod reads;
 
@@ -60,31 +59,8 @@ impl TempRepo {
         Self { dir }
     }
 
-    pub(crate) fn path(&self) -> &Path {
-        &self.dir
-    }
-
     pub(crate) fn set_origin(&self, url: &str) {
         run_git(&self.dir, &["remote", "add", "origin", url]);
-    }
-
-    pub(crate) fn set_binding(&self, branch: &str, issue: u64) {
-        let key = crate::branch_context::config_key(branch);
-        run_git(&self.dir, &["config", "--local", &key, &issue.to_string()]);
-    }
-
-    pub(crate) fn get_binding(&self, branch: &str) -> Option<String> {
-        let key = crate::branch_context::config_key(branch);
-        let output = Command::new("git")
-            .args(["config", "--local", "--get", &key])
-            .current_dir(&self.dir)
-            .output()
-            .expect("git config --get must run");
-        if output.status.success() {
-            Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        } else {
-            None
-        }
     }
 
     pub(crate) fn checkout_branch(&self, branch: &str) {
@@ -290,4 +266,33 @@ fn unselected_provider_stays_unresolved() {
         scope, None,
         "no selection means no scope: the Forgejo default must never be guessed for links"
     );
+}
+
+#[test]
+fn stored_repository_scopes_forgejo_migration_without_flags() {
+    use crate::infra::storage::test_support::lock_workflow_tests;
+    use crate::policy::Role;
+    let _lock = lock_workflow_tests();
+    let _env = clear_provider_env();
+    let (dir, _db) = pin_db("scope-stored");
+    let storage = crate::infra::storage::Storage::open_at(&dir.join("phasegent.sqlite3"))
+        .expect("temp storage must open");
+    storage
+        .save_role_config(
+            Role::Orchestrator,
+            &crate::auth::StoredConfig {
+                provider: Some("forgejo".to_owned()),
+                api_base: None,
+                repository: Some("owner/repo".to_owned()),
+            },
+        )
+        .expect("role config must save");
+    drop(storage);
+    // Role-less resolves stored config as orchestrator for scope only,
+    // so a stored forgejo checkout resolves without explicit flags.
+    let scope = crate::branch_links::resolve_link_scope(None, None, None, None)
+        .expect("resolution must not fail")
+        .expect("stored scope must resolve");
+    assert_eq!(scope.provider, "forgejo");
+    assert_eq!(scope.project, "owner/repo");
 }

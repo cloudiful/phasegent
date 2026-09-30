@@ -1,4 +1,4 @@
-//! Provider-scoped issue-branch create/link helpers (issue 628 P4).
+//! Provider-scoped issue-branch create/link helpers.
 //!
 //! Split from `cli/issue.rs` so the default create/link/switch flow and
 //! the explicit `--branch` durable links live in one cohesive module.
@@ -7,6 +7,7 @@
 //! link step.
 
 use crate::command::BranchOption;
+use crate::git_runner::ProcessGitRunner;
 use crate::providers::{ProviderDispatcher, ProviderKind};
 
 /// Inputs for [`report_create_branch_links`], bundled to stay under the
@@ -34,7 +35,7 @@ fn link_explicit(
 ) -> Option<String> {
     match crate::providers::index_store::provider_scope(provider) {
         Ok(scope) => crate::lifecycle::link_explicit_branch(
-            &crate::branch_context::ProcessGitRunner::new(),
+            &ProcessGitRunner::new(),
             &crate::lifecycle::ExplicitLinkParams {
                 issue_id: issue_number,
                 branch: branch_name,
@@ -63,9 +64,8 @@ fn link_explicit(
 /// `issue create`, reporting every outcome as a bounded stderr warning.
 /// The default path (no `--branch`) creates and links for every
 /// provider kind with a known scope and switches only when safe;
-/// explicit `--branch` keeps its Redmine-only contract and also
-/// records a durable link next to the legacy Git key (protected names
-/// refuse both).
+/// explicit `--branch` keeps its Redmine-only contract and records the
+/// durable link (protected names refuse the link).
 pub(crate) fn report_create_branch_links(params: &CreateBranchLinks<'_>) {
     let CreateBranchLinks {
         provider,
@@ -94,7 +94,7 @@ pub(crate) fn report_create_branch_links(params: &CreateBranchLinks<'_>) {
                 Ok(scope) => crate::cli::report_local_warnings(
                     "issue create",
                     crate::lifecycle::create_link_and_switch(
-                        &crate::branch_context::ProcessGitRunner::in_directory(repo_path.clone()),
+                        &ProcessGitRunner::in_directory(repo_path.clone()),
                         &crate::worktree::ProcessWorktreeRunner::new(),
                         &crate::lifecycle::IssueSwitchParams {
                             repo_path: &repo_path,
@@ -129,43 +129,20 @@ pub(crate) fn report_create_branch_links(params: &CreateBranchLinks<'_>) {
             let name = crate::lifecycle::branch_name_for_issue(*tracker, *issue_number);
             crate::cli::report_local_warnings(
                 "issue create",
-                crate::lifecycle::ensure_branch_and_bind(
-                    &crate::branch_context::ProcessGitRunner::new(),
-                    *issue_number,
-                    &name,
-                    *base,
-                    *repository,
-                )
-                .warning(),
-            );
-            crate::cli::report_local_warnings(
-                "issue create",
                 link_explicit(provider, *issue_number, &name, *base, *repository),
             );
         }
         BranchOption::Named(name) if *provider_kind == ProviderKind::Redmine => {
-            let runner = crate::branch_context::ProcessGitRunner::new();
+            let runner = ProcessGitRunner::new();
             // Protected branches (the detected default, or a
             // conventional main/master with unknown cached HEAD) are
-            // never issue branches: skip both the legacy and the
-            // durable link with guidance.
+            // never issue branches: skip the durable link with guidance.
             if let Err(reason) = crate::branch_links::identity::validate_not_protected_branch(
                 name,
                 crate::branch_links::detect_default_branch(&runner).as_deref(),
             ) {
                 crate::cli::report_local_warnings("issue create", Some(reason));
             } else {
-                crate::cli::report_local_warnings(
-                    "issue create",
-                    crate::lifecycle::ensure_branch_and_bind(
-                        &runner,
-                        *issue_number,
-                        name,
-                        *base,
-                        *repository,
-                    )
-                    .warning(),
-                );
                 crate::cli::report_local_warnings(
                     "issue create",
                     link_explicit(provider, *issue_number, name, *base, *repository),

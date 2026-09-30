@@ -80,14 +80,14 @@ fn missing_origin_falls_back_to_local_only_key() {
 
 #[test]
 fn default_branch_detection_and_protection() {
-    use crate::branch_context::{BranchContextError, GitOutput, GitRunner};
+    use crate::git_runner::{GitError, GitOutput, GitRunner};
     use std::cell::RefCell;
 
     struct Fake {
         calls: RefCell<Vec<Vec<String>>>,
     }
     impl GitRunner for Fake {
-        fn run(&self, args: &[&str]) -> Result<GitOutput, BranchContextError> {
+        fn run(&self, args: &[&str]) -> Result<GitOutput, GitError> {
             self.calls
                 .borrow_mut()
                 .push(args.iter().map(|value| value.to_string()).collect());
@@ -97,7 +97,7 @@ fn default_branch_detection_and_protection() {
                     stdout: "refs/remotes/origin/main".to_owned(),
                 });
             }
-            Err(BranchContextError::new("git", "unexpected"))
+            Err(GitError::new("git", "unexpected"))
         }
     }
 
@@ -119,11 +119,11 @@ fn default_branch_detection_and_protection() {
 
 #[test]
 fn unknown_default_branch_means_no_protection_claim() {
-    use crate::branch_context::{BranchContextError, GitOutput, GitRunner};
+    use crate::git_runner::{GitError, GitOutput, GitRunner};
 
     struct Failing;
     impl GitRunner for Failing {
-        fn run(&self, _args: &[&str]) -> Result<GitOutput, BranchContextError> {
+        fn run(&self, _args: &[&str]) -> Result<GitOutput, GitError> {
             Ok(GitOutput {
                 status: 1,
                 stdout: String::new(),
@@ -140,7 +140,7 @@ fn unknown_default_branch_means_no_protection_claim() {
 
 #[test]
 fn default_branch_fallback_uses_cached_remote_show_only() {
-    use crate::branch_context::{BranchContextError, GitOutput, GitRunner};
+    use crate::git_runner::{GitError, GitOutput, GitRunner};
     use std::cell::RefCell;
 
     struct Cached {
@@ -148,7 +148,7 @@ fn default_branch_fallback_uses_cached_remote_show_only() {
         fixture: String,
     }
     impl GitRunner for Cached {
-        fn run(&self, args: &[&str]) -> Result<GitOutput, BranchContextError> {
+        fn run(&self, args: &[&str]) -> Result<GitOutput, GitError> {
             self.calls
                 .borrow_mut()
                 .push(args.iter().map(|value| value.to_string()).collect());
@@ -164,7 +164,7 @@ fn default_branch_fallback_uses_cached_remote_show_only() {
                     stdout: self.fixture.clone(),
                 });
             }
-            Err(BranchContextError::new("git", "unexpected"))
+            Err(GitError::new("git", "unexpected"))
         }
     }
 
@@ -208,13 +208,13 @@ fn default_branch_fallback_uses_cached_remote_show_only() {
 
 #[test]
 fn checkout_root_prefers_git_toplevel_over_cwd() {
-    use crate::branch_context::{BranchContextError, GitOutput, GitRunner};
+    use crate::git_runner::{GitError, GitOutput, GitRunner};
 
     struct Top {
         toplevel: String,
     }
     impl GitRunner for Top {
-        fn run(&self, args: &[&str]) -> Result<GitOutput, BranchContextError> {
+        fn run(&self, args: &[&str]) -> Result<GitOutput, GitError> {
             assert_eq!(args, ["rev-parse", "--show-toplevel"]);
             Ok(GitOutput {
                 status: 0,

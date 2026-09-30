@@ -395,11 +395,15 @@ function phasegentInvocation(segment) {
 // assets/opencode/src/command.js
 // Shell command rewriting for `phasegent` invocations (issue #541; issue #588
 // phase 2): the session role is exported per invocation through
-// `PHASEGENT_ROLE`, `issue create|bind`/`issue close` get their session flag,
-// and a sub-agent's `issue create|bind` is refused.
+// `PHASEGENT_ROLE`, `issue create`/`issue close` get their session flag, and a
+// sub-agent's `issue create|bind` is refused.
 
 
+// Sub-agent prohibition: the orchestrator owns issue creation and binding.
 const PHASEGENT_ISSUE_WRITE = /\bissue\s+(create|bind)\b/;
+// `issue create` names its session through `--session`; `issue bind` takes no
+// session flag, so only a create segment gets one injected.
+const PHASEGENT_ISSUE_CREATE = /\bissue\s+create\b/;
 // `issue close` names its closer through `--worktree-session`: the parser
 // rejects `--session` there with `unknown option '--session'` (exit 2,
 // src/command/issue.rs), so the segment gets the flag the CLI parses.
@@ -473,11 +477,11 @@ function roleStatusPrefix(source, segment, invocation, windows) {
   return head ? `${head[0]}${base}` : base;
 }
 
-// The session-bearing flag of a segment: `issue create|bind` carry `--session`,
+// The session-bearing flag of a segment: `issue create` carries `--session`,
 // `issue close` carries `--worktree-session`; every other segment stays
-// untouched.
+// untouched (`issue bind` takes no session flag at all).
 function sessionFlagFor(tail) {
-  if (PHASEGENT_ISSUE_WRITE.test(tail)) return { name: "--session", present: SESSION_FLAG };
+  if (PHASEGENT_ISSUE_CREATE.test(tail)) return { name: "--session", present: SESSION_FLAG };
   if (PHASEGENT_ISSUE_CLOSE.test(tail)) {
     return { name: "--worktree-session", present: WORKTREE_SESSION_FLAG };
   }
@@ -1258,11 +1262,10 @@ old checkout; the next invocation retries and proceeds once the host confirms
 the session sits in the target. Only ordinary discovery failures keep the
 original directory.
 
-Creating a worktree is opt-in: \`issue create\` / \`issue bind\` and the adapter's
-lazy path reuse an existing lease, an inherited worktree, or the current
-checkout, and a conflict surfaces the explicit choice instead of a new
-directory — \`phasegent worktree acquire --issue N --isolate\` is how a dedicated
-worktree is requested.
+Creating a worktree is opt-in: \`issue create\` and the adapter's lazy path
+reuse an existing lease, an inherited worktree, or the current checkout, and a
+conflict surfaces the explicit choice instead of a new directory — \`phasegent
+worktree acquire --issue N --isolate\` is how a dedicated worktree is requested.
 
 Boundaries:
 
@@ -1298,7 +1301,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and \`bind\` is only a fallback repair when the name cannot resolve. A successful \`issue create\`/\`bind\` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\` instead, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases). \`issue status\` shows the current branch with its compatible single issue (only when unambiguous and not the detected default), the durable linked issues with last-known local-index state/source/indexed time (\`unknown\` when missing), the reverse branches of the active issue, and the legacy binding; \`issue branches N\` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set \`ambiguous=true\`. Both reads are read-only, never call a provider, and never guess (\`phasegent --help issue\` owns the exact flags).
+Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and the durable provider/project-scoped link is the sole branch/issue association; \`bind\` records that link explicitly and the branch name is the only fallback when the name carries an id and no link resolves. A successful \`issue create\` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\` instead, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases). \`issue status\` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (\`linked\`/\`named\`/\`none\`), the durable linked issues with last-known local-index state/source/indexed time (\`unknown\` when missing), and the reverse branches of the active issue; \`issue branches N\` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set \`ambiguous=true\`. Both reads are read-only, never call a provider, and never guess (\`phasegent --help issue\` owns the exact flags).
 
 ## Marker protocol
 
@@ -1490,13 +1493,14 @@ five-token vocabulary.
 
 ## Branch binding & lease checklist
 
-- OPEN: check the branch binding status before delegating; bind explicitly
-  (with \`--replace\` only when moving a branch off a different issue); confirm
-  commit hooks are installed so the issue reference lands. Worktree session
-  identity is plugin-owned and needs no manual handling.
-- CLOSE: after issue close, verify the branch is unbound (exact-match
-  auto-unbind, otherwise a no-op); children never bind, unbind, commit, push,
-  or mutate refs — binding and delivery stay orchestrator-owned.
+- OPEN: check the branch binding status before delegating; bind the branch to
+  its issue with \`phasegent issue bind N\` (durable provider/project-scoped
+  link) and confirm commit hooks are installed so the issue reference lands.
+  Worktree session identity is plugin-owned and needs no manual handling.
+- CLOSE: after issue close, verify the branch is detached from the issue
+  (\`phasegent issue unbind\` when a link must be retired); children never bind,
+  unbind, commit, push, or mutate refs — binding and delivery stay
+  orchestrator-owned.
 
 ## Worktree leases are yours alone
 

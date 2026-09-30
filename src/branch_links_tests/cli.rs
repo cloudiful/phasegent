@@ -69,11 +69,7 @@ fn scoped_bind(repo: &TempRepo, issue_id: u64) -> i32 {
             provider,
             repository.as_deref(),
             project.as_deref(),
-            IssueCommand::Bind {
-                issue_id,
-                replace: false,
-                session: None,
-            },
+            IssueCommand::Bind { issue_id },
         )
     })
 }

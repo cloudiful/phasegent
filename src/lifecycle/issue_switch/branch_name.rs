@@ -6,11 +6,11 @@
 //! (`show-ref`, `branch`); nothing is stashed, deleted, or fetched,
 //! and no command touches the network.
 
-use crate::branch_context::GitRunner;
 use crate::branch_links::{
     IssueKey, LinkParams, UnknownState, checkout_root, ensure_schema, issues_for_branch, link,
     read_origin_url, resolve_repo_key,
 };
+use crate::git_runner::GitRunner;
 use crate::infra::storage::Storage;
 
 /// Ensure `branch` exists, creating it from `base` when missing.
@@ -145,8 +145,8 @@ pub struct ExplicitLinkParams<'a> {
     pub base: Option<&'a str>,
     pub scope_provider: &'a str,
     pub scope_project: Option<&'a str>,
-    /// Explicit `--repository` scoping: a mismatch skips silently like
-    /// the legacy explicit-bind path (this checkout is not the target).
+    /// Explicit `--repository` scoping: a mismatch skips silently (this
+    /// checkout is not the target).
     pub explicit_repository: Option<&'a str>,
 }
 
@@ -189,9 +189,8 @@ impl ExplicitLinkOutcome {
 /// Create the explicit `--branch` target when missing and record its
 /// durable provider/project-scoped link, including shared existing
 /// branches (another link is added; history is never replaced). Never
-/// switches the checkout and never touches the legacy Git key (the
-/// frozen `ensure_branch_and_bind` owns that side). Best-effort: no
-/// outcome fails the remote create that already succeeded.
+/// switches the checkout and never touches local Git config. Best-effort:
+/// no outcome fails the remote create that already succeeded.
 pub fn link_explicit_branch(
     git: &dyn GitRunner,
     params: &ExplicitLinkParams<'_>,
@@ -236,8 +235,8 @@ pub fn link_explicit_branch(
     }
     // Protected branches (the detected default, or a conventional
     // main/master with unknown cached HEAD) are never issue branches.
-    // The CLI arm skips the legacy bind on the same rule; the helper
-    // defends direct use alike.
+    // The CLI arm applies the same rule before calling this helper, and
+    // the helper defends direct use alike.
     if let Err(reason) = crate::branch_links::identity::validate_not_protected_branch(
         branch,
         crate::branch_links::detect_default_branch(git).as_deref(),

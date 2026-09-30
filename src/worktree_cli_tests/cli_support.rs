@@ -106,27 +106,6 @@ pub(crate) fn in_temp_repo<T>(repo: &TempRepo, action: impl FnOnce() -> T) -> T 
     result
 }
 
-pub(crate) fn bind_issue_command(issue_id: u64, session: Option<&str>) -> IssueCommand {
-    IssueCommand::Bind {
-        issue_id,
-        replace: false,
-        session: session.map(Into::into),
-    }
-}
-
-/// The branch binding `read_issue_id` would see, or `None` when unset.
-pub(crate) fn read_branch_binding(repo: &TempRepo) -> Option<String> {
-    let runner = ProcessWorktreeRunner::new();
-    let key = crate::branch_context::config_key(&repo.head_branch);
-    let output = runner
-        .run(
-            &["config", "--local", "--get", key.as_str()],
-            repo.dir.path(),
-        )
-        .expect("git config read");
-    if output.status == 0 {
-        Some(output.stdout.trim().to_owned())
-    } else {
-        None
-    }
+pub(crate) fn bind_issue_command(issue_id: u64) -> IssueCommand {
+    IssueCommand::Bind { issue_id }
 }

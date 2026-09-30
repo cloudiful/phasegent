@@ -7,7 +7,7 @@ use super::{
     branch_exists, canonical_key, current_branch, linked_numbers, pin_temp_db, switch_params,
     switch_repo,
 };
-use crate::branch_context::GitRunner;
+use crate::git_runner::GitRunner;
 use crate::infra::storage::test_support::lock_workflow_tests;
 use crate::lifecycle;
 

@@ -36,9 +36,9 @@ pub enum IssueCommand {
         /// defaults to `HEAD` at execution time.
         base: Option<String>,
         /// Optional explicit worktree session id (`--session`). `None`
-        /// defers to `PHASEGENT_SESSION_ID` and then the legacy
-        /// `phasegent` fallback at execution time. After a successful
-        /// create (and bind step) the shared auto-acquire hook runs
+        /// defers to `PHASEGENT_SESSION_ID`; when neither names a session
+        /// the auto-acquire hook stays silent and no lease is booked.
+        /// After a successful create the shared auto-acquire hook runs
         /// best-effort; stdout JSON is unchanged (issue 18). Boxed so the
         /// `Command` enum stays under the `large_enum_variant` threshold.
         session: Option<Box<str>>,
@@ -87,18 +87,11 @@ pub enum IssueCommand {
         no_clean: bool,
     },
     /// Local branch context operations (no provider access). `bind`
-    /// stores the issue id under `branch.<name>.redmine-issue-id` in the
-    /// local Git config and rejects a different existing binding unless
-    /// `replace` is explicit.
+    /// records a durable provider/project-scoped branch link in the local
+    /// link store; the resolved scope comes from global options or stored
+    /// role config and is never guessed.
     Bind {
         issue_id: u64,
-        replace: bool,
-        /// Optional explicit worktree session id (`--session`). `None`
-        /// defers to `PHASEGENT_SESSION_ID` and then the legacy
-        /// `phasegent` fallback at execution time. After a successful
-        /// bind the shared auto-acquire hook runs best-effort; the
-        /// stdout bind document is unchanged (issue 18).
-        session: Option<Box<str>>,
     },
     Unbind,
     StatusBranch,
@@ -156,8 +149,9 @@ pub enum AssigneeOption {
 
 /// Explicit local branch request for `issue create` (`--branch [NAME]`).
 ///
-/// * `Unset` — no `--branch` flag. Legacy path: auto-bind the current
-///   named branch only, never create a branch.
+/// * `Unset` — no `--branch` flag. The default path derives the
+///   provider-scoped branch, links it durably, and switches only when
+///   safe (never creating a branch for another issue implicitly).
 /// * `Auto` — bare `--branch`. Generate `<type>/<id>` from the tracker
 ///   (`Bug` -> `fix`, everything else -> `feat`, e.g. `feat/452`).
 /// * `Named` — `--branch NAME` (or `--branch=NAME`). Use `NAME` verbatim.

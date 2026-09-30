@@ -58,12 +58,8 @@ fn acquire_explicit_base_creates_a_fresh_worktree_from_the_ref() {
         head,
         "the new worktree must start at the requested base commit"
     );
-    // The one-command closure is unchanged: the new branch is bound to
-    // the acquired issue exactly like the HEAD-based path.
-    let git_runner = crate::branch_context::ProcessGitRunner::in_directory(target);
-    let bound = crate::branch_context::read_issue_id(&git_runner, &outcome.branch)
-        .expect("binding read in the base worktree");
-    assert_eq!(bound, Some(595), "the base worktree branch must be bound");
+    // The one-command closure is unchanged: the acquired worktree lands
+    // on the requested base and the acquire records exactly one lease.
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let rows = leases_for_repo(&identity).expect("list leases");
     assert_eq!(rows.len(), 1, "exactly one lease must be recorded");

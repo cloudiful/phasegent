@@ -132,7 +132,7 @@ pub struct UninstallOutcome {
     pub errors: Vec<String>,
 }
 
-/// Structured error type. Mirrors `hooks::BranchContextError` shape so
+/// Structured error type. Mirrors `hooks::GitError` so
 /// the CLI layer can reuse `structured_error` + `json()` plumbing.
 #[derive(Debug)]
 pub struct PluginError {
