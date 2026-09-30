@@ -241,12 +241,12 @@ fn dockerfile_never_bakes_secrets() {
 #[test]
 fn dockerfile_runtime_stays_minimal_cli_only() {
     let dockerfile = dockerfile();
-    assert!(
-        dockerfile.contains("bookworm-slim")
-            || dockerfile.contains("distroless")
-            || dockerfile.contains("alpine"),
-        "Dockerfile runtime must use a minimal slim/distroless base"
-    );
+    // The runtime base is pinned to Debian 13 (trixie) slim: the released
+    // Linux binaries require glibc >= 2.38 and the rolling tag matches the
+    // existing slim convention. Digest pinning stays a separate
+    // reproducibility decision.
+    assert_contains(&dockerfile, "debian:trixie-slim", "Dockerfile runtime base");
+    assert_not_contains(&dockerfile, "bookworm", "Dockerfile runtime base");
     assert_contains(&dockerfile, "ca-certificates", "Dockerfile runtime");
     // No GUI/frontend toolchain or packaged desktop output in the runtime
     // image; the Electron desktop shell is packaged outside this image.

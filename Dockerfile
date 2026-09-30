@@ -20,7 +20,7 @@
 # - Per-arch correctness is enforced by the image pipeline (each arch
 #   image copies the matching arch binary); no cross-arch reuse.
 
-FROM docker.io/library/debian:bookworm-slim
+FROM docker.io/library/debian:trixie-slim
 
 # Minimal runtime: CA certificates for provider HTTPS only. No GUI
 # libraries, no build toolchain, no shell wrappers around the binary.
