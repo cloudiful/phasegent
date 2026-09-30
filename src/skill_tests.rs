@@ -13,6 +13,15 @@
 //! bounded nested-explorer level: executor/reviewer may launch only `explore`,
 //! the explorer cannot recurse and stays non-audited, reuse is parent-scoped,
 //! and orchestrator ownership plus the independent verdict contract stand.
+//! Issue 679 adds the `tester` role skill: it embeds and binds like the other
+//! protocol roles, owns a test-only write boundary and independent verification
+//! duty, and reuses the shared status vocabulary plus explicit test-result
+//! evidence without inventing a verdict token. Issue 679 P3 adds the risk-based
+//! review policy: one risk class per phase with a `reviewer_policy`
+//! (`final-only` by default, `checkpoint-and-final` only for a `high-risk` or
+//! `irreversible` phase whose plan names the checkpoint), an executor test
+//! disposition, compact evidence, and serial-by-default bounded parallelism that
+//! never authorizes overlapping write owners or a mutable shared tree.
 //! Pure filesystem + policy reads; no network, credentials, HOME, or SQLite
 //! access.
 
@@ -323,9 +332,10 @@ fn skill_is_a_single_self_contained_file() {
     );
 }
 
-/// Issue 665 adds the `explore` recon skill: every `SKILL.<role>.md` in the
-/// skill directory must be embedded by the generated adapter under its
-/// `phasegent-<role>` id, so a new role prompt cannot ship without its binding.
+/// Issue 665 adds the `explore` recon skill and issue 679 adds the `tester`
+/// verification skill: every `SKILL.<role>.md` in the skill directory must be
+/// embedded by the generated adapter under its `phasegent-<role>` id, so a new
+/// role prompt cannot ship without its binding.
 #[test]
 fn every_role_skill_ships_embedded_in_the_adapter() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -348,8 +358,9 @@ fn every_role_skill_ships_embedded_in_the_adapter() {
             "SKILL.explore.md".to_owned(),
             "SKILL.orchestrator.md".to_owned(),
             "SKILL.reviewer.md".to_owned(),
+            "SKILL.tester.md".to_owned(),
         ],
-        "the protocol role skills are the orchestrator/executor/reviewer/explore set"
+        "the protocol role skills are the orchestrator/executor/reviewer/tester/explore set"
     );
 
     let adapter = fs::read_to_string(root.join("assets/opencode/phasegent-worktree.js"))
@@ -576,6 +587,145 @@ fn executor_and_reviewer_may_launch_only_explore_without_weakening_ownership() {
     }
 }
 
+/// Issue 679 makes the `tester` role a first-class protocol role: its skill
+/// carries the tester marker, the test-only write boundary and independent
+/// verification duty, the no-production-write rules, and the shared status
+/// vocabulary plus explicit test-result evidence instead of a new verdict token.
+#[test]
+fn tester_skill_owns_independent_verification_and_test_only_writes() {
+    let tester = read_skill("SKILL.tester.md");
+    let normalised: String = tester.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        tester.contains("<!-- ai-tester issue="),
+        "SKILL.tester.md must carry the tester marker shape"
+    );
+    for phrase in [
+        "independently verify",
+        "Write only the test, fixture, and harness paths the orchestrator allowlists",
+        "Never modify production code",
+        "never weaken or delete a failing test",
+        "never substitutes for your independent verification",
+        "the exact commands run, the observed pass/fail outcome",
+        "no new verdict token",
+        "`DONE`/`PARTIAL`/`BLOCKED`/`FAILED`",
+        "`comment-allowed=true` is audit-incomplete",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.tester.md must own the tester protocol {phrase:?}"
+        );
+    }
+
+    // Tester keeps its restricted capability surface: no project/status/
+    // version/relation data, no status/timer/worktree/issue-body writes, and
+    // `notify send` stays manual-only.
+    for boundary in [
+        "project, status, version, and relation data stay out of reach",
+        "Never `issue update`/`close`/`search`",
+        "`status *`",
+        "`timer *`",
+        "`worktree acquire`/`release`/`prune`",
+        "`notify send` stays manual-only",
+    ] {
+        assert!(
+            normalised.contains(boundary),
+            "SKILL.tester.md must keep the tester boundary {boundary:?}"
+        );
+    }
+
+    // The tester note reuses the shared status vocabulary and never imports the
+    // reviewer verdict tokens.
+    for forbidden in ["VERDICT", "AUDIT_FAILED", "REQUEST_CHANGES"] {
+        assert!(
+            !tester.contains(forbidden),
+            "SKILL.tester.md must not import the reviewer verdict vocabulary {forbidden:?}"
+        );
+    }
+}
+
+/// Issue 679 P3 adds the risk-based review policy: one risk class per phase with
+/// a `reviewer_policy` (`final-only` by default, `checkpoint-and-final` only for
+/// a `high-risk` or `irreversible` phase whose issue plan names the checkpoint),
+/// an executor test disposition that never substitutes for tester verification,
+/// compact evidence, and serial-by-default bounded parallelism that never
+/// authorizes overlapping write owners or a mutable shared tree.
+#[test]
+fn risk_based_reviewer_policy_and_bounded_parallelism_are_documented() {
+    let shared = read_skill("SKILL.md");
+    let normalised: String = shared.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "## Risk classes and reviewer policy",
+        "`reviewer_policy`",
+        "`final-only` is the default for `standard` work",
+        "a checkpoint review never replaces the final one",
+        "Without a named checkpoint boundary in the issue plan the policy stays `final-only`",
+        "## Bounded parallelism (serial by default)",
+        "immutable revision or snapshot in a separate worktree",
+        "Overlapping write owners are never allowed",
+        "## Test disposition and compact evidence",
+        "never substitutes for the tester's independent verification",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.md must own the risk-based review policy {phrase:?}"
+        );
+    }
+    // The policy never authorizes overlapping write owners or a reviewer and
+    // executor on one mutable tree.
+    assert!(
+        normalised.contains("never work the same mutable tree at the same time"),
+        "SKILL.md must forbid a reviewer and executor sharing a mutable tree"
+    );
+
+    let orchestrator = read_skill("SKILL.orchestrator.md");
+    let normalised: String = orchestrator
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for phrase in [
+        "## Risk class, reviewer policy, and parallelism",
+        "`checkpoint-and-final` is allowed only for `high-risk` or `irreversible` work",
+        "without that boundary the policy stays `final-only`",
+        "Keep orchestration serial by default: one write owner per phase",
+        "explicit recorded decision, never automatic",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.orchestrator.md must own the phase policy {phrase:?}"
+        );
+    }
+
+    let executor = read_skill("SKILL.executor.md");
+    let normalised: String = executor.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "Declare a test disposition in your note",
+        "never substitute for the tester's independent verification",
+        "You remain the only write owner for the phase",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.executor.md must own the test disposition {phrase:?}"
+        );
+    }
+
+    let reviewer = read_skill("SKILL.reviewer.md");
+    let normalised: String = reviewer.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "## Risk class and reviewer policy",
+        "The default is one `final-only` audit of `standard` work",
+        "never treat a checkpoint review as a replacement for the final one",
+        "do not repeat the tester report",
+        "`REVIEW:` line beside the `VERDICT:` line",
+        "the pointer's `review` field",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.reviewer.md must own the risk-based review policy {phrase:?}"
+        );
+    }
+}
+
 #[test]
 fn branch_lifecycle_is_one_liner_with_main_merge_type_id_and_bind_fallback() {
     let skill = read_skill("SKILL.md");
@@ -638,6 +788,7 @@ fn role_skills_defer_shared_protocol_to_the_general_skill() {
         ("SKILL.orchestrator.md", ""),
         ("SKILL.executor.md", "ai-executor"),
         ("SKILL.reviewer.md", "ai-reviewer"),
+        ("SKILL.tester.md", "ai-tester"),
         ("SKILL.explore.md", ""),
     ];
     for &(relative, own_marker) in roles {
@@ -732,6 +883,7 @@ fn help_lookup_is_scoped_and_self_checks_stay_conditional() {
         "SKILL.orchestrator.md",
         "SKILL.executor.md",
         "SKILL.reviewer.md",
+        "SKILL.tester.md",
         "SKILL.explore.md",
     ] {
         let role = read_skill(relative);
@@ -758,6 +910,7 @@ fn admin_boundary_is_human_operator_only_in_every_prompt() {
         "SKILL.orchestrator.md",
         "SKILL.executor.md",
         "SKILL.reviewer.md",
+        "SKILL.tester.md",
         "SKILL.explore.md",
     ] {
         let text = read_skill(relative);

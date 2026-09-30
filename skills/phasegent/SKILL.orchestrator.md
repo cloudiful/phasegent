@@ -42,6 +42,22 @@ never infer a permission or a contract from another role. A follow-up attempt or
 round resumes the previous child; start a fresh one only when context isolation
 is genuinely needed.
 
+## Risk class, reviewer policy, and parallelism
+
+- Choose one risk class per phase when you plan it — `standard`, `high-risk`, or
+  `irreversible` — and set the phase's `reviewer_policy` from it; the classes,
+  the `final-only` default, and the checkpoint exception live in the shared
+  skill.
+- `checkpoint-and-final` is allowed only for `high-risk` or `irreversible` work,
+  and only when you write the exact checkpoint boundary into the issue plan
+  before delegating; without that boundary the policy stays `final-only`, and a
+  final audit always closes a phase.
+- Keep orchestration serial by default: one write owner per phase, and no
+  executor shares a mutable tree with a reviewer. Overlap is safe only for
+  read-only recon, a tester observing a frozen implementation it does not modify,
+  or acceptance against an immutable deployed revision, and any overlap is your
+  explicit recorded decision, never automatic.
+
 ## Recon delegation (explore-first)
 
 Send recon to `explore` before delegating implementation when the ground is

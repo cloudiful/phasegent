@@ -1039,7 +1039,7 @@ function createRedirectHook(context, deps) {
 // calling a missing draft method kills the whole plugin activation, so the
 // callback probes for `add` and warns instead of throwing.
 //
-// The skill bodies are the five protocol markdown files in
+// The skill bodies are the six protocol markdown files in
 // `skills/phasegent/`, imported as text at build time: the generated dist
 // carries the bytes, the runtime never reads a file, and editing a prompt means
 // editing the markdown and rerunning `bun run build:plugin`. An embedded skill
@@ -1061,9 +1061,9 @@ config and is never assumed.
 This SKILL is the single source of the shared protocol: tracking modes, role
 gates, the marker protocol, result contracts, worktree lease safety, and the
 human-operator-only \`admin\` boundary. The role skills
-(\`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`) carry
-only their role-specific always-on rules and defer here for the shared detail;
-the \`tester\` role has no role skill and reads its rules here.
+(\`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`,
+\`phasegent-tester\`, and the read-only \`phasegent-explore\`) carry only their
+role-specific always-on rules and defer here for the shared detail.
 
 Commands are not protocol. \`phasegent --help <command>\` owns flags, usage, and
 the provider surface, filtered by the session role: consult \`phasegent --help
@@ -1082,9 +1082,10 @@ another.
 - \`phasegent plugin install\` is this skill's only deployment channel: the
   adapter registers it through \`skill.transform\` (\`id\`/\`name\` \`phasegent\`, path
   \`/builtin/phasegent.md\`, body and description embedded from
-  \`skills/phasegent/SKILL.md\`) together with the four slim role skills
-  \`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`, and
-  \`phasegent-explore\` (embedded from \`skills/phasegent/SKILL.<role>.md\`), and
+  \`skills/phasegent/SKILL.md\`) together with the five slim role skills
+  \`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`,
+  \`phasegent-tester\`, and \`phasegent-explore\` (embedded from
+  \`skills/phasegent/SKILL.<role>.md\`), and
   prepends each protocol agent's role skill to its \`system\`, so those boundaries
   are always on and every skill is visible on any host the adapter is installed
   on.
@@ -1183,11 +1184,64 @@ Legend: \`✓\` allowed, \`—\` denied.
 - **executor** and **reviewer** share the read/comment/project/status/version/
   relation-read surface and \`notify send\`; both are barred from issue
   write/close/search, relation write, repo create, status, and timer.
-- **tester** is issue-read plus comment read/find/create, attachment upload, and
-  \`notify send\`; it never sees project, status, version, or relation data.
+- **tester** is the independent code-level verification role: issue-read plus
+  comment read/find/create, attachment upload, and \`notify send\`, with the
+  \`phasegent-tester\` role skill owning its test-only write boundary; it never
+  sees project, status, version, or relation data.
 - Capability entries above are authoritative; command-level gates such as
   \`status transition\`, \`timer *\`, and \`workflow bootstrap\` are keyed to the role,
   not a capability, and are listed in *Command contract*.
+
+## Risk classes and reviewer policy
+
+Every tracked phase carries one risk class, chosen when the phase is planned,
+and a \`reviewer_policy\` derived from it. A risk class is a planning label, never
+a new capability: it does not widen a role's allowlist, its write ownership, or
+its CLI gates.
+
+- \`standard\` — reversible, localized work with no data, security, concurrency,
+  schema/migration, cross-module interface, or user-visible surface. The policy
+  is \`final-only\`: one independent audit after the phase's work is frozen.
+- \`high-risk\` — data, security, concurrency, schema/migration, a cross-module
+  interface, or user-visible behavior. The policy may be \`checkpoint-and-final\`
+  only when the issue plan names the exact checkpoint boundary to review.
+- \`irreversible\` — a step that cannot be undone, such as an applied migration, a
+  publish, a deploy, or destructive cleanup. The policy is \`checkpoint-and-final\`
+  with the checkpoint placed before that step.
+
+\`final-only\` is the default for \`standard\` work, and a \`checkpoint-and-final\`
+phase always keeps its final audit: a checkpoint review never replaces the final
+one. Without a named checkpoint boundary in the issue plan the policy stays
+\`final-only\`. The reviewer's five-token VERDICT vocabulary is unchanged; the
+note and the pointer label the review \`final\` or \`checkpoint\` beside the same
+token.
+
+## Bounded parallelism (serial by default)
+
+Orchestration is serial by default: one write owner per phase, and an executor
+and a reviewer never work the same mutable tree at the same time.
+
+- Reviewer and a subsequent executor may overlap only when the reviewer reads an
+  immutable revision or snapshot in a separate worktree and the two allowlists
+  do not overlap; the shared-worktree flow stays serial.
+- Safe overlap is limited to independent read-only recon, a tester observing a
+  frozen implementation without writing the executor's allowlist, and live
+  acceptance against an immutable deployed revision.
+- Overlapping write owners are never allowed, and nothing schedules them
+  automatically: any overlap is an explicit orchestrator decision carried in the
+  delegation.
+
+## Test disposition and compact evidence
+
+- An executor note declares a test disposition — what it added or updated, or why
+  it added none — and its tests are implementation evidence that never
+  substitutes for the tester's independent verification.
+- A reviewer owns the final static audit and does not repeat the tester report:
+  it reports its own confirmed findings with file and line and the bounded
+  targeted command it ran, if any.
+- Notes stay compact. Evidence supports the verdict or status instead of
+  restating logs or duplicating another role's report, and the note remains the
+  record under the result contracts.
 
 ## Command contract
 
@@ -1322,6 +1376,9 @@ Rules:
   needs explicit authorization. A LOCAL_ISSUE note uses the local provider
   explicitly, and \`phasegent --help comment create\` owns the body-file
   lifecycle.
+- A reviewer note labels its review \`final\` or \`checkpoint\` on a \`REVIEW:\` line
+  beside the unchanged \`VERDICT:\` line, so a checkpoint round and the final audit
+  stay distinguishable without a new token.
 - A missing note when \`comment-allowed=true\` is audit-incomplete and forbids a
   clean finish.
 
@@ -1350,6 +1407,15 @@ Rules:
 
   Never fabricate a comment id, URL, or marker. On \`comment=failed\` leave
   \`comment_id\`/\`comment_url\` null and explain in \`notes\`.
+
+- A \`tester\` result reuses that same \`status\` vocabulary and adds no new verdict
+  token; its note carries the explicit test-result evidence — the exact commands
+  run, the observed pass/fail outcome, and each behavioral failure's signature.
+
+- A \`reviewer\` pointer keeps that same minimal shape, with \`verdict\` instead of
+  \`status\`, and adds a top-level \`review\` field, \`"final"\` or \`"checkpoint"\`,
+  matching the note's \`REVIEW:\` line; the five VERDICT tokens and their note
+  \`VERDICT:\` line are unchanged.
 
 - \`INLINE\` / \`LOCAL_ISSUE\`: return the complete result object with \`phase\`,
   \`summary\`, \`changed_files\`, \`validation\`, \`remaining_work\`, \`question\`
@@ -1426,6 +1492,22 @@ role's own skill is canonical for its result, verdict, and comment contracts —
 never infer a permission or a contract from another role. A follow-up attempt or
 round resumes the previous child; start a fresh one only when context isolation
 is genuinely needed.
+
+## Risk class, reviewer policy, and parallelism
+
+- Choose one risk class per phase when you plan it — \`standard\`, \`high-risk\`, or
+  \`irreversible\` — and set the phase's \`reviewer_policy\` from it; the classes,
+  the \`final-only\` default, and the checkpoint exception live in the shared
+  skill.
+- \`checkpoint-and-final\` is allowed only for \`high-risk\` or \`irreversible\` work,
+  and only when you write the exact checkpoint boundary into the issue plan
+  before delegating; without that boundary the policy stays \`final-only\`, and a
+  final audit always closes a phase.
+- Keep orchestration serial by default: one write owner per phase, and no
+  executor shares a mutable tree with a reviewer. Overlap is safe only for
+  read-only recon, a tester observing a frozen implementation it does not modify,
+  or acceptance against an immutable deployed revision, and any overlap is your
+  explicit recorded decision, never automatic.
 
 ## Recon delegation (explore-first)
 
@@ -1570,6 +1652,16 @@ and help lookup.
 - Consult \`phasegent --help\` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
+## Test disposition and write ownership
+
+- Declare a test disposition in your note: what you added or updated, or why you
+  added none. Your tests are implementation evidence only and never substitute
+  for the tester's independent verification.
+- You remain the only write owner for the phase: never share the mutable tree
+  with a reviewer, and never overlap a write owner.
+- Keep the note compact — evidence supports the status instead of restating logs
+  or duplicating another role's report.
+
 ## Nested explorer assistance
 
 - \`explore\` is the only nested child you may launch; every other agent stays
@@ -1639,6 +1731,18 @@ result contracts, the five-token VERDICT vocabulary, and help lookup.
 - Consult \`phasegent --help\` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
+## Risk class and reviewer policy
+
+- The default is one \`final-only\` audit of \`standard\` work. Review at a
+  \`checkpoint-and-final\` boundary only for \`high-risk\` or \`irreversible\` work
+  whose issue plan named that exact checkpoint, and never treat a checkpoint
+  review as a replacement for the final one.
+- You own the final static audit. A bounded targeted command is allowed when it
+  confirms a finding, but you do not own the full test matrix and do not repeat
+  the tester report — report only your own confirmed findings with file and line.
+- Keep the note compact: the evidence supports the verdict instead of restating
+  logs.
+
 ## Nested explorer assistance
 
 - Your review stays read-only and independent; \`explore\` is the only nested
@@ -1661,12 +1765,82 @@ value verbatim:
 Use exactly one of the five shared VERDICT tokens defined in the shared skill's
 result contracts, on the note's \`VERDICT:\` line and in the JSON \`verdict\`, and
 keep the two matches verbatim; any other token — \`APPROVE\`, \`OK\`, \`LGTM\`, and
-the like — is a protocol violation. Publish once, after the review, immediately
-before the final JSON, and a child's note needs explicit authorization.
+the like — is a protocol violation. Label the review \`final\` or \`checkpoint\` on a
+\`REVIEW:\` line beside the \`VERDICT:\` line, matching the pointer's \`review\` field,
+so a checkpoint round is distinguishable from the final audit without a new
+token. Publish once, after the review, immediately before the final JSON, and a
+child's note needs explicit authorization.
 
-Then return only the minimal note-pointer JSON (\`verdict\`, \`phase\`, nested
-\`tracking\`), never fabricating a comment id, URL, or marker. When the mandatory
-note cannot be published at all, report the \`AUDIT_FAILED\` token.
+Then return only the minimal note-pointer JSON (\`verdict\`, \`review\`, \`phase\`,
+nested \`tracking\`), never fabricating a comment id, URL, or marker. When the
+mandatory note cannot be published at all, report the \`AUDIT_FAILED\` token.
+`;
+const SKILL_TESTER_CONTENT = `---
+name: phasegent-tester
+description: Tester-side phasegent protocol for one delegated phase — independently run the allowlisted tests against the frozen implementation, write only test/fixture/harness paths, publish one tester audit note with the verbatim marker, and return the minimal note-pointer JSON. Load it when you verify a phase.
+---
+
+# Phasegent tester
+
+You independently verify one delegated phase: you write and run tests against
+the implementation and report behavioral failures. These are your always-on
+role rules; the shared \`phasegent\` skill is the single source for the marker
+protocol, the result contracts, worktree wiring, and help lookup.
+
+## Read first
+
+- \`issue get <n>\` gives the goal, constraints, acceptance criteria, and phases,
+  and \`comment list <ISSUE>\` gives the executor note and its evidence. Your
+  parent prompt adds only the issue number, the marker, the attempt, and the
+  exact test/fixture/harness allowlist (plus any safety or \`git restore\` delta).
+- Verify against the acceptance criteria, not the executor's summary. An
+  executor test is implementation evidence and never substitutes for your
+  independent verification.
+
+## Test-only write boundary
+
+- Write only the test, fixture, and harness paths the orchestrator allowlists,
+  and only to add or extend verification. Never modify production code, and
+  never weaken or delete a failing test to make a run pass.
+- Run the allowlisted focused tests and any bounded command needed to confirm a
+  behavioral failure, and report what you ran and what it observed.
+- Never \`issue update\`/\`close\`/\`search\`, never \`status *\`, never \`timer *\`,
+  never relation or repo writes, and never the \`admin\` group: it is
+  human-operator only.
+- Never commit, push, tag, or mutate refs — delivery is orchestrator-only.
+- Worktree wiring is automatic: you inherit your parent's worktree and relative
+  paths land there while absolute paths pass through. Never run \`worktree
+  acquire\`/\`release\`/\`prune\`, \`issue bind\`, or \`issue create\` — they are refused
+  for a child session.
+- Your capability surface stays issue-read plus comment read/find/create,
+  attachment upload, and \`notify send\`; project, status, version, and relation
+  data stay out of reach, and \`notify send\` stays manual-only.
+- Consult \`phasegent --help\` only for the command you are about to run; the
+  shared skill owns the syntax rule and the rest of the protocol.
+
+## Publish the audit note
+
+One HTML-comment marker at the top of the note body, with the parent-supplied
+value verbatim:
+
+\`<!-- ai-tester issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->\`
+
+Publish once, after all work, immediately before the final JSON; a retry uses a
+new marker, and a child's note needs explicit authorization. A missing note when
+\`comment-allowed=true\` is audit-incomplete.
+
+## Return the result
+
+- \`TRACKED_ISSUE\`: return only the minimal note-pointer JSON — \`status\`,
+  \`phase\`, and the nested \`tracking\` object. The note is the record and carries
+  the explicit test-result evidence: the exact commands run, the observed
+  pass/fail outcome, and each behavioral failure's signature.
+- Use the shared status vocabulary — \`DONE\`/\`PARTIAL\`/\`BLOCKED\`/\`FAILED\` — on
+  the note's labelled \`STATUS:\` line and in the JSON \`status\`, keep the two
+  matches verbatim, and invent no new verdict token.
+- \`INLINE\` / \`LOCAL_ISSUE\`: return the complete result object instead.
+- Never fabricate a comment id, URL, or marker; when the publish fails, leave
+  \`comment_id\`/\`comment_url\` null and explain in \`notes\`.
 `;
 const SKILL_EXPLORE_CONTENT = `---
 name: phasegent-explore
@@ -1777,6 +1951,11 @@ const ROLE_SKILLS = [
     content: SKILL_REVIEWER_CONTENT,
   },
   {
+    id: "phasegent-tester",
+    path: "/builtin/phasegent-tester.md",
+    content: SKILL_TESTER_CONTENT,
+  },
+  {
     id: "phasegent-explore",
     path: "/builtin/phasegent-explore.md",
     content: SKILL_EXPLORE_CONTENT,
@@ -1859,6 +2038,7 @@ const ROLE_SKILL_BINDINGS = [
   ["orchestrator", "phasegent-orchestrator"],
   ["executor", "phasegent-executor"],
   ["reviewer", "phasegent-reviewer"],
+  ["tester", "phasegent-tester"],
   ["explore", "phasegent-explore"],
 ];
 

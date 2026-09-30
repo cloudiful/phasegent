@@ -39,6 +39,16 @@ and help lookup.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
+## Test disposition and write ownership
+
+- Declare a test disposition in your note: what you added or updated, or why you
+  added none. Your tests are implementation evidence only and never substitute
+  for the tester's independent verification.
+- You remain the only write owner for the phase: never share the mutable tree
+  with a reviewer, and never overlap a write owner.
+- Keep the note compact — evidence supports the status instead of restating logs
+  or duplicating another role's report.
+
 ## Nested explorer assistance
 
 - `explore` is the only nested child you may launch; every other agent stays

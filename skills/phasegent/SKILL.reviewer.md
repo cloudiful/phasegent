@@ -32,6 +32,18 @@ result contracts, the five-token VERDICT vocabulary, and help lookup.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
+## Risk class and reviewer policy
+
+- The default is one `final-only` audit of `standard` work. Review at a
+  `checkpoint-and-final` boundary only for `high-risk` or `irreversible` work
+  whose issue plan named that exact checkpoint, and never treat a checkpoint
+  review as a replacement for the final one.
+- You own the final static audit. A bounded targeted command is allowed when it
+  confirms a finding, but you do not own the full test matrix and do not repeat
+  the tester report — report only your own confirmed findings with file and line.
+- Keep the note compact: the evidence supports the verdict instead of restating
+  logs.
+
 ## Nested explorer assistance
 
 - Your review stays read-only and independent; `explore` is the only nested
@@ -54,9 +66,12 @@ value verbatim:
 Use exactly one of the five shared VERDICT tokens defined in the shared skill's
 result contracts, on the note's `VERDICT:` line and in the JSON `verdict`, and
 keep the two matches verbatim; any other token — `APPROVE`, `OK`, `LGTM`, and
-the like — is a protocol violation. Publish once, after the review, immediately
-before the final JSON, and a child's note needs explicit authorization.
+the like — is a protocol violation. Label the review `final` or `checkpoint` on a
+`REVIEW:` line beside the `VERDICT:` line, matching the pointer's `review` field,
+so a checkpoint round is distinguishable from the final audit without a new
+token. Publish once, after the review, immediately before the final JSON, and a
+child's note needs explicit authorization.
 
-Then return only the minimal note-pointer JSON (`verdict`, `phase`, nested
-`tracking`), never fabricating a comment id, URL, or marker. When the mandatory
-note cannot be published at all, report the `AUDIT_FAILED` token.
+Then return only the minimal note-pointer JSON (`verdict`, `review`, `phase`,
+nested `tracking`), never fabricating a comment id, URL, or marker. When the
+mandatory note cannot be published at all, report the `AUDIT_FAILED` token.

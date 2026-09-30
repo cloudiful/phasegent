@@ -12,9 +12,9 @@ config and is never assumed.
 This SKILL is the single source of the shared protocol: tracking modes, role
 gates, the marker protocol, result contracts, worktree lease safety, and the
 human-operator-only `admin` boundary. The role skills
-(`phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`) carry
-only their role-specific always-on rules and defer here for the shared detail;
-the `tester` role has no role skill and reads its rules here.
+(`phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`,
+`phasegent-tester`, and the read-only `phasegent-explore`) carry only their
+role-specific always-on rules and defer here for the shared detail.
 
 Commands are not protocol. `phasegent --help <command>` owns flags, usage, and
 the provider surface, filtered by the session role: consult `phasegent --help
@@ -33,9 +33,10 @@ another.
 - `phasegent plugin install` is this skill's only deployment channel: the
   adapter registers it through `skill.transform` (`id`/`name` `phasegent`, path
   `/builtin/phasegent.md`, body and description embedded from
-  `skills/phasegent/SKILL.md`) together with the four slim role skills
-  `phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`, and
-  `phasegent-explore` (embedded from `skills/phasegent/SKILL.<role>.md`), and
+  `skills/phasegent/SKILL.md`) together with the five slim role skills
+  `phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`,
+  `phasegent-tester`, and `phasegent-explore` (embedded from
+  `skills/phasegent/SKILL.<role>.md`), and
   prepends each protocol agent's role skill to its `system`, so those boundaries
   are always on and every skill is visible on any host the adapter is installed
   on.
@@ -134,11 +135,64 @@ Legend: `✓` allowed, `—` denied.
 - **executor** and **reviewer** share the read/comment/project/status/version/
   relation-read surface and `notify send`; both are barred from issue
   write/close/search, relation write, repo create, status, and timer.
-- **tester** is issue-read plus comment read/find/create, attachment upload, and
-  `notify send`; it never sees project, status, version, or relation data.
+- **tester** is the independent code-level verification role: issue-read plus
+  comment read/find/create, attachment upload, and `notify send`, with the
+  `phasegent-tester` role skill owning its test-only write boundary; it never
+  sees project, status, version, or relation data.
 - Capability entries above are authoritative; command-level gates such as
   `status transition`, `timer *`, and `workflow bootstrap` are keyed to the role,
   not a capability, and are listed in *Command contract*.
+
+## Risk classes and reviewer policy
+
+Every tracked phase carries one risk class, chosen when the phase is planned,
+and a `reviewer_policy` derived from it. A risk class is a planning label, never
+a new capability: it does not widen a role's allowlist, its write ownership, or
+its CLI gates.
+
+- `standard` — reversible, localized work with no data, security, concurrency,
+  schema/migration, cross-module interface, or user-visible surface. The policy
+  is `final-only`: one independent audit after the phase's work is frozen.
+- `high-risk` — data, security, concurrency, schema/migration, a cross-module
+  interface, or user-visible behavior. The policy may be `checkpoint-and-final`
+  only when the issue plan names the exact checkpoint boundary to review.
+- `irreversible` — a step that cannot be undone, such as an applied migration, a
+  publish, a deploy, or destructive cleanup. The policy is `checkpoint-and-final`
+  with the checkpoint placed before that step.
+
+`final-only` is the default for `standard` work, and a `checkpoint-and-final`
+phase always keeps its final audit: a checkpoint review never replaces the final
+one. Without a named checkpoint boundary in the issue plan the policy stays
+`final-only`. The reviewer's five-token VERDICT vocabulary is unchanged; the
+note and the pointer label the review `final` or `checkpoint` beside the same
+token.
+
+## Bounded parallelism (serial by default)
+
+Orchestration is serial by default: one write owner per phase, and an executor
+and a reviewer never work the same mutable tree at the same time.
+
+- Reviewer and a subsequent executor may overlap only when the reviewer reads an
+  immutable revision or snapshot in a separate worktree and the two allowlists
+  do not overlap; the shared-worktree flow stays serial.
+- Safe overlap is limited to independent read-only recon, a tester observing a
+  frozen implementation without writing the executor's allowlist, and live
+  acceptance against an immutable deployed revision.
+- Overlapping write owners are never allowed, and nothing schedules them
+  automatically: any overlap is an explicit orchestrator decision carried in the
+  delegation.
+
+## Test disposition and compact evidence
+
+- An executor note declares a test disposition — what it added or updated, or why
+  it added none — and its tests are implementation evidence that never
+  substitutes for the tester's independent verification.
+- A reviewer owns the final static audit and does not repeat the tester report:
+  it reports its own confirmed findings with file and line and the bounded
+  targeted command it ran, if any.
+- Notes stay compact. Evidence supports the verdict or status instead of
+  restating logs or duplicating another role's report, and the note remains the
+  record under the result contracts.
 
 ## Command contract
 
@@ -273,6 +327,9 @@ Rules:
   needs explicit authorization. A LOCAL_ISSUE note uses the local provider
   explicitly, and `phasegent --help comment create` owns the body-file
   lifecycle.
+- A reviewer note labels its review `final` or `checkpoint` on a `REVIEW:` line
+  beside the unchanged `VERDICT:` line, so a checkpoint round and the final audit
+  stay distinguishable without a new token.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
   clean finish.
 
@@ -301,6 +358,15 @@ Rules:
 
   Never fabricate a comment id, URL, or marker. On `comment=failed` leave
   `comment_id`/`comment_url` null and explain in `notes`.
+
+- A `tester` result reuses that same `status` vocabulary and adds no new verdict
+  token; its note carries the explicit test-result evidence — the exact commands
+  run, the observed pass/fail outcome, and each behavioral failure's signature.
+
+- A `reviewer` pointer keeps that same minimal shape, with `verdict` instead of
+  `status`, and adds a top-level `review` field, `"final"` or `"checkpoint"`,
+  matching the note's `REVIEW:` line; the five VERDICT tokens and their note
+  `VERDICT:` line are unchanged.
 
 - `INLINE` / `LOCAL_ISSUE`: return the complete result object with `phase`,
   `summary`, `changed_files`, `validation`, `remaining_work`, `question`

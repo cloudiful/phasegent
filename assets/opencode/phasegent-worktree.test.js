@@ -1930,6 +1930,7 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       "phasegent-orchestrator",
       "phasegent-executor",
       "phasegent-reviewer",
+      "phasegent-tester",
       "phasegent-explore",
     ]);
     for (const definition of definitions) {
@@ -1946,8 +1947,8 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       expect(definition.content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
       expect(definition.content).not.toMatch(/\bses_[A-Za-z0-9]/);
     }
-    // The generic skill plus the four role variants are what setup registers.
-    expect(skillDefinitions()).toHaveLength(5);
+    // The generic skill plus the five role variants are what setup registers.
+    expect(skillDefinitions()).toHaveLength(6);
     expect(skillDefinitions()[0].id).toBe("phasegent");
   });
 
@@ -1998,6 +1999,57 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(shared).toContain("stays read-only, non-audited, and unable to recurse");
   });
 
+  test("the embedded tester prompt carries the test-only verification protocol (issue 679)", () => {
+    // The tester role ships its own slim skill: the tester marker, the
+    // test-only write boundary, independent verification, and the shared status
+    // vocabulary plus explicit test-result evidence — never a new verdict token.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const tester = flat(
+      roleSkillDefinitions().find((definition) => definition.id === "phasegent-tester").content,
+    );
+    expect(tester).toContain("<!-- ai-tester issue=");
+    expect(tester).toContain(
+      "Write only the test, fixture, and harness paths the orchestrator allowlists",
+    );
+    expect(tester).toContain("Never modify production code");
+    expect(tester).toContain("the exact commands run, the observed pass/fail outcome");
+    expect(tester).toContain("`DONE`/`PARTIAL`/`BLOCKED`/`FAILED`");
+    expect(tester).toContain("no new verdict token");
+    expect(tester).not.toContain("AUDIT_FAILED");
+    expect(tester).not.toContain("REQUEST_CHANGES");
+  });
+
+  test("the embedded prompts carry the risk-based review policy (issue 679 P3)", () => {
+    // The shared and role prompts define one risk class per phase, a
+    // `reviewer_policy` that defaults to `final-only` and only escalates to
+    // `checkpoint-and-final` for a planned checkpoint, an executor test
+    // disposition, compact evidence, and serial-by-default overlap that never
+    // allows overlapping write owners.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("## Risk classes and reviewer policy");
+    expect(shared).toContain("`final-only` is the default for `standard` work");
+    expect(shared).toContain("a checkpoint review never replaces the final one");
+    expect(shared).toContain("## Bounded parallelism (serial by default)");
+    expect(shared).toContain("Overlapping write owners are never allowed");
+    expect(shared).toContain("## Test disposition and compact evidence");
+    const orchestrator = flat(contentFor("phasegent-orchestrator"));
+    expect(orchestrator).toContain("`reviewer_policy`");
+    expect(orchestrator).toContain(
+      "`checkpoint-and-final` is allowed only for `high-risk` or `irreversible` work",
+    );
+    expect(orchestrator).toContain("Keep orchestration serial by default");
+    const executor = flat(contentFor("phasegent-executor"));
+    expect(executor).toContain("Declare a test disposition in your note");
+    expect(executor).toContain("You remain the only write owner for the phase");
+    const reviewer = flat(contentFor("phasegent-reviewer"));
+    expect(reviewer).toContain("The default is one `final-only` audit of `standard` work");
+    expect(reviewer).toContain("do not repeat the tester report");
+    expect(reviewer).toContain("`REVIEW:` line beside the `VERDICT:` line");
+  });
+
   test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {
@@ -2025,6 +2077,7 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       "phasegent-orchestrator",
       "phasegent-executor",
       "phasegent-reviewer",
+      "phasegent-tester",
       "phasegent-explore",
     ]);
     const skill = skills.get("phasegent");
@@ -2034,6 +2087,7 @@ describe("v2 skill.transform (embedded phasegent)", () => {
       "phasegent-orchestrator",
       "phasegent-executor",
       "phasegent-reviewer",
+      "phasegent-tester",
       "phasegent-explore",
     ]) {
       expect(skills.get(id).path).toBe(`/builtin/${id}.md`);
@@ -2075,6 +2129,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     ["orchestrator", "phasegent-orchestrator"],
     ["executor", "phasegent-executor"],
     ["reviewer", "phasegent-reviewer"],
+    ["tester", "phasegent-tester"],
     ["explore", "phasegent-explore"],
   ];
 
@@ -2123,8 +2178,13 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
       // Exactly one skill body: a second copy only appears if prefixing stacked.
       expect(entry.system.split(content).length - 1).toBe(1);
     }
-    // The tester agent keeps its own system untouched.
-    expect(state.find((entry) => entry.id === "tester").system).toBe("You test.");
+    // The tester agent carries its own tester skill like the other protocol
+    // agents.
+    expect(
+      state
+        .find((entry) => entry.id === "tester")
+        .system.startsWith(roleSkillContent("phasegent-tester")),
+    ).toBe(true);
   });
 
   test("re-running the transform never stacks the skill body", async () => {
@@ -2257,7 +2317,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     expect(roleSkillId("Executor")).toBe("phasegent-executor");
     expect(roleSkillId("build-reviewer-x")).toBe("phasegent-reviewer");
     expect(roleSkillId("explore")).toBe("phasegent-explore");
-    expect(roleSkillId("tester")).toBeNull();
+    expect(roleSkillId("tester")).toBe("phasegent-tester");
     expect(roleSkillId("build")).toBeNull();
     expect(roleSkillId("")).toBeNull();
     expect(roleSkillId(undefined)).toBeNull();
