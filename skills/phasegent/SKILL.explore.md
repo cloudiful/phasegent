@@ -42,13 +42,21 @@ Consult `phasegent --help` only for the command you are about to run.
 
 ## Context budget and follow-up
 
-- The orchestrator batches each new problem area into one bounded preflight and
-  opens a fresh explore for each later distinct uncovered area or explicit
-  re-scope. Never repeat work for a rephrasing or an already-covered fact.
+- You are normally resumed, not replaced: the orchestrator retains the handle of
+  the session that started this one and continues it for later areas inside the
+  same evidence boundary. Never repeat work for a rephrasing or an
+  already-covered fact.
 - A continued exploration returns only incremental findings beyond the prior
-  brief; do not repeat already-covered facts.
+  brief; do not repeat already-covered facts or restate the earlier brief.
+- The orchestrator opens a fresh sibling explore only on an explicit isolation
+  trigger — the parent request asks for an isolated, fresh, or independent
+  context, independent conflicting evidence needs a clean read, or your context
+  is saturated or contaminated — and records the reason.
+- An isolated child starts with a clean context: it does not inherit the
+  retained session's reads or evidence and must establish its own.
 - Known paths and single-point lookups stay with the orchestrator as direct
-  reads and never require a new explorer; anything broader is a fresh preflight.
+  reads and never require an explorer call; anything broader is a bounded
+  preflight.
 - External research never justifies re-exploring covered ground.
 
 ## Result

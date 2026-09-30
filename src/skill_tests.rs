@@ -6,8 +6,11 @@
 //! single-file self-contained shape, and the issue #602 split between the
 //! shared protocol in `SKILL.md` and the always-on role boundaries in
 //! `SKILL.<role>.md`. Issue 665 adds `SKILL.explore.md` to that role set and
-//! asserts every role skill is embedded by the generated adapter. Pure
-//! filesystem + policy reads; no network, credentials, HOME, or SQLite access.
+//! asserts every role skill is embedded by the generated adapter. Issue 669
+//! pins the default explorer-session reuse protocol: one retained `sessionID`
+//! handle per parent session, incremental deltas, and a recorded isolation
+//! reason for the limited fresh-child triggers. Pure filesystem + policy reads;
+//! no network, credentials, HOME, or SQLite access.
 
 use crate::policy::{Capability, Role};
 use std::collections::HashMap;
@@ -391,6 +394,77 @@ fn role_skills_own_recon_delegation_and_explore_read_rule() {
         explore.contains("Read the parent request and the applicable `AGENTS.md` files"),
         "SKILL.explore.md must keep the parent-request/applicable-AGENTS read rule"
     );
+}
+
+/// Issue 669 makes explorer-session reuse the default: the orchestrator retains
+/// the `sessionID` returned by its first `task(explore)` call for the rest of
+/// the parent session and continues that one child with incremental deltas, and
+/// it opens a fresh explore only on one of the approved isolation triggers whose
+/// reason it records. The explore skill resumes accordingly, starts an isolated
+/// child with a clean context, and keeps its read-only boundary, compact
+/// evidence brief, and result contract.
+#[test]
+fn orchestrator_reuses_one_explore_session_and_explore_resumes_it() {
+    let orchestrator = read_skill("SKILL.orchestrator.md");
+    let normalised: String = orchestrator
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for phrase in [
+        "Explorer sessions are reused by default",
+        "retain that one handle for the rest of the parent session",
+        "pass it back as the `sessionID` continuation on every later explore delegation",
+        "send only the incremental ask",
+        "A new topic is not by itself a reason for a fresh child",
+        "Isolation triggers are the only reasons to open a fresh explore",
+        "the parent request explicitly asks for an isolated, fresh, or independent context",
+        "independent conflicting evidence requires a clean read",
+        "the retained child's context is saturated or contaminated",
+        "Record the trigger and the reason",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.orchestrator.md must own the explore-session reuse protocol {phrase:?}"
+        );
+    }
+    // Only the approved isolation triggers: the plan never authorizes a
+    // re-scope on its own to abandon the retained child.
+    assert!(
+        !normalised.contains("re-scope that invalidates"),
+        "SKILL.orchestrator.md must not add an unapproved isolation trigger"
+    );
+
+    let explore = read_skill("SKILL.explore.md");
+    let normalised: String = explore.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "You are normally resumed, not replaced",
+        "returns only incremental findings beyond the prior brief",
+        "explicit isolation trigger",
+        "the parent request asks for an isolated, fresh, or independent context",
+        "independent conflicting evidence needs a clean read",
+        "your context is saturated or contaminated",
+        "records the reason",
+        "An isolated child starts with a clean context",
+        "it does not inherit the retained session's reads or evidence",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.explore.md must own the resumed-session behavior {phrase:?}"
+        );
+    }
+    // The resumed-session contract changes the follow-up budget only; the
+    // read-only boundary, the compact evidence brief, and the incremental
+    // no-repetition rule all stay intact.
+    for kept in [
+        "You are read-only by tool block, not only by convention",
+        "Return a concise evidence brief",
+        "do not repeat already-covered facts",
+    ] {
+        assert!(
+            normalised.contains(kept),
+            "SKILL.explore.md must keep {kept:?} after the reuse change"
+        );
+    }
 }
 
 #[test]

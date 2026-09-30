@@ -1942,6 +1942,27 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(skillDefinitions()[0].id).toBe("phasegent");
   });
 
+  test("the embedded orchestrator and explore prompts carry the reuse protocol", () => {
+    // Issue 669: explorer-session reuse is the shipped default — the
+    // orchestrator retains the returned handle and continues it, opens a fresh
+    // child only on an approved isolation trigger, and the explore role is
+    // resumed rather than replaced, with an isolated child starting clean.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const orchestrator = flat(contentFor("phasegent-orchestrator"));
+    expect(orchestrator).toContain("Explorer sessions are reused by default");
+    expect(orchestrator).toContain("retain that one handle for the rest of the parent session");
+    expect(orchestrator).toContain("A new topic is not by itself a reason for a fresh child");
+    expect(orchestrator).toContain(
+      "the parent request explicitly asks for an isolated, fresh, or independent context",
+    );
+    const explore = flat(contentFor("phasegent-explore"));
+    expect(explore).toContain("You are normally resumed, not replaced");
+    expect(explore).toContain("returns only incremental findings beyond the prior brief");
+    expect(explore).toContain("An isolated child starts with a clean context");
+  });
+
   test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {

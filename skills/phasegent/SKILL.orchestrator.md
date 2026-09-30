@@ -56,18 +56,30 @@ unknown:
 - Direct reads cover single-point facts off evidence in hand (at most two hops or
   two files per question); the moment a lookup needs a third open or a second
   grep round, delegate it.
-- Batch one preflight per new problem area, and give a later distinct uncovered
-  area its own explore. The budget bars repetition only: never delegate a
-  rephrasing or an already-covered fact.
+- The budget bars repetition only: never delegate a rephrasing or an
+  already-covered fact.
 - External research uses the same bounded preflight, with the subagent choosing
   its tools, and never justifies re-exploring covered ground.
-- Reuse the same explore task for follow-ups inside one topic and evidence
-  boundary; the resumed child returns only incremental findings. Start a fresh
-  explore for a new topic, conflicting evidence that needs an independent read,
-  context saturation, or changed constraints.
 - Diagnosis and forensics are recon too: multi-file searches, log, bundle, or UI
   analysis, and adaptive probe matrices come back as a compact findings table;
   you keep only gate checks and one- or two-hop lookups.
+
+Explorer sessions are reused by default. The first `task(explore)` call returns
+the child handle as its `sessionID`: retain that one handle for the rest of the
+parent session and pass it back as the `sessionID` continuation on every later
+explore delegation, so the child keeps its accumulated evidence instead of
+re-reading covered ground.
+
+- A later uncovered area, a follow-up, or a changed hypothesis is a delta into
+  the retained handle: send only the incremental ask and take back only
+  incremental findings, never a restated brief.
+- A new topic is not by itself a reason for a fresh child; continue the retained
+  handle unless an isolation trigger applies.
+- Isolation triggers are the only reasons to open a fresh explore: the parent
+  request explicitly asks for an isolated, fresh, or independent context;
+  independent conflicting evidence requires a clean read; or the retained
+  child's context is saturated or contaminated. Record the trigger and the
+  reason whenever you open a fresh child.
 
 ## Accept the note-pointer result
 

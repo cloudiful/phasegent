@@ -1432,18 +1432,30 @@ unknown:
 - Direct reads cover single-point facts off evidence in hand (at most two hops or
   two files per question); the moment a lookup needs a third open or a second
   grep round, delegate it.
-- Batch one preflight per new problem area, and give a later distinct uncovered
-  area its own explore. The budget bars repetition only: never delegate a
-  rephrasing or an already-covered fact.
+- The budget bars repetition only: never delegate a rephrasing or an
+  already-covered fact.
 - External research uses the same bounded preflight, with the subagent choosing
   its tools, and never justifies re-exploring covered ground.
-- Reuse the same explore task for follow-ups inside one topic and evidence
-  boundary; the resumed child returns only incremental findings. Start a fresh
-  explore for a new topic, conflicting evidence that needs an independent read,
-  context saturation, or changed constraints.
 - Diagnosis and forensics are recon too: multi-file searches, log, bundle, or UI
   analysis, and adaptive probe matrices come back as a compact findings table;
   you keep only gate checks and one- or two-hop lookups.
+
+Explorer sessions are reused by default. The first \`task(explore)\` call returns
+the child handle as its \`sessionID\`: retain that one handle for the rest of the
+parent session and pass it back as the \`sessionID\` continuation on every later
+explore delegation, so the child keeps its accumulated evidence instead of
+re-reading covered ground.
+
+- A later uncovered area, a follow-up, or a changed hypothesis is a delta into
+  the retained handle: send only the incremental ask and take back only
+  incremental findings, never a restated brief.
+- A new topic is not by itself a reason for a fresh child; continue the retained
+  handle unless an isolation trigger applies.
+- Isolation triggers are the only reasons to open a fresh explore: the parent
+  request explicitly asks for an isolated, fresh, or independent context;
+  independent conflicting evidence requires a clean read; or the retained
+  child's context is saturated or contaminated. Record the trigger and the
+  reason whenever you open a fresh child.
 
 ## Accept the note-pointer result
 
@@ -1660,13 +1672,21 @@ Consult \`phasegent --help\` only for the command you are about to run.
 
 ## Context budget and follow-up
 
-- The orchestrator batches each new problem area into one bounded preflight and
-  opens a fresh explore for each later distinct uncovered area or explicit
-  re-scope. Never repeat work for a rephrasing or an already-covered fact.
+- You are normally resumed, not replaced: the orchestrator retains the handle of
+  the session that started this one and continues it for later areas inside the
+  same evidence boundary. Never repeat work for a rephrasing or an
+  already-covered fact.
 - A continued exploration returns only incremental findings beyond the prior
-  brief; do not repeat already-covered facts.
+  brief; do not repeat already-covered facts or restate the earlier brief.
+- The orchestrator opens a fresh sibling explore only on an explicit isolation
+  trigger — the parent request asks for an isolated, fresh, or independent
+  context, independent conflicting evidence needs a clean read, or your context
+  is saturated or contaminated — and records the reason.
+- An isolated child starts with a clean context: it does not inherit the
+  retained session's reads or evidence and must establish its own.
 - Known paths and single-point lookups stay with the orchestrator as direct
-  reads and never require a new explorer; anything broader is a fresh preflight.
+  reads and never require an explorer call; anything broader is a bounded
+  preflight.
 - External research never justifies re-exploring covered ground.
 
 ## Result
