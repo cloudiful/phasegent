@@ -16,7 +16,9 @@
 //! * No provider / network is touched here; the role gate lives in
 //!   `cli::worktree::execute_worktree`.
 
-use super::parse_helpers::{has_flag, optional_option, required_nonempty_option, validate_options};
+use super::parse_helpers::{
+    has_flag, optional_nonempty_option, optional_option, required_nonempty_option, validate_options,
+};
 use super::{Command, HelpTopic, WorktreeCommand};
 
 pub(crate) fn parse_worktree(args: &[String]) -> Result<Command, String> {
@@ -263,34 +265,6 @@ fn parse_heartbeat(args: &[String]) -> Result<Command, String> {
         lease,
         session,
     }))
-}
-
-/// Resolve an optional value option while preserving the difference
-/// between an omitted option and an explicitly empty one.
-///
-/// The shared [`optional_option`] helper returns `Some("")` for both
-/// `--base=` / `--base ""` and for a whitespace-only value. Trimming
-/// that to `None` would make an invalid empty REF (or probe path) behave
-/// exactly like an omitted option, silently selecting the default path
-/// or the current checkout. This keeps presence observable: an omitted
-/// option stays `None`, while a present-but-blank value is a structured
-/// parser error.
-fn optional_nonempty_option(
-    args: &[String],
-    option: &str,
-    operation: &str,
-) -> Result<Option<String>, String> {
-    match optional_option(args, option) {
-        None => Ok(None),
-        Some(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                Err(format!("{operation} requires a non-empty {option}"))
-            } else {
-                Ok(Some(trimmed.to_owned()))
-            }
-        }
-    }
 }
 
 /// Validate an explicit session id at parse time so blanks and overlong

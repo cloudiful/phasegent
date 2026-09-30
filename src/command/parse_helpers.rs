@@ -66,6 +66,33 @@ pub(crate) fn optional_option(args: &[String], option: &str) -> Option<String> {
         .and_then(|values| (!values[1].starts_with('-')).then(|| values[1].clone()))
 }
 
+/// Resolve an optional value option while preserving the difference
+/// between an omitted option and an explicitly empty one.
+///
+/// The shared [`optional_option`] helper returns `Some("")` for both
+/// `--option=` / `--option ""` and for a whitespace-only value. Trimming
+/// that to `None` would make an invalid empty value behave exactly like an
+/// omitted option, silently selecting a default. This keeps presence
+/// observable: an omitted option stays `None`, while a present-but-blank
+/// value is a structured parser error.
+pub(crate) fn optional_nonempty_option(
+    args: &[String],
+    option: &str,
+    operation: &str,
+) -> Result<Option<String>, String> {
+    match optional_option(args, option) {
+        None => Ok(None),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Err(format!("{operation} requires a non-empty {option}"))
+            } else {
+                Ok(Some(trimmed.to_owned()))
+            }
+        }
+    }
+}
+
 /// If `arg` has the form `--option=value`, return the value with `option` matching
 /// the full long-name prefix (e.g. `--body` does not match `--bodyline`). Used so
 /// that recognized value-bearing options can carry values that legitimately begin

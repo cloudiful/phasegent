@@ -434,7 +434,10 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), Plug
     Ok(())
 }
 
-fn inspect_target(dir: &Path) -> PluginTargetStatus {
+/// Inspect the managed file inside one plugin directory without writing.
+/// `pub(crate)` so `plugin status --path DIR` reports an explicit target
+/// through the same inspection primitive as the scoped slots.
+pub(crate) fn inspect_target(dir: &Path) -> PluginTargetStatus {
     let path = dir.join(PLUGIN_FILENAME);
     let label = path.to_string_lossy().to_string();
     match std::fs::symlink_metadata(&path) {

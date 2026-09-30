@@ -162,10 +162,12 @@ fn install_parses_with_no_flags() {
             global,
             project,
             force,
+            path,
         }) => {
             assert!(!global);
             assert!(!project);
             assert!(!force);
+            assert_eq!(path, None);
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -187,10 +189,12 @@ fn install_parses_with_all_flags() {
             global,
             project,
             force,
+            path,
         }) => {
             assert!(global);
             assert!(project);
             assert!(force);
+            assert_eq!(path, None);
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -200,10 +204,29 @@ fn install_parses_with_all_flags() {
 fn status_parses_without_flags() {
     let _lock = lock_workflow_tests();
     let invocation = command::parse(&strings(["plugin", "status"])).unwrap();
-    assert!(matches!(
-        invocation.command,
-        Command::Plugin(PluginCommand::Status)
-    ));
+    match invocation.command {
+        Command::Plugin(PluginCommand::Status { path }) => assert_eq!(path, None),
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+#[test]
+fn status_parses_explicit_path_without_a_role() {
+    let _lock = lock_workflow_tests();
+    let invocation = command::parse(&strings([
+        "plugin",
+        "status",
+        "--path",
+        "/tmp/chezmoi/plugins",
+    ]))
+    .unwrap();
+    assert!(invocation.role.is_none());
+    match invocation.command {
+        Command::Plugin(PluginCommand::Status { path }) => {
+            assert_eq!(path.as_deref(), Some("/tmp/chezmoi/plugins"));
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
 }
 
 #[test]
@@ -211,9 +234,14 @@ fn uninstall_parses_with_project_flag() {
     let _lock = lock_workflow_tests();
     let invocation = command::parse(&strings(["plugin", "uninstall", "--project"])).unwrap();
     match invocation.command {
-        Command::Plugin(PluginCommand::Uninstall { global, project }) => {
+        Command::Plugin(PluginCommand::Uninstall {
+            global,
+            project,
+            path,
+        }) => {
             assert!(!global);
             assert!(project);
+            assert_eq!(path, None);
         }
         other => panic!("unexpected command {other:?}"),
     }
@@ -592,6 +620,7 @@ fn plugin_scopes_share_the_global_resolver_via_userprofile() {
         global: true,
         project: false,
         force: false,
+        path: None,
     });
     assert_eq!(install_rc, 0, "global install rc=0");
     assert!(
@@ -612,6 +641,7 @@ fn plugin_scopes_share_the_global_resolver_via_userprofile() {
     let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
         global: true,
         project: false,
+        path: None,
     });
     assert_eq!(uninstall_rc, 0, "global uninstall rc=0");
     assert!(!global_target.exists());
@@ -678,6 +708,7 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
         global: false,
         project: true,
         force: false,
+        path: None,
     });
     assert_eq!(install_rc, 0, "install rc=0");
 
@@ -698,6 +729,7 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
         global: false,
         project: true,
         force: false,
+        path: None,
     });
     assert_eq!(install_rc2, 0);
 
@@ -711,6 +743,7 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
     let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
         global: false,
         project: true,
+        path: None,
     });
     assert_eq!(uninstall_rc, 0);
     assert!(!target.exists());
@@ -718,6 +751,172 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
     // Restore the original cwd before the EnvGuards drop, so
     // subsequent tests run from the same starting state.
     let _ = std::env::set_current_dir(&previous_cwd);
+}
+
+// ---------------------------------------------------------------------------
+// Explicit `--path DIR` executor coverage (issue 666).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn explicit_path_install_status_uninstall_targets_only_that_directory() {
+    let _lock = lock_workflow_tests();
+    let (temp, _home_guard, _xdg_guard) = override_home("exec-explicit-path");
+    // A chezmoi-style source directory: the operator names the directory that
+    // holds phasegent-worktree.js and the installer appends the filename.
+    let source_dir = temp.child("chezmoi/home/dot_config/opencode/plugins");
+    let project_cwd = temp.child("project");
+    std::fs::create_dir_all(&project_cwd).expect("project cwd create");
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(&project_cwd).expect("set cwd");
+
+    let path = source_dir.to_string_lossy().to_string();
+    let install_rc = execute_plugin(PluginCommand::Install {
+        global: false,
+        project: false,
+        force: false,
+        path: Some(path.clone()),
+    });
+    assert_eq!(install_rc, 0, "explicit install rc=0");
+
+    let target = source_dir.join(PLUGIN_FILENAME);
+    assert!(
+        target.exists(),
+        "explicit install wrote {}",
+        target.display()
+    );
+    assert!(read_bytes(&target).starts_with(MANAGED_MARKER.as_bytes()));
+
+    // The default scopes stay untouched by an explicit-path invocation.
+    let global_target = resolve_global_dir()
+        .expect("global dir resolves")
+        .join(PLUGIN_FILENAME);
+    let project_target = project_cwd
+        .join(".opencode")
+        .join("plugins")
+        .join(PLUGIN_FILENAME);
+    assert!(!global_target.exists(), "global slot must stay untouched");
+    assert!(!project_target.exists(), "project slot must stay untouched");
+
+    // Idempotent re-run leaves the managed bytes in place.
+    let install_rc2 = execute_plugin(PluginCommand::Install {
+        global: false,
+        project: false,
+        force: false,
+        path: Some(path.clone()),
+    });
+    assert_eq!(install_rc2, 0, "explicit re-install rc=0");
+    assert_eq!(read_bytes(&target), adapter_source().as_bytes());
+
+    // Explicit status inspects exactly this directory through the same
+    // primitive the scoped slots use, and returns it under `target`.
+    let status_rc = execute_plugin(PluginCommand::Status {
+        path: Some(path.clone()),
+    });
+    assert_eq!(status_rc, 0, "explicit status rc=0");
+    let envelope = crate::cli::plugin::explicit_status_envelope(&source_dir);
+    assert!(envelope.global.is_none() && envelope.project.is_none());
+    let status = envelope.target.expect("explicit target status");
+    assert!(status.exists && status.managed && status.size > 0);
+    assert_eq!(status.path, target.to_string_lossy().to_string());
+
+    let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
+        global: false,
+        project: false,
+        path: Some(path),
+    });
+    assert_eq!(uninstall_rc, 0, "explicit uninstall rc=0");
+    assert!(!target.exists(), "explicit uninstall removed the target");
+    assert!(!global_target.exists());
+    assert!(!project_target.exists());
+
+    let _ = std::env::set_current_dir(&previous_cwd);
+}
+
+#[test]
+fn explicit_path_install_keeps_the_foreign_file_backup_behavior() {
+    let _lock = lock_workflow_tests();
+    let (temp, _home_guard, _xdg_guard) = override_home("exec-explicit-force");
+    let dir = temp.child("chezmoi/plugins");
+    let target = dir.join(PLUGIN_FILENAME);
+    let backup = dir.join(format!("{PLUGIN_FILENAME}{FOREIGN_BACKUP_SUFFIX}"));
+    write_bytes(&target, b"#!/usr/bin/env node\nnot ours;\n");
+    let path = dir.to_string_lossy().to_string();
+
+    let refused = execute_plugin(PluginCommand::Install {
+        global: false,
+        project: false,
+        force: false,
+        path: Some(path.clone()),
+    });
+    assert_eq!(refused, 0);
+    assert!(read_bytes(&target).starts_with(b"#!/usr/bin/env node"));
+    assert!(!backup.exists(), "a refused install writes no backup");
+
+    let forced = execute_plugin(PluginCommand::Install {
+        global: false,
+        project: false,
+        force: true,
+        path: Some(path),
+    });
+    assert_eq!(forced, 0);
+    assert!(backup.exists(), "forced install backs up the foreign file");
+    assert!(read_bytes(&target).starts_with(MANAGED_MARKER.as_bytes()));
+}
+
+#[test]
+fn explicit_path_envelopes_use_the_additive_target_field() {
+    let _lock = lock_workflow_tests();
+    let target = "/tmp/chezmoi/plugins/phasegent-worktree.js".to_owned();
+
+    let install = InstallEnvelope {
+        installed: vec![target.clone()],
+        updated: vec![],
+        skipped: vec![],
+        warnings: vec![],
+        errors: vec![],
+        global_path: None,
+        project_path: None,
+        target_path: Some(target.clone()),
+    };
+    let rendered = serde_json::to_string(&install).expect("serialize explicit install");
+    assert!(rendered.contains("\"target_path\""));
+    assert!(!rendered.contains("global_path"), "got: {rendered}");
+    assert!(!rendered.contains("project_path"), "got: {rendered}");
+
+    let status = StatusEnvelope {
+        global: None,
+        project: None,
+        target: Some(crate::plugin::PluginTargetStatus {
+            path: target.clone(),
+            exists: true,
+            managed: true,
+            size: 12,
+            mtime: Some(0),
+        }),
+    };
+    let rendered_status = serde_json::to_string(&status).expect("serialize explicit status");
+    assert!(rendered_status.contains("\"target\""));
+    assert!(
+        !rendered_status.contains("\"global\""),
+        "got: {rendered_status}"
+    );
+    assert!(
+        !rendered_status.contains("\"project\""),
+        "got: {rendered_status}"
+    );
+
+    let uninstall = UninstallEnvelope {
+        removed: vec![target.clone()],
+        warnings: vec![],
+        errors: vec![],
+        global_path: None,
+        project_path: None,
+        target_path: Some(target),
+    };
+    let rendered_uninstall =
+        serde_json::to_string(&uninstall).expect("serialize explicit uninstall");
+    assert!(rendered_uninstall.contains("\"target_path\""));
+    assert!(!rendered_uninstall.contains("\"global_path\""));
 }
 
 // ---------------------------------------------------------------------------
@@ -976,8 +1175,9 @@ fn envelope_serialises_with_stable_field_order() {
         skipped: vec![],
         warnings: vec![],
         errors: vec![],
-        global_path: "/tmp/global".to_owned(),
-        project_path: "/tmp/project".to_owned(),
+        global_path: Some("/tmp/global".to_owned()),
+        project_path: Some("/tmp/project".to_owned()),
+        target_path: None,
     };
     let rendered = serde_json::to_string(&envelope).expect("serialize");
     // Stable ordering: installed before updated, etc.
@@ -986,36 +1186,48 @@ fn envelope_serialises_with_stable_field_order() {
     let project_path_at = rendered.find("\"project_path\"").expect("project_path key");
     assert!(installed_at < updated_at);
     assert!(updated_at < project_path_at);
+    // The explicit-path field stays absent in the default scope mode.
+    assert!(!rendered.contains("target_path"), "got: {rendered}");
 
     let status = StatusEnvelope {
-        global: crate::plugin::PluginTargetStatus {
+        global: Some(crate::plugin::PluginTargetStatus {
             path: "/tmp/global".to_owned(),
             exists: true,
             managed: true,
             size: 12,
             mtime: Some(0),
-        },
-        project: crate::plugin::PluginTargetStatus {
+        }),
+        project: Some(crate::plugin::PluginTargetStatus {
             path: "/tmp/project".to_owned(),
             exists: false,
             managed: false,
             size: 0,
             mtime: None,
-        },
+        }),
+        target: None,
     };
     let rendered_status = serde_json::to_string(&status).expect("serialize status");
     assert!(rendered_status.contains("\"global\""));
     assert!(rendered_status.contains("\"project\""));
     assert!(rendered_status.contains("\"managed\":true"));
+    assert!(
+        !rendered_status.contains("target"),
+        "got: {rendered_status}"
+    );
 
     let uninstall = UninstallEnvelope {
         removed: vec!["/tmp/a".to_owned()],
         warnings: vec![],
         errors: vec![],
-        global_path: "/tmp/global".to_owned(),
-        project_path: "/tmp/project".to_owned(),
+        global_path: Some("/tmp/global".to_owned()),
+        project_path: Some("/tmp/project".to_owned()),
+        target_path: None,
     };
     let rendered_uninstall = serde_json::to_string(&uninstall).expect("serialize uninstall");
     assert!(rendered_uninstall.contains("\"removed\""));
     assert!(rendered_uninstall.contains("\"global_path\""));
+    assert!(
+        !rendered_uninstall.contains("target_path"),
+        "got: {rendered_uninstall}"
+    );
 }

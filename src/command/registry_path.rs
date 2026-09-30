@@ -35,7 +35,7 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::Hooks(HooksCommand::Install) => &["hooks", "install"],
         Command::Hooks(HooksCommand::Run { .. }) => &["hooks", "run"],
         Command::Plugin(PluginCommand::Install { .. }) => &["plugin", "install"],
-        Command::Plugin(PluginCommand::Status) => &["plugin", "status"],
+        Command::Plugin(PluginCommand::Status { .. }) => &["plugin", "status"],
         Command::Plugin(PluginCommand::Uninstall { .. }) => &["plugin", "uninstall"],
         Command::Relation(command) => &["relation", relation_name(command)],
         Command::Timer(command) => &["timer", timer_name(command)],

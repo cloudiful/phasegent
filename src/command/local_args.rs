@@ -1,14 +1,23 @@
+/// `plugin` subcommands. `path` is the explicit plugin directory named by
+/// `--path DIR`: the directory that contains (or will contain)
+/// `phasegent-worktree.js`, not the file itself. It is mutually exclusive
+/// with the `--global` / `--project` scope selectors; when it is absent the
+/// existing scope defaults apply.
 #[derive(Debug)]
 pub enum PluginCommand {
     Install {
         global: bool,
         project: bool,
         force: bool,
+        path: Option<String>,
     },
-    Status,
+    Status {
+        path: Option<String>,
+    },
     Uninstall {
         global: bool,
         project: bool,
+        path: Option<String>,
     },
 }
 

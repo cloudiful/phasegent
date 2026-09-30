@@ -68,9 +68,9 @@ pub(crate) fn print_plugin_command_help(command: &str) {
 /// Per-subcommand `plugin` help body (no trailing newline).
 pub(crate) fn plugin_command_help_text(command: &str) -> String {
     match command {
-        "install" => "Usage: plugin install [--global] [--project] [--force]\n\nInstalls or updates the phasegent worktree adapter in the OpenCode plugin directory. The global target is $XDG_CONFIG_HOME/opencode/plugins/phasegent-worktree.js, falling back to $HOME/.config/opencode/plugins/phasegent-worktree.js and then, on Windows without HOME, %USERPROFILE%/.config/opencode/plugins/phasegent-worktree.js; unset or empty roots are skipped and an unusable environment is a clear error rather than a current-directory target. The project target is .opencode/plugins/phasegent-worktree.js in the current working directory. The installer writes only the OpenCode plugin directories and never probes or installs into other agent hosts. When neither --global nor --project is supplied, both slots are written. Existing managed files (those that contain the `// phasegent:managed` marker) are updated in place when the embedded dist changes; otherwise they are reported as skipped. Foreign files (no marker) are refused unless --force is supplied, in which case the foreign file is renamed to phasegent-worktree.js.phasegent-orig before the managed file is written. Adapter contract: the OpenCode v2 plugin shape `export default { id, setup }` (OpenCode >= 2.0; the v1 plugin contract is no longer supported). `setup` registers the `tool.execute.before` redirect hook, claims the `worktree.transform` strategy only when the checkout already carries a phasegent issue binding, so a non-phasegent project keeps the host git strategy, and registers the embedded `phasegent` skill (`skill.transform`) but no slash command, because the OpenCode v2 command draft only accepts Effect-returning `execute` callbacks that a promise plugin cannot build; a failed acquire falls back to a plain git worktree. The acquired worktree becomes the session directory through `session.move`, and later tool calls have relative file paths and a bare or relative shell workdir redirected into it; absolute paths and sessions without a worktree pass through unchanged, and the external_directory permission check is never bypassed. The adapter targets the OpenCode binary's runtime plugin context, not the npm `@opencode-ai/plugin` type package, which can lag it (1.18.25 exposes no `tool`, `worktree`, `session`, or `location`); a host without a registration surface degrades to a console warning. `PHASEGENT_SESSION_ID` (stable session identity on a host without the adapter) and `PHASEGENT_WORKTREE_NO_DISCOVER=1` (no automatic discovery, acquire, or strategy claim) are the only hard environment guarantees. The adapter never deletes a worktree or branch: removal stays with `phasegent worktree prune`. The adapter is a generated single-file dist: edit the sources (`assets/opencode/src/**` and the `skills/phasegent/SKILL*.md` prompts) and rebuild with `bun run build:plugin`; never hand-edit the checked-in dist or an installed copy. No role or provider is required.".to_owned(),
-        "status" => "Usage: plugin status\n\nReports the global and project slots of the OpenCode worktree adapter. Each slot reports path, exists, managed (whether the file contains the `// phasegent:managed` marker), size, and mtime. The file contents are never printed. The global path uses the same resolver as install and uninstall ($XDG_CONFIG_HOME, then $HOME/.config, then %USERPROFILE%/.config); an unusable environment returns an error. No role or provider is required.".to_owned(),
-        "uninstall" => "Usage: plugin uninstall [--global] [--project]\n\nRemoves the managed worktree adapter from the OpenCode plugin directory. Files without the `// phasegent:managed` marker are refused (remove them manually if needed); missing files are reported as warnings. When neither --global nor --project is supplied, both slots are processed. No role or provider is required. The adapter contract does not delete worktrees or branches; use `phasegent worktree prune` for that.".to_owned(),
+        "install" => "Usage: plugin install [--global] [--project] [--path DIR] [--force]\n\nInstalls or updates the phasegent worktree adapter in the OpenCode plugin directory. The global target is $XDG_CONFIG_HOME/opencode/plugins/phasegent-worktree.js, falling back to $HOME/.config/opencode/plugins/phasegent-worktree.js and then, on Windows without HOME, %USERPROFILE%/.config/opencode/plugins/phasegent-worktree.js; unset or empty roots are skipped and an unusable environment is a clear error rather than a current-directory target. The project target is .opencode/plugins/phasegent-worktree.js in the current working directory. The installer writes only the OpenCode plugin directories and never probes or installs into other agent hosts. When neither --global nor --project is supplied, both slots are written. --path DIR installs into one explicit directory: DIR is the directory that will contain phasegent-worktree.js, and the installer appends the filename itself, so a chezmoi source directory is named directly. --path replaces the scope selectors and therefore cannot be combined with --global or --project; use --path=DIR for a value that begins with `-`. A missing, empty, or whitespace-only value is a parse error. Existing managed files (those that contain the `// phasegent:managed` marker) are updated in place when the embedded dist changes; otherwise they are reported as skipped. Foreign files (no marker) are refused unless --force is supplied, in which case the foreign file is renamed to phasegent-worktree.js.phasegent-orig before the managed file is written. Adapter contract: the OpenCode v2 plugin shape `export default { id, setup }` (OpenCode >= 2.0; the v1 plugin contract is no longer supported). `setup` registers the `tool.execute.before` redirect hook, claims the `worktree.transform` strategy only when the checkout already carries a phasegent issue binding, so a non-phasegent project keeps the host git strategy, and registers the embedded `phasegent` skill (`skill.transform`) but no slash command, because the OpenCode v2 command draft only accepts Effect-returning `execute` callbacks that a promise plugin cannot build; a failed acquire falls back to a plain git worktree. The acquired worktree becomes the session directory through `session.move`, and later tool calls have relative file paths and a bare or relative shell workdir redirected into it; absolute paths and sessions without a worktree pass through unchanged, and the external_directory permission check is never bypassed. The adapter targets the OpenCode binary's runtime plugin context, not the npm `@opencode-ai/plugin` type package, which can lag it (1.18.25 exposes no `tool`, `worktree`, `session`, or `location`); a host without a registration surface degrades to a console warning. `PHASEGENT_SESSION_ID` (stable session identity on a host without the adapter) and `PHASEGENT_WORKTREE_NO_DISCOVER=1` (no automatic discovery, acquire, or strategy claim) are the only hard environment guarantees. The adapter never deletes a worktree or branch: removal stays with `phasegent worktree prune`. The adapter is a generated single-file dist: edit the sources (`assets/opencode/src/**` and the `skills/phasegent/SKILL*.md` prompts) and rebuild with `bun run build:plugin`; never hand-edit the checked-in dist or an installed copy. No role or provider is required.".to_owned(),
+        "status" => "Usage: plugin status [--path DIR]\n\nReports the global and project slots of the OpenCode worktree adapter. Each slot reports path, exists, managed (whether the file contains the `// phasegent:managed` marker), size, and mtime. The file contents are never printed. The global path uses the same resolver as install and uninstall ($XDG_CONFIG_HOME, then $HOME/.config, then %USERPROFILE%/.config); an unusable environment returns an error. With --path DIR the report covers only that explicit directory (the directory that contains phasegent-worktree.js) and returns it under the `target` object instead of the global and project slots; use --path=DIR for a value that begins with `-`. No role or provider is required.".to_owned(),
+        "uninstall" => "Usage: plugin uninstall [--global] [--project] [--path DIR]\n\nRemoves the managed worktree adapter from the OpenCode plugin directory. Files without the `// phasegent:managed` marker are refused (remove them manually if needed); missing files are reported as warnings. When neither --global nor --project is supplied, both slots are processed. --path DIR targets only the managed file in that explicit directory (the directory that contains phasegent-worktree.js) and cannot be combined with --global or --project; use --path=DIR for a value that begins with `-`. No role or provider is required. The adapter contract does not delete worktrees or branches; use `phasegent worktree prune` for that.".to_owned(),
         _ => plugin_help_text(),
     }
 }
@@ -122,7 +122,7 @@ mod tests {
         }
         let install = plugin_command_help_text("install");
         assert!(
-            install.contains("Usage: plugin install [--global] [--project] [--force]")
+            install.contains("Usage: plugin install [--global] [--project] [--path DIR] [--force]")
                 && install.contains("// phasegent:managed"),
             "install detail keeps flags + marker contract; got: {install}"
         );
@@ -177,6 +177,46 @@ mod tests {
                 && status.contains("%USERPROFILE%/.config"),
             "status detail must document the shared resolver; got: {status}"
         );
+    }
+
+    #[test]
+    fn explicit_path_is_documented_for_every_subcommand() {
+        for (command, usage) in [
+            (
+                "install",
+                "Usage: plugin install [--global] [--project] [--path DIR] [--force]",
+            ),
+            ("status", "Usage: plugin status [--path DIR]"),
+            (
+                "uninstall",
+                "Usage: plugin uninstall [--global] [--project] [--path DIR]",
+            ),
+        ] {
+            let text = plugin_command_help_text(command);
+            assert!(
+                text.contains(usage),
+                "missing usage for {command}; got: {text}"
+            );
+            assert!(
+                text.contains("--path DIR"),
+                "detail must document the directory semantics; got: {text}"
+            );
+            assert!(
+                text.contains("phasegent-worktree.js"),
+                "detail must name the managed filename; got: {text}"
+            );
+            assert!(
+                text.contains("--path=DIR"),
+                "detail must keep the leading-dash escape hatch; got: {text}"
+            );
+        }
+        for command in ["install", "uninstall"] {
+            let text = plugin_command_help_text(command);
+            assert!(
+                text.contains("cannot be combined with --global or --project"),
+                "{command} detail must state the mutual exclusion; got: {text}"
+            );
+        }
     }
 
     #[test]
