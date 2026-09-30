@@ -44,6 +44,19 @@ fn is_close_mismatch(operation: &str, message: &str) -> bool {
             .contains("did not confirm close")
 }
 
+/// True when `error` is a verified stale close response: the server
+/// returned success but left the issue outside the requested close
+/// status (see [`is_close_mismatch`]). Callers use this to report an
+/// unconfirmed server-side no-op with workflow/permission checks
+/// instead of a policy `Forbidden`-style refusal. Pure string match on
+/// the already-redacted provider error; no network access.
+pub fn is_stale_close_mismatch(error: &ForgejoError) -> bool {
+    match error {
+        ForgejoError::Request { operation, message } => is_close_mismatch(operation, message),
+        _ => false,
+    }
+}
+
 /// Classify a raw HTTP status plus redacted message body.
 pub fn classify_http(status: u16, message: &str) -> RedmineErrorKind {
     let haystack = message.to_ascii_lowercase();
@@ -165,5 +178,33 @@ mod tests {
             classify_redmine_error(&ForgejoError::config("x")),
             RedmineErrorKind::Other
         );
+    }
+
+    #[test]
+    fn stale_close_mismatch_detector_matches_only_verified_close_mismatch() {
+        let mismatch = ForgejoError::request(
+            "issue close",
+            "Redmine did not confirm close (status_id=5); observed status_id=Some(3) ('Resolved', is_closed=Some(false))".to_owned(),
+        );
+        assert!(is_stale_close_mismatch(&mismatch));
+        // Classification is unchanged so the existing close climb still
+        // triggers; only the terminal diagnostic changes.
+        assert_eq!(
+            classify_redmine_error(&mismatch),
+            RedmineErrorKind::WorkflowNotAllowed
+        );
+        let wrong_operation = ForgejoError::request(
+            "issue status update",
+            "Redmine did not confirm close (status_id=5); observed status_id=Some(3) ('Resolved', is_closed=Some(false))".to_owned(),
+        );
+        assert!(!is_stale_close_mismatch(&wrong_operation));
+        let unrelated = ForgejoError::request("issue close", "boom".to_owned());
+        assert!(!is_stale_close_mismatch(&unrelated));
+        let http = ForgejoError::Http {
+            operation: "issue close".to_owned(),
+            status: 422,
+            message: "Status is invalid".to_owned(),
+        };
+        assert!(!is_stale_close_mismatch(&http));
     }
 }

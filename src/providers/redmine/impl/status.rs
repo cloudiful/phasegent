@@ -1,5 +1,6 @@
 use crate::providers::api::{ForgejoError, IssueSummary};
 use crate::providers::config::RedmineProvider;
+use crate::providers::redmine::model::error::is_stale_close_mismatch;
 use crate::providers::redmine::model::{
     RedmineErrorKind, RedmineIssue, RedmineIssueCollection, RedmineIssueResponse,
     RedmineIssueStatus, RedmineIssueStatusCollection, RedmineStatus, RedmineTracker,
@@ -390,6 +391,29 @@ impl RedmineProvider {
             .unwrap_or_else(|| "Closed".to_owned());
         let steps = close_climb_steps(&current.name);
         if steps.is_empty() {
+            // Issue 640: a verified stale response on a policy-allowed
+            // edge (e.g. `Resolved -> Closed` returning `200 OK` while
+            // the issue stays `Resolved`) is an unconfirmed server-side
+            // no-op, not a policy refusal. The `Forbidden`-style "not
+            // allowed" wording would contradict `allowed_next=[Closed,
+            // ...]`, so report the no-op with workflow/permission checks
+            // instead. Policy-forbidden or HTTP workflow refusals keep
+            // the legacy refusal shape, and the close climb itself is
+            // unchanged.
+            if is_stale_close_mismatch(&direct_error)
+                && !matches!(
+                    evaluate_transition(&current.name, &close_name),
+                    TransitionVerdict::Forbidden { .. }
+                )
+            {
+                return Err(close_unconfirmed_noop(
+                    number,
+                    &current.name,
+                    &close_name,
+                    status_id,
+                    &direct_error,
+                ));
+            }
             return Err(close_workflow_forbidden(
                 number,
                 &current.name,
@@ -590,6 +614,38 @@ fn close_workflow_forbidden(
         "issue close",
         format!(
             "close rejected by server workflow: current status '{current}' -> target status '{target}' is not allowed by the Redmine server workflow (policy {STATUS_POLICY_SOURCE}); allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}; server: {cause_text}",
+            recovery_hint(number)
+        ),
+    )
+}
+
+/// Structured close failure for a verified stale response: the server
+/// returned success for `PUT status_id` but the observed status still
+/// contradicts the close target (e.g. requesting `Closed` leaves the
+/// issue in `Resolved`). This is an unconfirmed server-side no-op, not
+/// evidence the configured close status id is wrong and not a policy
+/// refusal, so the message never claims the edge is "not allowed". It
+/// keeps the legacy `issue close` operation/kind, the policy
+/// `allowed_next` shape, and the `status next` recovery hint, and adds
+/// actionable workflow/permission checks. Close verification stays
+/// strict: the caller still receives an error, never success.
+fn close_unconfirmed_noop(
+    number: u64,
+    current: &str,
+    target: &str,
+    status_id: u64,
+    cause: &ForgejoError,
+) -> ForgejoError {
+    let allowed = match canonical_allowed_next(current) {
+        Some([]) => "<none: terminal status>".to_owned(),
+        Some(next) => next.join(", "),
+        None => "<unknown: server decides>".to_owned(),
+    };
+    let cause_text = bounded(&cause.to_string());
+    ForgejoError::request(
+        "issue close",
+        format!(
+            "close not confirmed: Redmine returned success but left issue {number} in status '{current}' instead of '{target}' (status_id={status_id}); this is an unconfirmed server-side no-op, not evidence the close status id is wrong; checks: confirm the tracker workflow allows '{current}' -> '{target}' for this role, the API role has Edit issues permission, required fields and closed-state rules pass, and author/assignee conditions hold; policy {STATUS_POLICY_SOURCE}; allowed_next=[{allowed}]; {STATUS_POLICY_CAVEAT} recovery: {}; server: {cause_text}",
             recovery_hint(number)
         ),
     )
