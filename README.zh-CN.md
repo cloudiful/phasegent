@@ -28,37 +28,33 @@ cargo install --path . --features postgres
 
 ```sh
 # 安全提示输入
-PHASEGENT_ROLE=orchestrator phasegent admin auth setup
+phasegent admin auth setup
 
 # 从受保护文件或其他安全来源读取
-PHASEGENT_ROLE=executor phasegent admin auth setup --stdin < /secure/path/token
+phasegent admin auth setup --stdin < /secure/path/token
 
 # 显式选择其他 provider 及其 API base
-PHASEGENT_ROLE=orchestrator phasegent --provider redmine admin auth setup \
+phasegent --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
 
 # 准备 Redmine 的 project 和 role membership
-PHASEGENT_ROLE=admin phasegent --provider redmine admin workflow bootstrap \
+phasegent --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
-
-CLI 从 `PHASEGENT_ROLE` 环境变量解析 role：受管 OpenCode session 按次导出，
-其他宿主在 shell 中设置。PowerShell 下使用
-`$env:PHASEGENT_ROLE='orchestrator'; phasegent ...`，而不是 `NAME=value` 前缀。
 
 ## 常用命令
 
 ```sh
-PHASEGENT_ROLE=orchestrator phasegent issue search --query "bug"
-PHASEGENT_ROLE=orchestrator phasegent issue get 123
-PHASEGENT_ROLE=orchestrator phasegent issue get 123 124 125
-PHASEGENT_ROLE=orchestrator phasegent comment list 123
-PHASEGENT_ROLE=orchestrator phasegent issue create \
+phasegent issue search --query "bug"
+phasegent issue get 123
+phasegent issue get 123 124 125
+phasegent comment list 123
+phasegent issue create \
   --title "Short title" --body "Issue details"
-PHASEGENT_ROLE=orchestrator phasegent issue update 123 --body "Updated details"
-PHASEGENT_ROLE=orchestrator phasegent issue close 123
-PHASEGENT_ROLE=executor phasegent issue status
-PHASEGENT_ROLE=executor phasegent issue branches 123
+phasegent issue update 123 --body "Updated details"
+phasegent issue close 123
+phasegent issue status
+phasegent issue branches 123
 phasegent doctor
 ```
 
@@ -93,8 +89,8 @@ lease 以 `(repo, issue, session)` 为键。`phasegent worktree acquire --issue 
 删除、不修复；`--issue` 无匹配 lease 时返回稳定的空结果，绝不猜测路径。
 
 ```sh
-PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 123 --base main
-PHASEGENT_ROLE=executor phasegent worktree probe --issue 123
+phasegent worktree acquire --issue 123 --base main
+phasegent worktree probe --issue 123
 ```
 
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件

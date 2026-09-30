@@ -19,8 +19,8 @@ repository root, not wired into CI.
 Corpus format: argv tokens separated by `0x00`, exactly what `argv::parse`
 receives from `main` (no program name). A trailing separator is not an empty
 token and an empty file is zero tokens (`phasegent` with no arguments). An
-optional first token `env:<value>` models `PHASEGENT_ROLE` and is not passed to
-the parser (bare `env:` = blank).
+optional first token `env:<value>` supplies the role context for the parse and
+is not passed to the parser (bare `env:` = blank).
 
 ## Commands
 

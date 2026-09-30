@@ -30,38 +30,33 @@ values.
 
 ```sh
 # Secure prompt
-PHASEGENT_ROLE=orchestrator phasegent admin auth setup
+phasegent admin auth setup
 
 # Read from a protected file or another secure source
-PHASEGENT_ROLE=executor phasegent admin auth setup --stdin < /secure/path/token
+phasegent admin auth setup --stdin < /secure/path/token
 
 # Select another provider and its API base explicitly
-PHASEGENT_ROLE=orchestrator phasegent --provider redmine admin auth setup \
+phasegent --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
 
 # Prepare the Redmine project and role memberships
-PHASEGENT_ROLE=admin phasegent --provider redmine admin workflow bootstrap \
+phasegent --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
-
-The CLI resolves its role from the `PHASEGENT_ROLE` environment variable: a
-managed OpenCode session exports it per invocation, and any other host sets it
-in the shell. On PowerShell use `$env:PHASEGENT_ROLE='orchestrator'; phasegent
-...` instead of the `NAME=value` prefix.
 
 ## Common Commands
 
 ```sh
-PHASEGENT_ROLE=orchestrator phasegent issue search --query "bug"
-PHASEGENT_ROLE=orchestrator phasegent issue get 123
-PHASEGENT_ROLE=orchestrator phasegent issue get 123 124 125
-PHASEGENT_ROLE=orchestrator phasegent comment list 123
-PHASEGENT_ROLE=orchestrator phasegent issue create \
+phasegent issue search --query "bug"
+phasegent issue get 123
+phasegent issue get 123 124 125
+phasegent comment list 123
+phasegent issue create \
   --title "Short title" --body "Issue details"
-PHASEGENT_ROLE=orchestrator phasegent issue update 123 --body "Updated details"
-PHASEGENT_ROLE=orchestrator phasegent issue close 123
-PHASEGENT_ROLE=executor phasegent issue status
-PHASEGENT_ROLE=executor phasegent issue branches 123
+phasegent issue update 123 --body "Updated details"
+phasegent issue close 123
+phasegent issue status
+phasegent issue branches 123
 phasegent doctor
 ```
 
@@ -101,8 +96,8 @@ provider, writes a lease, syncs, deletes, or repairs, and an `--issue` with no
 matching lease returns a stable empty result instead of a guessed path.
 
 ```sh
-PHASEGENT_ROLE=orchestrator phasegent worktree acquire --issue 123 --base main
-PHASEGENT_ROLE=executor phasegent worktree probe --issue 123
+phasegent worktree acquire --issue 123 --base main
+phasegent worktree probe --issue 123
 ```
 
 The OpenCode worktree adapter deployed by `phasegent plugin install` is a

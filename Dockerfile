@@ -50,9 +50,7 @@ USER 65532:nogroup
 
 # Deterministic exec-form entrypoint: no shell, so stdio stdout stays
 # protocol-clean. The default serves authenticated HTTP MCP on loopback as
-# the executor role and fails closed without PHASEGENT_MCP_AUTH_TOKEN. The
-# role is environment-provided (no CLI flag); override it with
-# `docker run -e PHASEGENT_ROLE=...`.
+# the executor role and fails closed without PHASEGENT_MCP_AUTH_TOKEN.
 ENV PHASEGENT_ROLE=executor
 ENTRYPOINT ["/usr/local/bin/phasegent"]
 CMD ["mcp", "serve", "--transport", "http", "--bind", "127.0.0.1:3000"]

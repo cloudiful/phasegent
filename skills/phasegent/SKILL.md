@@ -246,10 +246,8 @@ Boundaries:
   the provider already closed.
 - Environment: `PHASEGENT_SESSION_ID` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
-  call); `PHASEGENT_ROLE` is the CLI-level role source (a managed session
-  exports it for its child processes; a blank value means "no role", an invalid
-  value is an error); and `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter
-  inert beyond the in-memory registry.
+  call), and `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter inert beyond
+  the in-memory registry.
 - `phasegent --help worktree` owns the exact flags for these commands.
 
 ## Branch binding lifecycle
@@ -271,11 +269,10 @@ Rules:
   the final JSON. A retry or fresh child uses a **new** marker.
 - The JSON top-level `status` (executor/tester) or `verdict` (reviewer) must
   match the note's labelled line verbatim.
-- Publish under the child's own role: the role is implicit — a managed session
-  supplies it, and any other host exports `PHASEGENT_ROLE` once per session —
-  and a child's note needs explicit authorization. A LOCAL_ISSUE note uses the
-  local provider explicitly, and `phasegent --help comment create` owns the
-  body-file lifecycle.
+- Publish under the child's own role; the role is implicit, and a child's note
+  needs explicit authorization. A LOCAL_ISSUE note uses the local provider
+  explicitly, and `phasegent --help comment create` owns the body-file
+  lifecycle.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
   clean finish.
 
