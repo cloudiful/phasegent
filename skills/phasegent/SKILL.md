@@ -323,6 +323,12 @@ Rules:
   - `APPROVE`, `ACCEPT`, `OK`, `LGTM`, etc. are protocol violations; reselect a
     token from the vocabulary.
 
+- Nested explorer assistance changes no contract: an `explore` child launched by
+  the orchestrator, an executor, or a reviewer stays read-only, non-audited, and
+  unable to recurse, so it publishes no marker or VERDICT and owns no result. The
+  owning executor/reviewer still publishes its own single phase-terminal note
+  with any material explorer finding recorded there, and the orchestrator alone
+  owns plan, status, timer, worktree, and closure.
 - Status semantics: `DONE` (all acceptance criteria met), `PARTIAL` (useful
   work done, criteria remain, safe to continue), `BLOCKED`
   (decision/prerequisite missing — state the smallest concrete decision in

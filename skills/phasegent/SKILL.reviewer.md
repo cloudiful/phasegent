@@ -32,6 +32,18 @@ result contracts, the five-token VERDICT vocabulary, and help lookup.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
+## Nested explorer assistance
+
+- Your review stays read-only and independent; `explore` is the only nested
+  child you may launch, every other agent stays closed, and the explorer cannot
+  recurse. Use it only for context the round has not yet covered, never to
+  repeat orchestrator recon.
+- Reuse one explorer child for the whole round: retain the `sessionID` returned
+  by your first call and pass it back as the continuation on later asks; open a
+  fresh child only on the shared isolation triggers and record the reason.
+- Explorer evidence never replaces your own verification and owns no audit note
+  or VERDICT; your terminal note and its single VERDICT remain yours alone.
+
 ## Verdict and audit note
 
 One HTML-comment marker at the top of the note body, with the parent-supplied

@@ -39,6 +39,19 @@ and help lookup.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
+## Nested explorer assistance
+
+- `explore` is the only nested child you may launch; every other agent stays
+  closed, and the explorer itself cannot recurse. Use it only for context the
+  phase has not yet covered, never to repeat orchestrator recon or to widen your
+  own scope.
+- Reuse one explorer child for the whole phase: retain the `sessionID` returned
+  by your first call and pass it back as the continuation on later asks; open a
+  fresh child only on the shared isolation triggers and record the reason.
+- The explorer is read-only, holds no worktree lease, and owns no audit note or
+  VERDICT. You remain the only write owner for the phase and the sole publisher
+  of its terminal note, and you record any material explorer finding there.
+
 ## Publish the audit note
 
 One HTML-comment marker at the top of the note body, with the parent-supplied

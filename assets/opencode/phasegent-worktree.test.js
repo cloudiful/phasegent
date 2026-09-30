@@ -1972,6 +1972,32 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(explore).toContain("An isolated child starts with a clean context");
   });
 
+  test("the embedded role prompts bound nested explorer assistance (issue 671)", () => {
+    // The anchored executor/reviewer pair may launch only `explore`, the
+    // explorer cannot recurse, and orchestrator ownership plus the reviewer's
+    // single-verdict contract stand; the shared skill owns the non-audited note
+    // ownership.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const executor = flat(contentFor("phasegent-executor"));
+    expect(executor).toContain("`explore` is the only nested child you may launch");
+    expect(executor).toContain("the explorer itself cannot recurse");
+    expect(executor).toContain(
+      "You remain the only write owner for the phase and the sole publisher of its terminal note",
+    );
+    const reviewer = flat(contentFor("phasegent-reviewer"));
+    expect(reviewer).toContain("`explore` is the only nested child you may launch");
+    expect(reviewer).toContain("the explorer cannot recurse");
+    expect(reviewer).toContain("your terminal note and its single VERDICT remain yours alone");
+    const explore = flat(contentFor("phasegent-explore"));
+    expect(explore).toContain("a nested explorer cannot recurse and never invokes the `subagent` tool");
+    expect(explore).toContain("You publish no audit note, marker, or VERDICT");
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("Nested explorer assistance changes no contract");
+    expect(shared).toContain("stays read-only, non-audited, and unable to recurse");
+  });
+
   test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {

@@ -9,8 +9,12 @@
 //! asserts every role skill is embedded by the generated adapter. Issue 669
 //! pins the default explorer-session reuse protocol: one retained `sessionID`
 //! handle per parent session, incremental deltas, and a recorded isolation
-//! reason for the limited fresh-child triggers. Pure filesystem + policy reads;
-//! no network, credentials, HOME, or SQLite access.
+//! reason for the limited fresh-child triggers. Issue 671 extends that into a
+//! bounded nested-explorer level: executor/reviewer may launch only `explore`,
+//! the explorer cannot recurse and stays non-audited, reuse is parent-scoped,
+//! and orchestrator ownership plus the independent verdict contract stand.
+//! Pure filesystem + policy reads; no network, credentials, HOME, or SQLite
+//! access.
 
 use crate::policy::{Capability, Role};
 use std::collections::HashMap;
@@ -463,6 +467,111 @@ fn orchestrator_reuses_one_explore_session_and_explore_resumes_it() {
         assert!(
             normalised.contains(kept),
             "SKILL.explore.md must keep {kept:?} after the reuse change"
+        );
+    }
+}
+
+/// Issue 671 adds one bounded nested reconnaissance level: executor and
+/// reviewer may launch only `explore`, the explorer cannot recurse, the
+/// executor/reviewer stays the sole write and note owner, the reviewer keeps
+/// its independent single-verdict contract, and the orchestrator remains the
+/// only plan/status/timer/worktree/closure owner. It also pins the parent-scoped
+/// reuse clarification in the orchestrator skill and the non-audited explorer
+/// note ownership in the shared skill.
+#[test]
+fn executor_and_reviewer_may_launch_only_explore_without_weakening_ownership() {
+    for (relative, round_scope, closure) in [
+        (
+            "SKILL.executor.md",
+            "Reuse one explorer child for the whole phase",
+            "You remain the only write owner for the phase and the sole publisher of its terminal note",
+        ),
+        (
+            "SKILL.reviewer.md",
+            "Reuse one explorer child for the whole round",
+            "your terminal note and its single VERDICT remain yours alone",
+        ),
+    ] {
+        let role = read_skill(relative);
+        let normalised: String = role.split_whitespace().collect::<Vec<_>>().join(" ");
+        for phrase in [
+            "## Nested explorer assistance",
+            "`explore` is the only nested child you may launch",
+            "every other agent stays closed",
+            "cannot recurse",
+            "retain the `sessionID` returned by your first call",
+            "only on the shared isolation triggers",
+            "owns no audit note or VERDICT",
+        ] {
+            assert!(
+                normalised.contains(phrase),
+                "{relative} must own the nested-explore boundary {phrase:?}"
+            );
+        }
+        assert!(
+            normalised.contains(round_scope),
+            "{relative} must scope nested reuse to its own {round_scope:?}"
+        );
+        assert!(
+            normalised.contains(closure),
+            "{relative} must keep its phase-terminal ownership {closure:?}"
+        );
+        // The allowlist is exactly one child: no sibling agent id may appear as
+        // a launchable nested child.
+        for sibling in [
+            "`tester`",
+            "`general`",
+            "subagent=tester",
+            "subagent=general",
+        ] {
+            assert!(
+                !normalised.contains(sibling),
+                "{relative} must not widen the nested allowlist with {sibling:?}"
+            );
+        }
+    }
+
+    let explore = read_skill("SKILL.explore.md");
+    let normalised: String = explore.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "the primary orchestrator, or the executor/reviewer that owns a phase or round",
+        "a nested explorer cannot recurse and never invokes the `subagent` tool",
+        "the parent retains the handle of the session that started this one",
+        "scoped to the orchestrator's objective or to the executor/reviewer's phase or round",
+        "You publish no audit note, marker, or VERDICT",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.explore.md must state {phrase:?}"
+        );
+    }
+
+    let orchestrator = read_skill("SKILL.orchestrator.md");
+    let normalised: String = orchestrator
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for phrase in [
+        "Reuse is parent-scoped: the retained handle belongs to one parent session",
+        "the phase or round of a nested executor/reviewer parent",
+        "a nested explorer child follows the same reuse rule inside that parent's scope",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.orchestrator.md must scope explorer reuse {phrase:?}"
+        );
+    }
+
+    let shared = read_skill("SKILL.md");
+    let normalised: String = shared.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "Nested explorer assistance changes no contract",
+        "stays read-only, non-audited, and unable to recurse",
+        "publishes no marker or VERDICT",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.md must own the nested-explorer result note {phrase:?}"
         );
     }
 }

@@ -70,6 +70,11 @@ parent session and pass it back as the `sessionID` continuation on every later
 explore delegation, so the child keeps its accumulated evidence instead of
 re-reading covered ground.
 
+Reuse is parent-scoped: the retained handle belongs to one parent session —
+your orchestrator session, or the phase or round of a nested executor/reviewer
+parent — and a nested explorer child follows the same reuse rule inside that
+parent's scope.
+
 - A later uncovered area, a follow-up, or a changed hypothesis is a delta into
   the retained handle: send only the incremental ask and take back only
   incremental findings, never a restated brief.
