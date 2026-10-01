@@ -5,6 +5,9 @@ use crate::infra::storage::{
 // `PROVIDER_LOCAL` is imported from `storage_schema` directly because the
 // `storage` aggregator re-export lists only the non-local provider constants.
 use crate::infra::storage_schema::PROVIDER_LOCAL;
+// `GLOBAL_REDMINE_API_BASE` is imported from `storage_schema` directly so the
+// canonical global key does not require widening the `storage` aggregator.
+use crate::infra::storage_schema::GLOBAL_REDMINE_API_BASE;
 use crate::policy::Role;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -262,7 +265,10 @@ pub fn load_redmine_config(
     role: Role,
     storage: &Storage,
 ) -> Result<Option<RedmineStoredConfig>, String> {
-    // Effective Redmine config: TOML > SQLite, same contract as above.
+    // Effective legacy Redmine config: TOML > SQLite, same contract as
+    // above. The `api_base` field is a legacy read/migration input only:
+    // runtime address resolution goes through [`redmine_api_base`], and new
+    // writes never populate it. `close_status_id` stays role-scoped.
     let base = storage.load_redmine_config(role)?;
     let overlay = crate::infra::config_overlay::load_overlay()?;
     let Some(overlay) = overlay else {
@@ -282,6 +288,114 @@ pub fn load_redmine_config(
         present = true;
     }
     if present { Ok(Some(merged)) } else { Ok(None) }
+}
+
+/// Roles scanned by the bounded legacy Redmine address migration.
+const REDMINE_ROLES: [Role; 5] = [
+    Role::Admin,
+    Role::Orchestrator,
+    Role::Executor,
+    Role::Reviewer,
+    Role::Tester,
+];
+
+/// Resolve the canonical global Redmine REST API base.
+///
+/// Precedence, highest first (callers apply an explicit `--api-base`
+/// above this):
+///   1. `PHASEGENT_REDMINE_API_BASE` environment variable (Redmine
+///      runtime override).
+///   2. `PHASEGENT_API_BASE` environment variable (generic runtime
+///      compatibility alias).
+///   3. TOML top-level `redmine_api_base`.
+///   4. Persisted `global_setting` row `PHASEGENT_REDMINE_API_BASE`.
+///   5. Bounded legacy migration: when no canonical value exists yet,
+///      the effective per-role addresses (`role_redmine_config.api_base`
+///      overlaid by `[roles.<role>] redmine_api_base`, which is what
+///      [`load_redmine_config`] returns) are normalised. A single
+///      distinct address is migrated into the global setting and
+///      returned; distinct addresses fail closed so no role, first
+///      value, or credential-derived value is ever chosen.
+///
+/// The address is non-secret. Credentials, identities, provider
+/// selection, close-status ids, and the mirror bearer key keep their
+/// independent paths and are never consulted here. Environment and CLI
+/// values are runtime overrides only and are never persisted; only the
+/// legacy migration writes the global row.
+pub fn redmine_api_base(storage: &Storage) -> Result<Option<String>, String> {
+    if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_API_BASE")? {
+        return Ok(Some(value));
+    }
+    if let Some(value) = read_env_trimmed("PHASEGENT_API_BASE")? {
+        return Ok(Some(value));
+    }
+    if let Some(value) = crate::infra::config_overlay::load_overlay()?
+        .and_then(|overlay| overlay.redmine_api_base_value().map(str::to_owned))
+    {
+        return Ok(Some(value));
+    }
+    if let Some(value) = storage.load_global_setting(GLOBAL_REDMINE_API_BASE)? {
+        return Ok(Some(value));
+    }
+    migrate_legacy_redmine_api_base(storage)
+}
+
+/// Migrate the single legacy per-role Redmine address into the canonical
+/// global setting, or fail closed when the legacy values conflict.
+///
+/// Returns `Ok(None)` when no role carries a non-empty legacy address so
+/// the caller can keep its "not configured" diagnostic. Normalisation
+/// reuses the same Redmine URL rules as runtime resolution, and only a
+/// successful migration persists anything.
+fn migrate_legacy_redmine_api_base(storage: &Storage) -> Result<Option<String>, String> {
+    let mut distinct: Vec<String> = Vec::new();
+    let mut roles_with_values: Vec<&'static str> = Vec::new();
+    for role in REDMINE_ROLES {
+        let Some(config) = load_redmine_config(role, storage)? else {
+            continue;
+        };
+        let Some(raw) = config.api_base.as_deref() else {
+            continue;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Reject credential-bearing/invalid legacy addresses before they
+        // can reach the canonical non-sensitive global row. The error is
+        // bounded and never echoes the address.
+        validate_redmine_api_base(trimmed).map_err(|_| {
+            format!(
+                "legacy Redmine API base for role '{}' is invalid; \
+                 set the global redmine_api_base (config set redmine-api-base)",
+                role.as_str()
+            )
+        })?;
+        let normalized = crate::remote::normalize_redmine_api_base(trimmed).map_err(|_| {
+            format!(
+                "legacy Redmine API base for role '{}' is invalid; \
+                 set the global redmine_api_base (config set redmine-api-base)",
+                role.as_str()
+            )
+        })?;
+        if !distinct.iter().any(|existing| existing == &normalized) {
+            distinct.push(normalized);
+        }
+        roles_with_values.push(role.as_str());
+    }
+    match distinct.len() {
+        0 => Ok(None),
+        1 => {
+            let value = distinct.pop().expect("one distinct legacy address");
+            storage.save_global_setting(GLOBAL_REDMINE_API_BASE, &value)?;
+            Ok(Some(value))
+        }
+        _ => Err(format!(
+            "conflicting legacy Redmine API base addresses across roles ({}); \
+             set the global redmine_api_base (config set redmine-api-base) to one address",
+            roles_with_values.join(", ")
+        )),
+    }
 }
 
 pub fn load_gitlab_config(
@@ -458,27 +572,65 @@ fn save_forgejo_config(
     storage.save_role_config(role, &config)
 }
 
-fn save_redmine_config(
+/// Persist the `admin auth setup --provider redmine` fields: the
+/// non-secret REST address routes to the canonical global setting, the
+/// close-status id stays role-scoped, and the role provider preference is
+/// flipped to `redmine`. Exposed `pub(crate)` so focused config regression
+/// tests can drive the exact write path without a credential prompt.
+pub(crate) fn save_redmine_config(
     storage: &Storage,
     role: Role,
     api_base: Option<String>,
     close_status_id: Option<String>,
 ) -> Result<(), String> {
-    if api_base.is_some() || close_status_id.is_some() {
+    if let Some(value) = api_base {
+        // The canonical Redmine REST address is global and non-secret, so
+        // `auth setup --provider redmine --api-base` writes the global
+        // setting instead of a role-scoped address row. Validation runs
+        // before any write and never echoes the value.
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err("Redmine API base cannot be empty".to_owned());
+        }
+        validate_redmine_api_base(trimmed)?;
+        storage.save_global_setting(GLOBAL_REDMINE_API_BASE, trimmed)?;
+    }
+    if let Some(value) = close_status_id {
+        // Only the role-scoped close-status id is written here. A
+        // pre-existing legacy address row is left untouched (inert) rather
+        // than rewritten; setup never originates a role-scoped address.
         let mut config = storage.load_redmine_config(role)?.unwrap_or_default();
-        if api_base.is_some() {
-            config.api_base = api_base;
-        }
-        if let Some(value) = close_status_id {
-            config.close_status_id = Some(
-                value
-                    .parse()
-                    .map_err(|_| "Redmine close status id must be numeric".to_owned())?,
-            );
-        }
+        config.close_status_id = Some(
+            value
+                .parse()
+                .map_err(|_| "Redmine close status id must be numeric".to_owned())?,
+        );
         storage.save_redmine_config(role, &config)?;
     }
     storage.update_provider(role, PROVIDER_REDMINE)
+}
+
+/// Validate a non-sensitive Redmine REST base before it is persisted into
+/// the canonical global setting. Rejects a non-http(s) scheme, a missing
+/// host, userinfo (embedded credentials), and a query or fragment. Every
+/// error is bounded and never echoes the input so a credential-bearing
+/// value cannot leak through the diagnostic.
+fn validate_redmine_api_base(value: &str) -> Result<(), String> {
+    let parsed =
+        url::Url::parse(value).map_err(|_| "Redmine API base is not a valid URL".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Redmine API base must use http or https".to_owned());
+    }
+    if parsed.host_str().is_none() {
+        return Err("Redmine API base must include a host".to_owned());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Redmine API base must not contain credentials".to_owned());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("Redmine API base must not contain a query or fragment".to_owned());
+    }
+    Ok(())
 }
 
 fn save_gitlab_config(

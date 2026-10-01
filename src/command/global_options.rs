@@ -1,8 +1,11 @@
 /// Global options recognized before the command, paired with a concrete
-/// example value used when explaining a misplaced option.
+/// example value used when explaining a misplaced option. The `--api-base`
+/// example names a Forgejo address because the address override is a
+/// per-invocation flag: the persisted Redmine REST address is a
+/// machine-wide setting configured through `admin config set`.
 const GLOBAL_OPTIONS: &[(&str, &str)] = &[
     ("--provider", "redmine"),
-    ("--api-base", "https://redmine.example.com"),
+    ("--api-base", "https://forgejo.example.com"),
     ("--repository", "owner/repo"),
     ("--project-id", "23"),
     ("--close-status-id", "5"),

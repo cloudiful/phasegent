@@ -734,3 +734,64 @@ fn desktop_commands_are_unknown() {
     assert_eq!(envelope["error"]["kind"], "argument");
     assert_eq!(envelope["error"]["message"], "unknown command 'gui'");
 }
+
+/// The Redmine REST address is machine-wide, so the help pages that own it
+/// must present it as one global setting and must never imply a per-role
+/// address. `config show` reports it once under `global_settings`, the admin
+/// write page documents the role-free set/clear shape, and the `auth setup`
+/// page no longer claims all persisted provider config is role-scoped.
+#[test]
+fn help_pages_present_the_redmine_address_as_machine_wide() {
+    let show = stdout_text(&run_help(&["--help", "config", "show"]));
+    assert!(
+        show.contains("PHASEGENT_REDMINE_API_BASE"),
+        "config show must name the canonical global Redmine address; got:\n{show}",
+    );
+    assert!(
+        show.contains("never inside a role entry"),
+        "config show must state the address is not per-role; got:\n{show}",
+    );
+
+    let set = stdout_text(&run_help_with_role(
+        &["--help", "admin", "config", "set"],
+        Some("admin"),
+    ));
+    assert!(
+        set.contains("machine-wide Redmine REST address"),
+        "admin config set must mark the Redmine address machine-wide; got:\n{set}",
+    );
+    assert!(
+        set.contains("phasegent admin config set redmine-api-base https://redmine.example"),
+        "admin config set must show the role-free Redmine example; got:\n{set}",
+    );
+    assert!(
+        set.contains("never writes a Redmine address"),
+        "admin config set must scope the generic api-base alias; got:\n{set}",
+    );
+
+    let clear = stdout_text(&run_help_with_role(
+        &["--help", "admin", "config", "clear"],
+        Some("admin"),
+    ));
+    assert!(
+        clear.contains("clearing `redmine-api-base`"),
+        "admin config clear must document the role-free Redmine clear; got:\n{clear}",
+    );
+
+    let auth = stdout_text(&run_help_with_role(
+        &["--help", "admin", "auth"],
+        Some("admin"),
+    ));
+    assert!(
+        auth.contains("machine-wide"),
+        "admin auth must state the Redmine address is machine-wide; got:\n{auth}",
+    );
+    assert!(
+        !auth.contains("persisted provider config are role-scoped"),
+        "admin auth must not claim all persisted provider config is role-scoped; got:\n{auth}",
+    );
+    assert!(
+        auth.contains("Credentials, provisioned identities, provider selection, and the Redmine close-status id stay role-scoped"),
+        "admin auth must keep the genuinely role-scoped fields named; got:\n{auth}",
+    );
+}

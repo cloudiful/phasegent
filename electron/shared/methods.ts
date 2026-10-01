@@ -173,7 +173,6 @@ export interface RoleSnapshot {
   provider?: string | null
   forgejo_api_base?: string | null
   forgejo_repository?: string | null
-  redmine_api_base?: string | null
   redmine_close_status_id?: number | null
   gitlab_api_base?: string | null
   forgejo_credential: CredentialSummary

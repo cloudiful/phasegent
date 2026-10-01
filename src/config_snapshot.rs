@@ -8,6 +8,12 @@
 //! the git mirror bearer key reports presence/length, and the
 //! repository URL override is sanitised before being returned to the
 //! caller.
+//!
+//! The Redmine REST address is machine-wide, so it is reported once
+//! under `global_settings` (sanitised like the other non-secret URL
+//! settings) and never per role. The per-role entries keep the
+//! Forgejo/GitLab addresses, the role-scoped Redmine close-status id,
+//! and credential presence/length.
 
 use crate::infra::storage::{GlobalSettingSummary, Storage};
 use crate::policy::Role;
@@ -15,13 +21,15 @@ use serde::Serialize;
 
 /// Per-role snapshot consumed by `config show`. The structure is
 /// flat so the JSON output stays compact and operator-friendly.
+/// The machine-wide Redmine REST address is deliberately absent: it
+/// is rendered once under `global_settings` instead, so no role entry
+/// can present the address as role-scoped.
 #[derive(Debug, Serialize)]
 pub struct RoleSnapshot {
     pub role: &'static str,
     pub provider: Option<String>,
     pub forgejo_api_base: Option<String>,
     pub forgejo_repository: Option<String>,
-    pub redmine_api_base: Option<String>,
     pub redmine_close_status_id: Option<u64>,
     pub gitlab_api_base: Option<String>,
     pub forgejo_credential: CredentialSummary,
@@ -43,10 +51,11 @@ pub struct GlobalSettingJson {
     pub present: bool,
     #[serde(skip_serializing_if = "is_zero")]
     pub length: usize,
-    /// Sanitised repository URL, only populated for
-    /// `PHASEGENT_REDMINE_REPOSITORY_URL`. Credentials embedded in
-    /// the userinfo, query, or fragment are stripped before
-    /// rendering.
+    /// Sanitised URL, only populated for the non-secret URL-shaped
+    /// global settings (`PHASEGENT_REDMINE_API_BASE`,
+    /// `PHASEGENT_REDMINE_REPOSITORY_URL`, and the notify base/webhook
+    /// URLs). Credentials embedded in the userinfo, query, or fragment
+    /// are stripped before rendering.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sanitized_value: Option<String>,
     /// Non-secret literal value, only populated for entries that
@@ -165,9 +174,6 @@ pub(crate) fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapsho
         forgejo_repository: role_config
             .as_ref()
             .and_then(|config| config.repository.clone()),
-        redmine_api_base: redmine_config
-            .as_ref()
-            .and_then(|config| config.api_base.clone()),
         redmine_close_status_id: redmine_config.and_then(|config| config.close_status_id),
         gitlab_api_base: gitlab_config
             .as_ref()
@@ -191,10 +197,11 @@ fn global_setting_to_json(
     storage: &Storage,
     summary: GlobalSettingSummary,
 ) -> Result<GlobalSettingJson, String> {
-    // The sanitised URL is rendered for the repository URL override and
-    // the notify webhook-style URLs because they are the non-secret
-    // global settings whose values contain URL-shaped data. Bearer
-    // keys and notify secrets stay at presence/length. Index settings
+    // The sanitised URL is rendered for the repository URL override, the
+    // canonical global Redmine API base, and the notify webhook-style URLs
+    // because they are the non-secret global settings whose values contain
+    // URL-shaped data. Bearer keys and notify secrets stay at
+    // presence/length. Index settings
     // follow the same rule: the legacy backend literal is non-secret,
     // the pg url is secret and never rendered beyond presence/length.
     // Notify non-URL fields stay at presence/length so dynamic values
@@ -203,6 +210,7 @@ fn global_setting_to_json(
     let sanitized_value = if matches!(
         summary.name,
         "PHASEGENT_REDMINE_REPOSITORY_URL"
+            | "PHASEGENT_REDMINE_API_BASE"
             | "PHASEGENT_NOTIFY_NTFY_BASE_URL"
             | "PHASEGENT_NOTIFY_WEBHOOK_URL"
             | "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL"

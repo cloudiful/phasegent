@@ -155,38 +155,42 @@ impl RedmineConfig {
         ProviderKind::Redmine
     }
 
+    /// Resolve the Redmine configuration for `role`.
+    ///
+    /// The REST base resolves from the one canonical global address via
+    /// [`auth::redmine_api_base`]: explicit `--api-base` > env
+    /// (`PHASEGENT_REDMINE_API_BASE` / `PHASEGENT_API_BASE`) > TOML
+    /// `redmine_api_base` > persisted global setting > bounded legacy
+    /// role migration. No role-scoped address row is consulted for the
+    /// base. The close-status id stays role-scoped (explicit >
+    /// `PHASEGENT_REDMINE_CLOSE_STATUS_ID` / `PHASEGENT_CLOSE_STATUS_ID`
+    /// > TOML/SQLite role value).
     pub fn resolve(
         role: Role,
         api_base: Option<&str>,
         project_id: Option<&str>,
         close_status_id: Option<&str>,
     ) -> Result<Self, ForgejoError> {
-        // Resolution precedence per field: explicit CLI > env
-        // (`PHASEGENT_REDMINE_API_BASE` / `PHASEGENT_API_BASE` for the base,
-        // `PHASEGENT_REDMINE_CLOSE_STATUS_ID` /
-        // `PHASEGENT_CLOSE_STATUS_ID` for the status) > TOML
-        // (`[roles.<role>] redmine_api_base` /
-        // `redmine_close_status_id` via `auth::load_redmine_config`,
-        // which returns TOML-over-SQLite) > legacy SQLite row.
         let storage = Storage::open().map_err(ForgejoError::config)?;
         let stored = auth::load_redmine_config(role, &storage).map_err(ForgejoError::config)?;
-        let explicit_base = api_base
-            .map(str::to_owned)
-            .or_else(|| std::env::var("PHASEGENT_REDMINE_API_BASE").ok())
-            .or_else(|| std::env::var("PHASEGENT_API_BASE").ok());
+        let explicit_base = api_base.map(str::to_owned);
         let explicit_project = project_id.map(str::to_owned);
         let explicit_close = close_status_id
             .map(str::to_owned)
             .or_else(|| std::env::var("PHASEGENT_REDMINE_CLOSE_STATUS_ID").ok())
             .or_else(|| std::env::var("PHASEGENT_CLOSE_STATUS_ID").ok());
 
-        let base = explicit_base
-            .or_else(|| stored.as_ref().and_then(|config| config.api_base.clone()))
-            .ok_or_else(|| {
-                ForgejoError::config(
-                    "Redmine API base is not configured; use --api-base or auth setup",
-                )
-            })?;
+        let base = match explicit_base {
+            Some(value) => value,
+            None => auth::redmine_api_base(&storage)
+                .map_err(ForgejoError::config)?
+                .ok_or_else(|| {
+                    ForgejoError::config(
+                        "Redmine API base is not configured; set the global redmine_api_base \
+                         (config set redmine-api-base) or use --api-base",
+                    )
+                })?,
+        };
         let project_id = explicit_project.filter(|value| !value.trim().is_empty());
         let close_status_id = explicit_close
             .or_else(|| {

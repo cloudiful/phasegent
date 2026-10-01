@@ -56,16 +56,29 @@ fn config_set_role_scoped_persists_and_output_canonical() {
             !text.contains("https://forgejo.example"),
             "value must not be echoed: {text}"
         );
-        // Verify storage: generic api-base writes to three rows
+        // Verify storage: the generic api-base writes the Forgejo and
+        // GitLab role rows only. It must not create or update the legacy
+        // role-scoped Redmine address row (the canonical Redmine address
+        // is the global `PHASEGENT_REDMINE_API_BASE` setting).
         let forgejo = storage.load_role_config(Role::Executor).unwrap().unwrap();
         assert_eq!(forgejo.api_base.as_deref(), Some("https://forgejo.example"));
-        let redmine = storage
-            .load_redmine_config(Role::Executor)
-            .unwrap()
-            .unwrap();
-        assert_eq!(redmine.api_base.as_deref(), Some("https://forgejo.example"));
         let gitlab = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
         assert_eq!(gitlab.api_base.as_deref(), Some("https://forgejo.example"));
+        assert!(
+            storage
+                .load_redmine_config(Role::Executor)
+                .unwrap()
+                .and_then(|config| config.api_base)
+                .is_none(),
+            "generic api-base must not write the Redmine role row"
+        );
+        assert!(
+            storage
+                .load_global_setting("PHASEGENT_REDMINE_API_BASE")
+                .unwrap()
+                .is_none(),
+            "generic api-base must not write the global Redmine address"
+        );
 
         // Project-id aliases are now rejected; verify they do not persist.
         assert!(config_write::canonical_setting_name("redmine-project-id").is_none());
@@ -155,18 +168,25 @@ fn config_clear_global_without_role_and_role_scoped() {
         );
         assert!(
             storage
-                .load_redmine_config(Role::Executor)
+                .load_gitlab_config(Role::Executor)
                 .unwrap()
                 .unwrap()
                 .api_base
                 .is_none()
         );
+        // The generic alias never touches the legacy Redmine role row or
+        // the global Redmine address.
         assert!(
             storage
-                .load_gitlab_config(Role::Executor)
+                .load_redmine_config(Role::Executor)
                 .unwrap()
+                .and_then(|config| config.api_base)
+                .is_none()
+        );
+        assert!(
+            storage
+                .load_global_setting("PHASEGENT_REDMINE_API_BASE")
                 .unwrap()
-                .api_base
                 .is_none()
         );
     });

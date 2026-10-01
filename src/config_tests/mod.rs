@@ -31,6 +31,7 @@ mod index_backend_validation;
 mod parse_show;
 mod project_list;
 mod provider_default;
+mod redmine_api_base;
 mod resolution_fallback;
 mod set_clear_parse;
 mod set_clear_persist;

@@ -14,6 +14,7 @@ fn config_set_parses_canonical_and_kebab_alias() {
         ),
         ("PHASEGENT_DEFAULT_PROVIDER", "default-provider"),
         ("PHASEGENT_GITLAB_API_BASE", "gitlab-api-base"),
+        ("PHASEGENT_REDMINE_API_BASE", "redmine-api-base"),
     ];
     for (canonical, alias) in cases {
         for name in [canonical, alias] {
@@ -131,6 +132,23 @@ fn config_set_global_without_role_parses() {
         Command::ConfigSet { setting, .. } => {
             assert_eq!(setting, "PHASEGENT_REDMINE_REPOSITORY_URL")
         }
+        other => panic!("got {other:?}"),
+    }
+    // The canonical global Redmine address is machine-wide too.
+    let args = [
+        "admin",
+        "config",
+        "set",
+        "redmine-api-base",
+        "https://redmine.example",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let invocation = command::parse_with_role_env(&args, None)
+        .expect("global redmine api base without a role must parse");
+    match invocation.command {
+        Command::ConfigSet { setting, .. } => assert_eq!(setting, "PHASEGENT_REDMINE_API_BASE"),
         other => panic!("got {other:?}"),
     }
 }

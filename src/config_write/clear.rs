@@ -37,6 +37,7 @@ fn persist_clear_value(
     match canonical {
         "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY"
         | "PHASEGENT_REDMINE_REPOSITORY_URL"
+        | "PHASEGENT_REDMINE_API_BASE"
         | "PHASEGENT_DEFAULT_PROVIDER"
         | "PHASEGENT_INDEX_BACKEND"
         | "PHASEGENT_INDEX_PG_URL"
@@ -88,13 +89,9 @@ fn persist_clear_value(
                 storage.save_role_config(role, &cfg)?;
                 cleared = true;
             }
-            if let Some(mut cfg) = storage.load_redmine_config(role)?
-                && cfg.api_base.is_some()
-            {
-                cfg.api_base = None;
-                storage.save_redmine_config(role, &cfg)?;
-                cleared = true;
-            }
+            // The legacy role-scoped Redmine address is not touched: the
+            // generic alias must not create or update it (the canonical
+            // address is the global `PHASEGENT_REDMINE_API_BASE` setting).
             if let Some(mut cfg) = storage.load_gitlab_config(role)?
                 && cfg.api_base.is_some()
             {
@@ -117,22 +114,6 @@ fn persist_clear_value(
                 let mut cfg = current.unwrap_or_default();
                 cfg.repository = None;
                 storage.save_role_config(role, &cfg)?;
-                Ok(true)
-            }
-        }
-        "PHASEGENT_REDMINE_API_BASE" => {
-            let role = role.expect("role required");
-            let current = storage.load_redmine_config(role)?;
-            if current
-                .as_ref()
-                .and_then(|c| c.api_base.as_deref())
-                .is_none()
-            {
-                Ok(false)
-            } else {
-                let mut cfg = current.unwrap_or_default();
-                cfg.api_base = None;
-                storage.save_redmine_config(role, &cfg)?;
                 Ok(true)
             }
         }

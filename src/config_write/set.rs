@@ -149,10 +149,11 @@ fn persist_set_value(
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
+            // Generic runtime alias for the non-Redmine providers. It must
+            // not create or update the legacy role-scoped Redmine address
+            // row; the canonical Redmine address is the global
+            // `PHASEGENT_REDMINE_API_BASE` setting.
             update_role_config_field(storage, role, |c| {
-                c.api_base = Some(trimmed.to_owned());
-            })?;
-            update_redmine_config_field(storage, role, |c| {
                 c.api_base = Some(trimmed.to_owned());
             })?;
             update_gitlab_config_field(storage, role, |c| {
@@ -166,10 +167,10 @@ fn persist_set_value(
             })?;
         }
         "PHASEGENT_REDMINE_API_BASE" => {
-            let role = role.expect("role required");
-            update_redmine_config_field(storage, role, |c| {
-                c.api_base = Some(trimmed.to_owned());
-            })?;
+            // Canonical global Redmine REST address (non-secret). No role is
+            // required and no role-scoped address row is written.
+            validate_http_base_url(canonical, trimmed)?;
+            storage.save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");

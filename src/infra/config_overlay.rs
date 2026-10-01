@@ -21,11 +21,16 @@
 //! silently ignored.
 //!
 //! Allowed TOML fields (all non-secret):
-//!   `default_provider`, `redmine_repository_url`, `index_backend`
-//!   (`sqlite`/`postgres`, validated but ignored for backend selection
-//!   which remains URL-driven), plus per-role `[roles.<role>]` with
-//!   `provider`, `forgejo_api_base`, `forgejo_repository`,
-//!   `redmine_api_base`, `redmine_close_status_id`, `gitlab_api_base`.
+//!   `default_provider`, `redmine_api_base`, `redmine_repository_url`,
+//!   `index_backend` (`sqlite`/`postgres`, validated but ignored for
+//!   backend selection which remains URL-driven), plus per-role
+//!   `[roles.<role>]` with `provider`, `forgejo_api_base`,
+//!   `forgejo_repository`, `redmine_close_status_id`, `gitlab_api_base`.
+//!   The top-level `redmine_api_base` is the canonical global Redmine
+//!   REST address; the legacy per-role `[roles.<role>] redmine_api_base`
+//!   is accepted only as a bounded migration input while the per-role
+//!   address model is retired. `redmine_close_status_id` stays
+//!   role-scoped.
 //! Bearer credentials, role API keys, provisioned identities, timer
 //! state, index state, `PHASEGENT_INDEX_PG_URL`, and any
 //! credential-bearing URL are never accepted in TOML and fail with a
@@ -45,6 +50,9 @@ pub const CONFIG_PATH_ENV: &str = "PHASEGENT_CONFIG_PATH";
 pub struct ConfigOverlay {
     #[serde(default)]
     pub default_provider: Option<String>,
+    /// Canonical global Redmine REST API base, shared by every role.
+    #[serde(default)]
+    pub redmine_api_base: Option<String>,
     #[serde(default)]
     pub redmine_repository_url: Option<String>,
     #[serde(default)]
@@ -62,6 +70,8 @@ pub struct RoleOverlay {
     pub forgejo_api_base: Option<String>,
     #[serde(default)]
     pub forgejo_repository: Option<String>,
+    /// Legacy per-role Redmine address. Accepted only as a migration
+    /// input; new configuration uses the top-level `redmine_api_base`.
     #[serde(default)]
     pub redmine_api_base: Option<String>,
     #[serde(default)]
@@ -138,6 +148,12 @@ impl ConfigOverlay {
         self.default_provider.as_deref()
     }
 
+    /// Canonical global Redmine REST API base from the top-level TOML
+    /// key, if present.
+    pub fn redmine_api_base_value(&self) -> Option<&str> {
+        self.redmine_api_base.as_deref()
+    }
+
     pub fn redmine_repository_url_value(&self) -> Option<&str> {
         self.redmine_repository_url.as_deref()
     }
@@ -170,6 +186,9 @@ impl ConfigOverlay {
                 }
             }
             self.default_provider = Some(trimmed);
+        }
+        if let Some(value) = self.redmine_api_base.take() {
+            self.redmine_api_base = Some(validate_api_base("redmine_api_base", &value, origin)?);
         }
         if let Some(value) = self.redmine_repository_url.take() {
             let validated = validate_repository_url("redmine_repository_url", &value, origin)?;

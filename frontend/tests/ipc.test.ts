@@ -20,6 +20,7 @@ import {
   setRoleCredential,
   snapshotEndpointForRole,
   snapshotProviderForRole,
+  snapshotRedmineApiBase,
   snapshotRoleEntry,
   summarizeTasks,
   testConnection,
@@ -210,7 +211,6 @@ describe('snapshot helpers', () => {
         provider: 'redmine',
         forgejo_api_base: null,
         forgejo_repository: null,
-        redmine_api_base: 'https://redmine.example.invalid',
         redmine_close_status_id: 5,
         gitlab_api_base: null,
         forgejo_credential: { present: false, length: 0 },
@@ -218,7 +218,9 @@ describe('snapshot helpers', () => {
         gitlab_credential: { present: false },
       },
     ],
-    global_settings: [],
+    global_settings: [
+      { name: 'PHASEGENT_REDMINE_API_BASE', present: true, length: 31, sanitized_value: 'https://redmine.example.invalid' },
+    ],
     global_default_provider: 'forgejo',
   }
 
@@ -231,10 +233,51 @@ describe('snapshot helpers', () => {
     expect(snapshotProviderForRole(null, 'executor')).toBe('')
   })
 
-  test('resolves endpoints with redmine priority and empty fallback', () => {
+  test('resolves the redmine endpoint from the machine-wide setting', () => {
+    expect(snapshotRedmineApiBase(snapshot)).toBe('https://redmine.example.invalid')
     expect(snapshotEndpointForRole(snapshot, 'executor')).toBe('https://redmine.example.invalid')
+    expect(snapshotRedmineApiBase(null)).toBe('')
     expect(snapshotEndpointForRole(snapshot, 'missing')).toBe('')
     expect(snapshotEndpointForRole(null, 'executor')).toBe('')
+  })
+
+  test('keeps forgejo and gitlab endpoints role-scoped', () => {
+    const forgejo: ConfigSnapshotRaw = {
+      ...snapshot,
+      roles: [
+        {
+          role: 'executor',
+          provider: 'forgejo',
+          forgejo_api_base: 'https://forgejo.example.invalid',
+          forgejo_repository: 'acme/widgets',
+          redmine_close_status_id: null,
+          gitlab_api_base: null,
+          forgejo_credential: { present: false, length: 0 },
+          redmine_credential: { present: false, length: 0 },
+          gitlab_credential: { present: false },
+        },
+      ],
+    }
+    expect(snapshotEndpointForRole(forgejo, 'executor')).toBe('https://forgejo.example.invalid')
+
+    const gitlab: ConfigSnapshotRaw = {
+      ...forgejo,
+      roles: [
+        {
+          ...forgejo.roles[0]!,
+          provider: 'gitlab',
+          forgejo_api_base: null,
+          gitlab_api_base: 'https://gitlab.example.invalid',
+        },
+      ],
+    }
+    expect(snapshotEndpointForRole(gitlab, 'executor')).toBe('https://gitlab.example.invalid')
+  })
+
+  test('falls back to an empty endpoint when the global redmine address is absent', () => {
+    const unset: ConfigSnapshotRaw = { ...snapshot, global_settings: [] }
+    expect(snapshotRedmineApiBase(unset)).toBe('')
+    expect(snapshotEndpointForRole(unset, 'executor')).toBe('')
   })
 })
 

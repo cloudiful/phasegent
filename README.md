@@ -44,6 +44,13 @@ phasegent --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
 
+The Redmine REST address is machine-wide: `auth setup --api-base` and
+`admin config set redmine-api-base <URL>` store the one address every role
+shares, and `config show` reports it once under `global_settings`. Credentials,
+provisioned identities, provider selection, and the Redmine close-status id
+stay role-scoped; `admin config set api-base <URL>` is the role-scoped
+Forgejo/GitLab address.
+
 ## Common Commands
 
 ```sh

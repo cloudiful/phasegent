@@ -143,11 +143,18 @@ impl Storage {
         Ok(())
     }
 
-    /// Set only the bootstrap identity (api_base, close_status_id) without
-    /// disturbing an existing provider preference on `role_config`. The
-    /// `project_id` argument is retained for backward-compatible call sites
-    /// but is ignored: it is no longer persisted. The provider preference
-    /// is still updated to `redmine`.
+    /// Set the bootstrap identity (close_status_id) without disturbing an
+    /// existing provider preference on `role_config`. The `project_id`
+    /// argument is retained for backward-compatible call sites but is
+    /// ignored: it is no longer persisted. The provider preference is
+    /// still updated to `redmine`.
+    ///
+    /// The `api_base` argument is also ignored: the Redmine REST address
+    /// is canonical/global now, so bootstrap never writes a role-scoped
+    /// address row and never copies an env/CLI override into SQLite. The
+    /// canonical value is set through `config set redmine-api-base` or a
+    /// bounded legacy migration. Any pre-existing legacy SQLite
+    /// `api_base` is left untouched (inert) rather than rewritten.
     pub fn persist_redmine_bootstrap(
         &self,
         role: Role,
@@ -161,9 +168,8 @@ impl Storage {
             );
         }
         let mut config = self.load_redmine_config(role)?.unwrap_or_default();
-        if api_base.is_some() {
-            config.api_base = api_base;
-        }
+        // api_base deliberately ignored — the canonical address is global.
+        let _ = api_base;
         // project_id deliberately ignored — stored value is always None
         // and legacy rows are cleared by the migration.
         let _ = project_id;

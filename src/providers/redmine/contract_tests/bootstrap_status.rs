@@ -124,7 +124,12 @@ fn bootstrap_persists_role_scoped_ids_with_private_permissions() {
         "bootstrap must not persist project_id after Phase 1"
     );
     assert_eq!(loaded.close_status_id, Some(5));
-    assert_eq!(loaded.api_base.as_deref(), Some("https://redmine.example"));
+    // The Redmine REST address is canonical/global now, so bootstrap never
+    // writes a role-scoped address row; the passed api_base is ignored.
+    assert_eq!(
+        loaded.api_base, None,
+        "bootstrap must not persist a role-scoped Redmine address"
+    );
     // Active bootstrap no longer persists the legacy group fields;
     // older configs that still carry them continue to decode via
     // `serde(default)`.

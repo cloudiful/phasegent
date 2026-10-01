@@ -116,10 +116,7 @@ fn endpoint_for_role(
             .ok()
             .flatten()
             .and_then(|c| c.api_base),
-        ProviderKind::Redmine => crate::auth::load_redmine_config(role, storage)
-            .ok()
-            .flatten()
-            .and_then(|c| c.api_base),
+        ProviderKind::Redmine => crate::auth::redmine_api_base(storage).ok().flatten(),
         ProviderKind::Gitlab => crate::auth::load_gitlab_config(role, storage)
             .ok()
             .flatten()

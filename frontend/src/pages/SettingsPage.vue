@@ -6,6 +6,7 @@ import {
   clearRoleCredential,
   fetchConfigSnapshot,
   fetchProvisioningStatus,
+  REDMINE_API_BASE_SETTING,
   setNonSecretSetting,
   setRoleCredential,
   snapshotEndpointForRole,
@@ -14,6 +15,9 @@ import {
   testConnection,
 } from '@/ipc'
 import type { RoleId } from '@/types'
+
+/** Role-scoped address alias for the Forgejo and GitLab endpoints. */
+const ROLE_API_BASE_SETTING = 'PHASEGENT_API_BASE'
 
 const ROLE_ITEMS: { label: string, value: RoleId, hint: string }[] = [
   { label: 'Admin', value: 'admin', hint: 'Bootstrap Redmine projects and provision agent users.' },
@@ -47,6 +51,12 @@ const initialized = ref(false)
 
 const roleHint = computed(() => ROLE_ITEMS.find(item => item.value === activeRole.value)?.hint ?? '')
 const roleEntry = computed(() => snapshotRoleEntry(snapshot.value, activeRole.value))
+// The Redmine REST address is machine-wide; the Forgejo and GitLab addresses
+// stay scoped to the active role.
+const globalEndpoint = computed(() => provider.value.trim().toLowerCase() === 'redmine')
+const endpointSetting = computed(() => globalEndpoint.value ? REDMINE_API_BASE_SETTING : ROLE_API_BASE_SETTING)
+const endpointScope = computed<RoleId | null>(() => (globalEndpoint.value ? null : activeRole.value))
+const endpointHint = computed(() => (globalEndpoint.value ? 'Shared by every role.' : 'This role only.'))
 const credentialPresenceText = computed(() => {
   if (!roleEntry.value) return 'Not loaded yet.'
   const key = credentialProvider.value === 'forgejo' ? roleEntry.value.forgejo_credential : credentialProvider.value === 'gitlab' ? roleEntry.value.gitlab_credential : roleEntry.value.redmine_credential
@@ -130,7 +140,7 @@ async function persist(): Promise<void> {
       await setNonSecretSetting(activeRole.value, 'PHASEGENT_PROVIDER', trimmedProvider)
     }
     if (trimmedEndpoint !== '') {
-      await setNonSecretSetting(activeRole.value, 'PHASEGENT_API_BASE', trimmedEndpoint)
+      await setNonSecretSetting(endpointScope.value, endpointSetting.value, trimmedEndpoint)
     }
     if (trimmedProvider === '' && trimmedEndpoint === '') {
       saveError.value = 'Enter a provider or endpoint before saving.'
@@ -151,7 +161,7 @@ async function clearEndpoint(): Promise<void> {
   clearing.value = true
   saveError.value = ''
   try {
-    await clearNonSecretSetting(activeRole.value, 'PHASEGENT_API_BASE')
+    await clearNonSecretSetting(endpointScope.value, endpointSetting.value)
     endpoint.value = ''
     toast.add({ title: 'Endpoint cleared', color: 'success', icon: 'i-lucide-circle-check' })
     await refreshSnapshot()
@@ -310,6 +320,7 @@ async function clearCredentialAction(): Promise<void> {
         <UFormField
           label="Endpoint"
           name="endpoint"
+          :description="endpointHint"
         >
           <div class="flex flex-col gap-2 sm:flex-row">
             <UInput

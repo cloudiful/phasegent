@@ -330,7 +330,6 @@ export interface RoleSnapshotRaw {
   provider?: string | null
   forgejo_api_base?: string | null
   forgejo_repository?: string | null
-  redmine_api_base?: string | null
   redmine_close_status_id?: number | null
   gitlab_api_base?: string | null
   forgejo_credential: CredentialSummaryRaw
@@ -369,15 +368,35 @@ export function snapshotRoleEntry(snapshot: ConfigSnapshotRaw | null, role: stri
   return snapshot.roles.find(entry => entry.role === role) ?? null
 }
 
-export function snapshotEndpointForRole(snapshot: ConfigSnapshotRaw | null, role: string): string {
-  const entry = snapshotRoleEntry(snapshot, role)
-  if (!entry) return ''
-  return entry.redmine_api_base ?? entry.forgejo_api_base ?? entry.gitlab_api_base ?? ''
+/** Canonical global setting name of the machine-wide Redmine REST address. */
+export const REDMINE_API_BASE_SETTING = 'PHASEGENT_REDMINE_API_BASE'
+
+/**
+ * The one machine-wide Redmine REST address, read from the sanitised
+ * `global_settings` entry. Every role resolves the same address, so it is
+ * never read from a role entry.
+ */
+export function snapshotRedmineApiBase(snapshot: ConfigSnapshotRaw | null): string {
+  if (!snapshot) return ''
+  const entry = snapshot.global_settings.find(setting => setting.name === REDMINE_API_BASE_SETTING)
+  return entry?.sanitized_value ?? ''
 }
 
 export function snapshotProviderForRole(snapshot: ConfigSnapshotRaw | null, role: string): string {
   const entry = snapshotRoleEntry(snapshot, role)
   return entry?.provider ?? snapshot?.global_default_provider ?? ''
+}
+
+/**
+ * Endpoint shown for a role. Redmine resolves the machine-wide address; the
+ * Forgejo and GitLab addresses stay role-scoped.
+ */
+export function snapshotEndpointForRole(snapshot: ConfigSnapshotRaw | null, role: string): string {
+  const entry = snapshotRoleEntry(snapshot, role)
+  if (!entry) return ''
+  if (snapshotProviderForRole(snapshot, role).trim().toLowerCase() === 'redmine')
+    return snapshotRedmineApiBase(snapshot)
+  return entry.forgejo_api_base ?? entry.gitlab_api_base ?? ''
 }
 
 export async function setNonSecretSetting(role: string | null, setting: string, value: string): Promise<void> {

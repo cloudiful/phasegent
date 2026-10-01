@@ -42,6 +42,12 @@ phasegent --provider redmine admin workflow bootstrap \
   --repository OWNER/REPOSITORY
 ```
 
+Redmine REST 地址是机器级的：`auth setup --api-base` 与
+`admin config set redmine-api-base <URL>` 保存所有 role 共用的同一个地址，
+`config show` 只在 `global_settings` 中报告一次。credential、已开通的身份、
+provider 选择以及 Redmine close-status id 仍是 role 级；role 级的
+Forgejo/GitLab 地址使用 `admin config set api-base <URL>`。
+
 ## 常用命令
 
 ```sh

@@ -239,6 +239,11 @@ pub(crate) const MIGRATIONS: &[(&str, &str, &str)] = &[
 /// `config set` can persist them without a translation table.
 pub(crate) const GLOBAL_REDMINE_GIT_MIRROR_API_KEY: &str = "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY";
 pub(crate) const GLOBAL_REDMINE_REPOSITORY_URL: &str = "PHASEGENT_REDMINE_REPOSITORY_URL";
+/// Canonical, non-secret global Redmine REST API base. Every Redmine
+/// role/provider request resolves the same address from this one row
+/// (or its TOML/env override) instead of a per-role value. The string
+/// doubles as the environment variable name.
+pub(crate) const GLOBAL_REDMINE_API_BASE: &str = "PHASEGENT_REDMINE_API_BASE";
 /// Persistent machine-wide default provider. Acts as the fallback
 /// between `PHASEGENT_PROVIDER` (one-process override) and the
 /// role-scoped `role_config.provider` so operators can switch between
@@ -293,6 +298,7 @@ pub(crate) const GLOBAL_NOTIFY_EMAIL_REPLY_TO: &str = "PHASEGENT_NOTIFY_EMAIL_RE
 pub(crate) const GLOBAL_SETTING_NAMES: &[&str] = &[
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY,
     GLOBAL_REDMINE_REPOSITORY_URL,
+    GLOBAL_REDMINE_API_BASE,
     GLOBAL_DEFAULT_PROVIDER,
     GLOBAL_INDEX_BACKEND,
     GLOBAL_INDEX_PG_URL,

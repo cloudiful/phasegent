@@ -29,7 +29,9 @@ use serde::Serialize;
 /// All canonical setting names the explicit surface understands.
 /// The strings double as the canonical environment variable names
 /// so `config show` and the resolver can share the same literals.
-/// Project-id aliases were removed in Phase 1 (remove-project-id);
+/// `PHASEGENT_REDMINE_API_BASE` is the canonical global Redmine REST
+/// address (a global setting, not role-scoped). Project-id aliases were
+/// removed in Phase 1 (remove-project-id);
 /// `PHASEGENT_REDMINE_PROJECT_ID`, `PHASEGENT_GITLAB_PROJECT_ID`, and
 /// the ambiguous `PHASEGENT_PROJECT_ID` are intentionally absent and
 /// rejected as unknown settings. `PHASEGENT_INDEX_BACKEND` remains only
@@ -73,6 +75,7 @@ pub(crate) const ALL_CANONICAL: &[&str] = &[
 const GLOBAL_SETTINGS: &[&str] = &[
     "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
     "PHASEGENT_REDMINE_REPOSITORY_URL",
+    "PHASEGENT_REDMINE_API_BASE",
     "PHASEGENT_DEFAULT_PROVIDER",
     "PHASEGENT_INDEX_BACKEND",
     "PHASEGENT_INDEX_PG_URL",
