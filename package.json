@@ -1,7 +1,7 @@
 {
   "name": "phasegent",
   "private": true,
-  "version": "2.21.6",
+  "version": "2.21.7",
   "type": "module",
   "description": "phasegent desktop shell (Electron: Vue 3 + Nuxt UI + Tailwind CSS v4 frontend, Rust companion backend).",
   "author": "phasegent",
