@@ -287,11 +287,11 @@ fn mcp_help_documents_contracted_scope_and_exclusions() {
         "status_next",
         "comment_create",
         "notify_send",
-        "explorer_start",
-        "explorer_status",
-        "explorer_wait",
-        "explorer_cancel",
-        "explorer_resume",
+        "research_start",
+        "research_status",
+        "research_wait",
+        "research_cancel",
+        "research_resume",
     ] {
         assert!(
             stdout.contains(tool),
@@ -306,7 +306,7 @@ fn mcp_help_documents_contracted_scope_and_exclusions() {
 
 /// Phase 4: `--help mcp` renders the MCP tool descriptor table filtered by the
 /// resolved role, keeps the compatibility union for the role-less view, and
-/// preserves the exclusion wording. Issue 685 P2 adds the explorer delegation
+/// preserves the exclusion wording. Issue 685 P2 adds the research delegation
 /// group: the three delegation roles see it, `admin` and `tester` do not.
 #[test]
 fn mcp_help_tool_list_follows_the_role_gate() {
@@ -319,7 +319,7 @@ fn mcp_help_tool_list_follows_the_role_gate() {
         "status_next",
         "comment_create",
         "notify_send",
-        "explorer_start",
+        "research_start",
     ] {
         assert!(
             union.contains(tool),
@@ -327,12 +327,12 @@ fn mcp_help_tool_list_follows_the_role_gate() {
         );
     }
 
-    const EXPLORER: &[&str] = &[
-        "explorer_start",
-        "explorer_status",
-        "explorer_wait",
-        "explorer_cancel",
-        "explorer_resume",
+    const RESEARCH: &[&str] = &[
+        "research_start",
+        "research_status",
+        "research_wait",
+        "research_cancel",
+        "research_resume",
     ];
     let expected: &[(&str, &[&str], &[&str])] = &[
         (
@@ -402,7 +402,7 @@ fn mcp_help_tool_list_follows_the_role_gate() {
         }
         // The delegation group follows the same gate: present for the three
         // roles that delegate recon, absent for the two that do not.
-        for tool in EXPLORER {
+        for tool in RESEARCH {
             let delegates = matches!(*role, "orchestrator" | "executor" | "reviewer");
             assert_eq!(
                 stdout.contains(tool),

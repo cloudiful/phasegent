@@ -3,8 +3,8 @@
 // The role skill is prepended to the agent's `system`, so it is the stable
 // prefix of that agent's system prompt and a delegation only has to carry the
 // issue number. The agent is matched by id (task-spawned children use the same
-// ids), and every protocol agent is bound: `explore` receives its own recon
-// skill while keeping the reviewer capability rewrite.
+// ids), and every protocol agent is bound: `explore` receives its own read-only
+// research skill while keeping the reviewer capability rewrite.
 //
 // The live v2.0.12 draft is `{ list, get, default, update, remove }` with
 // `update(id, mutate)` mutating the live agent info. The host resolves plugin

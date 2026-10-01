@@ -22,6 +22,10 @@
 //! `irreversible` phase whose plan names the checkpoint), an executor test
 //! disposition, compact evidence, and serial-by-default bounded parallelism that
 //! never authorizes overlapping write owners or a mutable shared tree.
+//! Issue 692 replaces the issue-bound phasegent explorer backend with the
+//! generic research backend and documents the native `explore` child as a
+//! separate native capability, so no shipped skill reintroduces the removed
+//! `explorer_*` tools or an issue/worktree lease prerequisite.
 //! Pure filesystem + policy reads; no network, credentials, HOME, or SQLite
 //! access.
 
@@ -409,6 +413,52 @@ fn role_skills_own_recon_delegation_and_explore_read_rule() {
         explore.contains("Read the parent request and the applicable `AGENTS.md` files"),
         "SKILL.explore.md must keep the parent-request/applicable-AGENTS read rule"
     );
+}
+
+/// Issue 692 replaces the issue-bound phasegent explorer backend with the
+/// generic research backend and documents the native `explore` child as a
+/// separate native capability rather than an equivalent backend. The shared
+/// skill must name the research lifecycle tools, state the phasegent backend
+/// runs in a private scratch directory with no issue/worktree selection, keep
+/// the native fallback honest, and never reintroduce the removed `explorer_*`
+/// tool names or an issue/worktree lease prerequisite.
+#[test]
+fn skill_documents_generic_research_and_the_native_fallback() {
+    let shared = read_skill("SKILL.md");
+    let normalised: String = shared.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "## Research delegation backends",
+        "`research_start`",
+        "`research_wait`",
+        "`research_status`",
+        "`research_cancel`",
+        "`research_resume`",
+        "fixed read-only research system instruction it owns",
+        "private server-created scratch directory that never holds the phasegent repository or a resolved worktree",
+        "separate native capability, not an equivalent phasegent backend",
+        "never calls the phasegent MCP research tools or any phasegent issue/worktree binding",
+    ] {
+        assert!(
+            normalised.contains(phrase),
+            "SKILL.md must document the generic research contract {phrase:?}"
+        );
+    }
+    // The removed issue-bound explorer contract must not reappear anywhere in
+    // the shipped skill text.
+    for removed in [
+        "explorer_start",
+        "explorer_wait",
+        "explorer_status",
+        "explorer_cancel",
+        "explorer_resume",
+        "active worktree lease for the selected issue",
+        "the issue number is a selector",
+    ] {
+        assert!(
+            !shared.contains(removed),
+            "SKILL.md must not advertise the removed explorer contract {removed:?}"
+        );
+    }
 }
 
 /// Issue 669 makes explorer-session reuse the default: the orchestrator retains

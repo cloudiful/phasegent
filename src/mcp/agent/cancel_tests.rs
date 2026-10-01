@@ -15,7 +15,7 @@ use tokio::io::duplex;
 use super::run::{CANCEL_GRACE, RunManager};
 use super::session::AcpSession;
 use super::test_kit::{FakeAgent, FakeAgentOptions};
-use super::types::{AcpSpawnConfig, ExplorerPrompt};
+use super::types::{AcpSpawnConfig, ResearchPrompt};
 
 use super::tests::{temp_db_path, wait_terminal};
 
@@ -33,7 +33,7 @@ async fn hanging_session() -> (Arc<AcpSession>, Arc<FakeAgent>) {
             .await
             .expect("in-process session"),
     );
-    session.negotiate_explorer().await.expect("negotiate");
+    session.negotiate_research().await.expect("negotiate");
     (session, agent)
 }
 
@@ -44,7 +44,7 @@ async fn cancel_reaches_the_agent_while_a_prompt_is_in_flight() {
         let session = Arc::clone(&session);
         async move {
             session
-                .prompt(&ExplorerPrompt::new("long recon").with_timeout_secs(30))
+                .prompt(&ResearchPrompt::new("long recon").with_timeout_secs(30))
                 .await
         }
     });
@@ -77,7 +77,7 @@ async fn kill_is_idempotent_and_unblocks_an_in_flight_turn() {
         let session = Arc::clone(&session);
         async move {
             session
-                .prompt(&ExplorerPrompt::new("long recon").with_timeout_secs(30))
+                .prompt(&ResearchPrompt::new("long recon").with_timeout_secs(30))
                 .await
         }
     });
@@ -113,7 +113,7 @@ async fn run_registration_precedes_the_task_so_a_fast_run_is_still_visible() {
                 &run_id,
                 "ses_cancel",
                 config.clone(),
-                ExplorerPrompt::new("go"),
+                ResearchPrompt::new("go"),
             )
             .await
             .expect("run accepted");
@@ -150,12 +150,12 @@ async fn a_registered_run_id_cannot_be_started_twice() {
             "dup-run",
             "ses_dup",
             config.clone(),
-            ExplorerPrompt::new("go"),
+            ResearchPrompt::new("go"),
         )
         .await
         .expect("first run accepted");
     let error = manager
-        .start_run("dup-run", "ses_dup", config, ExplorerPrompt::new("go"))
+        .start_run("dup-run", "ses_dup", config, ResearchPrompt::new("go"))
         .await
         .expect_err("an active run id must not be reused");
     assert!(
@@ -186,7 +186,7 @@ async fn cancelling_a_spawning_run_records_a_terminal_cancelled_status() {
             "launch-cancel",
             "ses_launch",
             config,
-            ExplorerPrompt::new("go"),
+            ResearchPrompt::new("go"),
         )
         .await
         .expect("run accepted");
@@ -260,7 +260,7 @@ async fn cancel_grace_stays_bounded_when_the_agent_never_acknowledges() {
             "bounded",
             "ses_bounded",
             config,
-            ExplorerPrompt::new("go").with_timeout_secs(3),
+            ResearchPrompt::new("go").with_timeout_secs(3),
         )
         .await
         .expect("run accepted");

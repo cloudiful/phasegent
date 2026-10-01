@@ -1,13 +1,13 @@
-//! Wire-shape tests for the ACP types the explorer adapter speaks.
+//! Wire-shape tests for the ACP types the research adapter speaks.
 //!
 //! These assert the exact JSON spellings MCode 0.5.10 puts on the
 //! wire, so a change in the agent's shape fails here rather than in a
 //! live handshake.
 
 use super::wire::{
-    CONFIG_ID_MODEL, CONFIG_ID_PERMISSION_MODE, CONFIG_ID_THINKING_EFFORT,
-    EXPLORER_MODEL_WIRE_VALUE, EXPLORER_PERMISSION_MODE, EXPLORER_THINKING_EFFORT, IncomingMessage,
-    InitializeResult, SUPPORTED_PROTOCOL_VERSION, SessionNewResult, SetConfigOptionResult,
+    CONFIG_ID_MODEL, CONFIG_ID_PERMISSION_MODE, CONFIG_ID_THINKING_EFFORT, IncomingMessage,
+    InitializeResult, RESEARCH_MODEL_WIRE_VALUE, RESEARCH_PERMISSION_MODE,
+    RESEARCH_THINKING_EFFORT, SUPPORTED_PROTOCOL_VERSION, SessionNewResult, SetConfigOptionResult,
 };
 use super::wire_client::{RequestPermissionParams, SessionUpdateParams, ToolCallSummary};
 
@@ -68,16 +68,16 @@ fn initialize_result_reports_protocol_version_and_load_capability() {
 fn set_config_option_result_reports_the_agents_own_current_value() {
     let reported: SetConfigOptionResult = serde_json::from_value(serde_json::json!({
         "configOptions": [
-            {"type": "select", "id": CONFIG_ID_MODEL, "currentValue": EXPLORER_MODEL_WIRE_VALUE,
-             "options": [{"value": EXPLORER_MODEL_WIRE_VALUE}]},
+            {"type": "select", "id": CONFIG_ID_MODEL, "currentValue": RESEARCH_MODEL_WIRE_VALUE,
+             "options": [{"value": RESEARCH_MODEL_WIRE_VALUE}]},
             {"type": "select", "id": CONFIG_ID_THINKING_EFFORT, "currentValue": "low",
-             "options": [{"value": "low"}, {"value": EXPLORER_THINKING_EFFORT}]}
+             "options": [{"value": "low"}, {"value": RESEARCH_THINKING_EFFORT}]}
         ]
     }))
     .unwrap();
     assert_eq!(
         reported.current_value(CONFIG_ID_MODEL),
-        Some(EXPLORER_MODEL_WIRE_VALUE)
+        Some(RESEARCH_MODEL_WIRE_VALUE)
     );
     assert_eq!(
         reported.current_value(CONFIG_ID_THINKING_EFFORT),
@@ -99,15 +99,15 @@ fn load_result_carries_the_session_id_and_a_fresh_advertisement() {
         "sessionId": "ses-1",
         "configOptions": [
             {"type": "select", "id": CONFIG_ID_PERMISSION_MODE,
-             "currentValue": EXPLORER_PERMISSION_MODE,
-             "options": [{"value": EXPLORER_PERMISSION_MODE}, {"value": "auto"}]}
+             "currentValue": RESEARCH_PERMISSION_MODE,
+             "options": [{"value": RESEARCH_PERMISSION_MODE}, {"value": "auto"}]}
         ]
     }))
     .unwrap();
     assert_eq!(loaded.sessionId, "ses-1");
     assert_eq!(
         loaded.current_value(CONFIG_ID_PERMISSION_MODE),
-        Some(EXPLORER_PERMISSION_MODE)
+        Some(RESEARCH_PERMISSION_MODE)
     );
 }
 
@@ -180,13 +180,13 @@ fn message_chunk_text_extracts_text_chunks_only() {
 #[test]
 fn wire_values_pin_the_negotiated_model_and_effort() {
     assert_eq!(
-        EXPLORER_MODEL_WIRE_VALUE,
+        RESEARCH_MODEL_WIRE_VALUE,
         "m:minimax:MiniMax-M3.1-Flash-Preview:v:thinking"
     );
-    assert_eq!(EXPLORER_THINKING_EFFORT, "high");
+    assert_eq!(RESEARCH_THINKING_EFFORT, "high");
     assert_eq!(CONFIG_ID_MODEL, "model");
     assert_eq!(CONFIG_ID_THINKING_EFFORT, "thinkingEffort");
     assert_eq!(CONFIG_ID_PERMISSION_MODE, "permissionMode");
-    assert_eq!(EXPLORER_PERMISSION_MODE, "default");
+    assert_eq!(RESEARCH_PERMISSION_MODE, "default");
     assert_eq!(SUPPORTED_PROTOCOL_VERSION, 1);
 }

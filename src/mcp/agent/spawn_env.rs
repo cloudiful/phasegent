@@ -1,9 +1,9 @@
-//! Child-process environment for the ACP explorer worker.
+//! Child-process environment for the ACP research worker.
 //!
 //! A model-driven turn can read whatever its own process can read, and
 //! the phasegent server's environment is a credential store:
 //! `PHASEGENT_MCP_AUTH_TOKEN`, `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY`
-//! and the notify tokens all live there. The explorer therefore
+//! and the notify tokens all live there. The research therefore
 //! inherits an explicit allowlist and nothing else.
 //!
 //! `HOME` stays on the list because MCode resolves its own
@@ -128,7 +128,7 @@ mod tests {
         ] {
             assert!(
                 !is_inherited_env(name),
-                "{name} must not reach the explorer process"
+                "{name} must not reach the research process"
             );
         }
         for name in ["PATH", "HOME", "LANG", "TZ"] {

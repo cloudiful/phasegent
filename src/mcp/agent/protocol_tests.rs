@@ -10,10 +10,10 @@ use tokio::io::duplex;
 
 use super::session::AcpSession;
 use super::test_kit::{FakeAgent, FakeAgentOptions};
-use super::types::{ExplorerPrompt, MAX_TRANSCRIPT_CHARS, StopReason};
+use super::types::{MAX_TRANSCRIPT_CHARS, ResearchPrompt, StopReason};
 use super::wire::{
     CONFIG_ID_MODEL, CONFIG_ID_PERMISSION_MODE, CONFIG_ID_THINKING_EFFORT,
-    EXPLORER_MODEL_WIRE_VALUE, EXPLORER_PERMISSION_MODE, EXPLORER_THINKING_EFFORT,
+    RESEARCH_MODEL_WIRE_VALUE, RESEARCH_PERMISSION_MODE, RESEARCH_THINKING_EFFORT,
 };
 
 const WORKTREE: &str = "/tmp/fake-worktree";
@@ -36,9 +36,9 @@ async fn negotiation_verifies_advertised_values_then_selects_them() {
     // high effort, and the permission mode before anything is selected.
     let options = session.advertised_config_options().await;
     for (config_id, value) in [
-        (CONFIG_ID_MODEL, EXPLORER_MODEL_WIRE_VALUE),
-        (CONFIG_ID_THINKING_EFFORT, EXPLORER_THINKING_EFFORT),
-        (CONFIG_ID_PERMISSION_MODE, EXPLORER_PERMISSION_MODE),
+        (CONFIG_ID_MODEL, RESEARCH_MODEL_WIRE_VALUE),
+        (CONFIG_ID_THINKING_EFFORT, RESEARCH_THINKING_EFFORT),
+        (CONFIG_ID_PERMISSION_MODE, RESEARCH_PERMISSION_MODE),
     ] {
         let option = options
             .iter()
@@ -50,14 +50,14 @@ async fn negotiation_verifies_advertised_values_then_selects_them() {
         );
     }
     let report = session
-        .negotiate_explorer()
+        .negotiate_research()
         .await
         .expect("negotiation succeeds");
-    assert_eq!(report.model.as_deref(), Some(EXPLORER_MODEL_WIRE_VALUE));
-    assert_eq!(report.effort.as_deref(), Some(EXPLORER_THINKING_EFFORT));
+    assert_eq!(report.model.as_deref(), Some(RESEARCH_MODEL_WIRE_VALUE));
+    assert_eq!(report.effort.as_deref(), Some(RESEARCH_THINKING_EFFORT));
     assert_eq!(
         report.permission_mode.as_deref(),
-        Some(EXPLORER_PERMISSION_MODE)
+        Some(RESEARCH_PERMISSION_MODE)
     );
     assert_eq!(session.negotiated().await, report);
     // The permission mode is selected before anything else, because the
@@ -68,15 +68,15 @@ async fn negotiation_verifies_advertised_values_then_selects_them() {
         vec![
             (
                 CONFIG_ID_PERMISSION_MODE.to_owned(),
-                EXPLORER_PERMISSION_MODE.to_owned()
+                RESEARCH_PERMISSION_MODE.to_owned()
             ),
             (
                 CONFIG_ID_MODEL.to_owned(),
-                EXPLORER_MODEL_WIRE_VALUE.to_owned()
+                RESEARCH_MODEL_WIRE_VALUE.to_owned()
             ),
             (
                 CONFIG_ID_THINKING_EFFORT.to_owned(),
-                EXPLORER_THINKING_EFFORT.to_owned()
+                RESEARCH_THINKING_EFFORT.to_owned()
             ),
         ]
     );
@@ -97,7 +97,7 @@ async fn negotiation_fails_closed_when_values_are_not_advertised() {
                 omit_model_option: true,
                 ..FakeAgentOptions::default()
             },
-            "explorer model",
+            "research model",
         ),
         (
             FakeAgentOptions {
@@ -109,7 +109,7 @@ async fn negotiation_fails_closed_when_values_are_not_advertised() {
     ] {
         let (session, agent) = connect(options).await;
         let error = session
-            .negotiate_explorer()
+            .negotiate_research()
             .await
             .expect_err("an unadvertised value must fail negotiation");
         assert_eq!(error.kind.as_str(), "negotiation", "{error}");
@@ -134,7 +134,7 @@ async fn rejected_config_selection_surfaces_as_protocol_error() {
     })
     .await;
     let error = session
-        .negotiate_explorer()
+        .negotiate_research()
         .await
         .expect_err("a rejected set_config_option must fail the negotiation");
     assert_eq!(error.kind.as_str(), "protocol");
@@ -156,7 +156,7 @@ async fn an_unverified_selection_fails_closed() {
     })
     .await;
     let error = session
-        .negotiate_explorer()
+        .negotiate_research()
         .await
         .expect_err("an unverifiable selection must fail the negotiation");
     assert_eq!(error.kind.as_str(), "negotiation");
@@ -174,7 +174,7 @@ async fn an_unverified_selection_fails_closed() {
     })
     .await;
     let error = session
-        .negotiate_explorer()
+        .negotiate_research()
         .await
         .expect_err("a stale reported value must fail the negotiation");
     assert_eq!(error.kind.as_str(), "negotiation");
@@ -209,14 +209,41 @@ async fn an_unsupported_protocol_version_is_refused() {
 #[tokio::test]
 async fn prompt_streams_chunks_into_the_bounded_transcript() {
     let (session, _) = connect(FakeAgentOptions::default()).await;
-    session.negotiate_explorer().await.expect("negotiate");
+    session.negotiate_research().await.expect("negotiate");
     let outcome = session
-        .prompt(&ExplorerPrompt::new("summarize src/"))
+        .prompt(&ResearchPrompt::new("summarize src/"))
         .await
         .expect("prompt completes");
     assert_eq!(outcome.stop_reason, StopReason::EndTurn);
     assert_eq!(outcome.text, "found 12 modules in src/");
     assert!(!outcome.truncated);
+}
+
+/// The wire prompt is the fixed server-owned read-only instruction followed by
+/// the caller's request: the caller cannot supply or drop the system half.
+#[tokio::test]
+async fn the_wire_prompt_prepends_the_fixed_research_instruction() {
+    let (session, agent) = connect(FakeAgentOptions::default()).await;
+    session.negotiate_research().await.expect("negotiate");
+    session
+        .prompt(&ResearchPrompt::new("summarize the call flow"))
+        .await
+        .expect("prompt completes");
+    let prompts = agent.prompts.lock().await.clone();
+    assert_eq!(prompts.len(), 1, "one prompt turn");
+    let wire = &prompts[0];
+    assert!(
+        wire.starts_with(super::types::RESEARCH_INSTRUCTION),
+        "the fixed instruction must lead the prompt: {wire}"
+    );
+    assert!(
+        wire.ends_with("summarize the call flow"),
+        "the caller request must follow the instruction: {wire}"
+    );
+    assert!(
+        wire.contains("read-only"),
+        "the instruction must state the read-only contract"
+    );
 }
 
 #[tokio::test]
@@ -226,9 +253,9 @@ async fn prompt_timeout_returns_timeout_error() {
         ..FakeAgentOptions::default()
     })
     .await;
-    session.negotiate_explorer().await.expect("negotiate");
+    session.negotiate_research().await.expect("negotiate");
     let error = session
-        .prompt(&ExplorerPrompt::new("hang").with_timeout_secs(1))
+        .prompt(&ResearchPrompt::new("hang").with_timeout_secs(1))
         .await
         .expect_err("a hung agent must hit the timeout");
     assert_eq!(error.kind.as_str(), "timeout");

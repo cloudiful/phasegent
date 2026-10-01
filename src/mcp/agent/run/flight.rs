@@ -1,4 +1,4 @@
-//! In-process registry of active explorer runs.
+//! In-process registry of active research runs.
 //!
 //! One entry per active run, keyed by run id, holding the two things
 //! cancellation needs: the launch task's abort handle, and once the
@@ -140,7 +140,7 @@ impl FlightRegistry {
     pub(crate) fn register(&self, run_id: &str) -> Result<Arc<Flight>, String> {
         let mut entries = self.entries.lock().expect("flight registry lock");
         if entries.contains_key(run_id) {
-            return Err(format!("explorer run '{run_id}' is already active"));
+            return Err(format!("research run '{run_id}' is already active"));
         }
         let flight = Arc::new(Flight::default());
         entries.insert(run_id.to_owned(), flight.clone());

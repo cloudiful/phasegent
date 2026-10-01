@@ -103,6 +103,9 @@ pub(super) async fn run(agent: Arc<FakeAgent>, client: DuplexStream) {
                 set_config(&agent, &mut state, params, id).await
             }
             (wire::METHOD_SESSION_PROMPT, Some(id)) => {
+                if let Some(text) = params["prompt"][0]["text"].as_str() {
+                    agent.prompts.lock().await.push(text.to_owned());
+                }
                 let turn = run_turn(
                     &agent,
                     &mut state,

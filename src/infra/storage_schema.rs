@@ -174,21 +174,21 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 CREATE INDEX IF NOT EXISTS notification_deliveries_created_idx
     ON notification_deliveries (created_at DESC);
 
--- Asynchronous explorer run ledger (issue 685 P1). One row per ACP
--- explorer delegation, written before the process spawns so a crash
--- leaves the run observable. `status` is pending, running, completed,
--- failed, cancelled, timed_out, or interrupted. `worktree_cwd` is the
--- phasegent-resolved worktree the ACP process runs in (server-side
--- data, never returned to a model). `acp_session_id` is the ACP
--- session identifier a later process reconnects to through
--- `session/load`, so an interrupted, timed-out, failed, or cancelled
--- row is continuable while a `completed` row is final.
--- `prompt`/`output` are bounded to the adapter transcript cap;
--- `output_truncated` marks a cut transcript.
-CREATE TABLE IF NOT EXISTS acp_explorer_runs (
+-- Asynchronous research run ledger (issue 685 P1; renamed in issue 692).
+-- One row per ACP research delegation, written before the process spawns
+-- so a crash leaves the run observable. `status` is pending, running,
+-- completed, failed, cancelled, timed_out, or interrupted. `scratch_cwd`
+-- is the private server-created scratch directory the ACP process runs
+-- in (server-side data, never returned to a model). `acp_session_id` is
+-- the ACP session identifier a later process reconnects to through
+-- `session/load`, so an interrupted, timed-out, failed, or cancelled row
+-- is continuable while a `completed` row is final. `prompt`/`output` are
+-- bounded to the adapter transcript cap; `output_truncated` marks a cut
+-- transcript.
+CREATE TABLE IF NOT EXISTS acp_research_runs (
     run_id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
-    worktree_cwd TEXT NOT NULL,
+    scratch_cwd TEXT NOT NULL,
     acp_session_id TEXT,
     prompt TEXT NOT NULL,
     output TEXT,
@@ -199,26 +199,45 @@ CREATE TABLE IF NOT EXISTS acp_explorer_runs (
     finished_at INTEGER
 );
 
--- Explorer run ownership (issue 685 P2). One row per delegated run,
--- naming the OpenCode session the host bound to it. Ownership is a
--- separate ledger rather than a run column so the run writer keeps its
--- identity fields immutable, and it is written in the same call that
--- registers the run: a run with no owner row is unusable because every
--- status/wait/cancel/resume call resolves the owner first and fails
--- closed. The value is server-side only and is never returned to a
--- model or written to a log.
-CREATE TABLE IF NOT EXISTS acp_explorer_run_owners (
+-- Research run ownership (issue 685 P2; renamed in issue 692). One row
+-- per delegated run, naming the OpenCode session the host bound to it.
+-- Ownership is a separate ledger rather than a run column so the run
+-- writer keeps its identity fields immutable, and it is written in the
+-- same call that registers the run: a run with no owner row is unusable
+-- because every status/wait/cancel/resume call resolves the owner first
+-- and fails closed. The value is server-side only and is never returned
+-- to a model or written to a log.
+CREATE TABLE IF NOT EXISTS acp_research_run_owners (
     run_id TEXT PRIMARY KEY,
     owner_session_id TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS acp_explorer_run_owners_owner_idx
-    ON acp_explorer_run_owners (owner_session_id);
+CREATE INDEX IF NOT EXISTS acp_research_run_owners_owner_idx
+    ON acp_research_run_owners (owner_session_id);
 
-CREATE INDEX IF NOT EXISTS acp_explorer_runs_status_idx
-    ON acp_explorer_runs (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS acp_research_runs_status_idx
+    ON acp_research_runs (status, created_at DESC);
 ";
+
+/// Legacy research-ledger table names. A database created before issue 692
+/// carries these; the pre-schema migration renames them in place so the rows
+/// and owner records survive instead of being shadowed by a freshly created
+/// empty table.
+pub(crate) const LEGACY_RESEARCH_RUNS_TABLE: &str = "acp_explorer_runs";
+pub(crate) const LEGACY_RESEARCH_RUN_OWNERS_TABLE: &str = "acp_explorer_run_owners";
+/// Legacy index names, dropped after the table rename because SQLite keeps an
+/// index name when its table is renamed and `CREATE INDEX IF NOT EXISTS` would
+/// otherwise add a duplicate under the new name.
+pub(crate) const LEGACY_RESEARCH_RUNS_STATUS_INDEX: &str = "acp_explorer_runs_status_idx";
+pub(crate) const LEGACY_RESEARCH_RUN_OWNERS_OWNER_INDEX: &str = "acp_explorer_run_owners_owner_idx";
+/// The legacy scratch column name.
+pub(crate) const LEGACY_RESEARCH_CWD_COLUMN: &str = "worktree_cwd";
+
+/// Canonical research-ledger names the pre-schema migration renames into.
+pub(crate) const RESEARCH_RUNS_TABLE: &str = "acp_research_runs";
+pub(crate) const RESEARCH_RUN_OWNERS_TABLE: &str = "acp_research_run_owners";
+pub(crate) const RESEARCH_CWD_COLUMN: &str = "scratch_cwd";
 
 /// Additive migrations applied on every `Storage::open`. Each entry is a
 /// `(table, column)` pair the migration runner inspects via

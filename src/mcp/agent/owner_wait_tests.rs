@@ -1,4 +1,4 @@
-//! Ownership and bounded-wait tests for the explorer run manager (issue 685
+//! Ownership and bounded-wait tests for the research run manager (issue 685
 //! P2).
 //!
 //! The manager is a library, so these drive the ledger directly instead of
@@ -15,7 +15,7 @@ use crate::mcp::agent::store::{
     RUN_COMPLETED, RUN_INTERRUPTED, RUN_PENDING, RUN_RUNNING, WorkRunUpdate, now_epoch_seconds,
 };
 use crate::mcp::agent::store_tests::open_storage;
-use crate::mcp::agent::{AcpSpawnConfig, ExplorerPrompt, RunManager};
+use crate::mcp::agent::{AcpSpawnConfig, ResearchPrompt, RunManager};
 
 const OWNER: &str = "ses_owner";
 const OTHER: &str = "ses_other";
@@ -58,7 +58,7 @@ fn an_owned_run_is_visible_only_to_its_owner() {
         .expect_err("another session must not see the run");
     assert!(error.contains("not available"), "{error}");
     assert!(manager.owned_run("absent", OWNER).is_err());
-    // The refusal names neither the owner nor the worktree.
+    // The refusal names neither the owner nor the scratch path.
     assert!(!error.contains(OWNER), "{error}");
     assert!(!error.contains("/tmp/wt-a"), "{error}");
 }
@@ -124,7 +124,7 @@ async fn a_foreign_session_can_neither_wait_nor_cancel_a_run() {
 async fn a_foreign_session_cannot_resume_another_sessions_interrupted_run() {
     let manager = manager_with("resume-foreign", "run-1", RUN_INTERRUPTED);
     let error = manager
-        .resume_owned_run("run-1", OTHER, ExplorerPrompt::new("continue"))
+        .resume_owned_run("run-1", OTHER, ResearchPrompt::new("continue"))
         .await
         .expect_err("another session must not resume the run");
     assert!(error.contains("not available"), "{error}");
@@ -146,7 +146,7 @@ async fn a_start_with_an_existing_run_id_is_refused_and_transfers_nothing() {
             "run-1",
             OTHER,
             AcpSpawnConfig::new(std::path::PathBuf::from("/tmp/wt-a")),
-            ExplorerPrompt::new("recon"),
+            ResearchPrompt::new("recon"),
         )
         .await
         .expect_err("an existing run id is not reusable");

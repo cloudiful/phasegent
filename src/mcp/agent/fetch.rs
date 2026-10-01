@@ -2,7 +2,7 @@
 //!
 //! `fetch` is the one read-only kind with no path, and treating it like
 //! a filesystem read made the scope check vacuous: a URL is not a
-//! worktree path, so it joined onto the root and looked contained, and
+//! filesystem path, so it joined onto the root and looked contained, and
 //! a call that named no location at all passed with nothing to inspect.
 //! The rule is explicit instead — a fetch proceeds only when it names at
 //! least one string and every string it names is an absolute,

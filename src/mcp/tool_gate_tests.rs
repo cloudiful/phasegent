@@ -70,7 +70,7 @@ fn allowed_tools_never_expose_excluded_operations() {
 
 /// The advertised allowlist per role, pinned against the descriptor table and
 /// its declared gates: the custom `capabilities` payload, `--help mcp`,
-/// and the protocol-level `tools/list` all render this set. The five explorer
+/// and the protocol-level `tools/list` all render this set. The five research
 /// tools are the role-gated delegation surface (issue 685 P2).
 const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
     (
@@ -82,11 +82,11 @@ const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
             "status_next",
             "comment_create",
             "notify_send",
-            "explorer_start",
-            "explorer_status",
-            "explorer_wait",
-            "explorer_cancel",
-            "explorer_resume",
+            "research_start",
+            "research_status",
+            "research_wait",
+            "research_cancel",
+            "research_resume",
         ],
     ),
     (
@@ -97,11 +97,11 @@ const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
             "status_next",
             "comment_create",
             "notify_send",
-            "explorer_start",
-            "explorer_status",
-            "explorer_wait",
-            "explorer_cancel",
-            "explorer_resume",
+            "research_start",
+            "research_status",
+            "research_wait",
+            "research_cancel",
+            "research_resume",
         ],
     ),
     (
@@ -112,11 +112,11 @@ const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
             "status_next",
             "comment_create",
             "notify_send",
-            "explorer_start",
-            "explorer_status",
-            "explorer_wait",
-            "explorer_cancel",
-            "explorer_resume",
+            "research_start",
+            "research_status",
+            "research_wait",
+            "research_cancel",
+            "research_resume",
         ],
     ),
     (

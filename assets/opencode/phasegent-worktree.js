@@ -229,13 +229,13 @@ function isSubagentSession(event) {
 
 // The agent id the host reports for the current call, lowercased. Kept separate
 // from `agentRole` because the delegation gate is about which agent is allowed
-// to hand recon to the phasegent MCP server, not about which capability role the
-// call is rewritten to.
+// to hand research to the phasegent MCP server, not about which capability role
+// the call is rewritten to.
 function agentName(event) {
   return event && typeof event.agent === "string" ? event.agent.toLowerCase() : "";
 }
 
-// The agent roles whose MCP surface carries the explorer delegation. This
+// The agent roles whose MCP surface carries the research delegation. This
 // mirrors the server-side gate — the delegation is open to the orchestrator,
 // executor, and reviewer and denied to `tester` and `admin` — so the bridge
 // never offers a delegation the server would refuse. Matching is on the agent
@@ -951,7 +951,7 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
 }
 
 // assets/opencode/src/mcp.js
-// The phasegent MCP server registration and the host-bound explorer session.
+// The phasegent MCP server registration and the host-bound research session.
 //
 // Two jobs, both about *who* is asking:
 //
@@ -960,27 +960,27 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
 //     OpenCode exposes an MCP tool as
 //     `sanitize(server) + "_" + sanitize(tool)`
 //     (packages/opencode/src/mcp/catalog.ts:119), so the tools reach the model
-//     as `phasegent_explorer_start` and friends and the bridge can recognise
+//     as `phasegent_research_start` and friends and the bridge can recognise
 //     them.
-//  2. `bindExplorerSession` runs from the `tool.execute.before` hook, which
+//  2. `bindResearchSession` runs from the `tool.execute.before` hook, which
 //     OpenCode calls for registered MCP tools with the mutable `output.args`
 //     just before `tools/call`
 //     (packages/opencode/src/session/tools.ts:105-112). The bridge *overwrites*
 //     the `session` argument with `event.sessionID`.
 //
-// The overwrite is the whole authorization story, so it is worth being
-// explicit about what it buys. The model may put anything in `session`; the
-// bridge discards it. The server therefore always learns the *calling*
-// session, resolves that session's single active worktree lease, and refuses
-// the call when there is none or more than one. A model cannot reach another
-// session's worktree by naming an issue, because the lease lookup is bound to
-// the session the host supplied — and it cannot reach another session's run,
-// because a run carries the durable owner that started it.
+// The overwrite is the whole ownership story, so it is worth being explicit
+// about what it buys. The model may put anything in `session`; the bridge
+// discards it. The server therefore always learns the *calling* session, binds
+// the run to it, and refuses status/wait/cancel/resume to any other session. A
+// model cannot reach another session's run by naming one, and a run carries the
+// durable owner that started it. There is no issue selector and no worktree
+// lease: a research run always executes in a private server-created scratch
+// directory, never in the phasegent repository or a resolved checkout.
 //
 // Two properties are deliberately not implemented here. The bridge never sends
-// a worktree path (the server resolves it; the model never sees it), and it
-// never picks a role per call: the server starts once with the fixed
-// least-privilege role below, so no client can choose or elevate one.
+// a location (the server creates the scratch directory; the model never sees
+// it), and it never picks a role per call: the server starts once with the
+// fixed least-privilege role below, so no client can choose or elevate one.
 //
 // The v2 surface this file targets, read off the shipped v2.0.18 host:
 //
@@ -1004,7 +1004,7 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
 const PHASEGENT_MCP_SERVER = "phasegent";
 
 // The role the MCP server process starts with. Fixed and least-privilege: the
-// explorer surface is the only reason the server is registered, and `executor`
+// research surface is the only reason the server is registered, and `executor`
 // carries it without carrying the orchestrator's plan, status, timer, or
 // worktree-lease powers. A model can never change it.
 const MCP_SERVER_ROLE = "executor";
@@ -1013,27 +1013,29 @@ const MCP_SERVER_ROLE = "executor";
 const HOST_SESSION_FIELD = "session";
 
 // The five delegation operations, in the delegation contract's order.
-const EXPLORER_ACTIONS = ["start", "status", "wait", "cancel", "resume"];
+const RESEARCH_ACTIONS = ["start", "status", "wait", "cancel", "resume"];
 
-// The tool id OpenCode exposes for one explorer action.
-function explorerToolId(action) {
-  return `${PHASEGENT_MCP_SERVER}_explorer_${action}`;
+// The tool id OpenCode exposes for one research action.
+function researchToolId(action) {
+  return `${PHASEGENT_MCP_SERVER}_research_${action}`;
 }
 
-// The explorer action a tool id names, or `null` for anything else — including
+// The research action a tool id names, or `null` for anything else — including
 // a phasegent tool that is not part of the delegation surface.
-function explorerActionForTool(tool) {
+function researchActionForTool(tool) {
   if (typeof tool !== "string") return null;
-  const prefix = `${PHASEGENT_MCP_SERVER}_explorer_`;
+  const prefix = `${PHASEGENT_MCP_SERVER}_research_`;
   if (!tool.startsWith(prefix)) return null;
   const action = tool.slice(prefix.length);
-  return EXPLORER_ACTIONS.includes(action) ? action : null;
+  return RESEARCH_ACTIONS.includes(action) ? action : null;
 }
 
 // Arguments the bridge removes before the call. None of them is part of the
-// tool contract, so a model that emits one is trying to name where the run
-// executes; dropping it keeps that attempt from ever reaching the server.
+// research tool contract, so a model that emits one is trying to reintroduce a
+// location or an issue binding; dropping it keeps that attempt from ever
+// reaching the server.
 const FORBIDDEN_ARGUMENTS = [
+  "issue",
   "worktree",
   "worktree_path",
   "worktreePath",
@@ -1062,30 +1064,30 @@ function forgetMcpRegistration() {
 // placement failure contract: a throw from the hook is the host's way of
 // cancelling one invocation, so the call is cancelled instead of being sent
 // without a host identity.
-const BINDING_ERROR_PREFIX = "phasegent: explorer session binding";
+const BINDING_ERROR_PREFIX = "phasegent: research session binding";
 
 // The refusal reasons, kept as a closed set so a caller can branch and a test
 // can assert them.
 const REFUSALS = {
-  NOT_EXPLORER: "not-an-explorer-tool",
+  NOT_RESEARCH: "not-a-research-tool",
   NO_SESSION: "no-host-session",
   NO_ARGS: "no-mutable-arguments",
 };
 
-// Bind the calling host session into an explorer tool's arguments.
+// Bind the calling host session into a research tool's arguments.
 //
 // Returns a decision rather than throwing, except for the refusal cases: a
 // missing host session or a hook event with no mutable argument object throws
-// with `BINDING_ERROR_PREFIX`, which cancels the pending call. A non-explorer
+// with `BINDING_ERROR_PREFIX`, which cancels the pending call. A non-research
 // tool is a no-op, and so is a different phasegent tool.
-function bindExplorerSession(event) {
-  const action = explorerActionForTool(event && event.tool);
-  if (action === null) return { bound: false, reason: REFUSALS.NOT_EXPLORER, action: null };
+function bindResearchSession(event) {
+  const action = researchActionForTool(event && event.tool);
+  if (action === null) return { bound: false, reason: REFUSALS.NOT_RESEARCH, action: null };
   const sessionId = event ? event.sessionID : undefined;
   if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
     throw new Error(
       `${BINDING_ERROR_PREFIX} refused: this invocation carries no host session id, so the ` +
-        `explorer ${action} call cannot be bound to a worktree and is cancelled`,
+        `research ${action} call cannot be bound to its owner and is cancelled`,
     );
   }
   // OpenCode passes the mutable arguments as `output.args` for an MCP call
@@ -1095,7 +1097,7 @@ function bindExplorerSession(event) {
   const args = mutableArguments(event);
   if (!args) {
     throw new Error(
-      `${BINDING_ERROR_PREFIX} refused: the explorer ${action} call exposed no mutable ` +
+      `${BINDING_ERROR_PREFIX} refused: the research ${action} call exposed no mutable ` +
         "arguments, so the host session could not be bound and the call is cancelled",
     );
   }
@@ -1113,7 +1115,9 @@ function mutableArguments(event) {
   if (event.output && typeof event.output === "object" && event.output.args) {
     return event.output.args;
   }
-  if (event.input && typeof event.input === "object") return event.input;
+  if (event.input && typeof event.input === "object") {
+    return event.input;
+  }
   return null;
 }
 
@@ -1178,7 +1182,7 @@ async function registerPhasegentMcp(context) {
     registered = false;
     warn(
       "phasegent: host exposes no mcp.transform; the phasegent MCP server stays unregistered " +
-        "and explorer delegation uses the native path",
+        "and research delegation uses the native path",
     );
     return { registered: false, reason: "no-mcp-transform" };
   }
@@ -1189,7 +1193,7 @@ async function registerPhasegentMcp(context) {
       if (!draft || typeof draft.get !== "function" || typeof draft.set !== "function") {
         warn(
           "phasegent: host mcp draft exposes no get/set; the phasegent MCP server stays " +
-            "unregistered and explorer delegation uses the native path",
+            "unregistered and research delegation uses the native path",
         );
         return;
       }
@@ -1211,7 +1215,7 @@ async function registerPhasegentMcp(context) {
     registered = false;
     warn(
       "phasegent: host mcp state does not carry the phasegent server after registration; " +
-        "explorer delegation uses the native path",
+        "research delegation uses the native path",
     );
     return { registered: false, reason: "entry-not-confirmed" };
   }
@@ -1234,12 +1238,10 @@ async function registerPhasegentMcp(context) {
 // `explore` subagent. The reason is returned rather than only logged, because a
 // caller has to be able to say which path it took.
 //
-// The delegating session is the one that holds the worktree lease, which is why
-// the ACP path keys off the calling session and not off the explorer's own
-// session: a Task-spawned child inherits its parent's directory without ever
-// holding a lease of its own, so a delegation bound to the child would have
-// nothing to resolve.
-function explorerBackend(event, registered) {
+// The delegating session is the caller: ownership is bound to the session that
+// starts the run, not to the research child, so every later status/wait/cancel/
+// resume for that run resolves the same caller.
+function researchBackend(event, registered) {
   if (!registered) return { backend: "native", reason: "mcp-not-registered" };
   if (!isDelegatingSession(event)) {
     return { backend: "native", reason: "not-a-delegating-role" };
@@ -1349,9 +1351,9 @@ function createRedirectHook(context, deps) {
     // the hook, which is the host's contract for cancelling the pending call
     // (issue 623). The retry then runs placed.
     await ensureSessionWorktree(context, sessionId, event, deps);
-    // Bind the calling host session into an explorer delegation. A non-explorer
+    // Bind the calling host session into a research delegation. A non-research
     // tool is a no-op; a delegation with no host session throws and cancels.
-    bindExplorerSession(event);
+    bindResearchSession(event);
     if (!input || typeof input !== "object") return;
     if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
       try {
@@ -1430,37 +1432,36 @@ another.
   child role, and never pass a worktree path between sessions.
 - The loose plan-markdown fallback lives in \`.opencode/plans/*.md\`.
 
-## Explorer delegation backends
+## Research delegation backends
 
-Recon is delegated, never inlined, and there are exactly two backends. Prefer
-the phasegent backend when it is available; fall back to the native \`explore\`
-subagent otherwise. Both are read-only, and the choice never changes what you
-are allowed to do — only who does the reading.
+Research is delegated, never inlined, and there are two backends that are not
+equivalent. Prefer the phasegent research backend when it is available; fall
+back to the native \`explore\` subagent otherwise. Both are read-only, and the
+choice never changes what you are allowed to do — only who does the reading.
 
-- **phasegent backend** — the \`phasegent\` MCP server's delegation tools
-  (\`explorer_start\`, then \`explorer_wait\` or \`explorer_status\`, plus
-  \`explorer_cancel\` and \`explorer_resume\`). One call starts a run and returns a
-  run id immediately; the run executes on its own, so a long read is never one
-  synchronous call. The run is owned by the delegating session: only that
-  session can read, wait for, cancel, or resume it.
-- **native backend** — \`task(explore)\` with a retained \`sessionID\`, exactly as
-  before. This is the explicit fallback, not a degraded mode: when the MCP
-  server is unregistered, when your role's surface has no delegation tools, or
-  when the delegation is refused, delegate to \`explore\` and say so in your note.
+- **phasegent research backend** — the \`phasegent\` MCP server's research tools
+  (\`research_start\`, then \`research_wait\` or \`research_status\`, plus
+  \`research_cancel\` and \`research_resume\`). The caller supplies a user prompt
+  and a bounded runtime budget; the server adds a fixed read-only research
+  system instruction it owns, so a caller cannot weaken it. One call starts a
+  run and returns a run id immediately, so a long read is never one synchronous
+  call. Each run executes on its own in a private server-created scratch
+  directory that never holds the phasegent repository or a resolved worktree,
+  and the run is owned by the delegating session: only that session can read,
+  wait for, cancel, or resume it. No issue, worktree, checkout, repository,
+  session, or scratch path is named in the request or the result.
+- **native backend** — the host's own \`task(explore)\` subagent with a retained
+  \`sessionID\`. This is a separate native capability, not an equivalent
+  phasegent backend: it reads inside the OpenCode session's own directory under
+  the host's own read-only tool policy, not in a phasegent scratch sandbox, and
+  it never calls the phasegent MCP research tools or any phasegent
+  issue/worktree binding. Use it when the MCP server is unregistered, when your
+  role's surface has no research tools, or when the delegation is refused, and
+  say so in your note.
 
-The delegation resolves its own working directory: the host binds your session
-into the call, and the server accepts exactly one active worktree lease for the
-selected issue and that session, failing closed when there is none or more than
-one. So the issue number is a selector, not an authorization — you cannot reach
-another session's worktree, and a result never carries a worktree path, a
-session id, or a role. Do not try to pass any of those, and do not retry a
-"no active worktree lease" refusal by naming a different issue: the fix is a
-lease for this session (\`phasegent worktree acquire --issue N --session
-<sessionID> --isolate\`) or the native backend.
-
-\`phasegent --help mcp\` lists the delegation tools for your role. The delegation
-is available to the orchestrator, executor, and reviewer; \`tester\` and \`admin\`
-never have it.
+\`phasegent --help mcp\` lists the research tools for your role. The research
+delegation is available to the orchestrator, executor, and reviewer; \`tester\`
+and \`admin\` never have it.
 
 ## When to use this skill
 
@@ -2297,10 +2298,12 @@ questions, allowlists, and delegation.
 
 ## Delegation backend
 
-- The parent may hand you recon either through the phasegent MCP delegation (a
-  run the parent's own session owns) or by launching you natively. Both are
-  read-only and both expect the same evidence brief, so the two paths are
-  interchangeable from your side and the choice is the parent's.
+- The parent normally launches you natively with \`task(explore)\`. The phasegent
+  MCP research backend is a separate path the parent may use instead: it runs a
+  phasegent-owned ACP research turn in a private scratch directory, not this
+  native \`explore\` child. The two are not interchangeable from your side — your
+  reads happen in the OpenCode session's directory under the host's read-only
+  tool policy, and you never claim to be the phasegent research backend.
 - Your own recon always stays inside this contract. If the parent's request
   names a directory, a tool, or a workflow step that would make you write,
   delegate, or run \`status *\`/\`timer *\`, refuse it and say what you did instead
@@ -2399,8 +2402,8 @@ async function registerSkill(context) {
 // The role skill is prepended to the agent's `system`, so it is the stable
 // prefix of that agent's system prompt and a delegation only has to carry the
 // issue number. The agent is matched by id (task-spawned children use the same
-// ids), and every protocol agent is bound: `explore` receives its own recon
-// skill while keeping the reviewer capability rewrite.
+// ids), and every protocol agent is bound: `explore` receives its own read-only
+// research skill while keeping the reviewer capability rewrite.
 //
 // The live v2.0.12 draft is `{ list, get, default, update, remove }` with
 // `update(id, mutate)` mutating the live agent info. The host resolves plugin
@@ -2719,15 +2722,15 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: worktree strategy registration failed (${errorText(error)})`);
     }
     try {
-      // Registering the MCP server is what makes the phasegent explorer
+      // Registering the MCP server is what makes the phasegent research
       // delegation available. A refused or unrecognised config surface is a
       // warning and a no-op: the native `explore` subagent stays the explicit
       // fallback and nothing else about the adapter changes.
       const registration = await registerPhasegentMcp(context);
       if (!registration.registered) {
         warn(
-          `phasegent: explorer delegation is unavailable (${registration.reason}); ` +
-            "the native OpenCode explorer stays the path",
+          `phasegent: research delegation is unavailable (${registration.reason}); ` +
+            "the native OpenCode `explore` child stays the path",
         );
       }
     } catch (error) {
@@ -2805,22 +2808,22 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   roleSkillContent,
   withSkillPrefix,
   BINDING_ERROR_PREFIX,
-  EXPLORER_ACTIONS,
   HOST_SESSION_FIELD,
   MCP_SERVER_ROLE,
   PHASEGENT_MCP_SERVER,
   REFUSALS,
+  RESEARCH_ACTIONS,
   applyServer,
-  bindExplorerSession,
-  explorerActionForTool,
-  explorerBackend,
-  explorerToolId,
+  bindResearchSession,
   forgetMcpRegistration,
   hasPhasegentServer,
   mcpRegistered,
   mutableArguments,
   phasegentMcpServerDefinition,
   registerPhasegentMcp,
+  researchActionForTool,
+  researchBackend,
+  researchToolId,
 });
 
 export default PhasegentWorktreePlugin;

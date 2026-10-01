@@ -17,7 +17,7 @@
 
 import { rewritePhasegentCommand } from "./command.js";
 import { ensureSessionWorktree } from "./discovery.js";
-import { bindExplorerSession } from "./mcp.js";
+import { bindResearchSession } from "./mcp.js";
 import { SHELL_TOOLS } from "./paths.js";
 
 export function createRedirectHook(context, deps) {
@@ -29,9 +29,9 @@ export function createRedirectHook(context, deps) {
     // the hook, which is the host's contract for cancelling the pending call
     // (issue 623). The retry then runs placed.
     await ensureSessionWorktree(context, sessionId, event, deps);
-    // Bind the calling host session into an explorer delegation. A non-explorer
+    // Bind the calling host session into a research delegation. A non-research
     // tool is a no-op; a delegation with no host session throws and cancels.
-    bindExplorerSession(event);
+    bindResearchSession(event);
     if (!input || typeof input !== "object") return;
     if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
       try {

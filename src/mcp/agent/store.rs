@@ -1,10 +1,10 @@
-//! Durable asynchronous run state for explorer delegations (issue 685
+//! Durable asynchronous run state for research delegations (issue 685
 //! AC 3).
 //!
-//! One `acp_explorer_runs` row is written before the ACP process is
+//! One `acp_research_runs` row is written before the ACP process is
 //! spawned and updated as the run progresses, so a phasegent restart
 //! leaves the run observable: a `running` row with no live in-process
-//! handle reads back as `interrupted`. Worktree paths are stored in
+//! handle reads back as `interrupted`. Scratch paths are stored in
 //! the server-side database only and are never part of any result the
 //! MCP surface returns.
 
@@ -18,7 +18,7 @@ pub(crate) use validate::now_epoch_seconds;
 use validate::validate_cwd;
 pub use validate::validate_run_id;
 
-/// Statuses stored in `acp_explorer_runs.status`.
+/// Statuses stored in `acp_research_runs.status`.
 pub const RUN_PENDING: &str = "pending";
 pub const RUN_RUNNING: &str = "running";
 pub const RUN_COMPLETED: &str = "completed";
@@ -46,16 +46,16 @@ pub(crate) fn valid_run_status(status: &str) -> bool {
     status == RUN_PENDING || status == RUN_RUNNING || TERMINAL_STATUSES.contains(&status)
 }
 
-/// One persisted explorer run. The worktree path is deliberately not
+/// One persisted research run. The scratch path is deliberately not
 /// derived: [`Debug`] omits it so no log line can carry it.
 #[derive(Clone, serde::Serialize)]
 pub struct WorkRun {
     pub run_id: String,
     pub status: String,
-    /// Server-side only: the ACP process cwd. Never serialized into a
+    /// Server-side only: the ACP process scratch cwd. Never serialized into a
     /// model-visible result.
     #[serde(skip_serializing)]
-    pub worktree_cwd: String,
+    pub scratch_cwd: String,
     pub acp_session_id: Option<String>,
     pub prompt: String,
     pub output: Option<String>,
@@ -97,7 +97,7 @@ pub(crate) fn work_run_from_row(row: &Row<'_>) -> rusqlite::Result<WorkRun> {
     Ok(WorkRun {
         run_id: row.get(0)?,
         status: row.get(1)?,
-        worktree_cwd: row.get(2)?,
+        scratch_cwd: row.get(2)?,
         acp_session_id: row.get(3)?,
         prompt: row.get(4)?,
         output: row.get(5)?,
@@ -109,7 +109,7 @@ pub(crate) fn work_run_from_row(row: &Row<'_>) -> rusqlite::Result<WorkRun> {
     })
 }
 
-const RUN_COLUMNS: &str = "run_id, status, worktree_cwd, acp_session_id, prompt, output, \
+const RUN_COLUMNS: &str = "run_id, status, scratch_cwd, acp_session_id, prompt, output, \
      output_truncated, error, created_at, updated_at, finished_at";
 
 impl Storage {
@@ -118,47 +118,47 @@ impl Storage {
     pub fn create_work_run(
         &self,
         run_id: &str,
-        worktree_cwd: &str,
+        scratch_cwd: &str,
         prompt: &str,
     ) -> Result<WorkRun, String> {
         validate_run_id(run_id)?;
-        validate_cwd(worktree_cwd)?;
+        validate_cwd(scratch_cwd)?;
         if prompt.trim().is_empty() {
-            return Err("explorer prompt must not be empty".to_owned());
+            return Err("research prompt must not be empty".to_owned());
         }
         if prompt.chars().count() > super::types::MAX_TRANSCRIPT_CHARS {
-            return Err("explorer prompt exceeds the transcript bound".to_owned());
+            return Err("research prompt exceeds the transcript bound".to_owned());
         }
         let now = now_epoch_seconds();
         self.connection
             .execute(
-                "INSERT INTO acp_explorer_runs \
-                    (run_id, status, worktree_cwd, prompt, created_at, updated_at) \
+                "INSERT INTO acp_research_runs \
+                    (run_id, status, scratch_cwd, prompt, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-                params![run_id, RUN_PENDING, worktree_cwd, prompt, now],
+                params![run_id, RUN_PENDING, scratch_cwd, prompt, now],
             )
             .map_err(|error| {
                 if error.to_string().contains("UNIQUE") {
                     format!("run id '{run_id}' already exists")
                 } else {
-                    format!("could not persist explorer run start: {error}")
+                    format!("could not persist research run start: {error}")
                 }
             })?;
         self.load_work_run(run_id)?
-            .ok_or_else(|| "explorer run row disappeared after insert".to_owned())
+            .ok_or_else(|| "research run row disappeared after insert".to_owned())
     }
 
     pub fn load_work_run(&self, run_id: &str) -> Result<Option<WorkRun>, String> {
         let mut statement = self
             .connection
             .prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM acp_explorer_runs WHERE run_id = ?1"
+                "SELECT {RUN_COLUMNS} FROM acp_research_runs WHERE run_id = ?1"
             ))
-            .map_err(|error| format!("could not prepare explorer run load: {error}"))?;
+            .map_err(|error| format!("could not prepare research run load: {error}"))?;
         statement
             .query_row(params![run_id], work_run_from_row)
             .optional()
-            .map_err(|error| format!("could not read explorer run: {error}"))
+            .map_err(|error| format!("could not read research run: {error}"))
     }
 
     /// Apply a bounded update to a run. A run already in a terminal
@@ -167,16 +167,16 @@ impl Storage {
     pub fn update_work_run(&self, run_id: &str, update: &WorkRunUpdate) -> Result<WorkRun, String> {
         let existing = self
             .load_work_run(run_id)?
-            .ok_or_else(|| format!("explorer run '{run_id}' was not found"))?;
+            .ok_or_else(|| format!("research run '{run_id}' was not found"))?;
         if let Some(status) = &update.status {
             if !valid_run_status(status) {
-                return Err(format!("invalid explorer run status '{status}'"));
+                return Err(format!("invalid research run status '{status}'"));
             }
             if TERMINAL_STATUSES.contains(&existing.status.as_str())
                 && existing.status != status.as_str()
             {
                 return Err(format!(
-                    "explorer run '{run_id}' is already {} and cannot move to {status}",
+                    "research run '{run_id}' is already {} and cannot move to {status}",
                     existing.status
                 ));
             }
@@ -184,12 +184,12 @@ impl Storage {
         if let Some(output) = &update.output
             && output.chars().count() > super::types::MAX_TRANSCRIPT_CHARS
         {
-            return Err("explorer run output exceeds the transcript bound".to_owned());
+            return Err("research run output exceeds the transcript bound".to_owned());
         }
         let now = now_epoch_seconds();
         self.connection
             .execute(
-                "UPDATE acp_explorer_runs SET \
+                "UPDATE acp_research_runs SET \
                     status = COALESCE(?2, status), \
                     acp_session_id = COALESCE(?3, acp_session_id), \
                     output = COALESCE(?4, output), \
@@ -209,42 +209,45 @@ impl Storage {
                     now,
                 ],
             )
-            .map_err(|error| format!("could not update explorer run: {error}"))?;
+            .map_err(|error| format!("could not update research run: {error}"))?;
         self.load_work_run(run_id)?
-            .ok_or_else(|| "explorer run row disappeared after update".to_owned())
+            .ok_or_else(|| "research run row disappeared after update".to_owned())
     }
 
     /// Reopen a resumable run so a new process can continue its ACP
-    /// session. This is the single, explicit exception to the terminal
-    /// freeze: the run keeps its id, its prompt, its partial output,
-    /// and its persisted ACP session id, and only the terminal markers
-    /// are cleared. A run with no ACP session, a `completed` run, or a
-    /// run that is not resumable is refused.
-    pub fn resume_work_run(&self, run_id: &str) -> Result<WorkRun, String> {
+    /// session, in a fresh server-created scratch directory. This is the
+    /// single, explicit exception to the terminal freeze: the run keeps its
+    /// id, its prompt, its partial output, and its persisted ACP session id;
+    /// only the terminal markers are cleared and the scratch cwd is replaced.
+    /// A run with no ACP session, a `completed` run, or a run that is not
+    /// resumable is refused.
+    pub fn resume_work_run(&self, run_id: &str, scratch_cwd: &str) -> Result<WorkRun, String> {
         let existing = self
             .load_work_run(run_id)?
-            .ok_or_else(|| format!("explorer run '{run_id}' was not found"))?;
+            .ok_or_else(|| format!("research run '{run_id}' was not found"))?;
         if existing.acp_session_id.as_deref().is_none_or(str::is_empty) {
             return Err(format!(
-                "explorer run '{run_id}' has no ACP session to resume"
+                "research run '{run_id}' has no ACP session to resume"
             ));
         }
         if !RESUMABLE_STATUSES.contains(&existing.status.as_str()) {
             return Err(format!(
-                "explorer run '{run_id}' is {} and cannot be resumed",
+                "research run '{run_id}' is {} and cannot be resumed",
                 existing.status
             ));
         }
+        validate_cwd(scratch_cwd)?;
         self.connection
             .execute(
-                "UPDATE acp_explorer_runs SET \
-                     status = ?2, error = NULL, finished_at = NULL, updated_at = ?3 \
+                "UPDATE acp_research_runs SET \
+                     status = ?2, error = NULL, finished_at = NULL, scratch_cwd = ?4, \
+                     updated_at = ?3 \
                  WHERE run_id = ?1",
-                params![run_id, RUN_PENDING, now_epoch_seconds()],
+                params![run_id, RUN_PENDING, now_epoch_seconds(), scratch_cwd],
             )
-            .map_err(|error| format!("could not resume explorer run: {error}"))?;
+            .map_err(|error| format!("could not resume research run: {error}"))?;
         self.load_work_run(run_id)?
-            .ok_or_else(|| "explorer run row disappeared after resume".to_owned())
+            .ok_or_else(|| "research run row disappeared after resume".to_owned())
     }
 
     /// List runs, newest first. `running_only` selects the recovery
@@ -253,26 +256,26 @@ impl Storage {
         let clamped = limit.clamp(1, 1_000);
         let sql = if running_only {
             format!(
-                "SELECT {RUN_COLUMNS} FROM acp_explorer_runs \
+                "SELECT {RUN_COLUMNS} FROM acp_research_runs \
                  WHERE status IN ('{RUN_PENDING}', '{RUN_RUNNING}') \
                  ORDER BY created_at DESC LIMIT ?1"
             )
         } else {
             format!(
-                "SELECT {RUN_COLUMNS} FROM acp_explorer_runs \
+                "SELECT {RUN_COLUMNS} FROM acp_research_runs \
                  ORDER BY created_at DESC LIMIT ?1"
             )
         };
         let mut statement = self
             .connection
             .prepare(&sql)
-            .map_err(|error| format!("could not prepare explorer run list: {error}"))?;
+            .map_err(|error| format!("could not prepare research run list: {error}"))?;
         let rows = statement
             .query_map(params![clamped as i64], work_run_from_row)
-            .map_err(|error| format!("could not read explorer run list: {error}"))?;
+            .map_err(|error| format!("could not read research run list: {error}"))?;
         let mut runs = Vec::new();
         for row in rows {
-            runs.push(row.map_err(|error| format!("could not decode explorer run row: {error}"))?);
+            runs.push(row.map_err(|error| format!("could not decode research run row: {error}"))?);
         }
         Ok(runs)
     }

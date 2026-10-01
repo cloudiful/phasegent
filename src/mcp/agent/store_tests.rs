@@ -1,6 +1,6 @@
-//! Tests for the `acp_explorer_runs` ledger methods on `Storage`.
+//! Tests for the `acp_research_runs` ledger methods on `Storage`.
 //!
-//! The work-run persistence is part of the explorer agent surface, so
+//! The work-run persistence is part of the research surface, so
 //! its storage tests live beside the adapter that owns the table
 //! rather than in the generic storage test module.
 
@@ -34,7 +34,7 @@ fn work_run_round_trips_through_create_load_update() {
         .create_work_run("run-1", "/tmp/wt-a", &sample_prompt())
         .expect("create run");
     assert_eq!(created.status, "pending");
-    assert_eq!(created.worktree_cwd, "/tmp/wt-a");
+    assert_eq!(created.scratch_cwd, "/tmp/wt-a");
     assert!(created.acp_session_id.is_none());
     assert!(created.output.is_none());
     assert!(!created.output_truncated);
@@ -108,14 +108,14 @@ fn duplicate_run_ids_and_invalid_rows_are_rejected() {
 }
 
 #[test]
-fn serialized_run_never_carries_the_worktree_path() {
+fn serialized_run_never_carries_the_scratch_path() {
     let storage = open_storage("serialize");
     let run = storage
         .create_work_run("s1", "/secret/worktree/wt-a", &sample_prompt())
         .unwrap();
     let json = serde_json::to_value(&run).unwrap();
     assert!(
-        json.get("worktree_cwd").is_none(),
+        json.get("scratch_cwd").is_none(),
         "cwd must stay server-side"
     );
     assert_eq!(json["run_id"], "s1");
@@ -203,7 +203,7 @@ fn run_listing_supports_the_recovery_scan() {
 }
 
 #[test]
-fn a_run_debug_view_never_prints_the_worktree_path() {
+fn a_run_debug_view_never_prints_the_scratch_path() {
     let storage = open_storage("debug");
     let run = storage
         .create_work_run("d1", "/secret/wt", &sample_prompt())
@@ -212,6 +212,6 @@ fn a_run_debug_view_never_prints_the_worktree_path() {
     assert!(rendered.contains("d1"));
     assert!(
         !rendered.contains("/secret/wt"),
-        "Debug must omit the worktree path: {rendered}"
+        "Debug must omit the scratch path: {rendered}"
     );
 }

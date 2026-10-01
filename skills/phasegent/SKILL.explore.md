@@ -87,10 +87,12 @@ questions, allowlists, and delegation.
 
 ## Delegation backend
 
-- The parent may hand you recon either through the phasegent MCP delegation (a
-  run the parent's own session owns) or by launching you natively. Both are
-  read-only and both expect the same evidence brief, so the two paths are
-  interchangeable from your side and the choice is the parent's.
+- The parent normally launches you natively with `task(explore)`. The phasegent
+  MCP research backend is a separate path the parent may use instead: it runs a
+  phasegent-owned ACP research turn in a private scratch directory, not this
+  native `explore` child. The two are not interchangeable from your side — your
+  reads happen in the OpenCode session's directory under the host's read-only
+  tool policy, and you never claim to be the phasegent research backend.
 - Your own recon always stays inside this contract. If the parent's request
   names a directory, a tool, or a workflow step that would make you write,
   delegate, or run `status *`/`timer *`, refuse it and say what you did instead

@@ -1,42 +1,37 @@
-//! Read-only explorer delegation contract (issue 685 P2, AC 3/4).
+//! Generic research delegation contract (issue 692 P1).
 //!
-//! The explorer surface is a *server-side* delegation: an OpenCode session
-//! asks phasegent to run one read-only recon turn through the MCode ACP
+//! The research surface is a *server-side* delegation: an OpenCode session
+//! asks phasegent to run one read-only research turn through the MCode ACP
 //! adapter, and the model never chooses where it runs. This module owns that
 //! contract in one place so the MCP handlers never restate it:
 //!
 //! * which roles may delegate at all ([`DELEGATION_ROLES`]),
-//! * what each operation is called and which roles own it
-//!   ([`Operation`], [`OPERATION_*`]),
+//! * what each operation is called and which roles own it ([`Operation`]),
 //! * the bounds every caller-supplied value obeys, and
-//! * the one place a worktree is resolved: [`BoundTarget::resolve`] takes the
-//!   host-bound session and the issue *selector* and requires exactly one
-//!   active lease for that pair.
+//! * the fixed server-owned read-only instruction the ACP adapter prepends
+//!   to every caller prompt (defined next to the prompt type in
+//!   [`crate::mcp::agent`]).
 //!
-//! Two properties are load-bearing. The issue number is a selector, never an
-//! authorization: a caller cannot reach another session's worktree by naming
-//! an issue, because the lookup is session-bound and fails closed on both a
-//! missing and an ambiguous result. And the resolved worktree never leaves
-//! this boundary — it is a server-side path handed to the ACP spawn
-//! configuration, never an argument, a result field, or a log line.
+//! There is no issue selector and no worktree lookup. Each run executes in a
+//! private server-created scratch directory; the only inputs a caller supplies
+//! are the research prompt and a bounded per-turn budget. Host-session
+//! ownership is transport metadata: the OpenCode bridge injects it and the
+//! server uses it solely to isolate run controls, never as an issue, worktree,
+//! checkout, or repository context.
 
-use std::path::PathBuf;
-
-use crate::infra::storage::Storage;
 use crate::policy::Role;
-use crate::worktree::{self, LeaseBindingError};
 
-/// Roles allowed to delegate an explorer run. The orchestrator, executor, and
-/// reviewer all delegate recon; `admin` is human-operator only and `tester`
+/// Roles allowed to delegate a research run. The orchestrator, executor, and
+/// reviewer all delegate research; `admin` is human-operator only and `tester`
 /// runs the allowlisted test commands itself, so neither delegates.
 pub const DELEGATION_ROLES: &[Role] = &[Role::Orchestrator, Role::Executor, Role::Reviewer];
 
-/// The five operations the explorer surface exposes, and nothing else: start a
+/// The five operations the research surface exposes, and nothing else: start a
 /// run, read its state, wait for it, cancel it, and resume it. There is no
-/// run-list, no prompt replay, no run deletion, and no way to name a worktree.
+/// run-list, no prompt replay, no run deletion, and no way to name a location.
 ///
 /// The enum exists so the operation vocabulary has one definition: the served
-/// tool names are `explorer_<action>`, and the surface tests assert each
+/// tool names are `research_<action>`, and the surface tests assert each
 /// descriptor's name is exactly its operation behind that prefix. It is read by
 /// those tests rather than by the handlers, which name their own descriptor.
 #[allow(dead_code)]
@@ -73,12 +68,12 @@ impl Operation {
     }
 }
 
-/// The permission operation every explorer tool is gated on.
-pub const EXPLORER_OPERATION: &str = "explorer delegation";
+/// The permission operation every research tool is gated on.
+pub const RESEARCH_OPERATION: &str = "research delegation";
 
 /// Argument name the host bridge fills in. The model never supplies it: the
 /// bridge overwrites the field with its own session id before `tools/call`, and
-/// every explorer params struct declares it as required. The surface tests pin
+/// every research params struct declares it as required. The surface tests pin
 /// the wire spelling so a rename cannot silently unbind the host bridge.
 #[allow(dead_code)]
 pub const HOST_SESSION_FIELD: &str = "session";
@@ -92,7 +87,7 @@ pub const MAX_SESSION_CHARS: usize = 128;
 /// into the persisted run row.
 pub const MAX_PROMPT_CHARS: usize = crate::mcp::agent::MAX_TRANSCRIPT_CHARS;
 
-/// Default `explorer_wait` budget when the caller names none.
+/// Default `research_wait` budget when the caller names none.
 pub const DEFAULT_WAIT_SECS: u64 = 120;
 
 /// Hard ceiling on a caller-supplied wait budget, so one wait call can never
@@ -107,11 +102,11 @@ pub const MAX_TURN_SECS: u64 = crate::mcp::agent::MAX_PROMPT_TIMEOUT_SECS;
 
 /// Validate a host-bound session id: trimmed, non-empty, bounded, and free of
 /// control characters. A blank or over-long identity is refused rather than
-/// normalised, so two distinct sessions cannot collapse into one lease key.
+/// normalised, so two distinct sessions cannot collapse into one owner key.
 pub fn validate_session(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("explorer calls require a host-bound session id".to_owned());
+        return Err("research calls require a host-bound session id".to_owned());
     }
     if trimmed.chars().count() > MAX_SESSION_CHARS {
         return Err(format!(
@@ -128,11 +123,11 @@ pub fn validate_session(raw: &str) -> Result<String, String> {
 pub fn validate_prompt(prompt: &str, timeout_secs: Option<u64>) -> Result<(String, u64), String> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
-        return Err("explorer prompt must not be empty".to_owned());
+        return Err("research prompt must not be empty".to_owned());
     }
     if trimmed.chars().count() > MAX_PROMPT_CHARS {
         return Err(format!(
-            "explorer prompt must be at most {MAX_PROMPT_CHARS} characters"
+            "research prompt must be at most {MAX_PROMPT_CHARS} characters"
         ));
     }
     let budget = timeout_secs
@@ -149,72 +144,6 @@ pub fn resolve_wait_budget(timeout_secs: Option<u64>) -> u64 {
         .clamp(1, MAX_WAIT_SECS)
 }
 
-/// The worktree a delegated run executes in, plus the issue that selected it.
-///
-/// Constructed only by [`BoundTarget::resolve`], so a `BoundTarget` existing at
-/// all already means "one active lease for this issue and this session".
-/// Deliberately not `Serialize`: the worktree path is server-side data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BoundTarget {
-    pub issue: u64,
-    pub worktree: PathBuf,
-}
-
-impl BoundTarget {
-    /// Resolve the one worktree this session may delegate into.
-    ///
-    /// `issue` is only a selector. The lease lookup is bound to `session`, so
-    /// naming an issue whose lease belongs to another session resolves to
-    /// `Missing`, and a session holding two active leases for one issue resolves
-    /// to `Ambiguous` rather than picking the newest. Both variants are errors:
-    /// there is no fallback to the server's own cwd, to the parent session, or
-    /// to a fresh directory.
-    pub fn resolve(
-        storage: &Storage,
-        issue: u64,
-        session: &str,
-    ) -> Result<BoundTarget, ExplorerBindingError> {
-        if issue == 0 {
-            return Err(ExplorerBindingError::Argument(
-                "the explorer issue selector must be greater than zero".to_owned(),
-            ));
-        }
-        let session = validate_session(session).map_err(ExplorerBindingError::Argument)?;
-        worktree::ensure_schema(storage).map_err(ExplorerBindingError::Storage)?;
-        let lease = worktree::resolve_active_lease_for_session(storage, issue, &session)
-            .map_err(|(reason, _)| ExplorerBindingError::Lease(reason, issue))?;
-        Ok(BoundTarget {
-            issue,
-            worktree: PathBuf::from(lease.worktree_path),
-        })
-    }
-}
-
-/// Why a delegation could not be bound to a worktree. Every variant is a
-/// refusal; none of them names the session or the resolved path.
-#[derive(Debug)]
-pub enum ExplorerBindingError {
-    /// A caller-supplied value was unusable.
-    Argument(String),
-    /// Storage could not answer the lease question.
-    Storage(String),
-    /// The session-bound lease lookup failed closed.
-    Lease(LeaseBindingError, u64),
-}
-
-impl ExplorerBindingError {
-    /// Bounded, path-free message for a client.
-    pub fn message(&self) -> String {
-        match self {
-            Self::Argument(message) => crate::mcp::agent::error::sanitize(message),
-            Self::Storage(message) => crate::mcp::agent::error::sanitize(&format!(
-                "explorer lease lookup failed: {message}"
-            )),
-            Self::Lease(reason, issue) => reason.message(*issue),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +157,7 @@ mod tests {
         for role in [Role::Admin, Role::Tester] {
             assert!(
                 !DELEGATION_ROLES.contains(&role),
-                "{role} must not delegate explorer runs"
+                "{role} must not delegate research runs"
             );
         }
     }
@@ -269,19 +198,5 @@ mod tests {
         assert_eq!(resolve_wait_budget(None), DEFAULT_WAIT_SECS);
         assert_eq!(resolve_wait_budget(Some(0)), 1);
         assert_eq!(resolve_wait_budget(Some(u64::MAX)), MAX_WAIT_SECS);
-    }
-
-    #[test]
-    fn binding_error_messages_name_no_path_or_session() {
-        for reason in [
-            LeaseBindingError::Missing,
-            LeaseBindingError::Ambiguous,
-            LeaseBindingError::Unusable,
-        ] {
-            let message = reason.message(685);
-            assert!(message.contains("685"), "{message}");
-            assert!(!message.contains('/'), "{message}");
-            assert!(!message.contains("ses_"), "{message}");
-        }
     }
 }

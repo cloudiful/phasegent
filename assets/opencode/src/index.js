@@ -85,22 +85,22 @@ import {
 import { registerAgentSkills, roleSkillContent, roleSkillId, withSkillPrefix } from "./agents.js";
 import {
   BINDING_ERROR_PREFIX,
-  EXPLORER_ACTIONS,
   HOST_SESSION_FIELD,
   MCP_SERVER_ROLE,
   PHASEGENT_MCP_SERVER,
   REFUSALS,
+  RESEARCH_ACTIONS,
   applyServer,
-  bindExplorerSession,
-  explorerActionForTool,
-  explorerBackend,
-  explorerToolId,
+  bindResearchSession,
   forgetMcpRegistration,
   hasPhasegentServer,
   mcpRegistered,
   mutableArguments,
   phasegentMcpServerDefinition,
   registerPhasegentMcp,
+  researchActionForTool,
+  researchBackend,
+  researchToolId,
 } from "./mcp.js";
 import { registerSkill, roleSkillDefinitions, skillDefinition, skillDefinitions } from "./skills.js";
 import {
@@ -120,15 +120,15 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: worktree strategy registration failed (${errorText(error)})`);
     }
     try {
-      // Registering the MCP server is what makes the phasegent explorer
+      // Registering the MCP server is what makes the phasegent research
       // delegation available. A refused or unrecognised config surface is a
       // warning and a no-op: the native `explore` subagent stays the explicit
       // fallback and nothing else about the adapter changes.
       const registration = await registerPhasegentMcp(context);
       if (!registration.registered) {
         warn(
-          `phasegent: explorer delegation is unavailable (${registration.reason}); ` +
-            "the native OpenCode explorer stays the path",
+          `phasegent: research delegation is unavailable (${registration.reason}); ` +
+            "the native OpenCode `explore` child stays the path",
         );
       }
     } catch (error) {
@@ -206,22 +206,22 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   roleSkillContent,
   withSkillPrefix,
   BINDING_ERROR_PREFIX,
-  EXPLORER_ACTIONS,
   HOST_SESSION_FIELD,
   MCP_SERVER_ROLE,
   PHASEGENT_MCP_SERVER,
   REFUSALS,
+  RESEARCH_ACTIONS,
   applyServer,
-  bindExplorerSession,
-  explorerActionForTool,
-  explorerBackend,
-  explorerToolId,
+  bindResearchSession,
   forgetMcpRegistration,
   hasPhasegentServer,
   mcpRegistered,
   mutableArguments,
   phasegentMcpServerDefinition,
   registerPhasegentMcp,
+  researchActionForTool,
+  researchBackend,
+  researchToolId,
 });
 
 export default PhasegentWorktreePlugin;

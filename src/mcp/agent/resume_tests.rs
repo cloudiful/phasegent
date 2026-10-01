@@ -13,9 +13,9 @@ use tokio::io::duplex;
 use super::run::RunManager;
 use super::session::AcpSession;
 use super::test_kit::{FakeAgent, FakeAgentOptions};
-use super::types::{ExplorerPrompt, StopReason};
+use super::types::{ResearchPrompt, StopReason};
 use super::wire::{
-    CONFIG_ID_MODEL, EXPLORER_MODEL_WIRE_VALUE, EXPLORER_PERMISSION_MODE, EXPLORER_THINKING_EFFORT,
+    CONFIG_ID_MODEL, RESEARCH_MODEL_WIRE_VALUE, RESEARCH_PERMISSION_MODE, RESEARCH_THINKING_EFFORT,
 };
 
 use super::tests::{open_storage, temp_db_path, wait_terminal};
@@ -43,14 +43,14 @@ async fn resume_reconnects_through_session_load_and_reverifies_the_values() {
         "the persisted id is what the new process loads"
     );
     let report = session
-        .negotiate_explorer()
+        .negotiate_research()
         .await
         .expect("a resumed session re-selects and re-verifies");
-    assert_eq!(report.model.as_deref(), Some(EXPLORER_MODEL_WIRE_VALUE));
-    assert_eq!(report.effort.as_deref(), Some(EXPLORER_THINKING_EFFORT));
+    assert_eq!(report.model.as_deref(), Some(RESEARCH_MODEL_WIRE_VALUE));
+    assert_eq!(report.effort.as_deref(), Some(RESEARCH_THINKING_EFFORT));
     assert_eq!(
         report.permission_mode.as_deref(),
-        Some(EXPLORER_PERMISSION_MODE)
+        Some(RESEARCH_PERMISSION_MODE)
     );
     let selections = agent.selections.lock().await.clone();
     assert_eq!(selections.len(), 3, "every pinned value is re-applied");
@@ -112,9 +112,9 @@ async fn a_resumed_turn_streams_into_the_same_session() {
     let session = AcpSession::resume_in_process(stream, WORKTREE.to_owned(), "fake-session-1")
         .await
         .expect("resume");
-    session.negotiate_explorer().await.expect("negotiate");
+    session.negotiate_research().await.expect("negotiate");
     let outcome = session
-        .prompt(&ExplorerPrompt::new("continue the recon"))
+        .prompt(&ResearchPrompt::new("continue the recon"))
         .await
         .expect("the resumed session still runs turns");
     assert_eq!(outcome.stop_reason, StopReason::EndTurn);
@@ -148,7 +148,7 @@ async fn resume_run_continues_an_interrupted_ledger_row() {
     let reopened = manager
         .resume_run(
             "resumable",
-            ExplorerPrompt::new("continue where you left off"),
+            ResearchPrompt::new("continue where you left off"),
         )
         .await
         .expect("resume accepted");
@@ -159,7 +159,14 @@ async fn resume_run_continues_an_interrupted_ledger_row() {
     assert_eq!(reopened.prompt, "summarize src/");
     assert!(reopened.finished_at.is_none());
     assert!(reopened.error.is_none());
-    assert_eq!(reopened.worktree_cwd, WORKTREE);
+    // The resume runs in a fresh server-created scratch directory, never in the
+    // row's previous cwd.
+    assert_ne!(reopened.scratch_cwd, WORKTREE);
+    assert!(
+        std::path::Path::new(&reopened.scratch_cwd).starts_with(super::scratch::root()),
+        "the resumed cwd must be a server scratch directory: {}",
+        reopened.scratch_cwd
+    );
 }
 
 #[tokio::test]
@@ -194,7 +201,7 @@ async fn resume_run_refuses_completed_and_sessionless_rows() {
     let manager = RunManager::new(storage).expect("manager");
 
     let error = manager
-        .resume_run("done", ExplorerPrompt::new("again"))
+        .resume_run("done", ResearchPrompt::new("again"))
         .await
         .expect_err("a completed run is not resumable");
     assert!(
@@ -204,7 +211,7 @@ async fn resume_run_refuses_completed_and_sessionless_rows() {
     );
 
     let error = manager
-        .resume_run("no-session", ExplorerPrompt::new("again"))
+        .resume_run("no-session", ResearchPrompt::new("again"))
         .await
         .expect_err("a run with no ACP session is not resumable");
     assert!(
@@ -214,7 +221,7 @@ async fn resume_run_refuses_completed_and_sessionless_rows() {
     );
 
     let error = manager
-        .resume_run("absent", ExplorerPrompt::new("again"))
+        .resume_run("absent", ResearchPrompt::new("again"))
         .await
         .expect_err("an unknown run is not resumable");
     assert!(error.message.contains("not found"), "{}", error.message);
@@ -242,14 +249,14 @@ async fn a_second_resume_cannot_reopen_a_run_that_is_already_active() {
         .expect("interrupt");
     let manager = RunManager::new(storage).expect("manager");
     let reopened = manager
-        .resume_run("active", ExplorerPrompt::new("continue"))
+        .resume_run("active", ResearchPrompt::new("continue"))
         .await
         .expect("first resume accepted");
     assert_eq!(reopened.status, "pending");
     assert!(manager.is_in_flight("active"));
 
     let error = manager
-        .resume_run("active", ExplorerPrompt::new("continue again"))
+        .resume_run("active", ResearchPrompt::new("continue again"))
         .await
         .expect_err("an active run cannot be resumed twice");
     assert!(
@@ -285,7 +292,7 @@ async fn a_resume_that_is_refused_retires_its_registration() {
         .expect("complete");
     let manager = RunManager::new(storage).expect("manager");
     let error = manager
-        .resume_run("done", ExplorerPrompt::new("again"))
+        .resume_run("done", ResearchPrompt::new("again"))
         .await
         .expect_err("a completed run is not resumable");
     assert!(
@@ -302,8 +309,8 @@ async fn a_resume_that_is_refused_retires_its_registration() {
 }
 
 #[tokio::test]
-async fn a_resumed_run_keeps_its_own_worktree_server_side() {
-    // The worktree path must stay in the ledger and out of anything a
+async fn a_resumed_run_keeps_its_own_scratch_server_side() {
+    // The scratch path must stay in the ledger and out of anything a
     // model can read, including after a resume reopens the row.
     let path = temp_db_path("resume-server-side");
     let storage = open_storage(&path);
@@ -320,13 +327,15 @@ async fn a_resumed_run_keeps_its_own_worktree_server_side() {
             },
         )
         .expect("interrupt");
-    let reopened = storage.resume_work_run("private").expect("resume");
-    assert_eq!(reopened.worktree_cwd, "/secret/wt-a");
+    let reopened = storage
+        .resume_work_run("private", "/secret/new-scratch")
+        .expect("resume");
+    assert_eq!(reopened.scratch_cwd, "/secret/new-scratch");
     let json = serde_json::to_value(&reopened).expect("serialize");
-    assert!(json.get("worktree_cwd").is_none());
+    assert!(json.get("scratch_cwd").is_none());
     assert!(
-        !format!("{reopened:?}").contains("/secret/wt-a"),
-        "the Debug output must not carry the worktree path"
+        !format!("{reopened:?}").contains("/secret/new-scratch"),
+        "the Debug output must not carry the scratch path"
     );
 }
 
@@ -352,7 +361,7 @@ async fn an_interrupted_run_is_not_left_running_after_a_resumed_attempt_fails() 
     // rather than staying open.
     let manager = RunManager::new(storage).expect("manager");
     manager
-        .resume_run("failing", ExplorerPrompt::new("continue"))
+        .resume_run("failing", ResearchPrompt::new("continue"))
         .await
         .expect("resume accepted");
     let reader = open_storage(&path);

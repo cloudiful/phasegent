@@ -9,11 +9,10 @@ mod argv;
 mod auth;
 mod comment;
 mod config;
-// The explorer delegation contract (issue 685 P2). Server-side only: the
-// explorer surface has no CLI command, so the module is crate-visible for the
+// The research delegation contract (issue 692 P1). Server-side only: the
+// research surface has no CLI command, so the module is crate-visible for the
 // MCP handlers instead of a `pub use` row that would put a second copy of the
 // role allowlist, the operation names, and the bounds into the command surface.
-pub(crate) mod explorer;
 mod global_options;
 mod help_topic;
 mod hooks;
@@ -27,6 +26,7 @@ mod plugin;
 mod prelude;
 mod project;
 mod provider_args;
+pub(crate) mod research;
 // Phase 1 command registry skeleton (issue 597): top-level parser routing
 // consults `registry::top_level`; Phase 2 wires the same tree into the
 // parser role gate, root help, and the help detail gate; Phase 3 wires the

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use super::run::RunManager;
 use super::session::AcpSession;
-use super::types::{AcpSpawnConfig, ExplorerPrompt};
+use super::types::{AcpSpawnConfig, ResearchPrompt};
 
 use super::tests::{open_storage, temp_db_path, wait_terminal};
 
@@ -127,7 +127,7 @@ async fn a_failed_handshake_kills_the_process_it_spawned() {
     let (stub, pid_file) = silent_stub("handshake-stub");
     // The stub never answers `initialize`, so the bounded handshake
     // fails and the process must not survive it. A leaked child would
-    // be an `mcode acp` process still holding the worktree cwd.
+    // be an `mcode acp` process still holding the scratch cwd.
     let config = AcpSpawnConfig {
         program: stub.display().to_string(),
         cwd: std::env::temp_dir(),
@@ -152,7 +152,7 @@ async fn an_aborted_start_leaves_no_child_process_behind() {
     // The launch task is aborted mid-handshake, which is what a cancel
     // escalation does to a run whose agent never answers. The spawn is
     // `kill_on_drop`, so the process must die with the task rather than
-    // outlive it holding the worktree cwd.
+    // outlive it holding the scratch cwd.
     let (stub, pid_file) = silent_stub("abort-stub");
     let config = AcpSpawnConfig {
         program: stub.display().to_string(),
@@ -194,7 +194,7 @@ async fn agent_stderr_cannot_put_a_secret_in_the_persisted_error() {
                 cwd: std::env::temp_dir(),
                 handshake_timeout_secs: Some(30),
             },
-            ExplorerPrompt::new("recon"),
+            ResearchPrompt::new("recon"),
         )
         .await
         .expect("run accepted");
@@ -254,7 +254,7 @@ sleep 5"#
                 cwd: std::env::temp_dir(),
                 handshake_timeout_secs: Some(30),
             },
-            ExplorerPrompt::new("recon"),
+            ResearchPrompt::new("recon"),
         )
         .await
         .expect("run accepted");

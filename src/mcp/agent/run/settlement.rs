@@ -40,12 +40,12 @@ impl RunManager {
         let (status, error) = if cancelled {
             (
                 RUN_CANCELLED,
-                "cancelled before the explorer turn completed",
+                "cancelled before the research turn completed",
             )
         } else {
             (
                 RUN_INTERRUPTED,
-                "the explorer run task ended without recording an outcome",
+                "the research run task ended without recording an outcome",
             )
         };
         let _ = self.persist(
@@ -85,5 +85,12 @@ impl Drop for Settlement {
         self.flight.mark_done();
         self.manager.ensure_terminal(&self.run_id, cancelled);
         self.manager.flights.forget(&self.run_id, &self.flight);
+        // Every terminal settlement removes the run's private scratch
+        // directory. `remove` refuses any path outside the server-owned
+        // root, so a corrupted row cannot turn this into an arbitrary
+        // recursive delete.
+        if let Ok(Some(run)) = self.manager.load(&self.run_id) {
+            super::super::scratch::remove(std::path::Path::new(&run.scratch_cwd));
+        }
     }
 }

@@ -4,7 +4,7 @@
 //! Only the client-to-agent half of the protocol lives here: what this
 //! adapter sends, and the responses it reads back. The
 //! agent-to-client requests it answers are in [`super::wire_client`].
-//! The explorer permission mode, model, and thinking-effort values are
+//! The research permission mode, model, and thinking-effort values are
 //! the ones the MCode agent advertises (`configOptions` on
 //! `session/new`); they are pinned so the adapter always negotiates
 //! the same wire values the P0 live audit verified.
@@ -33,18 +33,18 @@ pub const CONFIG_ID_THINKING_EFFORT: &str = "thinkingEffort";
 /// `bypassPermissions`.
 pub const CONFIG_ID_PERMISSION_MODE: &str = "permissionMode";
 
-/// The explorer model selection exactly as MCode advertises it:
+/// The research model selection exactly as MCode advertises it:
 /// provider `minimax`, model `MiniMax-M3.1-Flash-Preview`, variant
 /// `thinking`, encoded in MCode's `m:<p>:<m>:v:<variant>` wire format.
-pub const EXPLORER_MODEL_WIRE_VALUE: &str = "m:minimax:MiniMax-M3.1-Flash-Preview:v:thinking";
-/// The explorer thinking effort, one of MCode's advertised efforts for
+pub const RESEARCH_MODEL_WIRE_VALUE: &str = "m:minimax:MiniMax-M3.1-Flash-Preview:v:thinking";
+/// The research thinking effort, one of MCode's advertised efforts for
 /// the model above.
-pub const EXPLORER_THINKING_EFFORT: &str = "high";
+pub const RESEARCH_THINKING_EFFORT: &str = "high";
 /// Permission mode selected for the run: `default` keeps MCode's
 /// tool-permission flow enabled, which is the only mode under which
 /// this client can deny a mutation at all. `auto` and
 /// `bypassPermissions` would remove the request this adapter answers.
-pub const EXPLORER_PERMISSION_MODE: &str = "default";
+pub const RESEARCH_PERMISSION_MODE: &str = "default";
 /// The only ACP protocol version this adapter speaks.
 pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 

@@ -65,17 +65,17 @@ impl AgentError {
     }
 
     pub fn timeout() -> Self {
-        Self::new(AgentErrorKind::Timeout, "explorer run exceeded its timeout")
+        Self::new(AgentErrorKind::Timeout, "research run exceeded its timeout")
     }
 
     pub fn cancelled() -> Self {
-        Self::new(AgentErrorKind::Cancelled, "explorer run was cancelled")
+        Self::new(AgentErrorKind::Cancelled, "research run was cancelled")
     }
 
     pub fn closed() -> Self {
         Self::new(
             AgentErrorKind::Closed,
-            "explorer process closed unexpectedly",
+            "research process closed unexpectedly",
         )
     }
 

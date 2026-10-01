@@ -23,7 +23,7 @@
 //!   `skill.transform` embedded skill registration. Issue #572 adds
 //!   the `agent.transform` binding that prepends each protocol
 //!   agent's own slim skill to its system prompt; issue 665 adds the
-//!   `explore` recon skill so every protocol agent is bound. Issue #616
+//!   `explore` read-only research skill so every protocol agent is bound. Issue #616
 //!   makes
 //!   worktree creation opt-in: the lazy path never acquires one, and a
 //!   host create request passes `isolate` so the dedicated directory is
@@ -1027,8 +1027,8 @@ fn adapter_template_registers_embedded_skill_without_a_command() {
     // system prefix. The command domain stays untouched.
     assert!(source.contains("agent.transform"));
     assert!(source.contains("draft.add(definition)"));
-    // Issue 665: every protocol agent is bound, explore included, and its recon
-    // prompt ships embedded like the other role skills.
+    // Issue 665: every protocol agent is bound, explore included, and its
+    // read-only research prompt ships embedded like the other role skills.
     assert!(source.contains("[\"orchestrator\", \"phasegent-orchestrator\"]"));
     assert!(source.contains("[\"executor\", \"phasegent-executor\"]"));
     assert!(source.contains("[\"reviewer\", \"phasegent-reviewer\"]"));
@@ -1130,7 +1130,7 @@ fn embedded_skill_matches_the_repository_copy() {
 /// Issue #602 keeps the role prompts slim, so the embedded mirror matters just
 /// as much for them: every `SKILL.<role>.md` the adapter inlines must equal the
 /// repository copy byte-for-byte, and still open with its frontmatter. Issue 665
-/// adds the `explore` recon skill to the same contract.
+/// adds the `explore` read-only research skill to the same contract.
 #[test]
 fn embedded_role_skills_match_the_repository_copies() {
     let _lock = lock_workflow_tests();

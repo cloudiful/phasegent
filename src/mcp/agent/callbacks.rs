@@ -1,11 +1,11 @@
 //! Fail-closed callbacks the codec invokes for agent-initiated traffic.
 //!
-//! `session/request_permission` follows the read-only explorer
+//! `session/request_permission` follows the read-only research
 //! contract on two axes. The tool *kind* must be a read: `read`,
 //! `search`, and `fetch` may proceed, and every mutation kind
 //! (`edit`, `delete`, `move`, `execute`, `switch_mode`, anything
 //! unknown) is denied. The *scope* must also hold: an allowed kind
-//! whose paths leave the worktree is denied too, so a `read` cannot
+//! whose paths leave the scratch workspace is denied too, so a `read` cannot
 //! reach the phasegent credential store or the agent's own
 //! configuration. Denials prefer `reject_once`, fall back to
 //! `reject_always`, and cancel outright when the agent advertises no
@@ -128,7 +128,7 @@ pub(crate) fn callbacks_for(
     (agent_requests, notifications)
 }
 
-/// Permission decisions follow the read-only explorer contract;
+/// Permission decisions follow the read-only research contract;
 /// everything else is refused as unimplemented.
 fn handle_agent_request(
     core: &Arc<Mutex<SharedCore>>,

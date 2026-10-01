@@ -193,34 +193,6 @@ pub fn find_active_lease_for_probe(
     Ok(row)
 }
 
-/// Active lease rows for one `(issue, session)` pair, newest first.
-///
-/// The session id is the host-unique anchor, so the pair already pins the
-/// repository: a session holding active leases for one issue in two
-/// repositories is ambiguous rather than resolvable. Callers act only through
-/// [`super::resolve_active_lease_for_session`], which turns the rows into a
-/// fail-closed decision.
-pub(super) fn active_lease_rows_for_session(
-    storage: &Storage,
-    issue: u64,
-    session: &str,
-) -> Result<Vec<LeaseRow>, WorktreeError> {
-    query_leases(
-        &storage.connection,
-        &format!(
-            "{LEASE_SELECT} WHERE issue = ?1 AND session = ?2 AND status = ?3 \
-             ORDER BY created_at DESC LIMIT ?4"
-        ),
-        &[
-            &(issue as i64),
-            &session,
-            &LEASE_STATUS_ACTIVE,
-            &MAX_LEASES_PER_QUERY,
-        ],
-        "session",
-    )
-}
-
 #[allow(dead_code)]
 pub(super) fn count_other_active_leases(
     storage: &Storage,

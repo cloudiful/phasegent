@@ -1,7 +1,7 @@
 //! Per-database, kernel-held exclusion between phasegent processes (issue 685
 //! P2).
 //!
-//! The explorer run ledger is one durable table in one SQLite database, and a
+//! The research run ledger is one durable table in one SQLite database, and a
 //! recovery pass reads it as a whole: every non-terminal row without a live
 //! entry in *this* process's flight registry is marked `interrupted`. That
 //! judgement is only sound for the process that owns the database. Without an
@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 
 /// The lock file this module owns, beside the database it guards.
-pub(crate) const LOCK_FILE_NAME: &str = "acp-explorer-runs.lock";
+pub(crate) const LOCK_FILE_NAME: &str = "acp-research-runs.lock";
 
 /// Why the ledger could not be claimed. Every variant is a refusal, and a
 /// refused claim never yields a [`ProcessLock`], so recovery and spawning are
@@ -56,12 +56,12 @@ impl ProcessLockError {
     pub(crate) fn message(&self) -> String {
         match self {
             Self::Held => {
-                "another phasegent process owns this database's explorer run ledger, so explorer \
-                 delegation is unavailable here; explorer runs stay owned by that process"
+                "another phasegent process owns this database's research run ledger, so research \
+                 delegation is unavailable here; research runs stay owned by that process"
                     .to_owned()
             }
             Self::Unavailable(detail) => format!(
-                "the explorer run ledger could not be locked, so explorer delegation is \
+                "the research run ledger could not be locked, so research delegation is \
                  unavailable: {detail}"
             ),
         }
@@ -84,7 +84,7 @@ impl ProcessLock {
     /// Claim `database`'s run ledger, creating the lock file if it is missing.
     ///
     /// Non-blocking on purpose. A caller that has to wait for another process
-    /// to finish is a caller that should not be serving explorer calls at all,
+    /// to finish is a caller that should not be serving research calls at all,
     /// and blocking here would hide the contention behind a request that looks
     /// slow instead of one that fails closed.
     pub(crate) fn acquire(database: &Path) -> Result<Self, ProcessLockError> {

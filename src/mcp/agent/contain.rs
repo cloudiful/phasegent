@@ -1,11 +1,11 @@
-//! Filesystem-resolved containment for the explorer's read scope.
+//! Filesystem-resolved containment for the research agent's read scope.
 //!
 //! [`super::scope`] decides *which* strings a tool call names; this
-//! module decides whether one of them lands inside the worktree. The
+//! module decides whether one of them lands inside the workspace. The
 //! split is deliberate: only this side has to touch the filesystem.
 //!
 //! Lexical normalization is not containment. A symlink inside the
-//! worktree can point anywhere, so a `read` of `link/phasegent.sqlite3`
+//! workspace can point anywhere, so a `read` of `link/phasegent.sqlite3`
 //! would reach the credential store through a path that looks
 //! entirely inside the workspace. Every component is therefore resolved
 //! through the filesystem, and a link is resolved even when it dangles:
@@ -22,7 +22,7 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 /// Upper bound on the components and symlink hops one resolution
-/// follows. A real worktree path is orders of magnitude shorter, and a
+/// follows. A real workspace path is orders of magnitude shorter, and a
 /// path built to spin through links lands here and is denied.
 const MAX_HOPS: usize = 64;
 
@@ -66,7 +66,7 @@ fn apply(out: &mut PathBuf, segment: Segment) {
 
 /// Lexical normalization: resolve `.` and `..` without touching the
 /// filesystem. A path that climbs above the filesystem root stays
-/// outside any worktree, which is the safe answer, and this is the
+/// outside any workspace, which is the safe answer, and this is the
 /// form [`resolve`] starts from.
 pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();

@@ -1,7 +1,8 @@
-//! Value types for the ACP explorer adapter: spawn configuration,
+//! Value types for the ACP research adapter: spawn configuration,
 //! bounded transcript, prompt input/output, and the read-only
 //! permission decision.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Default wall-clock budget for one prompt turn.
@@ -9,32 +10,47 @@ pub const DEFAULT_PROMPT_TIMEOUT_SECS: u64 = 600;
 /// Hard ceiling for a caller-supplied timeout override.
 pub const MAX_PROMPT_TIMEOUT_SECS: u64 = 3600;
 /// Wall-clock budget for `initialize` plus the session call. Without
-/// it a process that never answers would hold its worktree cwd and the
+/// it a process that never answers would hold its scratch cwd and the
 /// run's cancel escalation open indefinitely.
 pub const HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 /// Transcript cap in characters; oldest text drops first.
 pub const MAX_TRANSCRIPT_CHARS: usize = 64_000;
 
 /// Spawn configuration for one ACP process. Server-side only: the
-/// program, the worktree cwd, and the handshake budget never reach a
+/// program, the run's scratch cwd, and the handshake budget never reach a
 /// model-visible argument or result.
 #[derive(Clone, Debug)]
 pub struct AcpSpawnConfig {
     /// Program to run (typically `mcode`); overridable for tests.
     pub program: String,
-    /// Working directory: the phasegent-resolved worktree.
-    pub cwd: std::path::PathBuf,
+    /// Working directory: the private scratch directory the run manager
+    /// assigns to this attempt. [`crate::mcp::agent::RunManager::start_run`]
+    /// replaces any caller-supplied value with a fresh scratch path.
+    pub cwd: PathBuf,
     /// Overrides [`HANDSHAKE_TIMEOUT_SECS`] for this run.
     pub handshake_timeout_secs: Option<u64>,
 }
 
 impl AcpSpawnConfig {
-    pub fn new(cwd: impl Into<std::path::PathBuf>) -> Self {
+    pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self {
             program: "mcode".to_owned(),
             cwd: cwd.into(),
             handshake_timeout_secs: None,
         }
+    }
+
+    /// The default research spawn config. The scratch cwd is assigned by the
+    /// run manager, so the caller never names it.
+    pub fn research() -> Self {
+        Self::new(PathBuf::new())
+    }
+
+    /// Replace the working directory, used by the run manager to pin the
+    /// server-created scratch path for this attempt.
+    pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = cwd.into();
+        self
     }
 
     /// Clamp an override into a sane window; `None` keeps the default.
@@ -146,14 +162,28 @@ impl NegotiatedReport {
     }
 }
 
-/// One explorer's prompt input plus the per-run spawn budget.
+/// The fixed, server-owned read-only research instruction prepended to every
+/// caller prompt. Callers supply only the user request; the adapter always
+/// sends this preamble first, so a caller cannot replace or weaken the
+/// read-only contract through arguments. It names no path and carries no
+/// credential.
+pub const RESEARCH_INSTRUCTION: &str = "You are a phasegent read-only research agent. \
+Answer the user's research request using only read-only observation. \
+Do not modify any file, repository, ref, commit, tag, or phasegent/provider state; \
+do not run commands that mutate state; do not read, copy, or disclose credentials, \
+tokens, auth payloads, or private keys; do not reveal filesystem paths. \
+Keep the evidence bounded and the answer concise and factual.";
+
+/// One research prompt: the caller's user request plus the per-run budget. The
+/// fixed [`RESEARCH_INSTRUCTION`] is added by [`ResearchPrompt::wire_text`], so
+/// the caller can never supply or drop the system half.
 #[derive(Clone, Debug)]
-pub struct ExplorerPrompt {
+pub struct ResearchPrompt {
     pub text: String,
     pub timeout_secs: Option<u64>,
 }
 
-impl ExplorerPrompt {
+impl ResearchPrompt {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -164,6 +194,12 @@ impl ExplorerPrompt {
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs.clamp(1, MAX_PROMPT_TIMEOUT_SECS));
         self
+    }
+
+    /// The text block actually sent to the ACP agent: the fixed server-owned
+    /// instruction followed by the caller's user request.
+    pub(crate) fn wire_text(&self) -> String {
+        format!("{RESEARCH_INSTRUCTION}\n\n{}", self.text)
     }
 
     pub(crate) fn effective_timeout(&self) -> Duration {

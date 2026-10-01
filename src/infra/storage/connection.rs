@@ -1,6 +1,11 @@
 use crate::infra::sqlite_file;
 use crate::infra::storage_schema::DB_FILENAME;
-use crate::infra::storage_schema::{MIGRATIONS, PRAGMA_STATEMENTS, SCHEMA};
+use crate::infra::storage_schema::{
+    LEGACY_RESEARCH_CWD_COLUMN, LEGACY_RESEARCH_RUN_OWNERS_OWNER_INDEX,
+    LEGACY_RESEARCH_RUN_OWNERS_TABLE, LEGACY_RESEARCH_RUNS_STATUS_INDEX,
+    LEGACY_RESEARCH_RUNS_TABLE, MIGRATIONS, PRAGMA_STATEMENTS, RESEARCH_CWD_COLUMN,
+    RESEARCH_RUN_OWNERS_TABLE, RESEARCH_RUNS_TABLE, SCHEMA,
+};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -50,6 +55,13 @@ impl Storage {
         connection
             .execute_batch(PRAGMA_STATEMENTS)
             .map_err(|error| format!("could not configure phasegent database: {error}"))?;
+        // The legacy research-ledger rename must run before `SCHEMA`:
+        // `SCHEMA` uses `CREATE TABLE IF NOT EXISTS`, so on a pre-issue-692
+        // database it would first create a fresh empty `acp_research_runs`
+        // and the rename would then find the target occupied while the
+        // legacy rows stayed stranded. Renaming first keeps the active
+        // pending/running rows, owner records, and values.
+        Self::migrate_research_ledger(connection)?;
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| format!("could not initialise phasegent schema: {error}"))?;
@@ -57,8 +69,47 @@ impl Storage {
         Ok(())
     }
 
-    /// Run every additive `MIGRATIONS` row whose column is not yet present
-    /// on `execution_timer_runs`. Idempotent across opens so a database
+    /// Rename the pre-issue-692 research ledger into its canonical names.
+    ///
+    /// Idempotent and non-destructive: a fresh database (no legacy tables) is
+    /// untouched, an already-migrated database is a no-op, and a legacy
+    /// database keeps every run row, owner row, and value. The rename, the
+    /// column rename, and the old-index drops all run in one `BEGIN IMMEDIATE`
+    /// transaction with the same busy-retry and commit/rollback guarantees as
+    /// [`Self::apply_migrations`], so a partial rename is never observable.
+    fn migrate_research_ledger(connection: &Connection) -> Result<(), String> {
+        Self::with_immediate_transaction(connection, |connection| {
+            rename_legacy_table(connection, LEGACY_RESEARCH_RUNS_TABLE, RESEARCH_RUNS_TABLE)?;
+            rename_legacy_table(
+                connection,
+                LEGACY_RESEARCH_RUN_OWNERS_TABLE,
+                RESEARCH_RUN_OWNERS_TABLE,
+            )?;
+            if table_exists(connection, RESEARCH_RUNS_TABLE)? {
+                rename_column_if_needed(
+                    connection,
+                    RESEARCH_RUNS_TABLE,
+                    LEGACY_RESEARCH_CWD_COLUMN,
+                    RESEARCH_CWD_COLUMN,
+                )?;
+            }
+            // SQLite keeps an index name across `ALTER TABLE ... RENAME TO`, so
+            // the legacy-named indexes still point at the renamed table. Drop
+            // them here; `SCHEMA` then creates the canonical-named ones.
+            for index in [
+                LEGACY_RESEARCH_RUNS_STATUS_INDEX,
+                LEGACY_RESEARCH_RUN_OWNERS_OWNER_INDEX,
+            ] {
+                connection
+                    .execute(&format!("DROP INDEX IF EXISTS {index}"), [])
+                    .map_err(|error| format!("could not drop legacy index {index}: {error}"))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Run every additive `MIGRATIONS` row whose column is not yet present on
+    /// `execution_timer_runs`. Idempotent across opens so a database
     /// that already carries the column is untouched. Two processes opening
     /// the same pre-owner database concurrently serialize via an immediate
     /// transaction and tolerate a duplicate-column race as success.
@@ -66,28 +117,7 @@ impl Storage {
     /// backoff; any lock or commit failure is propagated so callers never
     /// observe a successful open when the schema is not durable.
     fn apply_migrations(connection: &Connection) -> Result<(), String> {
-        // Serialize the check+ALTER so two concurrent opens cannot both
-        // observe a missing column and then have the loser fail. Retry
-        // busy acquisition a few times before surfacing the error.
-        let mut begin_attempts = 0;
-        loop {
-            match connection.execute("BEGIN IMMEDIATE", []) {
-                Ok(_) => break,
-                Err(error) => {
-                    let msg = error.to_string().to_ascii_lowercase();
-                    let is_busy = msg.contains("busy") || msg.contains("locked");
-                    begin_attempts += 1;
-                    if is_busy && begin_attempts < 5 {
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            10 * begin_attempts as u64,
-                        ));
-                        continue;
-                    }
-                    return Err(format!("could not acquire migration lock: {error}"));
-                }
-            }
-        }
-        let result = (|| -> Result<(), String> {
+        Self::with_immediate_transaction(connection, |connection| {
             for (table, column, kind) in MIGRATIONS {
                 let present = column_exists(connection, table, column)?;
                 if present {
@@ -133,14 +163,43 @@ impl Storage {
                 }
             }
             Ok(())
-        })();
-        match result {
-            Ok(()) => {
+        })
+    }
+
+    /// Run `run` inside a `BEGIN IMMEDIATE` transaction with the migration
+    /// busy-retry and the commit/rollback guarantees. Serializing the
+    /// check+DDL is what lets two concurrent opens both succeed instead of
+    /// one losing a race; a lock or commit failure is propagated so an open
+    /// never reports success while the schema is not durable.
+    fn with_immediate_transaction<T>(
+        connection: &Connection,
+        run: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut begin_attempts = 0;
+        loop {
+            match connection.execute("BEGIN IMMEDIATE", []) {
+                Ok(_) => break,
+                Err(error) => {
+                    let msg = error.to_string().to_ascii_lowercase();
+                    let is_busy = msg.contains("busy") || msg.contains("locked");
+                    begin_attempts += 1;
+                    if is_busy && begin_attempts < 5 {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            10 * begin_attempts as u64,
+                        ));
+                        continue;
+                    }
+                    return Err(format!("could not acquire migration lock: {error}"));
+                }
+            }
+        }
+        match run(connection) {
+            Ok(value) => {
                 if let Err(error) = connection.execute("COMMIT", []) {
                     let _ = connection.execute("ROLLBACK", []);
                     return Err(format!("could not commit migration: {error}"));
                 }
-                Ok(())
+                Ok(value)
             }
             Err(error) => {
                 let _ = connection.execute("ROLLBACK", []);
@@ -175,4 +234,48 @@ fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<b
         }
     }
     Ok(false)
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")
+        .map_err(|error| format!("could not inspect schema for {table}: {error}"))?;
+    let exists = statement
+        .exists(rusqlite::params![table])
+        .map_err(|error| format!("could not read schema for {table}: {error}"))?;
+    Ok(exists)
+}
+
+/// Rename `from` to `to` when only the legacy table exists. A no-op when
+/// `from` is already gone (fresh or already-migrated database), and it leaves
+/// both tables alone rather than failing if a stray `to` already exists, so the
+/// migration can never error out on an unexpected state.
+fn rename_legacy_table(connection: &Connection, from: &str, to: &str) -> Result<(), String> {
+    if !table_exists(connection, from)? || table_exists(connection, to)? {
+        return Ok(());
+    }
+    connection
+        .execute(&format!("ALTER TABLE {from} RENAME TO {to}"), [])
+        .map_err(|error| format!("could not rename {from} to {to}: {error}"))?;
+    Ok(())
+}
+
+/// Rename one column when the legacy name is present and the canonical name is
+/// not. Idempotent across opens.
+fn rename_column_if_needed(
+    connection: &Connection,
+    table: &str,
+    from: &str,
+    to: &str,
+) -> Result<(), String> {
+    if !column_exists(connection, table, from)? || column_exists(connection, table, to)? {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} RENAME COLUMN {from} TO {to}"),
+            [],
+        )
+        .map_err(|error| format!("could not rename {table}.{from}: {error}"))?;
+    Ok(())
 }

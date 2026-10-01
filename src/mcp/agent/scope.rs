@@ -1,11 +1,11 @@
-//! Workspace-bounded read scope for the read-only explorer.
+//! Workspace-bounded read scope for the read-only research agent.
 //!
 //! An allowed tool kind is not a scope: a `read` of any path would
 //! hand a model-driven turn the phasegent credential store, the SSH
 //! keys, and the agent's own configuration. Every path the agent names
 //! in a permission request is therefore resolved — relative paths
-//! against the worktree the process was started in, symlinks through
-//! the filesystem — and must land inside that worktree. See
+//! against the scratch workspace the process was started in, symlinks
+//! through the filesystem — and must land inside that workspace. See
 //! [`super::contain`] for the resolution and [`super::fetch`] for the
 //! one read kind that is not a filesystem read at all.
 
@@ -19,14 +19,15 @@ use super::{contain, fetch};
 const MAX_INSPECTED_STRINGS: usize = 256;
 const MAX_INSPECTED_STRING_CHARS: usize = 4_096;
 
-/// One explorer's workspace root: the worktree the ACP process runs in.
+/// One research agent's workspace root: the scratch directory the ACP process
+/// runs in.
 #[derive(Clone, Debug)]
 pub struct WorkspaceScope {
-    /// The worktree path as phasegent resolved it, and the base every
+    /// The workspace root as the run manager created it, and the base every
     /// relative candidate is joined to.
     root: PathBuf,
     /// The same path with its symlinks resolved. Containment is checked
-    /// against this, so a link inside the worktree cannot point out of
+    /// against this, so a link inside the workspace cannot point out of
     /// it; a root that cannot be resolved fails closed.
     resolved_root: PathBuf,
 }
@@ -52,7 +53,7 @@ impl WorkspaceScope {
     /// without a separate "is this a path" guess.
     ///
     /// `fetch` is the exception: it names no path, so it is bounded by
-    /// the URL contract instead of the worktree.
+    /// the URL contract instead of the scratch workspace.
     pub fn permits_read(&self, tool_call: &ToolCallSummary) -> bool {
         let candidates = referenced_candidates(tool_call);
         if tool_call.kind.as_deref() == Some(super::KIND_FETCH) {

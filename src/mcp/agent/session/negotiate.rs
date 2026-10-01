@@ -18,7 +18,7 @@ use super::super::error::{AgentError, AgentResult};
 use super::super::types::NegotiatedReport;
 use super::super::wire::{
     self, CONFIG_ID_MODEL, CONFIG_ID_PERMISSION_MODE, CONFIG_ID_THINKING_EFFORT,
-    EXPLORER_MODEL_WIRE_VALUE, EXPLORER_PERMISSION_MODE, EXPLORER_THINKING_EFFORT,
+    RESEARCH_MODEL_WIRE_VALUE, RESEARCH_PERMISSION_MODE, RESEARCH_THINKING_EFFORT,
     SetConfigOptionResult,
 };
 
@@ -27,16 +27,16 @@ use super::AcpSession;
 /// The exact wire values this adapter selects, in the order they are
 /// applied.
 const SELECTION: [(&str, &str); 3] = [
-    (CONFIG_ID_PERMISSION_MODE, EXPLORER_PERMISSION_MODE),
-    (CONFIG_ID_MODEL, EXPLORER_MODEL_WIRE_VALUE),
-    (CONFIG_ID_THINKING_EFFORT, EXPLORER_THINKING_EFFORT),
+    (CONFIG_ID_PERMISSION_MODE, RESEARCH_PERMISSION_MODE),
+    (CONFIG_ID_MODEL, RESEARCH_MODEL_WIRE_VALUE),
+    (CONFIG_ID_THINKING_EFFORT, RESEARCH_THINKING_EFFORT),
 ];
 
 impl AcpSession {
     /// Verify the agent advertised every pinned value, select each
     /// exact wire value, and confirm each selection from the response.
     /// A successful return is the agent-reported session state.
-    pub async fn negotiate_explorer(&self) -> AgentResult<NegotiatedReport> {
+    pub async fn negotiate_research(&self) -> AgentResult<NegotiatedReport> {
         let advertised = self.advertised_config_options().await;
         for (config_id, value) in SELECTION {
             if !advertises(&advertised, config_id, value) {
@@ -47,7 +47,7 @@ impl AcpSession {
                     CONFIG_ID_THINKING_EFFORT => {
                         format!("thinking effort {value} is not advertised")
                     }
-                    _ => format!("explorer model {value} is not advertised"),
+                    _ => format!("research model {value} is not advertised"),
                 }));
             }
         }

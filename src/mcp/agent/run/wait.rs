@@ -1,4 +1,4 @@
-//! Bounded waiting for an explorer run and the owner check every
+//! Bounded waiting for an research run and the owner check every
 //! status/wait/cancel/resume call makes first.
 //!
 //! Split out of [`super`] because both are policies the MCP surface depends on
@@ -18,13 +18,13 @@ const WAIT_POLL: Duration = Duration::from_millis(50);
 /// The single refusal every ownership failure shares, so an unknown run, a run
 /// with no owner row, and a run owned by another session are indistinguishable
 /// from the outside.
-const NOT_AVAILABLE: &str = "explorer run is not available to this session";
+const NOT_AVAILABLE: &str = "research run is not available to this session";
 
 impl RunManager {
     /// Load a run only for the session that owns it.
     ///
     /// The owner binding is server-side and exact. The message never names the
-    /// session, the run's owner, or the worktree, so a caller cannot use the
+    /// session, the run's owner, or the scratch path, so a caller cannot use the
     /// error to discover them either.
     pub fn owned_run(&self, run_id: &str, session: &str) -> Result<WorkRun, String> {
         let run = self.load(run_id)?.ok_or_else(|| NOT_AVAILABLE.to_owned())?;
@@ -86,7 +86,7 @@ impl RunManager {
         &self,
         run_id: &str,
         session: &str,
-        follow_up: crate::mcp::agent::types::ExplorerPrompt,
+        follow_up: crate::mcp::agent::types::ResearchPrompt,
     ) -> Result<WorkRun, String> {
         self.owned_run(run_id, session)?;
         self.resume_run(run_id, follow_up)

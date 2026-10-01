@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use super::error::{AgentError, AgentErrorKind, AgentResult};
 use super::session::AcpSession;
 use super::store::{WorkRun, WorkRunUpdate, now_epoch_seconds};
-use super::types::{AcpSpawnConfig, ExplorerPrompt};
+use super::types::{AcpSpawnConfig, ResearchPrompt};
 use crate::infra::storage::Storage;
 
 mod cancel;
@@ -111,7 +111,8 @@ impl RunManager {
     }
 
     /// Mark every non-terminal run without an in-process handle as
-    /// interrupted. Called on construction; safe to call again.
+    /// interrupted, and clean the scratch directory its dead process left
+    /// behind. Called on construction; safe to call again.
     pub fn recover(&self) -> Result<usize, String> {
         let open = self.connection().list_work_runs(true, 1_000)?;
         let mut repaired = 0;
@@ -132,6 +133,10 @@ impl RunManager {
                     },
                 )
                 .map_err(|message| format!("could not recover run {}: {message}", run.run_id))?;
+            // The owning process is gone, so nothing holds this scratch
+            // directory: remove it rather than leak it. `remove` refuses any
+            // path outside the server-owned root.
+            super::scratch::remove(std::path::Path::new(&run.scratch_cwd));
             repaired += 1;
         }
         Ok(repaired)
@@ -142,7 +147,7 @@ impl RunManager {
         self.flights.contains(run_id)
     }
 
-    /// Start one explorer run: persist the row, register it, spawn the
+    /// Start one research run: persist the row, register it, spawn the
     /// process, negotiate, and run the prompt on a background task.
     /// Returns as soon as the row is durable and the run is registered;
     /// completion lands in the store.
@@ -156,17 +161,29 @@ impl RunManager {
         run_id: &str,
         owner_session: &str,
         config: AcpSpawnConfig,
-        prompt: ExplorerPrompt,
+        prompt: ResearchPrompt,
     ) -> AgentResult<WorkRun> {
+        // The run owns a fresh, server-created scratch directory: the caller
+        // never names the cwd, and no repository or worktree path is ever
+        // placed on the process.
+        let scratch = super::scratch::create(run_id).map_err(Self::storage_error)?;
+        let config = config.with_cwd(scratch.clone());
         // The registration lands before the spawn so a worker that
         // polls the task first can still find its own entry.
-        let flight = self.flights.register(run_id).map_err(Self::storage_error)?;
+        let flight = match self.flights.register(run_id) {
+            Ok(flight) => flight,
+            Err(error) => {
+                super::scratch::remove(&scratch);
+                return Err(Self::storage_error(error));
+            }
+        };
         let created = match self.register_owned(run_id, owner_session, &config, &prompt) {
             Ok(created) => created,
             Err(error) => {
                 // The insert is this call's own row, so a refusal must
                 // not leave a registration nothing will ever settle.
                 self.flights.forget(run_id, &flight);
+                super::scratch::remove(&scratch);
                 return Err(Self::storage_error(error));
             }
         };
@@ -186,7 +203,7 @@ impl RunManager {
         run_id: &str,
         owner_session: &str,
         config: &AcpSpawnConfig,
-        prompt: &ExplorerPrompt,
+        prompt: &ResearchPrompt,
     ) -> Result<WorkRun, String> {
         let storage = self.connection();
         let created =
@@ -195,11 +212,11 @@ impl RunManager {
         Ok(created)
     }
 
-    /// Continue an interrupted run's ACP session in a fresh process.
-    /// The durable row keeps its id, prompt, partial output, and
-    /// persisted ACP session id; only its terminal markers are
-    /// cleared, and the new process reconnects with `session/load` so
-    /// the agent still holds the conversation.
+    /// Continue an interrupted run's ACP session in a fresh process and a
+    /// fresh scratch directory. The durable row keeps its id, prompt, partial
+    /// output, and persisted ACP session id; only its terminal markers are
+    /// cleared and its scratch cwd replaced, and the new process reconnects
+    /// with `session/load` so the agent still holds the conversation.
     ///
     /// The caller must already have resolved ownership through
     /// [`Self::resume_owned_run`], which is the entry point the delegation
@@ -207,7 +224,7 @@ impl RunManager {
     pub(crate) async fn resume_run(
         &self,
         run_id: &str,
-        follow_up: ExplorerPrompt,
+        follow_up: ResearchPrompt,
     ) -> AgentResult<WorkRun> {
         // The registration is the gate, and it is taken before the store
         // is touched. A second resume that lost this race used to reopen
@@ -221,7 +238,7 @@ impl RunManager {
                 return Err(error);
             }
         };
-        let config = AcpSpawnConfig::new(std::path::PathBuf::from(&reopened.worktree_cwd));
+        let config = AcpSpawnConfig::new(std::path::PathBuf::from(&reopened.scratch_cwd));
         self.launch(
             run_id.to_owned(),
             config,
@@ -232,23 +249,35 @@ impl RunManager {
         Ok(reopened)
     }
 
-    /// Validate and reopen the durable row for a resume. Kept apart from
-    /// [`Self::resume_run`] so every refusal is one early return, and the
-    /// caller can retire the registration it took.
+    /// Validate and reopen the durable row for a resume in a fresh scratch
+    /// directory. Kept apart from [`Self::resume_run`] so every refusal is one
+    /// early return, and the caller can retire the registration it took.
     fn reopen_for_resume(&self, run_id: &str) -> Result<(WorkRun, String), AgentError> {
         let existing = self
             .load(run_id)
             .map_err(Self::storage_error)?
-            .ok_or_else(|| Self::storage_error(format!("explorer run '{run_id}' was not found")))?;
+            .ok_or_else(|| Self::storage_error(format!("research run '{run_id}' was not found")))?;
         let session_id = existing.acp_session_id.clone().ok_or_else(|| {
             Self::storage_error(format!(
-                "explorer run '{run_id}' has no ACP session to resume"
+                "research run '{run_id}' has no ACP session to resume"
             ))
         })?;
-        let reopened = self
+        // A resume runs in a fresh scratch directory; the previous one is
+        // already gone (terminal settlement removed it) or is an orphan this
+        // process no longer holds.
+        let scratch = super::scratch::create(run_id).map_err(Self::storage_error)?;
+        let reopened = match self
             .connection()
-            .resume_work_run(run_id)
-            .map_err(Self::storage_error)?;
+            .resume_work_run(run_id, &scratch.display().to_string())
+            .map_err(Self::storage_error)
+        {
+            Ok(reopened) => reopened,
+            Err(error) => {
+                super::scratch::remove(&scratch);
+                return Err(error);
+            }
+        };
+        super::scratch::remove(std::path::Path::new(&existing.scratch_cwd));
         Ok((reopened, session_id))
     }
 
@@ -264,7 +293,7 @@ impl RunManager {
         &self,
         run_id: String,
         config: AcpSpawnConfig,
-        prompt: ExplorerPrompt,
+        prompt: ResearchPrompt,
         resume: Option<String>,
         flight: Arc<flight::Flight>,
     ) {

@@ -19,7 +19,7 @@ use std::time::Duration;
 use super::super::error::{AgentError, AgentErrorKind};
 use super::super::session::AcpSession;
 use super::super::store::{RUN_RUNNING, WorkRunUpdate};
-use super::super::types::{AcpSpawnConfig, ExplorerPrompt, PromptOutcome};
+use super::super::types::{AcpSpawnConfig, PromptOutcome, ResearchPrompt};
 use super::RunManager;
 use super::flight::Flight;
 
@@ -39,7 +39,7 @@ impl RunManager {
         &self,
         run_id: &str,
         config: AcpSpawnConfig,
-        prompt: ExplorerPrompt,
+        prompt: ResearchPrompt,
         resume: Option<String>,
         flight: &Arc<Flight>,
     ) {
@@ -54,7 +54,7 @@ impl RunManager {
         &self,
         run_id: &str,
         config: &AcpSpawnConfig,
-        prompt: &ExplorerPrompt,
+        prompt: &ResearchPrompt,
         resume: Option<&str>,
         flight: &Arc<Flight>,
     ) -> Result<PromptOutcome, AgentError> {
@@ -94,7 +94,7 @@ impl RunManager {
             session.kill().await;
             return Err(AgentError::cancelled());
         }
-        session.negotiate_explorer().await?;
+        session.negotiate_research().await?;
         if flight.is_cancelled() {
             session.kill().await;
             return Err(AgentError::cancelled());

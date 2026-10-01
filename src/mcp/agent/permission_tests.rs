@@ -1,6 +1,6 @@
 //! Permission-decision regression tests.
 //!
-//! The read-only explorer contract fails closed on two axes, and both
+//! The read-only research contract fails closed on two axes, and both
 //! are exercised here through a real `session/request_permission` round
 //! trip: the tool *kind* must be a read, and the *paths* the call names
 //! must stay inside the worktree. The second axis is what keeps the
@@ -10,7 +10,7 @@
 
 use super::protocol_tests::connect;
 use super::test_kit::PermissionScript;
-use super::types::ExplorerPrompt;
+use super::types::ResearchPrompt;
 
 /// One scripted permission request, with the outcome the adapter chose
 /// and the config selections the turn made before it.
@@ -22,9 +22,9 @@ async fn permission_outcome(
         ..Default::default()
     })
     .await;
-    session.negotiate_explorer().await.expect("negotiate");
+    session.negotiate_research().await.expect("negotiate");
     session
-        .prompt(&ExplorerPrompt::new("run the tool"))
+        .prompt(&ResearchPrompt::new("run the tool"))
         .await
         .expect("prompt completes");
     let outcomes = agent.permission_outcomes.lock().await.clone();
@@ -46,7 +46,7 @@ async fn write_permission_request_is_denied_not_allowed() {
 
 #[tokio::test]
 async fn search_inside_the_worktree_is_allowed() {
-    // `search` is the explorer's primary tool: denying it made the
+    // `search` is the research's primary tool: denying it made the
     // delegation unusable.
     let (outcome, selections) =
         permission_outcome(PermissionScript::search("fn main", Some("src"))).await;

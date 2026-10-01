@@ -1,4 +1,4 @@
-//! Durable ownership of an explorer run.
+//! Durable ownership of an research run.
 //!
 //! A run belongs to the OpenCode session that started it. The binding is
 //! persisted rather than kept in memory so it survives a phasegent restart:
@@ -21,8 +21,8 @@ use crate::infra::storage::Storage;
 
 use super::super::store::now_epoch_seconds;
 
-/// Upper bound on an owner session id, mirroring the worktree lease's own
-/// session bound so one identity is never spelled two ways.
+/// Upper bound on an owner session id, matching the research contract's own
+/// `MAX_SESSION_CHARS` so one identity is never spelled two ways.
 pub(crate) const MAX_OWNER_SESSION_CHARS: usize = 128;
 
 /// Validate a host-bound owner session id: trimmed, non-empty, bounded, and
@@ -30,7 +30,7 @@ pub(crate) const MAX_OWNER_SESSION_CHARS: usize = 128;
 pub fn validate_owner_session(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("an explorer run requires a host-bound owner session".to_owned());
+        return Err("a research run requires a host-bound owner session".to_owned());
     }
     if trimmed.chars().count() > MAX_OWNER_SESSION_CHARS {
         return Err(format!(
@@ -50,12 +50,12 @@ pub fn run_is_owned_by(storage: &Storage, run_id: &str, session: &str) -> Result
     let owner: Option<String> = storage
         .connection
         .query_row(
-            "SELECT owner_session_id FROM acp_explorer_run_owners WHERE run_id = ?1",
+            "SELECT owner_session_id FROM acp_research_run_owners WHERE run_id = ?1",
             params![run_id],
             |row| row.get(0),
         )
         .optional()
-        .map_err(|error| format!("could not read explorer run owner: {error}"))?;
+        .map_err(|error| format!("could not read research run owner: {error}"))?;
     Ok(owner.as_deref() == Some(session))
 }
 
@@ -67,33 +67,33 @@ impl Storage {
     pub fn bind_run_owner(&self, run_id: &str, session: &str) -> Result<(), String> {
         let session = validate_owner_session(session)?;
         if self.load_work_run(run_id)?.is_none() {
-            return Err(format!("explorer run '{run_id}' was not found"));
+            return Err(format!("research run '{run_id}' was not found"));
         }
         let existing: Option<String> = self
             .connection
             .query_row(
-                "SELECT owner_session_id FROM acp_explorer_run_owners WHERE run_id = ?1",
+                "SELECT owner_session_id FROM acp_research_run_owners WHERE run_id = ?1",
                 params![run_id],
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|error| format!("could not read explorer run owner: {error}"))?;
+            .map_err(|error| format!("could not read research run owner: {error}"))?;
         if let Some(current) = existing {
             if current != session {
                 return Err(format!(
-                    "explorer run '{run_id}' is already owned by another session"
+                    "research run '{run_id}' is already owned by another session"
                 ));
             }
             return Ok(());
         }
         self.connection
             .execute(
-                "INSERT INTO acp_explorer_run_owners \
+                "INSERT INTO acp_research_run_owners \
                     (run_id, owner_session_id, created_at) \
                  VALUES (?1, ?2, ?3)",
                 params![run_id, session, now_epoch_seconds()],
             )
-            .map_err(|error| format!("could not bind explorer run owner: {error}"))?;
+            .map_err(|error| format!("could not bind research run owner: {error}"))?;
         Ok(())
     }
 }

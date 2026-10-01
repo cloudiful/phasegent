@@ -4,7 +4,7 @@
 //! live process behind sits in one file. Every failure path here ends
 //! the transport, and the spawn is `kill_on_drop`, so a rejected
 //! handshake can never orphan an `mcode acp` process still holding the
-//! worktree cwd.
+//! scratch cwd.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -27,7 +27,7 @@ pub(super) struct Advertised {
 /// `initialize`, then `session/new` or `session/load`, verifying the
 /// protocol version and the load capability before either session call.
 /// The whole exchange is bounded: an agent that never answers must not
-/// hold its worktree cwd, and the run's cancel escalation, forever.
+/// hold its scratch cwd, and the run's cancel escalation, forever.
 pub(super) async fn establish(
     connection: &Connection,
     cwd: &Path,
@@ -133,7 +133,7 @@ pub(super) fn with_diagnostics(error: AgentError, tail: &StderrTail) -> AgentErr
     }
 }
 
-/// Spawn `mcode acp` with the phasegent worktree as its cwd and a
+/// Spawn `mcode acp` with the run's private scratch directory as its cwd and a
 /// cleared environment carrying only the allowlist. `kill_on_drop`
 /// closes the orphan path: an aborted run task or a failed handshake
 /// drops the handle and the process dies with it.

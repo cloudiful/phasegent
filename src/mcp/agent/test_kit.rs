@@ -3,7 +3,7 @@
 //! Implements the exact subset of MCode's ACP surface the adapter
 //! consumes: `initialize` (with a configurable protocol version and
 //! `loadSession` capability), `session/new` and `session/load`
-//! (advertising the explorer permission mode, model, and effort),
+//! (advertising the research permission mode, model, and effort),
 //! `session/set_config_option` (rejecting values the fake did not
 //! advertise and answering with the session's re-read advertisement so
 //! the adapter's response verification has something real to check),
@@ -139,6 +139,8 @@ pub(crate) struct FakeAgent {
     pub(crate) selections: Arc<Mutex<Vec<(String, String)>>>,
     /// `session/load` calls the agent served, with the requested ids.
     pub(crate) loaded_sessions: Arc<Mutex<Vec<String>>>,
+    /// Prompt text blocks the agent received, in order.
+    pub(crate) prompts: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeAgent {
@@ -149,6 +151,7 @@ impl FakeAgent {
             permission_outcomes: Arc::new(Mutex::new(Vec::new())),
             selections: Arc::new(Mutex::new(Vec::new())),
             loaded_sessions: Arc::new(Mutex::new(Vec::new())),
+            prompts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -171,7 +174,7 @@ impl FakeAgent {
                 "currentValue": "auto",
                 "options": [
                     {"value": "auto", "name": "Auto"},
-                    {"value": wire::EXPLORER_PERMISSION_MODE, "name": "Default"},
+                    {"value": wire::RESEARCH_PERMISSION_MODE, "name": "Default"},
                     {"value": "bypassPermissions", "name": "Full access"},
                 ],
             }));
@@ -184,7 +187,7 @@ impl FakeAgent {
                 "currentValue": "m:minimax:MiniMax-M2.7:v:thinking",
                 "options": [
                     {"value": "m:minimax:MiniMax-M2.7:v:thinking", "name": "M2.7"},
-                    {"value": wire::EXPLORER_MODEL_WIRE_VALUE, "name": "M3.1 Flash"},
+                    {"value": wire::RESEARCH_MODEL_WIRE_VALUE, "name": "M3.1 Flash"},
                 ],
             }));
         }
@@ -197,7 +200,7 @@ impl FakeAgent {
                 "options": [
                     {"value": "low", "name": "low"},
                     {"value": "medium", "name": "medium"},
-                    {"value": wire::EXPLORER_THINKING_EFFORT, "name": "high"},
+                    {"value": wire::RESEARCH_THINKING_EFFORT, "name": "high"},
                 ],
             }));
         }

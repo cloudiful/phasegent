@@ -43,7 +43,7 @@ impl RunManager {
     /// surface uses; this is the raw lifecycle step underneath it.
     pub(crate) async fn cancel_run(&self, run_id: &str) -> Result<WorkRun, String> {
         if self.load(run_id)?.is_none() {
-            return Err(format!("explorer run '{run_id}' was not found"));
+            return Err(format!("research run '{run_id}' was not found"));
         }
         match self.flights.request_cancel(run_id) {
             CancelLever::Absent => {
@@ -74,7 +74,7 @@ impl RunManager {
         // snapshot: a cancel that lost the race to a natural completion
         // must report that completion, not fail on the terminal freeze.
         self.load(run_id)?
-            .ok_or_else(|| format!("explorer run '{run_id}' was not found"))
+            .ok_or_else(|| format!("research run '{run_id}' was not found"))
     }
 
     /// Stop the launch task, then make sure the row is terminal even if
@@ -157,7 +157,7 @@ pub(crate) async fn finish_run(
         // run row itself stays the record of the outcome.
         eprintln!(
             "{}",
-            serde_json::json!({"error":{"kind":"explorer_run","operation": run_id,"message": message}})
+            serde_json::json!({"error":{"kind":"research_run","operation": run_id,"message": message}})
         );
     }
 }

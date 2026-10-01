@@ -1,13 +1,13 @@
-//! One ACP process bound to one explorer session.
+//! One ACP process bound to one research session.
 //!
-//! [`AcpSession::start`] spawns `mcode acp` with the phasegent
-//! worktree as the process cwd and creates a session;
+//! [`AcpSession::start`] spawns `mcode acp` with the run's private
+//! scratch directory as the process cwd and creates a session;
 //! [`AcpSession::resume`] reconnects to a persisted ACP session id in a
 //! fresh process through `session/load`, which is what makes an
 //! interrupted run continuable rather than merely recorded. Both share
 //! one lifecycle, so the process is killed and reaped on every exit —
 //! failed handshake, aborted run, explicit [`AcpSession::kill`] — and
-//! never left holding the worktree cwd.
+//! never left holding the scratch cwd.
 //!
 //! The child inherits an explicit environment allowlist, never the
 //! phasegent server's own credentials. No lock is held across an
@@ -32,7 +32,7 @@ use super::error::{AgentError, AgentResult};
 use super::scope::WorkspaceScope;
 use super::stream::{StderrTail, drain_stderr};
 use super::types::{
-    AcpSpawnConfig, ExplorerPrompt, NegotiatedReport, PromptOutcome, StopReason, Transcript,
+    AcpSpawnConfig, NegotiatedReport, PromptOutcome, ResearchPrompt, StopReason, Transcript,
 };
 use super::wire;
 
@@ -47,7 +47,7 @@ pub(crate) fn next_request_id() -> i64 {
     NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// One live ACP process serving one explorer session.
+/// One live ACP process serving one research session.
 pub struct AcpSession {
     core: Arc<Mutex<SharedCore>>,
     /// A cheap clone of the codec connection. Request paths take a
@@ -283,23 +283,27 @@ impl AcpSession {
     }
 
     /// Run one prompt turn to completion, streaming message chunks
-    /// into a fresh transcript, and enforce the timeout. A timeout
-    /// leaves the turn in flight until cancellation or process exit,
-    /// so callers follow a timeout with [`AcpSession::kill`].
-    pub async fn prompt(&self, prompt: &ExplorerPrompt) -> AgentResult<PromptOutcome> {
+    /// into a fresh transcript, and enforce the timeout. The wire text is
+    /// the fixed server-owned [`super::types::RESEARCH_INSTRUCTION`] preamble
+    /// followed by the caller's user request, so the caller can never supply
+    /// or drop the system half. A timeout leaves the turn in flight until
+    /// cancellation or process exit, so callers follow a timeout with
+    /// [`AcpSession::kill`].
+    pub async fn prompt(&self, prompt: &ResearchPrompt) -> AgentResult<PromptOutcome> {
         let session_id = self.session_id().await;
         {
             let shared = self.core.lock().expect("session core lock");
             *shared.transcript.lock().expect("transcript lock") = Transcript::default();
         }
         let started = std::time::Instant::now();
+        let wire_text = prompt.wire_text();
         let request = self.request(
             wire::METHOD_SESSION_PROMPT,
             serde_json::to_value(wire::PromptParams {
                 sessionId: &session_id,
                 prompt: [wire::PromptBlock {
                     kind: "text",
-                    text: &prompt.text,
+                    text: &wire_text,
                 }],
             })
             .expect("serialize prompt"),
@@ -329,7 +333,7 @@ impl AcpSession {
     }
 
     /// Snapshot and drain the transcript of an in-flight turn. Used by
-    /// the cancel path so partial explorer output survives.
+    /// the cancel path so partial research output survives.
     pub async fn take_transcript(&self) -> (String, bool) {
         let shared = self.core.lock().expect("session core lock");
         let mut transcript = shared.transcript.lock().expect("transcript lock");

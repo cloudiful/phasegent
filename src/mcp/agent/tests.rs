@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use super::session::AcpSession;
-use super::types::{AcpSpawnConfig, ExplorerPrompt, MAX_TRANSCRIPT_CHARS, Transcript};
+use super::types::{AcpSpawnConfig, MAX_TRANSCRIPT_CHARS, ResearchPrompt, Transcript};
 use super::wire;
 
 #[tokio::test]
@@ -38,8 +38,8 @@ fn transcript_bounds_and_marks_truncation() {
 
 #[test]
 fn permission_decisions_follow_the_read_only_contract() {
-    // `search` is the explorer's primary tool; a read-only explorer
-    // that cannot search is useless.
+    // `search` is the research agent's primary tool; a read-only
+    // research turn that cannot search is useless.
     for kind in ["read", "search", "fetch"] {
         assert_eq!(
             super::permission_decision_for_kind(kind),
@@ -68,15 +68,15 @@ fn permission_decisions_follow_the_read_only_contract() {
 
 #[test]
 fn timeout_bounds_clamp() {
-    let prompt = ExplorerPrompt::new("x").with_timeout_secs(999_999);
+    let prompt = ResearchPrompt::new("x").with_timeout_secs(999_999);
     assert_eq!(
         prompt.timeout_secs,
         Some(super::types::MAX_PROMPT_TIMEOUT_SECS)
     );
-    let prompt = ExplorerPrompt::new("x").with_timeout_secs(0);
+    let prompt = ResearchPrompt::new("x").with_timeout_secs(0);
     assert_eq!(prompt.timeout_secs, Some(1));
     assert_eq!(
-        ExplorerPrompt::new("x").timeout_secs,
+        ResearchPrompt::new("x").timeout_secs,
         None,
         "default timeout stays unset until applied"
     );
@@ -88,10 +88,10 @@ fn spawn_config_defaults_to_mcode_acp() {
     assert_eq!(config.program, "mcode");
     assert_eq!(config.cwd, Path::new("/tmp/wt"));
     assert_eq!(
-        wire::EXPLORER_MODEL_WIRE_VALUE,
+        wire::RESEARCH_MODEL_WIRE_VALUE,
         "m:minimax:MiniMax-M3.1-Flash-Preview:v:thinking"
     );
-    assert_eq!(wire::EXPLORER_THINKING_EFFORT, "high");
+    assert_eq!(wire::RESEARCH_THINKING_EFFORT, "high");
 }
 
 #[test]
@@ -198,7 +198,7 @@ async fn start_run_persists_failure_when_the_process_cannot_spawn() {
             "spawn-fail",
             "ses_spawn_fail",
             config,
-            ExplorerPrompt::new("go"),
+            ResearchPrompt::new("go"),
         )
         .await
         .expect("run accepted");
@@ -215,6 +215,33 @@ async fn start_run_persists_failure_when_the_process_cannot_spawn() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     assert!(!manager.is_in_flight("spawn-fail"));
+}
+
+#[tokio::test]
+async fn start_run_assigns_a_private_scratch_cwd_not_the_caller_value() {
+    let path = temp_db_path("scratch-cwd");
+    let manager = super::RunManager::new(open_storage(&path)).expect("manager");
+    let config = super::AcpSpawnConfig {
+        program: "phasegent-definitely-not-a-binary".to_owned(),
+        cwd: std::path::PathBuf::from("/caller/named/worktree"),
+        handshake_timeout_secs: None,
+    };
+    let created = manager
+        .start_run(
+            "scratch-run",
+            "ses_scratch",
+            config,
+            ResearchPrompt::new("go"),
+        )
+        .await
+        .expect("run accepted");
+    assert!(
+        std::path::Path::new(&created.scratch_cwd).starts_with(super::scratch::root()),
+        "the run must own a server scratch cwd: {}",
+        created.scratch_cwd
+    );
+    assert_ne!(created.scratch_cwd, "/caller/named/worktree");
+    let _ = wait_terminal(&open_storage(&path), "scratch-run").await;
 }
 
 #[tokio::test]
