@@ -9,9 +9,8 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{tool::ToolCallContext, wrapper::Parameters},
     model::{
-        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-        InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
-        ProtocolVersion, ResultType, Tool,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams, Tool,
     },
     service::RequestContext,
     tool, tool_handler, tool_router,
@@ -20,7 +19,7 @@ use rmcp::{
 use crate::policy::{Capability, Role};
 use crate::providers::{IssueProvider, ProviderDispatcher, ProviderKind};
 
-use super::tool_registry::{self, McpToolSpec};
+use super::tool_registry;
 
 /// Server-side invocation context. Captured once at `mcp serve`
 /// startup from `PHASEGENT_ROLE` and the provider flags; never taken
@@ -65,11 +64,19 @@ impl McpConfig {
 ///
 /// Contracted tools: `capabilities`, `issue_get`, `issue_search`,
 /// `status_next`, `comment_create` (server-side `--authorized`
-/// only), `notify_send`. Explicitly excluded: `status_advance`,
-/// timer start/finish, and any role elevation.
+/// only), `notify_send`, and the five role-gated explorer delegation tools
+/// declared in [`tool_registry::EXPLORER_TOOLS`]. Explicitly excluded:
+/// `status_advance`, timer start/finish, worktree lease mutations, and any
+/// role elevation.
+///
+/// This module is the composition point only. The tracking handlers are the
+/// historical surface; the explorer handlers live in
+/// [`explorer_tools`](super::explorer_tools), the composed router and the
+/// single role gate live in [`router`](super::router), and every tool's gate
+/// is declared once in [`tool_registry`].
 #[derive(Clone)]
 pub struct PhasegentMcpServer {
-    config: McpConfig,
+    pub(crate) config: McpConfig,
 }
 
 impl PhasegentMcpServer {
@@ -87,29 +94,6 @@ impl PhasegentMcpServer {
             self.config.close_status_id.as_deref(),
         )
         .map_err(|error| internal_error(&error.to_string()))
-    }
-
-    /// Role gate for one registered tool. The capability comes from the shared
-    /// CLI registry via [`McpToolSpec::capability`], so every handler and the
-    /// advertised `capabilities` list share one descriptor table instead of a
-    /// per-handler role list.
-    fn require_tool(&self, tool: McpToolSpec) -> Result<(), McpError> {
-        match tool.capability() {
-            Some(capability) if !self.config.role.allows(capability) => {
-                Err(permission_error(self.config.role, capability.operation()))
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Whether the startup role may see and call the named tool. Unknown names
-    /// stay `false`, so the protocol surface filters them out while
-    /// `tools/call` keeps the router's not-found contract for a name no
-    /// handler is registered for.
-    fn tool_allowed_for_role(&self, name: &str) -> bool {
-        tool_registry::TOOLS
-            .iter()
-            .any(|tool| tool.name == name && tool.allows_role(self.config.role))
     }
 }
 
@@ -165,7 +149,7 @@ struct NotifySendParams {
     phase: Option<String>,
 }
 
-#[tool_router]
+#[tool_router(router = tracking_tool_router, vis = "pub(crate)")]
 impl PhasegentMcpServer {
     #[tool(
         name = "capabilities",
@@ -187,7 +171,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<IssueGetParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.require_tool(tool_registry::ISSUE_GET)?;
+        self.gate(tool_registry::ISSUE_GET)?;
         if params.number == 0 {
             return Err(invalid_params("issue_get number must be greater than zero"));
         }
@@ -212,7 +196,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<IssueSearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.require_tool(tool_registry::ISSUE_SEARCH)?;
+        self.gate(tool_registry::ISSUE_SEARCH)?;
         let options = crate::providers::IssueSearchOptions {
             query: params.query.clone(),
             state: params.state.clone().unwrap_or_else(|| "open".to_owned()),
@@ -263,7 +247,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<StatusNextParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.require_tool(tool_registry::STATUS_NEXT)?;
+        self.gate(tool_registry::STATUS_NEXT)?;
         if params.number == 0 {
             return Err(invalid_params(
                 "status_next number must be greater than zero",
@@ -287,7 +271,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<CommentCreateParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.require_tool(tool_registry::COMMENT_CREATE)?;
+        self.gate(tool_registry::COMMENT_CREATE)?;
         if self.config.role != Role::Orchestrator && !self.config.authorized {
             return Err(McpError::internal_error(
                 "comment create requires server-side --authorized for this role".to_owned(),
@@ -326,7 +310,7 @@ impl PhasegentMcpServer {
         &self,
         Parameters(params): Parameters<NotifySendParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.require_tool(tool_registry::NOTIFY_SEND)?;
+        self.gate(tool_registry::NOTIFY_SEND)?;
         let event = crate::notifications::NotificationEvent::parse(&params.event)
             .map_err(|message| invalid_params(&message))?;
         if params.title.trim().is_empty() {
@@ -368,7 +352,7 @@ impl PhasegentMcpServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = PhasegentMcpServer::tool_router())]
 impl ServerHandler for PhasegentMcpServer {
     async fn initialize(
         &self,
@@ -380,52 +364,30 @@ impl ServerHandler for PhasegentMcpServer {
     }
 
     /// Protocol-level `tools/list`. The rmcp default advertises every routed
-    /// tool; this filters the router descriptors through the shared descriptor
-    /// table and its registry-backed role gate, so a client sees the same
-    /// allowlist as the `capabilities` payload and role-specific `--help mcp`.
+    /// tool; the composed router filters the descriptors through the declared
+    /// gate in [`router`](super::router), so a client sees the same allowlist
+    /// as the `capabilities` payload and role-specific `--help mcp`.
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let supports_cache_hints = context
-            .protocol_version()
-            .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
-        Ok(ListToolsResult {
-            result_type: Some(ResultType::COMPLETE),
-            tools: Self::tool_router()
-                .list_all()
-                .into_iter()
-                .filter(|tool| self.tool_allowed_for_role(tool.name.as_ref()))
-                .collect(),
-            meta: None,
-            next_cursor: None,
-            ttl_ms: supports_cache_hints.then_some(0),
-            cache_scope: supports_cache_hints.then_some(CacheScope::Public),
-        })
+        Ok(self.list_tools_result(&context))
     }
 
     /// Protocol-level `tools/call`. An unadvertised tool is rejected before
     /// the router deserializes arguments or any handler or provider runs, so
     /// the protocol surface never dispatches a tool the startup role may not
-    /// call; the per-handler [`PhasegentMcpServer::require_tool`] gates stay
-    /// as defense in depth, and a name with no route still resolves through
-    /// the router's not-found path.
+    /// call; the per-handler [`PhasegentMcpServer::gate`] calls stay as defense
+    /// in depth, and a name with no route still resolves through the router's
+    /// not-found path.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if let Some(denied) = tool_registry::TOOLS
-            .iter()
-            .find(|tool| tool.name == request.name.as_ref())
-            .filter(|tool| !tool.allows_role(self.config.role))
-        {
-            let operation = denied
-                .capability()
-                .expect("a role-denied tool is capability-gated")
-                .operation();
-            return Err(permission_error(self.config.role, operation));
+        if let Some(denied) = self.denial_for(&request) {
+            return Err(denied);
         }
         let call = ToolCallContext::new(self, request, context);
         Self::tool_router().call(call).await
@@ -435,7 +397,7 @@ impl ServerHandler for PhasegentMcpServer {
     /// transport's `Mcp-Param-*` schema lookups never resolve an unadvertised
     /// tool; an unknown name keeps returning `None`.
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        if !self.tool_allowed_for_role(name) {
+        if !self.tool_allowed(name) {
             return None;
         }
         Self::tool_router().get(name).cloned()
@@ -518,7 +480,7 @@ fn run_notify_strict(
         .map_err(|_| "notification thread panicked".to_owned())?
 }
 
-fn ok_json(payload: &serde_json::Value) -> Result<CallToolResult, McpError> {
+pub(crate) fn ok_json(payload: &serde_json::Value) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_owned()),
     )]))
@@ -540,11 +502,11 @@ fn bound_message(raw: &str) -> String {
     format!("{}...", collapsed.chars().take(keep).collect::<String>())
 }
 
-fn internal_error(raw: &str) -> McpError {
+pub(crate) fn internal_error(raw: &str) -> McpError {
     McpError::internal_error(bound_message(raw), None)
 }
 
-fn invalid_params(raw: &str) -> McpError {
+pub(crate) fn invalid_params(raw: &str) -> McpError {
     McpError::invalid_params(bound_message(raw), None)
 }
 
@@ -555,7 +517,7 @@ fn not_supported(provider: &str, operation: &str) -> McpError {
     )
 }
 
-fn permission_error(role: Role, operation: &str) -> McpError {
+pub(crate) fn permission_error(role: Role, operation: &str) -> McpError {
     McpError::internal_error(
         bound_message(&format!(
             "role '{}' is not allowed to perform {operation}",

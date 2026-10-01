@@ -44,6 +44,25 @@ const {
   roleSkillId,
   roleSkillContent,
   withSkillPrefix,
+  agentName,
+  isDelegatingSession,
+  BINDING_ERROR_PREFIX,
+  EXPLORER_ACTIONS,
+  HOST_SESSION_FIELD,
+  MCP_SERVER_ROLE,
+  PHASEGENT_MCP_SERVER,
+  REFUSALS,
+  applyServer,
+  bindExplorerSession,
+  explorerActionForTool,
+  explorerBackend,
+  explorerToolId,
+  forgetMcpRegistration,
+  hasPhasegentServer,
+  mcpRegistered,
+  mutableArguments,
+  phasegentMcpServerDefinition,
+  registerPhasegentMcp,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
@@ -2500,5 +2519,359 @@ describe("generated dist freshness (issue #576 P1)", () => {
     // `phasegent plugin install` recognises its managed files by this marker.
     expect(lines[0]).toBe("// phasegent:managed");
     expect(lines[1]).toContain("@generated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The host explorer bridge (issue 685 P2).
+//
+// The bridge is the only thing that makes a phasegent explorer delegation
+// authorized, so its tests are about refusal: the model's arguments are
+// discarded, the host session is the only identity that survives, a call with
+// no host identity is cancelled, and every unregistered, unrecognised, or
+// rejected host surface leaves the native `explore` path in place.
+// ---------------------------------------------------------------------------
+
+describe("explorer host bridge (issue 685 P2)", () => {
+  const HOST_SESSION = "ses_host_1";
+
+  function explorerEvent(overrides) {
+    return {
+      tool: "phasegent_explorer_start",
+      sessionID: HOST_SESSION,
+      agent: "executor",
+      output: { args: { issue: 685, prompt: "recon the call flow" } },
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    forgetMcpRegistration();
+  });
+
+  test("the tool id is the server name and the operation", () => {
+    expect(PHASEGENT_MCP_SERVER).toBe("phasegent");
+    for (const action of EXPLORER_ACTIONS) {
+      expect(explorerToolId(action)).toBe(`phasegent_explorer_${action}`);
+      expect(explorerActionForTool(`phasegent_explorer_${action}`)).toBe(action);
+    }
+    expect(EXPLORER_ACTIONS).toEqual(["start", "status", "wait", "cancel", "resume"]);
+  });
+
+  test("a phasegent tool outside the delegation surface is not bound", () => {
+    expect(explorerActionForTool("phasegent_issue_get")).toBeNull();
+    expect(explorerActionForTool("phasegent_explorer_list")).toBeNull();
+    expect(explorerActionForTool("other_explorer_start")).toBeNull();
+    expect(explorerActionForTool(undefined)).toBeNull();
+    const event = explorerEvent({ tool: "phasegent_issue_get" });
+    const decision = bindExplorerSession(event);
+    expect(decision).toEqual({ bound: false, reason: REFUSALS.NOT_EXPLORER, action: null });
+    expect(event.output.args.session).toBeUndefined();
+  });
+
+  test("the host session overwrites whatever the model supplied", () => {
+    const event = explorerEvent();
+    event.output.args.session = "ses_model_supplied";
+    const decision = bindExplorerSession(event);
+    expect(decision).toEqual({ bound: true, reason: null, action: "start" });
+    expect(event.output.args[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
+    expect(event.output.args.session).not.toBe("ses_model_supplied");
+    expect(event.output.args.issue).toBe(685);
+    expect(event.output.args.prompt).toBe("recon the call flow");
+  });
+
+  test("a model cannot name where the run executes", () => {
+    const event = explorerEvent();
+    Object.assign(event.output.args, {
+      worktree: "/etc",
+      worktree_path: "/etc",
+      worktreePath: "/etc",
+      checkout_path: "/repo",
+      repo_identity: "/repo/.git",
+      lease_id: "lease-1",
+      cwd: "/etc",
+      directory: "/etc",
+      path: "/etc",
+    });
+    bindExplorerSession(event);
+    for (const key of [
+      "worktree",
+      "worktree_path",
+      "worktreePath",
+      "checkout_path",
+      "repo_identity",
+      "lease_id",
+      "cwd",
+      "directory",
+      "path",
+    ]) {
+      expect(event.output.args[key]).toBeUndefined();
+    }
+  });
+
+  test("every delegation operation binds, not just start", () => {
+    for (const action of EXPLORER_ACTIONS) {
+      const event = explorerEvent({
+        tool: explorerToolId(action),
+        output: { args: { run_id: "explorer-1", prompt: "recon" } },
+      });
+      const decision = bindExplorerSession(event);
+      expect(decision.bound).toBe(true);
+      expect(decision.action).toBe(action);
+      expect(event.output.args[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
+    }
+  });
+
+  test("a call with no host session is cancelled instead of sent unbound", () => {
+    for (const sessionID of [undefined, null, "", "   "]) {
+      const event = explorerEvent({ sessionID });
+      expect(() => bindExplorerSession(event)).toThrow(BINDING_ERROR_PREFIX);
+    }
+  });
+
+  test("a host event with no mutable arguments is cancelled", () => {
+    const event = explorerEvent();
+    delete event.output;
+    expect(() => bindExplorerSession(event)).toThrow(BINDING_ERROR_PREFIX);
+    expect(mutableArguments({})).toBeNull();
+    expect(mutableArguments(null)).toBeNull();
+    // The local-tool shape is the documented fallback, so a host that passes
+    // `input` instead still gets a binding rather than a cancelled call.
+    const fallback = explorerEvent();
+    delete fallback.output;
+    fallback.input = { issue: 685, prompt: "recon" };
+    expect(mutableArguments(fallback)).toBe(fallback.input);
+    bindExplorerSession(fallback);
+    expect(fallback.input[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
+  });
+
+  test("the hook binds an explorer call and leaves a local tool alone", async () => {
+    // Placement is inert here: the call is what is under test, and
+    // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the hook off the CLI and off any
+    // move so the binding is the only thing it can change.
+    const savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    try {
+      const hook = createRedirectHook();
+      const explorer = explorerEvent();
+      const local = {
+        tool: "read",
+        sessionID: HOST_SESSION,
+        agent: "executor",
+        input: { path: "src/a.rs" },
+      };
+      await hook(explorer);
+      await hook(local);
+      expect(explorer.output.args[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
+      expect(local.input[HOST_SESSION_FIELD]).toBeUndefined();
+      expect(local.input.path).toBe("src/a.rs");
+      // A cancelled delegation propagates out of the hook, which is the host's
+      // contract for not running the call at all.
+      const unbound = explorerEvent({ sessionID: "" });
+      await expect(hook(unbound)).rejects.toThrow(BINDING_ERROR_PREFIX);
+    } finally {
+      restoreNoDiscover(savedNoDiscover);
+    }
+  });
+
+  // The v2 host MCP draft: `{ list, get, set, update, remove }` over the
+  // server map, which is the shape the host's own config plugin writes through.
+  function mcpDraft(seed) {
+    const servers = new Map(Object.entries(seed || {}));
+    return {
+      servers,
+      list: () => [...servers.entries()],
+      get: (name) => servers.get(name),
+      set: (name, entry) => servers.set(name, entry),
+      update: (name, mutate) => {
+        if (servers.has(name)) mutate(servers.get(name));
+      },
+      remove: (name) => servers.delete(name),
+    };
+  }
+
+  test("the server entry is the v2 local CLI with a fixed least-privilege role", () => {
+    const definition = phasegentMcpServerDefinition();
+    // The v2 server shape: `mcp.servers.<name>` holds this object, and
+    // `disabled` is the flag that keeps the host connected to it — an entry
+    // that left it out is not a server the host will start.
+    expect(definition).toEqual({
+      type: "local",
+      command: ["phasegent", "mcp", "serve", "--transport", "stdio"],
+      environment: { PHASEGENT_ROLE: "executor" },
+      disabled: false,
+    });
+    expect("enabled" in definition).toBe(false);
+    expect(MCP_SERVER_ROLE).toBe("executor");
+    // A fresh object per call, so a host that mutates it cannot poison the next.
+    expect(phasegentMcpServerDefinition()).not.toBe(definition);
+    definition.command.push("--authorized");
+    expect(phasegentMcpServerDefinition().command).not.toContain("--authorized");
+  });
+
+  test("the draft gains the entry, keeps every other one, and is never clobbered", () => {
+    const mine = phasegentMcpServerDefinition();
+    const other = { type: "remote", url: "https://example.test/mcp" };
+    const draft = mcpDraft({ other });
+    expect(hasPhasegentServer(draft)).toBe(false);
+    expect(applyServer(draft, mine)).toBe(true);
+    expect(draft.get(PHASEGENT_MCP_SERVER)).toEqual(mine);
+    expect(draft.get("other")).toBe(other);
+    expect(draft.list().map(([name]) => name).sort()).toEqual(["other", "phasegent"]);
+    // A second registration with a different definition is a no-op: the entry
+    // the host already has wins, exactly like the host's own config plugin.
+    expect(applyServer(draft, { type: "local", command: ["operator", "choice"] })).toBe(true);
+    expect(draft.get(PHASEGENT_MCP_SERVER)).toEqual(mine);
+    // An operator's own phasegent entry is left byte-for-byte alone.
+    const configured = { type: "local", command: ["pinned"], disabled: true };
+    const seeded = mcpDraft({ phasegent: configured });
+    expect(applyServer(seeded, mine)).toBe(true);
+    expect(seeded.get(PHASEGENT_MCP_SERVER)).toBe(configured);
+    // A draft this bridge does not understand never claims a registration.
+    expect(applyServer({ set: () => {} }, mine)).toBe(false);
+    expect(applyServer(null, mine)).toBe(false);
+  });
+
+  test("the same entry is found in a v2 config object and in the host draft", () => {
+    const mine = phasegentMcpServerDefinition();
+    // The canonical chezmoi shape, which carries unrelated servers too.
+    const config = { mcp: { servers: { cloudiful: { type: "remote" }, phasegent: mine } } };
+    expect(hasPhasegentServer(config)).toBe(true);
+    expect(hasPhasegentServer({ mcp: { servers: { cloudiful: { type: "remote" } } } })).toBe(false);
+    expect(hasPhasegentServer({ mcp: {} })).toBe(false);
+    expect(hasPhasegentServer({})).toBe(false);
+    expect(hasPhasegentServer(null)).toBe(false);
+    // `mcp.servers.<name>` is the only place the entry lives, so a config that
+    // nests it directly under `mcp` does not count as configured.
+    expect(hasPhasegentServer({ mcp: { phasegent: mine } })).toBe(false);
+  });
+
+  test("the host mcp domain registers the entry and then reloads", async () => {
+    const other = { type: "remote", url: "https://example.test/mcp" };
+    const draft = mcpDraft({ other });
+    const reloaded = [];
+    const registration = await registerPhasegentMcp({
+      mcp: {
+        transform: async (mutate) => {
+          mutate(draft);
+          return { dispose: async () => {} };
+        },
+        reload: async () => {
+          reloaded.push(PHASEGENT_MCP_SERVER);
+        },
+      },
+    });
+    expect(registration).toEqual({ registered: true, reason: null });
+    expect(mcpRegistered()).toBe(true);
+    expect(draft.get(PHASEGENT_MCP_SERVER)).toEqual(phasegentMcpServerDefinition());
+    expect(draft.get("other")).toBe(other);
+    // The host connects an added server on a domain reload, so the registration
+    // ends with one, exactly as the host's own config plugin does.
+    expect(reloaded).toEqual([PHASEGENT_MCP_SERVER]);
+
+    forgetMcpRegistration();
+    const configured = { type: "local", command: ["pinned"], disabled: false };
+    const alreadyThere = mcpDraft({ phasegent: configured });
+    expect(
+      await registerPhasegentMcp({
+        mcp: { transform: async (mutate) => mutate(alreadyThere) },
+      }),
+    ).toEqual({ registered: true, reason: null });
+    expect(alreadyThere.get(PHASEGENT_MCP_SERVER)).toBe(configured);
+  });
+
+  test("an absent, unrecognised, or failing MCP surface leaves the native path", async () => {
+    const event = { agent: "executor", sessionID: HOST_SESSION };
+    for (const context of [{}, { mcp: {} }, { mcp: { transform: 42 } }]) {
+      expect(await registerPhasegentMcp(context)).toMatchObject({
+        registered: false,
+        reason: "no-mcp-transform",
+      });
+      expect(mcpRegistered()).toBe(false);
+    }
+    // A transform that never reaches the callback, and a draft without the two
+    // calls the host's own config plugin makes, both leave the host state
+    // without the entry — so the delegation stays unavailable.
+    expect(
+      await registerPhasegentMcp({ mcp: { transform: async () => ({ dispose: async () => {} }) } }),
+    ).toMatchObject({ registered: false, reason: "entry-not-confirmed" });
+    expect(
+      await registerPhasegentMcp({ mcp: { transform: async (mutate) => mutate({ set: () => {} }) } }),
+    ).toMatchObject({ registered: false, reason: "entry-not-confirmed" });
+    // A host that rejects the transform, and one that rejects the entry itself,
+    // are both warnings rather than a throw: a throw here would disable the
+    // whole plugin, redirect hook included.
+    expect(
+      await registerPhasegentMcp({
+        mcp: {
+          transform: async () => {
+            throw new Error("host rejected the transform");
+          },
+        },
+      }),
+    ).toMatchObject({ registered: false, reason: "mcp-transform-failed" });
+    const refused = mcpDraft({});
+    refused.set = () => {
+      throw new Error("host rejected the entry");
+    };
+    expect(
+      await registerPhasegentMcp({ mcp: { transform: async (mutate) => mutate(refused) } }),
+    ).toMatchObject({ registered: false, reason: "entry-not-confirmed" });
+    expect(mcpRegistered()).toBe(false);
+    // Every one of those keeps the native `explore` subagent as the path.
+    expect(explorerBackend(event, mcpRegistered()).backend).toBe("native");
+  });
+
+  test("a rejected reload keeps the entry and the delegation", async () => {
+    const draft = mcpDraft({});
+    const registration = await registerPhasegentMcp({
+      mcp: {
+        transform: async (mutate) => mutate(draft),
+        reload: async () => {
+          throw new Error("reload unavailable");
+        },
+      },
+    });
+    // The host state carries the entry, which is the same judgement the host's
+    // own config plugin stops at; a failed connect is a warning, not a refusal.
+    expect(registration).toMatchObject({ registered: true });
+    expect(draft.get(PHASEGENT_MCP_SERVER)).toEqual(phasegentMcpServerDefinition());
+    expect(mcpRegistered()).toBe(true);
+  });
+
+  test("the ACP backend needs registration, a delegating role, and a session", () => {
+    const event = { agent: "executor", sessionID: HOST_SESSION };
+    expect(explorerBackend(event, true)).toEqual({
+      backend: "phasegent",
+      reason: null,
+      sessionId: HOST_SESSION,
+    });
+    expect(explorerBackend(event, false)).toEqual({
+      backend: "native",
+      reason: "mcp-not-registered",
+    });
+    // `tester` and `admin` never reach the delegation: the server denies them
+    // too, so the bridge must not offer it.
+    expect(explorerBackend({ agent: "tester", sessionID: HOST_SESSION }, true).backend).toBe(
+      "native",
+    );
+    expect(explorerBackend({ agent: "explore", sessionID: HOST_SESSION }, true).backend).toBe(
+      "native",
+    );
+    expect(explorerBackend({ agent: "executor", sessionID: "  " }, true).reason).toBe(
+      "no-host-session",
+    );
+  });
+
+  test("the delegating roles mirror the server-side gate", () => {
+    expect(agentName({ agent: "Executor" })).toBe("executor");
+    expect(agentName({})).toBe("");
+    for (const agent of ["orchestrator", "executor", "reviewer"]) {
+      expect(isDelegatingSession({ agent })).toBe(true);
+    }
+    for (const agent of ["tester", "explore", "general"]) {
+      expect(isDelegatingSession({ agent })).toBe(false);
+    }
+    expect(isDelegatingSession({})).toBe(false);
   });
 });

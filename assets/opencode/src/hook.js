@@ -7,9 +7,17 @@
 // cancels that invocation instead of running it against the old checkout; the
 // next invocation retries the placement. Shell command rewriting (role/session
 // injection) runs regardless of placement and stays independent of it.
+//
+// A registered MCP tool arrives as the same event with the mutable arguments
+// under `output.args` instead of `input`
+// (packages/opencode/src/session/tools.ts:105-112), so the host session binding
+// reads whichever object the host exposed. Binding runs before the call either
+// way: a delegation with no host session throws out of the hook, which cancels
+// that invocation instead of sending it unbound.
 
 import { rewritePhasegentCommand } from "./command.js";
 import { ensureSessionWorktree } from "./discovery.js";
+import { bindExplorerSession } from "./mcp.js";
 import { SHELL_TOOLS } from "./paths.js";
 
 export function createRedirectHook(context, deps) {
@@ -21,6 +29,9 @@ export function createRedirectHook(context, deps) {
     // the hook, which is the host's contract for cancelling the pending call
     // (issue 623). The retry then runs placed.
     await ensureSessionWorktree(context, sessionId, event, deps);
+    // Bind the calling host session into an explorer delegation. A non-explorer
+    // tool is a no-op; a delegation with no host session throws and cancels.
+    bindExplorerSession(event);
     if (!input || typeof input !== "object") return;
     if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
       try {

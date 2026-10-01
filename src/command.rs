@@ -9,6 +9,11 @@ mod argv;
 mod auth;
 mod comment;
 mod config;
+// The explorer delegation contract (issue 685 P2). Server-side only: the
+// explorer surface has no CLI command, so the module is crate-visible for the
+// MCP handlers instead of a `pub use` row that would put a second copy of the
+// role allowlist, the operation names, and the bounds into the command surface.
+pub(crate) mod explorer;
 mod global_options;
 mod help_topic;
 mod hooks;

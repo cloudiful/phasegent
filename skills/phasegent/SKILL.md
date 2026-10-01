@@ -47,6 +47,38 @@ another.
   child role, and never pass a worktree path between sessions.
 - The loose plan-markdown fallback lives in `.opencode/plans/*.md`.
 
+## Explorer delegation backends
+
+Recon is delegated, never inlined, and there are exactly two backends. Prefer
+the phasegent backend when it is available; fall back to the native `explore`
+subagent otherwise. Both are read-only, and the choice never changes what you
+are allowed to do — only who does the reading.
+
+- **phasegent backend** — the `phasegent` MCP server's delegation tools
+  (`explorer_start`, then `explorer_wait` or `explorer_status`, plus
+  `explorer_cancel` and `explorer_resume`). One call starts a run and returns a
+  run id immediately; the run executes on its own, so a long read is never one
+  synchronous call. The run is owned by the delegating session: only that
+  session can read, wait for, cancel, or resume it.
+- **native backend** — `task(explore)` with a retained `sessionID`, exactly as
+  before. This is the explicit fallback, not a degraded mode: when the MCP
+  server is unregistered, when your role's surface has no delegation tools, or
+  when the delegation is refused, delegate to `explore` and say so in your note.
+
+The delegation resolves its own working directory: the host binds your session
+into the call, and the server accepts exactly one active worktree lease for the
+selected issue and that session, failing closed when there is none or more than
+one. So the issue number is a selector, not an authorization — you cannot reach
+another session's worktree, and a result never carries a worktree path, a
+session id, or a role. Do not try to pass any of those, and do not retry a
+"no active worktree lease" refusal by naming a different issue: the fix is a
+lease for this session (`phasegent worktree acquire --issue N --session
+<sessionID> --isolate`) or the native backend.
+
+`phasegent --help mcp` lists the delegation tools for your role. The delegation
+is available to the orchestrator, executor, and reviewer; `tester` and `admin`
+never have it.
+
 ## When to use this skill
 
 Load it when one of these is true:

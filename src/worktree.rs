@@ -329,3 +329,69 @@ pub fn leases_for_repo(repo_identity: &str) -> Result<Vec<LeaseRow>, WorktreeErr
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
     list_for_repo(&storage, repo_identity)
 }
+
+/// Why a session-bound lease resolution failed. A closed set so a caller can
+/// tell "no lease" from "ambiguous" without parsing a message, and so neither
+/// can be reported as a success.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseBindingError {
+    Missing,
+    Ambiguous,
+    Unusable,
+}
+
+impl LeaseBindingError {
+    /// Stable, bounded reason. Never names the session, the lease, or the path.
+    pub fn message(self, issue: u64) -> String {
+        match self {
+            Self::Missing => format!(
+                "no active worktree lease for issue {issue} in this session; acquire one first"
+            ),
+            Self::Ambiguous => format!(
+                "more than one active worktree lease for issue {issue} in this session; \
+                 release the extra lease and retry"
+            ),
+            Self::Unusable => {
+                format!("the active worktree lease for issue {issue} names no usable directory")
+            }
+        }
+    }
+}
+
+/// The single `active` lease that owns `(issue, session)`.
+///
+/// This is the session-bound lookup, and the reason `list_for_issue` is not an
+/// alternative: that one filters on the issue alone, so it can hand back
+/// another session's lease. `session` is the caller's own host-bound identity —
+/// never a value the model chose.
+///
+/// Fails closed in every direction: no row is [`LeaseBindingError::Missing`],
+/// more than one is [`LeaseBindingError::Ambiguous`] rather than a silent
+/// "newest wins", and a row without a worktree path is
+/// [`LeaseBindingError::Unusable`]. The second tuple element is the underlying
+/// storage failure, kept for diagnostics and never surfaced to a caller.
+pub fn resolve_active_lease_for_session(
+    storage: &Storage,
+    issue: u64,
+    session: &str,
+) -> Result<LeaseRow, (LeaseBindingError, WorktreeError)> {
+    let rows = leases::active_lease_rows_for_session(storage, issue, session)
+        .map_err(|error| (LeaseBindingError::Missing, error))?;
+    if rows.len() > 1 {
+        return Err((
+            LeaseBindingError::Ambiguous,
+            WorktreeError::new("state", format!("{} active leases", rows.len())),
+        ));
+    }
+    let lease = rows.into_iter().next().ok_or((
+        LeaseBindingError::Missing,
+        WorktreeError::new("state", "no active lease"),
+    ))?;
+    if lease.worktree_path.trim().is_empty() {
+        return Err((
+            LeaseBindingError::Unusable,
+            WorktreeError::new("state", "active lease has no worktree path"),
+        ));
+    }
+    Ok(lease)
+}

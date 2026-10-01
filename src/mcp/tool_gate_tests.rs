@@ -7,7 +7,7 @@
 //! of `tools`, so it can still reach the private `require_tool` gate.
 
 use super::*;
-use rmcp::model::{ErrorCode, NumberOrString};
+use rmcp::model::{CacheScope, ErrorCode, NumberOrString, ProtocolVersion, ResultType};
 use rmcp::service::Peer;
 
 const ALL_ROLES: &[Role] = &[
@@ -69,8 +69,9 @@ fn allowed_tools_never_expose_excluded_operations() {
 }
 
 /// The advertised allowlist per role, pinned against the descriptor table and
-/// its registry-backed gates: the custom `capabilities` payload, `--help mcp`,
-/// and the protocol-level `tools/list` all render this set.
+/// its declared gates: the custom `capabilities` payload, `--help mcp`,
+/// and the protocol-level `tools/list` all render this set. The five explorer
+/// tools are the role-gated delegation surface (issue 685 P2).
 const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
     (
         Role::Orchestrator,
@@ -81,6 +82,11 @@ const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
             "status_next",
             "comment_create",
             "notify_send",
+            "explorer_start",
+            "explorer_status",
+            "explorer_wait",
+            "explorer_cancel",
+            "explorer_resume",
         ],
     ),
     (
@@ -91,6 +97,11 @@ const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
             "status_next",
             "comment_create",
             "notify_send",
+            "explorer_start",
+            "explorer_status",
+            "explorer_wait",
+            "explorer_cancel",
+            "explorer_resume",
         ],
     ),
     (
@@ -101,6 +112,11 @@ const EXPECTED_TOOLS: &[(Role, &[&str])] = &[
             "status_next",
             "comment_create",
             "notify_send",
+            "explorer_start",
+            "explorer_status",
+            "explorer_wait",
+            "explorer_cancel",
+            "explorer_resume",
         ],
     ),
     (
@@ -119,21 +135,21 @@ fn allowed_tools_follow_the_descriptor_table_for_every_role() {
     }
 }
 
-/// Every handler gate resolves through the descriptor table plus the shared
-/// policy, so a denied role gets the stable operation-named permission
-/// error before any provider access.
+/// Every handler gate resolves through the descriptor table's declared gate,
+/// so a denied role gets the stable operation-named permission error before any
+/// provider access.
 #[test]
 fn handler_gates_match_the_descriptor_table_for_every_role() {
     for role in ALL_ROLES {
         let server = server(*role, false);
         for tool in tool_registry::TOOLS {
-            let result = server.require_tool(*tool);
+            let result = server.gate(*tool);
             if tool.allows_role(*role) {
                 assert!(result.is_ok(), "{} must be allowed for {role}", tool.name);
                 continue;
             }
             let error = result.expect_err("a denied tool must return a permission error");
-            let operation = tool.capability().expect("denied tool is gated").operation();
+            let operation = tool.operation();
             assert!(
                 error.message.contains(operation),
                 "{} denial for {role} must name {operation:?}: {}",
@@ -157,7 +173,7 @@ fn handler_gates_match_the_descriptor_table_for_every_role() {
 fn notify_send_denial_follows_the_notify_capability() {
     assert!(!Role::Admin.allows(Capability::Notify));
     let error = server(Role::Admin, false)
-        .require_tool(tool_registry::NOTIFY_SEND)
+        .gate(tool_registry::NOTIFY_SEND)
         .expect_err("admin notify_send must be denied");
     assert!(
         error.message.contains("notify send"),
@@ -172,9 +188,7 @@ fn notify_send_denial_follows_the_notify_capability() {
         Role::Tester,
     ] {
         assert!(
-            server(role, false)
-                .require_tool(tool_registry::NOTIFY_SEND)
-                .is_ok(),
+            server(role, false).gate(tool_registry::NOTIFY_SEND).is_ok(),
             "notify_send must stay allowed for {role}"
         );
         assert!(
@@ -311,7 +325,7 @@ async fn protocol_tools_call_rejects_unadvertised_tools_before_dispatch() {
                 )
                 .await
                 .expect_err("an unadvertised tool must be rejected before dispatch");
-            let operation = tool.capability().expect("denied tool is gated").operation();
+            let operation = tool.operation();
             assert_eq!(
                 error.code,
                 ErrorCode::INTERNAL_ERROR,
