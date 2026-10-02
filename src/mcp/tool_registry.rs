@@ -12,10 +12,6 @@
 //! * [`ToolGate::Cli`] — the tool wraps a CLI command, so its gate is the
 //!   shared registry's capability for that command path. This is the ordinary
 //!   case and the reason MCP never invents a role list of its own.
-//! * [`ToolGate::Research`] — the tool is a server-side delegation with no CLI
-//!   command. Its role allowlist is the closed set in
-//!   `crate::command::research`, referenced rather than restated, so the
-//!   delegation roles have exactly one definition.
 //! * [`ToolGate::Open`] — the open `capabilities` introspection tool, which
 //!   every role that can start the MCP server may call.
 //!
@@ -24,7 +20,6 @@
 //! operations) are simply not entries here, so a handler cannot expose a
 //! command the CLI would deny.
 
-use crate::command::research::{DELEGATION_ROLES, RESEARCH_OPERATION};
 use crate::command::{registry_allows_role, registry_capability};
 use crate::policy::{Capability, Role};
 
@@ -33,9 +28,6 @@ use crate::policy::{Capability, Role};
 pub(crate) enum ToolGate {
     /// A CLI registry path; the gate is that command's shared capability.
     Cli(&'static [&'static str]),
-    /// The server-side research delegation, gated by
-    /// [`DELEGATION_ROLES`].
-    Research,
     /// No gate: open to every role that can start the MCP server.
     Open,
 }
@@ -55,13 +47,6 @@ impl McpToolSpec {
         }
     }
 
-    pub(crate) const fn research(name: &'static str) -> Self {
-        Self {
-            name,
-            gate: ToolGate::Research,
-        }
-    }
-
     pub(crate) const fn open(name: &'static str) -> Self {
         Self {
             name,
@@ -70,12 +55,12 @@ impl McpToolSpec {
     }
 
     /// Capability gate resolved from the shared CLI registry, for the tools
-    /// that wrap a CLI command. `None` for the open and research surfaces,
-    /// which are not provider commands.
+    /// that wrap a CLI command. `None` for the open surface, which is not a
+    /// provider command.
     pub(crate) fn capability(self) -> Option<Capability> {
         match self.gate {
             ToolGate::Cli(path) => registry_capability(path),
-            ToolGate::Research | ToolGate::Open => None,
+            ToolGate::Open => None,
         }
     }
 
@@ -88,7 +73,6 @@ impl McpToolSpec {
                 .capability()
                 .map(Capability::operation)
                 .unwrap_or("mcp tool"),
-            ToolGate::Research => RESEARCH_OPERATION,
             ToolGate::Open => "",
         }
     }
@@ -97,7 +81,6 @@ impl McpToolSpec {
     pub(crate) fn allows_role(self, role: Role) -> bool {
         match self.gate {
             ToolGate::Cli(path) => registry_allows_role(role, path),
-            ToolGate::Research => DELEGATION_ROLES.contains(&role),
             ToolGate::Open => true,
         }
     }
@@ -111,31 +94,8 @@ pub(crate) const COMMENT_CREATE: McpToolSpec =
     McpToolSpec::cli("comment_create", &["comment", "create"]);
 pub(crate) const NOTIFY_SEND: McpToolSpec = McpToolSpec::cli("notify_send", &["notify", "send"]);
 
-/// The five research operations, in the order the delegation contract declares
-/// them. There is no run-list and no run deletion: a caller can start, read,
-/// wait for, cancel, and resume a run it owns, and do nothing else.
-pub(crate) const RESEARCH_START: McpToolSpec = McpToolSpec::research("research_start");
-pub(crate) const RESEARCH_STATUS: McpToolSpec = McpToolSpec::research("research_status");
-pub(crate) const RESEARCH_WAIT: McpToolSpec = McpToolSpec::research("research_wait");
-pub(crate) const RESEARCH_CANCEL: McpToolSpec = McpToolSpec::research("research_cancel");
-pub(crate) const RESEARCH_RESUME: McpToolSpec = McpToolSpec::research("research_resume");
-
-/// The research group in one slice, for the group-level invariants the
-/// research surface tests assert. The served tools are the individual consts
-/// so each handler can name its own gate.
-#[allow(dead_code)]
-pub(crate) const RESEARCH_TOOLS: &[McpToolSpec] = &[
-    RESEARCH_START,
-    RESEARCH_STATUS,
-    RESEARCH_WAIT,
-    RESEARCH_CANCEL,
-    RESEARCH_RESUME,
-];
-
 /// Every exposed tool, in declaration order. `capabilities` stays first so
-/// introspection is always the leading entry in the advertised list, and the
-/// research group follows the tracking tools so a role-filtered list keeps
-/// reading as the tracking surface plus its delegation.
+/// introspection is always the leading entry in the advertised list.
 pub(crate) const TOOLS: &[McpToolSpec] = &[
     CAPABILITIES,
     ISSUE_GET,
@@ -143,11 +103,6 @@ pub(crate) const TOOLS: &[McpToolSpec] = &[
     STATUS_NEXT,
     COMMENT_CREATE,
     NOTIFY_SEND,
-    RESEARCH_START,
-    RESEARCH_STATUS,
-    RESEARCH_WAIT,
-    RESEARCH_CANCEL,
-    RESEARCH_RESUME,
 ];
 
 #[cfg(test)]
@@ -226,11 +181,6 @@ mod tests {
                     "status_next",
                     "comment_create",
                     "notify_send",
-                    "research_start",
-                    "research_status",
-                    "research_wait",
-                    "research_cancel",
-                    "research_resume",
                 ],
             ),
             (
@@ -241,11 +191,6 @@ mod tests {
                     "status_next",
                     "comment_create",
                     "notify_send",
-                    "research_start",
-                    "research_status",
-                    "research_wait",
-                    "research_cancel",
-                    "research_resume",
                 ],
             ),
             (
@@ -256,11 +201,6 @@ mod tests {
                     "status_next",
                     "comment_create",
                     "notify_send",
-                    "research_start",
-                    "research_status",
-                    "research_wait",
-                    "research_cancel",
-                    "research_resume",
                 ],
             ),
             (
@@ -292,26 +232,6 @@ mod tests {
         }
         assert!(NOTIFY_SEND.allows_role(Role::Orchestrator));
         assert!(!NOTIFY_SEND.allows_role(Role::Admin));
-    }
-
-    /// The research group is one gate applied to exactly five tools, and the
-    /// role set is the closed delegation list rather than a second copy here.
-    #[test]
-    fn research_tools_share_one_declared_gate() {
-        assert_eq!(RESEARCH_TOOLS.len(), 5);
-        for tool in RESEARCH_TOOLS {
-            assert_eq!(tool.gate, ToolGate::Research);
-            assert!(tool.capability().is_none(), "{}", tool.name);
-            assert_eq!(tool.operation(), RESEARCH_OPERATION);
-            for role in ALL_ROLES {
-                assert_eq!(
-                    tool.allows_role(*role),
-                    DELEGATION_ROLES.contains(role),
-                    "{} gate for {role}",
-                    tool.name
-                );
-            }
-        }
     }
 
     /// Every gated tool names a permission operation, so a denial from either

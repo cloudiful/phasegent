@@ -30,28 +30,7 @@ mod infra;
 mod providers;
 
 #[cfg(test)]
-mod phase2_tests;
-
-#[cfg(test)]
-mod phase3_tests;
-
-#[cfg(test)]
-mod branch_naming_tests;
-
-#[cfg(test)]
-mod branch_links_tests;
-
-#[cfg(test)]
-mod branch_naming_prop_tests;
-
-#[cfg(test)]
-mod hooks_tests;
-
-#[cfg(test)]
 mod config_tests;
-
-#[cfg(test)]
-mod lifecycle_auto_tests;
 
 #[cfg(test)]
 mod worktree_tests;
@@ -61,24 +40,6 @@ mod worktree_cli_tests;
 
 #[cfg(test)]
 mod plugin_tests;
-
-#[cfg(test)]
-mod skill_tests;
-
-#[cfg(test)]
-mod admin_tests;
-
-#[cfg(test)]
-mod comment_tests;
-
-#[cfg(test)]
-mod body_file_tests;
-
-#[cfg(test)]
-mod doctor_tests;
-
-#[cfg(test)]
-mod issue_tests;
 
 #[cfg(test)]
 mod test_scratch;

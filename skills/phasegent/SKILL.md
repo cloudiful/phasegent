@@ -47,36 +47,14 @@ another.
   child role, and never pass a worktree path between sessions.
 - The loose plan-markdown fallback lives in `.opencode/plans/*.md`.
 
-## Research delegation backends
+## Reconnaissance delegation
 
-Research is delegated, never inlined, and there are two backends that are not
-equivalent. Prefer the phasegent research backend when it is available; fall
-back to the native `explore` subagent otherwise. Both are read-only, and the
-choice never changes what you are allowed to do — only who does the reading.
-
-- **phasegent research backend** — the `phasegent` MCP server's research tools
-  (`research_start`, then `research_wait` or `research_status`, plus
-  `research_cancel` and `research_resume`). The caller supplies a user prompt
-  and a bounded runtime budget; the server adds a fixed read-only research
-  system instruction it owns, so a caller cannot weaken it. One call starts a
-  run and returns a run id immediately, so a long read is never one synchronous
-  call. Each run executes on its own in a private server-created scratch
-  directory that never holds the phasegent repository or a resolved worktree,
-  and the run is owned by the delegating session: only that session can read,
-  wait for, cancel, or resume it. No issue, worktree, checkout, repository,
-  session, or scratch path is named in the request or the result.
-- **native backend** — the host's own `task(explore)` subagent with a retained
-  `sessionID`. This is a separate native capability, not an equivalent
-  phasegent backend: it reads inside the OpenCode session's own directory under
-  the host's own read-only tool policy, not in a phasegent scratch sandbox, and
-  it never calls the phasegent MCP research tools or any phasegent
-  issue/worktree binding. Use it when the MCP server is unregistered, when your
-  role's surface has no research tools, or when the delegation is refused, and
-  say so in your note.
-
-`phasegent --help mcp` lists the research tools for your role. The research
-delegation is available to the orchestrator, executor, and reviewer; `tester`
-and `admin` never have it.
+Reconnaissance is delegated, never inlined, and the native `explore` subagent
+is the only reconnaissance backend: the host launches it with `task(explore)`
+under its own read-only tool policy, and it reads inside the OpenCode session's
+own directory. It never binds a phasegent issue or worktree, and no phasegent
+MCP tool runs a research turn. Who does the reading never changes what you are
+allowed to do — only who does the reading.
 
 ## When to use this skill
 

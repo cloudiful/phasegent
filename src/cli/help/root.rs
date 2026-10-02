@@ -51,15 +51,11 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
 /// needs no new help file; dispatched from the help router.
 pub(crate) fn print_mcp_help(role: Option<Role>) {
     println!(
-        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: {}. Excluded: status_advance, timer start/finish, role elevation. {RESEARCH_HELP} The server resolves its role from PHASEGENT_ROLE and its provider from the provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
+        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: {}. Excluded: status_advance, timer start/finish, role elevation. The server resolves its role from PHASEGENT_ROLE and its provider from the provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
         role.map_or("all roles", Role::as_str),
         mcp_tools_line(role),
     );
 }
-
-/// The delegation group's contract, stated once and kept free of tool names so
-/// the role-filtered list above stays the only place a tool is named.
-const RESEARCH_HELP: &str = "The research delegation group is open to the orchestrator, executor, and reviewer; admin and tester are denied. Each of its calls carries a host-bound session the client never chooses, runs the caller's prompt in a private server-side scratch directory with a fixed read-only system instruction, and never returns a path, a session id, or an ACP session id.";
 
 /// The tool list for one help context. No role keeps the compatibility union
 /// (every registered tool); a resolved role sees only the tools its declared
@@ -78,7 +74,6 @@ fn mcp_tools_line(role: Option<Role>) -> String {
             "comment_create" => {
                 "comment_create (needs server-side --authorized unless orchestrator)"
             }
-            "research_start" => "research_start (needs a host-bound session id)",
             other => other,
         })
         .collect::<Vec<_>>()

@@ -44,25 +44,14 @@ const {
   roleSkillId,
   roleSkillContent,
   withSkillPrefix,
-  agentName,
-  isDelegatingSession,
-  BINDING_ERROR_PREFIX,
-  HOST_SESSION_FIELD,
   MCP_SERVER_ROLE,
   PHASEGENT_MCP_SERVER,
-  REFUSALS,
-  RESEARCH_ACTIONS,
   applyServer,
-  bindResearchSession,
   forgetMcpRegistration,
   hasPhasegentServer,
   mcpRegistered,
-  mutableArguments,
   phasegentMcpServerDefinition,
   registerPhasegentMcp,
-  researchActionForTool,
-  researchBackend,
-  researchToolId,
 } = PhasegentWorktreePlugin.redirect;
 
 const WORKTREE = "/repo/.worktrees/issue-532";
@@ -2523,156 +2512,18 @@ describe("generated dist freshness (issue #576 P1)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The host research bridge (issue 692 P1).
+// The phasegent MCP server registration.
 //
-// The bridge is the only thing that makes a phasegent research delegation
-// authorized, so its tests are about refusal: the model's arguments are
-// discarded, the host session is the only identity that survives, a call with
-// no host identity is cancelled, and every unregistered, unrecognised, or
-// rejected host surface leaves the native `explore` path in place.
+// The registration adds the local `phasegent mcp serve` entry to the host MCP
+// state so the contracted tracking tools are reachable. Its tests are about
+// additive, non-clobbering behavior: the entry is never duplicated, an
+// operator's own entry wins, and every refused, unrecognised, or failing host
+// surface is a warning with no registration rather than a throw.
 // ---------------------------------------------------------------------------
 
-describe("research host bridge (issue 692 P1)", () => {
-  const HOST_SESSION = "ses_host_1";
-
-  function researchEvent(overrides) {
-    return {
-      tool: "phasegent_research_start",
-      sessionID: HOST_SESSION,
-      agent: "executor",
-      output: { args: { prompt: "research the call flow" } },
-      ...overrides,
-    };
-  }
-
+describe("phasegent MCP server registration", () => {
   afterEach(() => {
     forgetMcpRegistration();
-  });
-
-  test("the tool id is the server name and the operation", () => {
-    expect(PHASEGENT_MCP_SERVER).toBe("phasegent");
-    for (const action of RESEARCH_ACTIONS) {
-      expect(researchToolId(action)).toBe(`phasegent_research_${action}`);
-      expect(researchActionForTool(`phasegent_research_${action}`)).toBe(action);
-    }
-    expect(RESEARCH_ACTIONS).toEqual(["start", "status", "wait", "cancel", "resume"]);
-  });
-
-  test("a phasegent tool outside the delegation surface is not bound", () => {
-    expect(researchActionForTool("phasegent_issue_get")).toBeNull();
-    expect(researchActionForTool("phasegent_research_list")).toBeNull();
-    expect(researchActionForTool("other_research_start")).toBeNull();
-    expect(researchActionForTool(undefined)).toBeNull();
-    const event = researchEvent({ tool: "phasegent_issue_get" });
-    const decision = bindResearchSession(event);
-    expect(decision).toEqual({ bound: false, reason: REFUSALS.NOT_RESEARCH, action: null });
-    expect(event.output.args.session).toBeUndefined();
-  });
-
-  test("the host session overwrites whatever the model supplied", () => {
-    const event = researchEvent();
-    event.output.args.session = "ses_model_supplied";
-    const decision = bindResearchSession(event);
-    expect(decision).toEqual({ bound: true, reason: null, action: "start" });
-    expect(event.output.args[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
-    expect(event.output.args.session).not.toBe("ses_model_supplied");
-    expect(event.output.args.prompt).toBe("research the call flow");
-  });
-
-  test("a model cannot name where the run executes or which issue it binds", () => {
-    const event = researchEvent();
-    Object.assign(event.output.args, {
-      issue: 692,
-      worktree: "/etc",
-      worktree_path: "/etc",
-      worktreePath: "/etc",
-      checkout_path: "/repo",
-      repo_identity: "/repo/.git",
-      lease_id: "lease-1",
-      cwd: "/etc",
-      directory: "/etc",
-      path: "/etc",
-    });
-    bindResearchSession(event);
-    for (const key of [
-      "issue",
-      "worktree",
-      "worktree_path",
-      "worktreePath",
-      "checkout_path",
-      "repo_identity",
-      "lease_id",
-      "cwd",
-      "directory",
-      "path",
-    ]) {
-      expect(event.output.args[key]).toBeUndefined();
-    }
-  });
-
-  test("every delegation operation binds, not just start", () => {
-    for (const action of RESEARCH_ACTIONS) {
-      const event = researchEvent({
-        tool: researchToolId(action),
-        output: { args: { run_id: "research-1", prompt: "recon" } },
-      });
-      const decision = bindResearchSession(event);
-      expect(decision.bound).toBe(true);
-      expect(decision.action).toBe(action);
-      expect(event.output.args[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
-    }
-  });
-
-  test("a call with no host session is cancelled instead of sent unbound", () => {
-    for (const sessionID of [undefined, null, "", "   "]) {
-      const event = researchEvent({ sessionID });
-      expect(() => bindResearchSession(event)).toThrow(BINDING_ERROR_PREFIX);
-    }
-  });
-
-  test("a host event with no mutable arguments is cancelled", () => {
-    const event = researchEvent();
-    delete event.output;
-    expect(() => bindResearchSession(event)).toThrow(BINDING_ERROR_PREFIX);
-    expect(mutableArguments({})).toBeNull();
-    expect(mutableArguments(null)).toBeNull();
-    // The local-tool shape is the documented fallback, so a host that passes
-    // `input` instead still gets a binding rather than a cancelled call.
-    const fallback = researchEvent();
-    delete fallback.output;
-    fallback.input = { prompt: "research" };
-    expect(mutableArguments(fallback)).toBe(fallback.input);
-    bindResearchSession(fallback);
-    expect(fallback.input[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
-  });
-
-  test("the hook binds a research call and leaves a local tool alone", async () => {
-    // Placement is inert here: the call is what is under test, and
-    // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the hook off the CLI and off any
-    // move so the binding is the only thing it can change.
-    const savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    try {
-      const hook = createRedirectHook();
-      const research = researchEvent();
-      const local = {
-        tool: "read",
-        sessionID: HOST_SESSION,
-        agent: "executor",
-        input: { path: "src/a.rs" },
-      };
-      await hook(research);
-      await hook(local);
-      expect(research.output.args[HOST_SESSION_FIELD]).toBe(HOST_SESSION);
-      expect(local.input[HOST_SESSION_FIELD]).toBeUndefined();
-      expect(local.input.path).toBe("src/a.rs");
-      // A cancelled delegation propagates out of the hook, which is the host's
-      // contract for not running the call at all.
-      const unbound = researchEvent({ sessionID: "" });
-      await expect(hook(unbound)).rejects.toThrow(BINDING_ERROR_PREFIX);
-    } finally {
-      restoreNoDiscover(savedNoDiscover);
-    }
   });
 
   // The v2 host MCP draft: `{ list, get, set, update, remove }` over the
@@ -2781,8 +2632,7 @@ describe("research host bridge (issue 692 P1)", () => {
     expect(alreadyThere.get(PHASEGENT_MCP_SERVER)).toBe(configured);
   });
 
-  test("an absent, unrecognised, or failing MCP surface leaves the native path", async () => {
-    const event = { agent: "executor", sessionID: HOST_SESSION };
+  test("an absent, unrecognised, or failing MCP surface is a warning and no registration", async () => {
     for (const context of [{}, { mcp: {} }, { mcp: { transform: 42 } }]) {
       expect(await registerPhasegentMcp(context)).toMatchObject({
         registered: false,
@@ -2792,7 +2642,7 @@ describe("research host bridge (issue 692 P1)", () => {
     }
     // A transform that never reaches the callback, and a draft without the two
     // calls the host's own config plugin makes, both leave the host state
-    // without the entry — so the delegation stays unavailable.
+    // without the entry — so the tracking tools stay unavailable.
     expect(
       await registerPhasegentMcp({ mcp: { transform: async () => ({ dispose: async () => {} }) } }),
     ).toMatchObject({ registered: false, reason: "entry-not-confirmed" });
@@ -2819,11 +2669,9 @@ describe("research host bridge (issue 692 P1)", () => {
       await registerPhasegentMcp({ mcp: { transform: async (mutate) => mutate(refused) } }),
     ).toMatchObject({ registered: false, reason: "entry-not-confirmed" });
     expect(mcpRegistered()).toBe(false);
-    // Every one of those keeps the native `explore` subagent as the path.
-    expect(researchBackend(event, mcpRegistered()).backend).toBe("native");
   });
 
-  test("a rejected reload keeps the entry and the delegation", async () => {
+  test("a rejected reload keeps the entry", async () => {
     const draft = mcpDraft({});
     const registration = await registerPhasegentMcp({
       mcp: {
@@ -2838,41 +2686,5 @@ describe("research host bridge (issue 692 P1)", () => {
     expect(registration).toMatchObject({ registered: true });
     expect(draft.get(PHASEGENT_MCP_SERVER)).toEqual(phasegentMcpServerDefinition());
     expect(mcpRegistered()).toBe(true);
-  });
-
-  test("the ACP backend needs registration, a delegating role, and a session", () => {
-    const event = { agent: "executor", sessionID: HOST_SESSION };
-    expect(researchBackend(event, true)).toEqual({
-      backend: "phasegent",
-      reason: null,
-      sessionId: HOST_SESSION,
-    });
-    expect(researchBackend(event, false)).toEqual({
-      backend: "native",
-      reason: "mcp-not-registered",
-    });
-    // `tester` and `admin` never reach the delegation: the server denies them
-    // too, so the bridge must not offer it.
-    expect(researchBackend({ agent: "tester", sessionID: HOST_SESSION }, true).backend).toBe(
-      "native",
-    );
-    expect(researchBackend({ agent: "explore", sessionID: HOST_SESSION }, true).backend).toBe(
-      "native",
-    );
-    expect(researchBackend({ agent: "executor", sessionID: "  " }, true).reason).toBe(
-      "no-host-session",
-    );
-  });
-
-  test("the delegating roles mirror the server-side gate", () => {
-    expect(agentName({ agent: "Executor" })).toBe("executor");
-    expect(agentName({})).toBe("");
-    for (const agent of ["orchestrator", "executor", "reviewer"]) {
-      expect(isDelegatingSession({ agent })).toBe(true);
-    }
-    for (const agent of ["tester", "explore", "general"]) {
-      expect(isDelegatingSession({ agent })).toBe(false);
-    }
-    expect(isDelegatingSession({})).toBe(false);
   });
 });

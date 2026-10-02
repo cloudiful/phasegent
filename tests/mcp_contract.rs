@@ -287,11 +287,6 @@ fn mcp_help_documents_contracted_scope_and_exclusions() {
         "status_next",
         "comment_create",
         "notify_send",
-        "research_start",
-        "research_status",
-        "research_wait",
-        "research_cancel",
-        "research_resume",
     ] {
         assert!(
             stdout.contains(tool),
@@ -306,8 +301,7 @@ fn mcp_help_documents_contracted_scope_and_exclusions() {
 
 /// Phase 4: `--help mcp` renders the MCP tool descriptor table filtered by the
 /// resolved role, keeps the compatibility union for the role-less view, and
-/// preserves the exclusion wording. Issue 685 P2 adds the research delegation
-/// group: the three delegation roles see it, `admin` and `tester` do not.
+/// preserves the exclusion wording.
 #[test]
 fn mcp_help_tool_list_follows_the_role_gate() {
     let scratch = scratch_db();
@@ -319,7 +313,6 @@ fn mcp_help_tool_list_follows_the_role_gate() {
         "status_next",
         "comment_create",
         "notify_send",
-        "research_start",
     ] {
         assert!(
             union.contains(tool),
@@ -327,13 +320,6 @@ fn mcp_help_tool_list_follows_the_role_gate() {
         );
     }
 
-    const RESEARCH: &[&str] = &[
-        "research_start",
-        "research_status",
-        "research_wait",
-        "research_cancel",
-        "research_resume",
-    ];
     let expected: &[(&str, &[&str], &[&str])] = &[
         (
             "orchestrator",
@@ -398,17 +384,6 @@ fn mcp_help_tool_list_follows_the_role_gate() {
             assert!(
                 !stdout.contains(tool),
                 "{role} mcp help must not list {tool}:\n{stdout}"
-            );
-        }
-        // The delegation group follows the same gate: present for the three
-        // roles that delegate recon, absent for the two that do not.
-        for tool in RESEARCH {
-            let delegates = matches!(*role, "orchestrator" | "executor" | "reviewer");
-            assert_eq!(
-                stdout.contains(tool),
-                delegates,
-                "{role} mcp help must {} list {tool}:\n{stdout}",
-                if delegates { "" } else { "not " },
             );
         }
         assert!(

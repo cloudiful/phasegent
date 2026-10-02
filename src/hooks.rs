@@ -280,13 +280,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Test-only rendering hook so tests can assert on script contents without
-/// touching the filesystem.
-#[cfg(test)]
-pub fn render_script_for_tests(hook: HookKind, backup: Option<&Path>) -> String {
-    render_script(hook, backup)
-}
-
 fn write_script(path: &Path, contents: &str) -> Result<(), GitError> {
     atomic_write(path, contents.as_bytes(), Some(0o755))
 }

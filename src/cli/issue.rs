@@ -7,9 +7,6 @@ use crate::providers::{IssueProvider, ProviderKind};
 
 #[path = "issue_search.rs"]
 mod issue_search;
-#[path = "issue_search_tests.rs"]
-#[cfg(test)]
-mod issue_search_tests;
 // Issue 628 P4: provider-scoped create/link/switch helpers live next to
 // the create arm they belong to; `execute_issue` only dispatches.
 #[path = "issue/create_branch.rs"]

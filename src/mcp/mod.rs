@@ -6,13 +6,7 @@
 //! startup. Transports are stdio (default) and streamable HTTP via
 //! axum on `/mcp`; the sync CLI stays sync through scoped runtimes.
 
-pub mod agent;
-pub mod research_tools;
 pub mod router;
 pub mod server;
 pub mod tool_registry;
 pub mod tools;
-
-#[cfg(test)]
-#[path = "research_gate_tests.rs"]
-mod research_gate_tests;

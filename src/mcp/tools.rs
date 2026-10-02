@@ -64,14 +64,11 @@ impl McpConfig {
 ///
 /// Contracted tools: `capabilities`, `issue_get`, `issue_search`,
 /// `status_next`, `comment_create` (server-side `--authorized`
-/// only), `notify_send`, and the five role-gated research delegation tools
-/// declared in [`tool_registry::RESEARCH_TOOLS`]. Explicitly excluded:
+/// only), and `notify_send`. Explicitly excluded:
 /// `status_advance`, timer start/finish, worktree lease mutations, and any
 /// role elevation.
 ///
-/// This module is the composition point only. The tracking handlers are the
-/// historical surface; the research handlers live in
-/// [`research_tools`](super::research_tools), the composed router and the
+/// This module owns the tracking handlers. The composed router and the
 /// single role gate live in [`router`](super::router), and every tool's gate
 /// is declared once in [`tool_registry`].
 #[derive(Clone)]

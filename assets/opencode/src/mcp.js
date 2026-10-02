@@ -1,33 +1,14 @@
-// The phasegent MCP server registration and the host-bound research session.
+// The phasegent MCP server registration.
 //
-// Two jobs, both about *who* is asking:
+// `registerPhasegentMcp` adds the local `phasegent mcp serve` process to the
+// host's MCP state under the fixed name `phasegent`. The name matters: OpenCode
+// exposes an MCP tool as
+// `sanitize(server) + "_" + sanitize(tool)`
+// (packages/opencode/src/mcp/catalog.ts:119), so the contracted tracking tools
+// reach the model as `phasegent_issue_get` and friends.
 //
-//  1. `registerPhasegentMcp` adds the local `phasegent mcp serve` process to the
-//     host's MCP state under the fixed name `phasegent`. The name matters:
-//     OpenCode exposes an MCP tool as
-//     `sanitize(server) + "_" + sanitize(tool)`
-//     (packages/opencode/src/mcp/catalog.ts:119), so the tools reach the model
-//     as `phasegent_research_start` and friends and the bridge can recognise
-//     them.
-//  2. `bindResearchSession` runs from the `tool.execute.before` hook, which
-//     OpenCode calls for registered MCP tools with the mutable `output.args`
-//     just before `tools/call`
-//     (packages/opencode/src/session/tools.ts:105-112). The bridge *overwrites*
-//     the `session` argument with `event.sessionID`.
-//
-// The overwrite is the whole ownership story, so it is worth being explicit
-// about what it buys. The model may put anything in `session`; the bridge
-// discards it. The server therefore always learns the *calling* session, binds
-// the run to it, and refuses status/wait/cancel/resume to any other session. A
-// model cannot reach another session's run by naming one, and a run carries the
-// durable owner that started it. There is no issue selector and no worktree
-// lease: a research run always executes in a private server-created scratch
-// directory, never in the phasegent repository or a resolved checkout.
-//
-// Two properties are deliberately not implemented here. The bridge never sends
-// a location (the server creates the scratch directory; the model never sees
-// it), and it never picks a role per call: the server starts once with the
-// fixed least-privilege role below, so no client can choose or elevate one.
+// The server starts once with the fixed least-privilege role below, so no
+// client can choose or elevate one.
 //
 // The v2 surface this file targets, read off the shipped v2.0.18 host:
 //
@@ -48,57 +29,18 @@
 // reads the entry from its config never sees a second one from the plugin.
 
 import { errorText, warn } from "./runtime.js";
-import { isDelegatingSession } from "./roles.js";
 
 export const PHASEGENT_MCP_SERVER = "phasegent";
 
-// The role the MCP server process starts with. Fixed and least-privilege: the
-// research surface is the only reason the server is registered, and `executor`
-// carries it without carrying the orchestrator's plan, status, timer, or
-// worktree-lease powers. A model can never change it.
+// The role the MCP server process starts with. Fixed and least-privilege:
+// `executor` carries the tracking surface (`issue_get`, `status_next`,
+// `comment_create`, `notify_send`) without carrying the orchestrator's plan,
+// status, timer, or worktree-lease powers. A model can never change it.
 export const MCP_SERVER_ROLE = "executor";
-
-// The argument the bridge owns. The model may emit it; the bridge replaces it.
-export const HOST_SESSION_FIELD = "session";
-
-// The five delegation operations, in the delegation contract's order.
-export const RESEARCH_ACTIONS = ["start", "status", "wait", "cancel", "resume"];
-
-// The tool id OpenCode exposes for one research action.
-export function researchToolId(action) {
-  return `${PHASEGENT_MCP_SERVER}_research_${action}`;
-}
-
-// The research action a tool id names, or `null` for anything else — including
-// a phasegent tool that is not part of the delegation surface.
-export function researchActionForTool(tool) {
-  if (typeof tool !== "string") return null;
-  const prefix = `${PHASEGENT_MCP_SERVER}_research_`;
-  if (!tool.startsWith(prefix)) return null;
-  const action = tool.slice(prefix.length);
-  return RESEARCH_ACTIONS.includes(action) ? action : null;
-}
-
-// Arguments the bridge removes before the call. None of them is part of the
-// research tool contract, so a model that emits one is trying to reintroduce a
-// location or an issue binding; dropping it keeps that attempt from ever
-// reaching the server.
-const FORBIDDEN_ARGUMENTS = [
-  "issue",
-  "worktree",
-  "worktree_path",
-  "worktreePath",
-  "checkout_path",
-  "repo_identity",
-  "lease_id",
-  "cwd",
-  "directory",
-  "path",
-];
 
 // Whether the phasegent MCP server was registered for this plugin activation.
 // Module state rather than a per-event argument, because registration happens
-// once in `setup` and the backend decision must agree with it for every call.
+// once in `setup` and the entry's state must agree with it for every call.
 let registered = false;
 
 export function mcpRegistered() {
@@ -107,67 +49,6 @@ export function mcpRegistered() {
 
 export function forgetMcpRegistration() {
   registered = false;
-}
-
-// The error prefix for a delegation the bridge refuses. It mirrors the
-// placement failure contract: a throw from the hook is the host's way of
-// cancelling one invocation, so the call is cancelled instead of being sent
-// without a host identity.
-export const BINDING_ERROR_PREFIX = "phasegent: research session binding";
-
-// The refusal reasons, kept as a closed set so a caller can branch and a test
-// can assert them.
-export const REFUSALS = {
-  NOT_RESEARCH: "not-a-research-tool",
-  NO_SESSION: "no-host-session",
-  NO_ARGS: "no-mutable-arguments",
-};
-
-// Bind the calling host session into a research tool's arguments.
-//
-// Returns a decision rather than throwing, except for the refusal cases: a
-// missing host session or a hook event with no mutable argument object throws
-// with `BINDING_ERROR_PREFIX`, which cancels the pending call. A non-research
-// tool is a no-op, and so is a different phasegent tool.
-export function bindResearchSession(event) {
-  const action = researchActionForTool(event && event.tool);
-  if (action === null) return { bound: false, reason: REFUSALS.NOT_RESEARCH, action: null };
-  const sessionId = event ? event.sessionID : undefined;
-  if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
-    throw new Error(
-      `${BINDING_ERROR_PREFIX} refused: this invocation carries no host session id, so the ` +
-        `research ${action} call cannot be bound to its owner and is cancelled`,
-    );
-  }
-  // OpenCode passes the mutable arguments as `output.args` for an MCP call
-  // (packages/opencode/src/session/tools.ts:105-112). `input` is the shape the
-  // local-tool path uses, so it is accepted as the fallback rather than
-  // assuming one host build.
-  const args = mutableArguments(event);
-  if (!args) {
-    throw new Error(
-      `${BINDING_ERROR_PREFIX} refused: the research ${action} call exposed no mutable ` +
-        "arguments, so the host session could not be bound and the call is cancelled",
-    );
-  }
-  for (const key of FORBIDDEN_ARGUMENTS) delete args[key];
-  // The single overwrite that makes the delegation authorized: whatever the
-  // model emitted here is discarded and replaced with this host session.
-  args[HOST_SESSION_FIELD] = sessionId.trim();
-  return { bound: true, reason: null, action };
-}
-
-// The mutable argument object for one hook event, or `null` when the host
-// exposed none.
-export function mutableArguments(event) {
-  if (!event || typeof event !== "object") return null;
-  if (event.output && typeof event.output === "object" && event.output.args) {
-    return event.output.args;
-  }
-  if (event.input && typeof event.input === "object") {
-    return event.input;
-  }
-  return null;
 }
 
 // The local MCP server entry phasegent needs: the CLI in stdio mode, with the
@@ -221,17 +102,15 @@ export function applyServer(draft, definition) {
 //
 // Every failure is a warning and a no-op, never a throw: a throw inside a
 // plugin callback disables the whole plugin, redirect hook included (issue #533
-// host evidence). The native `explore` path stays the fallback either way, so
-// an unavailable, unrecognised, or rejected registration costs the delegation
-// and nothing else.
+// host evidence). An unavailable, unrecognised, or rejected registration costs
+// the tracking tools and nothing else.
 export async function registerPhasegentMcp(context) {
   const mcp = context ? context.mcp : undefined;
   const transform = mcp && mcp.transform;
   if (typeof transform !== "function") {
     registered = false;
     warn(
-      "phasegent: host exposes no mcp.transform; the phasegent MCP server stays unregistered " +
-        "and research delegation uses the native path",
+      "phasegent: host exposes no mcp.transform; the phasegent MCP server stays unregistered",
     );
     return { registered: false, reason: "no-mcp-transform" };
   }
@@ -242,7 +121,7 @@ export async function registerPhasegentMcp(context) {
       if (!draft || typeof draft.get !== "function" || typeof draft.set !== "function") {
         warn(
           "phasegent: host mcp draft exposes no get/set; the phasegent MCP server stays " +
-            "unregistered and research delegation uses the native path",
+            "unregistered",
         );
         return;
       }
@@ -259,12 +138,11 @@ export async function registerPhasegentMcp(context) {
   }
   // The entry is only "registered" once the host's own state reports it, which
   // is the same test the host's config plugin relies on. Anything else leaves
-  // the delegation unavailable rather than advertising tools that cannot run.
+  // the tools unavailable rather than advertising a server that cannot run.
   if (!present) {
     registered = false;
     warn(
-      "phasegent: host mcp state does not carry the phasegent server after registration; " +
-        "research delegation uses the native path",
+      "phasegent: host mcp state does not carry the phasegent server after registration",
     );
     return { registered: false, reason: "entry-not-confirmed" };
   }
@@ -279,25 +157,4 @@ export async function registerPhasegentMcp(context) {
   }
   registered = true;
   return { registered: true, reason: null };
-}
-
-// The delegation backend for one host event: the phasegent ACP path when the
-// server is registered, the caller is a role whose MCP surface carries the
-// delegation, and the host supplied a session; otherwise the native OpenCode
-// `explore` subagent. The reason is returned rather than only logged, because a
-// caller has to be able to say which path it took.
-//
-// The delegating session is the caller: ownership is bound to the session that
-// starts the run, not to the research child, so every later status/wait/cancel/
-// resume for that run resolves the same caller.
-export function researchBackend(event, registered) {
-  if (!registered) return { backend: "native", reason: "mcp-not-registered" };
-  if (!isDelegatingSession(event)) {
-    return { backend: "native", reason: "not-a-delegating-role" };
-  }
-  const sessionId = event ? event.sessionID : undefined;
-  if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
-    return { backend: "native", reason: "no-host-session" };
-  }
-  return { backend: "phasegent", reason: null, sessionId: sessionId.trim() };
 }

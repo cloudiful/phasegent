@@ -71,7 +71,7 @@ import { rewritePhasegentCommand } from "./command.js";
 import { discoverWorktreeForSession, ensureSessionWorktree } from "./discovery.js";
 import { createRedirectHook } from "./hook.js";
 import { isAbsolutePath, redirectPathValue, redirectPaths } from "./paths.js";
-import { agentName, agentRole, isDelegatingSession, isSubagentSession } from "./roles.js";
+import { agentName, agentRole, isSubagentSession } from "./roles.js";
 import { errorText, warn } from "./runtime.js";
 import {
   inheritedWorktree,
@@ -84,23 +84,14 @@ import {
 } from "./session.js";
 import { registerAgentSkills, roleSkillContent, roleSkillId, withSkillPrefix } from "./agents.js";
 import {
-  BINDING_ERROR_PREFIX,
-  HOST_SESSION_FIELD,
   MCP_SERVER_ROLE,
   PHASEGENT_MCP_SERVER,
-  REFUSALS,
-  RESEARCH_ACTIONS,
   applyServer,
-  bindResearchSession,
   forgetMcpRegistration,
   hasPhasegentServer,
   mcpRegistered,
-  mutableArguments,
   phasegentMcpServerDefinition,
   registerPhasegentMcp,
-  researchActionForTool,
-  researchBackend,
-  researchToolId,
 } from "./mcp.js";
 import { registerSkill, roleSkillDefinitions, skillDefinition, skillDefinitions } from "./skills.js";
 import {
@@ -120,15 +111,13 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: worktree strategy registration failed (${errorText(error)})`);
     }
     try {
-      // Registering the MCP server is what makes the phasegent research
-      // delegation available. A refused or unrecognised config surface is a
-      // warning and a no-op: the native `explore` subagent stays the explicit
-      // fallback and nothing else about the adapter changes.
+      // Registering the MCP server exposes the contracted tracking tools. A
+      // refused or unrecognised config surface is a warning and a no-op, so
+      // nothing else about the adapter changes.
       const registration = await registerPhasegentMcp(context);
       if (!registration.registered) {
         warn(
-          `phasegent: research delegation is unavailable (${registration.reason}); ` +
-            "the native OpenCode `explore` child stays the path",
+          `phasegent: MCP tracking tools are unavailable (${registration.reason})`,
         );
       }
     } catch (error) {
@@ -175,7 +164,6 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   redirectPaths,
   agentName,
   agentRole,
-  isDelegatingSession,
   isSubagentSession,
   sessionPlaced,
   rewritePhasegentCommand,
@@ -205,23 +193,14 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   roleSkillId,
   roleSkillContent,
   withSkillPrefix,
-  BINDING_ERROR_PREFIX,
-  HOST_SESSION_FIELD,
   MCP_SERVER_ROLE,
   PHASEGENT_MCP_SERVER,
-  REFUSALS,
-  RESEARCH_ACTIONS,
   applyServer,
-  bindResearchSession,
   forgetMcpRegistration,
   hasPhasegentServer,
   mcpRegistered,
-  mutableArguments,
   phasegentMcpServerDefinition,
   registerPhasegentMcp,
-  researchActionForTool,
-  researchBackend,
-  researchToolId,
 });
 
 export default PhasegentWorktreePlugin;

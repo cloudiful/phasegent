@@ -1,11 +1,8 @@
 //! The composed tool router and the one role gate every MCP entry point uses.
 //!
-//! The server serves two tool groups — the tracking tools declared in
-//! [`tools`](super::tools) and the research delegation in
-//! [`research_tools`](super::research_tools) — so the router is composed here
-//! rather than in either handler module. `ToolRouter` is additive, which keeps
-//! the composition to one expression and keeps both handler modules free of
-//! knowledge about each other.
+//! The server serves the tracking tools declared in [`tools`](super::tools);
+//! the router is composed here so the handler module stays free of knowledge
+//! about the composition.
 //!
 //! The role gate lives here too, and in one place: [`PhasegentMcpServer::gate`]
 //! is called by the protocol-level `tools/call` before the router deserializes
@@ -28,9 +25,9 @@ use super::tool_registry::{self, McpToolSpec};
 use super::tools::PhasegentMcpServer;
 
 impl PhasegentMcpServer {
-    /// Every served tool: the tracking router plus the research router.
+    /// Every served tool: the tracking router.
     pub(crate) fn tool_router() -> ToolRouter<Self> {
-        Self::tracking_tool_router() + Self::research_tool_router()
+        Self::tracking_tool_router()
     }
 
     /// The role gate for one declared tool. `None` for the open

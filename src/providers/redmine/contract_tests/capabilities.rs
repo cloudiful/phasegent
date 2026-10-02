@@ -326,6 +326,10 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         ),
         1
     );
+
+    drop(storage);
+    drop(_db_path_guard);
+    let _ = fs::remove_dir_all(&directory);
 }
 
 #[test]
