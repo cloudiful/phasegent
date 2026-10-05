@@ -1,5 +1,5 @@
 // Acquired-worktree registry and session placement (issue #440; parent
-// inheritance issue #567; move-only fail-closed placement issue 623).
+// inheritance issue #567; prompt-time placement issue 37).
 //
 // `ctx.session.move` relocates a session, and the host's session info
 // (`ctx.session.get`) reports a Task-spawned child's `parentID` plus the
@@ -10,40 +10,42 @@
 // `activeWorktree` stays the fallback for sessions whose parentage the host
 // cannot report. An empty registry still tries parent inheritance, so only a
 // session with neither a recorded nor an inherited worktree stays untouched.
+// Every placement is decided once per session from the session prompt hook, so
+// no tool call is ever cancelled to move a session and no landing check has to
+// re-read the host record.
 
 import { errorText, locationDirectory } from "./runtime.js";
 
-// Every error the fail-closed placement itself raises starts with this prefix
-// (issue 623): `discovery.ensureSessionWorktree` rethrows exactly these past
-// its guarded probe, so a move rejection cancels the pending tool call while
-// an ordinary discovery failure still degrades to the current checkout.
+// Every error the placement itself raises starts with this prefix (issue 37):
+// `discovery.ensureSessionWorktree` rethrows exactly these past its guarded
+// probe, so a move the host cannot perform fails the prompt instead of running
+// the turn in the old checkout, while an ordinary discovery failure still
+// degrades to the current checkout.
 export const PLACEMENT_ERROR_PREFIX = "phasegent: session placement";
 
 export const sessionWorktrees = new Map();
 let activeWorktree = null;
 const moveAttempts = new Map();
-const movedSessions = new Set();
 const placedSessions = new Set();
 const sessionInfo = new Map();
 const closedIssues = new Set();
 
-// `sessionPlaced` reports a *confirmed* placement: the host itself says the
-// session sits in the worktree (it started there, or the admitted move landed).
+// `sessionPlaced` reports a *settled* placement: the session already sat in the
+// worktree, or its move was admitted and the runner applies it at the next step
+// boundary. Either way the decision is made, so later prompts never re-move it.
 export function sessionPlaced(sessionId) {
   return sessionId !== undefined && sessionId !== null && placedSessions.has(String(sessionId));
 }
 
-// Records a host-confirmed placement (the session's reported directory is the
-// worktree) so the call proceeds without a move and later calls skip it.
+// Records a placement the host already confirms (the session's reported
+// directory is the worktree) so no move is issued for it.
 export function markPlaced(sessionId) {
   if (sessionId === undefined || sessionId === null) return;
-  const key = String(sessionId);
-  placedSessions.add(key);
-  movedSessions.add(key);
+  placedSessions.add(String(sessionId));
 }
 
 // A refused acquisition is remembered per issue: the session stays in the
-// main checkout, and the next tool call must not repeat the lease probe or
+// main checkout, and the next prompt must not repeat the lease probe or
 // the warning.
 export function issueKnownClosed(issueId) {
   return closedIssues.has(String(issueId));
@@ -72,7 +74,6 @@ export function worktreeForSession(sessionId) {
 export function resetWorktrees() {
   sessionWorktrees.clear();
   moveAttempts.clear();
-  movedSessions.clear();
   placedSessions.clear();
   sessionInfo.clear();
   closedIssues.clear();
@@ -81,8 +82,8 @@ export function resetWorktrees() {
 
 // `context.session.get` is the host's session lookup: `parentID` names the
 // session that spawned this one, and `location.directory` is where the session
-// runs. The result is cached per session because the hook must not add a host
-// call to every tool call; a failed lookup stays uncached so a later call can
+// runs. The result is cached per session because the prompt hook must not add a
+// host call to every turn; a failed lookup stays uncached so a later prompt can
 // still inherit.
 export async function readSessionInfo(context, sessionId) {
   if (sessionId === undefined || sessionId === null) return null;
@@ -124,17 +125,16 @@ export async function inheritedWorktree(context, parentId, readInfo) {
 }
 
 // `context.session.move` hands an active runner the placement at its next step
-// boundary (packages/core/src/session/move.ts, runner/llm.ts), so admitting a
-// move never makes the initiating tool call safe — it is still running in the
-// old directory. Every call that finds the placement not yet effective fails
-// closed (issue 623): the error carries `PLACEMENT_ERROR_PREFIX`, reaches the
-// `tool.execute.before` hook, and OpenCode cancels that invocation; the next
-// invocation retries and, once the host confirms the session sits in the
-// target, runs placed. `moveAttempts` joins concurrent callers onto one
-// placement so they inherit the same outcome, and a failure clears with the
-// attempt so the next call retries. A session that already sits in the target
-// directory (`currentDirectory`, else the plugin location) is placed without a
-// move, and a second call after a successful placement is a no-op.
+// boundary (packages/core/src/session/move.ts, runner/llm.ts). Placement runs
+// from the session prompt hook (issue 37), which is admitted before the runner
+// reaches any tool call, so the move lands before the first tool call of the
+// turn: there is no in-flight call to protect and nothing to cancel. The move
+// itself still fails closed — a host that cannot move the session raises a
+// prefixed error that fails the prompt, so no turn is ever run unplaced.
+// `moveAttempts` joins concurrent prompts onto one placement, and a failure
+// clears with the attempt so the next prompt retries. A session that already
+// sits in the target directory (`currentDirectory`, else the plugin location)
+// is placed without a move, and every later prompt is a no-op.
 export async function moveSessionToWorktree(context, sessionId, directory, currentDirectory) {
   if (typeof directory !== "string" || directory.length === 0) return;
   if (sessionId === undefined || sessionId === null) return;
@@ -152,30 +152,13 @@ export async function moveSessionToWorktree(context, sessionId, directory, curre
     return;
   }
   const attempt = (async () => {
-    if (movedSessions.has(key)) {
-      // A previous call already admitted the move. The host's own session
-      // record is the only proof the placement has landed — the runner applies
-      // it at a step boundary, so a cached discovery snapshot still shows the
-      // old directory.
-      const landed = await hostSessionDirectory(context, sessionId);
-      if (landed !== directory) {
-        throw new Error(
-          `${PLACEMENT_ERROR_PREFIX} pending for '${key}': the move to ${directory} has not ` +
-            "landed yet; this invocation is cancelled so it does not run in the old " +
-            "directory, and the next invocation retries",
-        );
-      }
-      placedSessions.add(key);
-      return;
-    }
     const current =
       typeof currentDirectory === "string" && currentDirectory.length > 0
         ? currentDirectory
         : locationDirectory(context);
     if (current === directory) {
-      movedSessions.add(key); // the session already sits in the worktree
-      placedSessions.add(key);
-      return;
+      placedSessions.add(key); // the session already sits in the worktree
+      return directory;
     }
     const move = context && context.session && context.session.move;
     if (typeof move !== "function") {
@@ -189,17 +172,11 @@ export async function moveSessionToWorktree(context, sessionId, directory, curre
     } catch (error) {
       throw new Error(
         `${PLACEMENT_ERROR_PREFIX} failed for '${key}': moving to ${directory} rejected ` +
-          `(${errorText(error)}); the next invocation retries`,
+          `(${errorText(error)}); the next prompt retries`,
       );
     }
-    movedSessions.add(key);
-    // The move is admitted but lands after this tool call ends, so the
-    // initiating call is cancelled and the model's retry runs placed.
-    throw new Error(
-      `${PLACEMENT_ERROR_PREFIX} pending for '${key}': the move to ${directory} is admitted ` +
-        "and lands at the runner's next step boundary; this invocation is cancelled so " +
-        "it does not run in the old directory, and the retry runs placed",
-    );
+    placedSessions.add(key);
+    return directory;
   })();
   moveAttempts.set(key, attempt);
   try {
@@ -207,24 +184,6 @@ export async function moveSessionToWorktree(context, sessionId, directory, curre
   } finally {
     if (moveAttempts.get(key) === attempt) moveAttempts.delete(key);
   }
-}
-
-// The un-cached host lookup that confirms a landing move: the placement check
-// must see the current record, not the pre-move snapshot `readSessionInfo`
-// may have cached.
-async function hostSessionDirectory(context, sessionId) {
-  const get = context && context.session && context.session.get;
-  if (typeof get !== "function") return null;
-  try {
-    const result = await get({ sessionID: sessionId });
-    if (result && typeof result === "object" && result.location) {
-      const directory = result.location.directory;
-      return typeof directory === "string" && directory.length > 0 ? directory : null;
-    }
-  } catch (_) {
-    return null;
-  }
-  return null;
 }
 
 // The registry fallback: a sub-agent whose session id was never remembered

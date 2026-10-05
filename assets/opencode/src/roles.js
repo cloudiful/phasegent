@@ -1,9 +1,10 @@
 // Agent-role mapping for session events (issue #541).
 //
-// `event.agent` is the agent id the host reports for the current tool call;
-// the role decides both command rewriting and whether the session may acquire
-// a worktree. `explore` is recon-only and maps to the reviewer capability
-// surface.
+// `event.agent` is the agent id the host reports for the current tool call, and
+// the role decides command rewriting: the per-invocation `PHASEGENT_ROLE` scope,
+// a sub-agent's refusal of the orchestrator-only `issue create`/`bind`, and the
+// downgrade of a claimed elevated role. `explore` is recon-only and maps to the
+// reviewer capability surface.
 
 export const AGENT_ROLE_HINTS = [
   ["orchestrator", "orchestrator"],

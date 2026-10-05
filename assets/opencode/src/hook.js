@@ -1,33 +1,44 @@
-// The v2 `tool.execute.before` hook: one mutable event
+// The v2 runtime hooks: placement, and phasegent command rewriting.
+//
+// `context.session.hook("prompt", event)` receives the same mutable payload
+// object for every submitted turn (`{ sessionID, messageID, prompt, metadata,
+// delivery }`, core `SessionPrompt.prepare`). It owns the whole placement
+// decision (issue 37): the session is registered, inherited, or discovered and
+// then moved before the runner reaches any tool call, so the move lands at the
+// runner's next step boundary with no in-flight invocation to protect and
+// nothing to cancel. A host that cannot move the session still fails the prompt,
+// so no turn runs unplaced.
+//
+// `context.tool.hook("execute.before", event)` receives
 // `{ tool, sessionID, agent, messageID, id, input }`; core continues with the
 // returned `event.input` and rethrows a hook error before the tool executes
-// (packages/core/src/tool.ts:103-111, :271-280). Placement is move-only
-// (issue 623): `ensureSessionWorktree` throws when a required `session.move`
-// is unavailable, fails, or is still landing at a step boundary, so OpenCode
-// cancels that invocation instead of running it against the old checkout; the
-// next invocation retries the placement. Shell command rewriting (role/session
-// injection) runs regardless of placement and stays independent of it.
+// (packages/core/src/tool.ts:103-111, :271-280). It only rewrites shell
+// commands, so phasegent invocations carry their role and session and a
+// sub-agent cannot run the orchestrator-only `issue create`/`bind`. It holds no
+// placement state and raises no placement error.
 
 import { rewritePhasegentCommand } from "./command.js";
 import { ensureSessionWorktree } from "./discovery.js";
 import { SHELL_TOOLS } from "./paths.js";
 
-export function createRedirectHook(context, deps) {
+export function createRedirectHook() {
   return async function executeBefore(event) {
-    const sessionId = event ? event.sessionID : undefined;
-    const input = event ? event.input : undefined;
-    // A no-worktree session resolves to null and the call proceeds; a required
-    // placement that is unavailable, fails, or is still landing throws out of
-    // the hook, which is the host's contract for cancelling the pending call
-    // (issue 623). The retry then runs placed.
-    await ensureSessionWorktree(context, sessionId, event, deps);
-    if (!input || typeof input !== "object") return;
-    if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
-      try {
-        const rewritten = rewritePhasegentCommand(input.command, sessionId, event);
-        if (rewritten !== input.command) input.command = rewritten;
-      } catch (_) {
-      }
+    if (!event || typeof event.input !== "object") return;
+    const command = event.input.command;
+    if (!SHELL_TOOLS.includes(event.tool) || typeof command !== "string") return;
+    try {
+      const rewritten = rewritePhasegentCommand(command, event.sessionID, event);
+      if (rewritten !== command) event.input.command = rewritten;
+    } catch (_) {
     }
+  };
+}
+
+// The prompt hook mutates the payload in place: the host keeps the object it
+// passed, so the handler only has to read `sessionID`.
+export function createPromptHook(context, deps) {
+  return async function onPrompt(event) {
+    if (!event) return;
+    await ensureSessionWorktree(context, event.sessionID, deps);
   };
 }

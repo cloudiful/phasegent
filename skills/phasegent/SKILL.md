@@ -267,14 +267,13 @@ Leases are keyed by `(repo, issue, session)` and the adapter installed by
 owns the session identity and the lease side, so no session id, worktree path,
 or lease call travels between sessions. Wiring is automatic: never mint a fresh
 session id per command or per phase, and a child session inherits its parent's
-worktree on its first tool call. When a session has a known worktree, placement
-uses `session.move` before the tool executes; no-worktree and already-placed
-sessions continue normally. If the required move is unavailable, fails, or is
-still landing at the runner's next step boundary, the `tool.execute.before`
-hook throws so OpenCode cancels that invocation instead of running it in the
-old checkout; the next invocation retries and proceeds once the host confirms
-the session sits in the target. Only ordinary discovery failures keep the
-original directory.
+worktree from the session prompt hook, before the child's runner reaches its
+first tool call. Placement is decided once per session during prompt admission
+and uses `session.move`: a registered, inherited, or already leased worktree is
+entered there, while a no-worktree session continues normally and the placement
+is never repeated. If the required move is unavailable or the host rejects it,
+the prompt hook throws so the turn is not run in the old checkout, and the next
+prompt retries; only ordinary discovery failures keep the original directory.
 
 Creating a worktree is opt-in: `issue create` and the adapter's lazy path
 reuse an existing lease, an inherited worktree, or the current checkout, and a

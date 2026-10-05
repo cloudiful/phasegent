@@ -28,6 +28,7 @@ const {
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
+  createPromptHook,
   pickActiveWorktreePath,
   issueClosedLocally,
   ensureSessionWorktree,
@@ -92,14 +93,20 @@ describe("plugin module shape (v2)", () => {
     expect(PhasegentWorktreePlugin.redirect).toBeObject();
   });
 
-  test("setup registers the tool hook and skill, and returns a cleanup", async () => {
+  test("setup registers the tool hook, the prompt hook and skill, and returns a cleanup", async () => {
     const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
     try {
       const registered = [];
       const context = {
         location: { directory: "/repo" },
-        session: { move: async () => {} },
+        session: {
+          move: async () => {},
+          hook: async (name, callback) => {
+            registered.push({ name, callback });
+            return { dispose: async () => {} };
+          },
+        },
         worktree: {
           transform: async () => ({ dispose: async () => {} }),
         },
@@ -128,14 +135,44 @@ describe("plugin module shape (v2)", () => {
       };
       const cleanup = await PhasegentWorktreePlugin.setup(context);
       expect(registered.map((item) => item.name)).toEqual([
+        "prompt",
         "execute.before",
         "skill.transform",
         "agent.transform",
       ]);
       expect(typeof registered[0].callback).toBe("function");
+      expect(typeof registered[1].callback).toBe("function");
       expect(typeof cleanup).toBe("function");
       await cleanup();
     } finally {
+      restoreNoDiscover(saved);
+    }
+  });
+
+  test("setup keeps the tool hook when the host exposes no session prompt hook", async () => {
+    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      const registered = [];
+      const cleanup = await PhasegentWorktreePlugin.setup({
+        location: { directory: "/repo" },
+        session: { move: async () => {} },
+        tool: {
+          hook: async (name) => {
+            registered.push(name);
+            return { dispose: async () => {} };
+          },
+        },
+      });
+      expect(registered).toEqual(["execute.before"]);
+      expect(warnings.join("\n")).toContain("no session prompt hook");
+      expect(typeof cleanup).toBe("function");
+      await cleanup();
+    } finally {
+      console.warn = original;
       restoreNoDiscover(saved);
     }
   });
@@ -323,126 +360,58 @@ describe("worktree registry", () => {
   });
 });
 
-describe("tool.execute.before hook (v2 single event)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
-  test("proceeds without a move when no worktree applies", async () => {
+describe("tool.execute.before hook (command rewriting only)", () => {
+  test("rewrites a phasegent command and leaves every other tool alone", async () => {
     const hook = createRedirectHook();
-    const noWorktree = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await hook(noWorktree);
-    // No worktree, no placement requirement: the call is untouched.
-    expect(noWorktree.input.path).toBe("src/a.rs");
-
-    rememberWorktree("session-1", WORKTREE);
-    const absolute = { tool: "read", sessionID: "session-1", input: { path: "/etc/hosts" } };
-    const moves = [];
-    const context = {
-      location: { directory: WORKTREE },
-      session: { move: async (input) => moves.push(input) },
-    };
-    const placedHook = createRedirectHook(context);
-    await placedHook(absolute);
-    // The plugin location is the worktree, so the session is placed without a
-    // move and absolute paths are never touched (issue 623: no rewriting).
-    expect(absolute.input.path).toBe("/etc/hosts");
-    expect(moves).toEqual([]);
-  });
-
-  test("ignores calls without input", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const moves = [];
-    const context = {
-      location: { directory: WORKTREE },
-      session: { move: async (input) => moves.push(input) },
-    };
-    const hook = createRedirectHook(context);
-    await hook({ tool: "shell", sessionID: "session-1" });
-    expect(moves).toEqual([]); // placed without a move; no error path needed
-  });
-
-  test("places the session and lets the retry proceed placed", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const moves = [];
-    const sessions = {
-      "session-1": { parentID: null, location: { directory: "/repo" } },
-    };
-    const context = {
-      location: { directory: "/repo" },
-      session: {
-        move: async (input) => moves.push(input),
-        get: async ({ sessionID }) => sessions[sessionID],
-      },
-    };
-    const hook = createRedirectHook(context);
-    // The initiating call is cancelled: the move is only admitted and lands at
-    // the runner's next step boundary, after this call ends.
-    expect(
-      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
-    ).rejects.toThrow(/session placement pending/);
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
-
-    // The host record now shows the landing: the retry is placed and runs.
-    sessions["session-1"] = { parentID: null, location: { directory: WORKTREE } };
-    const retry = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await hook(retry);
-    // No path rewriting exists any more; the retry resolves the path in cwd.
-    expect(retry.input.path).toBe("src/a.rs");
-    expect(sessionPlaced("session-1")).toBe(true);
-    expect(moves).toHaveLength(1);
-  });
-
-  test("throws when the host exposes no session.move", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const hook = createRedirectHook({ location: { directory: "/repo" } });
-    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    // Fail closed: without a move capability the invocation is cancelled
-    // instead of running unplaced in the old checkout.
-    expect(hook(event)).rejects.toThrow(/session placement unavailable.*session\.move/);
-  });
-
-  test("throws when the session move rejects", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const context = {
-      location: { directory: "/repo" },
-      session: {
-        move: async () => {
-          throw new Error("destination unavailable");
-        },
-      },
-    };
-    const hook = createRedirectHook(context);
-    const event = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    expect(hook(event)).rejects.toThrow(/session placement failed.*destination unavailable/);
-  });
-
-  test("still rewrites commands for an already placed session", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const context = {
-      location: { directory: WORKTREE },
-      session: { move: async () => {} },
-    };
-    const hook = createRedirectHook(context);
-    await hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } });
-    expect(sessionPlaced("session-1")).toBe(true);
-
-    const event = {
+    const shell = {
       tool: "shell",
       sessionID: "session-1",
       agent: "orchestrator",
       input: { command: "phasegent issue get 1" },
     };
-    await hook(event);
-    // Command rewriting is independent of the placement state.
-    expect(event.input.command).toBe("PHASEGENT_ROLE=orchestrator phasegent issue get 1");
-    expect(event.input.workdir).toBeUndefined();
+    await hook(shell);
+    expect(shell.input.command).toBe("PHASEGENT_ROLE=orchestrator phasegent issue get 1");
+    expect(shell.input.workdir).toBeUndefined();
+
+    const read = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(read);
+    expect(read.input.path).toBe("src/a.rs");
+  });
+
+  test("never places a session and never raises a placement error", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("child-1", WORKTREE);
+    // The hook takes no context, but a recording spy is passed anyway: if it ever
+    // regained a placement path, the move would land in `moves` (and a host
+    // without `session.move` would surface a prefixed placement error) instead of
+    // this assertion passing on a counter nothing writes to.
+    const moves = [];
+    const spy = { session: { move: async (input) => moves.push(input) } };
+    const hook = createRedirectHook(spy);
+    const read = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    const child = {
+      tool: "read",
+      sessionID: "child-1",
+      agent: "executor",
+      input: { path: "src/a.rs" },
+    };
+    await expect(hook(read)).resolves.toBeUndefined();
+    await expect(hook(child)).resolves.toBeUndefined();
+    // No placement state was consulted or produced, and arguments are untouched.
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(false);
+    expect(sessionPlaced("child-1")).toBe(false);
+    expect(read.input.path).toBe("src/a.rs");
+    expect(child.input.path).toBe("src/a.rs");
+  });
+
+  test("ignores calls without input, a command, or a shell tool", async () => {
+    const hook = createRedirectHook();
+    await expect(hook(undefined)).resolves.toBeUndefined();
+    await expect(hook({ tool: "shell", sessionID: "session-1" })).resolves.toBeUndefined();
+    const other = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
+    await hook(other);
+    expect(other.input.command).toBeUndefined();
   });
 
   test("refuses issue create for a sub-agent session", async () => {
@@ -458,44 +427,9 @@ describe("tool.execute.before hook (v2 single event)", () => {
     expect(event.input.command.endsWith("; false")).toBe(true);
     expect(event.input.command).not.toContain("--title");
   });
-
-  test("resetWorktrees clears move attempts and placements", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const moves = [];
-    const context = {
-      location: { directory: "/repo" },
-      session: { move: async (input) => moves.push(input) },
-    };
-    const hook = createRedirectHook(context);
-    await expect(
-      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
-    ).rejects.toThrow(/session placement pending/);
-    expect(sessionPlaced("session-1")).toBe(false);
-
-    resetWorktrees();
-    expect(sessionPlaced("session-1")).toBe(false);
-
-    rememberWorktree("session-1", WORKTREE);
-    // The attempt set was cleared too, so a fresh move is allowed.
-    await expect(
-      hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } }),
-    ).rejects.toThrow(/session placement pending/);
-    expect(moves).toHaveLength(2);
-  });
-
-  test("never rewrites tool arguments for placement (issue 623)", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    const hook = createRedirectHook();
-    const read = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
-    await expect(hook(read)).rejects.toThrow(/session placement unavailable/);
-    expect(read.input.path).toBe("src/a.rs");
-    const shell = { tool: "shell", sessionID: "session-1", input: { command: "pwd" } };
-    await expect(hook(shell)).rejects.toThrow(/session placement unavailable/);
-    expect(shell.input.workdir).toBeUndefined();
-  });
 });
 
-describe("parent-inherit worktree (issue #567)", () => {
+describe("session prompt hook: worktree placement (issue 37)", () => {
   let savedNoDiscover;
   beforeEach(() => {
     savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
@@ -525,7 +459,11 @@ describe("parent-inherit worktree (issue #567)", () => {
     };
   }
 
-  test("moves a child into the parent's registered worktree on its first call", async () => {
+  function promptEvent(sessionID) {
+    return { sessionID, messageID: "msg-1", prompt: { text: "do the phase" }, delivery: "steer" };
+  }
+
+  test("moves a child into the parent's registered worktree on its first prompt", async () => {
     rememberWorktree("parent-1", WORKTREE);
     // A stale global fallback must not win over the parent's own target.
     rememberWorktree("other-session", "/wt/other");
@@ -534,20 +472,21 @@ describe("parent-inherit worktree (issue #567)", () => {
       "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
       "parent-1": { parentID: null, location: { directory: "/wt/host-parent" } },
     };
-    const context = hostContext(sessions, moves);
-    const hook = createRedirectHook(context, noCliDeps);
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
 
-    // The first call only admits the move; it is cancelled so it cannot run
-    // in the parent's old directory (issue 623).
-    await expect(
-      hook({ tool: "read", sessionID: "child-1", agent: "executor", input: { path: "src/a.rs" } }),
-    ).rejects.toThrow(/session placement pending/);
+    // The prompt is not cancelled: it has run no tool in the old directory, so
+    // the move is admitted and lands at the runner's next step boundary, before
+    // the child's first tool call.
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
     expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
 
-    // The retry sees the landed host record and proceeds placed.
+    // A second prompt before the landing is still admitted, never cancelled.
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toHaveLength(1);
+
+    // The host applied the move: the child is placed and stays that way.
     sessions["child-1"] = { parentID: "parent-1", location: { directory: WORKTREE } };
-    const retry = { tool: "read", sessionID: "child-1", agent: "executor", input: { path: "src/a.rs" } };
-    await hook(retry);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
     expect(sessionPlaced("child-1")).toBe(true);
     expect(moves).toHaveLength(1);
   });
@@ -560,76 +499,280 @@ describe("parent-inherit worktree (issue #567)", () => {
       "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
       "parent-1": { parentID: null, location: { directory: WORKTREE } },
     };
-    const context = hostContext(sessions, moves);
-    const hook = createRedirectHook(context, noCliDeps);
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
 
-    await expect(
-      hook({ tool: "shell", sessionID: "child-1", agent: "explore", input: { command: "pwd" } }),
-    ).rejects.toThrow(/session placement pending/);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
     expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
   });
 
   test("leaves a child that already sits in the parent's directory untouched", async () => {
     const moves = [];
-    const context = hostContext(
-      {
-        "child-1": { parentID: "parent-1", location: { directory: WORKTREE } },
-        "parent-1": { parentID: null, location: { directory: WORKTREE } },
-      },
-      moves,
-    );
-    const hook = createRedirectHook(context, noCliDeps);
-
-    const read = {
-      tool: "read",
-      sessionID: "child-1",
-      agent: "executor",
-      input: { path: "src/a.rs" },
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: WORKTREE } },
+      "parent-1": { parentID: null, location: { directory: WORKTREE } },
     };
-    await hook(read);
-    // The child already runs in the parent's directory: placed without a move,
-    // and nothing is rewritten.
-    expect(read.input.path).toBe("src/a.rs");
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
+
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    // The child already runs in the parent's directory: placed without a move.
     expect(moves).toEqual([]);
     expect(sessionPlaced("child-1")).toBe(true);
-
-    const glob = {
-      tool: "glob",
-      sessionID: "child-1",
-      agent: "executor",
-      input: { pattern: "*.rs" },
-    };
-    await hook(glob);
-    expect(glob.input.path).toBeUndefined();
   });
 
   test("keeps a child in place when the parent has no worktree", async () => {
     rememberWorktree("other-session", "/wt/other");
     const moves = [];
-    const context = hostContext(
-      {
-        "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
-        "parent-1": { parentID: null, location: { directory: "/repo" } },
-      },
-      moves,
-    );
-    const hook = createRedirectHook(context, noCliDeps);
-
-    const event = {
-      tool: "read",
-      sessionID: "child-1",
-      agent: "reviewer",
-      input: { path: "src/a.rs" },
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: "/repo" } },
     };
-    await hook(event);
-    expect(event.input.path).toBe("src/a.rs");
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
+
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
     expect(moves).toEqual([]);
   });
 
-  test("neither a sub-agent nor an orchestrator session creates a worktree lazily", async () => {
-    // Issue 616: the lazy path never creates a directory. The sub-agent stops
-    // early, and the orchestrator session with no reusable lease stays in the
-    // current checkout and gets the explicit isolation guidance once.
+  test("ignores a session with no reported parent and an empty prompt event", async () => {
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: "/repo" } },
+    };
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
+
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    await expect(prompt(undefined)).resolves.toBeUndefined();
+    await expect(prompt({})).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+  });
+
+  test("fails the prompt when the host rejects the move", async () => {
+    rememberWorktree("parent-1", WORKTREE);
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+    };
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        get: async ({ sessionID }) => sessions[sessionID],
+        move: async () => {
+          throw new Error("destination unavailable");
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("child-1"))).rejects.toThrow(
+      /session placement failed.*destination unavailable/,
+    );
+  });
+
+  test("never places at tool time and keeps no placement fallback there", async () => {
+    rememberWorktree("parent-1", WORKTREE);
+    // A stale registry entry for a sibling must not become the child's target
+    // through the global fallback either.
+    rememberWorktree("other-session", "/wt/other");
+    const moves = [];
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: WORKTREE } },
+    };
+    const context = hostContext(sessions, moves);
+    const hook = createRedirectHook();
+
+    const event = { tool: "read", sessionID: "child-1", agent: "executor", input: { path: "a.rs" } };
+    // The tool hook never places a child and never raises a placement error.
+    await expect(hook(event)).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("child-1")).toBe(false);
+
+    // And the child still refuses the sibling's registry fallback: it takes its
+    // parent's directory or nothing, so the stale entry is never used.
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+  });
+
+  test("keeps the registry-only path when host discovery is disabled", async () => {
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    rememberWorktree("parent-1", WORKTREE);
+    rememberWorktree("child-1", WORKTREE);
+    const moves = [];
+    let lookups = 0;
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async (input) => moves.push(input),
+        get: async ({ sessionID }) => {
+          lookups += 1;
+          return { parentID: null, location: { directory: `/repo/${sessionID}` } };
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+
+    // A registered session still moves, with no parentage lookup and no CLI.
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+    expect(lookups).toBe(0);
+  });
+
+  test("moves a registered session and leaves later prompts a no-op", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: "/repo" } },
+    };
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
+
+    // The move is admitted and the prompt continues: no pending error, and the
+    // runner applies the placement at its next step boundary.
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
+    expect(sessionPlaced("session-1")).toBe(true);
+
+    // Already settled: a second prompt issues no further move, whether or not
+    // the host record has caught up yet.
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toHaveLength(1);
+  });
+
+  test("moves a session already sitting in the target without a move", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: WORKTREE } },
+    };
+    // The plugin already runs in the worktree, so no move is needed.
+    const context = { ...hostContext(sessions, moves), location: { directory: WORKTREE } };
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("fails the prompt when the host exposes no session.move", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: "/repo" } },
+    };
+    const context = { location: { directory: "/repo" }, session: { get: async () => sessions["session-1"] } };
+    const prompt = createPromptHook(context, noCliDeps);
+
+    // Fail closed: the prompt does not run unplaced in the old checkout.
+    await expect(prompt(promptEvent("session-1"))).rejects.toThrow(
+      /session placement unavailable.*session\.move/,
+    );
+  });
+
+  test("retries a failed move on the next prompt", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    let attempts = 0;
+    const moves = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        get: async () => ({ parentID: null, location: { directory: "/repo" } }),
+        move: async (input) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("runner not ready");
+          moves.push(input);
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+
+    // The rejected move fails this prompt and releases the attempt.
+    await expect(prompt(promptEvent("session-1"))).rejects.toThrow(
+      /session placement failed.*runner not ready/,
+    );
+    expect(sessionPlaced("session-1")).toBe(false);
+
+    // The next prompt retries, and the admitted move settles the placement.
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("resetWorktrees clears the settled placement so a fresh move is allowed", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        get: async () => ({ parentID: null, location: { directory: "/repo" } }),
+        move: async (input) => moves.push(input),
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toHaveLength(1);
+
+    resetWorktrees();
+    expect(sessionPlaced("session-1")).toBe(false);
+    expect(worktreeForSession("session-1")).toBeNull();
+
+    rememberWorktree("session-1", WORKTREE);
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toHaveLength(2);
+  });
+
+  test("resumes an existing child whose parent moved to another worktree", async () => {
+    rememberWorktree("parent-1", WORKTREE);
+    const moves = [];
+    // A resumed child still sits in the checkout it was started in, while the
+    // parent's registered target is a different worktree.
+    const sessions = {
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+    };
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+
+    // The parent moves again: the child follows on its next prompt.
+    const next = "/repo/.worktrees/issue-567";
+    resetWorktrees();
+    rememberWorktree("parent-1", next);
+    moves.length = 0;
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: next }]);
+  });
+
+  test("leaves a prompt event with no session id untouched", async () => {
+    const moves = [];
+    const context = hostContext({}, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt({ messageID: "msg-1", prompt: { text: "hi" } })).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(await ensureSessionWorktree(context, null)).toBeNull();
+  });
+});
+
+describe("worktree discovery and inheritance helpers (issue #567)", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  // `discover`/`readBinding` are stubbed so a missed inheritance fails loudly
+  // instead of spawning the phasegent CLI; `readSessionInfo` stays real and
+  // reads the fake host. The lazy path never creates a worktree on its own
+  // (issue 616), so there is no acquire seam to stub.
+  const noCliDeps = {
+    discover: async () => null,
+    readBinding: async () => 567,
+    readLeaseHistory: async () => [],
+  };
+
+  test("no session without a reusable lease creates a worktree lazily", async () => {
+    // Issue 616: the lazy path never creates a directory. A session with no
+    // reusable lease stays in the current checkout and gets the explicit
+    // isolation guidance once, and the guidance is not repeated per prompt.
     const moves = [];
     const warnings = [];
     const original = console.warn;
@@ -645,10 +788,8 @@ describe("parent-inherit worktree (issue #567)", () => {
       session: { move: async (input) => moves.push(input) },
     };
     try {
-      expect(await ensureSessionWorktree(context, "child-1", { agent: "executor" }, deps)).toBeNull();
-      expect(
-        await ensureSessionWorktree(context, "parent-1", { agent: "orchestrator" }, deps),
-      ).toBeNull();
+      expect(await ensureSessionWorktree(context, "parent-1", deps)).toBeNull();
+      expect(await ensureSessionWorktree(context, "parent-1", deps)).toBeNull();
     } finally {
       console.warn = original;
     }
@@ -660,63 +801,39 @@ describe("parent-inherit worktree (issue #567)", () => {
     expect(warnings[0]).toContain("--isolate");
   });
 
-  test("retries a failed session move on the next call", async () => {
-    rememberWorktree("session-1", WORKTREE);
-    let attempts = 0;
-    const context = {
-      location: { directory: "/repo" },
-      session: {
-        move: async () => {
-          attempts += 1;
-          if (attempts === 1) throw new Error("runner not ready");
-        },
-      },
-    };
-    const hook = createRedirectHook(context);
-
-    // The first attempt rejects the move; the invocation fails closed and the
-    // attempt is released so a later call can retry.
-    await expect(
-      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
-    ).rejects.toThrow(/session placement failed.*runner not ready/);
-    expect(sessionPlaced("session-1")).toBe(false);
-
-    // The retry succeeds: the move is admitted, this call is still cancelled
-    // (the placement lands at the next step boundary), and a later call
-    // confirms placement through the host record.
-    await expect(
-      hook({ tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } }),
-    ).rejects.toThrow(/session placement pending/);
-    expect(attempts).toBe(2);
-    expect(sessionPlaced("session-1")).toBe(false);
-  });
-
-  test("confirms a landing move through the host session record", async () => {
-    rememberWorktree("session-1", WORKTREE);
+  test("a discovered lease is reused, and a closed issue is refused", async () => {
     const moves = [];
-    const sessions = {
-      "session-1": { parentID: null, location: { directory: "/repo" } },
-    };
     const context = {
       location: { directory: "/repo" },
-      session: {
-        move: async (input) => moves.push(input),
-        get: async ({ sessionID }) => sessions[sessionID],
-      },
+      session: { move: async (input) => moves.push(input) },
     };
-    const hook = createRedirectHook(context);
+    expect(
+      await ensureSessionWorktree(context, "orch-1", {
+        readSessionInfo: async () => null,
+        discover: async () => WORKTREE,
+      }),
+    ).toBe(WORKTREE);
+    expect(moves).toEqual([{ sessionID: "orch-1", directory: WORKTREE }]);
 
-    await expect(
-      hook({ tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } }),
-    ).rejects.toThrow(/session placement pending/);
-
-    // The host applied the move at the step boundary: the next call proceeds
-    // placed, with no further move issued.
-    sessions["session-1"] = { parentID: null, location: { directory: WORKTREE } };
-    const placed = { tool: "read", sessionID: "session-1", input: { path: "src/b.rs" } };
-    await hook(placed);
-    expect(sessionPlaced("session-1")).toBe(true);
+    // A lease `issue close` converged keeps its release reason, so the lazy path
+    // refuses to rebuild a worktree for that issue.
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      expect(
+        await ensureSessionWorktree(context, "orch-2", {
+          readSessionInfo: async () => null,
+          discover: async () => null,
+          readBinding: async () => 567,
+          readLeaseHistory: async () => [{ status: "released", release_reason: "issue closed" }],
+        }),
+      ).toBeNull();
+    } finally {
+      console.warn = original;
+    }
     expect(moves).toHaveLength(1);
+    expect(warnings.join("\n")).toContain("issue 567 is closed");
   });
 
   test("caches the host session lookup and clears it with the registry", async () => {
@@ -1621,9 +1738,7 @@ describe("closed issue refusal (issue #575 P2)", () => {
     console.warn = (message) => warnings.push(String(message));
     try {
       const deps = capturingDeps();
-      expect(
-        await ensureSessionWorktree(orchContext(moves), "orch-1", { agent: "orchestrator" }, deps),
-      ).toBeNull();
+      expect(await ensureSessionWorktree(orchContext(moves), "orch-1", deps)).toBeNull();
     } finally {
       console.warn = original;
     }
@@ -1648,12 +1763,8 @@ describe("closed issue refusal (issue #575 P2)", () => {
         },
       });
       const context = orchContext(moves);
-      expect(
-        await ensureSessionWorktree(context, "orch-2", { agent: "orchestrator" }, deps),
-      ).toBeNull();
-      expect(
-        await ensureSessionWorktree(context, "orch-2", { agent: "orchestrator" }, deps),
-      ).toBeNull();
+      expect(await ensureSessionWorktree(context, "orch-2", deps)).toBeNull();
+      expect(await ensureSessionWorktree(context, "orch-2", deps)).toBeNull();
     } finally {
       console.warn = original;
     }
@@ -1677,12 +1788,8 @@ describe("closed issue refusal (issue #575 P2)", () => {
       ],
     });
     try {
-      expect(
-        await ensureSessionWorktree(orchContext(moves), "orch-3", { agent: "orchestrator" }, deps),
-      ).toBeNull();
-      expect(
-        await ensureSessionWorktree(orchContext(moves), "orch-3", { agent: "orchestrator" }, deps),
-      ).toBeNull();
+      expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
+      expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
     } finally {
       console.warn = original;
     }
@@ -1704,31 +1811,22 @@ describe("closed issue refusal (issue #575 P2)", () => {
           return [closedRow];
         },
       });
-      expect(
-        await ensureSessionWorktree(orchContext([]), "orch-4", { agent: "orchestrator" }, deps),
-      ).toBeNull();
+      expect(await ensureSessionWorktree(orchContext([]), "orch-4", deps)).toBeNull();
       expect(reads).toBe(0);
     } finally {
       restoreNoDiscover(saved);
     }
   });
 
-  test("the hook leaves a closed issue's session in place", async () => {
+  test("the prompt hook leaves a closed issue's session in place", async () => {
     const moves = [];
     const warnings = [];
     const original = console.warn;
     console.warn = (message) => warnings.push(String(message));
     try {
       const deps = capturingDeps();
-      const hook = createRedirectHook(orchContext(moves), deps);
-      const event = {
-        tool: "read",
-        sessionID: "orch-5",
-        agent: "orchestrator",
-        input: { path: "src/a.rs" },
-      };
-      await hook(event);
-      expect(event.input.path).toBe("src/a.rs");
+      const prompt = createPromptHook(orchContext(moves), deps);
+      await prompt({ sessionID: "orch-5", messageID: "m1", prompt: { text: "go" } });
     } finally {
       console.warn = original;
     }

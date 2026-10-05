@@ -983,13 +983,25 @@ fn adapter_template_documents_redirect_contract() {
     // The shell gets a bare/relative workdir; command rewriting (issue #541)
     // lives in the hook, not in the pure path redirect.
     assert!(source.contains("redirected.workdir = workdir"));
-    // Absolute paths pass through (pure helper contract). Placement itself is
-    // move-only and fails closed (issue 623): the hook throws a prefixed
-    // placement error so OpenCode cancels the invocation instead of rewriting
-    // tool arguments for placement.
+    // Absolute paths pass through (pure helper contract). Placement is a
+    // `session.move` that fails closed when the host cannot perform it, so a
+    // turn is never run unplaced instead of rewriting tool arguments.
     assert!(source.contains("if (isAbsolutePath(value)) return value"));
     assert!(source.contains("PLACEMENT_ERROR_PREFIX"));
-    assert!(source.contains("await ensureSessionWorktree"));
+    // Issue 37: the session prompt hook owns the whole placement decision and
+    // the tool hook carries command rewriting only, so no tool invocation is
+    // cancelled to move a session and no pending-placement safety fallback
+    // remains.
+    assert!(source.contains("context.session.hook"));
+    assert!(source.contains("createPromptHook"));
+    assert_eq!(source.matches("await ensureSessionWorktree(").count(), 1);
+    assert!(source.contains("await ensureSessionWorktree(context, event.sessionID, deps)"));
+    assert!(!source.contains("PLACEMENT_AT_PROMPT"));
+    assert!(!source.contains("session placement pending"));
+    // Obsolete placement state: the landing re-check only existed to decide
+    // whether to cancel the current tool call.
+    assert!(!source.contains("movedSessions"));
+    assert!(!source.contains("hostSessionDirectory"));
     // Issue 616: creating a worktree is opt-in. The lazy path never acquires
     // one — it stays in the current checkout and points at the explicit
     // isolation command — while a host create request passes `isolate` so the

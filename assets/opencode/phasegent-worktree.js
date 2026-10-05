@@ -200,10 +200,11 @@ function pickActiveWorktreePath(leases) {
 // assets/opencode/src/roles.js
 // Agent-role mapping for session events (issue #541).
 //
-// `event.agent` is the agent id the host reports for the current tool call;
-// the role decides both command rewriting and whether the session may acquire
-// a worktree. `explore` is recon-only and maps to the reviewer capability
-// surface.
+// `event.agent` is the agent id the host reports for the current tool call, and
+// the role decides command rewriting: the per-invocation `PHASEGENT_ROLE` scope,
+// a sub-agent's refusal of the orchestrator-only `issue create`/`bind`, and the
+// downgrade of a claimed elevated role. `explore` is recon-only and maps to the
+// reviewer capability surface.
 
 const AGENT_ROLE_HINTS = [
   ["orchestrator", "orchestrator"],
@@ -569,7 +570,7 @@ function rewritePhasegentCommand(command, sessionId, event, options) {
 
 // assets/opencode/src/session.js
 // Acquired-worktree registry and session placement (issue #440; parent
-// inheritance issue #567; move-only fail-closed placement issue 623).
+// inheritance issue #567; prompt-time placement issue 37).
 //
 // `ctx.session.move` relocates a session, and the host's session info
 // (`ctx.session.get`) reports a Task-spawned child's `parentID` plus the
@@ -580,39 +581,41 @@ function rewritePhasegentCommand(command, sessionId, event, options) {
 // `activeWorktree` stays the fallback for sessions whose parentage the host
 // cannot report. An empty registry still tries parent inheritance, so only a
 // session with neither a recorded nor an inherited worktree stays untouched.
+// Every placement is decided once per session from the session prompt hook, so
+// no tool call is ever cancelled to move a session and no landing check has to
+// re-read the host record.
 
 
-// Every error the fail-closed placement itself raises starts with this prefix
-// (issue 623): `discovery.ensureSessionWorktree` rethrows exactly these past
-// its guarded probe, so a move rejection cancels the pending tool call while
-// an ordinary discovery failure still degrades to the current checkout.
+// Every error the placement itself raises starts with this prefix (issue 37):
+// `discovery.ensureSessionWorktree` rethrows exactly these past its guarded
+// probe, so a move the host cannot perform fails the prompt instead of running
+// the turn in the old checkout, while an ordinary discovery failure still
+// degrades to the current checkout.
 const PLACEMENT_ERROR_PREFIX = "phasegent: session placement";
 
 const sessionWorktrees = new Map();
 let activeWorktree = null;
 const moveAttempts = new Map();
-const movedSessions = new Set();
 const placedSessions = new Set();
 const sessionInfo = new Map();
 const closedIssues = new Set();
 
-// `sessionPlaced` reports a *confirmed* placement: the host itself says the
-// session sits in the worktree (it started there, or the admitted move landed).
+// `sessionPlaced` reports a *settled* placement: the session already sat in the
+// worktree, or its move was admitted and the runner applies it at the next step
+// boundary. Either way the decision is made, so later prompts never re-move it.
 function sessionPlaced(sessionId) {
   return sessionId !== undefined && sessionId !== null && placedSessions.has(String(sessionId));
 }
 
-// Records a host-confirmed placement (the session's reported directory is the
-// worktree) so the call proceeds without a move and later calls skip it.
+// Records a placement the host already confirms (the session's reported
+// directory is the worktree) so no move is issued for it.
 function markPlaced(sessionId) {
   if (sessionId === undefined || sessionId === null) return;
-  const key = String(sessionId);
-  placedSessions.add(key);
-  movedSessions.add(key);
+  placedSessions.add(String(sessionId));
 }
 
 // A refused acquisition is remembered per issue: the session stays in the
-// main checkout, and the next tool call must not repeat the lease probe or
+// main checkout, and the next prompt must not repeat the lease probe or
 // the warning.
 function issueKnownClosed(issueId) {
   return closedIssues.has(String(issueId));
@@ -641,7 +644,6 @@ function worktreeForSession(sessionId) {
 function resetWorktrees() {
   sessionWorktrees.clear();
   moveAttempts.clear();
-  movedSessions.clear();
   placedSessions.clear();
   sessionInfo.clear();
   closedIssues.clear();
@@ -650,8 +652,8 @@ function resetWorktrees() {
 
 // `context.session.get` is the host's session lookup: `parentID` names the
 // session that spawned this one, and `location.directory` is where the session
-// runs. The result is cached per session because the hook must not add a host
-// call to every tool call; a failed lookup stays uncached so a later call can
+// runs. The result is cached per session because the prompt hook must not add a
+// host call to every turn; a failed lookup stays uncached so a later prompt can
 // still inherit.
 async function readSessionInfo(context, sessionId) {
   if (sessionId === undefined || sessionId === null) return null;
@@ -693,17 +695,16 @@ async function inheritedWorktree(context, parentId, readInfo) {
 }
 
 // `context.session.move` hands an active runner the placement at its next step
-// boundary (packages/core/src/session/move.ts, runner/llm.ts), so admitting a
-// move never makes the initiating tool call safe — it is still running in the
-// old directory. Every call that finds the placement not yet effective fails
-// closed (issue 623): the error carries `PLACEMENT_ERROR_PREFIX`, reaches the
-// `tool.execute.before` hook, and OpenCode cancels that invocation; the next
-// invocation retries and, once the host confirms the session sits in the
-// target, runs placed. `moveAttempts` joins concurrent callers onto one
-// placement so they inherit the same outcome, and a failure clears with the
-// attempt so the next call retries. A session that already sits in the target
-// directory (`currentDirectory`, else the plugin location) is placed without a
-// move, and a second call after a successful placement is a no-op.
+// boundary (packages/core/src/session/move.ts, runner/llm.ts). Placement runs
+// from the session prompt hook (issue 37), which is admitted before the runner
+// reaches any tool call, so the move lands before the first tool call of the
+// turn: there is no in-flight call to protect and nothing to cancel. The move
+// itself still fails closed — a host that cannot move the session raises a
+// prefixed error that fails the prompt, so no turn is ever run unplaced.
+// `moveAttempts` joins concurrent prompts onto one placement, and a failure
+// clears with the attempt so the next prompt retries. A session that already
+// sits in the target directory (`currentDirectory`, else the plugin location)
+// is placed without a move, and every later prompt is a no-op.
 async function moveSessionToWorktree(context, sessionId, directory, currentDirectory) {
   if (typeof directory !== "string" || directory.length === 0) return;
   if (sessionId === undefined || sessionId === null) return;
@@ -721,30 +722,13 @@ async function moveSessionToWorktree(context, sessionId, directory, currentDirec
     return;
   }
   const attempt = (async () => {
-    if (movedSessions.has(key)) {
-      // A previous call already admitted the move. The host's own session
-      // record is the only proof the placement has landed — the runner applies
-      // it at a step boundary, so a cached discovery snapshot still shows the
-      // old directory.
-      const landed = await hostSessionDirectory(context, sessionId);
-      if (landed !== directory) {
-        throw new Error(
-          `${PLACEMENT_ERROR_PREFIX} pending for '${key}': the move to ${directory} has not ` +
-            "landed yet; this invocation is cancelled so it does not run in the old " +
-            "directory, and the next invocation retries",
-        );
-      }
-      placedSessions.add(key);
-      return;
-    }
     const current =
       typeof currentDirectory === "string" && currentDirectory.length > 0
         ? currentDirectory
         : locationDirectory(context);
     if (current === directory) {
-      movedSessions.add(key); // the session already sits in the worktree
-      placedSessions.add(key);
-      return;
+      placedSessions.add(key); // the session already sits in the worktree
+      return directory;
     }
     const move = context && context.session && context.session.move;
     if (typeof move !== "function") {
@@ -758,17 +742,11 @@ async function moveSessionToWorktree(context, sessionId, directory, currentDirec
     } catch (error) {
       throw new Error(
         `${PLACEMENT_ERROR_PREFIX} failed for '${key}': moving to ${directory} rejected ` +
-          `(${errorText(error)}); the next invocation retries`,
+          `(${errorText(error)}); the next prompt retries`,
       );
     }
-    movedSessions.add(key);
-    // The move is admitted but lands after this tool call ends, so the
-    // initiating call is cancelled and the model's retry runs placed.
-    throw new Error(
-      `${PLACEMENT_ERROR_PREFIX} pending for '${key}': the move to ${directory} is admitted ` +
-        "and lands at the runner's next step boundary; this invocation is cancelled so " +
-        "it does not run in the old directory, and the retry runs placed",
-    );
+    placedSessions.add(key);
+    return directory;
   })();
   moveAttempts.set(key, attempt);
   try {
@@ -776,24 +754,6 @@ async function moveSessionToWorktree(context, sessionId, directory, currentDirec
   } finally {
     if (moveAttempts.get(key) === attempt) moveAttempts.delete(key);
   }
-}
-
-// The un-cached host lookup that confirms a landing move: the placement check
-// must see the current record, not the pre-move snapshot `readSessionInfo`
-// may have cached.
-async function hostSessionDirectory(context, sessionId) {
-  const get = context && context.session && context.session.get;
-  if (typeof get !== "function") return null;
-  try {
-    const result = await get({ sessionID: sessionId });
-    if (result && typeof result === "object" && result.location) {
-      const directory = result.location.directory;
-      return typeof directory === "string" && directory.length > 0 ? directory : null;
-    }
-  } catch (_) {
-    return null;
-  }
-  return null;
 }
 
 // The registry fallback: a sub-agent whose session id was never remembered
@@ -809,19 +769,20 @@ async function reuseRememberedWorktree(context, sessionId) {
 // assets/opencode/src/discovery.js
 // Lazy worktree discovery and the per-session placement decision.
 //
-// A session with neither a registered nor an inherited worktree probes the
-// checkout's issue binding and the issue's leases, and reuses a path only when
-// one is already recorded. Creating a worktree is opt-in (issue 616): with no
-// reusable lease the session keeps the current checkout and is pointed at the
-// explicit `phasegent worktree acquire --isolate` command instead. A
-// Task-spawned child inherits its parent's directory and never acquires a
-// lease of its own. Placement is move-only (issue 623): a decided placement
-// that cannot move fails closed and the pending tool call is cancelled.
+// Placement runs from the session prompt hook (issue 37), once per session and
+// before the runner reaches any tool call, so a move never has to cancel an
+// in-flight invocation. A session with neither a registered nor an inherited
+// worktree probes the checkout's issue binding and the issue's leases, and reuses
+// a path only when one is already recorded. Creating a worktree is opt-in
+// (issue 616): with no reusable lease the session keeps the current checkout and
+// is pointed at the explicit `phasegent worktree acquire --isolate` command
+// instead. A Task-spawned child follows its parent's directory first and never
+// reaches the probes below, so it can neither acquire nor guess one.
 
 
 // A decided placement must fail closed: only errors raised by the move itself
 // (identified by `PLACEMENT_ERROR_PREFIX`) rethrow past the discovery guard, so
-// a host move rejection cancels the call while an ordinary probe failure keeps
+// a host move rejection fails the prompt while an ordinary probe failure keeps
 // the session in the current checkout.
 function isPlacementFailure(error) {
   return error instanceof Error && error.message.startsWith(PLACEMENT_ERROR_PREFIX);
@@ -846,7 +807,7 @@ async function discoverWorktreeForSession(sessionId, cwd) {
 }
 
 // A refused placement is remembered per (session, issue): the session stays in
-// the current checkout, so the next tool call must not repeat the same warning.
+// the current checkout, so the next prompt must not repeat the same warning.
 // A fresh session id (or a new issue binding) warns again, and a lease that
 // appears later is still picked up by the reuse probe before this guard.
 const refusedPlacements = new Set();
@@ -862,19 +823,20 @@ function warnRefusedPlacement(sessionId, issueId) {
   );
 }
 
-// A Task-spawned child inherits its parent's directory and never acquires a
-// lease of its own; a session without a reported parent keeps the registry
-// fallback and the reuse probe. Before that probe, the issue's lease history is
-// read: a closed issue (its rows carry the "issue closed…" release reason)
-// is refused so the lazy path cannot rebuild a worktree that `issue close`
-// just converged. `deps` is an internal seam so tests can exercise that order
+// The one placement decision for a session, run from the session prompt hook
+// (issue 37): a Task-spawned child follows its parent's directory first, so it
+// never reaches the probes below and can neither acquire nor guess a worktree.
+// `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the in-memory
+// registry: no host session lookup, no CLI, no acquire. The rest is guarded —
+// an ordinary discovery failure keeps the session in the current checkout — while
+// a decided placement rethrows out of the `try` so the prompt fails instead of
+// running unplaced. `deps` is an internal seam so tests can exercise that order
 // without the phasegent CLI.
-async function ensureSessionWorktree(context, sessionId, event, deps) {
+async function ensureSessionWorktree(context, sessionId, deps) {
   if (!sessionId) return null;
   const registered = sessionWorktrees.get(String(sessionId));
   if (registered) {
-    // Move-only placement (issue 623): a required move that is unavailable or
-    // fails throws so the host cancels this invocation; the next call retries.
+    // Move-only placement: a move the host cannot perform fails the prompt.
     await moveSessionToWorktree(context, sessionId, registered);
     return registered;
   }
@@ -886,23 +848,13 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
   const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   const cwd = locationDirectory(context);
-  // The probe stays guarded — discovery failures keep the session in the
-  // current checkout — while a decided placement rethrows out of the `try` so
-  // the host cancels the call instead of running it unplaced (issue 623).
   try {
+    // A child inherits before the reuse probe: it takes its parent's directory
+    // or nothing at all, never the most recently remembered worktree, which
+    // could belong to a sibling.
     const info = await readInfo(context, sessionId);
     if (info && info.parentID) {
-      const target = await inheritedWorktree(context, info.parentID, readInfo);
-      if (!target) return null;
-      if (info.directory === target) {
-        // The host reports the child already inside the parent's directory:
-        // confirmed placement, nothing to move.
-        markPlaced(sessionId);
-        return null;
-      }
-      rememberWorktree(sessionId, target);
-      await moveSessionToWorktree(context, sessionId, target, info.directory);
-      return target;
+      return await inheritParentWorktree(context, sessionId, info, readInfo);
     }
     const remembered = await reuseRememberedWorktree(context, sessionId);
     if (remembered) return remembered;
@@ -911,7 +863,6 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
       await moveSessionToWorktree(context, sessionId, discovered);
       return discovered;
     }
-    if (isSubagentSession(event)) return null; // sub-agents never acquire
     const issueId = await readBinding(cwd);
     if (!issueId) return null;
     if (issueKnownClosed(issueId)) return null;
@@ -930,6 +881,26 @@ async function ensureSessionWorktree(context, sessionId, event, deps) {
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
   }
+}
+
+// The parent's registered target is the destination of a move that may still be
+// pending at the parent's next step boundary; the directory the host reports for
+// the parent is the fallback once that move has landed. A prompt has run no tool
+// yet, so the child's move is admitted and the turn continues: it lands before
+// the child's first tool call. A parent with no resolvable directory is not an
+// error — the child simply stays where it is.
+async function inheritParentWorktree(context, sessionId, info, readInfo) {
+  const target = await inheritedWorktree(context, info.parentID, readInfo);
+  if (!target) return null;
+  if (info.directory === target) {
+    // The host reports the child already inside the parent's directory:
+    // placement settled, nothing to move.
+    markPlaced(sessionId);
+    return null;
+  }
+  rememberWorktree(sessionId, target);
+  await moveSessionToWorktree(context, sessionId, target, info.directory);
+  return target;
 }
 
 // assets/opencode/src/paths.js
@@ -1003,34 +974,45 @@ function redirectPaths(tool, workdir, args) {
 }
 
 // assets/opencode/src/hook.js
-// The v2 `tool.execute.before` hook: one mutable event
+// The v2 runtime hooks: placement, and phasegent command rewriting.
+//
+// `context.session.hook("prompt", event)` receives the same mutable payload
+// object for every submitted turn (`{ sessionID, messageID, prompt, metadata,
+// delivery }`, core `SessionPrompt.prepare`). It owns the whole placement
+// decision (issue 37): the session is registered, inherited, or discovered and
+// then moved before the runner reaches any tool call, so the move lands at the
+// runner's next step boundary with no in-flight invocation to protect and
+// nothing to cancel. A host that cannot move the session still fails the prompt,
+// so no turn runs unplaced.
+//
+// `context.tool.hook("execute.before", event)` receives
 // `{ tool, sessionID, agent, messageID, id, input }`; core continues with the
 // returned `event.input` and rethrows a hook error before the tool executes
-// (packages/core/src/tool.ts:103-111, :271-280). Placement is move-only
-// (issue 623): `ensureSessionWorktree` throws when a required `session.move`
-// is unavailable, fails, or is still landing at a step boundary, so OpenCode
-// cancels that invocation instead of running it against the old checkout; the
-// next invocation retries the placement. Shell command rewriting (role/session
-// injection) runs regardless of placement and stays independent of it.
+// (packages/core/src/tool.ts:103-111, :271-280). It only rewrites shell
+// commands, so phasegent invocations carry their role and session and a
+// sub-agent cannot run the orchestrator-only `issue create`/`bind`. It holds no
+// placement state and raises no placement error.
 
 
-function createRedirectHook(context, deps) {
+function createRedirectHook() {
   return async function executeBefore(event) {
-    const sessionId = event ? event.sessionID : undefined;
-    const input = event ? event.input : undefined;
-    // A no-worktree session resolves to null and the call proceeds; a required
-    // placement that is unavailable, fails, or is still landing throws out of
-    // the hook, which is the host's contract for cancelling the pending call
-    // (issue 623). The retry then runs placed.
-    await ensureSessionWorktree(context, sessionId, event, deps);
-    if (!input || typeof input !== "object") return;
-    if (SHELL_TOOLS.includes(event.tool) && typeof input.command === "string") {
-      try {
-        const rewritten = rewritePhasegentCommand(input.command, sessionId, event);
-        if (rewritten !== input.command) input.command = rewritten;
-      } catch (_) {
-      }
+    if (!event || typeof event.input !== "object") return;
+    const command = event.input.command;
+    if (!SHELL_TOOLS.includes(event.tool) || typeof command !== "string") return;
+    try {
+      const rewritten = rewritePhasegentCommand(command, event.sessionID, event);
+      if (rewritten !== command) event.input.command = rewritten;
+    } catch (_) {
     }
+  };
+}
+
+// The prompt hook mutates the payload in place: the host keeps the object it
+// passed, so the handler only has to read `sessionID`.
+function createPromptHook(context, deps) {
+  return async function onPrompt(event) {
+    if (!event) return;
+    await ensureSessionWorktree(context, event.sessionID, deps);
   };
 }
 
@@ -1321,14 +1303,13 @@ Leases are keyed by \`(repo, issue, session)\` and the adapter installed by
 owns the session identity and the lease side, so no session id, worktree path,
 or lease call travels between sessions. Wiring is automatic: never mint a fresh
 session id per command or per phase, and a child session inherits its parent's
-worktree on its first tool call. When a session has a known worktree, placement
-uses \`session.move\` before the tool executes; no-worktree and already-placed
-sessions continue normally. If the required move is unavailable, fails, or is
-still landing at the runner's next step boundary, the \`tool.execute.before\`
-hook throws so OpenCode cancels that invocation instead of running it in the
-old checkout; the next invocation retries and proceeds once the host confirms
-the session sits in the target. Only ordinary discovery failures keep the
-original directory.
+worktree from the session prompt hook, before the child's runner reaches its
+first tool call. Placement is decided once per session during prompt admission
+and uses \`session.move\`: a registered, inherited, or already leased worktree is
+entered there, while a no-worktree session continues normally and the placement
+is never repeated. If the required move is unavailable or the host rejects it,
+the prompt hook throws so the turn is not run in the old checkout, and the next
+prompt retries; only ordinary discovery failures keep the original directory.
 
 Creating a worktree is opt-in: \`issue create\` and the adapter's lazy path
 reuse an existing lease, an inherited worktree, or the current checkout, and a
@@ -2469,11 +2450,18 @@ async function registerWorktreeStrategy(context, deps) {
 // `export default { id, setup }`; `setup(context)` registers hooks imperatively
 // and returns a cleanup (packages/plugin/src/promise/plugin.ts:56-61).
 //
+//   * `context.session.hook("prompt", event)` — the same mutable payload object
+//     for every submitted turn (`{ sessionID, messageID, prompt, metadata,
+//     delivery }`, core `SessionPrompt.prepare`). It owns worktree placement
+//     (issue 37): a session is registered, inherited, or discovered and then
+//     moved before the runner reaches any tool call, so a Task-spawned child
+//     follows its parent's directory and no tool invocation is ever cancelled to
+//     move a session.
 //   * `context.tool.hook("execute.before", event)` — one mutable event
 //     `{ tool, sessionID, agent, messageID, id, input }`; core continues with the
-//     returned `event.input` (packages/core/src/tool.ts:103-111, :271-280), so
-//     relative path arguments and a bare/relative shell `workdir` are rewritten in
-//     place.
+//     returned `event.input` (packages/core/src/tool.ts:103-111, :271-280). It
+//     only rewrites shell commands, so role/session injection stays available
+//     and path rewriting stays absent.
 //   * `context.worktree.transform(editor => editor.add({ id, create, remove, list }))`
 //     (packages/plugin/src/promise/worktree.ts:5-22). It has no v1 `target`
 //     callback, so the acquired worktree becomes the session directory through
@@ -2504,18 +2492,17 @@ async function registerWorktreeStrategy(context, deps) {
 // the binary exposes them); the adapter targets the binary's runtime context.
 //
 // Session identity is `event.sessionID`, and a Task-spawned child reads its
-// `parentID` through `context.session.get` so it inherits the parent's directory
-// instead of guessing from the most recently remembered worktree (session.js).
-// Degradation is deliberate: no binding or a failed acquire keeps the original
-// directory and warns on the console (v2 has no structured warning channel). A
-// lease row that `issue close` / `issue sync` converged keeps its "issue
-// closed…" release reason, so the lazy path refuses to acquire a fresh worktree
-// for an already closed issue and stays in place (issue #575 P2). Absolute paths
-// pass through untouched, so an explicit escape and the external_directory check
-// that guards it are never rewritten. All worktree calls stay local: no network,
-// no credentials, no .env copies. Branches and directories are never deleted
-// here; removal is `phasegent worktree prune`.
-
+// `parentID` through `context.session.get` in the prompt hook so it inherits the
+// parent's directory instead of guessing from the most recently remembered
+// worktree (session.js). Degradation is deliberate: no binding or a failed
+// acquire keeps the original directory and warns on the console (v2 has no
+// structured warning channel). A lease row that `issue close` / `issue sync`
+// converged keeps its "issue closed…" release reason, so the lazy path refuses to
+// acquire a fresh worktree for an already closed issue and stays in place (issue
+// #575 P2). Absolute paths pass through untouched, so an explicit escape and the
+// external_directory check that guards it are never rewritten. All worktree
+// calls stay local: no network, no credentials, no .env copies. Branches and
+// directories are never deleted here; removal is `phasegent worktree prune`.
 
 const PhasegentWorktreePlugin = {
   id: "phasegent-worktree",
@@ -2541,11 +2528,25 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: MCP server registration failed (${errorText(error)})`);
     }
     try {
+      // The prompt hook owns placement: it is admitted before the runner reaches
+      // any tool call, so no tool invocation is cancelled to move a session.
+      const promptHook = context && context.session && context.session.hook;
+      if (typeof promptHook === "function") {
+        registrations.push(await promptHook("prompt", createPromptHook(context)));
+      } else {
+        warn("phasegent: host exposes no session prompt hook; worktree placement is disabled");
+      }
+    } catch (error) {
+      warn(`phasegent: session.prompt registration failed (${errorText(error)})`);
+    }
+    try {
+      // The tool hook only rewrites phasegent commands, so it carries no
+      // placement state and cannot raise a placement error.
       const hook = context && context.tool && context.tool.hook;
       if (typeof hook === "function") {
-        registrations.push(await hook("execute.before", createRedirectHook(context)));
+        registrations.push(await hook("execute.before", createRedirectHook()));
       } else {
-        warn("phasegent: host exposes no tool hook; path redirection is disabled");
+        warn("phasegent: host exposes no tool hook; command rewriting is disabled");
       }
     } catch (error) {
       warn(`phasegent: tool.execute.before registration failed (${errorText(error)})`);
@@ -2588,6 +2589,7 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
+  createPromptHook,
   pickActiveWorktreePath,
   issueClosedLocally,
   discoverWorktreeForSession,

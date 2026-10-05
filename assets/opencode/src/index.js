@@ -12,11 +12,18 @@
 // `export default { id, setup }`; `setup(context)` registers hooks imperatively
 // and returns a cleanup (packages/plugin/src/promise/plugin.ts:56-61).
 //
+//   * `context.session.hook("prompt", event)` — the same mutable payload object
+//     for every submitted turn (`{ sessionID, messageID, prompt, metadata,
+//     delivery }`, core `SessionPrompt.prepare`). It owns worktree placement
+//     (issue 37): a session is registered, inherited, or discovered and then
+//     moved before the runner reaches any tool call, so a Task-spawned child
+//     follows its parent's directory and no tool invocation is ever cancelled to
+//     move a session.
 //   * `context.tool.hook("execute.before", event)` — one mutable event
 //     `{ tool, sessionID, agent, messageID, id, input }`; core continues with the
-//     returned `event.input` (packages/core/src/tool.ts:103-111, :271-280), so
-//     relative path arguments and a bare/relative shell `workdir` are rewritten in
-//     place.
+//     returned `event.input` (packages/core/src/tool.ts:103-111, :271-280). It
+//     only rewrites shell commands, so role/session injection stays available
+//     and path rewriting stays absent.
 //   * `context.worktree.transform(editor => editor.add({ id, create, remove, list }))`
 //     (packages/plugin/src/promise/worktree.ts:5-22). It has no v1 `target`
 //     callback, so the acquired worktree becomes the session directory through
@@ -47,18 +54,17 @@
 // the binary exposes them); the adapter targets the binary's runtime context.
 //
 // Session identity is `event.sessionID`, and a Task-spawned child reads its
-// `parentID` through `context.session.get` so it inherits the parent's directory
-// instead of guessing from the most recently remembered worktree (session.js).
-// Degradation is deliberate: no binding or a failed acquire keeps the original
-// directory and warns on the console (v2 has no structured warning channel). A
-// lease row that `issue close` / `issue sync` converged keeps its "issue
-// closed…" release reason, so the lazy path refuses to acquire a fresh worktree
-// for an already closed issue and stays in place (issue #575 P2). Absolute paths
-// pass through untouched, so an explicit escape and the external_directory check
-// that guards it are never rewritten. All worktree calls stay local: no network,
-// no credentials, no .env copies. Branches and directories are never deleted
-// here; removal is `phasegent worktree prune`.
-
+// `parentID` through `context.session.get` in the prompt hook so it inherits the
+// parent's directory instead of guessing from the most recently remembered
+// worktree (session.js). Degradation is deliberate: no binding or a failed
+// acquire keeps the original directory and warns on the console (v2 has no
+// structured warning channel). A lease row that `issue close` / `issue sync`
+// converged keeps its "issue closed…" release reason, so the lazy path refuses to
+// acquire a fresh worktree for an already closed issue and stays in place (issue
+// #575 P2). Absolute paths pass through untouched, so an explicit escape and the
+// external_directory check that guards it are never rewritten. All worktree
+// calls stay local: no network, no credentials, no .env copies. Branches and
+// directories are never deleted here; removal is `phasegent worktree prune`.
 import {
   acquireWorktree,
   issueClosedLocally,
@@ -69,7 +75,7 @@ import {
 } from "./binding.js";
 import { rewritePhasegentCommand } from "./command.js";
 import { discoverWorktreeForSession, ensureSessionWorktree } from "./discovery.js";
-import { createRedirectHook } from "./hook.js";
+import { createPromptHook, createRedirectHook } from "./hook.js";
 import { isAbsolutePath, redirectPathValue, redirectPaths } from "./paths.js";
 import { agentName, agentRole, isSubagentSession } from "./roles.js";
 import { errorText, warn } from "./runtime.js";
@@ -124,11 +130,25 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: MCP server registration failed (${errorText(error)})`);
     }
     try {
+      // The prompt hook owns placement: it is admitted before the runner reaches
+      // any tool call, so no tool invocation is cancelled to move a session.
+      const promptHook = context && context.session && context.session.hook;
+      if (typeof promptHook === "function") {
+        registrations.push(await promptHook("prompt", createPromptHook(context)));
+      } else {
+        warn("phasegent: host exposes no session prompt hook; worktree placement is disabled");
+      }
+    } catch (error) {
+      warn(`phasegent: session.prompt registration failed (${errorText(error)})`);
+    }
+    try {
+      // The tool hook only rewrites phasegent commands, so it carries no
+      // placement state and cannot raise a placement error.
       const hook = context && context.tool && context.tool.hook;
       if (typeof hook === "function") {
-        registrations.push(await hook("execute.before", createRedirectHook(context)));
+        registrations.push(await hook("execute.before", createRedirectHook()));
       } else {
-        warn("phasegent: host exposes no tool hook; path redirection is disabled");
+        warn("phasegent: host exposes no tool hook; command rewriting is disabled");
       }
     } catch (error) {
       warn(`phasegent: tool.execute.before registration failed (${errorText(error)})`);
@@ -171,6 +191,7 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
+  createPromptHook,
   pickActiveWorktreePath,
   issueClosedLocally,
   discoverWorktreeForSession,
