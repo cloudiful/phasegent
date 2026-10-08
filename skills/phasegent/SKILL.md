@@ -11,17 +11,16 @@ config and is never assumed.
 
 This SKILL is the single source of the shared protocol: tracking modes, role
 gates, the marker protocol, result contracts, worktree lease safety, and the
-human-operator-only `admin` boundary. The role skills
-(`phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`,
-`phasegent-tester`, and the read-only `phasegent-explore`) carry only their
-role-specific always-on rules and defer here for the shared detail.
+human-operator-only `admin` boundary. The role skills (`phasegent-orchestrator`,
+`phasegent-executor`, `phasegent-reviewer`, `phasegent-tester`, and the read-only
+`phasegent-explore`) carry only their role-specific always-on rules and defer
+here for the shared detail.
 
 Commands are not protocol. `phasegent --help <command>` owns flags, usage, and
-the provider surface, filtered by the session role: consult `phasegent --help
-<command>` only for the command you are about to run, and defer every other
-command's help until it is selected. Never copy a flag table into a plan, a
-note, or a delegation; a child acts only under its own role and never claims
-another.
+the provider surface, filtered by the session role: consult it only for the
+command you are about to run and defer every other help until it is selected.
+Never copy a flag table into a plan, a note, or a delegation; a child acts only
+under its own role.
 
 ## OpenCode adaptation
 
@@ -34,27 +33,24 @@ another.
   adapter registers it through `skill.transform` (`id`/`name` `phasegent`, path
   `/builtin/phasegent.md`, body and description embedded from
   `skills/phasegent/SKILL.md`) together with the five slim role skills
-  `phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`,
-  `phasegent-tester`, and `phasegent-explore` (embedded from
-  `skills/phasegent/SKILL.<role>.md`), and
-  prepends each protocol agent's role skill to its `system`, so those boundaries
-  are always on and every skill is visible on any host the adapter is installed
-  on.
+  (`phasegent-orchestrator`, `-executor`, `-reviewer`, `-tester`, `-explore`,
+  embedded from `skills/phasegent/SKILL.<role>.md`), and prepends each protocol
+  agent's role skill to its `system`, so those boundaries are always on and every
+  skill is visible on any host the adapter is installed on.
 - Session and worktree wiring is automatic — the adapter owns the session
-  identity, a child session inherits its parent's worktree on its first call,
-  and relative paths land there while absolute paths pass through untouched.
-  Never run `worktree acquire`, `issue bind`, or `issue create` by hand from a
-  child role, and never pass a worktree path between sessions.
+  identity, a child session inherits its parent's worktree on its first call, and
+  relative paths land there while absolute paths pass through untouched. Never run
+  `worktree acquire`, `issue bind`, or `issue create` by hand from a child role,
+  and never pass a worktree path between sessions.
 - The loose plan-markdown fallback lives in `.opencode/plans/*.md`.
 
 ## Reconnaissance delegation
 
-Reconnaissance is delegated, never inlined, and the native `explore` subagent
-is the only reconnaissance backend: the host launches it with `task(explore)`
-under its own read-only tool policy, and it reads inside the OpenCode session's
-own directory. It never binds a phasegent issue or worktree, and it publishes no
-note. Who does the reading never changes what you are allowed to do — only who
-does the reading.
+Reconnaissance is delegated, never inlined, and the native `explore` subagent is
+the only backend: the host launches it with `task(explore)` under its own
+read-only tool policy, and it reads inside the OpenCode session's own directory.
+It never binds a phasegent issue or worktree and publishes no note; who reads
+never changes what a role may do.
 
 ## When to use this skill
 
@@ -66,21 +62,18 @@ Load it when one of these is true:
   delegation delta from an `orchestrator`.
 - A tracking issue or plan is the source of truth and you must decide a tracking
   mode, read the artifact, or publish a phase-terminal audit note.
-- You need the marker, note-pointer JSON, or VERDICT vocabulary, or need to
-  confirm which primitives a role may call.
-- A session needs its `(repo, issue, session)` worktree lease, the adapter is not
-  redirecting tool calls, or leases must be inspected or released.
+- You need the marker, note-pointer JSON, VERDICT vocabulary, worktree lease
+  rules, or which primitives a role may call.
 
 ## Tracking modes (decision tree)
 
 Pick exactly one before work starts; the artifact owns goal, constraints,
 acceptance criteria, phases, and decisions. A delegation prompt carries the
-issue number; children read the artifact and this skill for the rest, and a
-delegation adds only what the artifact cannot carry — the marker, the
-attempt/round, a safety-boundary or allowlist delta (including the
-`git restore` allowlist), and comment authorization. Never restate the
-mechanism, the plan, or the worktree path in a delegation. The provider always
-comes from user config; this skill never picks one.
+issue number and adds only what the artifact cannot carry — the marker, the
+attempt/round, a safety-boundary or allowlist delta (including the `git restore`
+allowlist), and comment authorization. The child reads the artifact and this
+skill for the rest; never restate the mechanism, the plan, or the worktree path.
+The provider always comes from user config; this skill never picks one.
 
 1. **`INLINE`** — trivial or read-only work, no plan and no issue. The parent
    prompt carries the full context; no artifact read and no audit comment.
@@ -94,13 +87,24 @@ comes from user config; this skill never picks one.
 3. **`LOCAL_ISSUE`** — tracking when the remote provider is unavailable or you
    want an offline, credential-free plan. The plan lives as a **local provider
    issue** (`--provider local`, explicit, no credential, no network), which
-   replaces loose plan markdown files.
-   Result shape: always the complete result object; when an audit comment is
-   authorized its ids go into `tracking.comment_id`/`comment_url`.
+   replaces loose plan markdown files. Result shape: always the complete result
+   object; when an audit comment is authorized its ids go into
+   `tracking.comment_id`/`comment_url`.
 
 - A loose plan markdown file is only a fallback when **both** the remote provider
   and the local provider are unreachable; record that fallback explicitly.
 - Never downgrade to `INLINE` from a qualified tracking mode.
+
+## Plan quality
+
+The artifact is the plan, so it must be executable without a chat transcript: a
+phase states its objective and non-goals, scope, current-to-target behavior,
+implementation path, fixed constraints, the executor's freedom boundary,
+acceptance criteria, validation commands, and blocker conditions, in short
+structured prose with stable file and symbol references. Detailed what and how
+stay in the body; a delegation stays issue-number-plus-deltas only, and an
+attempt-specific decision is recorded in the body before the retry. Model size
+never changes the contract, so a small executor is held to exactly the same one.
 
 ## Role capability matrix
 
@@ -149,15 +153,15 @@ Legend: `✓` allowed, `—` denied.
   `phasegent-tester` role skill owning its test-only write boundary; it never
   sees project, status, version, or relation data.
 - Capability entries above are authoritative; command-level gates such as
-  `status transition`, `timer *`, and `workflow bootstrap` are keyed to the role,
-  not a capability, and are listed in *Command contract*.
+  `status transition`, `timer *`, and `workflow bootstrap` are keyed to the
+  role, not a capability, and live in *Command contract*.
 
 ## Risk classes and reviewer policy
 
 Every tracked phase carries one risk class, chosen when the phase is planned,
-and a `reviewer_policy` derived from it. A risk class is a planning label, never
-a new capability: it does not widen a role's allowlist, its write ownership, or
-its CLI gates.
+and a `reviewer_policy` derived from it. A risk class is a planning label,
+never a new capability: it does not widen a role's allowlist, its write
+ownership, or its CLI gates.
 
 - `standard` — reversible, localized work with no data, security, concurrency,
   schema/migration, cross-module interface, or user-visible surface. The policy
@@ -182,8 +186,8 @@ Orchestration is serial by default: one write owner per phase, and an executor
 and a reviewer never work the same mutable tree at the same time.
 
 - Reviewer and a subsequent executor may overlap only when the reviewer reads an
-  immutable revision or snapshot in a separate worktree and the two allowlists
-  do not overlap; the shared-worktree flow stays serial.
+  immutable revision or snapshot in a separate worktree and the two allowlists do
+  not overlap; the shared-worktree flow stays serial.
 - Safe overlap is limited to independent read-only recon, a tester observing a
   frozen implementation without writing the executor's allowlist, and live
   acceptance against an immutable deployed revision.
@@ -226,8 +230,8 @@ phase is an explicit transition back to `In Progress`.
 - Issue body/search/create/close writes, relation and repo writes,
   `status transition`, every `timer *` command, and `worktree` lease writes are
   orchestrator-only. Children never edit the body, label, search, or close an
-  issue, never call `status *` or `timer *`, never commit, push, tag, or mutate refs,
-  and never claim another role's credential.
+  issue, never call `status *` or `timer *`, never commit, push, tag, or mutate
+  refs, and never claim another role's credential.
 - `comment create` writes under the session role: a child's note needs explicit
   authorization through the `--authorized` CLI flag.
 - `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope, and
@@ -240,16 +244,15 @@ phase is an explicit transition back to `In Progress`.
 
 The entire `admin` group (`admin auth setup`, `admin config set/clear`,
 `admin config provider set/clear`, `admin workflow bootstrap`) is
-human-operator only — for every AI role, orchestrator included. Agent
-permission rules deny the prefix, no role ever delegates it, and provisioning,
-credentials, and settings stay with the operator: a missing one goes back as a
-question, and credentials never travel as CLI values. Only when a configuration
-or provider problem actually blocks the task do the read-only self-checks come
-in — `doctor`, `config show`, and `config provider get` carry no role gate.
-Never read the local SQLite files or call provider REST directly, since
-`comment list` and batch `issue get` cover bulk reads. Audit notes are
-append-only: there is deliberately no comment update/delete command, so publish
-a follow-up note instead.
+human-operator only — for every AI role, orchestrator included. Agent permission
+rules deny the prefix, no role ever delegates it, and provisioning, credentials,
+and settings stay with the operator: a missing one goes back as a question, and
+credentials never travel as CLI values. Only when a configuration or provider
+problem actually blocks the task do the read-only self-checks come in — `doctor`,
+`config show`, and `config provider get` carry no role gate. Never read the local
+SQLite files or call provider REST directly, since `comment list` and batch
+`issue get` cover bulk reads. Audit notes are append-only, so publish a follow-up
+note instead.
 
 ## Worktree leases
 
@@ -266,10 +269,10 @@ is never repeated. If the required move is unavailable or the host rejects it,
 the prompt hook throws so the turn is not run in the old checkout, and the next
 prompt retries; only ordinary discovery failures keep the original directory.
 
-Creating a worktree is opt-in: `issue create` and the adapter's lazy path
-reuse an existing lease, an inherited worktree, or the current checkout, and a
-conflict surfaces the explicit choice instead of a new directory — `phasegent
-worktree acquire --issue N --isolate` is how a dedicated worktree is requested.
+Creating a worktree is opt-in: `issue create` and the adapter's lazy path reuse
+an existing lease, an inherited worktree, or the current checkout, and a conflict
+surfaces the explicit choice instead of a new directory — `phasegent worktree
+acquire --issue N --isolate` is how a dedicated worktree is requested.
 
 Boundaries:
 
@@ -289,8 +292,8 @@ Boundaries:
 - `worktree probe` is read-only: it reports existence,
   Git-worktree/clean/branch/`HEAD`/main-checkout facts and any matching lease
   as bounded JSON, and never calls a provider, writes a lease, syncs, deletes,
-  or repairs. No matching lease yields a stable empty result instead of a
-  guessed path.
+  or repairs. No matching lease yields a stable empty result, never a guessed
+  path.
 - A successful `issue close` flips this issue's active leases to `retained` and
   then removes a worktree directory only when it is clean, no active lease of
   another session points at it, and it is not the repository's main checkout.
@@ -324,8 +327,7 @@ Rules:
   match the note's labelled line verbatim.
 - Publish under the child's own role; the role is implicit, and a child's note
   needs explicit authorization. A LOCAL_ISSUE note uses the local provider
-  explicitly, and `phasegent --help comment create` owns the body-file
-  lifecycle.
+  explicitly, and `phasegent --help comment create` owns the body-file lifecycle.
 - A reviewer note labels its review `final` or `checkpoint` on a `REVIEW:` line
   beside the unchanged `VERDICT:` line, so a checkpoint round and the final audit
   stay distinguishable without a new token.
@@ -361,17 +363,15 @@ Rules:
 - A `tester` result reuses that same `status` vocabulary and adds no new verdict
   token; its note carries the explicit test-result evidence — the exact commands
   run, the observed pass/fail outcome, and each behavioral failure's signature.
-
 - A `reviewer` pointer keeps that same minimal shape, with `verdict` instead of
   `status`, and adds a top-level `review` field, `"final"` or `"checkpoint"`,
   matching the note's `REVIEW:` line; the five VERDICT tokens and their note
   `VERDICT:` line are unchanged.
-
 - `INLINE` / `LOCAL_ISSUE`: return the complete result object with `phase`,
   `summary`, `changed_files`, `validation`, `remaining_work`, `question`
   (required only for `BLOCKED`), `risks`, and nested `tracking` (`mode`
   `INLINE` or `LOCAL_ISSUE`, `provider` when bound, `issue` number or null,
-  `comment` `posted|failed|skipped`, `comment_id`/`comment_url`, `marker`,
+  `comment` `posted|failed|skipped`, `comment_id`/`comment_url`, `marker`, and
   `notes`).
 
 - **VERDICT vocabulary** (reviewer only). Use exactly one of these five
@@ -391,10 +391,10 @@ Rules:
 - Nested explorer assistance changes no contract: an `explore` child launched by
   the orchestrator, an executor, or a reviewer stays read-only, non-audited, and
   unable to recurse, so it publishes no marker or VERDICT and owns no result. The
-  owning executor/reviewer still publishes its own single phase-terminal note
-  with any material explorer finding recorded there, and the orchestrator alone
-  owns plan, status, timer, worktree, and closure.
+  owning executor/reviewer still publishes its own single phase-terminal note with
+  any material explorer finding recorded there, and the orchestrator alone owns
+  plan, status, timer, worktree, and closure.
 - Status semantics: `DONE` (all acceptance criteria met), `PARTIAL` (useful
-  work done, criteria remain, safe to continue), `BLOCKED`
-  (decision/prerequisite missing — state the smallest concrete decision in
-  `question`), `FAILED` (execution failed; continuing would mislead).
+  work done, criteria remain, safe to continue), `BLOCKED` (decision or
+  prerequisite missing — state the smallest concrete decision in `question`),
+  `FAILED` (execution failed; continuing would mislead).

@@ -2148,6 +2148,88 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(reviewer).toContain("`REVIEW:` line beside the `VERDICT:` line");
   });
 
+  test("the embedded prompts carry the executor-ready plan contract (issue 725 P1)", () => {
+    // A small executor reads the phase, not a transcript, so the shared skill
+    // owns the plan-quality boundary while each role skill owns only its own
+    // consumption of that contract. These assertions keep the three sections
+    // from being silently dropped: the byte-equality tests stay green when a
+    // section is removed from the sources, the dist, and `src` together.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("## Plan quality");
+    expect(shared).toContain("executable without a chat transcript");
+    expect(shared).toContain(
+      "objective and non-goals, scope, current-to-target behavior, implementation path, fixed constraints, the executor's freedom boundary, acceptance criteria, validation commands, and blocker conditions",
+    );
+    expect(shared).toContain("stable file and symbol references");
+    expect(shared).toContain("Detailed what and how stay in the body");
+    expect(shared).toContain("a delegation stays issue-number-plus-deltas only");
+    expect(shared).toContain(
+      "an attempt-specific decision is recorded in the body before the retry",
+    );
+    // The guidance stays model-size aware without naming one vendor or model.
+    expect(shared).toContain("Model size never changes the contract");
+    for (const body of [shared, ...roleSkillDefinitions().map((d) => flat(d.content))]) {
+      expect(body).not.toMatch(/minimax|deepseek|claude|gpt-|gemini|qwen|llama/i);
+    }
+    const orchestrator = flat(contentFor("phasegent-orchestrator"));
+    expect(orchestrator).toContain("## Write an executor-ready phase");
+    expect(orchestrator).toContain("The body is the phase implementation contract");
+    for (const section of [
+      "- Risk class and reviewer policy.",
+      "Objective / non-goals",
+      "Scope — the exact implementation write allowlist, the `git restore` allowlist",
+      "Behavior — current behavior → target behavior",
+      "Implementation path",
+      "Fixed constraints",
+      "Executor freedom",
+      "Acceptance",
+      "Validation",
+      "Blockers",
+    ]) {
+      expect(orchestrator).toContain(section);
+    }
+    expect(orchestrator).toContain("Run this quality gate before delegating");
+    expect(orchestrator).toContain("no line numbers, which rot on the first edit");
+    expect(orchestrator).toContain(
+      "The blocker list names the decisions that must return `BLOCKED`",
+    );
+    expect(orchestrator).toContain(
+      "A weaker executor is a reason for a smaller phase, never for a shorter contract",
+    );
+    // The autonomy boundary fixes the decisions without widening any gate.
+    expect(orchestrator).toContain("### Autonomy boundary");
+    expect(orchestrator).toContain(
+      "You fix in the body: observable behavior, interfaces, architecture and data flow, invariants, scope, and validation",
+    );
+    expect(orchestrator).toContain(
+      "The executor picks only local implementation details inside its allowlist",
+    );
+    expect(orchestrator).toContain(
+      "The boundary never widens an allowlist and never moves role ownership",
+    );
+    const executor = flat(contentFor("phasegent-executor"));
+    expect(executor).toContain("## Follow the phase implementation contract");
+    expect(executor).toContain(
+      "Your assigned phase in the artifact is the contract",
+    );
+    expect(executor).toContain(
+      "Anchor every edit to the stable file path and symbol the plan names",
+    );
+    expect(executor).toContain("a line number in the plan is a hint, never an address");
+    expect(executor).toContain(
+      "Invent no architecture, module, dependency, data flow, or neighbouring feature",
+    );
+    expect(executor).toContain(
+      "Choose only the local details the plan leaves open — naming, file split, helper placement, test layout",
+    );
+    expect(executor).toContain(
+      "return `BLOCKED` with the smallest concrete question",
+    );
+  });
+
   test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {

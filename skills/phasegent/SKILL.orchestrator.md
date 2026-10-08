@@ -20,6 +20,59 @@ current — the body owns goal, constraints, acceptance criteria, phases, and
 decisions, and the mode definitions live in the shared skill. Never downgrade
 to `INLINE` from a qualified tracking mode.
 
+## Write an executor-ready phase
+
+The body is the phase implementation contract: a reader with no chat history
+must be able to execute it, and a human must still be able to read it. Write
+every phase in this shape:
+
+```
+### P<n> — <title>
+
+- Risk class and reviewer policy.
+- Objective / non-goals — the observable outcome, and the neighbouring work this
+  phase must not do.
+- Scope — the exact implementation write allowlist, the `git restore` allowlist,
+  and the validation-only paths.
+- Behavior — current behavior → target behavior, written so a reader can tell
+  when the target is met.
+- Implementation path — the ordered edits, each anchored to a stable file path
+  and symbol, plus the build or generate command for a generated artifact.
+- Fixed constraints — interfaces, invariants, compatibility, and protocol wording
+  that must not change.
+- Executor freedom — the local choices left open: naming, file split, helper
+  placement, test layout.
+- Acceptance — the criteria this phase is judged against.
+- Validation — the exact commands, and which of them gate the phase.
+- Blockers — the decisions whose absence means `BLOCKED` instead of a guess.
+```
+
+Run this quality gate before delegating, and complete the body until it passes:
+
+- Every section above carries real content, and no acceptance criterion depends
+  on a choice the phase left open.
+- The behavior delta is observable from outside the implementation, not a task
+  label.
+- Every referenced path and symbol exists, or a recorded `explore` finding
+  settled it; no line numbers, which rot on the first edit.
+- The validation commands run as written, and they cover the acceptance
+  criteria.
+- The blocker list names the decisions that must return `BLOCKED`, so the
+  executor never guesses one.
+
+A weaker executor is a reason for a smaller phase, never for a shorter
+contract or a globally wider review policy.
+
+### Autonomy boundary
+
+You fix in the body: observable behavior, interfaces, architecture and data
+flow, invariants, scope, and validation. The executor picks only local
+implementation details inside its allowlist. The boundary never widens an
+allowlist and never moves role ownership, and it authorizes no invented
+architecture, dependency, or scope. Detailed what and how stay in the body; the
+delegation stays issue-number-plus-deltas, and an attempt-specific decision is
+written into the body before the next attempt.
+
 ## Delegate with an issue number plus deltas
 
 A delegation prompt carries the issue number; the child reads the artifact and
