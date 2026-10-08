@@ -89,16 +89,6 @@ import {
   worktreeForSession,
 } from "./session.js";
 import { registerAgentSkills, roleSkillContent, roleSkillId, withSkillPrefix } from "./agents.js";
-import {
-  MCP_SERVER_ROLE,
-  PHASEGENT_MCP_SERVER,
-  applyServer,
-  forgetMcpRegistration,
-  hasPhasegentServer,
-  mcpRegistered,
-  phasegentMcpServerDefinition,
-  registerPhasegentMcp,
-} from "./mcp.js";
 import { registerSkill, roleSkillDefinitions, skillDefinition, skillDefinitions } from "./skills.js";
 import {
   gitWorktreeAdd,
@@ -115,19 +105,6 @@ const PhasegentWorktreePlugin = {
       if (strategy) registrations.push(strategy);
     } catch (error) {
       warn(`phasegent: worktree strategy registration failed (${errorText(error)})`);
-    }
-    try {
-      // Registering the MCP server exposes the contracted tracking tools. A
-      // refused or unrecognised config surface is a warning and a no-op, so
-      // nothing else about the adapter changes.
-      const registration = await registerPhasegentMcp(context);
-      if (!registration.registered) {
-        warn(
-          `phasegent: MCP tracking tools are unavailable (${registration.reason})`,
-        );
-      }
-    } catch (error) {
-      warn(`phasegent: MCP server registration failed (${errorText(error)})`);
     }
     try {
       // The prompt hook owns placement: it is admitted before the runner reaches
@@ -214,14 +191,6 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   roleSkillId,
   roleSkillContent,
   withSkillPrefix,
-  MCP_SERVER_ROLE,
-  PHASEGENT_MCP_SERVER,
-  applyServer,
-  forgetMcpRegistration,
-  hasPhasegentServer,
-  mcpRegistered,
-  phasegentMcpServerDefinition,
-  registerPhasegentMcp,
 });
 
 export default PhasegentWorktreePlugin;

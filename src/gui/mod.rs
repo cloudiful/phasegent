@@ -2,7 +2,7 @@
 //! stdio bridge.
 //!
 //! Normal CLI commands never initialize a desktop shell: the Rust binary is
-//! the CLI/MCP executable and the packaged
+//! the CLI executable and the packaged
 //! [`crate::desktop_bridge`] companion for the Electron application, and the
 //! window lifecycle lives in that application. The backends here are the
 //! single source of truth for desktop payloads, redaction, and error text:

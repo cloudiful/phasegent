@@ -258,13 +258,38 @@ fn admin_auth_setup_is_role_scoped_for_every_role() {
 fn any_role_gate_requires_a_role() {
     assert_eq!(
         sorted_paths_matching(|spec| spec.access == RoleAccess::AnyRole),
-        vec!["admin auth setup".to_owned(), "mcp serve".to_owned()]
+        vec!["admin auth setup".to_owned()]
     );
-    for path in [&["admin", "auth", "setup"][..], &["mcp", "serve"][..]] {
+    for path in [&["admin", "auth", "setup"][..]] {
         let access = find(path).unwrap().access;
         for role in ALL_ROLES {
             assert!(access.allows_role(*role), "{path:?} must allow {role}");
         }
         assert!(!access.allows_roleless(), "{path:?} must require a role");
     }
+}
+
+// No descriptor may carry the unsupported token at any path depth, and the
+// parser must reject it with the stable unknown-command error at every role,
+// so the name is never accepted bare or as a subcommand.
+#[test]
+fn unsupported_token_is_absent_from_the_registry_and_rejected_by_the_parser() {
+    for (path, spec) in collect_paths() {
+        assert!(
+            path.iter().all(|segment| segment.to_lowercase() != "mcp"),
+            "{path:?} must not register an mcp command"
+        );
+        assert!(
+            !spec.name.to_lowercase().contains("mcp"),
+            "registry node {:?} must not be mcp-named",
+            spec.name
+        );
+    }
+    for role in ALL_ROLES {
+        let error =
+            super::parse_with_role_env(&super::args(&["mcp"]), Some(role.as_str())).unwrap_err();
+        assert_eq!(error, "unknown command 'mcp'");
+    }
+    let roleless = super::parse_with_role_env(&super::args(&["mcp"]), None).unwrap_err();
+    assert_eq!(roleless, "unknown command 'mcp'");
 }

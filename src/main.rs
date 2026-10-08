@@ -14,7 +14,6 @@ mod hooks;
 mod launch;
 mod lifecycle;
 mod lifecycle_auto;
-mod mcp;
 mod notifications;
 mod plugin;
 mod policy;

@@ -2,8 +2,7 @@ use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
     Command, HelpTopic, Invocation, IssueCommand, admin, auth, comment, config, help_topic, hooks,
-    issue, mcp, notify, plugin, project, registry, relation, status, timer, version, workflow,
-    worktree,
+    issue, notify, plugin, project, registry, relation, status, timer, version, workflow, worktree,
 };
 use crate::policy::Role;
 
@@ -311,7 +310,6 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
         "hooks" => hooks::parse_hooks(rest)?,
         "plugin" => plugin::parse_plugin(rest)?,
         "notify" => notify::parse_notify(rest)?,
-        "mcp" => mcp::parse_mcp(rest)?,
         value => return Err(format!("unknown command '{value}'")),
     })
 }

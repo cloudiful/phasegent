@@ -29,7 +29,6 @@ Commands:
   doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)
   hooks                  Managed Git hook installation
   notify                 Bounded agent notifications
-  mcp                    MCP server over stdio or streamable HTTP
   plugin                 Managed OpenCode plugin installation
   repo                   Repository operations
   worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)

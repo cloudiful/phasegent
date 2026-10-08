@@ -24,7 +24,7 @@ impl IssueProvider for ForgejoProvider {
         // Phase 1 parity matrix (issue 257): Forgejo stays native on
         // issue/comment/repository rows and uniformly not-supported on
         // attachment / metadata / relation rows. Every `false` here is
-        // the contract surface the CLI/MCP layer relies on to reject
+        // the contract surface the CLI layer relies on to reject
         // operations with a structured not-supported result before any
         // network call.
         ProviderCapabilities {

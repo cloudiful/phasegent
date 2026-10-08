@@ -10,9 +10,8 @@ pub(crate) use super::parse_helpers::{
     required_nonempty_option, required_option, required_value, split_inline, validate_options,
 };
 pub(crate) use super::{
-    Command, CommentCommand, HelpTopic, HooksCommand, IssueCommand, McpCommand, McpTransport,
-    NotifyCommand, ProjectCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand,
-    WorkflowCommand,
+    Command, CommentCommand, HelpTopic, HooksCommand, IssueCommand, NotifyCommand, ProjectCommand,
+    RelationCommand, StatusCommand, TimerCommand, VersionCommand, WorkflowCommand,
 };
 pub(crate) use crate::policy::Role;
 pub(crate) use crate::providers::ProviderKind;

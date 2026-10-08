@@ -133,11 +133,6 @@ pub(crate) fn help_topic(
             Some("send") => Ok(HelpTopic::NotifyCommand("send".to_owned())),
             Some(value) => Err(format!("unknown notify help topic '{value}'")),
         },
-        "mcp" => match subcommand {
-            None => Ok(HelpTopic::Mcp),
-            Some("serve") => Ok(HelpTopic::McpCommand("serve".to_owned())),
-            Some(value) => Err(format!("unknown mcp help topic '{value}'")),
-        },
         "worktree" => match subcommand {
             None => Ok(HelpTopic::Worktree),
             Some(value)

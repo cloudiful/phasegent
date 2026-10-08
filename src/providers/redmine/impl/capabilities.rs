@@ -14,13 +14,13 @@ impl RedmineProvider {
         // Phase 4 parity (issue 257): the uniform
         // `IssueAttachmentUpload = false` row now lives on the
         // inherent provider. Phase 1 only intercepted the row at the
-        // dispatcher surface so the CLI/MCP guard stayed single-
+        // dispatcher surface so the CLI guard stayed single-
         // sourced; Phase 4 sinks the value here so the dispatcher arm
         // can forward to the provider directly. The underlying
         // `upload_attachment` method stays compiled for callers that
         // reach the inherent surface (e.g. the legacy
         // `contract_tests/attachments.rs` wire-shape tests), but no
-        // command path reaches it because every CLI/MCP entry point
+        // command path reaches it because every CLI entry point
         // is gated by `provider.supports(...)` and now rejects the
         // capability uniformly.
         match capability {

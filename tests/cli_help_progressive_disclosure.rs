@@ -17,7 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use support::{phasegent_bin, stdout_text};
+use support::{phasegent_bin, stderr_text, stdout_text};
 
 /// Per-test scratch directory holding the throwaway SQLite the help
 /// commands would otherwise touch. Help-only invocations never open
@@ -441,8 +441,8 @@ fn role_specific_root_help_only_lists_available_commands() {
     assert!(output.status.success(), "--help exited non-zero");
     let stdout = stdout_text(&output);
     for command in [
-        "issue", "comment", "config", "doctor", "hooks", "notify", "mcp", "plugin", "project",
-        "status", "version", "relation", "worktree",
+        "issue", "comment", "config", "doctor", "hooks", "notify", "plugin", "project", "status",
+        "version", "relation", "worktree",
     ] {
         assert!(
             has_root_row(&stdout, command),
@@ -793,5 +793,54 @@ fn help_pages_present_the_redmine_address_as_machine_wide() {
     assert!(
         auth.contains("Credentials, provisioned identities, provider selection, and the Redmine close-status id stay role-scoped"),
         "admin auth must keep the genuinely role-scoped fields named; got:\n{auth}",
+    );
+}
+
+/// Process-boundary contract for an unsupported command name: the binary must
+/// reject that name bare and as a subcommand with the stable unknown-command
+/// error on stderr (empty stdout, exit 2), never advertise a root row or help
+/// topic for it at any role, and keep the root overview's byte-identical shape
+/// without a dead placeholder.
+#[test]
+fn unsupported_command_is_rejected_at_the_process_boundary() {
+    let deny = |args: &[&str], role: Option<&str>| {
+        let output = run_help_with_role(args, role);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?} must exit 2; stderr={}",
+            stderr_text(&output)
+        );
+        assert_eq!(
+            stdout_text(&output),
+            "",
+            "{args:?} must print nothing on stdout"
+        );
+        stderr_text(&output).trim_end().to_owned()
+    };
+    for role in [None, Some("admin"), Some("orchestrator"), Some("tester")] {
+        let stderr = deny(&["mcp", "serve"], role);
+        assert_eq!(
+            stderr, "{\"error\":{\"kind\":\"argument\",\"message\":\"unknown command 'mcp'\"}}",
+            "role={role:?} must see the stable unknown-command error"
+        );
+        let stderr = deny(&["--help", "mcp"], role);
+        assert_eq!(
+            stderr, "{\"error\":{\"kind\":\"argument\",\"message\":\"unknown help topic 'mcp'\"}}",
+            "role={role:?} must see the stable unknown-help-topic error"
+        );
+    }
+
+    assert!(
+        !has_root_row(&stdout_text(&run_help(&["--help"])), "mcp"),
+        "root help must not list an mcp row",
+    );
+
+    let deep = run_help_with_role(&["--help", "mcp", "serve"], None);
+    assert_eq!(deep.status.code(), Some(2));
+    assert!(
+        stderr_text(&deep).contains("unknown help topic 'mcp'"),
+        "--help mcp serve must reject the whole help subtree; stderr={}",
+        stderr_text(&deep)
     );
 }

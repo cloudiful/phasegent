@@ -52,9 +52,9 @@ another.
 Reconnaissance is delegated, never inlined, and the native `explore` subagent
 is the only reconnaissance backend: the host launches it with `task(explore)`
 under its own read-only tool policy, and it reads inside the OpenCode session's
-own directory. It never binds a phasegent issue or worktree, and no phasegent
-MCP tool runs a research turn. Who does the reading never changes what you are
-allowed to do — only who does the reading.
+own directory. It never binds a phasegent issue or worktree, and it publishes no
+note. Who does the reading never changes what you are allowed to do — only who
+does the reading.
 
 ## When to use this skill
 
@@ -229,8 +229,7 @@ phase is an explicit transition back to `In Progress`.
   issue, never call `status *` or `timer *`, never commit, push, tag, or mutate refs,
   and never claim another role's credential.
 - `comment create` writes under the session role: a child's note needs explicit
-  authorization (the CLI flag, or server-side authorization for MCP unless the
-  server role is orchestrator).
+  authorization through the `--authorized` CLI flag.
 - `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope, and
   `comment list` is the bulk note read.
 - `notify send` is manual-only and never automatic.
@@ -251,14 +250,6 @@ Never read the local SQLite files or call provider REST directly, since
 `comment list` and batch `issue get` cover bulk reads. Audit notes are
 append-only: there is deliberately no comment update/delete command, so publish
 a follow-up note instead.
-
-### MCP toolset nuance
-
-`mcp serve` exposes only the startup role's toolset (`capabilities`,
-`issue_get`, `issue_search`, `status_next`, `comment_create`, `notify_send`);
-status writes (`status transition` stays CLI-only), timers, and role elevation
-are never exposed. Clients never supply a role, and `comment_create` needs
-server-side authorization unless the server role is orchestrator.
 
 ## Worktree leases
 

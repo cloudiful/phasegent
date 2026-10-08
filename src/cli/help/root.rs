@@ -22,7 +22,7 @@ fn root_usage() -> String {
 /// top-level `auth`/`workflow` redirect leaves, which exist so the parser can
 /// resolve their moved-error help topics. A test keeps the two in sync.
 const ROOT_OVERVIEW: &[&str] = &[
-    "issue", "comment", "admin", "config", "doctor", "hooks", "notify", "mcp", "plugin", "repo",
+    "issue", "comment", "admin", "config", "doctor", "hooks", "notify", "plugin", "repo",
     "project", "status", "version", "relation", "timer", "worktree",
 ];
 
@@ -45,51 +45,6 @@ pub(crate) fn print_root_help(role: Option<Role>, provider: Option<ProviderKind>
           Provider resolution chain and machine-wide default: 'phasegent --help config provider'.\n\
           Role and credential guidance: 'phasegent --help admin'."
     );
-}
-
-/// Help for `mcp`. Kept in the root help module so the MCP phase
-/// needs no new help file; dispatched from the help router.
-pub(crate) fn print_mcp_help(role: Option<Role>) {
-    println!(
-        "MCP server for {}:\n\n  serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]  Serve contracted tools\n\nTools: {}. Excluded: status_advance, timer start/finish, role elevation. The server resolves its role from PHASEGENT_ROLE and its provider from the provider flags; clients never supply a role. Stdio is the default; HTTP mounts streamable HTTP at /mcp with graceful shutdown. --bind is HTTP-only and requires --transport http.\n\nUse 'phasegent --help mcp serve' for options.",
-        role.map_or("all roles", Role::as_str),
-        mcp_tools_line(role),
-    );
-}
-
-/// The tool list for one help context. No role keeps the compatibility union
-/// (every registered tool); a resolved role sees only the tools its declared
-/// gate allows, matching the `capabilities` tool and the handler gates.
-fn mcp_tools_line(role: Option<Role>) -> String {
-    let names: Vec<&'static str> = match role {
-        None => crate::mcp::tool_registry::TOOLS
-            .iter()
-            .map(|tool| tool.name)
-            .collect(),
-        Some(role) => crate::mcp::tools::allowed_tools(role),
-    };
-    names
-        .into_iter()
-        .map(|name| match name {
-            "comment_create" => {
-                "comment_create (needs server-side --authorized unless orchestrator)"
-            }
-            other => other,
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-pub(crate) fn print_mcp_command_help(role: Option<Role>, command: &str) {
-    match command {
-        "serve" => {
-            let role_text = role.map_or("ROLE", Role::as_str);
-            println!(
-                "Usage: PHASEGENT_ROLE={role_text} phasegent mcp serve [--transport stdio|http] [--bind 127.0.0.1:3000 (HTTP-only)] [--authorized]\n\nServe the contracted MCP tools with the role from PHASEGENT_ROLE. --transport stdio (default) speaks JSON-RPC on stdin/stdout; --transport http serves streamable HTTP via axum at /mcp on --bind (HTTP-only; requires --transport http). --authorized enables comment_create for non-orchestrator roles; without it the tool rejects with an authorization error. status_advance, timer start/finish, and role elevation are never exposed."
-            );
-        }
-        _ => print_mcp_help(role),
-    }
 }
 
 #[cfg(test)]

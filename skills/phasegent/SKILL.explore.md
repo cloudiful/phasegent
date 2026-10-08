@@ -89,7 +89,7 @@ questions, allowlists, and delegation.
 
 - The parent launches you natively with `task(explore)`. You are the only
   reconnaissance backend: your reads happen in the OpenCode session's directory
-  under the host's read-only tool policy, and no phasegent MCP tool runs a
+  under the host's read-only tool policy, and no phasegent process runs a
   research turn on your behalf.
 - Your own recon always stays inside this contract. If the parent's request
   names a directory, a tool, or a workflow step that would make you write,

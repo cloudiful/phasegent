@@ -1,7 +1,6 @@
 name: Release
 
-# Tag-triggered release + MCP image in one workflow. There is intentionally
-# no PR CI workflow.
+# Tag-triggered release. There is intentionally no PR CI workflow.
 #
 # - Trigger is version tags `v*` only; branch pushes never build or publish.
 # - `version-check` fails fast unless the tag is strict numeric
@@ -9,7 +8,7 @@ name: Release
 #   carry the stripped tag, so the Electron Builder MSI/DMG versions and the
 #   binary `--version` agree with the release.
 # - `build` compiles every release binary once with the full CLI feature set
-#   (`postgres,notify-dingtalk,notify-email`). The same binary is the CLI/MCP
+#   (`postgres,notify-dingtalk,notify-email`). The same binary is the CLI
 #   artifact and the packaged companion of the Electron desktop shell; Linux
 #   stays CLI-only (no renderer, no Electron).
 # - Desktop rows (Windows x64, macOS arm64) additionally build the Vue
@@ -17,22 +16,7 @@ name: Release
 #   Rust companion via `scripts/electron-backend.mjs`, and package the unsigned
 #   MSI/DMG with Electron Builder, the only desktop packager.
 # - The raw `phasegent` binaries are still published next to the installers so
-#   the CLI/MCP artifact contract is unchanged.
-# - The MCP image reuses the `build` Linux binaries verbatim (download the
-#   matching `phasegent-<target>` artifact, stage at
-#   `ci-image-input/phasegent`, docker buildx per-arch + multi-arch
-#   manifest). No second `cargo build`, no QEMU Rust compile, and the image
-#   binary is bit-identical to the release asset. `.dockerignore` keeps the
-#   renderer and Electron outputs out of the build context, so the image stays
-#   CLI-only.
-# - Dockerfile stays runtime-only (copies the prebuilt artifact, no Rust
-#   toolchain inside Docker). Per-arch correctness: each arch image copies
-#   the matching arch binary; no cross-arch reuse.
-# - Pushes the version tag plus `latest` to GHCR. Image path derives from
-#   the repository slug at runtime (`github.repository`); no owner/repo
-#   literal is baked in.
-# - Image checkouts pin the immutable commit (`github.sha`), never a
-#   mutable ref.
+#   the CLI artifact contract is unchanged.
 on:
   push:
     tags:
@@ -44,9 +28,6 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
   version-check:
@@ -97,7 +78,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux stays a plain CLI/MCP binary (no renderer, no Electron),
+          # Linux stays a plain CLI binary (no renderer, no Electron),
           # but with the full CLI feature set (postgres + notify channels).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -105,7 +86,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             desktop: false
-          # macOS ships the CLI/MCP binary plus an unsigned Electron Builder
+          # macOS ships the CLI binary plus an unsigned Electron Builder
           # DMG containing the real `.app` for Finder users. No
           # signing/notarization secrets are required or set; Gatekeeper will
           # warn on first open.
@@ -136,7 +117,7 @@ jobs:
       # Desktop rows build the renderer and the Electron bundles with the
       # pinned Bun toolchain through the repository's own scripts. No
       # bun.lock is committed under repository policy. Linux rows never run
-      # Bun, so the CLI binary and the container image stay renderer-free.
+      # Bun, so the CLI binary stays renderer-free.
       - name: Setup Bun (desktop rows only)
         if: matrix.desktop
         uses: oven-sh/setup-bun@v2
@@ -179,9 +160,9 @@ jobs:
           echo "PHASEGENT_FRONTEND_DIST_HASH=$HASH" >> "$GITHUB_ENV"
           echo "frontend/dist hash: $HASH"
 
-      # One binary per target: the released CLI/MCP artifact and the Rust
+      # One binary per target: the released CLI artifact and the Rust
       # companion Electron Builder stages as an extra resource.
-      - name: Build release binary (CLI/MCP and desktop companion)
+      - name: Build release binary (CLI and desktop companion)
         run: cargo build --release --bin phasegent --target ${{ matrix.target }} --features postgres,notify-dingtalk,notify-email
 
       - name: Prepare artifact (Unix)
@@ -265,135 +246,6 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats
-
-  image-prepare:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    outputs:
-      tags: ${{ steps.meta.outputs.tags }}
-      labels: ${{ steps.meta.outputs.labels }}
-    steps:
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-
-  build-image:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runs_on: ubuntu-24.04
-            platform: linux/amd64
-            target: x86_64-unknown-linux-gnu
-          - arch: arm64
-            runs_on: ubuntu-24.04-arm
-            platform: linux/arm64
-            target: aarch64-unknown-linux-gnu
-    runs-on: ${{ matrix.runs_on }}
-    needs:
-      - build
-      - image-prepare
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-
-      # Reuse the release `build` binary verbatim: no second `cargo build`.
-      - name: Download release binary bundle
-        uses: actions/download-artifact@v8
-        with:
-          name: phasegent-${{ matrix.target }}
-          path: dist-image
-
-      - name: Stage image input from release binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf ci-image-input
-          mkdir -p ci-image-input
-          SRC="$(find dist-image -maxdepth 2 -type f -name "phasegent-*" | head -n 1)"
-          if [ -z "$SRC" ]; then echo "release artifact missing under dist-image"; exit 1; fi
-          install -Dm755 "$SRC" ci-image-input/phasegent
-          ls -lh ci-image-input/phasegent
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Compute architecture tags
-        id: tags
-        shell: bash
-        run: |
-          {
-            echo 'value<<EOF'
-            while IFS= read -r tag; do
-              [ -n "$tag" ] && printf '%s-${{ matrix.arch }}\n' "$tag"
-            done <<'TAGS'
-          ${{ needs.image-prepare.outputs.tags }}
-          TAGS
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and push ${{ matrix.arch }} image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ steps.tags.outputs.value }}
-          labels: ${{ needs.image-prepare.outputs.labels }}
-          cache-from: type=gha,scope=phasegent-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=phasegent-${{ matrix.arch }}
-
-  publish-manifest:
-    runs-on: ubuntu-24.04
-    needs:
-      - image-prepare
-      - build-image
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Publish multi-arch manifests
-        shell: bash
-        run: |
-          while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            docker buildx imagetools create \
-              --tag "$tag" \
-              "$tag-amd64" \
-              "$tag-arm64"
-          done <<'TAGS'
-          ${{ needs.image-prepare.outputs.tags }}
-          TAGS
 
   release:
     needs: build

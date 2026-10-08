@@ -68,7 +68,6 @@ stripped tag. Any mismatch fails fast with a clear error message and the
 ## Documentation
 
 - `README.md` and `README.zh-CN.md` stay a slim backbone: overview,
-  install, and usage, plus `--help` and OpenCode-skill pointers. Do not
-  move the container/deploy runbook into the README; that contract lives
-  in `Dockerfile` and `.github/workflows/release.yml`, covered by
-  `tests/container_contract.rs` and `tests/mcp_image_workflow.rs`.
+  install, and usage, plus `--help` and OpenCode-skill pointers. The
+  release and packaging contract stays out of the README; it lives in
+  `.github/workflows/release.yml`, covered by the version-check job.

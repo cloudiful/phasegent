@@ -1088,9 +1088,9 @@ another.
 Reconnaissance is delegated, never inlined, and the native \`explore\` subagent
 is the only reconnaissance backend: the host launches it with \`task(explore)\`
 under its own read-only tool policy, and it reads inside the OpenCode session's
-own directory. It never binds a phasegent issue or worktree, and no phasegent
-MCP tool runs a research turn. Who does the reading never changes what you are
-allowed to do — only who does the reading.
+own directory. It never binds a phasegent issue or worktree, and it publishes no
+note. Who does the reading never changes what you are allowed to do — only who
+does the reading.
 
 ## When to use this skill
 
@@ -1265,8 +1265,7 @@ phase is an explicit transition back to \`In Progress\`.
   issue, never call \`status *\` or \`timer *\`, never commit, push, tag, or mutate refs,
   and never claim another role's credential.
 - \`comment create\` writes under the session role: a child's note needs explicit
-  authorization (the CLI flag, or server-side authorization for MCP unless the
-  server role is orchestrator).
+  authorization through the \`--authorized\` CLI flag.
 - \`issue get\` batch-reads up to 20 issues as an \`{issues, errors}\` envelope, and
   \`comment list\` is the bulk note read.
 - \`notify send\` is manual-only and never automatic.
@@ -1287,14 +1286,6 @@ Never read the local SQLite files or call provider REST directly, since
 \`comment list\` and batch \`issue get\` cover bulk reads. Audit notes are
 append-only: there is deliberately no comment update/delete command, so publish
 a follow-up note instead.
-
-### MCP toolset nuance
-
-\`mcp serve\` exposes only the startup role's toolset (\`capabilities\`,
-\`issue_get\`, \`issue_search\`, \`status_next\`, \`comment_create\`, \`notify_send\`);
-status writes (\`status transition\` stays CLI-only), timers, and role elevation
-are never exposed. Clients never supply a role, and \`comment_create\` needs
-server-side authorization unless the server role is orchestrator.
 
 ## Worktree leases
 
@@ -1928,7 +1919,7 @@ questions, allowlists, and delegation.
 
 - The parent launches you natively with \`task(explore)\`. You are the only
   reconnaissance backend: your reads happen in the OpenCode session's directory
-  under the host's read-only tool policy, and no phasegent MCP tool runs a
+  under the host's read-only tool policy, and no phasegent process runs a
   research turn on your behalf.
 - Your own recon always stays inside this contract. If the parent's request
   names a directory, a tool, or a workflow step that would make you write,
@@ -2166,167 +2157,6 @@ async function registerAgentSkills(context, deps) {
   };
 }
 
-// assets/opencode/src/mcp.js
-// The phasegent MCP server registration.
-//
-// `registerPhasegentMcp` adds the local `phasegent mcp serve` process to the
-// host's MCP state under the fixed name `phasegent`. The name matters: OpenCode
-// exposes an MCP tool as
-// `sanitize(server) + "_" + sanitize(tool)`
-// (packages/opencode/src/mcp/catalog.ts:119), so the contracted tracking tools
-// reach the model as `phasegent_issue_get` and friends.
-//
-// The server starts once with the fixed least-privilege role below, so no
-// client can choose or elevate one.
-//
-// The v2 surface this file targets, read off the shipped v2.0.18 host:
-//
-//   * Config: an MCP server lives at `mcp.servers.<name>`, and the flag that
-//     keeps it connected is `disabled` (packages/core/src/config/mcp.ts:15-24).
-//     `disabled: false` is therefore the entry's own state, not a separate
-//     switch, and the entry carries no credential of its own.
-//   * Plugin: `context.mcp.transform(draft => …)`, where the draft is
-//     `{ list, get, set, update, remove }`, plus `context.mcp.reload()` to
-//     connect whatever the transform added. The host's own config plugin feeds
-//     `config.mcp.servers` through exactly this draft — `if (draft.get(name))
-//     continue; draft.set(name, entry)`, then `mcp.reload()` — so those three
-//     calls are the whole documented way in; the plugin context has no hook
-//     that accepts a raw configuration object.
-//
-// The canonical chezmoi config carries the same entry, and the two agree: an
-// entry that is already configured is left exactly as it is, so a host that
-// reads the entry from its config never sees a second one from the plugin.
-
-
-const PHASEGENT_MCP_SERVER = "phasegent";
-
-// The role the MCP server process starts with. Fixed and least-privilege:
-// `executor` carries the tracking surface (`issue_get`, `status_next`,
-// `comment_create`, `notify_send`) without carrying the orchestrator's plan,
-// status, timer, or worktree-lease powers. A model can never change it.
-const MCP_SERVER_ROLE = "executor";
-
-// Whether the phasegent MCP server was registered for this plugin activation.
-// Module state rather than a per-event argument, because registration happens
-// once in `setup` and the entry's state must agree with it for every call.
-let registered = false;
-
-function mcpRegistered() {
-  return registered;
-}
-
-function forgetMcpRegistration() {
-  registered = false;
-}
-
-// The local MCP server entry phasegent needs: the CLI in stdio mode, with the
-// fixed role, no credential of its own, and `disabled: false` so the host
-// connects it. Returns a fresh object each call so a host that mutates the
-// entry cannot poison the next attempt.
-function phasegentMcpServerDefinition() {
-  return {
-    type: "local",
-    command: ["phasegent", "mcp", "serve", "--transport", "stdio"],
-    environment: {
-      PHASEGENT_ROLE: MCP_SERVER_ROLE,
-    },
-    disabled: false,
-  };
-}
-
-// Whether the host MCP state already carries the phasegent server, so a second
-// registration is a no-op instead of a duplicate entry.
-//
-// Two representations of the same v2 shape are accepted: a host draft (the
-// `get`/`set` pair the host's own config plugin writes through) and a plain v2
-// configuration object read as `mcp.servers.<name>` — the form the canonical
-// chezmoi config writes. Neither is a guess about a host API; both are the
-// documented shape, one mutable at runtime and one on disk.
-function hasPhasegentServer(config) {
-  if (!config || typeof config !== "object") return false;
-  if (typeof config.get === "function" && typeof config.set === "function") {
-    return Boolean(config.get(PHASEGENT_MCP_SERVER));
-  }
-  const servers = config.mcp && config.mcp.servers;
-  if (!servers || typeof servers !== "object") return false;
-  return Object.prototype.hasOwnProperty.call(servers, PHASEGENT_MCP_SERVER);
-}
-
-// Add the server entry to a host MCP draft, without clobbering an entry a user
-// or the canonical config already provided. Returns whether the entry is
-// present in the draft afterwards, so a caller can tell "the host has it" from
-// "the host accepted the call and dropped the entry".
-function applyServer(draft, definition) {
-  if (!draft || typeof draft !== "object") return false;
-  // `get` and `set` are the two draft calls the host's own config plugin
-  // makes; a draft without both is a shape this bridge does not understand.
-  if (typeof draft.get !== "function" || typeof draft.set !== "function") return false;
-  if (draft.get(PHASEGENT_MCP_SERVER)) return true;
-  draft.set(PHASEGENT_MCP_SERVER, definition);
-  return Boolean(draft.get(PHASEGENT_MCP_SERVER));
-}
-
-// Add the phasegent MCP server to the host's runtime MCP state.
-//
-// Every failure is a warning and a no-op, never a throw: a throw inside a
-// plugin callback disables the whole plugin, redirect hook included (issue #533
-// host evidence). An unavailable, unrecognised, or rejected registration costs
-// the tracking tools and nothing else.
-async function registerPhasegentMcp(context) {
-  const mcp = context ? context.mcp : undefined;
-  const transform = mcp && mcp.transform;
-  if (typeof transform !== "function") {
-    registered = false;
-    warn(
-      "phasegent: host exposes no mcp.transform; the phasegent MCP server stays unregistered",
-    );
-    return { registered: false, reason: "no-mcp-transform" };
-  }
-  const definition = phasegentMcpServerDefinition();
-  let present = false;
-  try {
-    await transform((draft) => {
-      if (!draft || typeof draft.get !== "function" || typeof draft.set !== "function") {
-        warn(
-          "phasegent: host mcp draft exposes no get/set; the phasegent MCP server stays " +
-            "unregistered",
-        );
-        return;
-      }
-      try {
-        present = applyServer(draft, definition);
-      } catch (error) {
-        warn(`phasegent: MCP server registration was rejected (${errorText(error)})`);
-      }
-    });
-  } catch (error) {
-    registered = false;
-    warn(`phasegent: MCP server registration was rejected (${errorText(error)})`);
-    return { registered: false, reason: "mcp-transform-failed" };
-  }
-  // The entry is only "registered" once the host's own state reports it, which
-  // is the same test the host's config plugin relies on. Anything else leaves
-  // the tools unavailable rather than advertising a server that cannot run.
-  if (!present) {
-    registered = false;
-    warn(
-      "phasegent: host mcp state does not carry the phasegent server after registration",
-    );
-    return { registered: false, reason: "entry-not-confirmed" };
-  }
-  // The host connects an added server on a domain reload, exactly as its own
-  // config plugin does after writing its entries.
-  if (typeof mcp.reload === "function") {
-    try {
-      await mcp.reload();
-    } catch (error) {
-      warn(`phasegent: MCP server reload was rejected (${errorText(error)})`);
-    }
-  }
-  registered = true;
-  return { registered: true, reason: null };
-}
-
 // assets/opencode/src/strategy.js
 // v2 worktree strategy. `editor.add` selects the strategy as the default, and
 // the v2 editor has no way to wrap the host git strategy, so the strategy is
@@ -2515,19 +2345,6 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: worktree strategy registration failed (${errorText(error)})`);
     }
     try {
-      // Registering the MCP server exposes the contracted tracking tools. A
-      // refused or unrecognised config surface is a warning and a no-op, so
-      // nothing else about the adapter changes.
-      const registration = await registerPhasegentMcp(context);
-      if (!registration.registered) {
-        warn(
-          `phasegent: MCP tracking tools are unavailable (${registration.reason})`,
-        );
-      }
-    } catch (error) {
-      warn(`phasegent: MCP server registration failed (${errorText(error)})`);
-    }
-    try {
       // The prompt hook owns placement: it is admitted before the runner reaches
       // any tool call, so no tool invocation is cancelled to move a session.
       const promptHook = context && context.session && context.session.hook;
@@ -2612,14 +2429,6 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   roleSkillId,
   roleSkillContent,
   withSkillPrefix,
-  MCP_SERVER_ROLE,
-  PHASEGENT_MCP_SERVER,
-  applyServer,
-  forgetMcpRegistration,
-  hasPhasegentServer,
-  mcpRegistered,
-  phasegentMcpServerDefinition,
-  registerPhasegentMcp,
 });
 
 export default PhasegentWorktreePlugin;

@@ -342,7 +342,7 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     // the underlying upload path, and the role gate remains
     // (orchestrator / tester). The underlying `upload_attachment`
     // inherent method stays compiled for the legacy
-    // `contract_tests/attachments.rs` wire-shape tests; no CLI/MCP
+    // `contract_tests/attachments.rs` wire-shape tests; no CLI
     // path reaches it because every entry point is gated by
     // `provider.supports(...)`.
 

@@ -38,7 +38,7 @@ use notify::{print_notify_command_help, print_notify_help};
 use plugin::{print_plugin_command_help, print_plugin_help};
 use project::{print_project_command_help, print_project_help};
 use relation::{print_relation_command_help, print_relation_help};
-use root::{print_mcp_command_help, print_mcp_help, print_root_help};
+use root::print_root_help;
 use status::{print_status_command_help, print_status_help};
 use timer::{print_timer_command_help, print_timer_help};
 use version::{print_version_command_help, print_version_help};
@@ -100,8 +100,6 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
         HelpTopic::TimerCommand(command) => vec!["timer", command.as_str()],
         HelpTopic::Notify => vec!["notify"],
         HelpTopic::NotifyCommand(command) => vec!["notify", command.as_str()],
-        HelpTopic::Mcp => vec!["mcp"],
-        HelpTopic::McpCommand(command) => vec!["mcp", command.as_str()],
         HelpTopic::Worktree => vec!["worktree"],
         HelpTopic::WorktreeCommand(command) => vec!["worktree", command.as_str()],
     })
@@ -173,8 +171,6 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::PluginCommand(command) => print_plugin_command_help(&command),
         HelpTopic::Notify => print_notify_help(role),
         HelpTopic::NotifyCommand(command) => print_notify_command_help(role, &command),
-        HelpTopic::Mcp => print_mcp_help(role),
-        HelpTopic::McpCommand(command) => print_mcp_command_help(role, &command),
         HelpTopic::Worktree => print_worktree_help(role),
         HelpTopic::WorktreeCommand(command) => print_worktree_command_help(role, &command),
     }

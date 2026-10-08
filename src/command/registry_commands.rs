@@ -8,7 +8,7 @@
 //!
 //! The tree is split across two sibling files to stay under the repository's
 //! file-size planning threshold: `core::CORE` holds the workflow groups and
-//! `ops::OPS` the operator/plugin/MCP groups. [`COMMANDS`] concatenates them
+//! `ops::OPS` the operator/plugin groups. [`COMMANDS`] concatenates them
 //! in declaration order, so the combined surface and every gate are unchanged.
 
 #[path = "registry_commands_core.rs"]
@@ -62,7 +62,7 @@ mod tests {
             [
                 "doctor", "admin", "auth", "config", "issue", "comment", "project", "status",
                 "version", "relation", "timer", "workflow", "worktree", "repo", "hooks", "plugin",
-                "notify", "mcp",
+                "notify",
             ]
         );
     }

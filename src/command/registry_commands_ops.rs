@@ -1,5 +1,5 @@
-//! Descriptor table (part 2): the operator/plugin/MCP groups in declaration
-//! order, from `worktree` through `mcp`. Spliced into `super::COMMANDS` after
+//! Descriptor table (part 2): the operator/plugin groups in declaration
+//! order, from `worktree` through `notify`. Spliced into `super::COMMANDS` after
 //! `core::CORE` by name, so command order and every role/provider gate stay
 //! exactly as declared.
 
@@ -101,18 +101,6 @@ pub(super) const OPS: &[CommandSpec] = &[
             "Deliver one bounded notification",
             ACCESS_NOTIFY,
             "notify send",
-        )],
-    ),
-    group(
-        "mcp",
-        "MCP server over stdio or streamable HTTP",
-        RoleAccess::Open,
-        ProviderScope::Any,
-        &[leaf_op(
-            "serve",
-            "Serve the contracted MCP tools",
-            RoleAccess::AnyRole,
-            "mcp serve",
         )],
     ),
 ];

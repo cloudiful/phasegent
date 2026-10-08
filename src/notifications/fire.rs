@@ -1,6 +1,6 @@
 //! Manual-only delivery boundary for agent notifications.
 //!
-//! Manual `notify send` (CLI + MCP) persists a [`NotificationIntent`]
+//! Manual `notify send` persists a [`NotificationIntent`]
 //! row in `notification_deliveries` before any network work, then
 //! delivers through `cloudiful-notifier` on a scoped current-thread
 //! runtime. The sync CLI entry point stays sync: a fresh async

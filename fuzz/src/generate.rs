@@ -3,7 +3,7 @@
 
 const COMMANDS: &[&str] = &[
     "gui", "doctor", "admin", "auth", "config", "issue", "comment", "project", "status", "version",
-    "relation", "timer", "workflow", "worktree", "repo", "hooks", "plugin", "notify", "mcp",
+    "relation", "timer", "workflow", "worktree", "repo", "hooks", "plugin", "notify",
     "help", "bogus", "",
 ];
 

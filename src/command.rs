@@ -1,4 +1,4 @@
-use crate::policy::{Capability, Role};
+use crate::policy::Role;
 use crate::providers::ProviderKind;
 
 pub use crate::hooks::HooksCommand;
@@ -15,7 +15,6 @@ mod hooks;
 mod issue;
 mod issue_args;
 mod local_args;
-mod mcp;
 mod notify;
 mod parse_helpers;
 mod plugin;
@@ -46,7 +45,7 @@ pub(crate) use argv::parse_outcome_with_role_env;
 pub(crate) use argv::parse_with_role_env;
 pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
-pub use local_args::{McpCommand, McpTransport, NotifyCommand, PluginCommand};
+pub use local_args::{NotifyCommand, PluginCommand};
 pub(crate) use parse_helpers::{has_flag, optional_option, validate_options};
 pub use provider_args::{
     CommentCommand, ProjectCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand,
@@ -126,10 +125,6 @@ pub enum Command {
     /// channel; there are no automatic triggers and no post-success
     /// side effects. Requires a role.
     Notify(NotifyCommand),
-    /// rmcp MCP server over stdio (default) or streamable HTTP on
-    /// `/mcp`. Tools run with the server-side role from `PHASEGENT_ROLE`
-    /// and provider flags; clients never supply a role. Requires a role.
-    Mcp(McpCommand),
 }
 
 #[derive(Debug)]
@@ -155,8 +150,6 @@ pub enum HelpTopic {
     AdminConfigProviderCommand(String),
     Notify,
     NotifyCommand(String),
-    Mcp,
-    McpCommand(String),
     Repo,
     IssueCommand(String),
     CommentCommand(String),
@@ -197,13 +190,6 @@ pub(crate) fn registry_unavailability(role: Option<Role>, path: &[&str]) -> Opti
 /// `None` when the path is unknown, allowed, or not compiled.
 pub(crate) fn registry_denied_operation(role: Role, path: &[&str]) -> Option<&'static str> {
     registry::denied_operation(role, path)
-}
-
-/// The capability gate for a registry `path`, or `None` when the path is
-/// unknown or not capability-gated. Non-CLI surfaces (MCP tools) resolve their
-/// role gate from here so they cannot drift from the CLI's capability policy.
-pub(crate) fn registry_capability(path: &[&str]) -> Option<Capability> {
-    registry::capability(path)
 }
 
 /// Whether a top-level command is visible for the resolved role and provider.

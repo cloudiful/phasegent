@@ -1,5 +1,5 @@
 //! Role and capability policy. The five roles (`admin`, `orchestrator`,
-//! `executor`, `reviewer`, `tester`) gate every CLI/MCP primitive and
+//! `executor`, `reviewer`, `tester`) gate every CLI primitive and
 //! the `Capability` enum is the closed set of operations the CLI
 //! exposes to roles and providers.
 
@@ -109,7 +109,7 @@ pub enum Capability {
     CommentRead,
     CommentFindMarker,
     /// Deliver one bounded manual agent notification (`notify send`). Not a
-    /// provider operation: the CLI and MCP paths both gate on it. Admin is
+    /// provider operation: every command path gates on it. Admin is
     /// excluded because it only bootstraps.
     Notify,
     ProjectRead,

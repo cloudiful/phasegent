@@ -10,7 +10,7 @@ use super::{
     Command, CommentCommand, IssueCommand, ProjectCommand, RelationCommand, StatusCommand,
     TimerCommand, VersionCommand, WorkflowCommand, WorktreeCommand,
 };
-use super::{HooksCommand, McpCommand, NotifyCommand, PluginCommand, RepoCommand};
+use super::{HooksCommand, NotifyCommand, PluginCommand, RepoCommand};
 
 /// Registry path for one parsed command, or `None` for the role-agnostic
 /// `Help`/`Version` toggles.
@@ -41,7 +41,6 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::Timer(command) => &["timer", timer_name(command)],
         Command::Worktree(command) => &["worktree", worktree_name(command)],
         Command::Notify(NotifyCommand::Send { .. }) => &["notify", "send"],
-        Command::Mcp(McpCommand::Serve { .. }) => &["mcp", "serve"],
     };
     Some(path.to_vec())
 }

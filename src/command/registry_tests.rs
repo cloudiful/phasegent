@@ -126,7 +126,7 @@ fn parser_rejects_names_outside_the_registry() {
     // Top-level routing consults `top_level`, so this is the reverse half of
     // the completeness guard: a name the registry does not describe can never
     // be accepted, and the historical error stays byte-identical.
-    for name in ["frobnicate", "issues", "mcp-serve", "Issue", "role"] {
+    for name in ["frobnicate", "issues", "widgets", "Issue", "role"] {
         assert!(
             top_level(name).is_none(),
             "{name} must not be a registered command"

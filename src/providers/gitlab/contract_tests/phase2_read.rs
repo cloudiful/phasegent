@@ -12,7 +12,7 @@
 //!
 //! Every test asserts that the equivalent read is reachable through
 //! both the `GitlabProvider` and the `ProviderDispatcher::Gitlab` arm
-//! so the CLI/MCP layer can rely on the parity row.
+//! so the CLI layer can rely on the parity row.
 
 #![allow(unused_imports)]
 use super::support::*;
