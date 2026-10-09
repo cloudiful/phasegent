@@ -326,12 +326,6 @@ fn bootstrap_output_and_errors_redact_provisioned_keys() {
     storage
         .save_credential(Role::Reviewer, "redmine", "reviewer-secret-ccc333")
         .unwrap();
-    storage
-        .save_redmine_user(Role::Tester, 44, "phasegent-tester")
-        .unwrap();
-    storage
-        .save_credential(Role::Tester, "redmine", "tester-secret-ddd444")
-        .unwrap();
 
     let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
         .expect_err("distinct collision must fail");
@@ -340,7 +334,6 @@ fn bootstrap_output_and_errors_redact_provisioned_keys() {
         ORCH_SECRET,
         EXEC_SECRET,
         "reviewer-secret-ccc333",
-        "tester-secret-ddd444",
         "admin-redmine-key",
     ] {
         assert!(

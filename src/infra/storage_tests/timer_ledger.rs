@@ -112,6 +112,34 @@ fn timer_ledger_rejects_conflicting_identity_and_invalid_timestamps() {
 }
 
 #[test]
+fn timer_ledger_keeps_historical_tester_rows_readable() {
+    // A run recorded before the verification role merged into the reviewer
+    // stays listable and finishable: the write path rejects the retired role
+    // but no read re-validates the stored string, so the history needs no
+    // database or credential edit.
+    let (temp_dir, storage) = open_at_temp("timer-legacy-role");
+    assert!(
+        storage
+            .start_timer_run("legacy", 28, "verification", "tester", 1, 100)
+            .is_err()
+    );
+    storage
+        .connection
+        .execute(
+            "INSERT INTO execution_timer_runs (run_id, issue_id, phase, role, attempt, started_at, status, sync_status) \
+             VALUES ('legacy', 28, 'verification', 'tester', 1, 100, 'running', 'pending')",
+            [],
+        )
+        .unwrap();
+    let stored = storage.load_timer_run("legacy").unwrap().unwrap();
+    assert_eq!(stored.role, "tester");
+    let finished = storage.finish_timer_run("legacy", "DONE", 137).unwrap();
+    assert_eq!(finished.status, "DONE");
+    assert_eq!(finished.elapsed_seconds, Some(37));
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
 fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
     // GitLab has no numeric time-entry id, so its projection path advances
     // sync_status to `synced` while leaving `redmine_time_entry_id` null.

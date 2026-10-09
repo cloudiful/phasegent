@@ -36,16 +36,12 @@ pub(crate) fn parse_timer(args: &[String]) -> Result<Command, String> {
             }
             let phase = required_nonempty_option(args, "--phase", "timer start")?;
             let raw_agent_role = required_nonempty_option(args, "--agent-role", "timer start")?;
-            let agent_role = if raw_agent_role == "tester" {
-                "tester".to_owned()
-            } else {
+            let agent_role = {
                 let parsed = raw_agent_role
                     .parse::<Role>()
                     .map_err(|error| format!("timer start --agent-role: {error}"))?;
                 if !matches!(parsed, Role::Executor | Role::Reviewer) {
-                    return Err(
-                        "timer start --agent-role must be executor, reviewer, or tester".to_owned(),
-                    );
+                    return Err("timer start --agent-role must be executor or reviewer".to_owned());
                 }
                 parsed.as_str().to_owned()
             };

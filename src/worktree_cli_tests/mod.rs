@@ -10,7 +10,7 @@
 //!   capability-level, and matches the documented split:
 //!   `acquire` / `release` / `prune` are orchestrator-only;
 //!   `status` / `list` are available to orchestrator, executor, and
-//!   reviewer; tester is denied. The executor function returns the
+//!   reviewer; admin is denied. The executor function returns the
 //!   documented `permission` JSON envelope with exit code 3.
 //! * **Prune dry-run** — the prune pass classifies every lease
 //!   row correctly: active and released rows are skipped, recent

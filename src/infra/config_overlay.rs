@@ -212,10 +212,10 @@ impl ConfigOverlay {
         // Role names must be known; unknown roles fail instead of being ignored.
         for name in self.roles.keys() {
             match name.as_str() {
-                "admin" | "orchestrator" | "executor" | "reviewer" | "tester" => {}
+                "admin" | "orchestrator" | "executor" | "reviewer" => {}
                 _ => {
                     return Err(format!(
-                        "TOML config at {origin}: unknown role '{name}'; expected admin, orchestrator, executor, reviewer, or tester"
+                        "TOML config at {origin}: unknown role '{name}'; expected admin, orchestrator, executor, or reviewer"
                     ));
                 }
             }

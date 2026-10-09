@@ -3,8 +3,7 @@
 //! Subcommand gating lives here (command-level, not capability-level)
 //! so `acquire` / `release` / `heartbeat` / `prune` are
 //! orchestrator-only while `status` / `list` / `probe` mirror the
-//! issue-status read surface (orchestrator, executor, reviewer; tester
-//! denied).
+//! issue-status read surface (orchestrator, executor, reviewer).
 //! Branch deletion is never invoked; only `git worktree remove` is used
 //! on clean candidates. `.env` and secret material are never read,
 //! copied, or written by any code path here (issue #239 Decisions).

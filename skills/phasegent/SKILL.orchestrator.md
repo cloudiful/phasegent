@@ -29,7 +29,7 @@ every phase in this shape:
 ```
 ### P<n> — <title>
 
-- Risk class and reviewer policy.
+- Risk class and any named risk checkpoint boundary.
 - Objective / non-goals — the observable outcome, and the neighbouring work this
   phase must not do.
 - Scope — the exact implementation write allowlist, the `git restore` allowlist,
@@ -42,8 +42,8 @@ every phase in this shape:
   that must not change.
 - Executor freedom — the local choices left open: naming, file split, helper
   placement, test layout.
-- Acceptance — the criteria this phase is judged against.
-- Validation — the exact commands, and which of them gate the phase.
+- Acceptance — the criteria this issue is judged against.
+- Validation — the exact commands, and which of them gate the issue.
 - Blockers — the decisions whose absence means `BLOCKED` instead of a guess.
 ```
 
@@ -89,27 +89,32 @@ overlap write owners. The marker shapes and the note contract come from the
 shared skill.
 
 `explore` is read-only recon, `executor` owns implementation, and `reviewer` is
-independent; reserve `general` for standalone work outside this workflow. Each
-role's own skill is canonical for its result, verdict, and comment contracts —
-never infer a permission or a contract from another role. A follow-up attempt or
-round resumes the previous child; start a fresh one only when context isolation
-is genuinely needed.
+the independent code audit, acceptance verification, and test run; reserve
+`general` for standalone work outside this workflow. Each role's own skill is
+canonical for its result, verdict, and comment contracts — never infer a
+permission or a contract from another role. A follow-up attempt or round resumes
+the previous child; start a fresh one only when context isolation is genuinely
+needed.
 
-## Risk class, reviewer policy, and parallelism
+## Review scope, risk class, and parallelism
 
-- Choose one risk class per phase when you plan it — `standard`, `high-risk`, or
-  `irreversible` — and set the phase's `reviewer_policy` from it; the classes,
-  the `final-only` default, and the checkpoint exception live in the shared
-  skill.
-- `checkpoint-and-final` is allowed only for `high-risk` or `irreversible` work,
+- The default review is one issue-final audit over the complete issue, run after
+  every implementation phase is frozen. You do not require a review per
+  implementation phase; the `final` PASS plus a green verification gate is what
+  opens delivery.
+- Choose one risk class per phase when you plan it — reversible and localized,
+  `high-risk` (data, security, concurrency, schema/migration, a cross-module
+  interface, or user-visible behavior), or `irreversible` (an applied migration,
+  a publish, a deploy, or destructive cleanup).
+- A `checkpoint` review is allowed only for `high-risk` or `irreversible` work,
   and only when you write the exact checkpoint boundary into the issue plan
-  before delegating; without that boundary the policy stays `final-only`, and a
-  final audit always closes a phase.
+  before the work reaches it; without that boundary the scope stays `final`, and
+  the final audit always closes the issue.
 - Keep orchestration serial by default: one write owner per phase, and no
   executor shares a mutable tree with a reviewer. Overlap is safe only for
-  read-only recon, a tester observing a frozen implementation it does not modify,
-  or acceptance against an immutable deployed revision, and any overlap is your
-  explicit recorded decision, never automatic.
+  read-only recon, the reviewer observing a frozen implementation it does not
+  modify, or acceptance against an immutable deployed revision, and any overlap
+  is your explicit recorded decision, never automatic.
 
 ## Recon delegation (explore-first)
 
@@ -158,9 +163,9 @@ parent's scope.
 ## Accept the note-pointer result
 
 A tracked child publishes its audit note first and returns only the minimal
-note-pointer JSON — `status` for executor/tester, `verdict` for reviewer, plus
-`phase` and the nested `tracking` object. The note is the record: reject prose
-or changed-file duplication, and reject any verdict outside the shared
+note-pointer JSON — `status` for executor, `verdict` and `review` for reviewer,
+plus `phase` and the nested `tracking` object. The note is the record: reject
+prose or changed-file duplication, and reject any verdict outside the shared
 five-token vocabulary.
 
 ## Status, timer, and closure are yours
@@ -175,9 +180,9 @@ five-token vocabulary.
 ## Git delivery
 
 - You own commit/push/tag; children never commit, push, tag, or mutate refs.
-- After a phase is `DONE`, the reviewer passes, and validation is green, commit
-  the authorized scope and push; never commit while review or validation is
-  open.
+- Delivery opens only after the issue-final review returns `PASS` and the
+  issue's validation commands are green; never commit while review or validation
+  is open, and never treat a phase-terminal `DONE` as a delivery gate on its own.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;

@@ -13,7 +13,7 @@ pub(crate) fn execute_notify(role_value: Option<Role>, command: NotifyCommand) -
                 "kind": "permission",
                 "role": role.as_str(),
                 "operation": "notify send",
-                "message": "notify send requires orchestrator, executor, reviewer, or tester"
+                "message": "notify send requires orchestrator, executor, or reviewer"
             }),
             3,
         );

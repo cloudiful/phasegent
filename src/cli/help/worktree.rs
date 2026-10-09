@@ -26,11 +26,11 @@ const ACQUIRE_HELP: &str = "Usage: worktree acquire --issue N [--session S] [--b
 
 const RELEASE_HELP: &str = "Usage: worktree release --lease ID [--retain=true|false] [--force --reason TEXT]\n\nFlip an active lease to retained (default) or released. --retain defaults to true; the boolean accepts true|1|yes|on and false|0|no|off. The release is a no-op when the lease is already in the requested terminal state. The directory and the branch are never deleted by `release`; that is `prune`'s job. --force requires a non-empty --reason and persists it on the lease row (visible in status/list) so forced overrides stay attributable; --reason without --force is rejected. Lease rows are audit records and are never deleted — use force+reason instead of deleting rows. Orchestrator-only.";
 
-const STATUS_HELP: &str = "Usage: worktree status --issue N\n\nList every active lease for the given issue id (read-only). Returns a JSON envelope with `{ \"issue\": N, \"leases\": [...] }`. The result is bounded by the storage layer (256 active rows max per query). Available to orchestrator, executor, and reviewer; tester is denied.";
+const STATUS_HELP: &str = "Usage: worktree status --issue N\n\nList every active lease for the given issue id (read-only). Returns a JSON envelope with `{ \"issue\": N, \"leases\": [...] }`. The result is bounded by the storage layer (256 active rows max per query). Available to orchestrator, executor, and reviewer.";
 
-const PROBE_HELP: &str = "Usage: worktree probe [--path PATH | --issue N [--session S]]\n\nRead-only diagnostic for one worktree. With --path PATH it probes that directory; with --issue N [--session S] it resolves the active lease for the current repository identity, the issue, and the optional session and probes the lease's worktree path; with no selector it probes the current checkout. --path and --issue are mutually exclusive, and --session requires --issue. Prints one bounded JSON document with resolved/path/exists/is_git_worktree/clean/branch/head/is_main_checkout/lease/errors: clean is true, false, or null (unknown), and a Git or filesystem failure is reported under errors instead of aborting, so a missing or non-Git path still returns a structured result. It never calls a provider, never writes or flips a lease, never syncs, and never deletes or repairs a directory, branch, or checkout. When --issue matches no active lease the result is the stable empty envelope (resolved=false, path=null) and no path is guessed. Available to orchestrator, executor, and reviewer; tester is denied.";
+const PROBE_HELP: &str = "Usage: worktree probe [--path PATH | --issue N [--session S]]\n\nRead-only diagnostic for one worktree. With --path PATH it probes that directory; with --issue N [--session S] it resolves the active lease for the current repository identity, the issue, and the optional session and probes the lease's worktree path; with no selector it probes the current checkout. --path and --issue are mutually exclusive, and --session requires --issue. Prints one bounded JSON document with resolved/path/exists/is_git_worktree/clean/branch/head/is_main_checkout/lease/errors: clean is true, false, or null (unknown), and a Git or filesystem failure is reported under errors instead of aborting, so a missing or non-Git path still returns a structured result. It never calls a provider, never writes or flips a lease, never syncs, and never deletes or repairs a directory, branch, or checkout. When --issue matches no active lease the result is the stable empty envelope (resolved=false, path=null) and no path is guessed. Available to orchestrator, executor, and reviewer.";
 
-const LIST_HELP: &str = "Usage: worktree list [--repo PATH] [--no-sync]\n\nList every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ \"repo_identity\": \"...\", \"leases\": [...] }`. Available to orchestrator, executor, and reviewer; tester is denied. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.";
+const LIST_HELP: &str = "Usage: worktree list [--repo PATH] [--no-sync]\n\nList every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ \"repo_identity\": \"...\", \"leases\": [...] }`. Available to orchestrator, executor, and reviewer. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.";
 
 const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove] [--no-sync]\n\nSingle pruning entry point (folds the former release-stale). With neither --release-stale nor --remove this is a read-only dry-run that reports stale active leases and prunable worktrees and changes nothing. --release-stale requires a non-empty --reason and flips exactly the active leases whose heartbeat is older than --stale-days (default 7) to `retained` in a single transaction, recording the reason; --reason without --release-stale is rejected. --remove deletes clean + expired + retained worktrees. Supplying both runs the recovery first and then the removal. A worktree is a removal candidate only when all three conditions hold: status is `retained`; heartbeat is older than stale-days days; and `git status --porcelain` reports an empty output. Dirty worktrees are never deleted (prunable=false, skipped_dirty); active and released leases are skipped; recent retained leases are skipped. `git worktree remove` is the only git command invoked, and it is never passed `--force`; branches are never deleted (no `git branch -D`). --repo defaults to the current working directory and is canonicalised through `git rev-parse --git-common-dir`. Returns a JSON envelope that records lease and directory actions separately. Orchestrator-only. Before its own work it runs a repository-scoped `issue sync` pass and forwards its warnings to stderr; --no-sync skips that pass.";
 
@@ -397,16 +397,11 @@ mod tests {
             reviewer.contains("  status") && !reviewer.contains("  acquire"),
             "reviewer keeps status and hides acquire; got: {reviewer}"
         );
-        for role in [Role::Tester, Role::Admin] {
-            let denied = worktree_help_text(Some(role));
-            assert!(
-                denied.contains(&format!(
-                    "No worktree commands available for {}",
-                    role.as_str()
-                )),
-                "{role:?} must stay denied without a table; got: {denied}"
-            );
-        }
+        let denied = worktree_help_text(Some(Role::Admin));
+        assert!(
+            denied.contains("No worktree commands available for admin"),
+            "admin must stay denied without a table; got: {denied}"
+        );
     }
 
     #[test]
@@ -448,11 +443,14 @@ mod tests {
         assert!(text.contains("mutually exclusive"), "got: {text}");
         assert!(text.contains("never calls a provider"), "got: {text}");
         assert!(text.contains("resolved=false"), "got: {text}");
-        assert!(text.contains("tester is denied"), "got: {text}");
-        let denied = worktree_command_help_text(Some(Role::Tester), "probe");
         assert!(
-            denied.contains("No command available for tester"),
-            "tester must be denied the probe page; got: {denied}"
+            text.contains("Available to orchestrator, executor, and reviewer"),
+            "got: {text}"
+        );
+        let denied = worktree_command_help_text(Some(Role::Admin), "probe");
+        assert!(
+            denied.contains("No command available for admin"),
+            "admin must be denied the probe page; got: {denied}"
         );
     }
 }

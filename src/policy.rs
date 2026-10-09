@@ -1,6 +1,6 @@
-//! Role and capability policy. The five roles (`admin`, `orchestrator`,
-//! `executor`, `reviewer`, `tester`) gate every CLI primitive and
-//! the `Capability` enum is the closed set of operations the CLI
+//! Role and capability policy. The four roles (`admin`, `orchestrator`,
+//! `executor`, `reviewer`) gate every CLI primitive and the
+//! `Capability` enum is the closed set of operations the CLI
 //! exposes to roles and providers.
 
 use std::fmt;
@@ -12,7 +12,6 @@ pub enum Role {
     Orchestrator,
     Executor,
     Reviewer,
-    Tester,
 }
 
 impl Role {
@@ -22,7 +21,6 @@ impl Role {
             Self::Orchestrator => "orchestrator",
             Self::Executor => "executor",
             Self::Reviewer => "reviewer",
-            Self::Tester => "tester",
         }
     }
 
@@ -48,25 +46,21 @@ impl Role {
                     | Capability::RelationRead
                     | Capability::Notify
             ),
+            // The reviewer is the single independent verification role: it
+            // audits the code, verifies the acceptance criteria, and runs the
+            // tests, so it carries the attachment surface the test-only write
+            // boundary needs.
             Self::Reviewer => matches!(
                 capability,
                 Capability::IssueRead
                     | Capability::CommentRead
                     | Capability::CommentFindMarker
                     | Capability::CommentCreate
+                    | Capability::IssueAttachmentUpload
                     | Capability::ProjectRead
                     | Capability::IssueStatusRead
                     | Capability::VersionRead
                     | Capability::RelationRead
-                    | Capability::Notify
-            ),
-            Self::Tester => matches!(
-                capability,
-                Capability::IssueRead
-                    | Capability::CommentRead
-                    | Capability::CommentFindMarker
-                    | Capability::CommentCreate
-                    | Capability::IssueAttachmentUpload
                     | Capability::Notify
             ),
         }
@@ -88,9 +82,8 @@ impl FromStr for Role {
             "orchestrator" => Ok(Self::Orchestrator),
             "executor" => Ok(Self::Executor),
             "reviewer" => Ok(Self::Reviewer),
-            "tester" => Ok(Self::Tester),
             _ => Err(format!(
-                "invalid role '{value}'; expected admin, orchestrator, executor, reviewer, or tester"
+                "invalid role '{value}'; expected admin, orchestrator, executor, or reviewer"
             )),
         }
     }

@@ -31,9 +31,8 @@ fn parser_auth_config_and_provider_selection_regressions() {
     .unwrap();
     assert_eq!(admin.role, Some(Role::Admin));
     let invalid_role = "invalid".parse::<Role>().unwrap_err();
-    assert!(invalid_role.contains("admin, orchestrator, executor, reviewer, or tester"));
-    assert!("tester".parse::<Role>().unwrap() == Role::Tester);
-    assert_eq!("tester".parse::<Role>().unwrap().as_str(), "tester");
+    assert!(invalid_role.contains("admin, orchestrator, executor, or reviewer"));
+    assert!("tester".parse::<Role>().is_err());
 
     let args = strings([
         "--provider",
@@ -210,59 +209,53 @@ fn admin_provider_requires_admin_key_without_falling_back() {
 }
 
 #[test]
-fn tester_credential_is_role_scoped_and_isolated() {
+fn reviewer_credential_is_role_scoped_and_isolated() {
     let temp_dir = crate::test_scratch::root().join(format!(
-        "phasegent-redmine-tester-key-{}-{}",
+        "phasegent-redmine-reviewer-key-{}-{}",
         std::process::id(),
         time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
     let storage = Storage::open_at(&temp_dir.join(crate::infra::storage::DB_FILENAME)).unwrap();
     storage
-        .save_credential(Role::Tester, "redmine", "tester-secret")
+        .save_credential(Role::Reviewer, "redmine", "reviewer-secret")
         .unwrap();
     storage
         .save_credential(Role::Executor, "redmine", "executor-secret")
         .unwrap();
-    let tester = storage
-        .load_credential(Role::Tester, "redmine")
+    let reviewer = storage
+        .load_credential(Role::Reviewer, "redmine")
         .unwrap()
-        .expect("tester credential must exist after save");
+        .expect("reviewer credential must exist after save");
     let executor = storage
         .load_credential(Role::Executor, "redmine")
         .unwrap()
         .expect("executor credential must exist after save");
-    assert_eq!(tester, "tester-secret");
+    assert_eq!(reviewer, "reviewer-secret");
     assert_eq!(executor, "executor-secret");
-    // Separate row via auth setup style: verify config snapshot isolates tester
-    let snapshot = crate::config_snapshot::render(&storage, Some(Role::Tester)).unwrap();
+    // Separate row via auth setup style: verify config snapshot isolates reviewer
+    let snapshot = crate::config_snapshot::render(&storage, Some(Role::Reviewer)).unwrap();
     assert_eq!(snapshot.roles.len(), 1);
-    assert_eq!(snapshot.roles[0].role, "tester");
+    assert_eq!(snapshot.roles[0].role, "reviewer");
     assert!(snapshot.roles[0].redmine_credential.present);
     assert_eq!(
         snapshot.roles[0].redmine_credential.length,
-        "tester-secret".len()
+        "reviewer-secret".len()
     );
-    // Global snapshot must enumerate tester
+    // Global snapshot must enumerate exactly the four active roles
     let global = crate::config_snapshot::render(&storage, None).unwrap();
     let names: Vec<&str> = global.roles.iter().map(|r| r.role).collect();
-    assert!(
-        names.contains(&"tester"),
-        "global snapshot must contain tester: {names:?}"
-    );
-    assert_eq!(
-        names,
-        vec!["admin", "orchestrator", "executor", "reviewer", "tester"]
-    );
+    assert_eq!(names, vec!["admin", "orchestrator", "executor", "reviewer"]);
     let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
-fn tester_role_parsing_and_auth_setup_provider() {
-    assert_eq!("tester".parse::<Role>().unwrap(), Role::Tester);
-    // admin auth setup as tester must parse and store a separate row.
+fn retired_tester_role_parsing_and_auth_setup_rejection() {
+    assert!("tester".parse::<Role>().is_err());
+    // admin auth setup under a retired role must not parse at all.
     let args = strings([
         "--provider",
         "redmine",
@@ -273,17 +266,9 @@ fn tester_role_parsing_and_auth_setup_provider() {
         "--api-base",
         "https://redmine.cloud1ful.com",
     ]);
-    let invocation = command::parse_with_role_env(&args, Some("tester")).unwrap();
-    match invocation.command {
-        Command::AuthSetup {
-            read_stdin,
-            ref api_base,
-            ..
-        } => {
-            assert!(read_stdin);
-            assert_eq!(api_base.as_deref(), Some("https://redmine.cloud1ful.com"));
-        }
-        other => panic!("expected AuthSetup, got {other:?}"),
-    }
-    assert_eq!(invocation.role, Some(Role::Tester));
+    let error = command::parse_with_role_env(&args, Some("tester")).unwrap_err();
+    assert!(
+        error.contains("invalid role 'tester'"),
+        "retired role must be rejected: {error}"
+    );
 }

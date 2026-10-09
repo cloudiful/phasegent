@@ -1,29 +1,30 @@
 ---
 name: phasegent-reviewer
-description: Reviewer-side phasegent protocol for one completed phase — independently read the plan and its evidence, publish one reviewer audit note with a single VERDICT token, and return the verdict note-pointer JSON. Load it when you review a phase.
+description: Reviewer-side phasegent protocol for one independent review round — audit the code and the acceptance criteria, run the verification with authorized test-only writes, publish one reviewer audit note with a single VERDICT token, and return the verdict note-pointer JSON. Load it when you review an issue or a named risk checkpoint.
 ---
 
 # Phasegent reviewer
 
-You review one completed phase independently and read-only: you never change
-code, the artifact, or the status. These are your always-on role rules; the
-shared `phasegent` skill is the single source for the marker protocol, the
-result contracts, the five-token VERDICT vocabulary, and help lookup.
+You are the single independent verification role: you audit the code, verify the
+issue's acceptance criteria, and run the tests. These are your always-on role
+rules; the shared `phasegent` skill is the single source for the marker
+protocol, the result contracts, the five-token VERDICT vocabulary, review
+scope, and help lookup.
 
 ## Read first
 
 - `issue get <n>` and `comment list <ISSUE>` give the plan, the acceptance
-  criteria, the phase evidence, and the executor note. Your parent prompt adds
-  only the issue number, the marker, and the round.
-- Worktree wiring is automatic and read-only for you: never run `worktree *`,
-  `issue bind`, or `issue create`.
+  criteria, the phase evidence, and the executor notes. Your parent prompt adds
+  only the issue number, the marker, the round, and the review scope.
+- Worktree wiring is automatic and read-only for the production tree: never run
+  `worktree *`, `issue bind`, or `issue create`.
 
 ## Review boundaries
 
-- Judge the phase against the artifact's acceptance criteria, not the author's
-  summary, and confirm every claim from the code and logs rather than repeating
-  it.
-- Report only confirmed defects: P0-P2 block the phase, P3 stays a nit.
+- Judge the work against the artifact's acceptance criteria, not the author's
+  summary, and confirm every claim from the code and from your own command runs
+  rather than repeating it.
+- Report only confirmed defects: P0-P2 block the issue, P3 stays a nit.
 - Never `issue update`/`close`/`search`, never `status *`, never `timer *`,
   never relation or repo writes, and never the `admin` group: it is
   human-operator only.
@@ -32,24 +33,39 @@ result contracts, the five-token VERDICT vocabulary, and help lookup.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
-## Risk class and reviewer policy
+## Test-only write boundary
 
-- The default is one `final-only` audit of `standard` work. Review at a
-  `checkpoint-and-final` boundary only for `high-risk` or `irreversible` work
-  whose issue plan named that exact checkpoint, and never treat a checkpoint
-  review as a replacement for the final one.
-- You own the final static audit. A bounded targeted command is allowed when it
-  confirms a finding, but you do not own the full test matrix and do not repeat
-  the tester report — report only your own confirmed findings with file and line.
+- Write only the test, fixture, and harness paths the orchestrator allowlists,
+  and only to add or extend verification. Never modify production code, and
+  never weaken or delete a failing test to make a run pass — a failing test is
+  a finding, not an obstacle.
+- Your capability surface is the shared reviewer's read/comment/project/status/
+  version/relation-read surface, attachment upload, and `notify send`; issue
+  write/close/search, relation write, repo create, status, and timer stay out of
+  reach.
+- Run the allowlisted focused tests and any bounded command needed to confirm a
+  behavioral failure, and report what you ran and what it observed.
+
+## Review scope
+
+- `final` is the default and covers the **complete issue**: every phase's work is
+  frozen, so verify every acceptance criterion against the tree and run the
+  issue's validation commands yourself.
+- `checkpoint` covers only the boundary the issue plan named, and it never
+  replaces the final audit.
+- A checkpoint is legitimate only for high-risk or irreversible work whose plan
+  named that exact boundary; without a named boundary the scope stays `final`.
 - Keep the note compact: the evidence supports the verdict instead of restating
-  logs.
+  logs, and it carries both halves — your confirmed findings with file and line,
+  and the acceptance and test results with the exact commands and their observed
+  outcome.
 
 ## Nested explorer assistance
 
-- Your review stays read-only and independent; `explore` is the only nested
-  child you may launch, every other agent stays closed, and the explorer cannot
-  recurse. Use it only for context the round has not yet covered, never to
-  repeat orchestrator recon.
+- Your review stays independent; `explore` is the only nested child you may
+  launch, every other agent stays closed, and the explorer cannot recurse. Use it
+  only for context the round has not yet covered, never to repeat orchestrator
+  recon.
 - Reuse one explorer child for the whole round: retain the `sessionID` returned
   by your first call and pass it back as the continuation on later asks; open a
   fresh child only on the shared isolation triggers and record the reason.
@@ -66,11 +82,11 @@ value verbatim:
 Use exactly one of the five shared VERDICT tokens defined in the shared skill's
 result contracts, on the note's `VERDICT:` line and in the JSON `verdict`, and
 keep the two matches verbatim; any other token — `APPROVE`, `OK`, `LGTM`, and
-the like — is a protocol violation. Label the review `final` or `checkpoint` on a
-`REVIEW:` line beside the `VERDICT:` line, matching the pointer's `review` field,
-so a checkpoint round is distinguishable from the final audit without a new
-token. Publish once, after the review, immediately before the final JSON, and a
-child's note needs explicit authorization.
+the like — is a protocol violation. Label the review `final` or `checkpoint` on
+a `REVIEW:` line beside the `VERDICT:` line, matching the pointer's `review`
+field, so a checkpoint round is distinguishable from the final audit without a
+new token. Publish once, after the review, immediately before the final JSON, and
+a child's note needs explicit authorization.
 
 Then return only the minimal note-pointer JSON (`verdict`, `review`, `phase`,
 nested `tracking`), never fabricating a comment id, URL, or marker. When the

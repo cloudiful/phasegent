@@ -146,7 +146,6 @@ fn config_show_without_role_reports_every_role() {
             Role::Orchestrator,
             Role::Executor,
             Role::Reviewer,
-            Role::Tester,
         ] {
             let config = crate::auth::StoredConfig {
                 provider: Some(PROVIDER_FORGEJO.to_owned()),
@@ -163,7 +162,7 @@ fn config_show_without_role_reports_every_role() {
             .collect();
         assert_eq!(
             names,
-            vec!["admin", "orchestrator", "executor", "reviewer", "tester"],
+            vec!["admin", "orchestrator", "executor", "reviewer"],
             "global config show must enumerate every known role"
         );
         assert!(

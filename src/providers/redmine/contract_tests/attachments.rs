@@ -268,7 +268,7 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
 }
 #[test]
 fn upload_cli_requires_orchestrator_and_validates_args() {
-    for role in ["executor", "reviewer", "admin"] {
+    for role in ["executor", "admin"] {
         let e = crate::cli::run_with_role(
             strings([
                 "--provider",
@@ -283,10 +283,10 @@ fn upload_cli_requires_orchestrator_and_validates_args() {
         );
         assert_eq!(e, 3, "{role}");
     }
-    // Tester passes the role gate; the dispatcher rejects uniformly
+    // The reviewer passes the role gate; the dispatcher rejects uniformly
     // (Phase 1 + Phase 4 sink), so the exit is 1 (not_supported) and
     // never 3 (permission denied).
-    let tester_exit = crate::cli::run_with_role(
+    let reviewer_exit = crate::cli::run_with_role(
         strings([
             "--provider",
             "redmine",
@@ -296,11 +296,11 @@ fn upload_cli_requires_orchestrator_and_validates_args() {
             "--path",
             "/tmp/any.txt",
         ]),
-        Some("tester"),
+        Some("reviewer"),
     );
     assert_ne!(
-        tester_exit, 3,
-        "tester must clear the role gate on upload-attachment"
+        reviewer_exit, 3,
+        "reviewer must clear the role gate on upload-attachment"
     );
     assert_eq!(
         crate::cli::run_with_role(

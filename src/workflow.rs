@@ -6,9 +6,8 @@ use crate::providers::api::ForgejoError;
 use crate::providers::redmine;
 use crate::providers::redmine::model::{
     DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR,
-    DEFAULT_REDMINE_ROLE_REVIEWER, DEFAULT_REDMINE_ROLE_TESTER, RedmineBootstrap,
-    RedmineCurrentUser, RedmineGitMirrorOutcome, RedmineUserMembershipOutcome, provisioned_roles,
-    provisioning_metadata,
+    DEFAULT_REDMINE_ROLE_REVIEWER, RedmineBootstrap, RedmineCurrentUser, RedmineGitMirrorOutcome,
+    RedmineUserMembershipOutcome, provisioned_roles, provisioning_metadata,
 };
 use crate::providers::{RedmineConfig, RedmineProvider};
 use crate::remote;
@@ -157,21 +156,16 @@ fn bootstrap_resolved(
     let orchestrator_user = find_provisioned(&provisioned, Role::Orchestrator)?;
     let executor_user = find_provisioned(&provisioned, Role::Executor)?;
     let reviewer_user = find_provisioned(&provisioned, Role::Reviewer)?;
-    let tester_user = find_provisioned(&provisioned, Role::Tester)?;
 
     if orchestrator_user.id == executor_user.id
         || orchestrator_user.id == reviewer_user.id
-        || orchestrator_user.id == tester_user.id
         || executor_user.id == reviewer_user.id
-        || executor_user.id == tester_user.id
-        || reviewer_user.id == tester_user.id
     {
         return Err(ForgejoError::config(format!(
-            "Redmine role-scoped API keys must identify distinct users; got orchestrator={}, executor={}, reviewer={}, tester={}",
+            "Redmine role-scoped API keys must identify distinct users; got orchestrator={}, executor={}, reviewer={}",
             describe_user(orchestrator_user),
             describe_user(executor_user),
-            describe_user(reviewer_user),
-            describe_user(tester_user)
+            describe_user(reviewer_user)
         )));
     }
 
@@ -190,16 +184,10 @@ fn bootstrap_resolved(
         reviewer_user,
         DEFAULT_REDMINE_ROLE_REVIEWER,
     )?;
-    let tester = admin.ensure_user_membership(
-        bootstrap.project.id,
-        tester_user,
-        DEFAULT_REDMINE_ROLE_TESTER,
-    )?;
 
     let all_memberships_ok = orchestrator.status != "warning"
         && executor.status != "warning"
-        && reviewer.status != "warning"
-        && tester.status != "warning";
+        && reviewer.status != "warning";
     if all_memberships_ok {
         let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
         for (role, _) in &provisioned {
@@ -240,7 +228,7 @@ fn bootstrap_resolved(
         &mirror_url,
     )?;
 
-    let user_memberships = vec![orchestrator, executor, reviewer, tester];
+    let user_memberships = vec![orchestrator, executor, reviewer];
     Ok(BootstrapResult {
         repository,
         identifier,
@@ -264,7 +252,7 @@ fn provision_agent_users(
     admin: &RedmineProvider,
 ) -> Result<Vec<(Role, RedmineCurrentUser)>, ForgejoError> {
     let storage = crate::infra::storage::Storage::open().map_err(ForgejoError::config)?;
-    let mut provisioned = Vec::with_capacity(4);
+    let mut provisioned = Vec::with_capacity(3);
     for role in provisioned_roles() {
         let metadata = provisioning_metadata(role).ok_or_else(|| {
             ForgejoError::config(format!(

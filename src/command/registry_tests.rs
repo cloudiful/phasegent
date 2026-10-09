@@ -13,7 +13,6 @@ const ALL_ROLES: &[Role] = &[
     Role::Orchestrator,
     Role::Executor,
     Role::Reviewer,
-    Role::Tester,
 ];
 
 const ALL_CAPABILITIES: &[Capability] = &[

@@ -65,7 +65,7 @@ implementation detail you would otherwise have to invent:
 
 - Declare a test disposition in your note: what you added or updated, or why you
   added none. Your tests are implementation evidence only and never substitute
-  for the tester's independent verification.
+  for the reviewer's independent verification.
 - You remain the only write owner for the phase: never share the mutable tree
   with a reviewer, and never overlap a write owner.
 - Keep the note compact — evidence supports the status instead of restating logs

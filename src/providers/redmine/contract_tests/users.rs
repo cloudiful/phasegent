@@ -402,15 +402,7 @@ fn provisioning_metadata_is_deterministic_and_complete() {
     use crate::policy::Role;
     use crate::providers::redmine::model::{provisioned_roles, provisioning_metadata};
     let roles = provisioned_roles();
-    assert_eq!(
-        roles,
-        [
-            Role::Orchestrator,
-            Role::Executor,
-            Role::Reviewer,
-            Role::Tester
-        ]
-    );
+    assert_eq!(roles, [Role::Orchestrator, Role::Executor, Role::Reviewer]);
     let mut logins = std::collections::HashSet::new();
     for role in roles {
         let meta = provisioning_metadata(role)

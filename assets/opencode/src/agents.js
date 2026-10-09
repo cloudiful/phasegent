@@ -21,7 +21,6 @@ export const ROLE_SKILL_BINDINGS = [
   ["orchestrator", "phasegent-orchestrator"],
   ["executor", "phasegent-executor"],
   ["reviewer", "phasegent-reviewer"],
-  ["tester", "phasegent-tester"],
   ["explore", "phasegent-explore"],
 ];
 

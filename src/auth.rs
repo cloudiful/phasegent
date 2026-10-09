@@ -291,12 +291,11 @@ pub fn load_redmine_config(
 }
 
 /// Roles scanned by the bounded legacy Redmine address migration.
-const REDMINE_ROLES: [Role; 5] = [
+const REDMINE_ROLES: [Role; 4] = [
     Role::Admin,
     Role::Orchestrator,
     Role::Executor,
     Role::Reviewer,
-    Role::Tester,
 ];
 
 /// Resolve the canonical global Redmine REST API base.

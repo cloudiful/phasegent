@@ -89,11 +89,11 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
     );
     // Whitespace is trimmed on write/read.
     storage
-        .save_redmine_user(Role::Tester, 44, "  phasegent-tester  ")
+        .save_redmine_user(Role::Reviewer, 44, "  phasegent-reviewer  ")
         .unwrap();
     assert_eq!(
-        storage.load_redmine_user(Role::Tester).unwrap(),
-        Some((44, "phasegent-tester".to_owned()))
+        storage.load_redmine_user(Role::Reviewer).unwrap(),
+        Some((44, "phasegent-reviewer".to_owned()))
     );
     // Downstream role_credential rows remain the source for API keys.
     storage

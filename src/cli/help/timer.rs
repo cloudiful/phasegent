@@ -44,8 +44,8 @@ fn timer_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>) {
 
 /// Top-level `timer` help body rendered through the shared group helper.
 /// Contract prose (local-only ledger order, Redmine/GitLab-only projection,
-/// orphan reconciliation, tester child-identity note) lives on the
-/// per-subcommand detail pages and stays out of this overview.
+/// orphan reconciliation) lives on the per-subcommand detail pages and
+/// stays out of this overview.
 pub(crate) fn timer_help_text(role: Option<Role>) -> String {
     if role.is_some_and(|role| role != Role::Orchestrator) {
         return format!(
@@ -85,7 +85,7 @@ pub(crate) fn timer_command_help_text(role: Option<Role>, command: &str) -> Stri
     match command {
         "start" => orchestrator_help(
             role,
-            "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer|tester --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nManual fallback for opening a local ledger row. The lifecycle path opens runs automatically on status transitions, so AI workflows should not call timer start directly; this command exists so an operator can recover after a missed auto-start or a crashed orchestrator. The orchestrator writes a local ledger row before any remote operation. --agent-role is executor, reviewer, or tester (tester is a first-class role with its own Redmine credential; timers remain orchestrator-only and tester project membership is optional during bootstrap); --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). Redmine-only when --agent-role is set; Forgejo rejects timer start.",
+            "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nManual fallback for opening a local ledger row. The lifecycle path opens runs automatically on status transitions, so AI workflows should not call timer start directly; this command exists so an operator can recover after a missed auto-start or a crashed orchestrator. The orchestrator writes a local ledger row before any remote operation. --agent-role is executor or reviewer; --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). Redmine-only when --agent-role is set; Forgejo rejects timer start.",
         ),
         "finish" => orchestrator_help(
             role,
@@ -163,7 +163,6 @@ mod tests {
             "without reopening it",
             "same-run marker reconciliation used by finish",
             "same-run provider reconciliation",
-            "tester is a first-class role",
             "SQLite ledger minus secrets",
             "local-only and must happen before any projection",
         ] {
@@ -179,8 +178,8 @@ mod tests {
             "start detail keeps ledger order + provider boundary; got: {start}"
         );
         assert!(
-            start.contains("tester is a first-class role"),
-            "start detail keeps the tester child-identity note; got: {start}"
+            start.contains("--agent-role executor|reviewer --attempt") && !start.contains("tester"),
+            "start detail keeps the two service roles only; got: {start}"
         );
         let finish = timer_command_help_text(Some(Role::Orchestrator), "finish");
         assert!(
@@ -217,7 +216,7 @@ mod tests {
                 "all-roles overview missing {command}; got: {all_roles}"
             );
         }
-        for role in [Role::Executor, Role::Reviewer, Role::Tester, Role::Admin] {
+        for role in [Role::Executor, Role::Reviewer, Role::Admin] {
             let denied = timer_help_text(Some(role));
             assert!(
                 denied.contains(&format!("No command available for {}", role.as_str())),

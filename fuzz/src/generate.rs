@@ -80,12 +80,14 @@ const INLINE_OPTIONS: &[&str] = &[
     "--",
 ];
 
+// The retired verification role stays in the pool so the fuzzer keeps
+// exercising its rejection as an unknown role value.
 const VALUES: &[&str] = &[
     "orchestrator",
     "executor",
     "reviewer",
-    "tester",
     "admin",
+    "tester",
     "ORCHESTRATOR",
     "nope",
     " Redmine ",

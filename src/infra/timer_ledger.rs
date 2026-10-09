@@ -111,6 +111,9 @@ pub(crate) fn timer_run_from_row(row: &Row<'_>) -> rusqlite::Result<TimerRun> {
     })
 }
 
+/// Write-path guard for a new timer run identity. Rows written before the
+/// verification role merged into `reviewer` keep their stored role string; the
+/// read path never re-validates it, so historical runs stay listable.
 pub(crate) fn validate_timer_identity(
     run_id: &str,
     issue: u64,
@@ -133,8 +136,8 @@ pub(crate) fn validate_timer_identity(
     if phase.chars().any(char::is_control) {
         return Err("timer phase must not contain control characters".to_owned());
     }
-    if !matches!(role, "executor" | "reviewer" | "tester") {
-        return Err("timer agent role must be executor, reviewer, or tester".to_owned());
+    if !matches!(role, "executor" | "reviewer") {
+        return Err("timer agent role must be executor or reviewer".to_owned());
     }
     if attempt == 0 || attempt > i64::MAX as u64 {
         return Err("timer attempt must be between 1 and i64::MAX".to_owned());
@@ -212,28 +215,19 @@ mod tests {
     use super::{validate_owner_field, validate_timer_identity};
 
     #[test]
-    fn tester_identity_is_valid_for_ledger() {
-        assert!(validate_timer_identity("run-1", 1, "phase-a", "tester", 1).is_ok());
+    fn service_role_identity_is_valid_for_ledger() {
         assert!(validate_timer_identity("run-1", 1, "phase-a", "executor", 1).is_ok());
         assert!(validate_timer_identity("run-1", 1, "phase-a", "reviewer", 1).is_ok());
         assert!(validate_timer_identity("run-1", 1, "phase-a", "admin", 1).is_err());
         assert!(validate_timer_identity("run-1", 1, "phase-a", "orchestrator", 1).is_err());
+        assert!(validate_timer_identity("run-1", 1, "phase-a", "tester", 1).is_err());
         assert!(validate_timer_identity("run-1", 1, "phase-a", "", 1).is_err());
     }
 
     #[test]
-    fn tester_identity_persists_and_round_trips() {
-        // The ledger stores the role as a plain string; tester must survive
-        // the same validation as executor/reviewer and is now a first-class Role.
-        let role = "tester";
-        validate_timer_identity("r", 1, "p", role, 1).unwrap();
-        assert_eq!(role, "tester");
-        // Global Role parsing now accepts tester as a first-class role.
-        assert!("tester".parse::<crate::policy::Role>().is_ok());
-        assert_eq!(
-            "tester".parse::<crate::policy::Role>().unwrap(),
-            crate::policy::Role::Tester
-        );
+    fn retired_tester_role_is_rejected_on_write() {
+        assert!("tester".parse::<crate::policy::Role>().is_err());
+        assert!(validate_timer_identity("r", 1, "p", "tester", 1).is_err());
     }
 
     #[test]

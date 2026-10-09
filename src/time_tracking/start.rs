@@ -79,7 +79,7 @@ pub(crate) fn auto_start_run(
     role: &str,
     attempt: u64,
 ) -> Result<String, String> {
-    debug_assert!(matches!(role, "executor" | "reviewer" | "tester"));
+    debug_assert!(matches!(role, "executor" | "reviewer"));
     let run_id = generate_run_id_with_prefix("auto");
     let started_at = now_epoch_seconds();
     let storage = Storage::open().map_err(|error| format!("auto start storage: {error}"))?;
@@ -98,18 +98,10 @@ pub(crate) fn auto_start_run(
 }
 
 fn normalise_agent_role(agent_role: &str) -> Result<String, ForgejoError> {
-    if agent_role == "tester" {
-        return Ok("tester".to_owned());
-    }
     let parsed = agent_role.parse::<Role>().map_err(ForgejoError::config)?;
-    if parsed == Role::Orchestrator || parsed == Role::Admin {
-        return Err(ForgejoError::config(
-            "timer start --agent-role must be executor, reviewer, or tester",
-        ));
-    }
     if !matches!(parsed, Role::Executor | Role::Reviewer) {
         return Err(ForgejoError::config(
-            "timer start --agent-role must be executor, reviewer, or tester",
+            "timer start --agent-role must be executor or reviewer",
         ));
     }
     Ok(parsed.as_str().to_owned())

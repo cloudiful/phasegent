@@ -340,7 +340,7 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     // a thin forwarder and no longer carries a separate guard. The
     // capability stays in the matrix so a future phase may re-enable
     // the underlying upload path, and the role gate remains
-    // (orchestrator / tester). The underlying `upload_attachment`
+    // (orchestrator / reviewer). The underlying `upload_attachment`
     // inherent method stays compiled for the legacy
     // `contract_tests/attachments.rs` wire-shape tests; no CLI
     // path reaches it because every entry point is gated by
@@ -348,10 +348,9 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
 
     // Role gates stay.
     assert!(Role::Orchestrator.allows(Capability::IssueAttachmentUpload));
-    assert!(Role::Tester.allows(Capability::IssueAttachmentUpload));
+    assert!(Role::Reviewer.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Admin.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Executor.allows(Capability::IssueAttachmentUpload));
-    assert!(!Role::Reviewer.allows(Capability::IssueAttachmentUpload));
 
     // Inherent provider surfaces (Phase 4 sinking): every provider
     // reports `false` so the dispatcher arm does not need a separate
@@ -398,7 +397,7 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     assert!(!gitlab_dispatcher.supports(Capability::IssueAttachmentUpload));
 
     // Role gate still fires before the dispatcher guard.
-    for role in ["admin", "executor", "reviewer"] {
+    for role in ["admin", "executor"] {
         for provider in ["redmine", "forgejo", "gitlab"] {
             assert_eq!(
                 crate::cli::run_with_role(
@@ -419,7 +418,7 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
         }
     }
 
-    // Every provider reports not-supported (exit 1). Tester is
+    // Every provider reports not-supported (exit 1). The reviewer is
     // allowed by the role gate but the inherent provider rejects
     // uniformly.
     for provider in ["redmine", "forgejo", "gitlab"] {
@@ -433,35 +432,31 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
                 "--path",
                 "/tmp/any.txt",
             ]),
-            Some("tester"),
+            Some("reviewer"),
         );
         assert_eq!(
             exit, 1,
-            "tester upload-attachment on {provider} must be not_supported (Phase 4 sinking)"
+            "reviewer upload-attachment on {provider} must be not_supported (Phase 4 sinking)"
         );
     }
 }
 
 #[test]
-fn tester_least_privilege_matrix() {
-    assert!(Role::Tester.allows(Capability::IssueRead));
-    assert!(Role::Tester.allows(Capability::CommentRead));
-    assert!(Role::Tester.allows(Capability::CommentFindMarker));
-    assert!(Role::Tester.allows(Capability::CommentCreate));
-    assert!(Role::Tester.allows(Capability::IssueAttachmentUpload));
-    assert!(!Role::Tester.allows(Capability::IssueSearch));
-    assert!(!Role::Tester.allows(Capability::IssueCreate));
-    assert!(!Role::Tester.allows(Capability::IssueUpdateBody));
-    assert!(!Role::Tester.allows(Capability::IssueClose));
-    assert!(!Role::Tester.allows(Capability::RepoCreate));
-    assert!(!Role::Tester.allows(Capability::ProjectRead));
-    assert!(!Role::Tester.allows(Capability::ProjectCreate));
-    assert!(!Role::Tester.allows(Capability::IssueStatusRead));
-    assert!(!Role::Tester.allows(Capability::VersionRead));
-    assert!(!Role::Tester.allows(Capability::RelationRead));
-    assert!(!Role::Tester.allows(Capability::RelationCreate));
-    assert!(!Role::Tester.allows(Capability::RelationDelete));
-    // CLI enforcement: tester cannot search/create/update/close or bootstrap or repo create
+fn reviewer_least_privilege_matrix() {
+    assert!(Role::Reviewer.allows(Capability::IssueRead));
+    assert!(Role::Reviewer.allows(Capability::CommentRead));
+    assert!(Role::Reviewer.allows(Capability::CommentFindMarker));
+    assert!(Role::Reviewer.allows(Capability::CommentCreate));
+    assert!(Role::Reviewer.allows(Capability::IssueAttachmentUpload));
+    assert!(!Role::Reviewer.allows(Capability::IssueSearch));
+    assert!(!Role::Reviewer.allows(Capability::IssueCreate));
+    assert!(!Role::Reviewer.allows(Capability::IssueUpdateBody));
+    assert!(!Role::Reviewer.allows(Capability::IssueClose));
+    assert!(!Role::Reviewer.allows(Capability::RepoCreate));
+    assert!(!Role::Reviewer.allows(Capability::ProjectCreate));
+    assert!(!Role::Reviewer.allows(Capability::RelationCreate));
+    assert!(!Role::Reviewer.allows(Capability::RelationDelete));
+    // CLI enforcement: reviewer cannot search/create/update/close or bootstrap or repo create
     for (args, expected) in [
         (strings(["--provider", "redmine", "issue", "search"]), 3),
         (
@@ -504,9 +499,9 @@ fn tester_least_privilege_matrix() {
         ),
         (strings(["repo", "create", "owner/repo", "--private"]), 3),
     ] {
-        assert_eq!(crate::cli::run_with_role(args, Some("tester")), expected);
+        assert_eq!(crate::cli::run_with_role(args, Some("reviewer")), expected);
     }
-    // Tester can read issues/comments
+    // Reviewer can read issues/comments
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -520,9 +515,9 @@ fn tester_least_privilege_matrix() {
                 "--marker",
                 "<!-- m -->"
             ]),
-            Some("tester")
+            Some("reviewer")
         ),
         2,
-        "tester comment without --authorized must be authorization error, not permission"
+        "reviewer comment without --authorized must be authorization error, not permission"
     );
 }

@@ -111,7 +111,7 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
 
     // Phase 2 admin-only: only the admin credential is seeded. Missing
     // role credentials no longer block provisioning; the admin API
-    // provisions all four deterministic service users.
+    // provisions all three deterministic service users.
     let (base, requests, server) = sequence(vec![
         // Project bootstrap (admin).
         MockResponse::error(404, r#"{"errors":["not found"]}"#),
@@ -146,22 +146,7 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
             "phasegent-reviewer",
             "reviewer-provisioned-key",
         )),
-        // Tester (always provisioned in Phase 2).
-        MockResponse::ok(user_list_empty()),
-        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
-        MockResponse::ok(user_get_with_key(
-            44,
-            "phasegent-tester",
-            "tester-provisioned-key",
-        )),
-        // Memberships for all four (admin).
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(None)),
-        MockResponse::ok("{}"),
+        // Memberships for all three service roles (admin).
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -309,8 +294,8 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     );
 
     let requests = requests.recv().unwrap();
-    // 3 project + 12 provisioning + 12 membership + 2 mirror + 4 issue = 33.
-    assert_eq!(requests.len(), 33, "unexpected request count: {requests:?}");
+    // 3 project + 9 provisioning + 9 membership + 2 mirror + 4 issue = 27.
+    assert_eq!(requests.len(), 27, "unexpected request count: {requests:?}");
     support::assert_request_with_key(
         &requests[0],
         "GET",
@@ -349,10 +334,9 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
         requests[4]
     );
     // Memberships use deterministic ids.
-    assert!(requests[17].contains(r#""user_id":11,"role_ids":[3]"#));
-    assert!(requests[20].contains(r#""user_id":22,"role_ids":[4]"#));
-    assert!(requests[23].contains(r#""user_id":33,"role_ids":[5]"#));
-    assert!(requests[26].contains(r#""user_id":44,"role_ids":[5]"#));
+    assert!(requests[14].contains(r#""user_id":11,"role_ids":[3]"#));
+    assert!(requests[17].contains(r#""user_id":22,"role_ids":[4]"#));
+    assert!(requests[20].contains(r#""user_id":33,"role_ids":[5]"#));
     // Provisioned keys persisted for downstream providers.
     assert_eq!(
         storage
@@ -363,20 +347,24 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     );
     assert_eq!(
         storage
-            .load_credential(Role::Tester, "redmine")
+            .load_credential(Role::Reviewer, "redmine")
             .unwrap()
             .as_deref(),
-        Some("tester-provisioned-key")
+        Some("reviewer-provisioned-key")
     );
     assert_eq!(
         storage.load_redmine_user(Role::Orchestrator).unwrap(),
         Some((11, "phasegent-orchestrator".to_owned()))
     );
     assert_eq!(
-        storage.load_redmine_user(Role::Tester).unwrap(),
-        Some((44, "phasegent-tester".to_owned()))
+        storage.load_redmine_user(Role::Reviewer).unwrap(),
+        Some((33, "phasegent-reviewer".to_owned()))
     );
-    assert!(requests[32].contains(r#""project_id":99"#));
+    assert!(
+        !requests.iter().any(|r| r.contains("phasegent-tester")),
+        "bootstrap must not provision the retired role: {requests:?}"
+    );
+    assert!(requests[26].contains(r#""project_id":99"#));
     let stored = auth::load_redmine_config(Role::Orchestrator, &storage)
         .unwrap()
         .unwrap();
@@ -395,13 +383,12 @@ fn bootstrap_reuses_existing_service_users_found_by_login() {
         "PHASEGENT_REDMINE_REPOSITORY_URL",
         "https://git.example.com/owner/repo.git",
     );
-    // All four deterministic users already exist; provisioning must find
+    // All three deterministic users already exist; provisioning must find
     // them by login and only read their keys, never POST.
     let existing = vec![
         (11, "phasegent-orchestrator"),
         (22, "phasegent-executor"),
         (33, "phasegent-reviewer"),
-        (44, "phasegent-tester"),
     ];
     let full_list = user_list_with(&existing);
     let (base, requests, server) = sequence(vec![
@@ -431,19 +418,6 @@ fn bootstrap_reuses_existing_service_users_found_by_login() {
             "phasegent-reviewer",
             "reviewer-existing-key",
         )),
-        MockResponse::ok(full_list.clone()),
-        MockResponse::ok(user_get_with_key(
-            44,
-            "phasegent-tester",
-            "tester-existing-key",
-        )),
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -482,9 +456,9 @@ fn bootstrap_reuses_existing_service_users_found_by_login() {
     seed_admin_only(&storage, &base);
     let result =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
-    assert_eq!(result.user_memberships.len(), 4);
+    assert_eq!(result.user_memberships.len(), 3);
     let reqs = requests.recv().unwrap();
-    assert_eq!(reqs.len(), 25, "lookup-existing must be 25: {reqs:?}");
+    assert_eq!(reqs.len(), 20, "lookup-existing must be 20: {reqs:?}");
     assert!(
         !reqs.iter().any(|r| r.starts_with("POST /users.json")),
         "lookup-existing must never create: {reqs:?}"
@@ -493,7 +467,7 @@ fn bootstrap_reuses_existing_service_users_found_by_login() {
         reqs.iter()
             .filter(|r| r.contains("GET /users.json?"))
             .count(),
-        4,
+        3,
         "one lookup per role: {reqs:?}"
     );
     assert_eq!(
@@ -547,20 +521,6 @@ fn bootstrap_rerun_reuses_persisted_users_without_user_api_calls() {
             "phasegent-reviewer",
             "reviewer-rerun-key",
         )),
-        MockResponse::ok(user_list_empty()),
-        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
-        MockResponse::ok(user_get_with_key(
-            44,
-            "phasegent-tester",
-            "tester-rerun-key",
-        )),
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -636,17 +596,6 @@ fn bootstrap_rerun_reuses_persisted_users_without_user_api_calls() {
             "phasegent-reviewer",
             vec![5],
         )))),
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(Some((
-            58,
-            44,
-            "phasegent-tester",
-            vec![5],
-        )))),
         MockResponse::error(404, r#"{"errors":["mirror not found"]}"#),
         MockResponse::status(
             202,
@@ -664,10 +613,10 @@ fn bootstrap_rerun_reuses_persisted_users_without_user_api_calls() {
     seed_admin_only(&storage, &base);
     let first =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
-    assert_eq!(first.user_memberships.len(), 4);
+    assert_eq!(first.user_memberships.len(), 3);
     let second =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
-    assert_eq!(second.user_memberships.len(), 4);
+    assert_eq!(second.user_memberships.len(), 3);
     assert!(
         second
             .user_memberships
@@ -677,9 +626,9 @@ fn bootstrap_rerun_reuses_persisted_users_without_user_api_calls() {
         second.user_memberships
     );
     let reqs = requests.recv().unwrap();
-    // First run 29 + second run 12 = 41.
-    assert_eq!(reqs.len(), 41, "rerun must be 41: {reqs:?}");
-    let second_run = &reqs[29..];
+    // First run 23 + second run 10 = 33.
+    assert_eq!(reqs.len(), 33, "rerun must be 33: {reqs:?}");
+    let second_run = &reqs[23..];
     assert!(
         !second_run
             .iter()
@@ -719,14 +668,10 @@ fn bootstrap_legacy_credential_without_user_id_looks_up_before_creating() {
     storage
         .save_credential(Role::Reviewer, "redmine", "stale-reviewer-key")
         .unwrap();
-    storage
-        .save_credential(Role::Tester, "redmine", "stale-tester-key")
-        .unwrap();
     let existing = vec![
         (11, "phasegent-orchestrator"),
         (22, "phasegent-executor"),
         (33, "phasegent-reviewer"),
-        (44, "phasegent-tester"),
     ];
     let full_list = user_list_with(&existing);
     let (base, requests, server) = sequence(vec![
@@ -756,19 +701,6 @@ fn bootstrap_legacy_credential_without_user_id_looks_up_before_creating() {
             "phasegent-reviewer",
             "reviewer-legacy-key",
         )),
-        MockResponse::ok(full_list.clone()),
-        MockResponse::ok(user_get_with_key(
-            44,
-            "phasegent-tester",
-            "tester-legacy-key",
-        )),
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -822,7 +754,7 @@ fn bootstrap_legacy_credential_without_user_id_looks_up_before_creating() {
         .unwrap();
     let result =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
-    assert_eq!(result.user_memberships.len(), 4);
+    assert_eq!(result.user_memberships.len(), 3);
     let reqs = requests.recv().unwrap();
     assert!(
         !reqs.iter().any(|r| r.starts_with("POST /users.json")),
@@ -881,9 +813,9 @@ fn bootstrap_fails_without_admin_credential_without_falling_back() {
 }
 
 #[test]
-fn bootstrap_without_tester_credential_still_provisions_tester() {
+fn bootstrap_never_provisions_the_retired_tester_identity() {
     let _environment_lock = lock_workflow_tests();
-    let (directory, _guard, storage) = temp_db("tester-always");
+    let (directory, _guard, storage) = temp_db("no-retired-role");
     let _mirror_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
     let _mirror_url = EnvGuard::set(
         "PHASEGENT_REDMINE_REPOSITORY_URL",
@@ -911,16 +843,6 @@ fn bootstrap_without_tester_credential_still_provisions_tester() {
         MockResponse::ok(user_list_empty()),
         MockResponse::status(201, user_create_response(33, "phasegent-reviewer")),
         MockResponse::ok(user_get_with_key(33, "phasegent-reviewer", "reviewer-key")),
-        MockResponse::ok(user_list_empty()),
-        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
-        MockResponse::ok(user_get_with_key(44, "phasegent-tester", "tester-key")),
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -956,26 +878,28 @@ fn bootstrap_without_tester_credential_still_provisions_tester() {
             ),
         ),
     ]);
-    // Only admin seeded; tester has no prior credential yet Phase 2 must
-    // still provision it (admin-only overrides the old optional check).
     seed_admin_only(&storage, &base);
     let result =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
     assert_eq!(
         result.user_memberships.len(),
-        4,
-        "tester must always be provisioned"
+        3,
+        "bootstrap must provision exactly the three service roles"
     );
     assert!(
-        result
+        !result
             .user_memberships
             .iter()
-            .any(|m| m.user_id == 44 && m.user_login == "phasegent-tester"),
-        "tester membership missing: {:?}",
+            .any(|m| m.user_login.contains("tester")),
+        "retired role membership present: {:?}",
         result.user_memberships
     );
     server.join().unwrap();
     let _ = fs::remove_dir_all(directory);
     let reqs = requests.recv().unwrap();
-    assert_eq!(reqs.len(), 29, "expected 29 bootstrap requests: {reqs:?}");
+    assert_eq!(reqs.len(), 23, "expected 23 bootstrap requests: {reqs:?}");
+    assert!(
+        !reqs.iter().any(|r| r.contains("tester")),
+        "bootstrap must not touch the retired identity: {reqs:?}"
+    );
 }

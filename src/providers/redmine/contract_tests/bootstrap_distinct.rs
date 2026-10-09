@@ -96,7 +96,6 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
         "phasegent-reviewer",
         "reviewer-key",
     );
-    seed_persisted(&storage, Role::Tester, 44, "phasegent-tester", "tester-key");
 
     let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
         .expect_err("bootstrap must fail when two provisioned users share an id");
@@ -150,9 +149,9 @@ fn bootstrap_fails_with_distinct_users_error_when_two_keys_resolve_to_same_user(
 }
 
 #[test]
-fn bootstrap_fails_when_tester_collides_with_existing_user() {
+fn bootstrap_fails_when_reviewer_collides_with_existing_user() {
     let _environment_lock = lock_workflow_tests();
-    let (directory, _guard, storage) = temp_db("tester-distinct");
+    let (directory, _guard, storage) = temp_db("reviewer-distinct");
     let (base, requests, server) = sequence(vec![
         MockResponse::error(404, r#"{"errors":["not found"]}"#),
         MockResponse::ok(
@@ -183,35 +182,28 @@ fn bootstrap_fails_when_tester_collides_with_existing_user() {
         "phasegent-executor",
         "executor-key",
     );
+    // Reviewer reuses executor's id.
     seed_persisted(
         &storage,
         Role::Reviewer,
-        33,
-        "phasegent-reviewer",
-        "reviewer-key",
-    );
-    // Tester reuses executor's id.
-    seed_persisted(
-        &storage,
-        Role::Tester,
         22,
         "phasegent-executor",
-        "tester-key",
+        "reviewer-key",
     );
 
     let error = crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None)
-        .expect_err("bootstrap must fail when tester collides with executor");
+        .expect_err("bootstrap must fail when reviewer collides with executor");
     let message = error.json()["message"].as_str().unwrap().to_owned();
     assert!(message.contains("distinct users"), "got: {message}");
     assert!(
-        message.contains("tester"),
-        "tester collision must be mentioned: {message}"
+        message.contains("reviewer=phasegent-executor"),
+        "reviewer collision must be named: {message}"
     );
     let reqs = requests.recv().unwrap();
     assert_eq!(
         reqs.len(),
         3,
-        "must stop after project bootstrap on tester collision: {reqs:?}"
+        "must stop after project bootstrap on reviewer collision: {reqs:?}"
     );
     for req in reqs.iter() {
         assert!(
@@ -224,9 +216,9 @@ fn bootstrap_fails_when_tester_collides_with_existing_user() {
 }
 
 #[test]
-fn bootstrap_succeeds_with_distinct_tester_when_configured() {
+fn bootstrap_succeeds_with_three_distinct_persisted_users() {
     let _environment_lock = lock_workflow_tests();
-    let (directory, _guard, storage) = temp_db("tester-ok");
+    let (directory, _guard, storage) = temp_db("service-roles-ok");
     let _mirror_key = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
     let _mirror_url = EnvGuard::set(
         "PHASEGENT_REDMINE_REPOSITORY_URL",
@@ -245,13 +237,6 @@ fn bootstrap_succeeds_with_distinct_tester_when_configured() {
             "owner-repo",
             "Workflow",
         )),
-        MockResponse::ok(support::role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(support::membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(support::role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -309,19 +294,18 @@ fn bootstrap_succeeds_with_distinct_tester_when_configured() {
         "phasegent-reviewer",
         "reviewer-key",
     );
-    seed_persisted(&storage, Role::Tester, 44, "phasegent-tester", "tester-key");
     let result =
         crate::workflow::bootstrap(Role::Admin, None, Some("owner/repo"), None, None).unwrap();
     assert_eq!(
         result.user_memberships.len(),
-        4,
-        "with tester configured must have 4 memberships"
+        3,
+        "three distinct persisted users must yield three memberships"
     );
     assert!(
         result
             .user_memberships
             .iter()
-            .any(|m| m.user_id == 44 && m.role_name == "Reporter")
+            .any(|m| m.user_id == 33 && m.role_name == "Reporter")
     );
     server.join().unwrap();
     let _ = fs::remove_dir_all(directory);

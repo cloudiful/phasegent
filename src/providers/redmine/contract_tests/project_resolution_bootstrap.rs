@@ -117,16 +117,6 @@ fn no_match_keeps_bootstrap_for_issue_and_actionable_for_version() {
         MockResponse::ok(user_list_empty()),
         MockResponse::status(201, user_create_response(33, "phasegent-reviewer")),
         MockResponse::ok(user_get_with_key(33, "phasegent-reviewer", "reviewer-key")),
-        MockResponse::ok(user_list_empty()),
-        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
-        MockResponse::ok(user_get_with_key(44, "phasegent-tester", "tester-key")),
-        MockResponse::ok(role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),
@@ -257,16 +247,6 @@ fn explicit_repository_mismatch_does_not_use_wrong_origin() {
         MockResponse::ok(user_list_empty()),
         MockResponse::status(201, user_create_response(33, "phasegent-reviewer")),
         MockResponse::ok(user_get_with_key(33, "phasegent-reviewer", "reviewer-key")),
-        MockResponse::ok(user_list_empty()),
-        MockResponse::status(201, user_create_response(44, "phasegent-tester")),
-        MockResponse::ok(user_get_with_key(44, "phasegent-tester", "tester-key")),
-        MockResponse::ok(role_collection(&[
-            (3, "Maintainer"),
-            (4, "Developer"),
-            (5, "Reporter"),
-        ])),
-        MockResponse::ok(membership_collection(None)),
-        MockResponse::ok("{}"),
         MockResponse::ok(role_collection(&[
             (3, "Maintainer"),
             (4, "Developer"),

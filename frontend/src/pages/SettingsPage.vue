@@ -23,8 +23,7 @@ const ROLE_ITEMS: { label: string, value: RoleId, hint: string }[] = [
   { label: 'Admin', value: 'admin', hint: 'Bootstrap Redmine projects and provision agent users.' },
   { label: 'Orchestrator', value: 'orchestrator', hint: 'Plan phases and advance workflow state.' },
   { label: 'Executor', value: 'executor', hint: 'Carry out assigned phases and report results.' },
-  { label: 'Reviewer', value: 'reviewer', hint: 'Review phase output independently.' },
-  { label: 'Tester', value: 'tester', hint: 'Verify behavior and record test evidence.' },
+  { label: 'Reviewer', value: 'reviewer', hint: 'Audit the code, verify acceptance, and run the tests.' },
 ]
 
 const toast = useToast()

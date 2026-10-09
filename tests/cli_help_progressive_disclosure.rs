@@ -475,7 +475,7 @@ fn role_denied_help_pages_print_the_stable_denial() {
         ("executor", &["--help", "admin"][..]),
         ("orchestrator", &["--help", "admin"][..]),
         ("executor", &["--help", "timer", "start"][..]),
-        ("tester", &["--help", "worktree"][..]),
+        ("admin", &["--help", "worktree"][..]),
     ] {
         let output = run_help_with_role(args, Some(role));
         assert!(output.status.success(), "{args:?} exited non-zero");
@@ -818,7 +818,7 @@ fn unsupported_command_is_rejected_at_the_process_boundary() {
         );
         stderr_text(&output).trim_end().to_owned()
     };
-    for role in [None, Some("admin"), Some("orchestrator"), Some("tester")] {
+    for role in [None, Some("admin"), Some("orchestrator"), Some("executor")] {
         let stderr = deny(&["mcp", "serve"], role);
         assert_eq!(
             stderr, "{\"error\":{\"kind\":\"argument\",\"message\":\"unknown command 'mcp'\"}}",

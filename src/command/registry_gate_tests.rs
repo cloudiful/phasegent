@@ -81,7 +81,7 @@ fn orchestrator_only_gate_covers_every_descriptor() {
         checked += 1;
         let path = path.join(" ");
         assert!(spec.access.allows_role(Role::Orchestrator), "{path}");
-        for role in [Role::Admin, Role::Executor, Role::Reviewer, Role::Tester] {
+        for role in [Role::Admin, Role::Executor, Role::Reviewer] {
             assert!(!spec.access.allows_role(role), "{path} must deny {role}");
         }
         assert!(!spec.access.allows_roleless(), "{path} must require a role");
@@ -119,9 +119,10 @@ fn worktree_read_gate_covers_every_descriptor() {
         for role in [Role::Orchestrator, Role::Executor, Role::Reviewer] {
             assert!(spec.access.allows_role(role), "{path} must allow {role}");
         }
-        for role in [Role::Admin, Role::Tester] {
-            assert!(!spec.access.allows_role(role), "{path} must deny {role}");
-        }
+        assert!(
+            !spec.access.allows_role(Role::Admin),
+            "{path} must deny admin"
+        );
         assert!(!spec.access.allows_roleless(), "{path} must require a role");
     }
 }
@@ -164,12 +165,7 @@ fn human_only_gate_covers_every_descriptor() {
         }
         let path = path.join(" ");
         assert!(spec.access.allows_role(Role::Admin), "{path}");
-        for ai_role in [
-            Role::Orchestrator,
-            Role::Executor,
-            Role::Reviewer,
-            Role::Tester,
-        ] {
+        for ai_role in [Role::Orchestrator, Role::Executor, Role::Reviewer] {
             assert!(
                 !spec.access.allows_role(ai_role),
                 "{path} must deny {ai_role}"
@@ -201,7 +197,7 @@ fn roleless_gate_covers_every_descriptor() {
                     "{path} keeps role-less calls"
                 );
                 assert!(spec.access.allows_role(Role::Orchestrator), "{path}");
-                for role in [Role::Admin, Role::Executor, Role::Reviewer, Role::Tester] {
+                for role in [Role::Admin, Role::Executor, Role::Reviewer] {
                     assert!(!spec.access.allows_role(role), "{path} must deny {role}");
                 }
             }

@@ -48,33 +48,28 @@ fn executor_cannot_prune() {
 }
 
 #[test]
-fn tester_cannot_status() {
+fn admin_cannot_status() {
     // Use a synthetic `status` invocation that does not touch the
     // database: the role gate fires first.
-    let exit = execute_worktree(Some(Role::Tester), WorktreeCommand::Status { issue: 1 });
+    let exit = execute_worktree(Some(Role::Admin), WorktreeCommand::Status { issue: 1 });
     assert_eq!(exit, 3, "permission error must return exit code 3");
 }
 
 #[test]
-fn tester_cannot_list() {
+fn reviewer_status_passes_role_gate() {
+    let _lock = lock_workflow_tests();
+    let (_temp, _storage, _env) = open_temp_db("status-reviewer");
+    let exit = execute_worktree(Some(Role::Reviewer), WorktreeCommand::Status { issue: 1 });
+    assert_eq!(exit, 0, "reviewer status must pass the role gate");
+}
+
+#[test]
+fn admin_cannot_list() {
     let exit = execute_worktree(
-        Some(Role::Tester),
+        Some(Role::Admin),
         WorktreeCommand::List {
             repo: None,
             no_sync: false,
-        },
-    );
-    assert_eq!(exit, 3, "permission error must return exit code 3");
-}
-
-#[test]
-fn tester_cannot_probe() {
-    let exit = execute_worktree(
-        Some(Role::Tester),
-        WorktreeCommand::Probe {
-            path: None,
-            issue: None,
-            session: None,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");

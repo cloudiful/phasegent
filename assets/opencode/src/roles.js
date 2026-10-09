@@ -10,7 +10,6 @@ export const AGENT_ROLE_HINTS = [
   ["orchestrator", "orchestrator"],
   ["executor", "executor"],
   ["reviewer", "reviewer"],
-  ["tester", "tester"],
   ["explore", "reviewer"],
 ];
 

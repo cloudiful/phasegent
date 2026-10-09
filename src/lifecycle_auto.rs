@@ -45,7 +45,7 @@
 //! `executor` and the helper emits a stderr warning so the operator
 //! can rename the workflow if they want a different role to handle
 //! it. The role always passes `validate_timer_identity` because the
-//! whitelist is exactly `{executor, reviewer, tester}`.
+//! whitelist is exactly `{executor, reviewer}`.
 //!
 //! ## Cumulative sum
 //!
@@ -88,16 +88,13 @@ fn bounded(text: &str) -> String {
 /// stderr warning describing the unmapped status so the operator can
 /// rename the workflow if they want a different role to handle it.
 ///
-/// Order of checks matters: the QA / test bucket must run before
-/// the generic review / dev containment so a status like "ready for
-/// test" is routed to `tester` and not `reviewer`. Likewise the
-/// review check runs before the dev/impl containment so a status
-/// like "implementation review" is `reviewer` and not `executor`.
+/// The QA / test bucket and the review bucket both land on `reviewer`:
+/// one role now owns the code audit, the acceptance verification, and the
+/// test run. The dev/impl containment check runs after them so a status like
+/// "implementation review" is `reviewer` and not `executor`.
 pub fn status_to_agent_role(status_name: &str) -> (&'static str, bool) {
     let lowered = status_name.to_ascii_lowercase();
-    if lowered.contains("test") || lowered.contains("qa") {
-        ("tester", false)
-    } else if lowered.contains("review") {
+    if lowered.contains("test") || lowered.contains("qa") || lowered.contains("review") {
         ("reviewer", false)
     } else if lowered.contains("progress") || lowered.contains("dev") || lowered.contains("impl") {
         ("executor", false)

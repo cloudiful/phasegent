@@ -177,7 +177,7 @@ pub struct RoleProvisioningMetadata {
 ///
 /// Returns `None` for [`crate::policy::Role::Admin`]: the administrator
 /// is the human-provisioned provisioner, never a provisioned service
-/// user. The four agent roles share the `Phasegent` firstname and a
+/// user. The three agent roles share the `Phasegent` firstname and a
 /// `phasegent.local` mail domain so the pattern is obvious when a new
 /// role is registered.
 pub fn provisioning_metadata(role: crate::policy::Role) -> Option<RoleProvisioningMetadata> {
@@ -200,19 +200,13 @@ pub fn provisioning_metadata(role: crate::policy::Role) -> Option<RoleProvisioni
             lastname: "Reviewer",
             mail: "phasegent-reviewer@phasegent.local",
         }),
-        crate::policy::Role::Tester => Some(RoleProvisioningMetadata {
-            login: "phasegent-tester",
-            firstname: "Phasegent",
-            lastname: "Tester",
-            mail: "phasegent-tester@phasegent.local",
-        }),
         crate::policy::Role::Admin => None,
     }
 }
 
 /// Built-in agent roles provisioned through the admin API, in bootstrap
 /// reconciliation order.
-pub fn provisioned_roles() -> [crate::policy::Role; 4] {
-    use crate::policy::Role::{Executor, Orchestrator, Reviewer, Tester};
-    [Orchestrator, Executor, Reviewer, Tester]
+pub fn provisioned_roles() -> [crate::policy::Role; 3] {
+    use crate::policy::Role::{Executor, Orchestrator, Reviewer};
+    [Orchestrator, Executor, Reviewer]
 }

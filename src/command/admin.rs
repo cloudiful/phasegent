@@ -5,7 +5,7 @@
 //! `config set/clear` and `config provider set/clear` (setting writes), and
 //! `workflow bootstrap` (admin-key provisioning). Agent permission rules deny
 //! the single `admin` token instead of regexing individual subcommands, and
-//! the skill bans the group for orchestrator/executor/reviewer/tester.
+//! the skill bans the group for orchestrator/executor/reviewer.
 //!
 //! The group reuses the existing `Command` variants so execution, role
 //! gating, and the capability matrix are untouched — only the argv routing

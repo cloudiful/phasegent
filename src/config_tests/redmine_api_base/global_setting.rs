@@ -35,7 +35,6 @@ fn config_set_redmine_api_base_is_global_and_round_trips() {
             Role::Orchestrator,
             Role::Executor,
             Role::Reviewer,
-            Role::Tester,
         ] {
             assert!(
                 storage
