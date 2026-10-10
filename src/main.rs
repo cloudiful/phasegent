@@ -7,11 +7,8 @@ mod command;
 mod config;
 mod config_snapshot;
 mod config_write;
-mod desktop_bridge;
 mod git_runner;
-mod gui;
 mod hooks;
-mod launch;
 mod lifecycle;
 mod lifecycle_auto;
 mod notifications;
@@ -44,16 +41,5 @@ mod test_scratch;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // Hidden packaged-desktop entry: the Electron main process spawns this
-    // binary with the `desktop-bridge` token and speaks newline-delimited
-    // JSON over stdio. The token is deliberately absent from the command
-    // registry, so it never appears in help and is not reachable as a normal
-    // CLI command.
-    if args.first().map(String::as_str) == Some(desktop_bridge::COMMAND) {
-        std::process::exit(desktop_bridge::run(&args[1..]));
-    }
-    // A bare launch is always CLI space: the desktop shell is the packaged
-    // Electron application, so this binary never opens a window and needs no
-    // terminal-vs-desktop heuristic.
-    std::process::exit(launch::run_cli(args));
+    std::process::exit(cli::run(args));
 }

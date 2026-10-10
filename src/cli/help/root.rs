@@ -11,8 +11,7 @@ const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]"
 const ROOT_USAGE_ROLE: &str =
     "\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
 
-/// The root usage block for this build. The desktop shell is the packaged
-/// Electron application, so there is no binary-local entry to advertise.
+/// The root usage block for this build.
 fn root_usage() -> String {
     format!("{ROOT_USAGE}{ROOT_USAGE_ROLE}")
 }
@@ -73,17 +72,6 @@ mod tests {
         assert!(
             !usage.contains("--provider"),
             "root usage must not tag --provider onto the common invocation: {usage}"
-        );
-    }
-
-    /// The desktop shell is a separate Electron application: no root-usage
-    /// line may advertise a binary-local desktop entry.
-    #[test]
-    fn root_usage_has_no_desktop_entry() {
-        let usage = root_usage();
-        assert!(
-            !usage.contains("gui") && !usage.contains("desktop"),
-            "root usage must not advertise a desktop entry: {usage}"
         );
     }
 

@@ -689,54 +689,22 @@ fn admin_config_write_help_is_denied_for_ai_roles_and_absent_from_read_only_page
     );
 }
 
-/// The desktop shell is the packaged Electron application: no root-help view
-/// may advertise a binary-local desktop command, for any role.
+/// An unregistered help topic is an argument error on stderr, not a help page.
 #[test]
-fn root_help_has_no_desktop_entry() {
-    let output = run_help(&["--help"]);
-    assert!(output.status.success(), "--help exited non-zero");
-    let stdout = stdout_text(&output);
+fn unregistered_help_topic_is_an_argument_error() {
+    let output = run_help_with_role(&["--help", "frobnicate"], None);
     assert!(
-        !has_root_row(&stdout, "gui"),
-        "root help must not list a gui row;\n{stdout}",
+        !output.status.success(),
+        "--help frobnicate must not render a help page",
     );
-    assert!(
-        !stdout.contains("phasegent gui"),
-        "root usage must not advertise a desktop entry;\n{stdout}",
-    );
-    assert!(
-        !stdout.contains("desktop"),
-        "root help must not mention a desktop entry;\n{stdout}",
-    );
-}
-
-/// A direct request for a desktop command is an unknown-command error, not a
-/// help page: the Electron application owns the shell.
-#[test]
-fn desktop_commands_are_unknown() {
-    for name in ["gui", "desktop"] {
-        let output = run_help_with_role(&["--help", name], None);
-        assert!(
-            !output.status.success(),
-            "--help {name} must not render a help page",
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let envelope: serde_json::Value =
-            serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
-        assert_eq!(envelope["error"]["kind"], "argument", "stderr: {stderr}");
-        assert_eq!(
-            envelope["error"]["message"],
-            format!("unknown help topic '{name}'"),
-        );
-    }
-
-    let runtime = run_help_with_role(&["gui"], None);
-    assert_eq!(runtime.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&runtime.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let envelope: serde_json::Value =
         serde_json::from_str(stderr.trim()).expect("structured error envelope on stderr");
-    assert_eq!(envelope["error"]["kind"], "argument");
-    assert_eq!(envelope["error"]["message"], "unknown command 'gui'");
+    assert_eq!(envelope["error"]["kind"], "argument", "stderr: {stderr}");
+    assert_eq!(
+        envelope["error"]["message"],
+        "unknown help topic 'frobnicate'",
+    );
 }
 
 /// The Redmine REST address is machine-wide, so the help pages that own it

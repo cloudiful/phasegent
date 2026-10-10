@@ -1,7 +1,7 @@
 //! Stable repository identity and durable many-to-many branch/issue links.
 //!
 //! Durable rows are the sole branch/issue association: the resolver, the
-//! commit hooks, and the desktop snapshots read these rows (plus the
+//! commit hooks, and the status snapshots read these rows (plus the
 //! branch-name fallback) and never consult local Git config.
 
 pub mod active;

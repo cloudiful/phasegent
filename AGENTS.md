@@ -8,8 +8,8 @@ and the README documentation rule.
 
 The single source of truth for the release version is the git tag
 `vX.Y.Z` (for example `v2.11.0`). The release workflow
-(`.github/workflows/release.yml`) is tag-triggered and the Windows MSI derives
-its version from the tag with strict `MAJOR.MINOR.PATCH` enforcement.
+(`.github/workflows/release.yml`) is tag-triggered and accepts only strict
+`MAJOR.MINOR.PATCH` tags.
 
 Two manifest files must always equal the tag with the leading `v`
 stripped:
@@ -17,10 +17,23 @@ stripped:
 - `Cargo.toml` — `[package] version`
 - `package.json` — top-level `version`
 
-Electron Builder derives the Windows MSI and macOS DMG versions from
-`package.json`. The Rust binary's `--version` output flows from
-`CARGO_PKG_VERSION`, which Cargo reads from `Cargo.toml`. Do **not** hard-code
-a version string in `src/**`.
+The Rust binary's `--version` output flows from `CARGO_PKG_VERSION`, which
+Cargo reads from `Cargo.toml`. Do **not** hard-code a version string in
+`src/**`.
+
+### Release targets
+
+Each tag publishes one native, raw `phasegent` executable per target, named
+`phasegent-<tag>-<target>` (`.exe` on Windows), plus `SHA256SUMS`:
+
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+
+Every build uses the feature set `postgres,notify-dingtalk,notify-email`.
+The product is the CLI plus the portable OpenCode plugin and skills; there is
+no installer or desktop package.
 
 ### Bump procedure
 
@@ -53,7 +66,7 @@ stripped tag. Any mismatch fails fast with a clear error message and the
 
 - Tags are lightweight (no `-a`/`-s`), matching the existing 36 tags.
 - Tags are immutable: never re-tag, never force-push a tag.
-- MSI version is strict numeric — `v1.2.3` works, `v1.2`, `v1.2.3-rc1`,
+- Release version is strict numeric — `v1.2.3` works, `v1.2`, `v1.2.3-rc1`,
   or any pre-release suffix does not.
 
 ### Lock files

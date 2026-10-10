@@ -2,6 +2,7 @@
 //! removed `--role` flag, and the Phase 2 registry role gate.
 
 use super::*;
+use crate::command::{Command, HelpTopic};
 
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
@@ -179,12 +180,11 @@ fn roleless_help_keeps_the_superset_view() {
     }
 }
 
-/// The desktop shell is a separate Electron application, so it is not a CLI
-/// command: the parser rejects it as unknown and no registry path resolves it.
-/// Unknown commands and role denials keep their distinct parse errors.
+/// Unregistered top-level names are unknown commands, never permission
+/// denials, and a registry lookup never resolves them for any role.
 #[test]
-fn desktop_shell_is_not_a_cli_command() {
-    for name in ["gui", "desktop", "desktop-bridge"] {
+fn unregistered_names_are_unknown_commands() {
+    for name in ["frobnicate", "bogus"] {
         let error = parse_with_role_env(&args(&[name]), None).unwrap_err();
         assert_eq!(error, format!("unknown command '{name}'"));
         assert!(
@@ -194,11 +194,24 @@ fn desktop_shell_is_not_a_cli_command() {
         );
     }
 
-    let unknown = parse_with_role_env(&args(&["frobnicate"]), None).unwrap_err();
-    assert_eq!(unknown, "unknown command 'frobnicate'");
     let denied = parse_with_role_env(&args(&["issue", "sync"]), Some("executor")).unwrap_err();
     assert_eq!(
         denied,
         "role 'executor' is not allowed to perform issue sync"
+    );
+}
+
+/// An empty argv parses to the root help for a bare launch, and a
+/// role-requiring command without any role source fails at parse time.
+#[test]
+fn empty_argv_is_root_help_and_role_is_required_for_operations() {
+    let invocation = parse_with_role_env(&[], None).expect("empty args must parse");
+    assert!(matches!(invocation.command, Command::Help(HelpTopic::Root)));
+
+    let error = parse_with_role_env(&args(&["issue", "get", "1"]), None)
+        .expect_err("issue get without a role must still fail");
+    assert!(
+        error.contains("a role is required"),
+        "unexpected error: {error}"
     );
 }

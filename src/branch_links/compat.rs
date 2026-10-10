@@ -1,6 +1,6 @@
 //! Compatible single-issue resolution over durable links.
 //!
-//! Status, commit-hook, and desktop surfaces expose one `issue_id` for
+//! Status, commit-hook, and snapshot surfaces expose one `issue_id` for
 //! adapter callers. It is populated only when unambiguous and the branch
 //! is not the detected default: multiple distinct linked issues are never
 //! guessed (the worktree lease disambiguates instead), and the detected

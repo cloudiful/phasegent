@@ -5,18 +5,12 @@ name: Release
 # - Trigger is version tags `v*` only; branch pushes never build or publish.
 # - `version-check` fails fast unless the tag is strict numeric
 #   MAJOR.MINOR.PATCH and both manifests (`Cargo.toml`, `package.json`) already
-#   carry the stripped tag, so the Electron Builder MSI/DMG versions and the
-#   binary `--version` agree with the release.
-# - `build` compiles every release binary once with the full CLI feature set
-#   (`postgres,notify-dingtalk,notify-email`). The same binary is the CLI
-#   artifact and the packaged companion of the Electron desktop shell; Linux
-#   stays CLI-only (no renderer, no Electron).
-# - Desktop rows (Windows x64, macOS arm64) additionally build the Vue
-#   renderer and the Electron main/preload bundles with Bun, stage the matching
-#   Rust companion via `scripts/electron-backend.mjs`, and package the unsigned
-#   MSI/DMG with Electron Builder, the only desktop packager.
-# - The raw `phasegent` binaries are still published next to the installers so
-#   the CLI artifact contract is unchanged.
+#   carry the stripped tag, so the binary `--version` and the package manifest
+#   agree with the release.
+# - `build` compiles one native release binary per target with the full CLI
+#   feature set (`postgres,notify-dingtalk,notify-email`) and publishes it as a
+#   raw executable named `phasegent-<tag>-<target>` (`.exe` on Windows).
+# - `release` checksums those artifacts into `SHA256SUMS` and publishes them.
 on:
   push:
     tags:
@@ -38,10 +32,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Electron Builder derives the Windows MSI and macOS DMG version from
-      # `package.json`, and the Rust `--version` output derives from
-      # `Cargo.toml`, so a tag that disagrees with either manifest must fail
-      # before anything is built or published.
+      # The Rust `--version` output derives from `Cargo.toml` and the package
+      # manifest mirrors it, so a tag that disagrees with either manifest must
+      # fail before anything is built or published.
       - name: Assert tag and manifest versions agree
         shell: bash
         run: |
@@ -78,26 +71,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux stays a plain CLI binary (no renderer, no Electron),
-          # but with the full CLI feature set (postgres + notify channels).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
-            desktop: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-            desktop: false
-          # macOS ships the CLI binary plus an unsigned Electron Builder
-          # DMG containing the real `.app` for Finder users. No
-          # signing/notarization secrets are required or set; Gatekeeper will
-          # warn on first open.
           - target: aarch64-apple-darwin
             os: macos-14
-            desktop: true
-          # Windows ships exactly one raw exe plus one matching Electron
-          # Builder MSI (x64). No ARM64 Windows package, no portable zip.
           - target: x86_64-pc-windows-msvc
             os: windows-2022
-            desktop: true
     runs-on: ${{ matrix.os }}
     env:
       RUSTC_WRAPPER: sccache
@@ -114,55 +95,7 @@ jobs:
       - name: Enable sccache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # Desktop rows build the renderer and the Electron bundles with the
-      # pinned Bun toolchain through the repository's own scripts. No
-      # bun.lock is committed under repository policy. Linux rows never run
-      # Bun, so the CLI binary stays renderer-free.
-      - name: Setup Bun (desktop rows only)
-        if: matrix.desktop
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.2"
-
-      - name: Cache Bun installs (desktop rows only)
-        if: matrix.desktop
-        uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-1-4-0-${{ hashFiles('package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-1-4-0-
-
-      - name: Install dependencies (desktop rows only)
-        if: matrix.desktop
-        run: bun install
-
-      - name: Build Electron main and preload bundles (desktop rows only)
-        if: matrix.desktop
-        run: bun scripts/electron-build.mjs
-
-      # `validate` runs `build-only` (vite build -> frontend/dist) plus
-      # `validate-dist.mjs`, so the renderer Electron Builder embeds is the
-      # same validated output the previous desktop shell used.
-      - name: Build and validate renderer dist (desktop rows only)
-        if: matrix.desktop
-        run: bun run validate
-
-      # The packaged companion reports the hash of the renderer it ships with,
-      # so `frontend/dist` is hashed before the Rust build and passed through
-      # the existing `PHASEGENT_FRONTEND_DIST_HASH` build-time variable.
-      - name: Record renderer dist hash for the companion build (desktop rows only)
-        if: matrix.desktop
-        shell: bash
-        run: |
-          set -euo pipefail
-          HASH="$(bun scripts/dist-hash.mjs)"
-          echo "PHASEGENT_FRONTEND_DIST_HASH=$HASH" >> "$GITHUB_ENV"
-          echo "frontend/dist hash: $HASH"
-
-      # One binary per target: the released CLI artifact and the Rust
-      # companion Electron Builder stages as an extra resource.
-      - name: Build release binary (CLI and desktop companion)
+      - name: Build release binary
         run: cargo build --release --bin phasegent --target ${{ matrix.target }} --features postgres,notify-dingtalk,notify-email
 
       - name: Prepare artifact (Unix)
@@ -173,74 +106,22 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
-      # Electron Builder packages the matching Rust companion as an extra
-      # resource, then the produced unsigned DMG is staged under the
-      # tag-based release contract name. The `.app` itself is distributed
-      # inside the DMG, not as a separate release file.
-      - name: Package macOS app and dmg with Electron Builder (unsigned)
-        if: matrix.desktop && runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          bun scripts/electron-backend.mjs --from target/${{ matrix.target }}/release/phasegent
-          bun x electron-builder --config electron-builder.yml --mac dmg --publish never
-          APP="$(find dist/electron -maxdepth 2 -type d -name 'phasegent.app' | head -n 1)"
-          if [ -z "$APP" ]; then echo "Electron Builder produced no phasegent.app under dist/electron"; exit 1; fi
-          test -f "$APP/Contents/Resources/phasegent-backend" || (echo "companion missing from the packaged .app: $APP"; exit 1)
-          SRC_DMG="$(find dist/electron -maxdepth 1 -name '*.dmg' | head -n 1)"
-          if [ -z "$SRC_DMG" ]; then echo "Electron Builder produced no dmg under dist/electron"; exit 1; fi
-          DEST="phasegent-${{ github.ref_name }}-${{ matrix.target }}.dmg"
-          cp "$SRC_DMG" "$DEST"
-          ls -lh "$DEST"
-
-      - name: Package Windows MSI with Electron Builder (unsigned)
-        if: matrix.desktop && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          bun scripts/electron-backend.mjs --from "target/${{ matrix.target }}/release/phasegent.exe"
-          bun x electron-builder --config electron-builder.yml --win msi --publish never
-          $companion = 'dist/electron/win-unpacked/resources/phasegent-backend.exe'
-          if (-not (Test-Path $companion)) {
-            Write-Error "companion missing from the packaged app: $companion"
-            exit 1
-          }
-          $src = Get-ChildItem -Path dist/electron -Recurse -Filter *.msi | Select-Object -First 1
-          if (-not $src) {
-            Write-Error 'Electron Builder produced no msi under dist/electron'
-            exit 1
-          }
-          $dest = "phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi"
-          Copy-Item -Path $src.FullName -Destination $dest -Force
-          Get-ChildItem $dest
-
       # Explicit artifact paths only: no wildcards that could pick up
-      # `.wixpdb`, logs, zip sidecars, or Electron Builder metadata.
-      - name: Upload artifact (Linux CLI)
-        if: runner.os == 'Linux'
+      # sidecars or build metadata.
+      - name: Upload artifact (Unix)
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: phasegent-${{ matrix.target }}
           path: phasegent-${{ github.ref_name }}-${{ matrix.target }}
           if-no-files-found: error
 
-      - name: Upload artifact (macOS desktop)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v7
-        with:
-          name: phasegent-${{ matrix.target }}
-          path: |
-            phasegent-${{ github.ref_name }}-${{ matrix.target }}
-            phasegent-${{ github.ref_name }}-${{ matrix.target }}.dmg
-          if-no-files-found: error
-
-      - name: Upload artifact (Windows desktop)
+      - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: phasegent-${{ matrix.target }}
-          path: |
-            phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
-            phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi
+          path: phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
           if-no-files-found: error
 
       - name: Show sccache stats
@@ -273,8 +154,6 @@ jobs:
             dist/phasegent-*-x86_64-unknown-linux-gnu
             dist/phasegent-*-aarch64-unknown-linux-gnu
             dist/phasegent-*-aarch64-apple-darwin
-            dist/phasegent-*-aarch64-apple-darwin.dmg
             dist/phasegent-*-x86_64-pc-windows-msvc.exe
-            dist/phasegent-*-x86_64-pc-windows-msvc.msi
             dist/SHA256SUMS
           generate_release_notes: true

@@ -75,7 +75,7 @@ pub fn is_notify_setting(canonical: &str) -> bool {
 
 /// True for write-only notify secrets. Mirrors
 /// `crate::config_write::is_secret_setting` for the notify subset so
-/// GUI and snapshot code can share one predicate.
+/// config snapshot code can share one predicate.
 pub fn is_notify_secret(canonical: &str) -> bool {
     matches!(
         canonical,

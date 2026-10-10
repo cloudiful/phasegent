@@ -2,7 +2,7 @@
 //! seed mutation, all driven by the reproducible [`Rng`].
 
 const COMMANDS: &[&str] = &[
-    "gui", "doctor", "admin", "auth", "config", "issue", "comment", "record", "project",
+    "frobnicate", "doctor", "admin", "auth", "config", "issue", "comment", "record", "project",
     "status", "version", "relation", "timer", "workflow", "worktree", "hooks", "plugin", "notify",
     "help", "bogus", "repo", "",
 ];
