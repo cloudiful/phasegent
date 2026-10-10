@@ -7,6 +7,8 @@
 //! role never requires a second hardcoded list here.
 
 use super::provision_user::provision_role_user;
+use crate::auth;
+use crate::infra::storage::{PROVIDER_REDMINE, Storage};
 use crate::policy::Role;
 use crate::providers::RedmineProvider;
 use crate::providers::api::PhasegentError;
@@ -50,6 +52,32 @@ pub(super) fn provision_agent_users(
         provisioned.push(ProvisionedRole { role, user });
     }
     Ok(provisioned)
+}
+
+/// Read the cached identity used by preview when both persisted identity and
+/// credential rows are valid, without returning or exposing the credential.
+pub(super) fn persisted_role_identity(
+    role: Role,
+    storage: &Storage,
+) -> Result<Option<RedmineCurrentUser>, PhasegentError> {
+    let persisted_user = auth::load_redmine_user(role, storage).map_err(PhasegentError::config)?;
+    let persisted_key = storage
+        .load_credential(role, PROVIDER_REDMINE)
+        .map_err(PhasegentError::config)?;
+    if let (Some((user_id, login)), Some(api_key)) = (persisted_user, persisted_key)
+        && user_id > 0
+        && !login.trim().is_empty()
+        && !api_key.trim().is_empty()
+    {
+        return Ok(Some(RedmineCurrentUser {
+            id: user_id,
+            login,
+            firstname: String::new(),
+            lastname: String::new(),
+            mail: String::new(),
+        }));
+    }
+    Ok(None)
 }
 
 /// Reject a freshly provisioned identity that resolves to the same Redmine

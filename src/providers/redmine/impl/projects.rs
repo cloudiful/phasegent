@@ -6,6 +6,7 @@ use crate::providers::redmine::model::{
     RedmineProjectCollection, RedmineProjectResponse, RedmineUserMembershipOutcome, RedmineVersion,
     RedmineVersionCollection,
 };
+use crate::providers::redmine::pagination;
 
 impl RedmineProvider {
     pub fn bootstrap_project(
@@ -87,10 +88,14 @@ impl RedmineProvider {
             let count = page.projects.len();
             let response_limit = page.limit.unwrap_or(super::PAGE_SIZE).max(1);
             let total_count = page.total_count;
+            let complete = pagination::page_is_complete(
+                "project list",
+                offset,
+                count,
+                total_count,
+                response_limit,
+            )?;
             projects.extend(page.projects);
-            let complete = count == 0
-                || total_count.is_some_and(|total| offset.saturating_add(count) >= total)
-                || (total_count.is_none() && count < response_limit);
             if complete {
                 return Ok(projects);
             }
@@ -167,10 +172,14 @@ impl RedmineProvider {
             let count = page.versions.len();
             let response_limit = page.limit.unwrap_or(super::PAGE_SIZE).max(1);
             let total_count = page.total_count;
+            let complete = pagination::page_is_complete(
+                "version list",
+                offset,
+                count,
+                total_count,
+                response_limit,
+            )?;
             versions.extend(page.versions);
-            let complete = count == 0
-                || total_count.is_some_and(|total| offset.saturating_add(count) >= total)
-                || (total_count.is_none() && count < response_limit);
             if complete {
                 return Ok(versions);
             }

@@ -13,9 +13,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use url::Url;
 
+use super::pagination::{MAX_PAGES, PAGE_SIZE, page_is_complete};
+
 const MAX_ERROR_MESSAGE: usize = 512;
-const PAGE_SIZE: usize = 100;
-const MAX_PAGES: usize = 10_000;
 
 pub(crate) struct RedmineHttp {
     client: Client,
@@ -329,11 +329,8 @@ impl RedmineHttp {
             }
             let count = page.users.len();
             let response_limit = page.limit.unwrap_or(PAGE_SIZE).max(1);
-            let complete = count == 0
-                || page
-                    .total_count
-                    .is_some_and(|total| offset.saturating_add(count) >= total)
-                || (page.total_count.is_none() && count < response_limit);
+            let complete =
+                page_is_complete("user list", offset, count, page.total_count, response_limit)?;
             if complete {
                 return Ok(None);
             }
@@ -446,7 +443,7 @@ impl RedmineHttp {
         })
     }
 
-    fn list_roles(
+    pub(crate) fn list_roles(
         &self,
     ) -> Result<Vec<crate::providers::redmine::model::RedmineRole>, PhasegentError> {
         self.paginate("role list", |http, offset| {
@@ -465,7 +462,7 @@ impl RedmineHttp {
         })
     }
 
-    fn list_memberships(
+    pub(crate) fn list_memberships(
         &self,
         project_id: u64,
     ) -> Result<Vec<crate::providers::redmine::model::RedmineMembership>, PhasegentError> {
@@ -513,10 +510,8 @@ impl RedmineHttp {
             }
             let count = page_items.len();
             let response_limit = limit.unwrap_or(PAGE_SIZE).max(1);
+            let complete = page_is_complete(operation, offset, count, total_count, response_limit)?;
             items.extend(page_items);
-            let complete = count == 0
-                || total_count.is_some_and(|total| offset.saturating_add(count) >= total)
-                || (total_count.is_none() && count < response_limit);
             if complete {
                 return Ok(items);
             }

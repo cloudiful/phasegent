@@ -5,6 +5,7 @@ use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::workflow;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_workflow(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -12,6 +13,7 @@ pub(crate) fn execute_workflow(
     global_repository: Option<&str>,
     global_close_status_id: Option<&str>,
     global_close_status_name: Option<&str>,
+    global_project_id: Option<&str>,
     command: WorkflowCommand,
 ) -> i32 {
     let role = super::required_role(role_value);
@@ -40,7 +42,22 @@ pub(crate) fn execute_workflow(
         repository,
         close_status_id,
         close_status_name,
+        all_projects,
+        dry_run,
     } = command;
+    if all_projects {
+        if global_repository.is_some()
+            || global_close_status_id.is_some()
+            || global_close_status_name.is_some()
+            || global_project_id.is_some()
+        {
+            return super::usage_error(
+                "admin workflow bootstrap --all-projects cannot be combined with \
+                 --repository, --close-status-id, --close-status-name, or --project-id",
+            );
+        }
+        return super::workflow_all_projects::execute(api_base, dry_run);
+    }
     if close_status_id.is_some() && global_close_status_id.is_some()
         || close_status_name.is_some() && global_close_status_name.is_some()
     {

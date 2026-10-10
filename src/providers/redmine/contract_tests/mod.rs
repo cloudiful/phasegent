@@ -1,5 +1,6 @@
 mod attachments;
 mod auth;
+mod bootstrap_all_projects;
 mod bootstrap_auto;
 mod bootstrap_distinct;
 mod bootstrap_explore;

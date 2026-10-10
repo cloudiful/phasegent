@@ -1,3 +1,4 @@
+pub(crate) mod all_projects;
 pub mod attachments;
 pub mod capabilities;
 pub mod comments;
@@ -10,5 +11,4 @@ pub mod status;
 pub mod time;
 pub mod users;
 
-pub(crate) const PAGE_SIZE: usize = 100;
-pub(crate) const MAX_PAGES: usize = 10_000;
+pub(crate) use crate::providers::redmine::pagination::{MAX_PAGES, PAGE_SIZE};

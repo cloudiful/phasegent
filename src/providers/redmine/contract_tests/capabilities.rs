@@ -100,6 +100,8 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
             ref repository,
             ref close_status_name,
             close_status_id: None,
+            all_projects: false,
+            dry_run: false,
         }) if repository.as_deref() == Some("Cloud1ful/repo")
             && close_status_name.as_deref() == Some("Closed")
     ));

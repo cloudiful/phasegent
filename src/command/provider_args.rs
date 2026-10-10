@@ -120,5 +120,10 @@ pub enum WorkflowCommand {
         repository: Option<String>,
         close_status_id: Option<String>,
         close_status_name: Option<String>,
+        /// Explicit global reconciliation across every existing Redmine
+        /// project instead of the current repository's project.
+        all_projects: bool,
+        /// Read-only preview; valid only together with `all_projects`.
+        dry_run: bool,
     },
 }

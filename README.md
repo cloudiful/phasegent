@@ -57,6 +57,17 @@ project memberships (Maintainer, Developer, Reporter, Reporter). It is
 idempotent: rerunning it reuses every identity it already holds and creates
 only the accounts that are missing.
 
+`admin workflow bootstrap --all-projects` reconciles those four users on every
+existing Redmine project instead of the current repository's project. It needs
+no Git repository, enumerates the complete project set before any write,
+provisions the shared identities once, and adds only missing memberships while
+preserving roles already attached. Add `--dry-run` for a read-only preview that
+plans the same outcome without creating users, fetching user API keys, or
+writing memberships or settings. Both modes print a complete JSON report and exit `0`
+when every project is ready, `1` on any blocked, warned, or errored project.
+The modes may still open the local SQLite store, which can create the schema or
+database file when it is absent.
+
 ## Common Commands
 
 ```sh

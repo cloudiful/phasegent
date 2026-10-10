@@ -9,6 +9,7 @@
 //! - [`repository`]: repository, mirror URL, and bootstrap config resolution
 //! - [`run`]: the resolved bootstrap sequence itself
 
+mod all_projects;
 mod provision;
 mod provision_user;
 mod repository;
@@ -24,6 +25,10 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use repository::{repository_was_explicit, resolve_bootstrap_config, resolve_repository};
+
+pub(crate) use all_projects::GlobalBootstrapReport;
+#[cfg(test)]
+pub(crate) use all_projects::{MembershipReport, ProjectReport, RoleIdentityReport};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorkflowState {
@@ -90,6 +95,13 @@ pub(crate) fn bootstrap(
         close_status_name,
     )
     .map(run::attach_local_hooks)
+}
+
+pub(crate) fn bootstrap_all_projects(
+    api_base: Option<&str>,
+    dry_run: bool,
+) -> Result<GlobalBootstrapReport, PhasegentError> {
+    all_projects::run(api_base, dry_run)
 }
 
 pub(crate) fn ensure_issue_workflow(

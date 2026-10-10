@@ -23,6 +23,7 @@ mod relation;
 mod status;
 mod version;
 mod workflow;
+mod workflow_all_projects;
 pub(crate) mod worktree;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -257,6 +258,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.repository.as_deref(),
             invocation.close_status_id.as_deref(),
             invocation.close_status_name.as_deref(),
+            invocation.project_id.as_deref(),
             command,
         ),
         Command::Relation(command) => relation::execute_relation(

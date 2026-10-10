@@ -53,6 +53,15 @@ API key，把 key 存入 SQLite，并协调它们的直接 project membership
 （Maintainer、Developer、Reporter、Reporter）。该命令是幂等的：重复执行会
 复用已持有的全部身份，只创建缺失的账号。
 
+`admin workflow bootstrap --all-projects` 会在全部现有 Redmine project 上
+（而不是当前仓库对应的 project）协调这四个账号。它无需 Git 仓库，在任何
+写入之前枚举完整 project 集合，只一次性开通共享身份，并仅补齐缺失的
+membership，同时保留已附加的其他 role。加上 `--dry-run` 得到只读预览：
+规划相同的目标结果，但不创建账号、不通过 API 获取用户 API key、不写入
+membership 或 settings。两种模式都会打印完整 JSON report，并在所有 project 就绪时退出
+`0`，任一 project blocked、warning 或 error 时退出 `1`。两种模式仍可能打开
+本地 SQLite store，当 schema 或数据库文件缺失时会创建它。
+
 ## 常用命令
 
 ```sh
