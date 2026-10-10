@@ -110,6 +110,34 @@ stay in the body; a delegation stays issue-number-plus-deltas only, and an
 attempt-specific decision is recorded in the body before the retry. Model size
 never changes the contract, so a small executor is held to exactly the same one.
 
+## Parent-first decision routing
+
+Only the primary orchestrator may ask the human, using the question tool. Executor,
+reviewer, and explore children never ask the human through that tool or in prose.
+When an unresolved decision or prerequisite blocks work, stop the dependent work
+and report it to the immediate parent. A denied question call is a blocker: never
+retry, rephrase, or use another route to ask. Prompt guidance is not enforcement;
+the host permission gate remains authoritative, and no parent answers a child's
+native pending-question request on the human's behalf or fabricates a human response.
+
+The handoff states the unresolved decision, evidence, minimal options or
+recommendation, scope or acceptance effect, and safely completed work; omit
+credentials and secrets. An executor returns `BLOCKED`; a tracked record carries
+the detail, while the INLINE/LOCAL `question` field asks the parent, not the human.
+A reviewer uses `VERDICT: BLOCKED` with the existing `REVIEW` scope and puts the
+detail in its record; this is not `FAIL` or `AUDIT_FAILED`. Explore has no phase
+status or verdict: put unresolved findings in risks/unknowns in its brief or recon
+record. Pointers are not the detail, so the parent reads the record body. A nested
+explorer reports to its executor/reviewer parent, which relays any unresolved
+blocker up to the primary.
+
+The primary reads the full handoff and decides only within the existing user
+mandate and issue constraints. If the decision is already supported, record it in
+the issue body before resuming the same child with a new attempt marker and only
+the delegation delta; never widen its allowlist. If intent, authority, security,
+or risk needs human judgment, only the primary asks the human and waits for that
+answer before updating the body or resuming work.
+
 ## Role capability matrix
 
 Source of truth: `src/policy.rs` (`Role::allows`); command-level gates keyed to
@@ -261,8 +289,8 @@ The entire `admin` group (`admin auth setup`, `admin config set/clear`,
 `admin config provider set/clear`, `admin workflow bootstrap`) is
 human-operator only — for every AI role, orchestrator included. Agent permission
 rules deny the prefix, no role ever delegates it, and provisioning, credentials,
-and settings stay with the operator: a missing one goes back as a question, and
-credentials never travel as CLI values. Only when a configuration or provider
+and settings stay with the operator: a missing one goes back to the primary for
+a question, and credentials never travel as CLI values. Only when a configuration or provider
 problem actually blocks the task do the read-only self-checks come in — `doctor`,
 `config show`, and `config provider get` carry no role gate. Never read the local
 SQLite files or call provider REST directly, since `record list`, `comment list`,

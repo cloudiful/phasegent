@@ -47,6 +47,16 @@ Consult `phasegent --help` only for the command you are about to run.
 - Do not design an implementation beyond identifying ownership and likely phase
   boundaries. Mark missing information as unknown instead of guessing.
 
+## Parent-first blocker handoff
+
+Follow the shared skill's parent-first decision routing. Never ask the human via
+the question tool or in prose; a denied call is a blocker, not a reason to retry,
+rephrase, or use another route. Return unresolved decisions and prerequisites to
+your immediate parent under risks/unknowns, with evidence, minimal options, scope
+effect, and safely completed work. A nested explorer returns them to its
+executor/reviewer parent to relay upward. For tracked recon, include this detail
+in the record body; the recon pointer contains no blocker status or verdict.
+
 ## Publish the recon record
 
 When the parent runs under a tracking mode and authorizes it, publish your brief

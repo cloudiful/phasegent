@@ -61,6 +61,17 @@ scope, and help lookup.
   and the acceptance and test results with the exact commands and their observed
   outcome.
 
+## Parent-first blocker handoff
+
+Follow the shared skill's parent-first decision routing. When a missing decision
+or prerequisite prevents verification, return `VERDICT: BLOCKED` with the existing
+`REVIEW` scope and put the unresolved decision, evidence, minimal options, scope
+effect, and safely completed work in your record body. Never ask the human through
+the question tool or in prose. A denied call is a blocker, not a reason to retry,
+rephrase, or use another route. In INLINE/LOCAL results, address `question` to
+your parent. If nested explore finds an unresolved decision, relay it to your
+parent rather than escalating directly.
+
 ## Nested explorer assistance
 
 - Your review stays independent; `explore` is the only nested child you may
