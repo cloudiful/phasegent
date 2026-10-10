@@ -9,7 +9,7 @@
 //! path so legacy payloads stay byte-identical.
 
 use crate::command::{AssigneeOption, PlanningOptions};
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, PhasegentError};
 use crate::providers::redmine::model::IssuePlanning;
 use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
 
@@ -17,15 +17,12 @@ use crate::providers::{IssueProvider, ProviderDispatcher, RedmineProvider};
 /// version name or numeric id within the configured project. Numeric
 /// ranges and date shapes are rejected before any write; version
 /// resolution is a read-only lookup, so a rejected value never reaches an
-/// issue write. Forgejo providers reject every Redmine-only planning
-/// flag with a structured not-supported error before any network
-/// access. GitLab accepts the `--tracker` and `--estimated-hours`
-/// flags (the latter maps to GitLab's native `time_estimate` endpoint)
-/// but rejects every other Redmine planning field.
+/// issue write. The local provider has no planning persistence, so it
+/// resolves to an empty plan.
 pub(crate) fn resolve_planning(
     provider: &ProviderDispatcher,
     options: &PlanningOptions,
-) -> Result<IssuePlanning, ForgejoError> {
+) -> Result<IssuePlanning, PhasegentError> {
     if options.is_empty() {
         return Ok(IssuePlanning::default());
     }
@@ -34,50 +31,6 @@ pub(crate) fn resolve_planning(
         return Ok(IssuePlanning::default());
     }
     match provider {
-        ProviderDispatcher::Gitlab(_) => {
-            // GitLab accepts `--estimated-hours` (mapped to the
-            // native `time_estimate` endpoint) but rejects every
-            // other Redmine planning field. Tracker is a label-only
-            // operation that goes through the existing label path,
-            // not through `resolve_planning`.
-            if options.parent_issue.is_some() {
-                return Err(ForgejoError::config(
-                    "GitLab issues do not support --parent-issue",
-                ));
-            }
-            if options.fixed_version.is_some() {
-                return Err(ForgejoError::config(
-                    "GitLab issues do not support --fixed-version",
-                ));
-            }
-            if options.start_date.is_some() {
-                return Err(ForgejoError::config(
-                    "GitLab issues do not support --start-date",
-                ));
-            }
-            if options.due_date.is_some() {
-                return Err(ForgejoError::config(
-                    "GitLab issues do not support --due-date",
-                ));
-            }
-            if options.done_ratio.is_some() {
-                return Err(ForgejoError::config(
-                    "GitLab issues do not support --done-ratio",
-                ));
-            }
-            // `--estimated-hours` is intentionally accepted: the
-            // planning CLI returns an empty IssuePlanning for GitLab so
-            // the create/update path stays symmetric; the provider
-            // caller is responsible for forwarding `estimated_hours`
-            // through the `time_estimate` endpoint after the issue
-            // body is written.
-        }
-        ProviderDispatcher::Forgejo(_) => {
-            return Err(ForgejoError::not_supported(
-                "forgejo",
-                "issue planning fields",
-            ));
-        }
         ProviderDispatcher::Redmine(_) => {}
         // Local is handled by the early return above; kept for exhaustiveness.
         ProviderDispatcher::Local(_) => {}
@@ -126,20 +79,9 @@ pub(crate) fn resolve_planning(
 }
 
 /// Create an issue with optional tracker plus native planning fields.
-/// Forgejo keeps its original plain path when no provider-specific
-/// flag is set. GitLab supports the tracker-only path (which becomes
-/// a `type::bug` / `type::feature` label) and accepts
-/// `--estimated-hours` (forwarded through the native `time_estimate`
-/// endpoint) but rejects every other Redmine planning flag with a
-/// structured not-supported error.
-///
-/// `assignee` is the GitLab-only assignee selector: GitLab self-assigns the
-/// authenticated user by default, `--no-assign` skips assignment, and
-/// `--assignee` overrides it. Every other provider rejects an explicit
-/// `--assignee` before any write so the legacy payload stays byte-identical
-/// for the default and `--no-assign` forms. The returned `Option<String>` is
-/// a bounded stderr warning (currently only the GitLab self-assign
-/// degradation when `GET /user` fails); stdout JSON is never affected.
+/// The local provider keeps the plain path when no provider-specific
+/// flag is set and ignores tracker/planning entirely; an explicit
+/// `--assignee` is rejected before any write.
 pub(crate) fn create_issue(
     provider: &ProviderDispatcher,
     title: &str,
@@ -147,40 +89,14 @@ pub(crate) fn create_issue(
     tracker: Option<&str>,
     planning_options: &PlanningOptions,
     assignee: &AssigneeOption,
-) -> Result<(IssueSummary, Option<String>), ForgejoError> {
+) -> Result<(IssueSummary, Option<String>), PhasegentError> {
     let planning = resolve_planning(provider, planning_options)?;
     let needs_provider_specific = tracker.is_some() || !planning.is_empty();
     match provider {
-        ProviderDispatcher::Gitlab(gitlab) => {
-            // GitLab accepts the tracker label and the
-            // `--estimated-hours` flag (forwarded through the native
-            // `time_estimate` endpoint). The body PUT path above only
-            // needs the label; the estimate is applied in a separate
-            // request right after the create call so the shared label
-            // path stays untouched.
-            let labels = match tracker {
-                None => Vec::new(),
-                Some(value) => gitlab.tracker_label_list(value)?,
-            };
-            let (assignee_ids, warning) = gitlab.resolve_assignee_ids(assignee)?;
-            let summary = gitlab.create_issue_with_labels(
-                title,
-                body,
-                &labels,
-                assignee_ids.as_deref().unwrap_or(&[]),
-            )?;
-            if let Some(hours) = planning.estimated_hours {
-                let seconds = (hours * 3600.0).round() as i64;
-                if seconds > 0 {
-                    gitlab.set_time_estimate(summary.number, seconds)?;
-                }
-            }
-            Ok((summary, warning))
-        }
         ProviderDispatcher::Redmine(redmine) => {
             reject_explicit_assignee(provider, assignee)?;
             if !needs_provider_specific {
-                return Ok((provider.create_issue(title, body)?, None));
+                return Ok((redmine.create_issue(title, body)?, None));
             }
             let tracker_id = match tracker {
                 None => None,
@@ -201,16 +117,6 @@ pub(crate) fn create_issue(
             };
             Ok((summary, None))
         }
-        ProviderDispatcher::Forgejo(_) => {
-            reject_explicit_assignee(provider, assignee)?;
-            if !needs_provider_specific {
-                return Ok((provider.create_issue(title, body)?, None));
-            }
-            Err(ForgejoError::not_supported(
-                "forgejo",
-                "issue tracker / planning fields",
-            ))
-        }
         // Local ignores tracker/planning/assignee and uses the plain path.
         ProviderDispatcher::Local(_) => {
             reject_explicit_assignee(provider, assignee)?;
@@ -219,15 +125,15 @@ pub(crate) fn create_issue(
     }
 }
 
-/// An explicit `--assignee` is a GitLab-only surface; every other provider
-/// rejects it before any write so the legacy payload stays byte-identical
-/// for default and `--no-assign` invocations.
+/// An explicit `--assignee` has no supported provider; it is rejected
+/// before any write so the payload stays byte-identical for default and
+/// `--no-assign` invocations.
 fn reject_explicit_assignee(
     provider: &ProviderDispatcher,
     assignee: &AssigneeOption,
-) -> Result<(), ForgejoError> {
+) -> Result<(), PhasegentError> {
     if matches!(assignee, AssigneeOption::Explicit(_)) {
-        return Err(ForgejoError::not_supported(
+        return Err(PhasegentError::not_supported(
             provider.kind().as_str(),
             "--assignee",
         ));
@@ -236,20 +142,15 @@ fn reject_explicit_assignee(
 }
 
 /// Update an issue body with optional tracker re-target plus native
-/// planning fields in one atomic PUT. Forgejo keeps its original
-/// plain path when no provider-specific flag is set. GitLab
-/// supports the tracker-only path (which becomes a `type::bug` /
-/// `type::feature` label add) and accepts `--estimated-hours`
-/// (forwarded through the native `time_estimate` endpoint) but
-/// rejects every other Redmine planning flag with a structured
-/// not-supported error.
+/// planning fields in one atomic PUT. The local provider keeps the plain
+/// path and ignores tracker/planning.
 pub(crate) fn update_body(
     provider: &ProviderDispatcher,
     number: u64,
     body: &str,
     tracker: Option<&str>,
     planning_options: &PlanningOptions,
-) -> Result<IssueSummary, ForgejoError> {
+) -> Result<IssueSummary, PhasegentError> {
     let planning = resolve_planning(provider, planning_options)?;
     let needs_provider_specific = tracker.is_some() || !planning.is_empty();
     if !needs_provider_specific {
@@ -273,24 +174,6 @@ pub(crate) fn update_body(
                 redmine.update_body_with_planning(number, body, tracker_id, &planning)
             }
         }
-        ProviderDispatcher::Gitlab(gitlab) => {
-            let labels = match tracker {
-                None => Vec::new(),
-                Some(value) => gitlab.tracker_label_list(value)?,
-            };
-            let summary = gitlab.update_body_with_labels(number, body, &labels)?;
-            if let Some(hours) = planning.estimated_hours {
-                let seconds = (hours * 3600.0).round() as i64;
-                if seconds > 0 {
-                    gitlab.set_time_estimate(number, seconds)?;
-                }
-            }
-            Ok(summary)
-        }
-        ProviderDispatcher::Forgejo(_) => Err(ForgejoError::not_supported(
-            "forgejo",
-            "issue tracker / planning fields",
-        )),
         // Local ignores tracker/planning and uses the plain path.
         ProviderDispatcher::Local(_) => provider.update_body(number, body),
     }
@@ -298,64 +181,50 @@ pub(crate) fn update_body(
 
 /// Extract the concrete Redmine provider from the dispatcher for
 /// Redmine-only operations that are not part of the shared issue trait.
-fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, ForgejoError> {
+fn redmine_provider(provider: &ProviderDispatcher) -> Result<&RedmineProvider, PhasegentError> {
     match provider {
         ProviderDispatcher::Redmine(redmine) => Ok(redmine),
-        ProviderDispatcher::Forgejo(_) => Err(ForgejoError::not_supported(
-            "forgejo",
-            "issue planning fields",
-        )),
-        // The GitLab planning surface is narrower than Redmine's (only
-        // `--tracker` and `--estimated-hours` are supported), and the
-        // dispatch above already validated every other flag before
-        // reaching this helper. Reaching this branch means the caller
-        // asked for a Redmine-only field; surface a structured
-        // not-supported error so the failure mode stays symmetric.
-        ProviderDispatcher::Gitlab(_) => Err(ForgejoError::not_supported(
-            "gitlab",
-            "issue planning fields",
-        )),
         // Local never reaches here: resolve_planning returns early for
-        // Local providers, so this wildcard only documents exhaustiveness.
-        other => Err(ForgejoError::not_supported(
+        // Local providers, so this arm only documents exhaustiveness.
+        other => Err(PhasegentError::not_supported(
             other.kind().as_str(),
             "issue planning fields",
         )),
     }
 }
 
-fn parse_positive(value: &str, field: &'static str) -> Result<u64, ForgejoError> {
-    let parsed = value
-        .parse::<u64>()
-        .map_err(|_| ForgejoError::config(format!("Redmine {field} must be a positive integer")))?;
+fn parse_positive(value: &str, field: &'static str) -> Result<u64, PhasegentError> {
+    let parsed = value.parse::<u64>().map_err(|_| {
+        PhasegentError::config(format!("Redmine {field} must be a positive integer"))
+    })?;
     if parsed == 0 {
-        return Err(ForgejoError::config(format!(
+        return Err(PhasegentError::config(format!(
             "Redmine {field} must be greater than zero"
         )));
     }
     Ok(parsed)
 }
 
-fn parse_estimated_hours(value: &str) -> Result<f64, ForgejoError> {
+fn parse_estimated_hours(value: &str) -> Result<f64, PhasegentError> {
     let parsed = value.parse::<f64>().map_err(|_| {
-        ForgejoError::config("Redmine estimated hours must be a non-negative number")
+        PhasegentError::config("Redmine estimated hours must be a non-negative number")
     })?;
     if !parsed.is_finite() || parsed < 0.0 {
-        return Err(ForgejoError::config(
+        return Err(PhasegentError::config(
             "Redmine estimated hours must be a non-negative number",
         ));
     }
     Ok(parsed)
 }
 
-fn parse_done_ratio(value: &str) -> Result<u64, ForgejoError> {
+fn parse_done_ratio(value: &str) -> Result<u64, PhasegentError> {
     // done_ratio is a 0-100 percentage; 0% is a valid default state, so
     // only values above 100 are rejected.
     let parsed = value
         .parse::<u64>()
-        .map_err(|_| ForgejoError::config("Redmine done ratio must be between 0 and 100"))?;
+        .map_err(|_| PhasegentError::config("Redmine done ratio must be between 0 and 100"))?;
     if parsed > 100 {
-        return Err(ForgejoError::config(
+        return Err(PhasegentError::config(
             "Redmine done ratio must be between 0 and 100",
         ));
     }
@@ -365,9 +234,9 @@ fn parse_done_ratio(value: &str) -> Result<u64, ForgejoError> {
 /// Validate the strict zero-padded `YYYY-MM-DD` shape Redmine expects for
 /// date fields, including real calendar rules (month lengths and leap
 /// years) so impossible dates are rejected locally before any write.
-fn parse_date(value: &str, field: &'static str) -> Result<String, ForgejoError> {
+fn parse_date(value: &str, field: &'static str) -> Result<String, PhasegentError> {
     let invalid =
-        || ForgejoError::config(format!("Redmine {field} must use the YYYY-MM-DD format"));
+        || PhasegentError::config(format!("Redmine {field} must use the YYYY-MM-DD format"));
     let parts = value.split('-').collect::<Vec<_>>();
     let [year, month, day] = parts.as_slice() else {
         return Err(invalid());

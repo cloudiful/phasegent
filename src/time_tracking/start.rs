@@ -1,44 +1,41 @@
 use crate::infra::storage::{Storage, TimerRunOwner};
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::api::PhasegentError;
 
 use super::dispatch::TimerOutput;
 use super::util::{generate_run_id, generate_run_id_with_prefix, now_epoch_seconds};
 
-fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, ForgejoError> {
+fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, PhasegentError> {
     let role = role_value.ok_or_else(|| {
-        ForgejoError::config(format!(
+        PhasegentError::config(format!(
             "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
         ))
     })?;
     if role != Role::Orchestrator {
-        return Err(ForgejoError::config(format!(
+        return Err(PhasegentError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
     Ok(role)
 }
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> PhasegentError + 'a {
+    move |message| PhasegentError::request(operation, message)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_start(
     role_value: Option<Role>,
-    provider_kind: Option<ProviderKind>,
+    _provider_kind: Option<ProviderKind>,
     issue: u64,
     phase: &str,
     agent_role: String,
     attempt: u64,
     run_id: Option<&str>,
     owner: &TimerRunOwner,
-) -> Result<TimerOutput, ForgejoError> {
+) -> Result<TimerOutput, PhasegentError> {
     let _role = timer_orchestrator(role_value, "timer start")?;
-    if provider_kind == Some(ProviderKind::Forgejo) {
-        return Err(ForgejoError::not_supported("forgejo", "timer start"));
-    }
     let effective_role = normalise_agent_role(&agent_role)?;
     let run_id = run_id.map(str::to_owned).unwrap_or_else(generate_run_id);
     let storage = Storage::open().map_err(timer_storage_error("timer start"))?;
@@ -97,10 +94,10 @@ pub(crate) fn auto_start_run(
     Ok(run_id)
 }
 
-fn normalise_agent_role(agent_role: &str) -> Result<String, ForgejoError> {
-    let parsed = agent_role.parse::<Role>().map_err(ForgejoError::config)?;
+fn normalise_agent_role(agent_role: &str) -> Result<String, PhasegentError> {
+    let parsed = agent_role.parse::<Role>().map_err(PhasegentError::config)?;
     if !matches!(parsed, Role::Executor | Role::Reviewer) {
-        return Err(ForgejoError::config(
+        return Err(PhasegentError::config(
             "timer start --agent-role must be executor or reviewer",
         ));
     }

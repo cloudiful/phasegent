@@ -7,7 +7,7 @@ description: Executor-side phasegent protocol for one delegated phase — read t
 
 You implement one delegated phase inside its allowlist. The issue is the plan;
 these are your always-on role rules, and the shared `phasegent` skill is the
-single source for the marker protocol, the result contracts, worktree wiring,
+single source for the record and marker protocol, the result contracts, worktree wiring,
 and help lookup.
 
 ## Read first
@@ -80,28 +80,37 @@ implementation detail you would otherwise have to invent:
 - Reuse one explorer child for the whole phase: retain the `sessionID` returned
   by your first call and pass it back as the continuation on later asks; open a
   fresh child only on the shared isolation triggers and record the reason.
-- The explorer is read-only, holds no worktree lease, and owns no audit note or
-  VERDICT. You remain the only write owner for the phase and the sole publisher
+- The explorer is read-only apart from an authorized recon record: it holds no
+  worktree lease and owns no audit note or VERDICT. A tracked recon record is
+  referenceable by its native id, so cite the record id instead of transcribing
+  raw recon. You remain the only write owner for the phase and the sole publisher
   of its terminal note, and you record any material explorer finding there.
 
 ## Publish the audit note
 
-One HTML-comment marker at the top of the note body, with the parent-supplied
-value verbatim:
+Publish your phase-terminal audit note as an executor record — the CLI owns the
+header, so you supply metadata and a plain body and never write a header by hand:
 
-`<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->`
+`record create <issue> --kind executor --key <marker> --phase <phase> --attempt <n> [--authorized] (--body TEXT | --body-file PATH [--keep-body-file])`
 
-Publish once, after all work, immediately before the final JSON; a retry uses a
-new marker, and a child's note needs explicit authorization. A missing note when
-`comment-allowed=true` is audit-incomplete.
+Use the parent-supplied marker verbatim as `--key` (the stable request token:
+1..128 characters from `[A-Za-z0-9._:-]`). Reuse a key only to retry the identical
+request: an identical retry returns the existing record id, a changed body under a
+used key is a conflict, and a new attempt uses a new key. Publish once, after all
+work, immediately before the final JSON; a child's record needs `--authorized`.
+A missing note when `comment-allowed=true` is audit-incomplete.
+
+The body keeps the labelled `status` line, and the pointer's `status` matches it
+verbatim. Nothing else about the outcome changes: the same note text, the same
+status semantics, only the transport (record instead of comment) and the header
+ownership (CLI instead of handwritten).
 
 ## Return the result
 
 - `TRACKED_ISSUE`: return only the minimal note-pointer JSON — `status`,
   `phase`, and the nested `tracking` object; the note is the record, with no
-  prose or changed-file duplication. Never fabricate a comment id, URL, or
-  marker; when the publish fails, leave `comment_id`/`comment_url` null and
-  explain in `notes`.
+  prose or changed-file duplication. Never fabricate a record/comment id, URL, or
+  marker; when the publish fails, leave the id/URL null and explain in `notes`.
 - `INLINE` / `LOCAL_ISSUE`: return the complete result object instead.
 - The exact shapes and the `DONE`/`PARTIAL`/`BLOCKED`/`FAILED` semantics live in
   the shared skill's result contracts.

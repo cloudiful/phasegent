@@ -3,7 +3,7 @@
 [简体中文](README.zh-CN.md)
 
 `phasegent` is a role-aware CLI for provider-backed OpenCode workflows. It
-provides one command-line interface for issue tracking, repository operations,
+provides one command-line interface for issue tracking, structured agent records,
 comments, and workflow automation.
 
 ## Install
@@ -48,8 +48,7 @@ The Redmine REST address is machine-wide: `auth setup --api-base` and
 `admin config set redmine-api-base <URL>` store the one address every role
 shares, and `config show` reports it once under `global_settings`. Credentials,
 provisioned identities, provider selection, and the Redmine close-status id
-stay role-scoped; `admin config set api-base <URL>` is the role-scoped
-Forgejo/GitLab address.
+stay role-scoped.
 
 ## Common Commands
 
@@ -58,6 +57,8 @@ phasegent issue search --query "bug"
 phasegent issue get 123
 phasegent issue get 123 124 125
 phasegent comment list 123
+phasegent record list 123
+phasegent record get 123 42
 phasegent issue create \
   --title "Short title" --body "Issue details"
 phasegent issue update 123 --body "Updated details"
@@ -69,9 +70,10 @@ phasegent doctor
 
 Branch links are local-only and read-only: `issue status` shows the current branch with its linked issues and cached state, and `issue branches N` lists every branch linked to that issue across all scopes in this repository.
 
-Use `--provider redmine` or `--provider gitlab` on a command when the selected
-provider is not the default. Use `--repository OWNER/REPOSITORY` and
-`--project-id ID` to override repository or project discovery when required.
+Use `--provider redmine` or `--provider local` on a command when the selected
+provider is not the default. Use `--project-id ID` to override project
+discovery when required; `--repository OWNER/REPOSITORY` names the Git host
+repository for `workflow bootstrap` and project discovery.
 
 Provisioning (`auth setup`, config writes, `workflow bootstrap`) lives under
 the human-operator `admin` group (`phasegent admin ...`) and is never invoked
@@ -80,9 +82,26 @@ by AI roles.
 Run `phasegent --help` (or `phasegent --help <topic>`) for the full command
 reference, and see `skills/phasegent` for the OpenCode skill: it picks
 the tracking mode (`INLINE` / `TRACKED_ISSUE` / `LOCAL_ISSUE`), resolves the
-provider from configuration through `--provider` with a Forgejo fallback, and
-covers the current `issue update`, `worktree acquire --base`, `worktree probe`,
-and `worktree prune` surfaces.
+provider from configuration through `--provider` with a Redmine fallback, and
+covers the current `issue update`, structured `record` publication, `worktree
+acquire --base`, `worktree probe`, and `worktree prune` surfaces.
+
+## Records
+
+`record create` / `record get` / `record list` are the documented agent path for
+structured notes: the CLI generates one versioned metadata header and the agent
+supplies only metadata plus a plain body, so a child never writes a header by
+hand. A record's id is its native reference (`#change-<id>` on Redmine,
+`#note-<id>` locally), and `record get ISSUE RECORD_ID` reads it back as the
+plain body plus structured fields — so a parent cites the record id instead of
+transcribing the note. The kind is bound to the session role: `executor` and
+`reviewer` notes keep their status/verdict semantics, and the read-only
+`explore` role may publish only an authorized recon record.
+
+Tracking is Redmine or explicit offline local; an unsupported provider name is
+rejected with an actionable config error before any network call. See
+[docs/agent-records.md](docs/agent-records.md) for the reference protocol, the
+stable request key, and the Redmine/local boundaries.
 
 ## Worktrees
 

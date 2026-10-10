@@ -68,7 +68,7 @@ pub struct IssueIndexSearchResult {
 }
 
 /// Deterministic scope that keys every index document.
-/// `source` is the provider kind literal (`forgejo`/`redmine`/`gitlab`),
+/// `source` is the provider kind literal (`redmine`/`local`),
 /// `project` is the stable project identifier for that provider.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct IssueIndexScope {
@@ -91,22 +91,15 @@ impl IssueIndexScope {
 }
 
 /// Derive a stable scope from a resolved dispatcher.
-/// Forgejo uses `owner/repo`, Redmine uses the explicit project id (required),
-/// GitLab uses the numeric project id as a string. Returns a config error
-/// when Redmine project id is missing so callers never silently index all
+/// Redmine uses the explicit project id (required); the local backend
+/// warms under a stable local scope. Returns a config error when the
+/// Redmine project id is missing so callers never silently index all
 /// projects.
 pub fn provider_scope(
     dispatcher: &crate::providers::ProviderDispatcher,
-) -> Result<IssueIndexScope, crate::providers::api::ForgejoError> {
-    use crate::providers::api::ForgejoError;
+) -> Result<IssueIndexScope, crate::providers::api::PhasegentError> {
+    use crate::providers::api::PhasegentError;
     match dispatcher {
-        crate::providers::ProviderDispatcher::Forgejo(provider) => {
-            let project = format!("{}/{}", provider.config.owner, provider.config.repository);
-            Ok(IssueIndexScope {
-                source: "forgejo".to_owned(),
-                project,
-            })
-        }
         crate::providers::ProviderDispatcher::Redmine(provider) => {
             let project = provider
                 .config
@@ -114,7 +107,7 @@ pub fn provider_scope(
                 .as_deref()
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| {
-                    ForgejoError::config(
+                    PhasegentError::config(
                         "Redmine project id is required for issue index operations; use --project-id",
                     )
                 })?;
@@ -123,10 +116,6 @@ pub fn provider_scope(
                 project: project.trim().to_owned(),
             })
         }
-        crate::providers::ProviderDispatcher::Gitlab(provider) => Ok(IssueIndexScope {
-            source: "gitlab".to_owned(),
-            project: provider.config.project_id.to_string(),
-        }),
         // Local backend warms under a stable local scope.
         crate::providers::ProviderDispatcher::Local(_) => Ok(IssueIndexScope {
             source: "local".to_owned(),
@@ -146,41 +135,15 @@ pub fn explicit_scope(
     repository: Option<&str>,
     project_id: Option<&str>,
 ) -> Option<IssueIndexScope> {
+    let _ = repository;
     let kind = provider_kind?;
     match kind {
-        crate::providers::ProviderKind::Forgejo => {
-            let repo = repository?.trim();
-            if repo.is_empty() || !repo.contains('/') {
-                return None;
-            }
-            // Basic `owner/repo` shape check without network or config.
-            let mut parts = repo.split('/');
-            let owner = parts.next()?.trim();
-            let name = parts.next()?.trim();
-            if owner.is_empty() || name.is_empty() || parts.next().is_some() {
-                return None;
-            }
-            IssueIndexScope::new("forgejo", format!("{owner}/{name}")).ok()
-        }
         crate::providers::ProviderKind::Redmine => {
             let pid = project_id?.trim();
             if pid.is_empty() {
                 return None;
             }
             IssueIndexScope::new("redmine", pid).ok()
-        }
-        crate::providers::ProviderKind::Gitlab => {
-            let pid = project_id?.trim();
-            if pid.is_empty() {
-                return None;
-            }
-            // GitLab project ids are numeric; reject non-numeric so we
-            // never invent a scope for a malformed id.
-            let parsed: u64 = pid.parse().ok()?;
-            if parsed == 0 {
-                return None;
-            }
-            IssueIndexScope::new("gitlab", parsed.to_string()).ok()
         }
         // Local yields no narrow scope from an explicit kind; callers
         // fall back to the global scope.

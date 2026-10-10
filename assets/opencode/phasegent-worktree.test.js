@@ -1180,8 +1180,10 @@ describe("agentRole (issue #541)", () => {
     expect(agentRole({ agent: "orchestrator" })).toBe("orchestrator");
     expect(agentRole({ agent: "executor" })).toBe("executor");
     expect(agentRole({ agent: "reviewer" })).toBe("reviewer");
-    // explore is read-only recon and behaves as a reviewer.
-    expect(agentRole({ agent: "explore" })).toBe("reviewer");
+    // issue #754 P3: explore maps to its own least-privilege role, not the
+    // reviewer surface, so it can publish an authorized recon record without
+    // gaining reviewer writes.
+    expect(agentRole({ agent: "explore" })).toBe("explore");
   });
 
   test("is case-insensitive and matches compound agent names", () => {
@@ -1555,6 +1557,43 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         agent: "orchestrator",
       }),
     ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue close 1 --worktree-session s1");
+  });
+
+  test("injects the least-privilege role for the structured record group (issue #754 P3)", () => {
+    // The record group carries no session flag, so the only rewrite is the
+    // role scope. An explore sub-agent runs as `explore` (not `reviewer`), and
+    // a differing claim is outranked by the injected session role.
+    expect(
+      rewritePhasegentCommand(
+        "phasegent record create 754 --kind recon --key scan-1 --recon repo --authorized --body t",
+        "s1",
+        { agent: "explore" },
+      ),
+    ).toBe(
+      "PHASEGENT_ROLE=explore phasegent record create 754 --kind recon --key scan-1 --recon repo --authorized --body t",
+    );
+    expect(
+      rewritePhasegentCommand(
+        "PHASEGENT_ROLE=reviewer phasegent record create 754 --kind reviewer --key r-1 --authorized --body t",
+        "s1",
+        { agent: "explore" },
+      ),
+    ).toBe(
+      "PHASEGENT_ROLE=reviewer PHASEGENT_ROLE=explore phasegent record create 754 --kind reviewer --key r-1 --authorized --body t",
+    );
+    expect(
+      rewritePhasegentCommand(
+        "phasegent record create 754 --kind executor --key e-1 --phase P1 --attempt 1 --body t",
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe(
+      "PHASEGENT_ROLE=executor phasegent record create 754 --kind executor --key e-1 --phase P1 --attempt 1 --body t",
+    );
+    // A record read is still a phasegent invocation, so it gets the role too.
+    expect(
+      rewritePhasegentCommand("phasegent record get 754 42", "s1", { agent: "explore" }),
+    ).toBe("PHASEGENT_ROLE=explore phasegent record get 754 42");
   });
 });
 
@@ -2354,6 +2393,31 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(explore).toContain("An isolated child starts with a clean context");
   });
 
+  test("the embedded prompts carry the authorized recon record path and pointer (issue #754 P3)", () => {
+    // The explorer publishes an authorized recon record under a tracking mode
+    // and returns only a minimal pointer; executor/reviewer notes move to
+    // `record create` with the same status/verdict semantics.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const explore = flat(contentFor("phasegent-explore"));
+    expect(explore).toContain("record create <issue> --kind recon");
+    expect(explore).toContain("--authorized");
+    expect(explore).toContain("record_id · record_url · key · provider · issue");
+    expect(explore).toContain("You publish no VERDICT");
+    const executor = flat(contentFor("phasegent-executor"));
+    expect(executor).toContain("record create <issue> --kind executor");
+    expect(executor).toContain("never write a header by hand");
+    const reviewer = flat(contentFor("phasegent-reviewer"));
+    expect(reviewer).toContain("record create <issue> --kind reviewer");
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("## Records and the audit note");
+    expect(shared).toContain("record create <issue> --kind recon --recon <label>");
+    expect(shared).toContain("record_id`, `record_url`, `key`, `provider`");
+    // No handwritten marker header remains the agent's job.
+    expect(shared).toContain("never writes a header by hand");
+  });
+
   test("the embedded role prompts bound nested explorer assistance (issue 671)", () => {
     // The anchored executor/reviewer pair may launch only `explore`, the
     // explorer cannot recurse, and orchestrator ownership plus the reviewer's
@@ -2374,10 +2438,10 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(reviewer).toContain("your terminal note and its single VERDICT remain yours alone");
     const explore = flat(contentFor("phasegent-explore"));
     expect(explore).toContain("a nested explorer cannot recurse and never invokes the `subagent` tool");
-    expect(explore).toContain("You publish no audit note, marker, or VERDICT");
+    expect(explore).toContain("You publish no VERDICT");
     const shared = flat(skillDefinition().content);
     expect(shared).toContain("Nested explorer assistance changes no contract");
-    expect(shared).toContain("stays read-only, non-audited, and unable to recurse");
+    expect(shared).toContain("stays non-audited and unable to recurse");
   });
 
   test("the embedded reviewer prompt carries the verification protocol (issue 736)", () => {
@@ -2388,7 +2452,8 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     const reviewer = flat(
       roleSkillDefinitions().find((definition) => definition.id === "phasegent-reviewer").content,
     );
-    expect(reviewer).toContain("<!-- ai-reviewer issue=");
+    expect(reviewer).toContain("record create <issue> --kind reviewer");
+    expect(reviewer).toContain("--review <final|checkpoint>");
     expect(reviewer).toContain(
       "Write only the test, fixture, and harness paths the orchestrator allowlists",
     );
@@ -2428,7 +2493,7 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     const reviewer = flat(contentFor("phasegent-reviewer"));
     expect(reviewer).toContain("`final` is the default and covers the **complete issue**");
     expect(reviewer).toContain("`checkpoint` covers only the boundary the issue plan named");
-    expect(reviewer).toContain("`REVIEW:` line beside the `VERDICT:` line");
+    expect(reviewer).toContain("`REVIEW:` line beside `VERDICT:`");
   });
 
   test("the embedded prompts carry the executor-ready plan contract (issue 725 P1)", () => {

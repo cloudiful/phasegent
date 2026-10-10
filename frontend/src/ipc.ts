@@ -176,9 +176,8 @@ export function mapIssueStateToTaskStatus(state: string): TaskStatus {
 
 export function capitalizeProvider(raw: string): string {
   const lower = raw.toLowerCase()
-  if (lower === 'gitlab') return 'GitLab'
-  if (lower === 'forgejo') return 'Forgejo'
   if (lower === 'redmine') return 'Redmine'
+  if (lower === 'local') return 'Local'
   return raw
 }
 
@@ -328,13 +327,8 @@ export interface CredentialSummaryRaw {
 export interface RoleSnapshotRaw {
   role: string
   provider?: string | null
-  forgejo_api_base?: string | null
-  forgejo_repository?: string | null
   redmine_close_status_id?: number | null
-  gitlab_api_base?: string | null
-  forgejo_credential: CredentialSummaryRaw
   redmine_credential: CredentialSummaryRaw
-  gitlab_credential: CredentialSummaryRaw
 }
 
 export interface ConfigSnapshotRaw {
@@ -388,15 +382,15 @@ export function snapshotProviderForRole(snapshot: ConfigSnapshotRaw | null, role
 }
 
 /**
- * Endpoint shown for a role. Redmine resolves the machine-wide address; the
- * Forgejo and GitLab addresses stay role-scoped.
+ * Endpoint shown for a role. Redmine resolves the machine-wide address;
+ * the local provider has no remote endpoint.
  */
 export function snapshotEndpointForRole(snapshot: ConfigSnapshotRaw | null, role: string): string {
   const entry = snapshotRoleEntry(snapshot, role)
   if (!entry) return ''
   if (snapshotProviderForRole(snapshot, role).trim().toLowerCase() === 'redmine')
     return snapshotRedmineApiBase(snapshot)
-  return entry.forgejo_api_base ?? entry.gitlab_api_base ?? ''
+  return ''
 }
 
 export async function setNonSecretSetting(role: string | null, setting: string, value: string): Promise<void> {

@@ -18,7 +18,7 @@ pub struct IssueSummary {
     pub html_url: Option<String>,
     /// Owning-project passthrough for the Redmine single-number scope
     /// guard (issue 394 P2). Redmine sets `Some` from the issue DTO's
-    /// `project` ref; Forgejo/GitLab/Local set `None` so their stdout
+    /// `project` ref; the local provider sets `None` so its stdout
     /// JSON stays byte-identical (omitted via `skip_serializing_if`).
     /// Search items stay `None` (see `from_summary`) so search output
     /// convergence is unchanged; only single-number `get` documents
@@ -57,23 +57,23 @@ impl IssueSearchOptions {
             .filter(|value| !value.is_empty())
     }
 
-    pub fn validate(&self) -> Result<(), ForgejoError> {
+    pub fn validate(&self) -> Result<(), PhasegentError> {
         if !matches!(self.state.as_str(), "open" | "closed" | "all") {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "issue state must be open, closed, or all",
             ));
         }
         if self.page == 0 {
-            return Err(ForgejoError::config("issue search page must be >= 1"));
+            return Err(PhasegentError::config("issue search page must be >= 1"));
         }
         if self.limit == 0 || self.limit > ISSUE_SEARCH_MAX_LIMIT {
-            return Err(ForgejoError::config(format!(
+            return Err(PhasegentError::config(format!(
                 "issue search limit must be between 1 and {ISSUE_SEARCH_MAX_LIMIT}"
             )));
         }
         let has_query = self.effective_query().is_some();
         if !has_query && !self.all {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "issue search requires --query TEXT or --all for a bounded all-issues listing (empty queries are rejected)",
             ));
         }
@@ -214,22 +214,31 @@ pub struct CommentOutput {
     pub body: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct RepoSummary {
-    pub full_name: String,
-    pub owner: String,
-    pub name: String,
-    pub private: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clone_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ssh_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+/// One structured agent record.
+///
+/// Records ride on the existing comment/note primitives but are always
+/// surfaced through the CLI-owned envelope: `body` is the agent's plain
+/// note text with the generated header stripped, and the structured
+/// fields are decoded from that header rather than from any substring of
+/// the prose. The native provider reference is `id`/`html_url`, which is
+/// the journal id on Redmine and the note id on the local store.
+#[derive(Debug, Serialize, Clone)]
+pub struct RecordOutput {
+    pub id: u64,
     pub html_url: Option<String>,
+    pub issue: u64,
+    pub kind: String,
+    pub actor: String,
+    pub key: String,
+    pub phase: Option<String>,
+    pub attempt: Option<u32>,
+    pub review: Option<String>,
+    pub recon: Option<String>,
+    pub body: String,
 }
 
 #[derive(Debug, Clone)]
-pub enum ForgejoError {
+pub enum PhasegentError {
     Config(String),
     Auth(String),
     Request {
@@ -260,7 +269,7 @@ pub enum ForgejoError {
     },
 }
 
-impl ForgejoError {
+impl PhasegentError {
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config(message.into())
     }
@@ -356,7 +365,7 @@ impl ForgejoError {
     }
 }
 
-impl fmt::Display for ForgejoError {
+impl fmt::Display for PhasegentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.json().to_string())
     }

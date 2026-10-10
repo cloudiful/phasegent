@@ -7,14 +7,16 @@ fn config_set_parses_canonical_and_kebab_alias() {
     // Project-id aliases were removed; they are asserted as rejected in
     // the dedicated regression test below.
     let cases = [
-        ("PHASEGENT_API_BASE", "api-base"),
         (
             "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
             "redmine-git-mirror-api-key",
         ),
         ("PHASEGENT_DEFAULT_PROVIDER", "default-provider"),
-        ("PHASEGENT_GITLAB_API_BASE", "gitlab-api-base"),
         ("PHASEGENT_REDMINE_API_BASE", "redmine-api-base"),
+        (
+            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
+            "redmine-close-status-id",
+        ),
     ];
     for (canonical, alias) in cases {
         for name in [canonical, alias] {
@@ -155,7 +157,7 @@ fn config_set_global_without_role_parses() {
 
 #[test]
 fn config_set_role_scoped_requires_role() {
-    let args = ["admin", "config", "set", "api-base", "https://example.com"]
+    let args = ["admin", "config", "set", "redmine-close-status-id", "5"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -201,7 +203,7 @@ fn config_set_rejects_unknown_setting() {
 
 #[test]
 fn config_set_rejects_missing_value_for_non_secret() {
-    let args = ["admin", "config", "set", "api-base"]
+    let args = ["admin", "config", "set", "redmine-close-status-id"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -215,7 +217,7 @@ fn config_set_rejects_empty_value() {
     with_isolated_storage("set-empty", |_db_path, storage| {
         let err = config_write::set_setting_value(
             Some(Role::Executor),
-            "PHASEGENT_API_BASE",
+            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
             "   ",
             storage,
         )

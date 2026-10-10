@@ -339,8 +339,16 @@ impl RedmineIssue {
 }
 
 impl RedmineJournal {
-    /// Render a journal as a comment whose URL anchors the exact note so
-    /// audit references land on `#note-<id>` instead of the issue top.
+    /// Render a journal as a comment whose URL anchors the exact journal so
+    /// record references land on the stable `#change-<journal id>` element.
+    ///
+    /// Redmine renders two anchors per journal: `#change-<journal.id>` on
+    /// the history entry and `#note-<journal.indice>` on the note body,
+    /// where `indice` is the per-page ordinal. Only the journal id is
+    /// globally unique and stable, so it is the anchor a record reference
+    /// must use; the ordinal would move as soon as the history paginates.
+    /// The local provider keeps its own `#note-<id>` convention, which is
+    /// unaffected.
     pub(crate) fn to_comment(
         &self,
         issue_url: &str,
@@ -349,7 +357,7 @@ impl RedmineJournal {
     ) -> CommentOutput {
         CommentOutput {
             id: self.id,
-            html_url: Some(format!("{issue_url}#note-{}", self.id)),
+            html_url: Some(format!("{issue_url}#change-{}", self.id)),
             marker: marker
                 .map(str::to_owned)
                 .or_else(|| marker_from_notes(&self.notes)),

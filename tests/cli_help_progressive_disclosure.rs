@@ -121,6 +121,7 @@ fn root_help_is_short_and_points_at_deep_pages() {
     for command in [
         "issue",
         "comment",
+        "record",
         "admin",
         "config",
         "hooks",
@@ -194,10 +195,9 @@ fn root_help_remains_short_with_provider_filter() {
 /// Issue 443 added `status transition` as the preferred status write (a
 /// `--to`/`--status` target, or a bare call that auto-routes to the policy's
 /// first allowed next status). The parser and the skill both treat it as the
-/// primary entry point, so the help surface must advertise it and must not
-/// claim a provider set the dispatcher does not serve: Redmine and local
-/// implement `next`/`advance`/`transition`, while GitLab only serves
-/// `list`/`set` and Forgejo rejects the whole status surface.
+/// primary entry point, so the help surface must advertise it and must name
+/// the real served provider set: Redmine and local implement
+/// `next`/`advance`/`transition`/`set`.
 #[test]
 fn status_help_advertises_transition_with_the_real_provider_set() {
     let output = run_help(&["--help", "status"]);
@@ -229,8 +229,8 @@ fn status_help_advertises_transition_with_the_real_provider_set() {
     assert!(output.status.success(), "--help status set exited non-zero");
     let stdout = stdout_text(&output);
     assert!(
-        stdout.contains("GitLab"),
-        "--help status set must name GitLab (managed workflow label); got:\n{stdout}",
+        stdout.contains("Redmine and local"),
+        "--help status set must name the real provider set; got:\n{stdout}",
     );
 
     // Every command the listing advertises must also resolve as a deep page,
@@ -270,7 +270,7 @@ fn config_provider_help_carries_the_resolver_chain() {
         stdout.contains("PHASEGENT_PROVIDER")
             && stdout.contains("PHASEGENT_DEFAULT_PROVIDER")
             && stdout.contains("role_config.provider")
-            && stdout.contains("forgejo fallback"),
+            && stdout.contains("redmine fallback"),
         "config provider help must carry the resolver chain; got:\n{stdout}",
     );
     assert!(
@@ -398,6 +398,8 @@ fn documented_next_help_pointers_all_resolve() {
         &["--help", "issue"],
         &["--help", "issue", "upload-attachment"],
         &["--help", "comment"],
+        &["--help", "record"],
+        &["--help", "record", "create"],
         &["--help", "auth"],
         &["--help", "config"],
         &["--help", "config", "provider"],
@@ -441,8 +443,8 @@ fn role_specific_root_help_only_lists_available_commands() {
     assert!(output.status.success(), "--help exited non-zero");
     let stdout = stdout_text(&output);
     for command in [
-        "issue", "comment", "config", "doctor", "hooks", "notify", "plugin", "project", "status",
-        "version", "relation", "worktree",
+        "issue", "comment", "record", "config", "doctor", "hooks", "notify", "plugin", "project",
+        "status", "version", "relation", "worktree",
     ] {
         assert!(
             has_root_row(&stdout, command),
@@ -476,6 +478,8 @@ fn role_denied_help_pages_print_the_stable_denial() {
         ("orchestrator", &["--help", "admin"][..]),
         ("executor", &["--help", "timer", "start"][..]),
         ("admin", &["--help", "worktree"][..]),
+        ("admin", &["--help", "record"][..]),
+        ("admin", &["--help", "record", "create"][..]),
     ] {
         let output = run_help_with_role(args, Some(role));
         assert!(output.status.success(), "{args:?} exited non-zero");
@@ -631,7 +635,7 @@ fn admin_config_write_help_is_denied_for_ai_roles_and_absent_from_read_only_page
             "PHASEGENT_PROVIDER",
             "PHASEGENT_DEFAULT_PROVIDER",
             "role_config.provider",
-            "forgejo fallback",
+            "redmine fallback",
         ] {
             assert!(
                 provider.contains(needle),
@@ -765,8 +769,8 @@ fn help_pages_present_the_redmine_address_as_machine_wide() {
         "admin config set must show the role-free Redmine example; got:\n{set}",
     );
     assert!(
-        set.contains("never writes a Redmine address"),
-        "admin config set must scope the generic api-base alias; got:\n{set}",
+        !set.contains("PHASEGENT_API_BASE"),
+        "admin config set must no longer offer the removed generic PHASEGENT_API_BASE alias; got:\n{set}",
     );
 
     let clear = stdout_text(&run_help_with_role(

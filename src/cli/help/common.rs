@@ -1,9 +1,5 @@
 use crate::policy::Role;
 
-pub(crate) fn print_not_supported_help(operation: &str) {
-    println!("No command available for Redmine: {operation} is Forgejo-only.");
-}
-
 /// One row in a help group: command name, one-line description, and the
 /// registry path used for the role gate. The registry owns the gate, so the
 /// overview and the parser can never disagree about which role sees a row.

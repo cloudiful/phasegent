@@ -1,4 +1,4 @@
-use crate::providers::api::{ForgejoError, IssueSummary};
+use crate::providers::api::{IssueSummary, PhasegentError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -275,9 +275,9 @@ pub fn parse_forbidden_transition(message: &str) -> Option<(String, String)> {
 /// and `policy_source`. Returns `None` when the error is not a canonical
 /// policy rejection so every other failure keeps its legacy shape. The
 /// fields are additive, so existing `kind`-based assertions keep passing.
-pub fn structured_forbidden_json(error: &ForgejoError) -> Option<serde_json::Value> {
+pub fn structured_forbidden_json(error: &PhasegentError) -> Option<serde_json::Value> {
     let (operation, message) = match error {
-        ForgejoError::Request { operation, message } => (operation, message),
+        PhasegentError::Request { operation, message } => (operation, message),
         _ => return None,
     };
     if !message.contains("transition rejected before any write") {
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn structured_forbidden_json_round_trips_a_preflight_rejection() {
         let message = "transition rejected before any write: current status 'Resolved' -> target status 'In Review' is not allowed by policy phasegent/canonical-phase-workflow@v1; allowed_next=[Closed, In Progress]; Policy guidance only recovery: PHASEGENT_ROLE=orchestrator phasegent --provider redmine status next 7";
-        let error = ForgejoError::request("issue status advance", message.to_owned());
+        let error = PhasegentError::request("issue status advance", message.to_owned());
         let json = structured_forbidden_json(&error).expect("preflight rejection must map");
         assert_eq!(json["kind"], "request");
         assert_eq!(json["operation"], "issue status advance");
@@ -392,12 +392,12 @@ mod tests {
 
     #[test]
     fn structured_forbidden_json_rejects_server_side_and_non_request_errors() {
-        let server = ForgejoError::request(
+        let server = PhasegentError::request(
             "issue status advance",
             "boom; current status 'In Progress' -> target status 'In Review'; server rejected a policy-allowed or custom transition, so the Redmine workflow is authoritative; recovery: PHASEGENT_ROLE=orchestrator phasegent --provider redmine status next 7".to_owned(),
         );
         assert!(structured_forbidden_json(&server).is_none());
-        let config = ForgejoError::config("issue number must be greater than zero");
+        let config = PhasegentError::config("issue number must be greater than zero");
         assert!(structured_forbidden_json(&config).is_none());
     }
 

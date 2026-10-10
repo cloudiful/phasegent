@@ -13,10 +13,10 @@ Role resolution:
   Managed sessions supply the role; other hosts set PHASEGENT_ROLE.
 
 Options:
-  --provider <NAME>      forgejo, redmine, gitlab, or local (default: forgejo)
-  --api-base <URL>       Override the provider API base
-  --repository <O/R>     Override the Forgejo owner/repository
-  --project-id <ID>      Override the Redmine or GitLab project id
+  --provider <NAME>      redmine or local (default: redmine)
+  --api-base <URL>       Override the Redmine API base
+  --repository <O/R>     Override the Git host repository for bootstrap/discovery
+  --project-id <ID>      Override the Redmine project id
   --close-status-id <ID> Override the Redmine closed status
   -h, --help             Print help
   -V, --version          Print version
@@ -24,13 +24,13 @@ Options:
 Commands:
   issue                  Issue operations
   comment                Comment operations
+  record                 Structured agent records: CLI-owned metadata header with a plain note body
   admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)
   config                 Local configuration (read-only show/get; writes live under admin)
   doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)
   hooks                  Managed Git hook installation
   notify                 Bounded agent notifications
   plugin                 Managed OpenCode plugin installation
-  repo                   Repository operations
   worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)
 
 Use 'phasegent --help <command>' for the next level.

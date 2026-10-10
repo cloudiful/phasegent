@@ -153,8 +153,8 @@ fn relation_help_prints_usage_and_exits_cleanly() {
 #[test]
 fn relation_commands_enforce_role_and_provider_boundaries() {
     // relation list is allowed for orchestrator/executor/reviewer (the
-    // permission check passes and parsing succeeds); admin is denied and
-    // Forgejo is rejected before any provider is built.
+    // permission check passes and parsing succeeds); admin is denied and a
+    // retired provider name is rejected at argument parsing.
     for role in ["orchestrator", "executor", "reviewer"] {
         let parsed = command::parse_with_role_env(
             &strings(["--provider", "redmine", "relation", "list", "10"]),
@@ -179,7 +179,7 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             strings(["--provider", "forgejo", "relation", "list", "10",]),
             Some("orchestrator")
         ),
-        1
+        2
     );
 
     // relation create/delete are orchestrator-only; non-orchestrator roles
@@ -212,8 +212,8 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             "expected permission error for {role} relation delete"
         );
     }
-    // Forgejo rejects relation create/delete with a structured not-supported
-    // error before any network access.
+    // A retired provider name rejects relation create/delete at argument
+    // parsing before any network access.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -229,14 +229,14 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             ]),
             Some("orchestrator")
         ),
-        1
+        2
     );
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "relation", "delete", "5",]),
             Some("orchestrator")
         ),
-        1
+        2
     );
 }
 

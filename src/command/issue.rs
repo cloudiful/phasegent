@@ -160,9 +160,9 @@ fn parse_session_option(args: &[String], operation: &str) -> Result<Option<Box<s
     }
 }
 
-/// Parse the GitLab assignee selector for `issue create`. `--assignee`
-/// (numeric id or username) and `--no-assign` are mutually exclusive; the
-/// raw value is resolved against the provider at execution time.
+/// Parse the assignee selector for `issue create`. `--assignee`
+/// (numeric id or username) and `--no-assign` are mutually exclusive; an
+/// explicit value is rejected by every provider at execution time.
 fn parse_assignee(args: &[String]) -> Result<AssigneeOption, String> {
     let explicit = optional_option(args, "--assignee");
     let no_assign = has_flag(args, "--no-assign");

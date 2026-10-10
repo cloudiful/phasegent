@@ -88,8 +88,8 @@ fn secret_settings_are_rejected_from_plain_path() {
     assert!(secret.unwrap_err().contains("credential path"));
     assert!(canonical_non_secret_setting("bogus-setting").is_err());
     assert_eq!(
-        canonical_non_secret_setting("api-base").unwrap(),
-        "PHASEGENT_API_BASE"
+        canonical_non_secret_setting("redmine-api-base").unwrap(),
+        "PHASEGENT_REDMINE_API_BASE"
     );
 }
 
@@ -98,8 +98,8 @@ fn credential_and_setting_values_are_bounded() {
     assert!(validate_credential_value("  ").is_err());
     assert!(validate_credential_value("valid-token-123").is_ok());
     assert!(validate_credential_value("bad\x01token").is_err());
-    assert!(validate_setting_value("PHASEGENT_API_BASE", "  ").is_err());
-    assert!(validate_setting_value("PHASEGENT_API_BASE", "https://x.example").is_ok());
+    assert!(validate_setting_value("PHASEGENT_REDMINE_API_BASE", "  ").is_err());
+    assert!(validate_setting_value("PHASEGENT_REDMINE_API_BASE", "https://x.example").is_ok());
     // Secrets never echo in errors.
     let err = validate_credential_value("  ").unwrap_err();
     assert!(!err.contains("hunter2"));

@@ -1,34 +1,41 @@
 use crate::auth;
 use crate::infra::storage::Storage;
 use crate::policy::Role;
-use crate::providers::api::{ForgejoError, RepoSummary};
+use crate::providers::api::PhasegentError;
 use crate::providers::redmine::http::RedmineHttp;
 use crate::remote;
 use std::str::FromStr;
-use url::Url;
 
+/// The two tracking providers phasegent supports.
+///
+/// `Redmine` is the configured default; `Local` is the credential-free
+/// SQLite store. Any other name is rejected before a provider is
+/// resolved, so a retired value can never fall back silently.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ProviderKind {
     #[default]
-    Forgejo,
     Redmine,
-    /// GitLab provider. Recognised by the resolver, dispatcher, config
-    /// snapshot, and env-import paths.
-    Gitlab,
     /// Local provider. Recognised by the resolver, `--provider` flag
-    /// parsing, and the config snapshot via `as_str`/`from_str` only;
-    /// runtime dispatch still treats `local` as unsupported there.
+    /// parsing, and the config snapshot via `as_str`/`from_str`.
     Local,
 }
 
 impl ProviderKind {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Forgejo => "forgejo",
             Self::Redmine => "redmine",
-            Self::Gitlab => "gitlab",
             Self::Local => "local",
         }
+    }
+
+    /// Whether `value` names a provider this build still recognises,
+    /// including the retired names, so callers can produce a value-aware
+    /// diagnostic instead of a generic parse error. The literals come
+    /// from the storage layer so the rejection and the persisted legacy
+    /// rows can never drift apart.
+    fn is_retired(value: &str) -> bool {
+        use crate::infra::storage::{PROVIDER_FORGEJO, PROVIDER_GITLAB};
+        value == PROVIDER_FORGEJO || value == PROVIDER_GITLAB
     }
 }
 
@@ -43,12 +50,14 @@ impl FromStr for ProviderKind {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "forgejo" => Ok(Self::Forgejo),
             "redmine" => Ok(Self::Redmine),
-            "gitlab" => Ok(Self::Gitlab),
             "local" => Ok(Self::Local),
+            retired if Self::is_retired(retired) => Err(format!(
+                "tracking provider '{retired}' is no longer supported; \
+                 phasegent tracks only 'redmine' and 'local'"
+            )),
             _ => Err(format!(
-                "invalid provider '{value}'; expected forgejo, redmine, gitlab, or local"
+                "invalid provider '{value}'; expected redmine or local"
             )),
         }
     }
@@ -58,75 +67,67 @@ impl FromStr for ProviderKind {
 ///
 /// Precedence, highest first:
 ///   1. Explicit `--provider` argument supplied by the caller.
-///   2. `PHASEGENT_PROVIDER` environment variable (one-process
-///      override).
-///   3. `PHASEGENT_DEFAULT_PROVIDER` environment variable
-///      (one-process override for the persistent default).
+///   2. `PHASEGENT_PROVIDER` environment variable (one-process override).
+///   3. `PHASEGENT_DEFAULT_PROVIDER` environment variable (one-process
+///      override for the persistent default).
 ///   4. TOML `default_provider` in `phasegent.toml` (human-editable
 ///      overlay; `PHASEGENT_CONFIG_PATH` isolates the path in tests).
-///   5. Persisted `PHASEGENT_DEFAULT_PROVIDER` in the
-///      `global_setting` table (machine-wide default that survives
-///      across processes; surfaces during a single `resolve_kind`
-///      call without touching the role-scoped config).
+///   5. Persisted `PHASEGENT_DEFAULT_PROVIDER` in the `global_setting`
+///      table (machine-wide default that survives across processes).
 ///   6. Role-scoped `role_config.provider` as returned by
-///      `auth::load_config` (effective TOML-over-SQLite per role, so a
-///      `[roles.<role>] provider` TOML value shadows the SQLite row).
-///   7. Forgejo fallback.
+///      `auth::load_config` (effective TOML-over-SQLite per role).
+///   7. Redmine fallback.
 ///
-/// Steps 1 and 2 already existed; steps 3 through 7 add the TOML
-/// overlay. The resolver is read-only: it never persists anything and
-/// never writes TOML, so a stray `--provider` omission cannot silently
-/// overwrite either store. `config set`/`clear` and `config provider
-/// set`/`clear` continue to touch SQLite only; a TOML value shadows
-/// SQLite until the file (or env) is removed.
+/// A retired explicit or configured name errors here, before any network
+/// access, instead of falling back. The resolver is read-only: it never
+/// persists anything and never writes TOML.
 pub fn resolve_kind(
     role: Role,
     explicit: Option<ProviderKind>,
-) -> Result<ProviderKind, ForgejoError> {
+) -> Result<ProviderKind, PhasegentError> {
     if let Some(provider) = explicit {
         return Ok(provider);
     }
     if let Ok(provider) = std::env::var("PHASEGENT_PROVIDER") {
         return provider
             .parse()
-            .map_err(|error: String| ForgejoError::config(error));
+            .map_err(|error: String| PhasegentError::config(error));
     }
     if let Ok(provider) = std::env::var("PHASEGENT_DEFAULT_PROVIDER") {
         let trimmed = provider.trim();
         if !trimmed.is_empty() {
             return trimmed
                 .parse()
-                .map_err(|error: String| ForgejoError::config(error));
+                .map_err(|error: String| PhasegentError::config(error));
         }
     }
     // TOML overlay sits between env and SQLite. A malformed/secret TOML
     // fails here instead of falling back so misconfiguration is visible.
     if let Some(overlay) =
-        crate::infra::config_overlay::load_overlay().map_err(ForgejoError::config)?
+        crate::infra::config_overlay::load_overlay().map_err(PhasegentError::config)?
         && let Some(value) = overlay.default_provider_value()
     {
         return value
             .parse()
-            .map_err(|error: String| ForgejoError::config(error));
+            .map_err(|error: String| PhasegentError::config(error));
     }
     // Persisted global default lives in `global_setting`. Read it
-    // directly so the resolver never writes — the schema-level
-    // helpers take care of the secret-bearing fields separately.
+    // directly so the resolver never writes.
     if let Ok(storage) = Storage::open()
         && let Ok(Some(value)) = storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
     {
         return value
             .parse()
-            .map_err(|error: String| ForgejoError::config(error));
+            .map_err(|error: String| PhasegentError::config(error));
     }
-    let storage = Storage::open().map_err(ForgejoError::config)?;
-    let stored = auth::load_config(role, &storage).map_err(ForgejoError::config)?;
+    let storage = Storage::open().map_err(PhasegentError::config)?;
+    let stored = auth::load_config(role, &storage).map_err(PhasegentError::config)?;
     stored
         .and_then(|config| config.provider)
-        .map_or(Ok(ProviderKind::Forgejo), |provider| {
+        .map_or(Ok(ProviderKind::Redmine), |provider| {
             provider
                 .parse()
-                .map_err(|error: String| ForgejoError::config(error))
+                .map_err(|error: String| PhasegentError::config(error))
         })
 }
 
@@ -170,9 +171,9 @@ impl RedmineConfig {
         api_base: Option<&str>,
         project_id: Option<&str>,
         close_status_id: Option<&str>,
-    ) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let stored = auth::load_redmine_config(role, &storage).map_err(ForgejoError::config)?;
+    ) -> Result<Self, PhasegentError> {
+        let storage = Storage::open().map_err(PhasegentError::config)?;
+        let stored = auth::load_redmine_config(role, &storage).map_err(PhasegentError::config)?;
         let explicit_base = api_base.map(str::to_owned);
         let explicit_project = project_id.map(str::to_owned);
         let explicit_close = close_status_id
@@ -183,9 +184,9 @@ impl RedmineConfig {
         let base = match explicit_base {
             Some(value) => value,
             None => auth::redmine_api_base(&storage)
-                .map_err(ForgejoError::config)?
+                .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
-                    ForgejoError::config(
+                    PhasegentError::config(
                         "Redmine API base is not configured; set the global redmine_api_base \
                          (config set redmine-api-base) or use --api-base",
                     )
@@ -202,16 +203,16 @@ impl RedmineConfig {
             .map(|value| {
                 value
                     .parse::<u64>()
-                    .map_err(|_| ForgejoError::config("Redmine close status id must be numeric"))
+                    .map_err(|_| PhasegentError::config("Redmine close status id must be numeric"))
             })
             .transpose()?;
         if close_status_id == Some(0) {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine close status id must be greater than zero",
             ));
         }
 
-        let api_base = remote::normalize_redmine_api_base(&base).map_err(ForgejoError::config)?;
+        let api_base = remote::normalize_redmine_api_base(&base).map_err(PhasegentError::config)?;
         Ok(Self {
             api_base,
             project_id,
@@ -219,22 +220,22 @@ impl RedmineConfig {
         })
     }
 
-    pub fn require_project_id(&self) -> Result<&str, ForgejoError> {
+    pub fn require_project_id(&self) -> Result<&str, PhasegentError> {
         self.project_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| {
-                ForgejoError::config("Redmine project id is not configured; use --project-id")
+                PhasegentError::config("Redmine project id is not configured; use --project-id")
             })
     }
 
-    pub fn require_close_status_id(&self) -> Result<u64, ForgejoError> {
+    pub fn require_close_status_id(&self) -> Result<u64, PhasegentError> {
         match self.close_status_id {
             Some(value) if value > 0 => Ok(value),
-            Some(_) => Err(ForgejoError::config(
+            Some(_) => Err(PhasegentError::config(
                 "Redmine close status id must be greater than zero",
             )),
-            None => Err(ForgejoError::config(
+            None => Err(PhasegentError::config(
                 "Redmine close status id is not configured; use --close-status-id or auth setup",
             )),
         }
@@ -248,235 +249,60 @@ pub struct RedmineProvider {
 }
 
 impl RedmineProvider {
-    pub fn for_role(role: Role, config: RedmineConfig) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let api_key = auth::redmine_api_key(role, &storage).map_err(ForgejoError::auth)?;
+    pub fn for_role(role: Role, config: RedmineConfig) -> Result<Self, PhasegentError> {
+        let storage = Storage::open().map_err(PhasegentError::config)?;
+        let api_key = auth::redmine_api_key(role, &storage).map_err(PhasegentError::auth)?;
         Self::new(config, api_key)
     }
 
-    pub fn new(config: RedmineConfig, api_key: String) -> Result<Self, ForgejoError> {
+    pub fn new(config: RedmineConfig, api_key: String) -> Result<Self, PhasegentError> {
         let api_key = api_key.trim().to_owned();
         if api_key.is_empty() {
-            return Err(ForgejoError::auth("Redmine API key is empty"));
+            return Err(PhasegentError::auth("Redmine API key is empty"));
         }
         let http = RedmineHttp::new(config.api_base.clone(), api_key)?;
         Ok(Self { config, http })
     }
-
-    fn unsupported<T>(&self, operation: &str) -> Result<T, ForgejoError> {
-        Err(ForgejoError::not_supported("redmine", operation))
-    }
-
-    pub fn create_repo(
-        &self,
-        _target: &str,
-        _private: bool,
-        _description: &str,
-        _auto_init: bool,
-    ) -> Result<RepoSummary, ForgejoError> {
-        self.unsupported("repo create")
-    }
 }
-
-/// Resolved GitLab configuration. The `project_id` is a numeric GitLab
-/// project identifier; the `api_base` is the `/api/v4` endpoint URL
-/// already normalised by [`normalize_gitlab_api_base`]. The struct is
-/// intentionally minimal in this foundation phase: subsequent phases
-/// will extend it with workflow, time-tracking, and link fields without
-/// disturbing the existing resolver path.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitlabConfig {
-    pub api_base: String,
-    pub project_id: u64,
-}
-
-#[allow(dead_code)]
-impl GitlabConfig {
-    pub fn new(api_base: impl Into<String>, project_id: u64) -> Self {
-        Self {
-            api_base: api_base.into(),
-            project_id,
-        }
-    }
-
-    pub const fn provider(&self) -> ProviderKind {
-        ProviderKind::Gitlab
-    }
-
-    /// Resolve the GitLab configuration for `role`.
-    ///
-    /// Resolution precedence:
-    ///   1. Explicit `--api-base` / `--project-id` flags supplied by the
-    ///      caller.
-    ///   2. `PHASEGENT_GITLAB_API_BASE` / `PHASEGENT_API_BASE` environment
-    ///      variables for the base (project-id env and persisted values
-    ///      were removed).
-    ///   3. TOML `[roles.<role>] gitlab_api_base` via
-    ///      `auth::load_gitlab_config` (TOML-over-SQLite) falling back to
-    ///      the persisted `api_base` in `role_gitlab_config`.
-    ///
-    /// The project id is required as an explicit `--project-id` because
-    /// GitLab workflow commands need a single, unambiguous target; an
-    /// unset project id returns a structured error rather than silently
-    /// selecting the wrong project.
-    pub fn resolve(
-        role: Role,
-        api_base: Option<&str>,
-        project_id: Option<&str>,
-    ) -> Result<Self, ForgejoError> {
-        let storage = Storage::open().map_err(ForgejoError::config)?;
-        let stored = auth::load_gitlab_config(role, &storage).map_err(ForgejoError::config)?;
-        let explicit_base = api_base
-            .map(str::to_owned)
-            .or_else(|| std::env::var("PHASEGENT_GITLAB_API_BASE").ok())
-            .or_else(|| std::env::var("PHASEGENT_API_BASE").ok());
-        let explicit_project = project_id.map(str::to_owned);
-
-        let base = explicit_base
-            .or_else(|| stored.as_ref().and_then(|config| config.api_base.clone()))
-            .ok_or_else(|| {
-                ForgejoError::config(
-                    "GitLab API base is not configured; use --api-base or auth setup",
-                )
-            })?;
-        // Project id source: only explicit `--project-id`. Env and
-        // persisted values were removed and are intentionally ignored to
-        // ensure legacy rows are inert.
-        let parsed_project: u64 = match explicit_project
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                value
-                    .parse::<u64>()
-                    .map_err(|_| ForgejoError::config("GitLab project id must be numeric"))
-            })
-            .transpose()?
-        {
-            Some(value) => value,
-            None => {
-                return Err(ForgejoError::config(
-                    "GitLab project id is not configured; use --project-id",
-                ));
-            }
-        };
-        if parsed_project == 0 {
-            return Err(ForgejoError::config(
-                "GitLab project id must be greater than zero",
-            ));
-        }
-
-        let api_base = normalize_gitlab_api_base(&base).map_err(ForgejoError::config)?;
-        Ok(Self {
-            api_base,
-            project_id: parsed_project,
-        })
-    }
-}
-
-/// Normalise the GitLab API base URL to its `/api/v4` endpoint while
-/// preserving any deployment prefix the operator may have configured
-/// (for example `https://gitlab.example/gitlab` becomes
-/// `https://gitlab.example/gitlab/api/v4`).
-///
-/// Lives next to [`GitlabConfig`] because `remote.rs` is intentionally
-/// provider-agnostic and the GitLab API path suffix is a GitLab-only
-/// concern. The function accepts both `/api/v4` already present (no-op)
-/// and a bare host (single append), so callers can rely on a stable
-/// `…/api/v4` final path.
-pub fn normalize_gitlab_api_base(value: &str) -> Result<String, String> {
-    let mut url =
-        Url::parse(value).map_err(|error| format!("invalid GitLab API base URL: {error}"))?;
-    if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
-        return Err("GitLab API base URL must use http or https".to_owned());
-    }
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err("GitLab API base URL cannot contain a query or fragment".to_owned());
-    }
-    let mut path = url.path().trim_end_matches('/').to_owned();
-    if path.is_empty() {
-        path = String::from("/api/v4");
-    } else if !path.ends_with("/api/v4") {
-        path.push_str("/api/v4");
-    }
-    url.set_path(&path);
-    Ok(url.to_string().trim_end_matches('/').to_owned())
-}
-
-pub use crate::providers::gitlab::GitlabProvider;
 
 #[cfg(test)]
 mod tests {
-    use super::{GitlabConfig, ProviderKind, normalize_gitlab_api_base};
+    use super::ProviderKind;
     use std::str::FromStr;
 
     #[test]
-    fn provider_kind_round_trip_includes_gitlab() {
-        assert_eq!(ProviderKind::Gitlab.as_str(), "gitlab");
-        assert_eq!(
-            "gitlab".parse::<ProviderKind>().unwrap(),
-            ProviderKind::Gitlab
-        );
-        let error = "wrong".parse::<ProviderKind>().unwrap_err();
-        assert!(error.contains("forgejo, redmine, gitlab, or local"));
-    }
-
-    #[test]
-    fn local_kind_round_trip() {
-        // `local` parses, renders, and displays without touching the
-        // seven-level `resolve_kind` chain or any dispatcher arm.
+    fn provider_kind_round_trips_only_the_two_supported_names() {
+        assert_eq!(ProviderKind::Redmine.as_str(), "redmine");
         assert_eq!(ProviderKind::Local.as_str(), "local");
+        assert_eq!(ProviderKind::default(), ProviderKind::Redmine);
+        assert_eq!(
+            "redmine".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Redmine
+        );
         assert_eq!(
             "local".parse::<ProviderKind>().unwrap(),
             ProviderKind::Local
         );
-        assert_eq!(format!("{}", ProviderKind::Local), "local");
-        // Existing providers keep their mappings so the
-        // forgejo/redmine/gitlab CLI paths are unaffected.
-        assert_eq!(ProviderKind::Forgejo.as_str(), "forgejo");
-        assert_eq!(ProviderKind::Redmine.as_str(), "redmine");
-        assert_eq!(ProviderKind::Gitlab.as_str(), "gitlab");
         assert_eq!(
             ProviderKind::from_str(ProviderKind::Local.as_str()).unwrap(),
             ProviderKind::Local
         );
+        assert_eq!(format!("{}", ProviderKind::Local), "local");
     }
 
     #[test]
-    fn normalize_appends_api_v4_once_for_bare_host() {
-        let value = normalize_gitlab_api_base("https://gitlab.example").unwrap();
-        assert_eq!(value, "https://gitlab.example/api/v4");
+    fn a_retired_provider_name_is_rejected_with_an_actionable_error() {
+        for retired in ["forgejo", "gitlab"] {
+            let error = retired.parse::<ProviderKind>().unwrap_err();
+            assert!(error.contains(retired), "{error}");
+            assert!(error.contains("redmine"), "{error}");
+            assert!(error.contains("local"), "{error}");
+        }
     }
 
     #[test]
-    fn normalize_preserves_deployment_prefix() {
-        let value = normalize_gitlab_api_base("https://gitlab.example/gitlab").unwrap();
-        assert_eq!(value, "https://gitlab.example/gitlab/api/v4");
-    }
-
-    #[test]
-    fn normalize_is_idempotent_when_api_v4_already_present() {
-        let value = normalize_gitlab_api_base("https://gitlab.example/api/v4").unwrap();
-        assert_eq!(value, "https://gitlab.example/api/v4");
-        let prefixed = normalize_gitlab_api_base("https://gitlab.example/gitlab/api/v4").unwrap();
-        assert_eq!(prefixed, "https://gitlab.example/gitlab/api/v4");
-    }
-
-    #[test]
-    fn normalize_rejects_invalid_schemes_and_queries() {
-        assert!(normalize_gitlab_api_base("ftp://gitlab.example").is_err());
-        assert!(normalize_gitlab_api_base("https://gitlab.example?token=hush").is_err());
-        assert!(normalize_gitlab_api_base("https://gitlab.example#fragment").is_err());
-        assert!(normalize_gitlab_api_base("not a url").is_err());
-    }
-
-    #[test]
-    fn provider_rejects_empty_token() {
-        let provider = crate::providers::gitlab::GitlabProvider::new(
-            GitlabConfig::new("https://gitlab.example/api/v4", 7),
-            "  ".to_owned(),
-        );
-        let error = provider.unwrap_err();
-        assert!(error.to_string().contains("empty"));
+    fn an_unknown_provider_name_names_the_supported_set() {
+        let error = "wrong".parse::<ProviderKind>().unwrap_err();
+        assert_eq!(error, "invalid provider 'wrong'; expected redmine or local");
     }
 }

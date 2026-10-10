@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{RedmineIssueStatus, RedmineTracker, RedmineVersion};
 
@@ -9,10 +9,10 @@ impl RedmineProvider {
     pub fn select_status_by_value<'a>(
         statuses: &'a [RedmineIssueStatus],
         value: &str,
-    ) -> Result<&'a RedmineIssueStatus, ForgejoError> {
+    ) -> Result<&'a RedmineIssueStatus, PhasegentError> {
         if let Ok(id) = value.parse::<u64>() {
             if id == 0 {
-                return Err(ForgejoError::config(
+                return Err(PhasegentError::config(
                     "Redmine status id must be greater than zero",
                 ));
             }
@@ -20,7 +20,7 @@ impl RedmineProvider {
                 .iter()
                 .find(|status| status.id == id)
                 .ok_or_else(|| {
-                    ForgejoError::config(format!("Redmine status id {id} was not found"))
+                    PhasegentError::config(format!("Redmine status id {id} was not found"))
                 });
         }
         select_by_name(statuses.iter(), value, "status")
@@ -32,10 +32,10 @@ impl RedmineProvider {
     pub fn select_tracker<'a>(
         trackers: &'a [RedmineTracker],
         value: &str,
-    ) -> Result<&'a RedmineTracker, ForgejoError> {
+    ) -> Result<&'a RedmineTracker, PhasegentError> {
         if let Ok(id) = value.parse::<u64>() {
             if id == 0 {
-                return Err(ForgejoError::config(
+                return Err(PhasegentError::config(
                     "Redmine tracker id must be greater than zero",
                 ));
             }
@@ -43,7 +43,7 @@ impl RedmineProvider {
                 .iter()
                 .find(|tracker| tracker.id == id)
                 .ok_or_else(|| {
-                    ForgejoError::config(format!("Redmine tracker id {id} was not found"))
+                    PhasegentError::config(format!("Redmine tracker id {id} was not found"))
                 });
         }
         select_by_name(trackers.iter(), value, "tracker")
@@ -55,10 +55,10 @@ impl RedmineProvider {
     pub fn select_version<'a>(
         versions: &'a [RedmineVersion],
         value: &str,
-    ) -> Result<&'a RedmineVersion, ForgejoError> {
+    ) -> Result<&'a RedmineVersion, PhasegentError> {
         if let Ok(id) = value.parse::<u64>() {
             if id == 0 {
-                return Err(ForgejoError::config(
+                return Err(PhasegentError::config(
                     "Redmine version id must be greater than zero",
                 ));
             }
@@ -66,14 +66,14 @@ impl RedmineProvider {
                 .iter()
                 .find(|version| version.id == id)
                 .ok_or_else(|| {
-                    ForgejoError::config(format!("Redmine version id {id} was not found"))
+                    PhasegentError::config(format!("Redmine version id {id} was not found"))
                 });
         }
         select_by_name(versions.iter(), value, "version")
     }
 }
 
-fn select_by_name<'a, I, T>(items: I, value: &str, kind: &str) -> Result<&'a T, ForgejoError>
+fn select_by_name<'a, I, T>(items: I, value: &str, kind: &str) -> Result<&'a T, PhasegentError>
 where
     I: IntoIterator<Item = &'a T>,
     T: NamedRecord,
@@ -84,10 +84,10 @@ where
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [item] => Ok(item),
-        [] => Err(ForgejoError::config(format!(
+        [] => Err(PhasegentError::config(format!(
             "Redmine {kind} name '{value}' was not found"
         ))),
-        _ => Err(ForgejoError::config(format!(
+        _ => Err(PhasegentError::config(format!(
             "Redmine {kind} name '{value}' is ambiguous"
         ))),
     }

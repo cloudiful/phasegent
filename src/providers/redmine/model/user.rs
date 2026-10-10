@@ -200,6 +200,11 @@ pub fn provisioning_metadata(role: crate::policy::Role) -> Option<RoleProvisioni
             lastname: "Reviewer",
             mail: "phasegent-reviewer@phasegent.local",
         }),
+        // Reconnaissance has no provisioned service user yet: its record
+        // writes need an operator-provisioned credential, and a missing
+        // one is an operator question rather than a fallback to another
+        // role's credential.
+        crate::policy::Role::Explore => None,
         crate::policy::Role::Admin => None,
     }
 }

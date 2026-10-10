@@ -1,44 +1,29 @@
 #[allow(unused_imports)]
-use crate::command::RepoCommand;
-#[allow(unused_imports)]
 use crate::policy::Capability;
 #[allow(unused_imports)]
-use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
-use crate::providers::forgejo::{ForgejoConfig, ForgejoProvider};
+use crate::providers::api::{CommentOutput, IssueSummary, PhasegentError};
 use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
-    GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
-    RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
+    IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus, RedmineMetadataProvider,
+    RedmineProject, RedmineProvider, RedmineVersion,
 };
 
+/// The resolved tracking provider for one invocation. Only the two
+/// supported providers exist; a retired name never reaches this type
+/// because [`crate::providers::config::resolve_kind`] rejects it first.
 pub enum ProviderDispatcher {
-    Forgejo(ForgejoProvider),
     Redmine(RedmineProvider),
-    Gitlab(GitlabProvider),
     /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),
 }
-impl ProviderDispatcher {
-    pub fn for_role(
-        role: crate::policy::Role,
-        config: ForgejoConfig,
-    ) -> Result<Self, ForgejoError> {
-        Ok(Self::Forgejo(ForgejoProvider::for_role(role, config)?))
-    }
 
+impl ProviderDispatcher {
     pub fn redmine(
         role: crate::policy::Role,
         config: crate::providers::config::RedmineConfig,
-    ) -> Result<Self, ForgejoError> {
+    ) -> Result<Self, PhasegentError> {
         Ok(Self::Redmine(RedmineProvider::for_role(role, config)?))
-    }
-
-    pub fn gitlab(
-        role: crate::policy::Role,
-        config: crate::providers::config::GitlabConfig,
-    ) -> Result<Self, ForgejoError> {
-        Ok(Self::Gitlab(GitlabProvider::for_role(role, config)?))
     }
 
     /// Local backend. SQLite opens synchronously with no credentials;
@@ -47,32 +32,9 @@ impl ProviderDispatcher {
         Self::Local(provider)
     }
 
-    /// Drive a `RepoCommand::Create` through whichever provider arm
-    /// resolved. Redmine still surfaces a structured not-supported
-    /// error. The provider-side enforcement of `--private` and
-    /// namespace resolution stays inside each provider so this
-    /// dispatcher stays thin.
-    pub fn create_repo_for_command(
-        &self,
-        command: &RepoCommand,
-        _role: crate::policy::Role,
-        _api_base: Option<&str>,
-        _repository: Option<&str>,
-    ) -> Result<RepoSummary, ForgejoError> {
-        let RepoCommand::Create {
-            target,
-            private,
-            description,
-            auto_init,
-        } = command;
-        RepoProvider::create_repo(self, target, *private, description, *auto_init)
-    }
-
     pub const fn kind(&self) -> ProviderKind {
         match self {
-            Self::Forgejo(_) => ProviderKind::Forgejo,
             Self::Redmine(_) => ProviderKind::Redmine,
-            Self::Gitlab(_) => ProviderKind::Gitlab,
             Self::Local(_) => ProviderKind::Local,
         }
     }

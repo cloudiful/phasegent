@@ -72,7 +72,7 @@ fn toml_secret_and_runtime_fields_are_rejected_without_echo() {
         ),
         (
             "api-base-creds",
-            "[roles.executor]\nforgejo_api_base = \"https://user:s3cret@host.example\"\n",
+            "[roles.executor]\nredmine_api_base = \"https://user:s3cret@host.example\"\n",
             "s3cret",
         ),
     ] {
@@ -120,9 +120,9 @@ fn toml_overlay_is_read_only_for_set_and_clear() {
     let (db_path, toml_path, dir) = toml_temp_paths("toml-readonly");
     let storage = Storage::open_at(&db_path).unwrap();
     storage
-        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_FORGEJO)
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", PROVIDER_REDMINE)
         .unwrap();
-    write_toml_file(&toml_path, "default_provider = \"gitlab\"\n");
+    write_toml_file(&toml_path, "default_provider = \"local\"\n");
     let _cfg = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         toml_path.to_string_lossy().as_ref(),
@@ -134,7 +134,7 @@ fn toml_overlay_is_read_only_for_set_and_clear() {
         crate::providers::config::resolve_kind(Role::Executor, None)
             .unwrap()
             .as_str(),
-        "gitlab"
+        "local"
     );
     // `config set` still writes SQLite only (read-only overlay contract).
     crate::config_write::set_setting_value(None, "PHASEGENT_DEFAULT_PROVIDER", "redmine", &storage)
@@ -150,7 +150,7 @@ fn toml_overlay_is_read_only_for_set_and_clear() {
         crate::providers::config::resolve_kind(Role::Executor, None)
             .unwrap()
             .as_str(),
-        "gitlab",
+        "local",
         "TOML must still shadow SQLite after a SQLite write"
     );
     // `config clear` removes the SQLite row but TOML still shadows.
@@ -165,7 +165,7 @@ fn toml_overlay_is_read_only_for_set_and_clear() {
         crate::providers::config::resolve_kind(Role::Executor, None)
             .unwrap()
             .as_str(),
-        "gitlab",
+        "local",
         "clearing SQLite must not clear TOML"
     );
     // SQLite snapshot stays persisted-view and redacted/backward-compatible.
@@ -208,7 +208,7 @@ fn toml_index_backend_validated_but_ignored_for_selection() {
 }
 
 #[test]
-fn toml_redmine_and_gitlab_resolvers_prefer_toml_over_sqlite() {
+fn toml_redmine_resolver_prefers_toml_over_sqlite() {
     let _lock = lock_workflow_tests();
     let (db_path, toml_path, dir) = toml_temp_paths("toml-resolvers");
     let storage = Storage::open_at(&db_path).unwrap();
@@ -224,18 +224,9 @@ fn toml_redmine_and_gitlab_resolvers_prefer_toml_over_sqlite() {
             },
         )
         .unwrap();
-    storage
-        .save_gitlab_config(
-            Role::Executor,
-            &crate::auth::GitlabStoredConfig {
-                api_base: Some("https://sqlite-gitlab.example".to_owned()),
-                project_id: None,
-            },
-        )
-        .unwrap();
     write_toml_file(
         &toml_path,
-        "[roles.executor]\nredmine_api_base = \"https://toml-redmine.example\"\nredmine_close_status_id = 11\ngitlab_api_base = \"https://toml-gitlab.example\"\n",
+        "[roles.executor]\nredmine_api_base = \"https://toml-redmine.example\"\nredmine_close_status_id = 11\n",
     );
     let _cfg = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
@@ -247,15 +238,11 @@ fn toml_redmine_and_gitlab_resolvers_prefer_toml_over_sqlite() {
         "PHASEGENT_API_BASE",
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
         "PHASEGENT_CLOSE_STATUS_ID",
-        "PHASEGENT_GITLAB_API_BASE",
     ]);
     let redmine =
         crate::providers::config::RedmineConfig::resolve(Role::Executor, None, None, None).unwrap();
     assert_eq!(redmine.api_base, "https://toml-redmine.example");
     assert_eq!(redmine.close_status_id, Some(11));
-    let gitlab =
-        crate::providers::config::GitlabConfig::resolve(Role::Executor, None, Some("77")).unwrap();
-    assert_eq!(gitlab.api_base, "https://toml-gitlab.example/api/v4");
     // Explicit CLI still wins over TOML.
     let explicit = crate::providers::config::RedmineConfig::resolve(
         Role::Executor,

@@ -131,14 +131,14 @@ impl PlanningOptions {
     }
 }
 
-/// Raw GitLab assignee selector for `issue create`.
+/// Raw assignee selector for `issue create`.
 ///
-/// * `Unset` — no `--assignee`/`--no-assign` flag. GitLab self-assigns the
-///   authenticated user; every other provider keeps the legacy payload with
-///   no assignee field.
-/// * `Unassigned` — `--no-assign`; never attach an assignee.
-/// * `Explicit` — `--assignee` value, either a numeric user id or a username
-///   resolved against `GET /users?username=` at execution time.
+/// * `Unset` — no `--assignee`/`--no-assign` flag. The payload keeps no
+///   assignee field.
+/// * `Unassigned` — `--no-assign`; never attach an assignee (a no-op that
+///   keeps the legacy payload).
+/// * `Explicit` — `--assignee` value. No provider supports an explicit
+///   assignee, so it is rejected before any write.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum AssigneeOption {
     #[default]

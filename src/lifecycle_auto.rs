@@ -11,15 +11,11 @@
 //!
 //! ## Provider coverage
 //!
-//! - **Forgejo** — no status surface, no auto-run. The helper returns
-//!   [`AutoTimerOutcome::Skipped`] so the caller can distinguish
-//!   "no-op because no status" from "could not start".
 //! - **Redmine** — full auto-accounting; `status set` and
 //!   `status advance` both flow through the helper.
-//! - **GitLab** — `status set` flows through (label-based); `status
-//!   advance` is Redmine-only upstream so the helper is not reached
-//!   on that path. The provider branch is gated inside the helper
-//!   itself for defensive parity.
+//! - **Local** — the ledger lives in `Storage`; `status set` and
+//!   `status advance` both flow through the helper with no remote
+//!   projection.
 //!
 //! ## Single-running invariant
 //!
@@ -82,7 +78,7 @@ fn bounded(text: &str) -> String {
 }
 
 /// Map a status name to an agent role. The case-insensitive matching
-/// keeps the mapping tolerant of custom Redmine / GitLab status
+/// keeps the mapping tolerant of custom Redmine status
 /// names (e.g. "Doing", "In Review") while never silently dropping
 /// a value: the fallback is `executor` and the caller surfaces a
 /// stderr warning describing the unmapped status so the operator can
@@ -137,18 +133,14 @@ pub fn auto_route_next(_issue: u64, signal: ToolSignal) -> Option<&'static str> 
 }
 
 /// Outcome of a lifecycle auto-accounting call. Callers translate
-/// `Skipped` into silence (no warning), and either `Started` (when
-/// its `warning` field is `Some`) or `Warning` into a bounded
-/// stderr line via `cli::report_local_warnings`. The `Started`
-/// variant carries a `warning` field so the fallback mapping
+/// `Warning` into a bounded stderr line via
+/// `cli::report_local_warnings` and keep every other outcome silent.
+/// The `Started` variant carries a `warning` field so the fallback mapping
 /// (custom Redmine status with no canonical role) and the
 /// close-sweep partial-failure path can be surfaced to the operator
 /// even when the new segment was opened successfully.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoTimerOutcome {
-    /// Forgejo: no status surface, no auto-run. This is the only
-    /// outcome that produces no row activity.
-    Skipped { reason: String },
     /// The transition produced a new auto-run and zero or more
     /// finished pre-existing runs. `warning` is `Some` when a
     /// non-fatal signal needs to reach the operator: the status
@@ -173,7 +165,6 @@ impl AutoTimerOutcome {
         match self {
             Self::Warning { reason } => Some(bounded(reason)),
             Self::Started { warning, .. } => warning.as_ref().map(|w| bounded(w)),
-            _ => None,
         }
     }
 }
@@ -207,9 +198,8 @@ impl AutoCloseOutcome {
 }
 
 /// Run the auto-accounting side effect for a successful
-/// `status set` / `status advance`. Forgejo is a no-op (no status,
-/// no timer). For Redmine and GitLab we finish every running
-/// auto-run for the issue, then open a new run whose phase is
+/// `status set` / `status advance`. Redmine and Local finish every
+/// running auto-run for the issue, then open a new run whose phase is
 /// `status_name` and whose role comes from
 /// [`status_to_agent_role`]. Failures degrade to a `Warning` so
 /// the orchestrator's status change still returns success.
@@ -222,14 +212,9 @@ impl AutoCloseOutcome {
 /// `report_local_warnings`.
 pub fn auto_transition_timer(
     issue: u64,
-    provider_kind: ProviderKind,
+    _provider_kind: ProviderKind,
     status_name: &str,
 ) -> AutoTimerOutcome {
-    if provider_kind == ProviderKind::Forgejo {
-        return AutoTimerOutcome::Skipped {
-            reason: "forgejo has no status surface; auto timer is a no-op".to_owned(),
-        };
-    }
     let (role, fallback) = status_to_agent_role(status_name);
     let phase = status_name.to_owned();
     let mut finished_runs: Vec<String> = Vec::new();
@@ -293,18 +278,8 @@ fn build_transition_warning(
 /// finished locally. This is the close path; no new run is
 /// started because the issue is now closed.
 ///
-/// Forgejo is gated to [`AutoCloseOutcome::Noop`] for parity with
-/// [`auto_transition_timer`]'s [`AutoTimerOutcome::Skipped`]:
-/// Forgejo has no first-class status surface, and the auto-run
-/// set is provider-local bookkeeping so a Forgejo close should
-/// not retroactively mutate Redmine or GitLab rows. An empty
-/// ledger also returns `Noop`.
-pub fn auto_close_issue_timer(issue: u64, provider_kind: ProviderKind) -> AutoCloseOutcome {
-    if provider_kind == ProviderKind::Forgejo {
-        return AutoCloseOutcome::Noop {
-            reason: "forgejo has no status surface; auto timer close is a no-op".to_owned(),
-        };
-    }
+/// An empty ledger returns `Noop`.
+pub fn auto_close_issue_timer(issue: u64, _provider_kind: ProviderKind) -> AutoCloseOutcome {
     match close_issue_runs(issue) {
         Ok(finished_runs) if finished_runs.is_empty() => AutoCloseOutcome::Noop {
             reason: format!("no running auto-runs to finish for issue {issue}"),
@@ -367,13 +342,13 @@ fn close_issue_runs(issue: u64) -> Result<Vec<String>, String> {
 /// bounded stderr line via `cli::report_local_warnings`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AutoRelationOutcome {
-    /// Provider has no relation surface (Forgejo) or no parent
+    /// No relation surface (Local) or no parent
     /// linkage was supplied at the call site. Silent success — the
     /// caller should not surface anything.
     Skipped { reason: String },
     /// A fresh `relates` link was created. `relation_id` is the
-    /// server-assigned id (Redmine relation id / GitLab issue link
-    /// id) so the operator can spot the new auto-link via
+    /// server-assigned Redmine relation id
+    /// so the operator can spot the new auto-link via
     /// `relation list`.
     Created {
         child: u64,
@@ -412,11 +387,8 @@ impl AutoRelationOutcome {
 ///   the parent linkage; the helper returns `Skipped` silently.
 ///   Phase 4 may extend this once the read-side widening lands.
 ///
-/// Forgejo and Local are gated to `Skipped` because neither exposes
-/// a relation surface. Redmine and GitLab both support `relates`:
-/// Redmine's `relates` is symmetric, GitLab's `relates_to` is the
-/// same link type translated via the existing
-/// `gitlab_link_type_from_relation_type` mapper. The helper is
+/// Local is gated to `Skipped` because it exposes no relation
+/// surface. Redmine supports `relates` (symmetric). The helper is
 /// idempotent: a pre-existing `relates` link to the same parent is
 /// recognised by listing the child's relations before the create
 /// call so repeated invocations never produce duplicate rows.
@@ -448,17 +420,11 @@ pub fn auto_create_parent_child_relation(
         };
     }
     match provider {
-        ProviderDispatcher::Forgejo(_) => AutoRelationOutcome::Skipped {
-            reason: "forgejo has no relation surface; auto relation is a no-op".to_owned(),
-        },
         ProviderDispatcher::Local(_) => AutoRelationOutcome::Skipped {
             reason: "local has no relation surface; auto relation is a no-op".to_owned(),
         },
         ProviderDispatcher::Redmine(redmine) => {
             auto_relation_redmine(redmine, child_issue_id, parent_issue_id)
-        }
-        ProviderDispatcher::Gitlab(gitlab) => {
-            auto_relation_gitlab(gitlab, child_issue_id, parent_issue_id)
         }
     }
 }
@@ -509,56 +475,6 @@ fn auto_relation_redmine(
         Err(error) => AutoRelationOutcome::Warning {
             reason: format!(
                 "auto relation: create relates from issue {child_issue_id} \
-                 to parent {parent_issue_id} failed: {error}"
-            ),
-        },
-    }
-}
-
-fn auto_relation_gitlab(
-    gitlab: &crate::providers::gitlab::GitlabProvider,
-    child_issue_id: u64,
-    parent_issue_id: u64,
-) -> AutoRelationOutcome {
-    // Idempotency on GitLab mirrors the Redmine path: list the
-    // child's links and look for any existing `relates_to` link
-    // targeting the parent. `RelationSummary::relation_type` is the
-    // viewpoint-resolved canonical name (`relates` for both
-    // directions on the symmetric link).
-    match gitlab.list_issue_links(child_issue_id) {
-        Ok(existing) => {
-            if existing.iter().any(|summary| {
-                summary.relation_type == "relates"
-                    && (summary.issue_to_id == parent_issue_id
-                        || summary.issue_id == parent_issue_id)
-            }) {
-                return AutoRelationOutcome::Idempotent {
-                    child: child_issue_id,
-                    parent: parent_issue_id,
-                };
-            }
-        }
-        Err(error) => {
-            return AutoRelationOutcome::Warning {
-                reason: format!(
-                    "auto relation: list issue links for issue {child_issue_id} failed: {error}"
-                ),
-            };
-        }
-    }
-    match gitlab.create_issue_link(
-        child_issue_id,
-        parent_issue_id,
-        RedmineRelationType::Relates,
-    ) {
-        Ok(summary) => AutoRelationOutcome::Created {
-            child: child_issue_id,
-            parent: parent_issue_id,
-            relation_id: summary.id,
-        },
-        Err(error) => AutoRelationOutcome::Warning {
-            reason: format!(
-                "auto relation: create relates_to from issue {child_issue_id} \
                  to parent {parent_issue_id} failed: {error}"
             ),
         },

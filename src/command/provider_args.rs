@@ -77,12 +77,6 @@ pub enum RelationCommand {
     },
     Delete {
         relation_id: u64,
-        /// Optional source issue iid. Required for GitLab because the
-        /// DELETE endpoint is scoped per source issue; Redmine and
-        /// Forgejo ignore the field. Carrying it on the shared enum
-        /// keeps the GitLab dispatch backward-compatible without
-        /// silently guessing the source.
-        issue: Option<u64>,
     },
 }
 

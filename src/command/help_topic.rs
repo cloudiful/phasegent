@@ -35,6 +35,13 @@ pub(crate) fn help_topic(
             }
             Some(value) => Err(format!("unknown comment help topic '{value}'")),
         },
+        "record" => match subcommand {
+            None => Ok(HelpTopic::Record),
+            Some(value) if ["create", "get", "list"].contains(&value) => {
+                Ok(HelpTopic::RecordCommand(value.to_owned()))
+            }
+            Some(value) => Err(format!("unknown record help topic '{value}'")),
+        },
         "project" => match subcommand {
             None => Ok(HelpTopic::Project),
             Some(value) if ["list", "create"].contains(&value) => {
@@ -110,11 +117,6 @@ pub(crate) fn help_topic(
                 Some(value) => Err(format!("unknown config provider help topic '{value}'")),
             },
             Some(value) => Err(format!("unknown config help topic '{value}'")),
-        },
-        "repo" => match subcommand {
-            None => Ok(HelpTopic::Repo),
-            Some("create") => Ok(HelpTopic::RepoCommand("create".to_owned())),
-            Some(value) => Err(format!("unknown repo help topic '{value}'")),
         },
         "hooks" => match subcommand {
             None => Ok(HelpTopic::Hooks),

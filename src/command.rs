@@ -2,7 +2,6 @@ use crate::policy::Role;
 use crate::providers::ProviderKind;
 
 pub use crate::hooks::HooksCommand;
-pub use crate::repo_command::RepoCommand;
 
 mod admin;
 mod argv;
@@ -21,6 +20,8 @@ mod plugin;
 mod prelude;
 mod project;
 mod provider_args;
+mod record;
+mod record_args;
 // Phase 1 command registry skeleton (issue 597): top-level parser routing
 // consults `registry::top_level`; Phase 2 wires the same tree into the
 // parser role gate, root help, and the help detail gate; Phase 3 wires the
@@ -46,11 +47,12 @@ pub(crate) use argv::parse_with_role_env;
 pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
 pub use local_args::{NotifyCommand, PluginCommand};
-pub(crate) use parse_helpers::{has_flag, optional_option, validate_options};
+pub(crate) use parse_helpers::{has_flag, optional_option};
 pub use provider_args::{
     CommentCommand, ProjectCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand,
     WorkflowCommand,
 };
+pub use record_args::RecordCommand;
 pub(crate) use registry::Unavailable;
 pub use worktree_args::WorktreeCommand;
 
@@ -96,13 +98,16 @@ pub enum Command {
     ConfigProviderClear,
     Issue(IssueCommand),
     Comment(CommentCommand),
+    /// Structured agent records: a CLI-owned versioned envelope over the
+    /// existing comment primitives, so an agent publishes metadata plus a
+    /// plain note and gets a stable native reference back.
+    Record(RecordCommand),
     Project(ProjectCommand),
     Status(StatusCommand),
     /// Redmine project version operations; named to stay distinct from the
     /// pre-existing `Command::Version` (`--version`) variant.
     VersionCommand(VersionCommand),
     Workflow(WorkflowCommand),
-    Repo(RepoCommand),
     Hooks(HooksCommand),
     Plugin(PluginCommand),
     Relation(RelationCommand),
@@ -150,16 +155,16 @@ pub enum HelpTopic {
     AdminConfigProviderCommand(String),
     Notify,
     NotifyCommand(String),
-    Repo,
     IssueCommand(String),
     CommentCommand(String),
+    Record,
+    RecordCommand(String),
     ProjectCommand(String),
     StatusCommand(String),
     Version,
     VersionCommand(String),
     Workflow,
     WorkflowCommand(String),
-    RepoCommand(String),
     Hooks,
     HooksCommand(String),
     Plugin,

@@ -9,11 +9,10 @@
 //! Tests use [`Storage::open_at`] with an explicit temp path so they
 //! never touch the operator's real platform-standard database.
 
-use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
+use crate::auth::{RedmineStoredConfig, StoredConfig};
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::infra::storage::{
-    DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage, TimerRunOwner,
-    TimerStatusFilter,
+    DB_FILENAME, PROVIDER_REDMINE, Storage, TimerRunOwner, TimerStatusFilter,
 };
 use crate::policy::Role;
 use std::fs;

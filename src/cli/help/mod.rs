@@ -13,6 +13,7 @@ pub mod issue;
 pub mod notify;
 pub mod plugin;
 pub mod project;
+pub mod record;
 pub mod relation;
 pub mod root;
 pub mod status;
@@ -24,7 +25,6 @@ pub mod worktree;
 use admin::print_admin_help;
 use auth::print_auth_help;
 use comment::{print_comment_command_help, print_comment_help};
-use common::print_not_supported_help;
 use config::{
     print_admin_config_command_help, print_admin_config_help,
     print_admin_config_provider_command_help, print_admin_config_provider_help,
@@ -37,6 +37,7 @@ use issue::{print_issue_command_help, print_issue_help};
 use notify::{print_notify_command_help, print_notify_help};
 use plugin::{print_plugin_command_help, print_plugin_help};
 use project::{print_project_command_help, print_project_help};
+use record::{print_record_command_help, print_record_help};
 use relation::{print_relation_command_help, print_relation_help};
 use root::print_root_help;
 use status::{print_status_command_help, print_status_help};
@@ -80,6 +81,8 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
         HelpTopic::IssueCommand(command) => vec!["issue", command.as_str()],
         HelpTopic::Comment => vec!["comment"],
         HelpTopic::CommentCommand(command) => vec!["comment", command.as_str()],
+        HelpTopic::Record => vec!["record"],
+        HelpTopic::RecordCommand(command) => vec!["record", command.as_str()],
         HelpTopic::Project => vec!["project"],
         HelpTopic::ProjectCommand(command) => vec!["project", command.as_str()],
         HelpTopic::Status => vec!["status"],
@@ -88,8 +91,6 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
         HelpTopic::VersionCommand(command) => vec!["version", command.as_str()],
         HelpTopic::Workflow => vec!["admin", "workflow"],
         HelpTopic::WorkflowCommand(command) => vec!["admin", "workflow", command.as_str()],
-        HelpTopic::Repo => vec!["repo"],
-        HelpTopic::RepoCommand(command) => vec!["repo", command.as_str()],
         HelpTopic::Hooks => vec!["hooks"],
         HelpTopic::HooksCommand(command) => vec!["hooks", command.as_str()],
         HelpTopic::Plugin => vec!["plugin"],
@@ -122,6 +123,7 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::Root => print_root_help(role, provider),
         HelpTopic::Issue => print_issue_help(role),
         HelpTopic::Comment => print_comment_help(role),
+        HelpTopic::Record => print_record_help(role),
         HelpTopic::Doctor => print_doctor_help(),
         HelpTopic::Project => print_project_help(role),
         HelpTopic::Status => print_status_help(role),
@@ -141,15 +143,9 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::AdminConfigProviderCommand(command) => {
             print_admin_config_provider_command_help(role, &command)
         }
-        HelpTopic::Repo => {
-            if provider == Some(ProviderKind::Redmine) {
-                print_not_supported_help("repo")
-            } else {
-                crate::repo_cli::print_help(role)
-            }
-        }
         HelpTopic::IssueCommand(command) => print_issue_command_help(role, &command),
         HelpTopic::CommentCommand(command) => print_comment_command_help(role, &command),
+        HelpTopic::RecordCommand(command) => print_record_command_help(role, &command),
         HelpTopic::ProjectCommand(command) => print_project_command_help(role, &command),
         HelpTopic::StatusCommand(command) => print_status_command_help(role, &command),
         HelpTopic::VersionCommand(command) => print_version_command_help(role, &command),
@@ -158,13 +154,6 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::RelationCommand(command) => print_relation_command_help(role, &command),
         HelpTopic::Timer => print_timer_help(role),
         HelpTopic::TimerCommand(command) => print_timer_command_help(role, &command),
-        HelpTopic::RepoCommand(command) => {
-            if provider == Some(ProviderKind::Redmine) {
-                print_not_supported_help(&format!("repo {command}"))
-            } else {
-                crate::repo_cli::print_command_help(role, &command, provider)
-            }
-        }
         HelpTopic::Hooks => print_hooks_help(),
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
         HelpTopic::Plugin => print_plugin_help(),

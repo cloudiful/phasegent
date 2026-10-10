@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::RedmineNewProject;
 use crate::providers::redmine::model::{
@@ -14,7 +14,7 @@ impl RedmineProvider {
         identifier: &str,
         close_status_id: Option<&str>,
         close_status_name: Option<&str>,
-    ) -> Result<RedmineBootstrap, ForgejoError> {
+    ) -> Result<RedmineBootstrap, PhasegentError> {
         let project = self.find_project(identifier)?;
         let statuses = self.list_issue_statuses()?;
         let close_status =
@@ -41,7 +41,7 @@ impl RedmineProvider {
     ///
     /// Retained for contract tests.
     #[allow(dead_code)]
-    pub fn current_user(&self) -> Result<RedmineCurrentUser, ForgejoError> {
+    pub fn current_user(&self) -> Result<RedmineCurrentUser, PhasegentError> {
         self.http.current_user()
     }
 
@@ -53,12 +53,12 @@ impl RedmineProvider {
         project_id: u64,
         user: &RedmineCurrentUser,
         role_name: &str,
-    ) -> Result<RedmineUserMembershipOutcome, ForgejoError> {
+    ) -> Result<RedmineUserMembershipOutcome, PhasegentError> {
         self.http
             .ensure_user_membership(project_id, user, role_name)
     }
 
-    pub fn list_projects(&self) -> Result<Vec<RedmineProject>, ForgejoError> {
+    pub fn list_projects(&self) -> Result<Vec<RedmineProject>, PhasegentError> {
         let mut projects = Vec::new();
         let mut offset: usize = 0;
         let mut previous_signature = None;
@@ -78,7 +78,7 @@ impl RedmineProvider {
             if previous_signature.as_deref() == Some(signature.as_str())
                 && !page.projects.is_empty()
             {
-                return Err(ForgejoError::pagination(
+                return Err(PhasegentError::pagination(
                     "project list",
                     "Redmine returned the same non-empty page repeatedly",
                 ));
@@ -96,7 +96,7 @@ impl RedmineProvider {
             }
             let next_offset = offset.saturating_add(count);
             if next_offset <= offset {
-                return Err(ForgejoError::pagination(
+                return Err(PhasegentError::pagination(
                     "project list",
                     "Redmine pagination offset did not advance",
                 ));
@@ -104,7 +104,7 @@ impl RedmineProvider {
             offset = next_offset;
             previous_signature = Some(signature);
         }
-        Err(ForgejoError::pagination(
+        Err(PhasegentError::pagination(
             "project list",
             "pagination exceeded the safety limit",
         ))
@@ -115,12 +115,12 @@ impl RedmineProvider {
         name: &str,
         identifier: &str,
         description: Option<&str>,
-    ) -> Result<RedmineProject, ForgejoError> {
+    ) -> Result<RedmineProject, PhasegentError> {
         if name.trim().is_empty() {
-            return Err(ForgejoError::config("project name cannot be empty"));
+            return Err(PhasegentError::config("project name cannot be empty"));
         }
         if identifier.trim().is_empty() {
-            return Err(ForgejoError::config("project identifier cannot be empty"));
+            return Err(PhasegentError::config("project identifier cannot be empty"));
         }
         let payload =
             RedmineNewProject::new(name, identifier, description).with_repository_module();
@@ -137,7 +137,7 @@ impl RedmineProvider {
     /// roadmaps never silently miss versions during `--fixed-version`
     /// resolution. Version discovery is project-scoped, so a configured
     /// project id is required.
-    pub fn list_versions(&self) -> Result<Vec<RedmineVersion>, ForgejoError> {
+    pub fn list_versions(&self) -> Result<Vec<RedmineVersion>, PhasegentError> {
         let project_id = self.config.require_project_id()?;
         let path = format!("projects/{project_id}/versions.json");
         let mut versions = Vec::new();
@@ -158,7 +158,7 @@ impl RedmineProvider {
             if previous_signature.as_deref() == Some(signature.as_str())
                 && !page.versions.is_empty()
             {
-                return Err(ForgejoError::pagination(
+                return Err(PhasegentError::pagination(
                     "version list",
                     "Redmine returned the same non-empty page repeatedly",
                 ));
@@ -176,7 +176,7 @@ impl RedmineProvider {
             }
             let next_offset = offset.saturating_add(count);
             if next_offset <= offset {
-                return Err(ForgejoError::pagination(
+                return Err(PhasegentError::pagination(
                     "version list",
                     "Redmine pagination offset did not advance",
                 ));
@@ -184,13 +184,13 @@ impl RedmineProvider {
             offset = next_offset;
             previous_signature = Some(signature);
         }
-        Err(ForgejoError::pagination(
+        Err(PhasegentError::pagination(
             "version list",
             "pagination exceeded the safety limit",
         ))
     }
 
-    pub fn find_project(&self, identifier: &str) -> Result<Option<RedmineProject>, ForgejoError> {
+    pub fn find_project(&self, identifier: &str) -> Result<Option<RedmineProject>, PhasegentError> {
         let response: Option<RedmineProjectResponse> = self.http.get_optional(
             &format!("projects/{identifier}.json"),
             &[],
@@ -206,21 +206,21 @@ impl RedmineProvider {
         statuses: &'a [RedmineIssueStatus],
         close_status_id: Option<&str>,
         close_status_name: Option<&str>,
-    ) -> Result<&'a RedmineIssueStatus, ForgejoError> {
+    ) -> Result<&'a RedmineIssueStatus, PhasegentError> {
         if let Some(value) = close_status_id {
             let id = value
                 .parse::<u64>()
-                .map_err(|_| ForgejoError::config("Redmine close status id must be numeric"))?;
+                .map_err(|_| PhasegentError::config("Redmine close status id must be numeric"))?;
             if id == 0 {
-                return Err(ForgejoError::config(
+                return Err(PhasegentError::config(
                     "Redmine close status id must be greater than zero",
                 ));
             }
             return match statuses.iter().find(|status| status.id == id) {
-                None => Err(ForgejoError::config(format!(
+                None => Err(PhasegentError::config(format!(
                     "Redmine status id {id} was not found"
                 ))),
-                Some(status) if !status.is_closed => Err(ForgejoError::config(format!(
+                Some(status) if !status.is_closed => Err(PhasegentError::config(format!(
                     "Redmine status id {id} was found but is not closed"
                 ))),
                 Some(status) => Ok(status),
@@ -233,13 +233,13 @@ impl RedmineProvider {
                 .collect::<Vec<_>>();
             return match matches.as_slice() {
                 [status] if status.is_closed => Ok(status),
-                [] => Err(ForgejoError::config(format!(
+                [] => Err(PhasegentError::config(format!(
                     "Redmine status name '{name}' was not found"
                 ))),
-                [_] => Err(ForgejoError::config(format!(
+                [_] => Err(PhasegentError::config(format!(
                     "Redmine status name '{name}' was found but is not closed"
                 ))),
-                _ => Err(ForgejoError::config(format!(
+                _ => Err(PhasegentError::config(format!(
                     "Redmine status name '{name}' is ambiguous"
                 ))),
             };
@@ -247,9 +247,9 @@ impl RedmineProvider {
         let mut closed = statuses.iter().filter(|status| status.is_closed);
         let status = closed
             .next()
-            .ok_or_else(|| ForgejoError::config("Redmine has no closed issue status"))?;
+            .ok_or_else(|| PhasegentError::config("Redmine has no closed issue status"))?;
         if closed.next().is_some() {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine has multiple closed issue statuses; use --close-status-id or --close-status-name",
             ));
         }

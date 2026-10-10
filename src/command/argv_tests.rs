@@ -136,7 +136,7 @@ fn role_denied_commands_fail_at_parse_with_the_stable_permission_message() {
         ),
         (
             "orchestrator",
-            &["admin", "config", "set", "api-base", "x"][..],
+            &["admin", "config", "set", "redmine-close-status-id", "5"][..],
             "admin config set",
         ),
     ] {

@@ -3,45 +3,16 @@ use crate::policy::Capability;
 #[allow(unused_imports)]
 use crate::providers::ProviderDispatcher;
 #[allow(unused_imports)]
-use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary, RepoSummary};
-#[allow(unused_imports)]
-use crate::providers::forgejo::ForgejoConfig;
-#[allow(unused_imports)]
-use crate::providers::forgejo::ForgejoProvider;
+use crate::providers::api::{CommentOutput, IssueSummary, PhasegentError};
 use crate::providers::local::LocalProvider;
 #[allow(unused_imports)]
 use crate::providers::{
-    GitlabProvider, IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus,
-    RedmineMetadataProvider, RedmineProject, RedmineProvider, RedmineVersion, RepoProvider,
+    IssueProvider, ProviderCapabilities, ProviderKind, RedmineIssueStatus, RedmineMetadataProvider,
+    RedmineProject, RedmineProvider, RedmineVersion,
 };
 
-impl RedmineMetadataProvider for ForgejoProvider {
-    type Error = ForgejoError;
-
-    fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
-        Err(ForgejoError::not_supported("forgejo", "project list"))
-    }
-
-    fn create_project(
-        &self,
-        _name: &str,
-        _identifier: &str,
-        _description: Option<&str>,
-    ) -> Result<RedmineProject, Self::Error> {
-        Err(ForgejoError::not_supported("forgejo", "project create"))
-    }
-
-    fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error> {
-        Err(ForgejoError::not_supported("forgejo", "issue status list"))
-    }
-
-    fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error> {
-        Err(ForgejoError::not_supported("forgejo", "version list"))
-    }
-}
-
 impl RedmineMetadataProvider for RedmineProvider {
-    type Error = ForgejoError;
+    type Error = PhasegentError;
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
         RedmineProvider::list_projects(self)
@@ -65,39 +36,12 @@ impl RedmineMetadataProvider for RedmineProvider {
     }
 }
 
-impl RedmineMetadataProvider for GitlabProvider {
-    type Error = ForgejoError;
-
-    fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
-        GitlabProvider::list_projects(self)
-    }
-
-    fn create_project(
-        &self,
-        _name: &str,
-        _identifier: &str,
-        _description: Option<&str>,
-    ) -> Result<RedmineProject, Self::Error> {
-        Err(ForgejoError::not_supported("gitlab", "project create"))
-    }
-
-    fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error> {
-        GitlabProvider::list_workflow_statuses(self)
-    }
-
-    fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error> {
-        GitlabProvider::list_milestones(self)
-    }
-}
-
 impl RedmineMetadataProvider for ProviderDispatcher {
-    type Error = ForgejoError;
+    type Error = PhasegentError;
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
         match self {
-            Self::Forgejo(provider) => provider.list_projects(),
             Self::Redmine(provider) => provider.list_projects(),
-            Self::Gitlab(provider) => provider.list_projects(),
             Self::Local(provider) => provider.list_projects(),
         }
     }
@@ -109,34 +53,28 @@ impl RedmineMetadataProvider for ProviderDispatcher {
         description: Option<&str>,
     ) -> Result<RedmineProject, Self::Error> {
         match self {
-            Self::Forgejo(provider) => provider.create_project(name, identifier, description),
             Self::Redmine(provider) => provider.create_project(name, identifier, description),
-            Self::Gitlab(provider) => provider.create_project(name, identifier, description),
             Self::Local(provider) => provider.create_project(name, identifier, description),
         }
     }
 
     fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error> {
         match self {
-            Self::Forgejo(provider) => provider.list_issue_statuses(),
             Self::Redmine(provider) => provider.list_issue_statuses(),
-            Self::Gitlab(provider) => provider.list_issue_statuses(),
             Self::Local(provider) => provider.list_issue_statuses(),
         }
     }
 
     fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error> {
         match self {
-            Self::Forgejo(provider) => provider.list_project_versions(),
             Self::Redmine(provider) => provider.list_project_versions(),
-            Self::Gitlab(provider) => provider.list_project_versions(),
             Self::Local(provider) => provider.list_project_versions(),
         }
     }
 }
 
 impl RedmineMetadataProvider for LocalProvider {
-    type Error = ForgejoError;
+    type Error = PhasegentError;
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
         LocalProvider::list_projects(self)

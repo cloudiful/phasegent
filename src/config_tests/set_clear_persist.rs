@@ -45,52 +45,42 @@ fn config_set_role_scoped_persists_and_output_canonical() {
     with_isolated_storage("set-role-scoped", |_db_path, storage| {
         let outcome = config_write::set_setting_value(
             Some(Role::Executor),
-            "PHASEGENT_API_BASE",
-            "https://forgejo.example",
+            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
+            "6",
             storage,
         )
         .unwrap();
         let text = serde_json::to_string(&outcome).unwrap();
-        assert!(text.contains("PHASEGENT_API_BASE"));
-        assert!(
-            !text.contains("https://forgejo.example"),
-            "value must not be echoed: {text}"
-        );
-        // Verify storage: the generic api-base writes the Forgejo and
-        // GitLab role rows only. It must not create or update the legacy
-        // role-scoped Redmine address row (the canonical Redmine address
-        // is the global `PHASEGENT_REDMINE_API_BASE` setting).
-        let forgejo = storage.load_role_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(forgejo.api_base.as_deref(), Some("https://forgejo.example"));
-        let gitlab = storage.load_gitlab_config(Role::Executor).unwrap().unwrap();
-        assert_eq!(gitlab.api_base.as_deref(), Some("https://forgejo.example"));
-        assert!(
-            storage
-                .load_redmine_config(Role::Executor)
-                .unwrap()
-                .and_then(|config| config.api_base)
-                .is_none(),
-            "generic api-base must not write the Redmine role row"
-        );
-        assert!(
-            storage
-                .load_global_setting("PHASEGENT_REDMINE_API_BASE")
-                .unwrap()
-                .is_none(),
-            "generic api-base must not write the global Redmine address"
-        );
+        assert!(text.contains("PHASEGENT_REDMINE_CLOSE_STATUS_ID"));
+        assert!(!text.contains("6"), "value must not be echoed: {text}");
+        let stored = storage
+            .load_redmine_config(Role::Executor)
+            .unwrap()
+            .and_then(|config| config.close_status_id);
+        assert_eq!(stored, Some(6));
 
-        // Project-id aliases are now rejected; verify they do not persist.
-        assert!(config_write::canonical_setting_name("redmine-project-id").is_none());
-        assert!(config_write::canonical_setting_name("gitlab-project-id").is_none());
-        assert!(config_write::canonical_setting_name("project-id").is_none());
+        // Retired-provider settings and the removed generic aliases no
+        // longer resolve, so they are rejected as unknown settings.
+        for removed in [
+            "api-base",
+            "repository",
+            "gitlab-api-base",
+            "redmine-project-id",
+            "gitlab-project-id",
+            "project-id",
+        ] {
+            assert!(
+                config_write::canonical_setting_name(removed).is_none(),
+                "{removed} must no longer resolve"
+            );
+        }
     });
 }
 
 #[test]
 fn config_set_default_provider_reuses_validation() {
     with_isolated_storage("set-default-provider", |_db_path, storage| {
-        for literal in [PROVIDER_FORGEJO, PROVIDER_REDMINE, PROVIDER_GITLAB] {
+        for literal in [PROVIDER_REDMINE, "local"] {
             let outcome = config_write::set_setting_value(
                 None,
                 "PHASEGENT_DEFAULT_PROVIDER",
@@ -140,19 +130,23 @@ fn config_clear_global_without_role_and_role_scoped() {
                 .contains("\"cleared\":false")
         );
 
-        let err = config_write::clear_setting(None, "PHASEGENT_API_BASE", storage).unwrap_err();
+        let err = config_write::clear_setting(None, "PHASEGENT_REDMINE_CLOSE_STATUS_ID", storage)
+            .unwrap_err();
         assert!(err.contains("a role is required"), "got: {err}");
 
         config_write::set_setting_value(
             Some(Role::Executor),
-            "PHASEGENT_API_BASE",
-            "https://a.example",
+            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
+            "6",
             storage,
         )
         .unwrap();
-        let clear =
-            config_write::clear_setting(Some(Role::Executor), "PHASEGENT_API_BASE", storage)
-                .unwrap();
+        let clear = config_write::clear_setting(
+            Some(Role::Executor),
+            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
+            storage,
+        )
+        .unwrap();
         assert!(
             serde_json::to_string(&clear)
                 .unwrap()
@@ -160,33 +154,9 @@ fn config_clear_global_without_role_and_role_scoped() {
         );
         assert!(
             storage
-                .load_role_config(Role::Executor)
-                .unwrap()
-                .unwrap()
-                .api_base
-                .is_none()
-        );
-        assert!(
-            storage
-                .load_gitlab_config(Role::Executor)
-                .unwrap()
-                .unwrap()
-                .api_base
-                .is_none()
-        );
-        // The generic alias never touches the legacy Redmine role row or
-        // the global Redmine address.
-        assert!(
-            storage
                 .load_redmine_config(Role::Executor)
                 .unwrap()
-                .and_then(|config| config.api_base)
-                .is_none()
-        );
-        assert!(
-            storage
-                .load_global_setting("PHASEGENT_REDMINE_API_BASE")
-                .unwrap()
+                .and_then(|config| config.close_status_id)
                 .is_none()
         );
     });
@@ -206,7 +176,7 @@ fn config_clear_command_parsing() {
         }
         other => panic!("got {other:?}"),
     }
-    let args = ["admin", "config", "clear", "api-base"]
+    let args = ["admin", "config", "clear", "redmine-close-status-id"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -214,14 +184,16 @@ fn config_clear_command_parsing() {
         .expect_err("clear role-scoped without role must error");
     assert!(err.contains("a role is required"), "got: {err}");
 
-    let args = ["admin", "config", "clear", "api-base"]
+    let args = ["admin", "config", "clear", "redmine-close-status-id"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let inv =
         command::parse_with_role_env(&args, Some("admin")).expect("clear with role must parse");
     match inv.command {
-        Command::ConfigClear { setting } => assert_eq!(setting, "PHASEGENT_API_BASE"),
+        Command::ConfigClear { setting } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_CLOSE_STATUS_ID")
+        }
         other => panic!("got {other:?}"),
     }
 

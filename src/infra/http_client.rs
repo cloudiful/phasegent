@@ -10,7 +10,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 
 /// Default connect timeout: fail fast when the peer is unreachable.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -79,18 +79,18 @@ pub fn fetch_with_retry(
     request: RequestBuilder,
     operation: &str,
     redact: impl Fn(&str) -> String,
-) -> Result<(StatusCode, HeaderMap, String), ForgejoError> {
+) -> Result<(StatusCode, HeaderMap, String), PhasegentError> {
     // If the builder cannot be cloned it is not replayable (e.g., streaming
     // body). Fail fast with a single attempt and no retry.
     if request.try_clone().is_none() {
         let response = request
             .send()
-            .map_err(|error| ForgejoError::request(operation, redact(&error.to_string())))?;
+            .map_err(|error| PhasegentError::request(operation, redact(&error.to_string())))?;
         let status = response.status();
         let headers = response.headers().clone();
         let text = response
             .text()
-            .map_err(|error| ForgejoError::request(operation, redact(&error.to_string())))?;
+            .map_err(|error| PhasegentError::request(operation, redact(&error.to_string())))?;
         return Ok((status, headers, text));
     }
 
@@ -104,7 +104,10 @@ pub fn fetch_with_retry(
                 continue;
             }
             Err(error) => {
-                return Err(ForgejoError::request(operation, redact(&error.to_string())));
+                return Err(PhasegentError::request(
+                    operation,
+                    redact(&error.to_string()),
+                ));
             }
             Ok(response) => {
                 let status = response.status();
@@ -122,7 +125,10 @@ pub fn fetch_with_retry(
                         continue;
                     }
                     Err(error) => {
-                        return Err(ForgejoError::request(operation, redact(&error.to_string())));
+                        return Err(PhasegentError::request(
+                            operation,
+                            redact(&error.to_string()),
+                        ));
                     }
                     Ok(text) => return Ok((status, headers, text)),
                 }

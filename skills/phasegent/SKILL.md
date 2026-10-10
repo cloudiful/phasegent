@@ -1,6 +1,6 @@
 ---
 name: phasegent
-description: Role-aware, provider-backed workflow protocol for phasegent issue/plan work plus the OpenCode worktree adapter — tracking modes (INLINE/TRACKED_ISSUE/LOCAL_ISSUE), executor/reviewer delegation, marker and VERDICT contracts, note-pointer results, and the automatic (repo, issue, session) worktree lease. Provider-neutral — the tracking provider comes from user config and is never assumed; load it when starting, delegating, or publishing a phase-terminal audit note.
+description: Role-aware, provider-backed workflow protocol for phasegent issue/plan work plus the OpenCode worktree adapter — tracking modes (INLINE/TRACKED_ISSUE/LOCAL_ISSUE), executor/reviewer delegation, record and VERDICT contracts, note-pointer results, and the automatic (repo, issue, session) worktree lease. Provider-neutral — the tracking provider comes from user config and is never assumed; load it when starting, delegating, or publishing a phase-terminal audit note.
 ---
 
 # Phasegent
@@ -10,9 +10,9 @@ selects the capability/routing policy; the tracking provider comes from user
 config and is never assumed.
 
 This SKILL is the single source of the shared protocol: tracking modes, role
-gates, the marker protocol, result contracts, worktree lease safety, and the
-human-operator-only `admin` boundary. The role skills (`phasegent-orchestrator`,
-`phasegent-executor`, `phasegent-reviewer`, and the read-only
+gates, the record and marker protocol, result contracts, worktree lease safety,
+and the human-operator-only `admin` boundary. The role skills
+(`phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`, and
 `phasegent-explore`) carry only their role-specific always-on rules and defer
 here for the shared detail.
 
@@ -49,8 +49,12 @@ under its own role.
 Reconnaissance is delegated, never inlined, and the native `explore` subagent is
 the only backend: the host launches it with `task(explore)` under its own
 read-only tool policy, and it reads inside the OpenCode session's own directory.
-It never binds a phasegent issue or worktree and publishes no note; who reads
-never changes what a role may do.
+It never binds a phasegent issue or worktree. Under a tracking mode a parent may
+authorize the explorer to publish its brief as a recon record
+(`record create --kind recon --recon <label> --key <token> --authorized`) and
+take back only a minimal recon pointer; under `INLINE` the explorer returns the
+brief directly. Who reads never changes what a role may do, and a recorded recon
+conclusion is evidence — never scope, architecture, or authorization.
 
 ## When to use this skill
 
@@ -109,52 +113,59 @@ never changes the contract, so a small executor is held to exactly the same one.
 ## Role capability matrix
 
 Source of truth: `src/policy.rs` (`Role::allows`); command-level gates keyed to
-a role rather than a capability live in *Command contract*. The four roles are
-`admin`, `orchestrator`, `executor`, `reviewer`. The session role is
+a role rather than a capability live in *Command contract*. The five roles are
+`admin`, `orchestrator`, `executor`, `reviewer`, `explore`. The session role is
 a capability/routing policy, not identity isolation: each role's credential
 stays least-privilege and never crosses roles, and status follows the tools
-automatically.
+automatically. `explore` is the least-privilege recon role and holds no
+credential borrowed from another role.
 
 Legend: `✓` allowed, `—` denied.
 
-| Capability | Operation | admin | orchestrator | executor | reviewer |
-|---|---|---|---|---|---|
-| IssueRead | issue read | — | ✓ | ✓ | ✓ |
-| IssueSearch | issue search | — | ✓ | — | — |
-| IssueCreate | issue create | — | ✓ | — | — |
-| IssueUpdateBody | issue update | — | ✓ | — | — |
-| IssueClose | issue close | — | ✓ | — | — |
-| IssueAttachmentUpload | issue upload-attachment | — | ✓ | — | ✓ |
-| RepoCreate | repo create | — | ✓ | — | — |
-| CommentCreate | comment create | — | ✓ | ✓ | ✓ |
-| CommentRead | comment get | — | ✓ | ✓ | ✓ |
-| CommentFindMarker | comment find-marker | — | ✓ | ✓ | ✓ |
-| Notify | notify send | — | ✓ | ✓ | ✓ |
-| ProjectRead | project list | ✓ | ✓ | ✓ | ✓ |
-| ProjectCreate | project create | ✓ | ✓ | — | — |
-| IssueStatusRead | issue status list | ✓ | ✓ | ✓ | ✓ |
-| VersionRead | version list | ✓ | ✓ | ✓ | ✓ |
-| RelationRead | relation list | — | ✓ | ✓ | ✓ |
-| RelationCreate | relation create | — | ✓ | — | — |
-| RelationDelete | relation delete | — | ✓ | — | — |
+| Capability | Operation | admin | orchestrator | executor | reviewer | explore |
+|---|---|---|---|---|---|---|
+| IssueRead | issue read | — | ✓ | ✓ | ✓ | ✓ |
+| IssueSearch | issue search | — | ✓ | — | — | — |
+| IssueCreate | issue create | — | ✓ | — | — | — |
+| IssueUpdateBody | issue update | — | ✓ | — | — | — |
+| IssueClose | issue close | — | ✓ | — | — | — |
+| IssueAttachmentUpload | issue upload-attachment | — | ✓ | — | ✓ | — |
+| CommentCreate | comment create | — | ✓ | ✓ | ✓ | — |
+| CommentRead | comment get | — | ✓ | ✓ | ✓ | — |
+| CommentFindMarker | comment find-marker | — | ✓ | ✓ | ✓ | — |
+| Notify | notify send | — | ✓ | ✓ | ✓ | — |
+| ProjectRead | project list | ✓ | ✓ | ✓ | ✓ | — |
+| ProjectCreate | project create | ✓ | ✓ | — | — | — |
+| IssueStatusRead | issue status list | ✓ | ✓ | ✓ | ✓ | — |
+| VersionRead | version list | ✓ | ✓ | ✓ | ✓ | — |
+| RelationRead | relation list | — | ✓ | ✓ | ✓ | — |
+| RelationCreate | relation create | — | ✓ | — | — | — |
+| RelationDelete | relation delete | — | ✓ | — | — | — |
 
 ### Role notes
 
 - **orchestrator** allows every capability and is the only role with issue
-  write/search/close, repo create, relation write, and the only non-admin role
-  with the status-transition and `timer` commands.
+  write/search/close, relation write, and the only non-admin role with the
+  status-transition and `timer` commands.
 - **admin** is bootstrap-only — project list/create, status list/next, version
   list, and `workflow bootstrap` — and is never an AI role.
 - **executor** and **reviewer** share the read/comment/project/status/version/
   relation-read surface and `notify send`; both are barred from issue
-  write/close/search, relation write, repo create, status, and timer.
+  write/close/search, relation write, status, and timer.
 - **reviewer** is the single independent verification role: it owns the code
   audit, the acceptance verification, and the test run, and the
   `phasegent-reviewer` role skill owns its test-only write boundary plus the
   attachment capability that boundary needs.
+- **explore** is recon-only: issue read plus the structured `record` read surface
+  and an authorized recon `record create`, and nothing else — no comment, notify,
+  project, status, version, relation, attachment, timer, worktree, or `admin`.
+- `record create/get/list` is a command-level gate, not a capability row: the
+  roles that may read or write a record are `orchestrator`, `executor`,
+  `reviewer`, and `explore`, and a write is bound to the session role's own kind
+  (`executor`, `reviewer`, or recon) with `--authorized` for a child.
 - Capability entries above are authoritative; command-level gates such as
-  `status transition`, `timer *`, and `workflow bootstrap` are keyed to the
-  role, not a capability, and live in *Command contract*.
+  `status transition`, `timer *`, the `record` group, and `workflow bootstrap`
+  are keyed to the role, not a capability, and live in *Command contract*.
 
 ## Review scope and risk classes
 
@@ -214,7 +225,7 @@ Source of truth: `src/cli/help/` role-filter plus `src/policy.rs`.
 hand, filtered by the session's role; this section records role gates and
 boundaries, never flag tables. The provider resolves from configuration at
 runtime — an explicit override wins, then the configured default (role or
-global setting, `phasegent.toml`, or environment), with Forgejo as the final
+global setting, `phasegent.toml`, or environment), with Redmine as the final
 fallback — and a session never hard-codes one.
 
 ### Role gates
@@ -233,9 +244,13 @@ phase is an explicit transition back to `In Progress`.
   issue, never call `status *` or `timer *`, never commit, push, tag, or mutate
   refs, and never claim another role's credential.
 - `comment create` writes under the session role: a child's note needs explicit
-  authorization through the `--authorized` CLI flag.
-- `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope, and
-  `comment list` is the bulk note read.
+  authorization through the `--authorized` CLI flag. Structured records are the
+  documented agent path instead: `record create` under the session role's own
+  kind (`executor`, `reviewer`, or the explorer's authorized recon), and
+  `record get`/`record list` for reads.
+- `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope,
+  `record list` is the bulk record read, and `comment list` still reads legacy
+  notes.
 - `notify send` is manual-only and never automatic.
 - `issue upload-attachment` rejects uniformly as not-supported, before any file,
   network, or credential access.
@@ -250,7 +265,8 @@ and settings stay with the operator: a missing one goes back as a question, and
 credentials never travel as CLI values. Only when a configuration or provider
 problem actually blocks the task do the read-only self-checks come in — `doctor`,
 `config show`, and `config provider get` carry no role gate. Never read the local
-SQLite files or call provider REST directly, since `comment list` and batch
+SQLite files or call provider REST directly, since `record list`, `comment list`,
+and batch
 `issue get` cover bulk reads. Audit notes are append-only, so publish a follow-up
 note instead.
 
@@ -325,26 +341,40 @@ Boundaries:
 
 Work happens on `<type>/<id>` branches (e.g. `feat/452`) and the durable provider/project-scoped link is the sole branch/issue association; `bind` records that link explicitly and the branch name is the only fallback when the name carries an id and no link resolves. A successful `issue create` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming `phasegent worktree acquire --issue N --isolate` instead, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases). `issue status` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (`linked`/`named`/`none`), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), and the reverse branches of the active issue; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
 
-## Marker protocol
+## Records and the audit note
 
-One HTML-comment marker at the top of the note body; the parent-supplied value
-appears **verbatim** as `marker=<unique-marker>`:
+Structured records are the documented agent path: `record create`/`get`/`list`
+wraps the issue-comment primitive with a CLI-owned, versioned metadata header, so
+an agent supplies only metadata plus a plain note body and **never writes a header
+by hand**. `record get <issue> <record_id>` and `record list <issue>` return the
+plain body plus the structured fields, and the native reference id (`#change-<id>`
+on Redmine, `#note-<id>` locally) is the referenceable evidence. Legacy
+`comment create`/`get`/`list` stay available for historical records and the
+existing audit protocol.
 
-- executor — `<!-- ai-executor issue=<n> phase=<phase> attempt=<n> marker=<unique-marker> -->`
-- reviewer — `<!-- ai-reviewer issue=<n> phase=<phase> round=<n> marker=<unique-marker> -->`
+The parent supplies the marker, and the child passes it **verbatim** as the record
+`--key` (the stable request token: 1..128 characters from `[A-Za-z0-9._:-]`):
+
+- executor — `record create <issue> --kind executor --key <marker> --phase <phase> --attempt <n> [--authorized]`
+- reviewer — `record create <issue> --kind reviewer --key <marker> --phase <phase> --attempt <round> --review <final|checkpoint> [--authorized]`
+- recon — `record create <issue> --kind recon --recon <label> --key <marker> --authorized`
 
 Rules:
 
 - One note per phase-terminal; publish once after all work, immediately before
-  the final JSON. A retry or fresh child uses a **new** marker.
-- The JSON top-level `status` (executor) or `verdict` (reviewer) must
-  match the note's labelled line verbatim.
-- Publish under the child's own role; the role is implicit, and a child's note
-  needs explicit authorization. A LOCAL_ISSUE note uses the local provider
-  explicitly, and `phasegent --help comment create` owns the body-file lifecycle.
-- A reviewer note labels its review `final` or `checkpoint` on a `REVIEW:` line
-  beside the unchanged `VERDICT:` line, so a checkpoint round and the final audit
-  stay distinguishable without a new token.
+  the final JSON. Reuse a `--key` only for the identical retry (an identical retry
+  returns the existing record id, a changed body under a used key is a conflict);
+  a retry or fresh child uses a **new** marker.
+- The body keeps the labelled `status` (executor) or `VERDICT:`/`REVIEW:`
+  (reviewer) lines, and the JSON top-level `status`/`verdict` matches them
+  verbatim.
+- Publish under the child's own role; the role is implicit and the kind is bound
+  to it, and a child's record needs explicit authorization. A LOCAL_ISSUE note
+  uses the local provider explicitly, and `phasegent --help record create` owns the
+  body-file lifecycle (unchanged from `comment create`).
+- A reviewer note labels its review `final` or `checkpoint` through `--review`
+  and on the `REVIEW:` line beside the unchanged `VERDICT:` line, so a checkpoint
+  round and the final audit stay distinguishable without a new token.
 - A missing note when `comment-allowed=true` is audit-incomplete and forbids a
   clean finish.
 
@@ -371,8 +401,10 @@ Rules:
   }
   ```
 
-  Never fabricate a comment id, URL, or marker. On `comment=failed` leave
-  `comment_id`/`comment_url` null and explain in `notes`.
+  Never fabricate a note id, URL, or marker. On `comment=failed` leave
+  `comment_id`/`comment_url` null and explain in `notes`. The published note is a
+  structured record, so `comment_id`/`comment_url` carry its native record id and
+  URL (the field names are retained for the pointer contract).
 
 - A `reviewer` pointer keeps that same minimal shape, with `verdict` instead of
   `status`, and adds a top-level `review` field, `"final"` or `"checkpoint"`,
@@ -380,6 +412,12 @@ Rules:
   `VERDICT:` line are unchanged. The note carries the acceptance and test
   evidence — the exact commands run, the observed pass/fail outcome, and each
   behavioral failure's signature.
+- A tracked `explore` publishes an authorized recon record and returns **only** a
+  minimal recon pointer — `record_id`, `record_url`, `key`, `provider`,
+  `issue` — with the findings in the record body; under `INLINE` it returns the
+  brief instead. A parent references the record id in the issue plan rather than
+  transcribing raw recon, and a recorded conclusion is evidence, never scope,
+  architecture, or authorization.
 - `INLINE` / `LOCAL_ISSUE`: return the complete result object with `phase`,
   `summary`, `changed_files`, `validation`, `remaining_work`, `question`
   (required only for `BLOCKED`), `risks`, and nested `tracking` (`mode`
@@ -397,16 +435,18 @@ Rules:
   - `FAIL` — at least one confirmed P0-P2; blocks the phase until repaired
     (`REQUEST_CHANGES` is the legacy alias the orchestrator treats as `FAIL`).
   - `BLOCKED` — review cannot complete (missing context/tooling/artifact).
-  - `AUDIT_FAILED` — the mandatory `ai-reviewer` comment could not be published.
+  - `AUDIT_FAILED` — the mandatory reviewer record could not be published.
   - `APPROVE`, `ACCEPT`, `OK`, `LGTM`, etc. are protocol violations; reselect a
     token from the vocabulary.
 
 - Nested explorer assistance changes no contract: an `explore` child launched by
-  the orchestrator, an executor, or a reviewer stays read-only, non-audited, and
-  unable to recurse, so it publishes no marker or VERDICT and owns no result. The
-  owning executor/reviewer still publishes its own single phase-terminal note with
-  any material explorer finding recorded there, and the orchestrator alone owns
-  plan, status, timer, worktree, and closure.
+  the orchestrator, an executor, or a reviewer stays non-audited and unable to
+  recurse, so it publishes no VERDICT and owns no audit note. Under a tracking
+  mode it may publish an authorized recon record and return a minimal recon
+  pointer; that record is evidence, not a phase result. The owning
+  executor/reviewer still publishes its own single phase-terminal note, citing the
+  recon record id and recording any material finding there, and the orchestrator
+  alone owns plan, status, timer, worktree, and closure.
 - Status semantics: `DONE` (all acceptance criteria met), `PARTIAL` (useful
   work done, criteria remain, safe to continue), `BLOCKED` (decision or
   prerequisite missing — state the smallest concrete decision in `question`),

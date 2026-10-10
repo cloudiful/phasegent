@@ -13,9 +13,10 @@ scope, and help lookup.
 
 ## Read first
 
-- `issue get <n>` and `comment list <ISSUE>` give the plan, the acceptance
-  criteria, the phase evidence, and the executor notes. Your parent prompt adds
-  only the issue number, the marker, the round, and the review scope.
+- `issue get <n>` and `record list <ISSUE>` give the plan, the acceptance
+  criteria, the phase evidence, and the executor records; `comment list <ISSUE>`
+  still reads legacy notes. Your parent prompt adds only the issue number, the
+  marker, the round, and the review scope.
 - Worktree wiring is automatic and read-only for the production tree: never run
   `worktree *`, `issue bind`, or `issue create`.
 
@@ -70,24 +71,30 @@ scope, and help lookup.
   by your first call and pass it back as the continuation on later asks; open a
   fresh child only on the shared isolation triggers and record the reason.
 - Explorer evidence never replaces your own verification and owns no audit note
-  or VERDICT; your terminal note and its single VERDICT remain yours alone.
+  or VERDICT; a tracked explorer's recon record is referenceable by its native
+  id, so cite the id instead of transcribing raw recon, and your terminal note
+  and its single VERDICT remain yours alone.
 
 ## Verdict and audit note
 
-One HTML-comment marker at the top of the note body, with the parent-supplied
-value verbatim:
+Publish your round's audit note as a reviewer record — the CLI owns the header,
+so you supply metadata and a plain body and never write a header by hand:
 
-`<!-- ai-reviewer issue=<n> phase=<phase> round=<n> marker=<unique-marker> -->`
+`record create <issue> --kind reviewer --key <marker> --phase <phase> --attempt <round> --review <final|checkpoint> [--authorized] (--body TEXT | --body-file PATH [--keep-body-file])`
 
-Use exactly one of the five shared VERDICT tokens defined in the shared skill's
-result contracts, on the note's `VERDICT:` line and in the JSON `verdict`, and
-keep the two matches verbatim; any other token — `APPROVE`, `OK`, `LGTM`, and
-the like — is a protocol violation. Label the review `final` or `checkpoint` on
-a `REVIEW:` line beside the `VERDICT:` line, matching the pointer's `review`
-field, so a checkpoint round is distinguishable from the final audit without a
-new token. Publish once, after the review, immediately before the final JSON, and
-a child's note needs explicit authorization.
+Use the parent-supplied marker verbatim as `--key` (the stable request token:
+1..128 characters from `[A-Za-z0-9._:-]`); a retry reuses the key only for the
+identical request, and a fresh round uses a new key.
+
+The body keeps the `VERDICT:` and `REVIEW:` lines. Use exactly one of the five
+shared VERDICT tokens defined in the shared skill's result contracts on the
+`VERDICT:` line and in the JSON `verdict`, and keep the two matches verbatim; any
+other token — `APPROVE`, `OK`, `LGTM`, and the like — is a protocol violation.
+Label the review `final` or `checkpoint` on the `REVIEW:` line beside `VERDICT:`,
+matching the pointer's `review` field, so a checkpoint round stays distinguishable
+from the final audit without a new token. Publish once, after the review,
+immediately before the final JSON, and a child's record needs `--authorized`.
 
 Then return only the minimal note-pointer JSON (`verdict`, `review`, `phase`,
-nested `tracking`), never fabricating a comment id, URL, or marker. When the
-mandatory note cannot be published at all, report the `AUDIT_FAILED` token.
+nested `tracking`), never fabricating a record/comment id, URL, or marker. When
+the mandatory note cannot be published at all, report the `AUDIT_FAILED` token.

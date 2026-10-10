@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::infra::storage::Storage;
 use crate::lifecycle::AutoCleanupOutcome;
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 use crate::providers::{IssueProvider, ProviderDispatcher};
 use crate::worktree::{
     GitOutput, LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, WorktreeRunner, bounded,
@@ -32,7 +32,7 @@ pub(crate) fn run_sync(
     runner: &dyn WorktreeRunner,
     storage: &Storage,
     request: SyncRequest<'_>,
-) -> Result<SyncReport, ForgejoError> {
+) -> Result<SyncReport, PhasegentError> {
     let (scopes, skipped) = match resolve_scopes(runner, storage, request.all, request.cwd) {
         Ok(resolved) => resolved,
         Err(error) => return Err(error.into_provider_error()),
@@ -47,7 +47,7 @@ pub(crate) fn run_sync(
                 // A remote issue that no longer exists is not "closed":
                 // record it and keep going so one stale lease row cannot
                 // wedge the whole pass.
-                Err(ForgejoError::NotFound { .. }) => {
+                Err(PhasegentError::NotFound { .. }) => {
                     report.not_found += 1;
                     continue;
                 }
@@ -96,7 +96,7 @@ fn sync_issue(
     rows: &[&LeaseRow],
     remote_state: &str,
     mode: SyncMode,
-) -> Result<SyncIssueReport, ForgejoError> {
+) -> Result<SyncIssueReport, PhasegentError> {
     let active_leases = rows
         .iter()
         .filter(|row| row.status == LEASE_STATUS_ACTIVE)
@@ -140,13 +140,13 @@ fn clean_issue(
     issue: u64,
     rows: &[&LeaseRow],
     entry: &mut SyncIssueReport,
-) -> Result<(), ForgejoError> {
+) -> Result<(), PhasegentError> {
     entry.released_leases = crate::worktree::release_active_leases_for_issue(
         &scope.repo_identity,
         issue,
         SYNC_RELEASE_REASON,
     )
-    .map_err(|error| ForgejoError::request("issue sync", error.message))?;
+    .map_err(|error| PhasegentError::request("issue sync", error.message))?;
     // Issue 747 P1: the pass checks OpenCode occupancy but never moves a
     // session. A directory whose session a close already relocated is
     // found free here and becomes eligible; one whose session is still

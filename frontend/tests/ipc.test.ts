@@ -97,8 +97,7 @@ describe('capitalizeProvider / payloadFetchedAtMs / desktopErrorMessage', () => 
   test('capitalizes known providers case-insensitively and passes others through', () => {
     expect(capitalizeProvider('redmine')).toBe('Redmine')
     expect(capitalizeProvider('REDMINE')).toBe('Redmine')
-    expect(capitalizeProvider('gitlab')).toBe('GitLab')
-    expect(capitalizeProvider('forgejo')).toBe('Forgejo')
+    expect(capitalizeProvider('local')).toBe('Local')
     expect(capitalizeProvider('custom')).toBe('custom')
   })
 
@@ -209,19 +208,14 @@ describe('snapshot helpers', () => {
       {
         role: 'executor',
         provider: 'redmine',
-        forgejo_api_base: null,
-        forgejo_repository: null,
         redmine_close_status_id: 5,
-        gitlab_api_base: null,
-        forgejo_credential: { present: false, length: 0 },
         redmine_credential: { present: true, length: 40 },
-        gitlab_credential: { present: false },
       },
     ],
     global_settings: [
       { name: 'PHASEGENT_REDMINE_API_BASE', present: true, length: 31, sanitized_value: 'https://redmine.example.invalid' },
     ],
-    global_default_provider: 'forgejo',
+    global_default_provider: 'local',
   }
 
   test('finds role entries and prefers role provider over the global default', () => {
@@ -229,7 +223,7 @@ describe('snapshot helpers', () => {
     expect(snapshotRoleEntry(snapshot, 'missing')).toBeNull()
     expect(snapshotRoleEntry(snapshot, 'executor')?.role).toBe('executor')
     expect(snapshotProviderForRole(snapshot, 'executor')).toBe('redmine')
-    expect(snapshotProviderForRole(snapshot, 'missing')).toBe('forgejo')
+    expect(snapshotProviderForRole(snapshot, 'missing')).toBe('local')
     expect(snapshotProviderForRole(null, 'executor')).toBe('')
   })
 
@@ -241,37 +235,19 @@ describe('snapshot helpers', () => {
     expect(snapshotEndpointForRole(null, 'executor')).toBe('')
   })
 
-  test('keeps forgejo and gitlab endpoints role-scoped', () => {
-    const forgejo: ConfigSnapshotRaw = {
+  test('returns no endpoint for the local provider', () => {
+    const local: ConfigSnapshotRaw = {
       ...snapshot,
       roles: [
         {
           role: 'executor',
-          provider: 'forgejo',
-          forgejo_api_base: 'https://forgejo.example.invalid',
-          forgejo_repository: 'acme/widgets',
+          provider: 'local',
           redmine_close_status_id: null,
-          gitlab_api_base: null,
-          forgejo_credential: { present: false, length: 0 },
           redmine_credential: { present: false, length: 0 },
-          gitlab_credential: { present: false },
         },
       ],
     }
-    expect(snapshotEndpointForRole(forgejo, 'executor')).toBe('https://forgejo.example.invalid')
-
-    const gitlab: ConfigSnapshotRaw = {
-      ...forgejo,
-      roles: [
-        {
-          ...forgejo.roles[0]!,
-          provider: 'gitlab',
-          forgejo_api_base: null,
-          gitlab_api_base: 'https://gitlab.example.invalid',
-        },
-      ],
-    }
-    expect(snapshotEndpointForRole(gitlab, 'executor')).toBe('https://gitlab.example.invalid')
+    expect(snapshotEndpointForRole(local, 'executor')).toBe('')
   })
 
   test('falls back to an empty endpoint when the global redmine address is absent', () => {
@@ -311,7 +287,7 @@ describe('preload-unavailable fallback (plain browser / Bun has no window)', () 
   })
 
   test('mutations reject with a bounded message instead of a stack trace', async () => {
-    await expect(setNonSecretSetting(null, 'PHASEGENT_PROVIDER', 'forgejo')).rejects.toThrow('Desktop backend is unavailable in this preview.')
+    await expect(setNonSecretSetting(null, 'PHASEGENT_PROVIDER', 'local')).rejects.toThrow('Desktop backend is unavailable in this preview.')
     await expect(clearNonSecretSetting('executor', 'PHASEGENT_API_BASE')).rejects.toThrow('Desktop backend is unavailable in this preview.')
     await expect(setRoleCredential('executor', 'redmine', 'secret')).rejects.toThrow('Desktop backend is unavailable in this preview.')
     await expect(clearRoleCredential('executor', 'redmine')).rejects.toThrow('Desktop backend is unavailable in this preview.')
@@ -476,10 +452,10 @@ describe('preload bridge (window.phasegent)', () => {
       clearCredential: async request => ({ role: request.role, provider: request.provider, cleared: true }),
     })
     try {
-      await setNonSecretSetting('  ', 'PHASEGENT_PROVIDER', 'forgejo')
+      await setNonSecretSetting('  ', 'PHASEGENT_PROVIDER', 'local')
       await setNonSecretSetting('executor', 'PHASEGENT_API_BASE', 'https://redmine.example.invalid')
       expect(settings).toEqual([
-        { role: null, setting: 'PHASEGENT_PROVIDER', value: 'forgejo' },
+        { role: null, setting: 'PHASEGENT_PROVIDER', value: 'local' },
         { role: 'executor', setting: 'PHASEGENT_API_BASE', value: 'https://redmine.example.invalid' },
       ])
       expect(await clearNonSecretSetting('executor', 'PHASEGENT_API_BASE')).toBe(true)

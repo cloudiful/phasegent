@@ -11,9 +11,8 @@
 //!
 //! The Redmine REST address is machine-wide, so it is reported once
 //! under `global_settings` (sanitised like the other non-secret URL
-//! settings) and never per role. The per-role entries keep the
-//! Forgejo/GitLab addresses, the role-scoped Redmine close-status id,
-//! and credential presence/length.
+//! settings) and never per role. The per-role entries keep the role-scoped
+//! Redmine close-status id and the Redmine credential presence/length.
 
 use crate::infra::storage::{GlobalSettingSummary, Storage};
 use crate::policy::Role;
@@ -28,16 +27,8 @@ use serde::Serialize;
 pub struct RoleSnapshot {
     pub role: &'static str,
     pub provider: Option<String>,
-    pub forgejo_api_base: Option<String>,
-    pub forgejo_repository: Option<String>,
     pub redmine_close_status_id: Option<u64>,
-    pub gitlab_api_base: Option<String>,
-    pub forgejo_credential: CredentialSummary,
     pub redmine_credential: CredentialSummary,
-    /// Phase-1 GitLab credential summary. Reports presence/length only,
-    /// matching the redmine/forgejo field-pair convention so the
-    /// snapshot never echoes a GitLab PRIVATE-TOKEN value.
-    pub gitlab_credential: CredentialSummary,
 }
 
 /// Single global-setting entry as rendered by `config show`. Secrets
@@ -61,9 +52,8 @@ pub struct GlobalSettingJson {
     /// Non-secret literal value, only populated for entries that
     /// never carry a credential (currently the machine-wide default
     /// provider). The value is the validated `ProviderKind` string
-    /// (`forgejo`, `redmine`, or `gitlab`) — the resolver reads the
-    /// same string, so the snapshot stays in sync with the runtime
-    /// precedence.
+    /// (`redmine` or `local`) — the resolver reads the same string, so
+    /// the snapshot stays in sync with the runtime precedence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<&'static str>,
 }
@@ -99,7 +89,7 @@ pub struct ConfigSnapshot {
     /// Mirrors `config provider get` so a single `config show`
     /// invocation reports both the global picture and the
     /// resolver-relevant default. The value is one of the canonical
-    /// `forgejo` / `redmine` / `gitlab` literals (or `null` when
+    /// `redmine` / `local` literals (or `null` when
     /// unset); it is never echoed from the environment or from a
     /// secret field. Always rendered (the `null` value stays in the
     /// JSON) so downstream tooling can switch on the field name
@@ -116,6 +106,7 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
                 Role::Orchestrator,
                 Role::Executor,
                 Role::Reviewer,
+                Role::Explore,
             ]
             .into_iter(),
         ),
@@ -152,10 +143,7 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
 pub(crate) fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> {
     let role_config = storage.load_role_config(role)?;
     let redmine_config = storage.load_redmine_config(role)?;
-    let gitlab_config = storage.load_gitlab_config(role)?;
-    let forgejo = storage.credential_summary(role, crate::infra::storage::PROVIDER_FORGEJO)?;
     let redmine = storage.credential_summary(role, crate::infra::storage::PROVIDER_REDMINE)?;
-    let gitlab = storage.credential_summary(role, crate::infra::storage::PROVIDER_GITLAB)?;
     let summarize = |identity: crate::infra::storage::CredentialIdentity| CredentialSummary {
         present: identity.present,
         length: identity.length,
@@ -167,19 +155,8 @@ pub(crate) fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapsho
         provider: role_config
             .as_ref()
             .and_then(|config| config.provider.clone()),
-        forgejo_api_base: role_config
-            .as_ref()
-            .and_then(|config| config.api_base.clone()),
-        forgejo_repository: role_config
-            .as_ref()
-            .and_then(|config| config.repository.clone()),
         redmine_close_status_id: redmine_config.and_then(|config| config.close_status_id),
-        gitlab_api_base: gitlab_config
-            .as_ref()
-            .and_then(|config| config.api_base.clone()),
-        forgejo_credential: summarize(forgejo),
         redmine_credential: summarize(redmine),
-        gitlab_credential: summarize(gitlab),
     })
 }
 

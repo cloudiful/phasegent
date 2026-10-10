@@ -22,7 +22,6 @@ const ALL_CAPABILITIES: &[Capability] = &[
     Capability::IssueUpdateBody,
     Capability::IssueClose,
     Capability::IssueAttachmentUpload,
-    Capability::RepoCreate,
     Capability::CommentCreate,
     Capability::CommentRead,
     Capability::CommentFindMarker,
@@ -170,10 +169,6 @@ fn every_capability_is_referenced_by_the_registry() {
 
 #[test]
 fn provider_scopes_match_the_root_help_conditions() {
-    assert_eq!(
-        find(&["repo"]).unwrap().provider_scope,
-        ProviderScope::NonRedmine
-    );
     for name in ["project", "status", "version", "relation", "timer"] {
         assert_eq!(
             find(&[name]).unwrap().provider_scope,
@@ -183,12 +178,10 @@ fn provider_scopes_match_the_root_help_conditions() {
     }
     assert!(ProviderScope::Redmine.visible(Some(ProviderKind::Redmine)));
     assert!(!ProviderScope::Redmine.visible(None));
-    assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Forgejo)));
-    assert!(ProviderScope::NonRedmine.visible(None));
-    assert!(ProviderScope::NonRedmine.visible(Some(ProviderKind::Gitlab)));
-    assert!(ProviderScope::NonRedmine.visible(Some(ProviderKind::Local)));
-    assert!(!ProviderScope::NonRedmine.visible(Some(ProviderKind::Redmine)));
+    assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Local)));
     assert!(ProviderScope::Any.visible(Some(ProviderKind::Redmine)));
+    assert!(ProviderScope::Any.visible(Some(ProviderKind::Local)));
+    assert!(ProviderScope::Any.visible(None));
 
     // Provider scope lives on the top-level group only, so a consumer always
     // resolves the enclosing group first.

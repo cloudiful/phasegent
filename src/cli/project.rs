@@ -1,7 +1,7 @@
 use crate::command::ProjectCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 
 pub(crate) fn execute_project(
@@ -23,23 +23,7 @@ pub(crate) fn execute_project(
         return super::permission_error(role, capability);
     }
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
-        Ok(ProviderKind::Redmine) => {}
-        Ok(ProviderKind::Gitlab) => {
-            if matches!(command, ProjectCommand::List) {
-            } else {
-                return super::provider_error(ForgejoError::not_supported(
-                    "gitlab",
-                    capability.operation(),
-                ));
-            }
-        }
-        Ok(ProviderKind::Local) => {}
+        Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(
@@ -54,7 +38,7 @@ pub(crate) fn execute_project(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));

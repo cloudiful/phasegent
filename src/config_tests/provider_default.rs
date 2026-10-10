@@ -31,9 +31,7 @@ fn config_provider_get_parses_with_role() {
 #[test]
 fn config_provider_set_parses_valid_values() {
     for (raw, expected) in [
-        ("forgejo", crate::providers::ProviderKind::Forgejo),
         ("redmine", crate::providers::ProviderKind::Redmine),
-        ("gitlab", crate::providers::ProviderKind::Gitlab),
         ("local", crate::providers::ProviderKind::Local),
     ] {
         let args = ["admin", "config", "provider", "set", raw]
@@ -46,6 +44,21 @@ fn config_provider_set_parses_valid_values() {
             Command::ConfigProviderSet { value } => assert_eq!(value, expected),
             other => panic!("expected ConfigProviderSet, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn config_provider_set_rejects_a_retired_provider_name() {
+    for raw in ["forgejo", "gitlab"] {
+        let args = ["admin", "config", "provider", "set", raw]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let error = command::parse(&args).expect_err("retired provider must be rejected");
+        assert!(
+            error.contains("no longer supported"),
+            "error must name the retirement for {raw}: {error}"
+        );
     }
 }
 
@@ -176,7 +189,7 @@ fn config_provider_set_get_and_clear_round_trip_through_helpers() {
             "fresh storage must report null default: {initial:?}"
         );
 
-        for literal in [PROVIDER_FORGEJO, PROVIDER_REDMINE, PROVIDER_GITLAB] {
+        for literal in [PROVIDER_REDMINE, "local"] {
             let outcome = config::provider_set(literal, storage).unwrap();
             assert_eq!(outcome.provider, Some(literal));
             let stored = config::provider_get(storage).unwrap();

@@ -132,22 +132,17 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
 }
 
 #[test]
-fn redmine_keeps_repo_command_unsupported() {
+fn redmine_dispatches_as_the_default_provider() {
     let redmine = provider("http://redmine.test".to_owned());
-    assert!(!redmine.supports(Capability::RepoCreate));
-    assert_eq!(
-        redmine
-            .create_repo("owner/repo", true, "", false)
-            .unwrap_err()
-            .json()["kind"],
-        "not_supported"
-    );
     let dispatcher = ProviderDispatcher::Redmine(provider("http://redmine.test".to_owned()));
     assert_eq!(dispatcher.kind(), ProviderKind::Redmine);
+    assert_eq!(ProviderKind::default(), ProviderKind::Redmine);
+    assert!(redmine.supports(Capability::IssueRead));
+    assert!(!redmine.supports(Capability::IssueAttachmentUpload));
 }
 
 #[test]
-fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
+fn project_creation_is_admin_only_and_status_catalogue_is_available() {
     assert!(Role::Admin.allows(Capability::ProjectCreate));
     assert!(Role::Admin.allows(Capability::ProjectRead));
     assert!(Role::Admin.allows(Capability::IssueStatusRead));
@@ -158,26 +153,21 @@ fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
         assert!(role.allows(Capability::IssueStatusRead));
     }
 
-    let forgejo = crate::providers::forgejo::ForgejoProvider::new(
-        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
-    assert_eq!(
-        forgejo.list_projects().unwrap_err().json()["kind"],
-        "not_supported"
-    );
-    assert_eq!(
-        forgejo.list_issue_statuses().unwrap_err().json()["kind"],
-        "not_supported"
-    );
-
+    // A retired provider name is rejected at argument parsing (exit 2)
+    // before any provider build or network access.
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "project", "list"]),
             Some("orchestrator")
         ),
-        1
+        2
+    );
+    assert_eq!(
+        crate::cli::run_with_role(
+            strings(["--provider", "gitlab", "project", "list"]),
+            Some("orchestrator")
+        ),
+        2
     );
     assert_eq!(
         crate::cli::run_with_role(
@@ -213,21 +203,6 @@ fn project_creation_is_admin_only_and_forgejo_metadata_is_unsupported() {
             3
         );
     }
-    assert_eq!(
-        crate::cli::run_with_role(
-            strings([
-                "--provider",
-                "forgejo",
-                "admin",
-                "workflow",
-                "bootstrap",
-                "--repository",
-                "owner/repo",
-            ]),
-            Some("orchestrator")
-        ),
-        3
-    );
 }
 
 #[test]
@@ -253,7 +228,8 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         );
     }
 
-    // status set is Redmine-only: Forgejo is rejected as unsupported.
+    // status set is Redmine-only: local has its own status surface, and a
+    // retired provider name is rejected before any provider build.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -267,35 +243,16 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
             ]),
             Some("orchestrator")
         ),
-        1
+        2
     );
 
-    // Tracker selection on create/update is Redmine-only. A stored
-    // forgejo token lets the dispatcher build so the rejection comes from
-    // tracker resolution, not from missing credentials; no request is made.
-    let _environment_lock = lock_workflow_tests();
-    let directory = crate::test_scratch::root().join(format!(
-        "phasegent-tracker-boundary-{}-{}",
-        std::process::id(),
-        time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let db_path = directory.join(crate::infra::storage::DB_FILENAME);
-    let _db_path_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
-    let storage = Storage::open_at(&db_path).unwrap();
-    storage
-        .save_credential(Role::Orchestrator, "forgejo", "test-forgejo-token")
-        .unwrap();
-
+    // A retired provider name on a tracker create is rejected at argument
+    // parsing before tracker resolution or any provider build.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
-                "--api-base",
-                "http://forgejo.test",
-                "--repository",
-                "owner/repo",
+                "--provider",
+                "gitlab",
                 "issue",
                 "create",
                 "--title",
@@ -305,45 +262,21 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
             ]),
             Some("orchestrator")
         ),
-        1
-    );
-    assert_eq!(
-        crate::cli::run_with_role(
-            strings([
-                "--api-base",
-                "http://forgejo.test",
-                "--repository",
-                "owner/repo",
-                "issue",
-                "update",
-                "9",
-                "--body",
-                "Updated",
-                "--tracker",
-                "Bug",
-            ]),
-            Some("orchestrator")
-        ),
-        1
+        2
     );
 
-    drop(storage);
-    drop(_db_path_guard);
-    let _ = fs::remove_dir_all(&directory);
+    let _ = (Role::Orchestrator, Capability::IssueCreate);
 }
 
 #[test]
-fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
-    // Phase 4 parity matrix (issue 257): the uniform
-    // `IssueAttachmentUpload = false` row now lives on every inherent
-    // provider's `supports`, including Redmine. The dispatcher arm is
-    // a thin forwarder and no longer carries a separate guard. The
-    // capability stays in the matrix so a future phase may re-enable
-    // the underlying upload path, and the role gate remains
-    // (orchestrator / reviewer). The underlying `upload_attachment`
-    // inherent method stays compiled for the legacy
-    // `contract_tests/attachments.rs` wire-shape tests; no CLI
-    // path reaches it because every entry point is gated by
+fn issue_attachment_upload_is_uniformly_not_supported() {
+    // The uniform `IssueAttachmentUpload = false` row lives on every
+    // inherent provider's `supports`. The capability stays in the matrix
+    // so a future phase may re-enable the underlying upload path, and the
+    // role gate remains (orchestrator / reviewer). The underlying
+    // `upload_attachment` inherent method stays compiled for the legacy
+    // `contract_tests/attachments.rs` wire-shape tests; no CLI path
+    // reaches it because every entry point is gated by
     // `provider.supports(...)`.
 
     // Role gates stay.
@@ -352,80 +285,43 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
     assert!(!Role::Admin.allows(Capability::IssueAttachmentUpload));
     assert!(!Role::Executor.allows(Capability::IssueAttachmentUpload));
 
-    // Inherent provider surfaces (Phase 4 sinking): every provider
-    // reports `false` so the dispatcher arm does not need a separate
-    // override.
+    // Inherent provider surface.
     let redmine = provider("http://redmine.test".to_owned());
     assert!(!redmine.supports(Capability::IssueAttachmentUpload));
-    let forgejo = crate::providers::forgejo::ForgejoProvider::new(
-        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
-    assert!(
-        !<crate::providers::forgejo::ForgejoProvider as crate::providers::IssueProvider>::supports(
-            &forgejo,
-            Capability::IssueAttachmentUpload
-        )
-    );
-    let gitlab = crate::providers::gitlab::GitlabProvider::new(
-        crate::providers::config::GitlabConfig::new("https://gitlab.example/api/v4", 42),
-        "token".to_owned(),
-    )
-    .unwrap();
-    assert!(!gitlab.supports(Capability::IssueAttachmentUpload));
 
-    // Dispatcher surface: thin forwarder; the uniform row is enforced
-    // by the inherent providers.
+    // Dispatcher surface: thin forwarder; the uniform row is enforced by
+    // the inherent providers.
     let redmine_dispatcher =
         ProviderDispatcher::Redmine(provider("http://redmine.test".to_owned()));
     assert!(!redmine_dispatcher.supports(Capability::IssueAttachmentUpload));
-    let forgejo_provider = crate::providers::forgejo::ForgejoProvider::new(
-        crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-        "token".to_owned(),
-    )
-    .unwrap();
-    let forgejo_dispatcher = ProviderDispatcher::Forgejo(forgejo_provider);
-    assert!(!forgejo_dispatcher.supports(Capability::IssueAttachmentUpload));
-    let gitlab_dispatcher = ProviderDispatcher::Gitlab(
-        crate::providers::gitlab::GitlabProvider::new(
-            crate::providers::config::GitlabConfig::new("https://gitlab.example/api/v4", 42),
-            "token".to_owned(),
-        )
-        .unwrap(),
-    );
-    assert!(!gitlab_dispatcher.supports(Capability::IssueAttachmentUpload));
 
     // Role gate still fires before the dispatcher guard.
     for role in ["admin", "executor"] {
-        for provider in ["redmine", "forgejo", "gitlab"] {
-            assert_eq!(
-                crate::cli::run_with_role(
-                    strings([
-                        "--provider",
-                        provider,
-                        "issue",
-                        "upload-attachment",
-                        "5",
-                        "--path",
-                        "/tmp/any.txt"
-                    ]),
-                    Some(role)
-                ),
-                3,
-                "role {role} on {provider} must hit the permission gate first"
-            );
-        }
+        assert_eq!(
+            crate::cli::run_with_role(
+                strings([
+                    "--provider",
+                    "redmine",
+                    "issue",
+                    "upload-attachment",
+                    "5",
+                    "--path",
+                    "/tmp/any.txt"
+                ]),
+                Some(role)
+            ),
+            3,
+            "role {role} must hit the permission gate first"
+        );
     }
 
-    // Every provider reports not-supported (exit 1). The reviewer is
-    // allowed by the role gate but the inherent provider rejects
-    // uniformly.
-    for provider in ["redmine", "forgejo", "gitlab"] {
-        let exit = crate::cli::run_with_role(
+    // The reviewer is allowed by the role gate but the inherent provider
+    // rejects uniformly.
+    assert_eq!(
+        crate::cli::run_with_role(
             strings([
                 "--provider",
-                provider,
+                "redmine",
                 "issue",
                 "upload-attachment",
                 "5",
@@ -433,12 +329,10 @@ fn issue_attachment_upload_is_uniformly_not_supported_at_phase_4_sink() {
                 "/tmp/any.txt",
             ]),
             Some("reviewer"),
-        );
-        assert_eq!(
-            exit, 1,
-            "reviewer upload-attachment on {provider} must be not_supported (Phase 4 sinking)"
-        );
-    }
+        ),
+        1,
+        "reviewer upload-attachment must be the uniform not-supported result"
+    );
 }
 
 #[test]
@@ -452,7 +346,6 @@ fn reviewer_least_privilege_matrix() {
     assert!(!Role::Reviewer.allows(Capability::IssueCreate));
     assert!(!Role::Reviewer.allows(Capability::IssueUpdateBody));
     assert!(!Role::Reviewer.allows(Capability::IssueClose));
-    assert!(!Role::Reviewer.allows(Capability::RepoCreate));
     assert!(!Role::Reviewer.allows(Capability::ProjectCreate));
     assert!(!Role::Reviewer.allows(Capability::RelationCreate));
     assert!(!Role::Reviewer.allows(Capability::RelationDelete));
@@ -497,7 +390,6 @@ fn reviewer_least_privilege_matrix() {
             ]),
             3,
         ),
-        (strings(["repo", "create", "owner/repo", "--private"]), 3),
     ] {
         assert_eq!(crate::cli::run_with_role(args, Some("reviewer")), expected);
     }

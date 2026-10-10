@@ -6,7 +6,6 @@ impl RedmineProvider {
         crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
             comments: true,
-            repository_creation: false,
         }
     }
 
@@ -40,7 +39,7 @@ impl RedmineProvider {
             Capability::RelationRead | Capability::RelationCreate | Capability::RelationDelete => {
                 true
             }
-            Capability::RepoCreate | Capability::Notify => false,
+            Capability::Notify => false,
         }
     }
 }

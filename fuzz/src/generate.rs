@@ -2,9 +2,9 @@
 //! seed mutation, all driven by the reproducible [`Rng`].
 
 const COMMANDS: &[&str] = &[
-    "gui", "doctor", "admin", "auth", "config", "issue", "comment", "project", "status", "version",
-    "relation", "timer", "workflow", "worktree", "repo", "hooks", "plugin", "notify",
-    "help", "bogus", "",
+    "gui", "doctor", "admin", "auth", "config", "issue", "comment", "record", "project",
+    "status", "version", "relation", "timer", "workflow", "worktree", "hooks", "plugin", "notify",
+    "help", "bogus", "repo", "",
 ];
 
 const SUBCOMMANDS: &[&str] = &[
@@ -73,6 +73,8 @@ const INLINE_OPTIONS: &[&str] = &[
     "--project-id=",
     "--close-status-id=0",
     "--close-status-name=Closed",
+    "--kind=recon",
+    "--key=issue754-P1-a2-records",
     "--body=--bullet",
     "--title=-x",
     "--stdin",
@@ -86,6 +88,7 @@ const VALUES: &[&str] = &[
     "orchestrator",
     "executor",
     "reviewer",
+    "explore",
     "admin",
     "tester",
     "ORCHESTRATOR",

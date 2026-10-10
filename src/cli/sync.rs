@@ -272,6 +272,6 @@ fn storage_error(message: &str) -> i32 {
     )
 }
 
-fn error_json(error: &crate::providers::api::ForgejoError) -> String {
+fn error_json(error: &crate::providers::api::PhasegentError) -> String {
     error.json().to_string()
 }

@@ -1,16 +1,14 @@
 use super::Storage;
-use crate::auth::{GitlabStoredConfig, RedmineStoredConfig, StoredConfig};
-#[cfg(test)]
-use crate::infra::storage_schema::PROVIDER_GITLAB;
+use crate::auth::{RedmineStoredConfig, StoredConfig};
 use crate::infra::storage_schema::PROVIDER_REDMINE;
 use crate::policy::Role;
 use rusqlite::{OptionalExtension, params};
 
 impl Storage {
     /// Load the role-level configuration (provider preference plus the
-    /// Forgejo api_base/repository). Returns `None` when no row exists
-    /// for `role` so callers can distinguish "never written" from
-    /// "written with all fields null".
+    /// legacy `api_base`/`repository` columns, which stay inert). Returns
+    /// `None` when no row exists for `role` so callers can distinguish
+    /// "never written" from "written with all fields null".
     pub fn load_role_config(&self, role: Role) -> Result<Option<StoredConfig>, String> {
         let mut statement = self
             .connection
@@ -176,81 +174,6 @@ impl Storage {
         config.close_status_id = Some(close_status_id);
         self.save_redmine_config(role, &config)?;
         self.update_provider(role, PROVIDER_REDMINE)
-    }
-
-    /// Load the GitLab-specific configuration for `role`. Mirrors the
-    /// Redmine helper except the persisted `project_id` is a numeric
-    /// GitLab identifier, not a free-text slug. The project id is inert:
-    /// stored values are ignored and always returned as `None`.
-    pub fn load_gitlab_config(&self, role: Role) -> Result<Option<GitlabStoredConfig>, String> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT api_base FROM role_gitlab_config WHERE role = ?1")
-            .map_err(|error| format!("could not prepare gitlab config load: {error}"))?;
-        let value = statement
-            .query_row(params![role.as_str()], |row| {
-                Ok(GitlabStoredConfig {
-                    api_base: row.get(0)?,
-                    project_id: None,
-                })
-            })
-            .optional()
-            .map_err(|error| format!("could not read gitlab config: {error}"))?;
-        Ok(value)
-    }
-
-    /// Upsert the GitLab-specific configuration. The numeric project id
-    /// is stored as `INTEGER` so the column never holds a placeholder
-    /// string that callers might confuse with a Redmine slug.
-    /// `project_id` is no longer persisted; the column is left
-    /// untouched and `load` always returns `None`.
-    pub fn save_gitlab_config(
-        &self,
-        role: Role,
-        config: &GitlabStoredConfig,
-    ) -> Result<(), String> {
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(|error| format!("could not begin gitlab config write: {error}"))?;
-        transaction
-            .execute(
-                "INSERT INTO role_gitlab_config (role, api_base) \
-                 VALUES (?1, ?2) \
-                 ON CONFLICT(role) DO UPDATE SET \
-                    api_base = excluded.api_base",
-                params![role.as_str(), config.api_base,],
-            )
-            .map_err(|error| format!("could not write gitlab config: {error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("could not commit gitlab config write: {error}"))?;
-        Ok(())
-    }
-
-    /// Persist the bootstrap identity (`api_base`) without disturbing an
-    /// existing provider preference on `role_config`. The `project_id`
-    /// argument is retained for backward-compatible call sites but is
-    /// ignored: it is no longer persisted. The provider preference is
-    /// still flipped to "gitlab" so the resolver doesn't drift back to
-    /// the default Forgejo path.
-    #[cfg(test)]
-    pub fn persist_gitlab_bootstrap(
-        &self,
-        role: Role,
-        api_base: Option<String>,
-        project_id: u64,
-    ) -> Result<(), String> {
-        if project_id == 0 {
-            return Err("GitLab project id must be greater than zero".to_owned());
-        }
-        let mut config = self.load_gitlab_config(role)?.unwrap_or_default();
-        if api_base.is_some() {
-            config.api_base = api_base;
-        }
-        let _ = project_id;
-        self.save_gitlab_config(role, &config)?;
-        self.update_provider(role, PROVIDER_GITLAB)
     }
 
     /// Load the admin-provisioned Redmine identity for `role`.

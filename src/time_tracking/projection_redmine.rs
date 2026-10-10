@@ -1,7 +1,7 @@
 use crate::infra::storage::{Storage, TimerRun};
 use crate::infra::storage::{TIMER_SYNC_PROJECTING, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED};
 use crate::providers::RedmineProvider;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::api::PhasegentError;
 
 use super::util::format_unix_date;
 
@@ -11,8 +11,8 @@ pub(crate) fn time_entry_comments(run: &TimerRun) -> String {
     format!("phasegent timer run_id={}", run.run_id)
 }
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> PhasegentError + 'a {
+    move |message| PhasegentError::request(operation, message)
 }
 
 pub(crate) fn project_run_with_provider(
@@ -20,7 +20,7 @@ pub(crate) fn project_run_with_provider(
     run: &mut TimerRun,
     provider: &RedmineProvider,
     token: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), PhasegentError> {
     if run.sync_status == TIMER_SYNC_SYNCED && run.time_entry_id.is_some() {
         return Ok(());
     }
@@ -41,16 +41,16 @@ pub(crate) fn project_run_with_provider(
     if let Err(error) = storage.begin_projection() {
         let lower = error.to_ascii_lowercase();
         if lower.contains("busy") || lower.contains("locked") || lower.contains("acquire") {
-            return Err(ForgejoError::request(
+            return Err(PhasegentError::request(
                 "timer finish",
                 "projection already in progress for this run".to_owned(),
             ));
         }
-        return Err(ForgejoError::request("timer finish", error));
+        return Err(PhasegentError::request("timer finish", error));
     }
 
     // Ensure rollback on early exit; commit on success
-    let outcome: Result<(), ForgejoError> = (|| {
+    let outcome: Result<(), PhasegentError> = (|| {
         // Caller-bound lease: only the holder of `token` may POST. A loaded
         // `projecting` row without the matching token is never considered this
         // caller's claim. The token is persisted so a concurrent finish/recover
@@ -72,18 +72,18 @@ pub(crate) fn project_run_with_provider(
                 let current = storage
                     .load_timer_run(&run.run_id)
                     .map_err(timer_storage_error("timer finish claim"))?
-                    .ok_or_else(|| ForgejoError::config("timer run disappeared during claim"))?;
+                    .ok_or_else(|| PhasegentError::config("timer run disappeared during claim"))?;
                 if current.sync_status == TIMER_SYNC_SYNCED && current.time_entry_id.is_some() {
                     *run = current;
                     return Ok(());
                 }
                 if current.sync_status == TIMER_SYNC_PROJECTING {
-                    return Err(ForgejoError::request(
+                    return Err(PhasegentError::request(
                         "timer finish",
                         "projection already in progress for this run".to_owned(),
                     ));
                 }
-                return Err(ForgejoError::request(
+                return Err(PhasegentError::request(
                     "timer finish",
                     "could not claim projection; another operation is in progress".to_owned(),
                 ));
@@ -91,7 +91,7 @@ pub(crate) fn project_run_with_provider(
             *run = storage
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish claim"))?
-                .ok_or_else(|| ForgejoError::config("timer run disappeared after claim"))?;
+                .ok_or_else(|| PhasegentError::config("timer run disappeared after claim"))?;
         }
 
         // Activity initialization is now covered by the held lock and the
@@ -106,7 +106,7 @@ pub(crate) fn project_run_with_provider(
                 .update_activity_with_token(&run.run_id, token, activity_id)
                 .map_err(timer_storage_error("timer finish activity selection"))?;
             if !ok {
-                return Err(ForgejoError::request(
+                return Err(PhasegentError::request(
                     "timer finish",
                     "projection lease lost before activity persist".to_owned(),
                 ));
@@ -115,17 +115,17 @@ pub(crate) fn project_run_with_provider(
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish activity selection"))?
                 .ok_or_else(|| {
-                    ForgejoError::config("timer run disappeared after activity persist")
+                    PhasegentError::config("timer run disappeared after activity persist")
                 })?;
         }
 
         let activity_id = run.activity_id.ok_or_else(|| {
-            ForgejoError::config("Redmine activity id disappeared before projection")
+            PhasegentError::config("Redmine activity id disappeared before projection")
         })?;
 
         let finished_at = run
             .finished_at
-            .ok_or_else(|| ForgejoError::config("finished timer run has no finish timestamp"))?;
+            .ok_or_else(|| PhasegentError::config("finished timer run has no finish timestamp"))?;
         let comments = time_entry_comments(run);
         let spent_on = format_unix_date(finished_at)?;
         let issue = run.issue;
@@ -148,7 +148,7 @@ pub(crate) fn project_run_with_provider(
                 )
                 .map_err(timer_storage_error("timer finish reconciliation"))?;
             if !ok {
-                return Err(ForgejoError::request(
+                return Err(PhasegentError::request(
                     "timer finish",
                     "projection lease lost before reconciliation".to_owned(),
                 ));
@@ -157,14 +157,14 @@ pub(crate) fn project_run_with_provider(
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish reconciliation"))?
                 .ok_or_else(|| {
-                    ForgejoError::config("timer run disappeared after reconciliation")
+                    PhasegentError::config("timer run disappeared after reconciliation")
                 })?;
             return Ok(());
         }
 
         let hours = run
             .rounded_hours
-            .ok_or_else(|| ForgejoError::config("finished timer run has no rounded hours"))?;
+            .ok_or_else(|| PhasegentError::config("finished timer run has no rounded hours"))?;
         let created =
             provider.create_time_entry(issue, hours, &spent_on, activity_id, &comments)?;
         if let Some(entry) = created {
@@ -180,7 +180,7 @@ pub(crate) fn project_run_with_provider(
                 )
                 .map_err(timer_storage_error("timer finish projection"))?;
             if !ok {
-                return Err(ForgejoError::request(
+                return Err(PhasegentError::request(
                     "timer finish",
                     "projection lease lost before marking synced".to_owned(),
                 ));
@@ -188,7 +188,7 @@ pub(crate) fn project_run_with_provider(
             *run = storage
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish projection"))?
-                .ok_or_else(|| ForgejoError::config("timer run disappeared after projection"))?;
+                .ok_or_else(|| PhasegentError::config("timer run disappeared after projection"))?;
         } else {
             // The request was accepted but Redmine supplied no id. Keep the
             // exact ledger state and allow the next finish retry to re-list
@@ -204,7 +204,7 @@ pub(crate) fn project_run_with_provider(
                 )
                 .map_err(timer_storage_error("timer finish unconfirmed projection"))?;
             if !ok {
-                return Err(ForgejoError::request(
+                return Err(PhasegentError::request(
                     "timer finish",
                     "projection lease lost before marking unconfirmed".to_owned(),
                 ));
@@ -212,7 +212,7 @@ pub(crate) fn project_run_with_provider(
             *run = storage
                 .load_timer_run(&run.run_id)
                 .map_err(timer_storage_error("timer finish unconfirmed projection"))?
-                .ok_or_else(|| ForgejoError::config("timer run disappeared after unconfirmed"))?;
+                .ok_or_else(|| PhasegentError::config("timer run disappeared after unconfirmed"))?;
         }
         Ok(())
     })();

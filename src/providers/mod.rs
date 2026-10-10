@@ -1,8 +1,6 @@
 pub mod api;
 pub mod config;
 pub mod dispatch;
-pub mod forgejo;
-pub mod gitlab;
 pub mod index;
 pub mod index_store;
 pub mod local;
@@ -10,8 +8,8 @@ pub mod redmine;
 
 use crate::policy::Capability;
 
-pub use api::{CommentOutput, IssueSearchOptions, IssueSearchResult, IssueSummary, RepoSummary};
-pub use config::{GitlabConfig, GitlabProvider, ProviderKind, RedmineConfig, RedmineProvider};
+pub use api::{CommentOutput, IssueSearchOptions, IssueSearchResult, IssueSummary};
+pub use config::{ProviderKind, RedmineConfig, RedmineProvider};
 pub use dispatch::ProviderDispatcher;
 pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
 
@@ -20,7 +18,6 @@ pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
 pub struct ProviderCapabilities {
     pub issue_lifecycle: bool,
     pub comments: bool,
-    pub repository_creation: bool,
 }
 
 #[allow(dead_code)]
@@ -65,16 +62,4 @@ pub trait RedmineMetadataProvider {
     ) -> Result<RedmineProject, Self::Error>;
     fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error>;
     fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error>;
-}
-
-pub trait RepoProvider {
-    type Error;
-
-    fn create_repo(
-        &self,
-        target: &str,
-        private: bool,
-        description: &str,
-        auto_init: bool,
-    ) -> Result<RepoSummary, Self::Error>;
 }

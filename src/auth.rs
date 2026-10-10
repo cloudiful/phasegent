@@ -1,6 +1,5 @@
 use crate::infra::storage::{
-    GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_FORGEJO,
-    PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
+    GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_REDMINE, Storage,
 };
 // `PROVIDER_LOCAL` is imported from `storage_schema` directly because the
 // `storage` aggregator re-export lists only the non-local provider constants.
@@ -48,47 +47,11 @@ pub struct RedmineStoredConfig {
     pub group_role: Option<String>,
 }
 
-/// GitLab-only persistent configuration. The numeric `project_id` is the
-/// GitLab project identifier; the `api_base` is the URL of the
-/// `/api/v4` endpoint. Kept on a separate struct so legacy Redmine JSON
-/// files never accidentally bind the wrong fields and the storage layer
-/// can persist the numeric id without re-encoding a slug string.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct GitlabStoredConfig {
-    #[serde(default)]
-    pub api_base: Option<String>,
-    /// Legacy GitLab project identifier. Preserved for backward-compatible
-    /// JSON and SQLite decoding; no longer persisted or read—resolution
-    /// uses only explicit `--project-id`. The SQLite column remains but
-    /// values are ignored and cleared on open.
-    #[serde(default)]
-    pub project_id: Option<u64>,
-}
-
 pub struct SetupOptions {
     pub read_stdin: bool,
     pub api_base: Option<String>,
     pub repository: Option<String>,
     pub close_status_id: Option<String>,
-}
-
-#[allow(dead_code)]
-pub fn setup(
-    role: Role,
-    read_stdin: bool,
-    api_base: Option<String>,
-    repository: Option<String>,
-) -> Result<serde_json::Value, String> {
-    setup_provider(
-        role,
-        PROVIDER_FORGEJO,
-        SetupOptions {
-            read_stdin,
-            api_base,
-            repository,
-            close_status_id: None,
-        },
-    )
 }
 
 pub fn setup_provider(
@@ -107,9 +70,9 @@ pub fn setup_provider(
         // The local provider keeps no credential, needs no repository and no
         // close-status-id (both rejected above), and has no backend table.
         // Flip the role-scoped provider preference only so `resolve_kind`
-        // and `config show` report `local` while forgejo/redmine/gitlab
-        // rows stay intact. `api_base`/`read_stdin` are inert: there is
-        // nowhere to persist a base URL yet and nothing to read from stdin.
+        // and `config show` report `local` while redmine rows stay intact.
+        // `api_base`/`read_stdin` are inert: there is nowhere to persist a
+        // base URL and nothing to read from stdin.
         let storage = Storage::open()?;
         storage.update_provider(role, PROVIDER_LOCAL)?;
         return Ok(serde_json::json!({
@@ -118,47 +81,24 @@ pub fn setup_provider(
             "provider": provider
         }));
     }
-    let credential_label = match provider {
-        PROVIDER_FORGEJO => "Forgejo token",
-        PROVIDER_REDMINE => "Redmine API key",
-        PROVIDER_GITLAB => "GitLab PRIVATE-TOKEN",
-        _ => return Err(format!("unsupported provider '{provider}'")),
-    };
-    let credential = read_credential(provider, credential_label, read_stdin)?;
+    if provider != PROVIDER_REDMINE {
+        return Err(format!("unsupported provider '{provider}'"));
+    }
+    let credential = read_credential("Redmine API key", read_stdin)?;
     let credential = credential.trim().to_owned();
     if credential.is_empty() {
-        return Err(match provider {
-            PROVIDER_FORGEJO => "token cannot be empty".to_owned(),
-            PROVIDER_REDMINE => "Redmine API key cannot be empty".to_owned(),
-            PROVIDER_GITLAB => "GitLab PRIVATE-TOKEN cannot be empty".to_owned(),
-            _ => unreachable!("provider was validated above"),
-        });
+        return Err("Redmine API key cannot be empty".to_owned());
     }
 
     let storage = Storage::open()?;
     storage.save_credential(role, provider, &credential)?;
+    save_redmine_config(&storage, role, api_base, close_status_id)?;
 
-    match provider {
-        PROVIDER_FORGEJO => save_forgejo_config(&storage, role, api_base, repository)?,
-        PROVIDER_REDMINE => save_redmine_config(&storage, role, api_base, close_status_id)?,
-        PROVIDER_GITLAB => {
-            save_gitlab_config(&storage, role, api_base)?;
-        }
-        _ => unreachable!("provider was validated above"),
-    }
-
-    if provider == PROVIDER_FORGEJO {
-        Ok(serde_json::json!({
-            "configured": true,
-            "role": role.as_str()
-        }))
-    } else {
-        Ok(serde_json::json!({
-            "configured": true,
-            "role": role.as_str(),
-            "provider": provider
-        }))
-    }
+    Ok(serde_json::json!({
+        "configured": true,
+        "role": role.as_str(),
+        "provider": provider
+    }))
 }
 
 fn validate_provider_options(
@@ -166,28 +106,15 @@ fn validate_provider_options(
     repository: &Option<String>,
     close_status_id: &Option<String>,
 ) -> Result<(), String> {
-    // Provider-agnostic: the option-applicability rules reference the
-    // shared PROVIDER_* identity constants (never inline literals) so
-    // the messages describe which provider owns each option rather than
-    // which provider was configured. Credentials are not validated here;
-    // the `setup_provider` local arm skips credential handling entirely.
-    if provider == PROVIDER_FORGEJO && close_status_id.is_some() {
-        return Err("--close-status-id requires the redmine provider".to_owned());
-    }
+    // Provider-agnostic: the messages describe which provider owns each
+    // option rather than which provider was configured. Credentials are
+    // not validated here; the `setup_provider` local arm skips credential
+    // handling entirely.
     if provider == PROVIDER_REDMINE && repository.is_some() {
-        return Err("--repository requires the forgejo provider".to_owned());
+        return Err("--repository is not a Redmine option".to_owned());
     }
-    if provider == PROVIDER_GITLAB && repository.is_some() {
-        return Err("--repository requires the forgejo provider".to_owned());
-    }
-    if provider == PROVIDER_GITLAB && close_status_id.is_some() {
-        return Err("--close-status-id requires the redmine provider".to_owned());
-    }
-    // The local provider takes neither a Forgejo repository nor a Redmine
-    // close-status-id, mirroring the GitLab arms above so inapplicable
-    // options fail fast instead of being silently ignored.
     if provider == PROVIDER_LOCAL && repository.is_some() {
-        return Err("--repository requires the forgejo provider".to_owned());
+        return Err("--repository is not a local option".to_owned());
     }
     if provider == PROVIDER_LOCAL && close_status_id.is_some() {
         return Err("--close-status-id requires the redmine provider".to_owned());
@@ -195,47 +122,27 @@ fn validate_provider_options(
     Ok(())
 }
 
-fn read_credential(provider: &str, label: &str, read_stdin: bool) -> Result<String, String> {
-    // GitLab PRIVATE-TOKENs are still bearer-style secrets; the label is
-    // already disambiguated above. The kind is used only for the
-    // rpassword prompt path so the prompt and stdin path read alike.
-    let credential_kind = if provider == "forgejo" {
-        "token"
-    } else if provider == "gitlab" {
-        "PRIVATE-TOKEN"
-    } else {
-        "credential"
-    };
+fn read_credential(label: &str, read_stdin: bool) -> Result<String, String> {
     if read_stdin {
         let mut input = String::new();
         io::stdin()
             .read_to_string(&mut input)
-            .map_err(|error| format!("could not read {credential_kind} from stdin: {error}"))?;
+            .map_err(|error| format!("could not read credential from stdin: {error}"))?;
         Ok(input.trim().to_owned())
     } else {
         rpassword::prompt_password(format!("{label}: "))
-            .map_err(|error| format!("could not read {credential_kind} securely: {error}"))
+            .map_err(|error| format!("could not read credential securely: {error}"))
             .map(|value| value.trim().to_owned())
     }
 }
 
-pub fn token(role: Role, storage: &Storage) -> Result<String, String> {
-    let value = storage
-        .load_credential(role, PROVIDER_FORGEJO)?
-        .ok_or_else(|| format!("could not read {} token: missing", role.as_str()))?;
-    if value.is_empty() {
-        return Err(format!("{} token is empty", role.as_str()));
-    }
-    Ok(value)
-}
-
 pub fn load_config(role: Role, storage: &Storage) -> Result<Option<StoredConfig>, String> {
     // Effective role config: TOML overlays legacy SQLite so direct file
-    // edits affect the same resolver paths (Forgejo/Redmine/GitLab) used
-    // by normal commands. Precedence for each field is TOML > SQLite;
-    // callers apply explicit CLI > env before this stored-effective value.
-    // Credentials never consult TOML. Overlay parse/secret errors propagate
-    // instead of falling back so malformed TOML cannot be silently ignored.
+    // edits affect the same resolver paths used by normal commands.
+    // Precedence for the provider field is TOML > SQLite; callers apply
+    // explicit CLI > env before this stored-effective value. Credentials
+    // never consult TOML. Overlay parse/secret errors propagate instead of
+    // falling back so malformed TOML cannot be silently ignored.
     let base = storage.load_role_config(role)?;
     let overlay = crate::infra::config_overlay::load_overlay()?;
     let Some(overlay) = overlay else {
@@ -248,14 +155,6 @@ pub fn load_config(role: Role, storage: &Storage) -> Result<Option<StoredConfig>
     let mut present = base.is_some();
     if let Some(value) = &role_overlay.provider {
         merged.provider = Some(value.clone());
-        present = true;
-    }
-    if let Some(value) = &role_overlay.forgejo_api_base {
-        merged.api_base = Some(value.clone());
-        present = true;
-    }
-    if let Some(value) = &role_overlay.forgejo_repository {
-        merged.repository = Some(value.clone());
         present = true;
     }
     if present { Ok(Some(merged)) } else { Ok(None) }
@@ -291,11 +190,12 @@ pub fn load_redmine_config(
 }
 
 /// Roles scanned by the bounded legacy Redmine address migration.
-const REDMINE_ROLES: [Role; 4] = [
+const REDMINE_ROLES: [Role; 5] = [
     Role::Admin,
     Role::Orchestrator,
     Role::Executor,
     Role::Reviewer,
+    Role::Explore,
 ];
 
 /// Resolve the canonical global Redmine REST API base.
@@ -397,28 +297,6 @@ fn migrate_legacy_redmine_api_base(storage: &Storage) -> Result<Option<String>, 
     }
 }
 
-pub fn load_gitlab_config(
-    role: Role,
-    storage: &Storage,
-) -> Result<Option<GitlabStoredConfig>, String> {
-    // Effective GitLab config: TOML > SQLite, same contract as above.
-    let base = storage.load_gitlab_config(role)?;
-    let overlay = crate::infra::config_overlay::load_overlay()?;
-    let Some(overlay) = overlay else {
-        return Ok(base);
-    };
-    let Some(role_overlay) = overlay.role_overlay(role) else {
-        return Ok(base);
-    };
-    let mut merged = base.clone().unwrap_or_default();
-    let mut present = base.is_some();
-    if let Some(value) = &role_overlay.gitlab_api_base {
-        merged.api_base = Some(value.clone());
-        present = true;
-    }
-    if present { Ok(Some(merged)) } else { Ok(None) }
-}
-
 pub fn persist_redmine_bootstrap(
     role: Role,
     api_base: Option<String>,
@@ -451,21 +329,6 @@ pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> 
         .ok_or_else(|| "could not read Redmine API key: missing".to_owned())?;
     if value.is_empty() {
         return Err("Redmine API key is empty".to_owned());
-    }
-    Ok(value)
-}
-
-/// Read the GitLab PRIVATE-TOKEN stored for `role`.
-///
-/// Empty values produce a structured error so a noisy `auth setup` run
-/// never silently returns an empty bearer key. The token value is never
-/// surfaced in error messages; callers receive only the typed error.
-pub fn gitlab_token(role: Role, storage: &Storage) -> Result<String, String> {
-    let value = storage
-        .load_credential(role, PROVIDER_GITLAB)?
-        .ok_or_else(|| "could not read GitLab PRIVATE-TOKEN: missing".to_owned())?;
-    if value.is_empty() {
-        return Err("GitLab PRIVATE-TOKEN is empty".to_owned());
     }
     Ok(value)
 }
@@ -547,30 +410,6 @@ fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
     Ok((!trimmed.is_empty()).then_some(trimmed))
 }
 
-fn save_forgejo_config(
-    storage: &Storage,
-    role: Role,
-    api_base: Option<String>,
-    repository: Option<String>,
-) -> Result<(), String> {
-    if api_base.is_none() && repository.is_none() {
-        let current = storage.load_role_config(role)?;
-        if current.as_ref().and_then(|c| c.provider.as_deref()) != Some(PROVIDER_REDMINE) {
-            return Ok(());
-        }
-        return storage.update_provider(role, PROVIDER_FORGEJO);
-    }
-    let mut config = storage.load_role_config(role)?.unwrap_or_default();
-    config.provider = Some(PROVIDER_FORGEJO.to_owned());
-    if api_base.is_some() {
-        config.api_base = api_base;
-    }
-    if repository.is_some() {
-        config.repository = repository;
-    }
-    storage.save_role_config(role, &config)
-}
-
 /// Persist the `admin auth setup --provider redmine` fields: the
 /// non-secret REST address routes to the canonical global setting, the
 /// close-status id stays role-scoped, and the role provider preference is
@@ -630,19 +469,6 @@ fn validate_redmine_api_base(value: &str) -> Result<(), String> {
         return Err("Redmine API base must not contain a query or fragment".to_owned());
     }
     Ok(())
-}
-
-fn save_gitlab_config(
-    storage: &Storage,
-    role: Role,
-    api_base: Option<String>,
-) -> Result<(), String> {
-    if api_base.is_some() {
-        let mut config = storage.load_gitlab_config(role)?.unwrap_or_default();
-        config.api_base = api_base;
-        storage.save_gitlab_config(role, &config)?;
-    }
-    storage.update_provider(role, PROVIDER_GITLAB)
 }
 
 #[cfg(test)]
@@ -709,9 +535,8 @@ mod tests {
 
     #[test]
     fn auth_setup_local_rejects_inapplicable_options() {
-        // Mirrors the GitLab arms: local takes neither a Forgejo
-        // repository nor a Redmine close-status-id, and the message is
-        // provider-agnostic (it names the owning provider).
+        // Local takes neither a repository nor a Redmine close-status-id,
+        // and the message names the owning provider.
         let _lock = lock_workflow_tests();
         let err = setup_provider(
             Role::Executor,
@@ -724,7 +549,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert_eq!(err, "--repository requires the forgejo provider");
+        assert_eq!(err, "--repository is not a local option");
 
         let err = setup_provider(
             Role::Executor,

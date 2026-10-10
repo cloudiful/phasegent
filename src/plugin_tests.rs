@@ -1062,6 +1062,11 @@ fn adapter_template_documents_redirect_contract() {
     assert!(source.contains("rewritePhasegentCommand"));
     assert!(source.contains("agentRole"));
     assert!(source.contains("sessionPlaced"));
+    // issue #754 P3: explore maps to its own least-privilege role, not the
+    // reviewer surface, so it can publish an authorized recon record.
+    assert!(source.contains("[\"explore\", \"explore\"]"));
+    assert!(source.contains("[\"reviewer\", \"reviewer\"]"));
+    assert!(!source.contains("[\"explore\", \"reviewer\"]"));
 }
 
 #[test]
@@ -1160,7 +1165,7 @@ fn embedded_prompt(declaration: &str) -> String {
 fn embedded_skill() -> String {
     let resolved = embedded_prompt("const SKILL_CONTENT = `");
     assert!(
-        resolved.contains("# Phasegent") && resolved.contains("## Marker protocol"),
+        resolved.contains("# Phasegent") && resolved.contains("## Records and the audit note"),
         "the extracted SKILL_CONTENT must carry the skill body"
     );
     resolved

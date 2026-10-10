@@ -203,7 +203,10 @@ fn upload_output_never_contains_token_or_file_content() {
     let _ = fs::remove_dir_all(dir);
 }
 #[test]
-fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
+fn retired_provider_upload_is_rejected_before_file_access() {
+    // A retired provider name is rejected at argument parsing, before any
+    // file access: the same invocation with a missing file still fails on
+    // the provider selection, never on the path.
     let missing = crate::test_scratch::root().join(format!(
         "phasegent-missing-for-not-supported-{}-{}",
         std::process::id(),
@@ -226,6 +229,8 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
         let st = Storage::open_at(&db).unwrap();
         st.save_credential(Role::Orchestrator, prov, "dummy-token-for-test")
             .unwrap();
+        // Exit 2 is the argument-level rejection for the retired provider;
+        // the missing `--path` is never opened.
         let exit = crate::cli::run_with_role(
             strings([
                 "--provider",
@@ -242,27 +247,7 @@ fn forgejo_and_gitlab_upload_are_not_supported_without_file_access() {
             ]),
             Some("orchestrator"),
         );
-        assert_eq!(exit, 1, "{prov}");
-        let dir = temp_dir();
-        let real = write_temp_file(&dir, "real.txt", b"data");
-        let exit2 = crate::cli::run_with_role(
-            strings([
-                "--provider",
-                prov,
-                "--api-base",
-                "http://example.test",
-                "--repository",
-                "owner/repo",
-                "issue",
-                "upload-attachment",
-                "42",
-                "--path",
-                real.to_str().unwrap(),
-            ]),
-            Some("orchestrator"),
-        );
-        assert_eq!(exit2, 1, "{prov} real");
-        let _ = fs::remove_dir_all(dir);
+        assert_eq!(exit, 2, "{prov}");
         let _ = fs::remove_dir_all(tmp);
     }
 }

@@ -1,29 +1,28 @@
 use crate::infra::storage::{Storage, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED, TimerRun};
 use crate::policy::Role;
+use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
-use crate::providers::gitlab::GitlabProvider;
 use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
 
 use super::dispatch::TimerOutput;
 use super::util::{bounded_error_message, generate_projection_token, now_epoch_seconds};
 
-fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, ForgejoError> {
+fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, PhasegentError> {
     let role = role_value.ok_or_else(|| {
-        ForgejoError::config(format!(
+        PhasegentError::config(format!(
             "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
         ))
     })?;
     if role != Role::Orchestrator {
-        return Err(ForgejoError::config(format!(
+        return Err(PhasegentError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
     Ok(role)
 }
 
-fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> PhasegentError + 'a {
+    move |message| PhasegentError::request(operation, message)
 }
 
 pub(crate) fn execute_finish(
@@ -34,11 +33,8 @@ pub(crate) fn execute_finish(
     close_status_id: Option<&str>,
     run_id: &str,
     result: &str,
-) -> Result<TimerOutput, ForgejoError> {
+) -> Result<TimerOutput, PhasegentError> {
     let _role = timer_orchestrator(role_value, "timer finish")?;
-    if provider_kind == Some(ProviderKind::Forgejo) {
-        return Err(ForgejoError::not_supported("forgejo", "timer finish"));
-    }
 
     // This local transition deliberately precedes every provider/key lookup
     // and every network request. A failed projection is recoverable by
@@ -49,16 +45,10 @@ pub(crate) fn execute_finish(
         .finish_timer_run(run_id, result, finished_at)
         .map_err(timer_storage_error("timer finish"))?;
 
-    // The early-return check is provider-aware: Redmine uses the
-    // numeric time-entry id as the durable idempotency key, so the
-    // row must carry a non-null id before the projection is skipped.
-    // GitLab has no equivalent remote id and reconciles retries via a
-    // run-marker embedded in the spent-time summary; the projection
-    // path therefore only needs `sync_status == synced` to skip.
-    let already_projected = match provider_kind {
-        Some(ProviderKind::Gitlab) => run.sync_status == TIMER_SYNC_SYNCED,
-        _ => run.sync_status == TIMER_SYNC_SYNCED && run.time_entry_id.is_some(),
-    };
+    // Redmine uses the numeric time-entry id as the durable idempotency
+    // key, so the row must carry a non-null id before the projection is
+    // skipped.
+    let already_projected = run.sync_status == TIMER_SYNC_SYNCED && run.time_entry_id.is_some();
     if already_projected {
         return Ok(TimerOutput {
             run,
@@ -114,13 +104,7 @@ pub(crate) fn execute_finish(
         }
     };
     let sync_warning = (projection.sync_status == TIMER_SYNC_UNCONFIRMED).then(|| {
-        match provider_kind {
-            Some(ProviderKind::Gitlab) => {
-                "GitLab accepted the spent time without returning totals; retry reconciliation before creating another entry"
-                    .to_owned()
-            }
-            _ => "Redmine accepted the Time Entry without returning an id; retry reconciliation before creating another entry".to_owned(),
-        }
+        "Redmine accepted the Time Entry without returning an id; retry reconciliation before creating another entry".to_owned()
     });
     // The timer JSON remains the success signal; notifications are
     // manual-only via `notify send`.
@@ -139,7 +123,7 @@ pub(crate) fn project_run(
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     token: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), PhasegentError> {
     let resolved = resolve_kind(Role::Orchestrator, provider_kind)?;
     match resolved {
         ProviderKind::Redmine => {
@@ -147,13 +131,6 @@ pub(crate) fn project_run(
                 redmine_provider_for_finish(Some(resolved), api_base, project_id, close_status_id)?;
             super::projection_redmine::project_run_with_provider(storage, run, &provider, token)
         }
-        ProviderKind::Gitlab => {
-            let provider = gitlab_provider_for_finish(Some(resolved), api_base, project_id)?;
-            super::projection_gitlab::project_run_with_gitlab_provider(
-                storage, run, &provider, token,
-            )
-        }
-        ProviderKind::Forgejo => Err(ForgejoError::not_supported("forgejo", "timer finish")),
         // Local keeps the timer ledger in `Storage` and has no remote
         // time-entry projection, so the finish transition above is the
         // whole record. The projection arm is a no-op: the run keeps the
@@ -166,21 +143,10 @@ pub(crate) fn project_run(
 fn require_redmine_provider(
     provider_kind: Option<ProviderKind>,
     operation: &str,
-) -> Result<(), ForgejoError> {
+) -> Result<(), PhasegentError> {
     let resolved_provider = resolve_kind(Role::Orchestrator, provider_kind)?;
     if resolved_provider != ProviderKind::Redmine {
-        return Err(ForgejoError::not_supported("forgejo", operation));
-    }
-    Ok(())
-}
-
-fn require_gitlab_provider(
-    provider_kind: Option<ProviderKind>,
-    operation: &str,
-) -> Result<(), ForgejoError> {
-    let resolved_provider = resolve_kind(Role::Orchestrator, provider_kind)?;
-    if resolved_provider != ProviderKind::Gitlab {
-        return Err(ForgejoError::not_supported(
+        return Err(PhasegentError::not_supported(
             resolved_provider.as_str(),
             operation,
         ));
@@ -193,7 +159,7 @@ fn redmine_provider_for_finish(
     api_base: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<RedmineProvider, ForgejoError> {
+) -> Result<RedmineProvider, PhasegentError> {
     // Provider and API-base arguments are resolved here, after the local
     // finish transition, so no remote call can occur before durable state.
     // The caller has already selected the orchestrator role.
@@ -202,28 +168,13 @@ fn redmine_provider_for_finish(
     RedmineProvider::for_role(Role::Orchestrator, config)
 }
 
-fn gitlab_provider_for_finish(
-    provider_kind: Option<ProviderKind>,
-    api_base: Option<&str>,
-    project_id: Option<&str>,
-) -> Result<GitlabProvider, ForgejoError> {
-    // The provider and api-base arguments are resolved here, after the
-    // local finish transition, so no remote call can occur before
-    // durable state. The caller has already selected the orchestrator
-    // role.
-    require_gitlab_provider(provider_kind, "timer finish")?;
-    let config =
-        crate::providers::config::GitlabConfig::resolve(Role::Orchestrator, api_base, project_id)?;
-    GitlabProvider::for_role(Role::Orchestrator, config)
-}
-
 /// Internal entry point used by the lifecycle auto-accounting path.
 /// Unlike [`execute_finish`] it skips the orchestrator-role check,
 /// the provider-kind gating, and the projection call. The lifecycle
 /// path opens and closes runs purely as a local bookkeeping
 /// transition: the operator still drives `timer finish` / `timer
-/// recover` when they want a real Redmine Time Entry or GitLab spent
-/// time POST. The result is hard-coded to `DONE` because the
+/// recover` when they want a real Redmine Time Entry POST. The result
+/// is hard-coded to `DONE` because the
 /// orchestrator's status set/advance path always represents a
 /// successful transition; a failed transition already returned an
 /// error before reaching this helper.

@@ -1,16 +1,14 @@
 use crate::command::RelationCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind};
 
-/// Redmine or GitLab issue relations. `list` is available to every non-admin
+/// Redmine issue relations. `list` is available to every non-admin
 /// role (orchestrator/executor/reviewer), while `create` and `delete` are
-/// orchestrator-only; the admin identity is denied all three. Forgejo
+/// orchestrator-only; the admin identity is denied all three. Local
 /// rejects every relation operation with a structured not-supported error
-/// before any network access. The dispatch path handles GitLab's
-/// `/links` endpoint, with `precedes` and `--delay` rejected as
-/// structured config errors rather than silently mapped.
+/// before any network access.
 pub(crate) fn execute_relation(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -29,23 +27,13 @@ pub(crate) fn execute_relation(
     if !role.allows(capability) {
         return super::permission_error(role, capability);
     }
-    // Forgejo has no issue relations; reject before any provider build or
-    // network access so the structured not-supported error is the only side
-    // effect. Redmine and GitLab both continue; the dispatch layer in
-    // `redmine_relations_cli` validates provider-specific flags.
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
-        Ok(ProviderKind::Redmine) | Ok(ProviderKind::Gitlab) => {}
+        Ok(ProviderKind::Redmine) => {}
         // Local has no issue-relations surface; keep the structured
         // not-supported error before any provider build so the only side
         // effect is the structured error.
         Ok(ProviderKind::Local) => {
-            return super::provider_error(ForgejoError::not_supported(
+            return super::provider_error(PhasegentError::not_supported(
                 "local",
                 capability.operation(),
             ));
@@ -64,7 +52,7 @@ pub(crate) fn execute_relation(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));

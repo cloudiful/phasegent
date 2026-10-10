@@ -17,9 +17,7 @@ use crate::command::{self, Command, ProjectCommand};
 use crate::config;
 use crate::config_write;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
-use crate::infra::storage::{
-    DB_FILENAME, PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE, Storage,
-};
+use crate::infra::storage::{DB_FILENAME, PROVIDER_REDMINE, Storage};
 use crate::policy::Role;
 use serde_json::Value;
 use std::fs;

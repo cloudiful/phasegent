@@ -3,7 +3,7 @@
 [English](README.md)
 
 `phasegent` 是面向 OpenCode provider 工作流的角色化 CLI，用一套命令行接口
-处理 issue、仓库、评论和工作流自动化。
+处理 issue、结构化 agent record、评论和工作流自动化。
 
 ## 安装
 
@@ -45,8 +45,7 @@ phasegent --provider redmine admin workflow bootstrap \
 Redmine REST 地址是机器级的：`auth setup --api-base` 与
 `admin config set redmine-api-base <URL>` 保存所有 role 共用的同一个地址，
 `config show` 只在 `global_settings` 中报告一次。credential、已开通的身份、
-provider 选择以及 Redmine close-status id 仍是 role 级；role 级的
-Forgejo/GitLab 地址使用 `admin config set api-base <URL>`。
+provider 选择以及 Redmine close-status id 仍是 role 级。
 
 ## 常用命令
 
@@ -55,6 +54,8 @@ phasegent issue search --query "bug"
 phasegent issue get 123
 phasegent issue get 123 124 125
 phasegent comment list 123
+phasegent record list 123
+phasegent record get 123 42
 phasegent issue create \
   --title "Short title" --body "Issue details"
 phasegent issue update 123 --body "Updated details"
@@ -67,8 +68,9 @@ phasegent doctor
 分支关联是本地只读查询：`issue status` 显示当前分支及其关联 issue 与缓存状态，`issue branches N` 列出本仓库中关联到该 issue 的全部分支（跨全部 scope）。
 
 选择的 provider 不是默认值时，在命令上添加 `--provider redmine` 或
-`--provider gitlab`。可以使用 `--repository OWNER/REPOSITORY` 和
-`--project-id ID` 覆盖仓库或 project 的自动发现。
+`--provider local`。可以使用 `--project-id ID` 覆盖 project 的自动发现；
+`--repository OWNER/REPOSITORY` 指定 Git 主机上的仓库，用于
+`workflow bootstrap` 与 project 发现。
 
 Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。
@@ -76,8 +78,22 @@ Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`），OpenCode
 skill 见 `skills/phasegent`：它选择 tracking 模式（`INLINE` /
 `TRACKED_ISSUE` / `LOCAL_ISSUE`），通过 `--provider` 从配置解析 provider
-（最终回退 Forgejo），并记录当前的 `issue update`、`worktree acquire --base`、
-`worktree probe` 与 `worktree prune` 用法。
+（最终回退 Redmine），并记录当前的 `issue update`、结构化 `record` 发布、
+`worktree acquire --base`、`worktree probe` 与 `worktree prune` 用法。
+
+## Record
+
+`record create` / `record get` / `record list` 是结构化笔记的官方路径：CLI
+生成唯一的带版本元数据 header，agent 只提供元数据与纯文本正文，子会话绝不手写
+header。record 的 id 即其原生引用（Redmine 为 `#change-<id>`，本地为
+`#note-<id>`），`record get ISSUE RECORD_ID` 会读回纯文本正文与结构化字段，
+因此父会话引用 record id 即可，无需转录笔记。kind 绑定会话 role：`executor` 与
+`reviewer` 记录保留各自的 status/verdict 语义，只读的 `explore` role 只能发布
+经授权的 recon record。
+
+tracking 仅支持 Redmine 或显式的离线 local；不受支持的 provider 名称会在任何网络
+调用前以可操作的 config 错误被拒绝。引用协议、稳定请求键与 Redmine/local 边界
+详见 [docs/agent-records.md](docs/agent-records.md)。
 
 ## Worktree
 

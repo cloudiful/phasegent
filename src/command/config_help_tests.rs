@@ -95,11 +95,11 @@ fn non_help_invocations_keep_their_parse_and_error_behavior() {
         Command::ConfigProviderSet { .. }
     ));
     assert!(matches!(
-        parse_config_admin(&strings(&["set", "api-base", "https://example.com"])).unwrap(),
+        parse_config_admin(&strings(&["set", "redmine-close-status-id", "5"])).unwrap(),
         Command::ConfigSet { .. }
     ));
     assert!(matches!(
-        parse_config_admin(&strings(&["clear", "api-base"])).unwrap(),
+        parse_config_admin(&strings(&["clear", "redmine-close-status-id"])).unwrap(),
         Command::ConfigClear { .. }
     ));
     // The admin group still rejects read-only views with the top-level pointer.

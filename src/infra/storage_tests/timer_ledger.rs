@@ -141,14 +141,14 @@ fn timer_ledger_keeps_historical_tester_rows_readable() {
 
 #[test]
 fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
-    // GitLab has no numeric time-entry id, so its projection path advances
-    // sync_status to `synced` while leaving `redmine_time_entry_id` null.
-    // The Redmine path keeps its id-based behaviour so `load_timer_run`
+    // A projection can advance sync_status to `synced` while leaving
+    // `redmine_time_entry_id` null (no remote id was returned). The
+    // Redmine path keeps its id-based behaviour so `load_timer_run`
     // always reports the actual state.
-    let (temp_dir, storage) = open_at_temp("timer-gitlab-sync");
+    let (temp_dir, storage) = open_at_temp("timer-synced-sync");
     let _ = storage
         .start_timer_run(
-            "timer-gitlab",
+            "timer-synced",
             7,
             "implementation",
             "executor",
@@ -157,14 +157,14 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
         )
         .unwrap();
     let finished = storage
-        .finish_timer_run("timer-gitlab", "DONE", 1_700_003_600)
+        .finish_timer_run("timer-synced", "DONE", 1_700_003_600)
         .unwrap();
     assert_eq!(finished.sync_status, "pending");
     assert!(finished.time_entry_id.is_none());
 
     let updated = storage
         .mark_timer_sync(
-            "timer-gitlab",
+            "timer-synced",
             None,
             None,
             crate::infra::storage::TIMER_SYNC_SYNCED,
@@ -174,12 +174,12 @@ fn timer_ledger_distinguishes_synced_with_or_without_time_entry_id() {
     assert_eq!(updated.sync_status, "synced");
     assert!(updated.time_entry_id.is_none());
 
-    let persisted = storage.load_timer_run("timer-gitlab").unwrap().unwrap();
+    let persisted = storage.load_timer_run("timer-synced").unwrap().unwrap();
     assert_eq!(persisted.sync_status, "synced");
     assert!(persisted.time_entry_id.is_none());
 
-    // The Redmine-shaped path still records the id and stays
-    // distinguishable from the GitLab path.
+    // The id-carrying path records the id and stays distinguishable
+    // from the id-less path.
     let _ = storage
         .start_timer_run(
             "timer-redmine",
@@ -231,7 +231,7 @@ fn timer_ledger_marks_failure_with_bounded_error_message() {
             None,
             None,
             crate::infra::storage::TIMER_SYNC_FAILED,
-            Some("GitLab add_spent_time returned HTTP 422"),
+            Some("Redmine add time entry returned HTTP 422"),
         )
         .unwrap();
     assert_eq!(updated.sync_status, "failed");

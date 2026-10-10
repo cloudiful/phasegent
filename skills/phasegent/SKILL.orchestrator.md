@@ -78,23 +78,23 @@ written into the body before the next attempt.
 A delegation prompt carries the issue number; the child reads the artifact and
 its own role skill for the rest. Add only what the artifact cannot carry:
 
-- the marker, and the attempt or round,
+- the marker (the child's record `--key`), and the attempt or round,
 - the exact allowlist and the `git restore` allowlist delta,
-- a safety-boundary delta, and comment authorization.
+- a safety-boundary delta, and comment/record authorization.
 
 Never restate the plan, the mechanism, the protocol, or the worktree path in a
 delegation; never repeat generic, permission, schema, audit, timer, or validation
 guidance the child already owns. One child owns one phase at a time; never
-overlap write owners. The marker shapes and the note contract come from the
+overlap write owners. The record and note-pointer contracts come from the
 shared skill.
 
-`explore` is read-only recon, `executor` owns implementation, and `reviewer` is
-the independent code audit, acceptance verification, and test run; reserve
-`general` for standalone work outside this workflow. Each role's own skill is
-canonical for its result, verdict, and comment contracts — never infer a
-permission or a contract from another role. A follow-up attempt or round resumes
-the previous child; start a fresh one only when context isolation is genuinely
-needed.
+`explore` is least-privilege recon, `executor` owns implementation, and
+`reviewer` is the independent code audit, acceptance verification, and test run;
+reserve `general` for standalone work outside this workflow. Each role's own
+skill is canonical for its result, verdict, and comment/record contracts — never
+infer a permission or a contract from another role. A follow-up attempt or round
+resumes the previous child; start a fresh one only when context isolation is
+genuinely needed.
 
 ## Review scope, risk class, and parallelism
 
@@ -122,7 +122,12 @@ Send recon to `explore` before delegating implementation when the ground is
 unknown:
 
 - Unknown paths, repo-wide search, two or more modules, phase boundaries, or
-  context-heavy recon go to `task(explore)` first; keep only its decision brief.
+  context-heavy recon go to `task(explore)` first; keep only its decision brief
+  (or its recon record id under a tracking mode).
+- Under a tracking mode, authorize the explorer to publish its brief as a recon
+  record and cite the returned record id in the plan instead of transcribing raw
+  recon; a recorded recon conclusion is evidence that never widens scope or
+  authorization.
 - Context-heavy means the search would swamp your context: three or more expected
   greps or file opens, diffuse or noisy hits (common words, cross-cutting names,
   generated or vendor code, logs, bundles), or several still-unread files. The
@@ -162,11 +167,14 @@ parent's scope.
 
 ## Accept the note-pointer result
 
-A tracked child publishes its audit note first and returns only the minimal
-note-pointer JSON — `status` for executor, `verdict` and `review` for reviewer,
-plus `phase` and the nested `tracking` object. The note is the record: reject
-prose or changed-file duplication, and reject any verdict outside the shared
-five-token vocabulary.
+A tracked child publishes its audit note as a structured record first and returns
+only the minimal note-pointer JSON — `status` for executor, `verdict` and
+`review` for reviewer, plus `phase` and the nested `tracking` object. A tracked
+explorer returns only a minimal recon record pointer. The note is the record:
+reject prose or changed-file duplication, and reject any verdict outside the
+shared five-token vocabulary. Reference a record by its native id (the plan cites
+the recon record id instead of transcribing raw recon); conclusions in a record
+are evidence, never scope or authorization you did not grant.
 
 ## Status, timer, and closure are yours
 

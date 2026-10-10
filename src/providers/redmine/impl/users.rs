@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::{RedmineNewUser, RedmineUser};
 
@@ -22,25 +22,25 @@ impl RedmineProvider {
         lastname: &str,
         mail: &str,
         password: &str,
-    ) -> Result<RedmineUser, ForgejoError> {
+    ) -> Result<RedmineUser, PhasegentError> {
         if login.trim().is_empty() {
-            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+            return Err(PhasegentError::config("Redmine user login cannot be empty"));
         }
         if firstname.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine user firstname cannot be empty",
             ));
         }
         if lastname.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine user lastname cannot be empty",
             ));
         }
         if mail.trim().is_empty() {
-            return Err(ForgejoError::config("Redmine user mail cannot be empty"));
+            return Err(PhasegentError::config("Redmine user mail cannot be empty"));
         }
         if password.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine user password cannot be empty",
             ));
         }
@@ -55,9 +55,9 @@ impl RedmineProvider {
     ///
     /// Used by contract tests and admin provisioning.
     #[allow(dead_code)]
-    pub fn get_user(&self, id: u64) -> Result<RedmineUser, ForgejoError> {
+    pub fn get_user(&self, id: u64) -> Result<RedmineUser, PhasegentError> {
         if id == 0 {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine user id must be greater than zero",
             ));
         }
@@ -71,12 +71,12 @@ impl RedmineProvider {
     ///
     /// Used by contract tests and admin provisioning.
     #[allow(dead_code)]
-    pub fn get_user_api_key(&self, id: u64) -> Result<String, ForgejoError> {
+    pub fn get_user_api_key(&self, id: u64) -> Result<String, PhasegentError> {
         let user = self.get_user(id)?;
         user.api_key_value()
             .filter(|value| !value.chars().any(char::is_control))
             .map(str::to_owned)
-            .ok_or_else(|| ForgejoError::Decode {
+            .ok_or_else(|| PhasegentError::Decode {
                 operation: "user get".to_owned(),
                 message: "Redmine user response missing API key".to_owned(),
             })
@@ -96,22 +96,22 @@ impl RedmineProvider {
         firstname: &str,
         lastname: &str,
         mail: &str,
-    ) -> Result<RedmineUser, ForgejoError> {
+    ) -> Result<RedmineUser, PhasegentError> {
         if login.trim().is_empty() {
-            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+            return Err(PhasegentError::config("Redmine user login cannot be empty"));
         }
         if firstname.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine user firstname cannot be empty",
             ));
         }
         if lastname.trim().is_empty() {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "Redmine user lastname cannot be empty",
             ));
         }
         if mail.trim().is_empty() {
-            return Err(ForgejoError::config("Redmine user mail cannot be empty"));
+            return Err(PhasegentError::config("Redmine user mail cannot be empty"));
         }
         self.http
             .create_service_user(login, firstname, lastname, mail)
@@ -122,9 +122,9 @@ impl RedmineProvider {
     /// Used by provisioning to look up the deterministic service-user
     /// login before creating, so reruns and legacy databases never
     /// create duplicates. Blank logins fail fast without HTTP.
-    pub fn find_user_by_login(&self, login: &str) -> Result<Option<RedmineUser>, ForgejoError> {
+    pub fn find_user_by_login(&self, login: &str) -> Result<Option<RedmineUser>, PhasegentError> {
         if login.trim().is_empty() {
-            return Err(ForgejoError::config("Redmine user login cannot be empty"));
+            return Err(PhasegentError::config("Redmine user login cannot be empty"));
         }
         self.http.find_user_by_login(login)
     }
@@ -135,7 +135,7 @@ impl RedmineProvider {
     /// for contract tests and for future provisioning scans that need
     /// more than a single-login lookup.
     #[allow(dead_code)]
-    pub fn list_users(&self) -> Result<Vec<RedmineUser>, ForgejoError> {
+    pub fn list_users(&self) -> Result<Vec<RedmineUser>, PhasegentError> {
         self.http.list_users()
     }
 }

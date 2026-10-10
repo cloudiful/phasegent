@@ -4,9 +4,7 @@ use crate::providers::config::ProviderKind;
 use serde_json::Value;
 use std::io::{self, Read};
 
-use super::common::{
-    update_gitlab_config_field, update_redmine_config_field, update_role_config_field,
-};
+use super::common::update_redmine_config_field;
 use super::{ConfigSetOutcome, is_role_scoped_setting, is_secret_setting};
 
 /// Persist a setting value that has already been sourced (from
@@ -144,28 +142,6 @@ fn persist_set_value(
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
             storage.update_provider(role, kind.as_str())?;
         }
-        "PHASEGENT_API_BASE" => {
-            let role = role.expect("role required");
-            if trimmed.is_empty() {
-                return Err(format!("value for '{canonical}' cannot be empty"));
-            }
-            // Generic runtime alias for the non-Redmine providers. It must
-            // not create or update the legacy role-scoped Redmine address
-            // row; the canonical Redmine address is the global
-            // `PHASEGENT_REDMINE_API_BASE` setting.
-            update_role_config_field(storage, role, |c| {
-                c.api_base = Some(trimmed.to_owned());
-            })?;
-            update_gitlab_config_field(storage, role, |c| {
-                c.api_base = Some(trimmed.to_owned());
-            })?;
-        }
-        "PHASEGENT_REPOSITORY" => {
-            let role = role.expect("role required");
-            update_role_config_field(storage, role, |c| {
-                c.repository = Some(trimmed.to_owned());
-            })?;
-        }
         "PHASEGENT_REDMINE_API_BASE" => {
             // Canonical global Redmine REST address (non-secret). No role is
             // required and no role-scoped address row is written.
@@ -182,12 +158,6 @@ fn persist_set_value(
             }
             update_redmine_config_field(storage, role, |c| {
                 c.close_status_id = Some(parsed);
-            })?;
-        }
-        "PHASEGENT_GITLAB_API_BASE" => {
-            let role = role.expect("role required");
-            update_gitlab_config_field(storage, role, |c| {
-                c.api_base = Some(trimmed.to_owned());
             })?;
         }
         "PHASEGENT_CLOSE_STATUS_ID" => {

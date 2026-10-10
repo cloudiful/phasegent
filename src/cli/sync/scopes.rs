@@ -128,7 +128,7 @@ pub(super) fn open_lease_storage() -> Result<Storage, String> {
 /// exactly like any other provider-backed command without `--provider`.
 pub(super) fn default_provider(
     role: crate::policy::Role,
-) -> Result<crate::providers::ProviderDispatcher, crate::providers::api::ForgejoError> {
+) -> Result<crate::providers::ProviderDispatcher, crate::providers::api::PhasegentError> {
     let kind = crate::providers::config::resolve_kind(role, None)?;
     crate::cli::provider_for(role, Some(kind), None, None, None, None)
 }
@@ -136,11 +136,11 @@ pub(super) fn default_provider(
 /// Small adapter so a [`WorktreeError`] can travel through the pass's
 /// single error channel.
 pub(super) trait IntoProviderError {
-    fn into_provider_error(self) -> crate::providers::api::ForgejoError;
+    fn into_provider_error(self) -> crate::providers::api::PhasegentError;
 }
 
 impl IntoProviderError for WorktreeError {
-    fn into_provider_error(self) -> crate::providers::api::ForgejoError {
-        crate::providers::api::ForgejoError::request("issue sync", self.message)
+    fn into_provider_error(self) -> crate::providers::api::PhasegentError {
+        crate::providers::api::PhasegentError::request("issue sync", self.message)
     }
 }

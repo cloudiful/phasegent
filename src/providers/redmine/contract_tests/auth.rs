@@ -31,7 +31,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
     .unwrap();
     assert_eq!(admin.role, Some(Role::Admin));
     let invalid_role = "invalid".parse::<Role>().unwrap_err();
-    assert!(invalid_role.contains("admin, orchestrator, executor, or reviewer"));
+    assert!(invalid_role.contains("admin, orchestrator, executor, reviewer, or explore"));
     assert!("tester".parse::<Role>().is_err());
 
     let args = strings([
@@ -124,7 +124,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
             },
         )
         .unwrap_err(),
-        "--repository requires the forgejo provider"
+        "--repository is not a Redmine option"
     );
 }
 
@@ -245,10 +245,13 @@ fn reviewer_credential_is_role_scoped_and_isolated() {
         snapshot.roles[0].redmine_credential.length,
         "reviewer-secret".len()
     );
-    // Global snapshot must enumerate exactly the four active roles
+    // Global snapshot must enumerate every known role
     let global = crate::config_snapshot::render(&storage, None).unwrap();
     let names: Vec<&str> = global.roles.iter().map(|r| r.role).collect();
-    assert_eq!(names, vec!["admin", "orchestrator", "executor", "reviewer"]);
+    assert_eq!(
+        names,
+        vec!["admin", "orchestrator", "executor", "reviewer", "explore"]
+    );
     let _ = fs::remove_dir_all(temp_dir);
 }
 

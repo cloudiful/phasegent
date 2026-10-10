@@ -55,6 +55,7 @@ pub(crate) fn build_report() -> Result<DoctorReport, String> {
         Role::Orchestrator,
         Role::Executor,
         Role::Reviewer,
+        Role::Explore,
     ] {
         roles.push(config_snapshot::snapshot_role(&storage, role)?);
     }

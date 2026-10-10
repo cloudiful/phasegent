@@ -4,8 +4,8 @@
 //! exactly as declared.
 
 use super::super::{
-    ACCESS_NOTIFY, ACCESS_ORCHESTRATOR, ACCESS_REPO_CREATE, ACCESS_WORKTREE_READ, CommandSpec,
-    ProviderScope, RoleAccess, group, leaf, leaf_op,
+    ACCESS_NOTIFY, ACCESS_ORCHESTRATOR, ACCESS_WORKTREE_READ, CommandSpec, ProviderScope,
+    RoleAccess, group, leaf, leaf_op,
 };
 
 pub(super) const OPS: &[CommandSpec] = &[
@@ -58,17 +58,6 @@ pub(super) const OPS: &[CommandSpec] = &[
                 "worktree heartbeat",
             ),
         ],
-    ),
-    group(
-        "repo",
-        "Repository operations",
-        RoleAccess::Open,
-        ProviderScope::NonRedmine,
-        &[leaf(
-            "create",
-            "Create a private repository",
-            ACCESS_REPO_CREATE,
-        )],
     ),
     group(
         "hooks",

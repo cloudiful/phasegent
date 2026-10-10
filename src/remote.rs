@@ -218,41 +218,6 @@ fn normalize_identifier_component(component: &str) -> String {
     normalized
 }
 
-pub fn validate_repository_create_target(value: &str) -> Result<String, String> {
-    let parts: Vec<_> = value.split('/').collect();
-    if parts.len() != 2 || parts.iter().any(|part| !valid_name(part)) {
-        return Err("repository must use OWNER/REPOSITORY form with valid names".to_owned());
-    }
-    Ok(value.to_owned())
-}
-
-fn valid_name(value: &str) -> bool {
-    let mut chars = value.chars();
-    chars
-        .next()
-        .is_some_and(|first| first.is_ascii_alphanumeric())
-        && chars.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-        })
-}
-
-pub fn normalize_api_base(value: &str) -> Result<String, String> {
-    let mut url = Url::parse(value).map_err(|error| format!("invalid API base URL: {error}"))?;
-    if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
-        return Err("API base URL must use http or https".to_owned());
-    }
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err("API base URL cannot contain a query or fragment".to_owned());
-    }
-    let path = url.path().trim_end_matches('/').to_owned();
-    if path.is_empty() {
-        url.set_path("/api/v1");
-    } else {
-        url.set_path(&path);
-    }
-    Ok(url.to_string().trim_end_matches('/').to_owned())
-}
-
 pub fn normalize_redmine_api_base(value: &str) -> Result<String, String> {
     let mut url =
         Url::parse(value).map_err(|error| format!("invalid Redmine API base URL: {error}"))?;

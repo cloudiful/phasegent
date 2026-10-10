@@ -1,40 +1,45 @@
 use super::support::*;
 use super::*;
 
+/// A retired provider key. Historical `role_credential` rows can still
+/// carry a retired provider literal, and the composite `(role, provider)`
+/// primary key must still isolate them from the live `redmine` rows.
+const LEGACY_PROVIDER: &str = "forgejo";
+
 #[test]
 fn credentials_for_different_providers_are_stored_separately() {
     let (temp_dir, storage) = open_at_temp("credential-separation");
     storage
-        .save_credential(Role::Executor, PROVIDER_FORGEJO, "forgejo-token")
-        .unwrap();
-    storage
         .save_credential(Role::Executor, PROVIDER_REDMINE, "redmine-key")
         .unwrap();
-
-    let forgejo = storage
-        .load_credential(Role::Executor, PROVIDER_FORGEJO)
-        .unwrap()
+    storage
+        .save_credential(Role::Executor, LEGACY_PROVIDER, "legacy-token")
         .unwrap();
+
     let redmine = storage
         .load_credential(Role::Executor, PROVIDER_REDMINE)
         .unwrap()
         .unwrap();
-    assert_eq!(forgejo, "forgejo-token");
-    assert_eq!(redmine, "redmine-key");
-
-    // Overwriting the forgejo credential must not touch the redmine one.
-    storage
-        .save_credential(Role::Executor, PROVIDER_FORGEJO, "forgejo-token-v2")
+    let legacy = storage
+        .load_credential(Role::Executor, LEGACY_PROVIDER)
+        .unwrap()
         .unwrap();
-    let forgejo_v2 = storage
-        .load_credential(Role::Executor, PROVIDER_FORGEJO)
+    assert_eq!(redmine, "redmine-key");
+    assert_eq!(legacy, "legacy-token");
+
+    // Overwriting one credential must not touch the other.
+    storage
+        .save_credential(Role::Executor, LEGACY_PROVIDER, "legacy-token-v2")
+        .unwrap();
+    let legacy_v2 = storage
+        .load_credential(Role::Executor, LEGACY_PROVIDER)
         .unwrap()
         .unwrap();
     let redmine_after = storage
         .load_credential(Role::Executor, PROVIDER_REDMINE)
         .unwrap()
         .unwrap();
-    assert_eq!(forgejo_v2, "forgejo-token-v2");
+    assert_eq!(legacy_v2, "legacy-token-v2");
     assert_eq!(redmine_after, "redmine-key");
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -68,15 +73,15 @@ fn mirror_environment_variables_are_never_persisted() {
         Role::Executor,
         Role::Reviewer,
     ] {
-        for provider in [PROVIDER_FORGEJO, PROVIDER_REDMINE] {
+        for provider in [LEGACY_PROVIDER, PROVIDER_REDMINE] {
             assert!(storage.load_credential(role, provider).unwrap().is_none());
         }
         storage
             .save_role_config(
                 role,
                 &StoredConfig {
-                    provider: Some(PROVIDER_FORGEJO.to_owned()),
-                    api_base: Some("https://forgejo.example".to_owned()),
+                    provider: Some(LEGACY_PROVIDER.to_owned()),
+                    api_base: Some("https://legacy.example".to_owned()),
                     repository: Some("owner/repo".to_owned()),
                 },
             )
@@ -98,66 +103,53 @@ fn mirror_environment_variables_are_never_persisted() {
 }
 
 #[test]
-fn credentials_for_all_three_providers_are_isolated_per_role() {
+fn credentials_for_distinct_provider_keys_are_isolated_per_role() {
     // The role_credential table uses (role, provider) as a composite
-    // primary key so the same role can keep three independent
-    // credentials. Confirm the new gitlab row coexists with forgejo and
-    // redmine values without any cross-write or leak, and that
-    // overwriting one credential never touches another.
+    // primary key so the same role can keep independent credentials. A
+    // historical retired-provider row must coexist with the live redmine
+    // value without any cross-write or leak, and overwriting one
+    // credential never touches another.
     let (temp_dir, storage) = open_at_temp("credential-coexistence");
     storage
-        .save_credential(Role::Orchestrator, PROVIDER_FORGEJO, "forgejo-secret")
+        .save_credential(Role::Orchestrator, LEGACY_PROVIDER, "legacy-secret")
         .unwrap();
     storage
         .save_credential(Role::Orchestrator, PROVIDER_REDMINE, "redmine-secret")
         .unwrap();
-    storage
-        .save_credential(Role::Orchestrator, PROVIDER_GITLAB, "gitlab-secret")
-        .unwrap();
 
-    let forgejo = storage
-        .load_credential(Role::Orchestrator, PROVIDER_FORGEJO)
+    let legacy = storage
+        .load_credential(Role::Orchestrator, LEGACY_PROVIDER)
         .unwrap()
         .unwrap();
     let redmine = storage
         .load_credential(Role::Orchestrator, PROVIDER_REDMINE)
         .unwrap()
         .unwrap();
-    let gitlab = storage
-        .load_credential(Role::Orchestrator, PROVIDER_GITLAB)
-        .unwrap()
-        .unwrap();
-    assert_eq!(forgejo, "forgejo-secret");
+    assert_eq!(legacy, "legacy-secret");
     assert_eq!(redmine, "redmine-secret");
-    assert_eq!(gitlab, "gitlab-secret");
 
     // Overwriting one must not leak into another.
     storage
-        .save_credential(Role::Orchestrator, PROVIDER_GITLAB, "gitlab-secret-v2")
-        .unwrap();
-    let forgejo_after = storage
-        .load_credential(Role::Orchestrator, PROVIDER_FORGEJO)
-        .unwrap()
+        .save_credential(Role::Orchestrator, LEGACY_PROVIDER, "legacy-secret-v2")
         .unwrap();
     let redmine_after = storage
         .load_credential(Role::Orchestrator, PROVIDER_REDMINE)
         .unwrap()
         .unwrap();
-    let gitlab_after = storage
-        .load_credential(Role::Orchestrator, PROVIDER_GITLAB)
+    let legacy_after = storage
+        .load_credential(Role::Orchestrator, LEGACY_PROVIDER)
         .unwrap()
         .unwrap();
-    assert_eq!(forgejo_after, "forgejo-secret");
     assert_eq!(redmine_after, "redmine-secret");
-    assert_eq!(gitlab_after, "gitlab-secret-v2");
+    assert_eq!(legacy_after, "legacy-secret-v2");
 
     // Other roles must not observe any of these credentials.
     assert!(
         storage
-            .load_credential(Role::Executor, PROVIDER_GITLAB)
+            .load_credential(Role::Executor, LEGACY_PROVIDER)
             .unwrap()
             .is_none(),
-        "executor must not observe orchestrator's GitLab credential"
+        "executor must not observe the orchestrator's legacy credential"
     );
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -202,10 +194,10 @@ fn credential_summary_reports_fingerprint_and_store_time() {
 
     // Short secrets report presence/length but no fingerprint.
     storage
-        .save_credential(Role::Executor, PROVIDER_FORGEJO, "abc")
+        .save_credential(Role::Executor, LEGACY_PROVIDER, "abc")
         .unwrap();
     let short = storage
-        .credential_summary(Role::Executor, PROVIDER_FORGEJO)
+        .credential_summary(Role::Executor, LEGACY_PROVIDER)
         .unwrap();
     assert!(short.present);
     assert_eq!(short.fingerprint, None);
@@ -228,23 +220,19 @@ fn credential_summary_backfills_legacy_rows_without_fingerprint() {
     // the secret itself is never returned.
     let (temp_dir, storage) = open_at_temp("credential-backfill");
     storage
-        .save_credential(
-            Role::Orchestrator,
-            PROVIDER_GITLAB,
-            "legacy-gitlab-token-99",
-        )
+        .save_credential(Role::Orchestrator, LEGACY_PROVIDER, "legacy-token-99")
         .unwrap();
     storage
         .connection
         .execute(
             "UPDATE role_credential SET fingerprint = NULL, credential_updated_at = NULL \
-             WHERE role = 'orchestrator' AND provider = 'gitlab'",
-            [],
+             WHERE role = 'orchestrator' AND provider = ?1",
+            [LEGACY_PROVIDER],
         )
         .unwrap();
 
     let summary = storage
-        .credential_summary(Role::Orchestrator, PROVIDER_GITLAB)
+        .credential_summary(Role::Orchestrator, LEGACY_PROVIDER)
         .unwrap();
     assert!(summary.present);
     assert_eq!(summary.fingerprint.as_deref(), Some("n-99"));
@@ -252,8 +240,8 @@ fn credential_summary_backfills_legacy_rows_without_fingerprint() {
     let stored: Option<String> = storage
         .connection
         .query_row(
-            "SELECT fingerprint FROM role_credential WHERE role = 'orchestrator' AND provider = 'gitlab'",
-            [],
+            "SELECT fingerprint FROM role_credential WHERE role = 'orchestrator' AND provider = ?1",
+            [LEGACY_PROVIDER],
             |row| row.get(0),
         )
         .unwrap();

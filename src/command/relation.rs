@@ -42,7 +42,7 @@ pub(crate) fn parse_relation(args: &[String]) -> Result<Command, String> {
                 Ok(relation_type) => relation_type,
                 Err(error) => {
                     return Err(match error {
-                        ForgejoError::Config(message) => message,
+                        PhasegentError::Config(message) => message,
                         other => other.to_string(),
                     });
                 }
@@ -61,26 +61,9 @@ pub(crate) fn parse_relation(args: &[String]) -> Result<Command, String> {
             }))
         }
         "delete" => {
-            // `--issue <SOURCE_ISSUE_IID>` is required for GitLab
-            // because the DELETE endpoint is scoped per source issue;
-            // Redmine and Forgejo ignore the flag. Requiring the
-            // option always keeps the GitLab dispatch honest; users
-            // who target Redmine or Forgejo can still pass any
-            // positive id (or zero, which the provider layer
-            // surfaces as a structured config error if it lands on
-            // GitLab by mistake).
-            validate_options(args, 1, &["--issue"], &[], "relation delete")?;
+            validate_options(args, 1, &[], &[], "relation delete")?;
             let relation_id = positional_number(args, 1, "relation delete")?;
-            let issue = match optional_option(args, "--issue") {
-                Some(value) => Some(value.parse::<u64>().map_err(|_| {
-                    "relation delete --issue requires a positive integer".to_owned()
-                })?),
-                None => None,
-            };
-            Ok(Command::Relation(RelationCommand::Delete {
-                relation_id,
-                issue,
-            }))
+            Ok(Command::Relation(RelationCommand::Delete { relation_id }))
         }
         value => Err(format!("unknown relation command '{value}'")),
     }

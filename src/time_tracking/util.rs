@@ -1,4 +1,4 @@
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::api::PhasegentError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,7 +25,7 @@ pub(crate) fn now_epoch_seconds() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
-pub(crate) fn format_unix_date(timestamp: i64) -> Result<String, ForgejoError> {
+pub(crate) fn format_unix_date(timestamp: i64) -> Result<String, PhasegentError> {
     let days = timestamp.div_euclid(86_400);
     // Howard Hinnant's civil_from_days algorithm, without adding a date
     // crate solely for this small projection.

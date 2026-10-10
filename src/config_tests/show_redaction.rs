@@ -5,9 +5,6 @@ use super::*;
 fn config_show_redacts_credentials_and_sanitises_url() {
     with_isolated_storage("show-redact", |_db_path, storage| {
         storage
-            .save_credential(Role::Executor, PROVIDER_FORGEJO, "forgejo-secret-token")
-            .unwrap();
-        storage
             .save_credential(Role::Executor, PROVIDER_REDMINE, "redmine-secret-key")
             .unwrap();
         storage
@@ -26,12 +23,7 @@ fn config_show_redacts_credentials_and_sanitises_url() {
         let snapshot = config::show(Some(Role::Executor), storage).unwrap();
         let text = serde_json::to_string(&snapshot).unwrap();
 
-        for forbidden in [
-            "forgejo-secret-token",
-            "redmine-secret-key",
-            "mirror-bearer-key-shhh",
-            "password",
-        ] {
+        for forbidden in ["redmine-secret-key", "mirror-bearer-key-shhh", "password"] {
             assert!(
                 !text.contains(forbidden),
                 "snapshot leaked '{forbidden}': {text}"
@@ -47,11 +39,6 @@ fn config_show_redacts_credentials_and_sanitises_url() {
         assert_eq!(roles.len(), 1);
         let executor = &roles[0];
         assert_eq!(executor["role"], "executor");
-        assert_eq!(executor["forgejo_credential"]["present"], Value::Bool(true));
-        assert_eq!(
-            executor["forgejo_credential"]["length"],
-            Value::from("forgejo-secret-token".len())
-        );
         assert_eq!(executor["redmine_credential"]["present"], Value::Bool(true));
         assert_eq!(
             executor["redmine_credential"]["length"],
@@ -148,7 +135,7 @@ fn config_show_without_role_reports_every_role() {
             Role::Reviewer,
         ] {
             let config = crate::auth::StoredConfig {
-                provider: Some(PROVIDER_FORGEJO.to_owned()),
+                provider: Some(PROVIDER_REDMINE.to_owned()),
                 ..Default::default()
             };
             storage.save_role_config(role, &config).unwrap();
@@ -162,7 +149,7 @@ fn config_show_without_role_reports_every_role() {
             .collect();
         assert_eq!(
             names,
-            vec!["admin", "orchestrator", "executor", "reviewer"],
+            vec!["admin", "orchestrator", "executor", "reviewer", "explore"],
             "global config show must enumerate every known role"
         );
         assert!(
@@ -180,13 +167,13 @@ fn config_show_reports_global_default_provider_without_secrets() {
     with_isolated_storage("show-global-default", |_db_path, storage| {
         let _unset_default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "");
 
-        config::provider_set(PROVIDER_GITLAB, storage).unwrap();
+        config::provider_set("local", storage).unwrap();
 
         let snapshot = config::show(None, storage).unwrap();
         let text = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(
             snapshot["global_default_provider"].as_str(),
-            Some(PROVIDER_GITLAB),
+            Some("local"),
             "snapshot must surface the machine-wide default"
         );
 
@@ -198,7 +185,7 @@ fn config_show_reports_global_default_provider_without_secrets() {
         assert_eq!(entry["present"], Value::Bool(true));
         assert_eq!(
             entry["value"].as_str(),
-            Some(PROVIDER_GITLAB),
+            Some("local"),
             "non-secret slot must carry the literal: {entry:?}"
         );
         assert!(

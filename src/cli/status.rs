@@ -1,7 +1,7 @@
 use crate::command::StatusCommand;
 use crate::policy::{Capability, Role};
+use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
 use crate::providers::redmine::model::StatusNextReport;
 use crate::providers::redmine::model::status::{STATUS_POLICY_SOURCE, structured_forbidden_json};
 use crate::providers::{
@@ -13,7 +13,7 @@ use crate::providers::{
 /// policy preflight rejects the transition. Every other outcome keeps
 /// its legacy shape, so success JSON and non-policy errors stay
 /// byte-compatible.
-fn print_advance_result<T: serde::Serialize>(result: Result<T, ForgejoError>) -> i32 {
+fn print_advance_result<T: serde::Serialize>(result: Result<T, PhasegentError>) -> i32 {
     if let Err(error) = &result
         && let Some(payload) = structured_forbidden_json(error)
     {
@@ -91,15 +91,7 @@ pub(crate) fn execute_status(
         );
     }
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Forgejo) => {
-            return super::provider_error(ForgejoError::not_supported(
-                "forgejo",
-                capability.operation(),
-            ));
-        }
-        Ok(ProviderKind::Redmine) => {}
-        Ok(ProviderKind::Gitlab) => {}
-        Ok(ProviderKind::Local) => {}
+        Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(
@@ -114,7 +106,7 @@ pub(crate) fn execute_status(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));
@@ -141,10 +133,6 @@ pub(crate) fn execute_status(
                 super::print_result(redmine.status_next(number))
             }
             ProviderDispatcher::Local(local) => super::print_result(local.status_next(number)),
-            other => super::provider_error(ForgejoError::not_supported(
-                other.kind().as_str(),
-                "issue status next",
-            )),
         },
         StatusCommand::Advance { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
@@ -217,7 +205,7 @@ pub(crate) fn execute_status(
             ProviderDispatcher::Local(local) => {
                 // Phase 2 bare auto on the static local catalogue plus
                 // the timer hook for Local parity (stderr-only, stdout
-                // unchanged; Forgejo/GitLab arms below are untouched).
+                // unchanged).
                 let effective = if status.is_empty() {
                     match local.status_next(number) {
                         Ok(report) => match auto_target_from_report(&report) {
@@ -245,40 +233,8 @@ pub(crate) fn execute_status(
                 }
                 print_advance_result(result)
             }
-            other => super::provider_error(ForgejoError::not_supported(
-                other.kind().as_str(),
-                "issue status advance",
-            )),
         },
         StatusCommand::Set { number, status } => match &provider {
-            ProviderDispatcher::Gitlab(gitlab) => {
-                let result = gitlab.set_workflow_status(number, &status);
-                if result.is_ok() {
-                    // See the `Advance` arm above for the
-                    // Phase 3 relation-auto wiring rationale:
-                    // the trigger lives at status transitions
-                    // but the parent linkage is only resolvable
-                    // through the create arm today. The helper
-                    // stays silent here.
-                    super::report_local_warnings(
-                        "status set",
-                        crate::lifecycle_auto::auto_create_parent_child_relation(
-                            &provider, number, None,
-                        )
-                        .warning(),
-                    );
-                    super::report_local_warnings(
-                        "status set",
-                        crate::lifecycle_auto::auto_transition_timer(
-                            number,
-                            ProviderKind::Gitlab,
-                            &status,
-                        )
-                        .warning(),
-                    );
-                }
-                super::print_result(result)
-            }
             ProviderDispatcher::Redmine(redmine) => {
                 // Single-number scope guard (issue 394 P3 pre-write): fails
                 // before the catalogue reads and the status PUT.
@@ -349,10 +305,6 @@ pub(crate) fn execute_status(
                 }
                 super::print_result(result)
             }
-            other => super::provider_error(ForgejoError::not_supported(
-                other.kind().as_str(),
-                "issue status update",
-            )),
         },
     }
 }

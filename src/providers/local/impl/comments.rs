@@ -1,6 +1,27 @@
 use super::LocalProvider;
 use super::model::{LocalCommentRow, is_unique_violation, local_sql, now_epoch_seconds};
-use crate::providers::api::{CommentOutput, ForgejoError};
+use crate::providers::api::{CommentOutput, PhasegentError};
+
+/// Bindings derived from a CLI-owned record header: the local store has
+/// real `role`, `phase`, and `attempt` columns, so a record's metadata is
+/// stored as columns rather than re-derived from the body on every read.
+///
+/// An ordinary comment carries no header and keeps the historical
+/// bindings unchanged.
+fn derived_bindings(body: &str) -> (&'static str, String, i64) {
+    match crate::record::decode_stored_body(body) {
+        Ok(Some(spec)) => (
+            spec.actor.as_str(),
+            spec.phase.clone().unwrap_or_default(),
+            i64::from(spec.attempt.unwrap_or(1)),
+        ),
+        // A malformed reserved header is an error at the record read
+        // paths; the ordinary comment write path stays unchanged here so
+        // an invalid combination is reported by `record create` itself
+        // before any storage is touched.
+        _ => ("executor", String::new(), 1),
+    }
+}
 
 fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalCommentRow, rusqlite::Error> {
     Ok(LocalCommentRow {
@@ -17,21 +38,21 @@ impl LocalProvider {
         issue: u64,
         body: &str,
         marker: &str,
-    ) -> Result<CommentOutput, ForgejoError> {
+    ) -> Result<CommentOutput, PhasegentError> {
         if issue == 0 {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "issue number must be greater than zero",
             ));
         }
         if marker.is_empty() {
-            return Err(ForgejoError::config("marker cannot be empty"));
+            return Err(PhasegentError::config("marker cannot be empty"));
         }
         // Friendly existence check before the UNIQUE insert so a missing
         // issue surfaces as not-found instead of a foreign-key error.
         self.get_issue(issue).map_err(|error| {
             let message = error.to_string();
             if message.contains("was not found") {
-                ForgejoError::not_found("comment create", &format!("issue {issue} was not found"))
+                PhasegentError::not_found("comment create", &format!("issue {issue} was not found"))
             } else {
                 error
             }
@@ -39,15 +60,16 @@ impl LocalProvider {
         let now = now_epoch_seconds();
         let body_owned = body.to_owned();
         let marker_owned = marker.to_owned();
+        let (role, phase, attempt) = derived_bindings(body);
         let inner = self
             .with_conn("comment create", |conn| {
                 match conn.execute(
                     local_sql("insert_comment"),
                     rusqlite::params![
                         issue as i64,
-                        "executor",
-                        "",
-                        1_i64,
+                        role,
+                        phase,
+                        attempt,
                         marker_owned,
                         body_owned,
                         now,
@@ -62,7 +84,7 @@ impl LocalProvider {
             })
             .map_err(|error| {
                 if error.to_string().contains("FOREIGN KEY") {
-                    ForgejoError::not_found(
+                    PhasegentError::not_found(
                         "comment create",
                         &format!("issue {issue} was not found"),
                     )
@@ -80,9 +102,9 @@ impl LocalProvider {
         .to_create_output())
     }
 
-    pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, ForgejoError> {
+    pub fn get_comment(&self, issue: u64, comment: u64) -> Result<CommentOutput, PhasegentError> {
         if issue == 0 || comment == 0 {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "issue and comment ids must be greater than zero",
             ));
         }
@@ -97,7 +119,7 @@ impl LocalProvider {
         .map_err(|error| {
             let message = error.to_string();
             if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-                ForgejoError::not_found(
+                PhasegentError::not_found(
                     "comment get",
                     "comment was not found in the specified issue",
                 )
@@ -109,9 +131,9 @@ impl LocalProvider {
 
     /// Full bodies of every comment on the issue, in id order.
     /// Backs `comment list` through the trait forwarder.
-    pub fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, ForgejoError> {
+    pub fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, PhasegentError> {
         if issue == 0 {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -126,12 +148,12 @@ impl LocalProvider {
         })
     }
 
-    pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, ForgejoError> {
+    pub fn find_marker(&self, issue: u64, marker: &str) -> Result<CommentOutput, PhasegentError> {
         if marker.is_empty() {
-            return Err(ForgejoError::config("marker cannot be empty"));
+            return Err(PhasegentError::config("marker cannot be empty"));
         }
         if issue == 0 {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "issue number must be greater than zero",
             ));
         }
@@ -147,7 +169,7 @@ impl LocalProvider {
         .map_err(|error| {
             let message = error.to_string();
             if message.contains("QueryReturnedNoRows") || message.contains("no rows") {
-                ForgejoError::not_found("comment find-marker", "marker was not found")
+                PhasegentError::not_found("comment find-marker", "marker was not found")
             } else {
                 error
             }
@@ -156,9 +178,12 @@ impl LocalProvider {
 }
 
 /// Map a raw rusqlite UNIQUE failure to the friendly marker error.
-pub(crate) fn friendly_marker_error(marker: &str, error: &rusqlite::Error) -> Option<ForgejoError> {
+pub(crate) fn friendly_marker_error(
+    marker: &str,
+    error: &rusqlite::Error,
+) -> Option<PhasegentError> {
     if is_unique_violation(error) {
-        Some(ForgejoError::request(
+        Some(PhasegentError::request(
             "comment create",
             format!("marker '{marker}' already exists; markers must be unique"),
         ))

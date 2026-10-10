@@ -1,8 +1,8 @@
 use crate::command::IssueCommand;
 use crate::policy::{Capability, Role};
 use crate::providers::api::IssueSummary;
+use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::ForgejoError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 #[path = "issue_search.rs"]
@@ -130,7 +130,7 @@ pub(crate) fn execute_issue(
     if let IssueCommand::UploadAttachment { .. } = &command
         && provider_kind != ProviderKind::Redmine
     {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(PhasegentError::not_supported(
             provider_kind.as_str(),
             capability.operation(),
         ));
@@ -171,7 +171,7 @@ pub(crate) fn execute_issue(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));
@@ -195,7 +195,7 @@ pub(crate) fn execute_issue(
                     Err(error) => super::provider_error(error),
                 }
             }
-            _ => super::provider_error(ForgejoError::not_supported(
+            _ => super::provider_error(PhasegentError::not_supported(
                 provider.kind().as_str(),
                 capability.operation(),
             )),
@@ -340,10 +340,9 @@ pub(crate) fn execute_issue(
                 &assignee,
             ) {
                 Ok((summary, assignee_warning)) => {
-                    // GitLab-only: a failing `GET /user` degrades the
-                    // default self-assignment to an unassigned create and
-                    // surfaces a bounded stderr warning; stdout stays the
-                    // normal issue JSON.
+                    // `--assignee` is rejected by every provider, so
+                    // `assignee_warning` stays `None`; the warning slot is
+                    // retained for the create path.
                     super::report_local_warnings("issue create", assignee_warning);
                     // Explicit `--branch` (issue 452 P2) is Redmine-only
                     // like the create auto-acquire hook; the create/link
@@ -376,7 +375,7 @@ pub(crate) fn execute_issue(
                     // Phase 3 relation auto: fire the helper
                     // after a successful create when the parent
                     // linkage was supplied. The helper is
-                    // idempotent (skips on Forgejo/Local, skips
+                    // idempotent (skips on Local, skips
                     // silently when parent linkage is absent),
                     // so callers that never use `--parent-issue`
                     // stay unaffected. Any failure degrades to a
@@ -394,7 +393,7 @@ pub(crate) fn execute_issue(
                     // Phase 2 tool-driven auto (issue 443): a successful
                     // create implies `In Progress` via `auto_route_next`.
                     // Best-effort timer only; failures stay on stderr so
-                    // the stdout issue JSON is byte-identical. Forgejo
+                    // the stdout issue JSON is byte-identical. Local
                     // stays a silent `Skipped` inside the helper.
                     if let Some(target) = crate::lifecycle_auto::auto_route_next(
                         summary.number,
@@ -526,11 +525,9 @@ pub(crate) fn execute_issue(
             match provider.close_issue(number) {
                 Ok(summary) => {
                     // Auto-accounting side effect: finish any running
-                    // auto-run for the issue. The helper is gated for
-                    // Forgejo internally and returns `Noop` so a
-                    // Forgejo close never mutates the Redmine or
-                    // GitLab ledger rows; for Redmine and GitLab it
-                    // finishes every running row for the issue.
+                    // auto-run for the issue. The helper closes every
+                    // running row for the issue (Redmine and Local) and
+                    // returns `Noop` when there is nothing to finish.
                     super::report_local_warnings(
                         "issue close",
                         crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind)
@@ -632,7 +629,7 @@ pub(crate) fn batch_fetch_issues<P>(
     numbers: &[u64],
 ) -> (Vec<IssueSummary>, Vec<serde_json::Value>)
 where
-    P: IssueProvider<Error = ForgejoError>,
+    P: IssueProvider<Error = PhasegentError>,
 {
     let mut issues = Vec::with_capacity(numbers.len());
     let mut errors = Vec::new();

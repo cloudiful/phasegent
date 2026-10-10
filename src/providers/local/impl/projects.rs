@@ -1,6 +1,6 @@
 use super::LocalProvider;
 use super::model::{LocalProjectRow, empty_versions, local_sql, now_epoch_seconds};
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 use crate::providers::{RedmineProject, RedmineVersion};
 
 fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalProjectRow, rusqlite::Error> {
@@ -12,7 +12,7 @@ fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalProjectRow, rusqlite::E
 }
 
 impl LocalProvider {
-    pub fn list_projects(&self) -> Result<Vec<RedmineProject>, ForgejoError> {
+    pub fn list_projects(&self) -> Result<Vec<RedmineProject>, PhasegentError> {
         let rows = self.with_conn("project list", |conn| {
             let mut stmt = conn.prepare(local_sql("list_projects"))?;
             let rows = stmt
@@ -28,15 +28,15 @@ impl LocalProvider {
         name: &str,
         identifier: &str,
         description: Option<&str>,
-    ) -> Result<RedmineProject, ForgejoError> {
+    ) -> Result<RedmineProject, PhasegentError> {
         if name.trim().is_empty() {
-            return Err(ForgejoError::config("project name cannot be empty"));
+            return Err(PhasegentError::config("project name cannot be empty"));
         }
         if identifier.trim().is_empty() {
-            return Err(ForgejoError::config("project identifier cannot be empty"));
+            return Err(PhasegentError::config("project identifier cannot be empty"));
         }
         if identifier.len() > 200 {
-            return Err(ForgejoError::config(
+            return Err(PhasegentError::config(
                 "project identifier must be at most 200 bytes",
             ));
         }
@@ -68,7 +68,7 @@ impl LocalProvider {
             Err(error) => {
                 let message = error.to_string();
                 if message.contains("UNIQUE") || message.contains("already exists") {
-                    return Err(ForgejoError::request(
+                    return Err(PhasegentError::request(
                         "project create",
                         format!("project '{key}' already exists"),
                     ));
@@ -78,7 +78,7 @@ impl LocalProvider {
         }
     }
 
-    pub fn list_versions(&self) -> Result<Vec<RedmineVersion>, ForgejoError> {
+    pub fn list_versions(&self) -> Result<Vec<RedmineVersion>, PhasegentError> {
         // No versions table; return an empty catalogue so the envelope
         // stays Redmine-compatible without inventing rows.
         Ok(empty_versions())

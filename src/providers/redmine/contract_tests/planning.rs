@@ -141,23 +141,30 @@ fn planning_validation_rejects_malformed_values_before_any_write() {
 }
 
 #[test]
-fn planning_flags_are_forgejo_not_supported_and_empty_planning_stays_plain() {
+fn planning_flags_are_ignored_by_the_local_provider() {
     use crate::command::PlanningOptions;
+    use crate::providers::local::LocalProvider;
     use crate::providers::redmine::planning::resolve_planning;
-    let forgejo = ProviderDispatcher::Forgejo(
-        crate::providers::forgejo::ForgejoProvider::new(
-            crate::providers::forgejo::ForgejoConfig::new("http://forgejo.test", "owner", "repo"),
-            "token".to_owned(),
-        )
-        .unwrap(),
-    );
+    // The local backend has no planning persistence, so any planning field
+    // resolves to an empty plan rather than a not-supported error.
+    let dir = crate::test_scratch::root().join(format!(
+        "phasegent-planning-local-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let local = LocalProvider::open_at(&dir.join("phasegent-local.sqlite3")).unwrap();
+    let dispatcher = ProviderDispatcher::Local(local);
     let options = PlanningOptions {
         fixed_version: Some("Sprint 1".to_owned()),
         ..Default::default()
     };
-    let error = resolve_planning(&forgejo, &options).unwrap_err();
-    assert_eq!(error.json()["kind"], "not_supported");
-    assert!(!error.to_string().contains("Sprint 1"));
+    let planning = resolve_planning(&dispatcher, &options).expect("local ignores planning");
+    assert!(planning.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

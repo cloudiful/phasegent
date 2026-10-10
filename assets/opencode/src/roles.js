@@ -3,14 +3,16 @@
 // `event.agent` is the agent id the host reports for the current tool call, and
 // the role decides command rewriting: the per-invocation `PHASEGENT_ROLE` scope,
 // a sub-agent's refusal of the orchestrator-only `issue create`/`bind`, and the
-// downgrade of a claimed elevated role. `explore` is recon-only and maps to the
-// reviewer capability surface.
+// downgrade of a claimed elevated role. `explore` maps to its own least-privilege
+// role (issue #754 P3): the CLI grants it issue read plus structured `record`
+// read, and an authorized recon `record create` only — never the reviewer
+// surface, and never ordinary comment/status/admin/lease writes.
 
 export const AGENT_ROLE_HINTS = [
   ["orchestrator", "orchestrator"],
   ["executor", "executor"],
   ["reviewer", "reviewer"],
-  ["explore", "reviewer"],
+  ["explore", "explore"],
 ];
 
 export function agentRole(event) {

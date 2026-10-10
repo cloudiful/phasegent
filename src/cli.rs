@@ -2,9 +2,9 @@ use crate::auth;
 use crate::command::{self, Command, IssueCommand};
 use crate::infra::storage::Storage;
 use crate::policy::{Capability, Role};
+use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
-use crate::providers::forgejo::{ForgejoConfig, ForgejoError};
-use crate::providers::{GitlabConfig, ProviderDispatcher, ProviderKind, RedmineConfig};
+use crate::providers::{ProviderDispatcher, ProviderKind, RedmineConfig};
 use serde::Serialize;
 
 pub(crate) mod branch;
@@ -18,8 +18,8 @@ mod notify;
 pub(crate) mod plugin;
 mod project;
 mod project_resolution;
+mod record;
 mod relation;
-mod repo;
 mod status;
 mod version;
 mod workflow;
@@ -214,6 +214,15 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
+        Command::Record(command) => record::execute_record(
+            invocation.role,
+            invocation.provider,
+            invocation.api_base.as_deref(),
+            invocation.repository.as_deref(),
+            invocation.project_id.as_deref(),
+            invocation.close_status_id.as_deref(),
+            command,
+        ),
         Command::Project(command) => project::execute_project(
             invocation.role,
             invocation.provider,
@@ -248,15 +257,6 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.repository.as_deref(),
             invocation.close_status_id.as_deref(),
             invocation.close_status_name.as_deref(),
-            command,
-        ),
-        Command::Repo(command) => repo::execute_repo_or_gitlab(
-            invocation.role,
-            invocation.provider,
-            invocation.api_base.as_deref(),
-            invocation.repository.as_deref(),
-            invocation.project_id.as_deref(),
-            invocation.close_status_id.as_deref(),
             command,
         ),
         Command::Relation(command) => relation::execute_relation(
@@ -315,21 +315,6 @@ pub(crate) fn report_local_warnings(operation: &str, warnings: Option<String>) {
     }
 }
 
-pub(crate) fn provider(
-    role: Role,
-    api_base: Option<&str>,
-    repository: Option<&str>,
-) -> Result<ProviderDispatcher, ForgejoError> {
-    provider_for(
-        role,
-        Some(ProviderKind::Forgejo),
-        api_base,
-        repository,
-        None,
-        None,
-    )
-}
-
 pub(crate) fn provider_for(
     role: Role,
     provider_kind: Option<ProviderKind>,
@@ -337,45 +322,17 @@ pub(crate) fn provider_for(
     repository: Option<&str>,
     project_id: Option<&str>,
     close_status_id: Option<&str>,
-) -> Result<ProviderDispatcher, ForgejoError> {
+) -> Result<ProviderDispatcher, PhasegentError> {
+    // A retired provider name errors here, before any provider is built.
     match resolve_kind(role, provider_kind)? {
-        ProviderKind::Forgejo => {
-            let config = ForgejoConfig::resolve(role, api_base, repository)?;
-            match config.provider() {
-                ProviderKind::Forgejo => ProviderDispatcher::for_role(role, config),
-                ProviderKind::Redmine => Err(ForgejoError::config(
-                    "Forgejo configuration selected an unsupported provider",
-                )),
-                ProviderKind::Gitlab => Err(ForgejoError::config(
-                    "Forgejo configuration selected an unsupported provider",
-                )),
-                // Local is not a valid Forgejo configuration; kept for
-                // exhaustiveness.
-                ProviderKind::Local => Err(ForgejoError::config(
-                    "Forgejo configuration selected an unsupported provider",
-                )),
-            }
-        }
         ProviderKind::Redmine => {
             let config = RedmineConfig::resolve(role, api_base, project_id, close_status_id)?;
             ProviderDispatcher::redmine(role, config)
         }
-        ProviderKind::Gitlab => {
-            // The CLI shares the Redmine flag namespace for the project
-            // id; the GitLab resolver is numeric and rejects a Redmine
-            // close status id or a Forgejo repository. The dispatcher
-            // still hands the resolved config to GitlabProvider so the
-            // not-supported stubs receive the exact URL and project id
-            // the caller asked for.
-            let _ = repository;
-            let _ = close_status_id;
-            let config = GitlabConfig::resolve(role, api_base, project_id)?;
-            ProviderDispatcher::gitlab(role, config)
-        }
         // Local needs no credentials or remote config: open the
-        // independent SQLite store directly. Auth stays passwordless
-        // and the forgejo/redmine/gitlab paths are untouched.
+        // independent SQLite store directly. Auth stays passwordless.
         ProviderKind::Local => {
+            let _ = repository;
             crate::providers::local::LocalProvider::open().map(ProviderDispatcher::local)
         }
     }
@@ -412,7 +369,7 @@ fn permission_denial(role: Role, operation: &str) -> i32 {
     )
 }
 
-pub(crate) fn print_result<T: Serialize>(result: Result<T, ForgejoError>) -> i32 {
+pub(crate) fn print_result<T: Serialize>(result: Result<T, PhasegentError>) -> i32 {
     match result {
         Ok(value) => print_json(&value),
         Err(error) => provider_error(error),
@@ -432,7 +389,7 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> i32 {
     }
 }
 
-pub(crate) fn provider_error(error: ForgejoError) -> i32 {
+pub(crate) fn provider_error(error: PhasegentError) -> i32 {
     structured_error(error.json(), 1)
 }
 

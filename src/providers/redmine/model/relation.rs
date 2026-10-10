@@ -1,4 +1,4 @@
-use crate::providers::api::ForgejoError;
+use crate::providers::api::PhasegentError;
 use serde::{Deserialize, Serialize};
 
 /// Redmine issue relation types used by this workflow.
@@ -22,12 +22,12 @@ impl RedmineRelationType {
     /// Strict parse of the CLI-facing canonical names. Inverse names are
     /// rejected so callers can never create a relation whose direction
     /// contradicts its label.
-    pub(crate) fn parse_input(value: &str) -> Result<Self, ForgejoError> {
+    pub(crate) fn parse_input(value: &str) -> Result<Self, PhasegentError> {
         match value {
             "blocks" => Ok(Self::Blocks),
             "precedes" => Ok(Self::Precedes),
             "relates" => Ok(Self::Relates),
-            other => Err(ForgejoError::config(format!(
+            other => Err(PhasegentError::config(format!(
                 "Redmine relation type must be blocks, precedes, or relates (got '{other}')"
             ))),
         }
@@ -35,14 +35,14 @@ impl RedmineRelationType {
 
     /// Strict decode of a server-side relation type, including inverse
     /// names Redmine reports for relations stored from the opposite side.
-    pub(crate) fn parse(value: &str) -> Result<Self, ForgejoError> {
+    pub(crate) fn parse(value: &str) -> Result<Self, PhasegentError> {
         match value {
             "blocks" => Ok(Self::Blocks),
             "precedes" => Ok(Self::Precedes),
             "relates" => Ok(Self::Relates),
             "blocked" => Ok(Self::Blocked),
             "follows" => Ok(Self::Follows),
-            other => Err(ForgejoError::config(format!(
+            other => Err(PhasegentError::config(format!(
                 "unknown Redmine relation type '{other}'"
             ))),
         }

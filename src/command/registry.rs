@@ -81,8 +81,6 @@ pub(crate) enum ProviderScope {
     Any,
     /// Listed only when the resolved provider is Redmine.
     Redmine,
-    /// Listed only when the resolved provider is not Redmine.
-    NonRedmine,
 }
 
 impl ProviderScope {
@@ -90,7 +88,6 @@ impl ProviderScope {
         match self {
             Self::Any => true,
             Self::Redmine => matches!(provider, Some(ProviderKind::Redmine)),
-            Self::NonRedmine => !matches!(provider, Some(ProviderKind::Redmine)),
         }
     }
 }
@@ -230,6 +227,15 @@ pub(super) const fn group(
 const ORCHESTRATOR_ONLY: &[Role] = &[Role::Orchestrator];
 const WORKTREE_READ_ROLES: &[Role] = &[Role::Orchestrator, Role::Executor, Role::Reviewer];
 
+// Structured records are gated by role rather than by a single
+// capability row: a record write is additionally bound to one record
+// kind (executor/reviewer/recon), which `Capability` cannot express.
+// The lists live in `policy.rs` so the policy and the registry cannot
+// disagree about which roles reach a record at all. `admin` is absent
+// from both: it is the human bootstrap role and never an agent.
+const ACCESS_RECORD_READ: RoleAccess = RoleAccess::Only(Role::RECORD_READ_ROLES);
+const ACCESS_RECORD_CREATE: RoleAccess = RoleAccess::Only(Role::RECORD_WRITE_ROLES);
+
 const ACCESS_ISSUE_READ: RoleAccess = RoleAccess::Capability(Capability::IssueRead);
 const ACCESS_ISSUE_SEARCH: RoleAccess = RoleAccess::Capability(Capability::IssueSearch);
 const ACCESS_ISSUE_CREATE: RoleAccess = RoleAccess::Capability(Capability::IssueCreate);
@@ -246,7 +252,6 @@ const ACCESS_VERSION_READ: RoleAccess = RoleAccess::Capability(Capability::Versi
 const ACCESS_RELATION_READ: RoleAccess = RoleAccess::Capability(Capability::RelationRead);
 const ACCESS_RELATION_CREATE: RoleAccess = RoleAccess::Capability(Capability::RelationCreate);
 const ACCESS_RELATION_DELETE: RoleAccess = RoleAccess::Capability(Capability::RelationDelete);
-const ACCESS_REPO_CREATE: RoleAccess = RoleAccess::Capability(Capability::RepoCreate);
 const ACCESS_ORCHESTRATOR: RoleAccess = RoleAccess::Only(ORCHESTRATOR_ONLY);
 const ACCESS_WORKTREE_READ: RoleAccess = RoleAccess::Only(WORKTREE_READ_ROLES);
 const ACCESS_BIND: RoleAccess = RoleAccess::RolelessOrOnly(ORCHESTRATOR_ONLY);

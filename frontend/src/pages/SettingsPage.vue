@@ -16,9 +16,6 @@ import {
 } from '@/ipc'
 import type { RoleId } from '@/types'
 
-/** Role-scoped address alias for the Forgejo and GitLab endpoints. */
-const ROLE_API_BASE_SETTING = 'PHASEGENT_API_BASE'
-
 const ROLE_ITEMS: { label: string, value: RoleId, hint: string }[] = [
   { label: 'Admin', value: 'admin', hint: 'Bootstrap Redmine projects and provision agent users.' },
   { label: 'Orchestrator', value: 'orchestrator', hint: 'Plan phases and advance workflow state.' },
@@ -50,15 +47,15 @@ const initialized = ref(false)
 
 const roleHint = computed(() => ROLE_ITEMS.find(item => item.value === activeRole.value)?.hint ?? '')
 const roleEntry = computed(() => snapshotRoleEntry(snapshot.value, activeRole.value))
-// The Redmine REST address is machine-wide; the Forgejo and GitLab addresses
-// stay scoped to the active role.
+// The Redmine REST address is machine-wide; the local provider keeps no
+// remote endpoint.
 const globalEndpoint = computed(() => provider.value.trim().toLowerCase() === 'redmine')
-const endpointSetting = computed(() => globalEndpoint.value ? REDMINE_API_BASE_SETTING : ROLE_API_BASE_SETTING)
-const endpointScope = computed<RoleId | null>(() => (globalEndpoint.value ? null : activeRole.value))
-const endpointHint = computed(() => (globalEndpoint.value ? 'Shared by every role.' : 'This role only.'))
+const endpointSetting = computed(() => REDMINE_API_BASE_SETTING)
+const endpointScope = computed<RoleId | null>(() => null)
+const endpointHint = computed(() => (globalEndpoint.value ? 'Shared by every role.' : 'The local provider keeps no remote endpoint.'))
 const credentialPresenceText = computed(() => {
   if (!roleEntry.value) return 'Not loaded yet.'
-  const key = credentialProvider.value === 'forgejo' ? roleEntry.value.forgejo_credential : credentialProvider.value === 'gitlab' ? roleEntry.value.gitlab_credential : roleEntry.value.redmine_credential
+  const key = roleEntry.value.redmine_credential
   if (!key) return 'Not configured.'
   if (!key.present) return 'Not configured.'
   return `Configured (length ${key.length ?? 0}). Value is never displayed.`
@@ -75,7 +72,7 @@ function syncCredentialPresence(): void {
   if (!snapshot.value) return
   const entry = snapshotRoleEntry(snapshot.value, activeRole.value)
   if (entry) {
-    const key = credentialProvider.value === 'forgejo' ? entry.forgejo_credential : credentialProvider.value === 'gitlab' ? entry.gitlab_credential : entry.redmine_credential
+    const key = entry.redmine_credential
     credentialInfo.value = key ? { present: key.present, length: key.length ?? 0 } : null
   }
   if (!initialized.value) initialized.value = true
@@ -138,7 +135,7 @@ async function persist(): Promise<void> {
     if (trimmedProvider !== '') {
       await setNonSecretSetting(activeRole.value, 'PHASEGENT_PROVIDER', trimmedProvider)
     }
-    if (trimmedEndpoint !== '') {
+    if (trimmedEndpoint !== '' && globalEndpoint.value) {
       await setNonSecretSetting(endpointScope.value, endpointSetting.value, trimmedEndpoint)
     }
     if (trimmedProvider === '' && trimmedEndpoint === '') {
@@ -309,11 +306,10 @@ async function clearCredentialAction(): Promise<void> {
           label="Provider"
           name="provider"
         >
-          <UInput
+          <USelect
             v-model="provider"
+            :items="['redmine', 'local']"
             class="w-full sm:w-64"
-            autocomplete="off"
-            placeholder="redmine"
           />
         </UFormField>
         <UFormField
@@ -379,7 +375,7 @@ async function clearCredentialAction(): Promise<void> {
           >
             <USelect
               v-model="credentialProvider"
-              :items="['forgejo', 'redmine', 'gitlab']"
+              :items="['redmine']"
               class="w-full"
             />
           </UFormField>

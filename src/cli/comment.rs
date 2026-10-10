@@ -1,6 +1,6 @@
 use crate::command::CommentCommand;
 use crate::policy::{Capability, Role};
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::api::PhasegentError;
 use crate::providers::{IssueProvider, ProviderKind};
 
 pub(crate) fn execute_comment(
@@ -60,7 +60,7 @@ pub(crate) fn execute_comment(
         Err(error) => return super::provider_error(error),
     };
     if !provider.supports(capability) {
-        return super::provider_error(ForgejoError::not_supported(
+        return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
             capability.operation(),
         ));
@@ -121,7 +121,7 @@ pub(crate) fn execute_comment(
                 // Phase 2 tool-driven auto (issue 443): a successful
                 // comment implies `In Review` via `auto_route_next`.
                 // Best-effort timer only; failures stay on stderr so
-                // the stdout comment JSON is byte-identical. Forgejo
+                // the stdout comment JSON is byte-identical. Local
                 // stays a silent `Skipped` inside the helper.
                 if let Some(target) = crate::lifecycle_auto::auto_route_next(
                     issue,

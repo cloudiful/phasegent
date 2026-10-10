@@ -42,8 +42,7 @@ pub(crate) fn write_toml_file(path: &Path, content: &str) {
 
 /// Remove env vars for the test lifetime and restore host values on drop.
 /// Needed because `PHASEGENT_PROVIDER`, `PHASEGENT_API_BASE`,
-/// `PHASEGENT_REPOSITORY`, `PHASEGENT_REDMINE_API_BASE`,
-/// `PHASEGENT_GITLAB_API_BASE`, and close-status vars treat a blank
+/// `PHASEGENT_REDMINE_API_BASE`, and close-status vars treat a blank
 /// value as a present value (unlike the trimmed globals); tests must
 /// remove them rather than set them to `""` to simulate "unset".
 pub(crate) struct EnvRemoveGuard {

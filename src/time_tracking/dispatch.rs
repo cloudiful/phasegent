@@ -2,7 +2,7 @@ use crate::command::TimerCommand;
 use crate::infra::storage::{Storage, TimerRun, TimerStatusFilter};
 use crate::policy::Role;
 use crate::providers::ProviderKind;
-use crate::providers::forgejo::ForgejoError;
+use crate::providers::api::PhasegentError;
 use serde::Serialize;
 
 /// JSON returned by `timer start` and `timer finish`. The run fields are
@@ -45,7 +45,7 @@ pub(crate) fn execute(
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     command: TimerCommand,
-) -> Result<TimerOutput, ForgejoError> {
+) -> Result<TimerOutput, PhasegentError> {
     match command {
         TimerCommand::Start {
             issue,
@@ -80,9 +80,11 @@ pub(crate) fn execute(
         // `list` / `get` / `recover` flow through `execute_recovery`;
         // the CLI dispatcher keeps the two paths separated so this branch
         // is unreachable in practice but kept as a defensive error.
-        TimerCommand::List { .. } | TimerCommand::Get { .. } | TimerCommand::Recover { .. } => Err(
-            ForgejoError::config("timer list/get/recover must be routed through execute_recovery"),
-        ),
+        TimerCommand::List { .. } | TimerCommand::Get { .. } | TimerCommand::Recover { .. } => {
+            Err(PhasegentError::config(
+                "timer list/get/recover must be routed through execute_recovery",
+            ))
+        }
     }
 }
 
@@ -97,11 +99,11 @@ pub(crate) fn execute_recovery(
     project_id: Option<&str>,
     close_status_id: Option<&str>,
     command: TimerCommand,
-) -> Result<TimerListOutput, ForgejoError> {
+) -> Result<TimerListOutput, PhasegentError> {
     let _role = timer_orchestrator(role_value, "timer")?;
     match command {
         TimerCommand::List { status, limit } => {
-            let filter = TimerStatusFilter::parse(&status).map_err(ForgejoError::config)?;
+            let filter = TimerStatusFilter::parse(&status).map_err(PhasegentError::config)?;
             let storage = Storage::open().map_err(timer_storage_error("timer list"))?;
             let runs = storage
                 .list_timer_runs(filter, limit)
@@ -115,7 +117,7 @@ pub(crate) fn execute_recovery(
                 .load_timer_run(&run_id)
                 .map_err(timer_storage_error("timer get"))?
                 .ok_or_else(|| {
-                    ForgejoError::config(format!("timer run '{run_id}' was not found"))
+                    PhasegentError::config(format!("timer run '{run_id}' was not found"))
                 })?;
             Ok(TimerListOutput::Single { run: Box::new(run) })
         }
@@ -133,7 +135,7 @@ pub(crate) fn execute_recovery(
         // `start` and `finish` are dispatched through the main entry point;
         // `execute_recovery` is its own surface for the read-only and
         // recovery commands.
-        TimerCommand::Start { .. } | TimerCommand::Finish { .. } => Err(ForgejoError::config(
+        TimerCommand::Start { .. } | TimerCommand::Finish { .. } => Err(PhasegentError::config(
             "timer list/get/recover do not accept start or finish",
         )),
     }
@@ -142,14 +144,14 @@ pub(crate) fn execute_recovery(
 pub(crate) fn timer_orchestrator(
     role_value: Option<Role>,
     operation: &str,
-) -> Result<Role, ForgejoError> {
+) -> Result<Role, PhasegentError> {
     let role = role_value.ok_or_else(|| {
-        ForgejoError::config(format!(
+        PhasegentError::config(format!(
             "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
         ))
     })?;
     if role != Role::Orchestrator {
-        return Err(ForgejoError::config(format!(
+        return Err(PhasegentError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
@@ -158,6 +160,6 @@ pub(crate) fn timer_orchestrator(
 
 pub(crate) fn timer_storage_error<'a>(
     operation: &'static str,
-) -> impl FnOnce(String) -> ForgejoError + 'a {
-    move |message| ForgejoError::request(operation, message)
+) -> impl FnOnce(String) -> PhasegentError + 'a {
+    move |message| PhasegentError::request(operation, message)
 }

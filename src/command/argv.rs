@@ -2,7 +2,8 @@ use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
     Command, HelpTopic, Invocation, IssueCommand, admin, auth, comment, config, help_topic, hooks,
-    issue, notify, plugin, project, registry, relation, status, timer, version, workflow, worktree,
+    issue, notify, plugin, project, record, registry, relation, status, timer, version, workflow,
+    worktree,
 };
 use crate::policy::Role;
 
@@ -291,6 +292,7 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
         }
         "issue" => issue::parse_issue(rest)?,
         "comment" => comment::parse_comment(rest)?,
+        "record" => record::parse_record(rest)?,
         "project" => project::parse_project(rest)?,
         "status" => status::parse_status(rest)?,
         "version" => version::parse_version(rest)?,
@@ -306,7 +308,6 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
             }
         },
         "worktree" => worktree::parse_worktree(rest)?,
-        "repo" => crate::repo_command::parse(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
         "plugin" => plugin::parse_plugin(rest)?,
         "notify" => notify::parse_notify(rest)?,

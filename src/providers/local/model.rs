@@ -6,7 +6,7 @@
 //! `RedmineVersion`). Status ids and `is_closed` flags are static so
 //! the JSON shape matches Redmine without a versions table.
 
-use crate::providers::api::{CommentOutput, ForgejoError, IssueSummary};
+use crate::providers::api::{CommentOutput, IssueSummary, PhasegentError};
 use crate::providers::{RedmineIssueStatus, RedmineProject, RedmineVersion};
 
 /// Static local statuses mirroring the canonical workflow. Ids are
@@ -182,8 +182,8 @@ pub(crate) fn is_unique_violation(error: &rusqlite::Error) -> bool {
     }
 }
 
-pub(crate) fn db_error(operation: &str, error: rusqlite::Error) -> ForgejoError {
-    ForgejoError::request(operation, bounded(&error.to_string()))
+pub(crate) fn db_error(operation: &str, error: rusqlite::Error) -> PhasegentError {
+    PhasegentError::request(operation, bounded(&error.to_string()))
 }
 
 pub(crate) fn empty_versions() -> Vec<RedmineVersion> {

@@ -7,10 +7,10 @@
 //! `--version` toggle carry no command surface and map to `None`.
 
 use super::{
-    Command, CommentCommand, IssueCommand, ProjectCommand, RelationCommand, StatusCommand,
-    TimerCommand, VersionCommand, WorkflowCommand, WorktreeCommand,
+    Command, CommentCommand, IssueCommand, ProjectCommand, RecordCommand, RelationCommand,
+    StatusCommand, TimerCommand, VersionCommand, WorkflowCommand, WorktreeCommand,
 };
-use super::{HooksCommand, NotifyCommand, PluginCommand, RepoCommand};
+use super::{HooksCommand, NotifyCommand, PluginCommand};
 
 /// Registry path for one parsed command, or `None` for the role-agnostic
 /// `Help`/`Version` toggles.
@@ -27,11 +27,11 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::ConfigProviderClear => &["admin", "config", "provider", "clear"],
         Command::Issue(command) => &["issue", issue_name(command)],
         Command::Comment(command) => &["comment", comment_name(command)],
+        Command::Record(command) => &["record", record_name(command)],
         Command::Project(command) => &["project", project_name(command)],
         Command::Status(command) => &["status", status_name(command)],
         Command::VersionCommand(VersionCommand::List) => &["version", "list"],
         Command::Workflow(WorkflowCommand::Bootstrap { .. }) => &["admin", "workflow", "bootstrap"],
-        Command::Repo(RepoCommand::Create { .. }) => &["repo", "create"],
         Command::Hooks(HooksCommand::Install) => &["hooks", "install"],
         Command::Hooks(HooksCommand::Run { .. }) => &["hooks", "run"],
         Command::Plugin(PluginCommand::Install { .. }) => &["plugin", "install"],
@@ -67,6 +67,14 @@ fn comment_name(command: &CommentCommand) -> &'static str {
         CommentCommand::Get { .. } => "get",
         CommentCommand::List { .. } => "list",
         CommentCommand::FindMarker { .. } => "find-marker",
+    }
+}
+
+fn record_name(command: &RecordCommand) -> &'static str {
+    match command {
+        RecordCommand::Create { .. } => "create",
+        RecordCommand::Get { .. } => "get",
+        RecordCommand::List { .. } => "list",
     }
 }
 

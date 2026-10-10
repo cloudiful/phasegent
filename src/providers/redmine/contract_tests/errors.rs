@@ -104,7 +104,7 @@ fn issue_with_named_status(id: u64, name: &str, closed: bool) -> String {
 #[test]
 fn workflow_classification_drives_close_climb_to_success() {
     use crate::providers::redmine::model::{RedmineErrorKind, classify_redmine_error};
-    let workflow = crate::providers::api::ForgejoError::Http {
+    let workflow = crate::providers::api::PhasegentError::Http {
         operation: "issue close".to_owned(),
         status: 422,
         message: "Status is invalid".to_owned(),

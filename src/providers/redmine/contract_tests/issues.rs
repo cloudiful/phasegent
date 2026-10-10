@@ -175,13 +175,14 @@ fn journals_back_comment_create_get_and_marker_lookup() {
     assert_eq!(created.id, 501);
     assert_eq!(created.marker.as_deref(), Some(marker));
     assert!(created.body.is_none());
-    // Note output must anchor the exact journal so audit references land on
-    // #note-<id> rather than the issue top.
+    // Comment output must anchor the exact journal. Redmine's stable
+    // history anchor is `#change-<journal id>`; `#note-<indice>` is the
+    // per-page ordinal and is not what a record reference should cite.
     assert!(
         created
             .html_url
             .as_deref()
-            .is_some_and(|url| url.ends_with("/issues/21#note-501")),
+            .is_some_and(|url| url.ends_with("/issues/21#change-501")),
         "html_url: {:?}",
         created.html_url
     );
@@ -193,7 +194,7 @@ fn journals_back_comment_create_get_and_marker_lookup() {
         fetched
             .html_url
             .as_deref()
-            .is_some_and(|url| url.ends_with("/issues/21#note-501")),
+            .is_some_and(|url| url.ends_with("/issues/21#change-501")),
         "html_url: {:?}",
         fetched.html_url
     );

@@ -6,14 +6,16 @@
 //! reported as unused.
 
 pub(crate) use super::parse_helpers::{
-    has_flag, optional_option, planning_options, positional_number, require_exact_positionals,
-    required_nonempty_option, required_option, required_value, split_inline, validate_options,
+    has_flag, optional_nonempty_option, optional_option, planning_options, positional_number,
+    require_exact_positionals, required_nonempty_option, required_option, required_value,
+    split_inline, validate_options,
 };
 pub(crate) use super::{
     Command, CommentCommand, HelpTopic, HooksCommand, IssueCommand, NotifyCommand, ProjectCommand,
-    RelationCommand, StatusCommand, TimerCommand, VersionCommand, WorkflowCommand,
+    RecordCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand, WorkflowCommand,
 };
 pub(crate) use crate::policy::Role;
 pub(crate) use crate::providers::ProviderKind;
-pub(crate) use crate::providers::api::ForgejoError;
+pub(crate) use crate::providers::api::PhasegentError;
 pub(crate) use crate::providers::redmine::model::RedmineRelationType;
+pub(crate) use crate::record::RecordKind;

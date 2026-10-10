@@ -5,7 +5,7 @@ use super::*;
 fn save_role_config_distinguishes_missing_from_empty() {
     let (temp_dir, storage) = open_at_temp("save-empty");
     let config = StoredConfig {
-        provider: Some(PROVIDER_FORGEJO.to_owned()),
+        provider: Some(PROVIDER_REDMINE.to_owned()),
         ..Default::default()
     };
     storage.save_role_config(Role::Admin, &config).unwrap();
@@ -13,7 +13,7 @@ fn save_role_config_distinguishes_missing_from_empty() {
         .load_role_config(Role::Admin)
         .unwrap()
         .expect("row must exist after save");
-    assert_eq!(loaded.provider.as_deref(), Some(PROVIDER_FORGEJO));
+    assert_eq!(loaded.provider.as_deref(), Some(PROVIDER_REDMINE));
     assert_eq!(loaded.api_base, None);
     assert_eq!(loaded.repository, None);
 
@@ -110,99 +110,18 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
 }
 
 #[test]
-fn role_gitlab_config_round_trip_and_numeric_project_id() {
-    // GitLab `project_id` is no longer persisted; the column remains for
-    // non-destructive migration but `load` always returns `None` and
-    // `save` ignores the field. The test verifies api_base round-trip
-    // and that legacy values are
-    // inert rather than asserting the old persistence.
-    let (temp_dir, storage) = open_at_temp("gitlab-round-trip");
-    assert!(
-        storage.load_gitlab_config(Role::Admin).unwrap().is_none(),
-        "fresh database must report no GitLab row as missing"
-    );
-
-    storage
-        .save_gitlab_config(
-            Role::Executor,
-            &GitlabStoredConfig {
-                api_base: Some("https://gitlab.example".to_owned()),
-                project_id: Some(42),
-            },
-        )
-        .unwrap();
-    let loaded = storage
-        .load_gitlab_config(Role::Executor)
-        .unwrap()
-        .expect("Gitlab row must exist after save");
-    assert_eq!(loaded.api_base.as_deref(), Some("https://gitlab.example"));
-    assert_eq!(
-        loaded.project_id, None,
-        "gitlab project_id must be inert after Phase 1"
-    );
-
-    // Saving a row with api_base only must keep the row alive and still
-    // report project_id as None. Second save with relocated api_base
-    // confirms api_base still round-trips.
-    storage
-        .save_gitlab_config(
-            Role::Executor,
-            &GitlabStoredConfig {
-                api_base: Some("https://gitlab-relocated.example".to_owned()),
-                project_id: Some(42),
-            },
-        )
-        .unwrap();
-    let reloaded = storage
-        .load_gitlab_config(Role::Executor)
-        .unwrap()
-        .expect("row must still exist after second save");
-    assert_eq!(
-        reloaded.api_base.as_deref(),
-        Some("https://gitlab-relocated.example")
-    );
-    assert_eq!(
-        reloaded.project_id, None,
-        "gitlab project_id must remain inert after second save"
-    );
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn persist_gitlab_bootstrap_validates_zero_project_id_and_flips_provider() {
-    // The GitLab bootstrap is the only entry point that flips the
-    // role_config.provider column on the executor so ordinary
-    // `auth setup` flows don't have to know about the underlying
-    // column. Confirm the zero-id guard and the provider flip in one
-    // test so the foundation never silently accepts an id of zero.
-    // project_id is ignored on persist, only api_base is kept.
-    let (temp_dir, storage) = open_at_temp("gitlab-bootstrap");
-    let zero = storage
-        .persist_gitlab_bootstrap(Role::Executor, None, 0)
-        .unwrap_err();
-    assert!(zero.contains("greater than zero"));
-
-    storage
-        .persist_gitlab_bootstrap(
-            Role::Executor,
-            Some("https://gitlab.example".to_owned()),
-            42,
-        )
-        .unwrap();
-    let row = storage
-        .load_gitlab_config(Role::Executor)
-        .unwrap()
-        .expect("gitlab row must exist after bootstrap");
-    assert_eq!(row.api_base.as_deref(), Some("https://gitlab.example"));
-    assert_eq!(
-        row.project_id, None,
-        "gitlab project_id must be inert after Phase 1 bootstrap"
-    );
-    let provider = storage
-        .load_role_config(Role::Executor)
-        .unwrap()
-        .expect("role_config row must exist after bootstrap")
-        .provider;
-    assert_eq!(provider.as_deref(), Some(PROVIDER_GITLAB));
+fn legacy_provider_literals_remain_inert_in_role_config() {
+    // Historical provider rows can still exist in an operator database. The
+    // storage layer keeps them decodable and inert: the resolver rejects a
+    // retired literal before any network access, and nothing here rewrites
+    // or deletes the row.
+    let (temp_dir, storage) = open_at_temp("legacy-provider");
+    let config = StoredConfig {
+        provider: Some("forgejo".to_owned()),
+        ..Default::default()
+    };
+    storage.save_role_config(Role::Executor, &config).unwrap();
+    let loaded = storage.load_role_config(Role::Executor).unwrap().unwrap();
+    assert_eq!(loaded.provider.as_deref(), Some("forgejo"));
     let _ = fs::remove_dir_all(temp_dir);
 }

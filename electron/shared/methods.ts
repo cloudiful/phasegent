@@ -171,13 +171,8 @@ export interface CredentialSummary {
 export interface RoleSnapshot {
   role: string
   provider?: string | null
-  forgejo_api_base?: string | null
-  forgejo_repository?: string | null
   redmine_close_status_id?: number | null
-  gitlab_api_base?: string | null
-  forgejo_credential: CredentialSummary
   redmine_credential: CredentialSummary
-  gitlab_credential: CredentialSummary
 }
 
 export interface GlobalSettingSnapshot {
