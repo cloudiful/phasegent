@@ -61,10 +61,15 @@
 // structured warning channel). A lease row that `issue close` / `issue sync`
 // converged keeps its "issue closed…" release reason, so the lazy path refuses to
 // acquire a fresh worktree for an already closed issue and stays in place (issue
-// #575 P2). Absolute paths pass through untouched, so an explicit escape and the
-// external_directory check that guards it are never rewritten. All worktree
-// calls stay local: no network, no credentials, no .env copies. Branches and
-// directories are never deleted here; removal is `phasegent worktree prune`.
+// #575 P2). The host is also the authority that outranks the registry: `issue
+// close` returns the closing session to the main checkout through the OpenCode
+// API before removing its worktree, and a settled placement is reconciled against
+// a fresh host read so that relocation is never reversed and a removed worktree is
+// never re-entered by this session or a later child (issue #747 P2,
+// session-reconcile.js). Absolute paths pass through untouched, so an explicit
+// escape and the external_directory check that guards it are never rewritten. All
+// worktree calls stay local: no network, no credentials, no .env copies. Branches
+// and directories are never deleted here; removal is `phasegent worktree prune`.
 import {
   acquireWorktree,
   issueClosedLocally,
@@ -82,12 +87,14 @@ import { errorText, warn } from "./runtime.js";
 import {
   inheritedWorktree,
   moveSessionToWorktree,
+  readAuthoritativeDirectory,
   readSessionInfo,
   rememberWorktree,
   resetWorktrees,
   sessionPlaced,
   worktreeForSession,
 } from "./session.js";
+import { reconcileSessionLocation } from "./session-reconcile.js";
 import { registerAgentSkills, roleSkillContent, roleSkillId, withSkillPrefix } from "./agents.js";
 import { registerSkill, roleSkillDefinitions, skillDefinition, skillDefinitions } from "./skills.js";
 import {
@@ -175,7 +182,9 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   ensureSessionWorktree,
   moveSessionToWorktree,
   readSessionInfo,
+  readAuthoritativeDirectory,
   inheritedWorktree,
+  reconcileSessionLocation,
   readBranchBinding,
   acquireWorktree,
   readIssueLeases,

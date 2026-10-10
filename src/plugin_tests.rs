@@ -961,6 +961,51 @@ fn adapter_template_is_well_formed_for_opencode_v2_api() {
     assert!(source.contains("phasegent worktree prune"));
 }
 
+/// Issue 747 P2: `issue close` returns a closing session to the main
+/// checkout through the OpenCode API before removing its worktree, so the
+/// adapter's registry can name a directory that is already gone. The host
+/// must therefore outrank the registry, and the bundle must carry that
+/// contract: a fresh (never cached) host read, an invalidation that clears
+/// every reference to the dead directory, and a closed-lease check before
+/// the shared fallback is handed to a new session.
+#[test]
+fn adapter_template_reconciles_the_registry_against_the_host() {
+    let _lock = lock_workflow_tests();
+    let source = adapter_source();
+    // `adapter_source()` is the linked dist, where the build resolves `export`
+    // away, so these assert the declaration the artifact actually carries.
+    // The authoritative read is a separate entry point from the cached one,
+    // so a reconciliation can never be answered from the session cache.
+    assert!(source.contains("async function readAuthoritativeDirectory"));
+    assert!(source.contains("async function readSessionInfo"));
+    assert!(source.contains("async function reconcileSessionLocation"));
+    // A settled placement is reconciled before its cached target is trusted,
+    // and the invalidation clears the session entry, the settled marker, the
+    // cached host record and the shared fallback.
+    assert!(source.contains("function forgetSessionWorktree"));
+    for cleared in [
+        "sessionWorktrees.delete(key)",
+        "sessionInfo.delete(key)",
+        "placedSessions.delete(key)",
+        "moveAttempts.delete(key)",
+        "activeWorktree === directory",
+    ] {
+        assert!(
+            source.contains(cleared),
+            "invalidation must clear {cleared}"
+        );
+    }
+    assert!(source.contains("reconcileSessionLocation(context, sessionId, readDirectory)"));
+    // The closed marker is consulted before the shared fallback, not only
+    // before a fresh acquire.
+    assert!(source.contains("refusing to reuse a worktree"));
+    assert!(source.contains("refusing to acquire a worktree"));
+    // The plugin still owns placement and only placement: it never spawns the
+    // `opencode` client, and the CLI keeps the close-time move.
+    assert!(!source.contains("\"opencode\""));
+    assert!(source.contains("phasegent worktree prune"));
+}
+
 #[test]
 fn adapter_template_documents_redirect_contract() {
     let _lock = lock_workflow_tests();

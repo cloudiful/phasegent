@@ -85,15 +85,9 @@ export function resetWorktrees() {
 // runs. The result is cached per session because the prompt hook must not add a
 // host call to every turn; a failed lookup stays uncached so a later prompt can
 // still inherit.
-export async function readSessionInfo(context, sessionId) {
-  if (sessionId === undefined || sessionId === null) return null;
-  const key = String(sessionId);
-  if (sessionInfo.has(key)) return sessionInfo.get(key);
+async function fetchSessionInfo(context, sessionId) {
   const get = context && context.session && context.session.get;
-  if (typeof get !== "function") {
-    sessionInfo.set(key, null);
-    return null;
-  }
+  if (typeof get !== "function") return null;
   let info = null;
   try {
     const result = await get({ sessionID: sessionId });
@@ -108,17 +102,80 @@ export async function readSessionInfo(context, sessionId) {
   } catch (_) {
     info = null;
   }
+  return info;
+}
+
+function hostSessionLookupAvailable(context) {
+  const get = context && context.session && context.session.get;
+  return typeof get === "function";
+}
+
+export async function readSessionInfo(context, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  const key = String(sessionId);
+  if (sessionInfo.has(key)) return sessionInfo.get(key);
+  if (!hostSessionLookupAvailable(context)) {
+    sessionInfo.set(key, null);
+    return null;
+  }
+  const info = await fetchSessionInfo(context, sessionId);
   if (info) sessionInfo.set(key, info);
   return info;
+}
+
+// Issue 747 P2: the host is the only authority on where a session runs, so a
+// reconciliation is never answered from the cache above — the cached record
+// exists to keep an ordinary inheritance lookup off the host, and answering
+// "is my placement still valid?" from it is exactly the stale answer that would
+// send a session back into a worktree `issue close` already removed. A usable
+// answer refreshes the cache so the next ordinary lookup is current too.
+export async function readAuthoritativeDirectory(context, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  const info = await fetchSessionInfo(context, sessionId);
+  if (info) sessionInfo.set(String(sessionId), info);
+  return info ? info.directory : null;
+}
+
+// Drops every cached reference to a worktree the host no longer associates
+// with this session: its registered target, the settled-placement marker, an
+// in-flight move, the cached host record that produced the stale answer, and
+// the shared fallback — but only while that fallback still names the same dead
+// directory, so another session's worktree is never dropped with it.
+export function forgetSessionWorktree(sessionId, directory) {
+  if (sessionId === undefined || sessionId === null) return;
+  const key = String(sessionId);
+  sessionWorktrees.delete(key);
+  sessionInfo.delete(key);
+  placedSessions.delete(key);
+  moveAttempts.delete(key);
+  if (directory && activeWorktree === directory) activeWorktree = null;
 }
 
 // The parent's registered target is the destination of a move that may still be
 // pending at the parent's next step boundary; the directory the host reports for
 // the parent is the fallback once that move has landed.
+//
+// Issue 747 P2: a parent whose placement already *settled* is the exception.
+// Nothing about the plugin keeps it there — `issue close` returns the closing
+// session to the main checkout through the OpenCode API before its worktree is
+// removed — so its registered target is stale by definition once the host
+// reports somewhere else, and the child inherits where the parent actually is
+// rather than the closed directory. A parent that has not settled keeps its
+// registered target, and that read is always fresh so a stale cache cannot
+// answer for it.
 export async function inheritedWorktree(context, parentId, readInfo) {
   if (parentId === undefined || parentId === null) return null;
   const registered = sessionWorktrees.get(String(parentId));
-  if (registered) return registered;
+  if (registered) {
+    if (sessionPlaced(parentId)) {
+      const directory = await readAuthoritativeDirectory(context, parentId);
+      if (directory !== registered) {
+        forgetSessionWorktree(parentId, registered);
+        return directory;
+      }
+    }
+    return registered;
+  }
   const read = readInfo || readSessionInfo;
   const info = await read(context, parentId);
   return info ? info.directory : null;

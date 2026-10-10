@@ -147,8 +147,18 @@ fn clean_issue(
         SYNC_RELEASE_REASON,
     )
     .map_err(|error| ForgejoError::request("issue sync", error.message))?;
-    let outcome =
-        crate::lifecycle::cleanup_closed_issue_worktrees(runner, &scope.repo_path, issue, None);
+    // Issue 747 P1: the pass checks OpenCode occupancy but never moves a
+    // session. A directory whose session a close already relocated is
+    // found free here and becomes eligible; one whose session is still
+    // hosted there stays until a later pass sees it leave.
+    let outcome = crate::lifecycle::cleanup_closed_issue_worktrees_with(
+        runner,
+        &crate::worktree::opencode::ProcessOpenCodeApi::new(),
+        crate::lifecycle::CleanupMode::Sync,
+        &scope.repo_path,
+        issue,
+        None,
+    );
     let kept = match &outcome {
         AutoCleanupOutcome::Warning { reason } => {
             let reason = bounded(reason);
@@ -195,12 +205,17 @@ fn clean_issue(
 /// Read-only verdict for one directory in report mode.
 ///
 /// Report mode must not write, and the shared guard implementation lives in
-/// [`crate::lifecycle::cleanup_closed_issue_worktrees`] (no dry-run switch).
-/// The verdict is therefore produced by driving that same function through
-/// a runner that answers the single mutating invocation (`git worktree
-/// remove`) with success and records its target, so every predicate
-/// (main checkout, foreign active lease, cleanliness) is still evaluated by
-/// the shared code instead of a second implementation.
+/// [`crate::lifecycle::cleanup_closed_issue_worktrees_with`] (no dry-run
+/// switch). The verdict is therefore produced by driving that same
+/// function through a runner that answers the single mutating invocation
+/// (`git worktree remove`) with success and records its target, so every
+/// predicate (main checkout, foreign active lease, cleanliness) is still
+/// evaluated by the shared code instead of a second implementation.
+///
+/// [`crate::lifecycle::CleanupMode::Report`] additionally forbids the
+/// OpenCode conversation itself: an associated candidate is reported
+/// `would_keep` without a single API call, which is the conservative
+/// direction for a pass that promises to change nothing.
 ///
 /// The clean pass flips this issue's `active` leases before it cleans, so
 /// the verdict attributes the candidate row's own session as the
@@ -214,8 +229,10 @@ fn report_verdict(
     row: &LeaseRow,
 ) -> (String, Option<String>) {
     let dry_run = DryRunRunner::new(runner);
-    let outcome = crate::lifecycle::cleanup_closed_issue_worktrees(
+    let outcome = crate::lifecycle::cleanup_closed_issue_worktrees_with(
         &dry_run,
+        &crate::worktree::opencode::ProcessOpenCodeApi::new(),
+        crate::lifecycle::CleanupMode::Report,
         repo_path,
         issue,
         Some(row.session.as_str()),

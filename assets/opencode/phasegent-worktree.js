@@ -654,15 +654,9 @@ function resetWorktrees() {
 // runs. The result is cached per session because the prompt hook must not add a
 // host call to every turn; a failed lookup stays uncached so a later prompt can
 // still inherit.
-async function readSessionInfo(context, sessionId) {
-  if (sessionId === undefined || sessionId === null) return null;
-  const key = String(sessionId);
-  if (sessionInfo.has(key)) return sessionInfo.get(key);
+async function fetchSessionInfo(context, sessionId) {
   const get = context && context.session && context.session.get;
-  if (typeof get !== "function") {
-    sessionInfo.set(key, null);
-    return null;
-  }
+  if (typeof get !== "function") return null;
   let info = null;
   try {
     const result = await get({ sessionID: sessionId });
@@ -677,17 +671,80 @@ async function readSessionInfo(context, sessionId) {
   } catch (_) {
     info = null;
   }
+  return info;
+}
+
+function hostSessionLookupAvailable(context) {
+  const get = context && context.session && context.session.get;
+  return typeof get === "function";
+}
+
+async function readSessionInfo(context, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  const key = String(sessionId);
+  if (sessionInfo.has(key)) return sessionInfo.get(key);
+  if (!hostSessionLookupAvailable(context)) {
+    sessionInfo.set(key, null);
+    return null;
+  }
+  const info = await fetchSessionInfo(context, sessionId);
   if (info) sessionInfo.set(key, info);
   return info;
+}
+
+// Issue 747 P2: the host is the only authority on where a session runs, so a
+// reconciliation is never answered from the cache above — the cached record
+// exists to keep an ordinary inheritance lookup off the host, and answering
+// "is my placement still valid?" from it is exactly the stale answer that would
+// send a session back into a worktree `issue close` already removed. A usable
+// answer refreshes the cache so the next ordinary lookup is current too.
+async function readAuthoritativeDirectory(context, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  const info = await fetchSessionInfo(context, sessionId);
+  if (info) sessionInfo.set(String(sessionId), info);
+  return info ? info.directory : null;
+}
+
+// Drops every cached reference to a worktree the host no longer associates
+// with this session: its registered target, the settled-placement marker, an
+// in-flight move, the cached host record that produced the stale answer, and
+// the shared fallback — but only while that fallback still names the same dead
+// directory, so another session's worktree is never dropped with it.
+function forgetSessionWorktree(sessionId, directory) {
+  if (sessionId === undefined || sessionId === null) return;
+  const key = String(sessionId);
+  sessionWorktrees.delete(key);
+  sessionInfo.delete(key);
+  placedSessions.delete(key);
+  moveAttempts.delete(key);
+  if (directory && activeWorktree === directory) activeWorktree = null;
 }
 
 // The parent's registered target is the destination of a move that may still be
 // pending at the parent's next step boundary; the directory the host reports for
 // the parent is the fallback once that move has landed.
+//
+// Issue 747 P2: a parent whose placement already *settled* is the exception.
+// Nothing about the plugin keeps it there — `issue close` returns the closing
+// session to the main checkout through the OpenCode API before its worktree is
+// removed — so its registered target is stale by definition once the host
+// reports somewhere else, and the child inherits where the parent actually is
+// rather than the closed directory. A parent that has not settled keeps its
+// registered target, and that read is always fresh so a stale cache cannot
+// answer for it.
 async function inheritedWorktree(context, parentId, readInfo) {
   if (parentId === undefined || parentId === null) return null;
   const registered = sessionWorktrees.get(String(parentId));
-  if (registered) return registered;
+  if (registered) {
+    if (sessionPlaced(parentId)) {
+      const directory = await readAuthoritativeDirectory(context, parentId);
+      if (directory !== registered) {
+        forgetSessionWorktree(parentId, registered);
+        return directory;
+      }
+    }
+    return registered;
+  }
   const read = readInfo || readSessionInfo;
   const info = await read(context, parentId);
   return info ? info.directory : null;
@@ -765,6 +822,45 @@ async function reuseRememberedWorktree(context, sessionId) {
   return known;
 }
 
+// assets/opencode/src/session-reconcile.js
+// Reconciling the worktree registry against the host (issue 747 P2).
+//
+// A lease records where a session *was*, and this registry recorded where the
+// plugin put it. Neither survives an authoritative move: `issue close` returns
+// the closing session to the repository's main checkout through the OpenCode
+// API before it removes the worktree, and the directory a cached entry names can
+// be gone by the time the next prompt arrives. So the host is read fresh and
+// three rules follow from its answer:
+//
+//   * a placement this adapter already *settled* is never reversed — the host
+//     reporting somewhere else is evidence that something else moved it;
+//   * an unreadable host is not evidence that the placement still holds. The
+//     directory may already be gone, so the cached target is dropped rather
+//     than re-entered on an unproven assumption;
+//   * a session that is not settled is left alone, so a session still sitting
+//     in the main checkout before its first placement keeps that placement.
+
+
+// True when the cached target for `sessionId` may still be used.
+//
+// `readDirectory` is the injection seam; it defaults to the uncached host read
+// and a caller must not substitute a cached reader, because answering this
+// question from a cache is the failure this module exists to prevent.
+async function reconcileSessionLocation(context, sessionId, readDirectory) {
+  if (!sessionPlaced(sessionId)) return true;
+  const registered = sessionWorktrees.get(String(sessionId));
+  const read = readDirectory || readAuthoritativeDirectory;
+  const directory = await read(context, sessionId);
+  // A known-closed worktree is never revived on an unproven assumption: the
+  // host would not say where the session is, and the directory the registry
+  // still names may already have been removed.
+  if (!directory || (registered && directory !== registered)) {
+    forgetSessionWorktree(sessionId, registered);
+    return false;
+  }
+  return true;
+}
+
 // assets/opencode/src/discovery.js
 // Lazy worktree discovery and the per-session placement decision.
 //
@@ -833,15 +929,27 @@ function warnRefusedPlacement(sessionId, issueId) {
 // without the phasegent CLI.
 async function ensureSessionWorktree(context, sessionId, deps) {
   if (!sessionId) return null;
+  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
+  // in-memory registry: no host session lookup, no CLI, no acquire.
+  const discoveryDisabled = phasegentCallsDisabled();
+  // Issue 747 P2: the host, not this registry, decides where a session runs.
+  // A settled placement is reconciled against a fresh host read before its
+  // cached target is trusted, so an `issue close` relocation is never reversed
+  // and a worktree that was already removed is never re-entered. An unsettled
+  // session is untouched, so the ordinary first placement — the session is in
+  // the main checkout and must be moved into the worktree — still happens.
+  if (!discoveryDisabled) {
+    const readDirectory =
+      (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
+    if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
+  }
   const registered = sessionWorktrees.get(String(sessionId));
   if (registered) {
     // Move-only placement: a move the host cannot perform fails the prompt.
     await moveSessionToWorktree(context, sessionId, registered);
     return registered;
   }
-  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
-  // in-memory registry: no host session lookup, no CLI, no acquire.
-  if (phasegentCallsDisabled()) return await reuseRememberedWorktree(context, sessionId);
+  if (discoveryDisabled) return await reuseRememberedWorktree(context, sessionId);
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
@@ -855,6 +963,21 @@ async function ensureSessionWorktree(context, sessionId, deps) {
     if (info && info.parentID) {
       return await inheritParentWorktree(context, sessionId, info, readInfo);
     }
+    // Issue 747 P2: the shared fallback can outlive the lease it came from.
+    // `issue close` converges the lease rows and may already have removed the
+    // directory the fallback still names, so the closed marker is consulted
+    // before the fallback is handed out, not only before a fresh acquire. The
+    // binding is read only when there is a fallback to protect, so a session
+    // with nothing remembered still costs no CLI call here.
+    if (worktreeForSession(sessionId)) {
+      const fallbackIssue = await readBinding(cwd);
+      if (fallbackIssue && (await issueConverged(fallbackIssue, cwd, readLeaseHistory))) {
+        warn(
+          `phasegent: issue ${fallbackIssue} is closed; refusing to reuse a worktree (staying put)`,
+        );
+        return null;
+      }
+    }
     const remembered = await reuseRememberedWorktree(context, sessionId);
     if (remembered) return remembered;
     const discovered = await discover(sessionId, cwd);
@@ -865,8 +988,7 @@ async function ensureSessionWorktree(context, sessionId, deps) {
     const issueId = await readBinding(cwd);
     if (!issueId) return null;
     if (issueKnownClosed(issueId)) return null;
-    if (issueClosedLocally(await readLeaseHistory(issueId, cwd))) {
-      rememberClosedIssue(issueId);
+    if (await issueConverged(issueId, cwd, readLeaseHistory)) {
       warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
       return null;
     }
@@ -880,6 +1002,17 @@ async function ensureSessionWorktree(context, sessionId, deps) {
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
   }
+}
+
+// The local, offline closed marker: `issue close` and `issue sync` converge a
+// lease row instead of deleting it, so its "issue closed…" release reason is
+// what the adapter reads. Remembering the answer keeps the next prompt off the
+// CLI. A binding that cannot be read leaves the decision to the caller.
+async function issueConverged(issueId, cwd, readLeaseHistory) {
+  if (issueKnownClosed(issueId)) return true;
+  if (!issueClosedLocally(await readLeaseHistory(issueId, cwd))) return false;
+  rememberClosedIssue(issueId);
+  return true;
 }
 
 // The parent's registered target is the destination of a move that may still be
@@ -1331,10 +1464,25 @@ Boundaries:
   path.
 - A successful \`issue close\` flips this issue's active leases to \`retained\` and
   then removes a worktree directory only when it is clean, no active lease of
-  another session points at it, and it is not the repository's main checkout.
-  Branches and lease rows are never deleted, and cleanup never changes the
-  close exit code or its stdout. \`issue sync\` runs the same guards for issues
-  the provider already closed.
+  another session points at it, it is not the repository's main checkout, and —
+  for a directory leased by an OpenCode session (\`ses_…\`) — the host confirms no
+  session still runs there. Before removing such a directory the close asks the
+  OpenCode API (\`opencode api session.move\`) to return the closing session to the
+  repository's verified main checkout, then confirms the move with a fresh
+  authoritative read; an unreachable API, an incomplete listing, an unowned
+  session, another session hosted there, or a move that has not taken effect yet
+  keeps the directory with a warning. Only the closing session is ever moved,
+  the close never waits for the move, and a pure CLI worktree never reaches the
+  API. \`issue sync\` runs the same guards for issues the provider already closed
+  but never moves a session: it removes a deferred directory once the host
+  reports the session elsewhere. Branches and lease rows are never deleted, and
+  cleanup never changes the close exit code or its stdout.
+- The host outranks the adapter's registry: the plugin places a session once per
+  session and then reconciles a settled placement against a fresh host read
+  before reusing a cached target, so an API return is never reversed and a
+  removed worktree is never re-entered by that session or a later child. A
+  session that has not settled keeps its first placement, and an unreadable host
+  is never treated as proof that the cached worktree still exists.
 - Environment: \`PHASEGENT_SESSION_ID\` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
   call), and \`PHASEGENT_WORKTREE_NO_DISCOVER=1\` keeps the adapter inert beyond
@@ -2349,10 +2497,15 @@ async function registerWorktreeStrategy(context, deps) {
 // structured warning channel). A lease row that `issue close` / `issue sync`
 // converged keeps its "issue closed…" release reason, so the lazy path refuses to
 // acquire a fresh worktree for an already closed issue and stays in place (issue
-// #575 P2). Absolute paths pass through untouched, so an explicit escape and the
-// external_directory check that guards it are never rewritten. All worktree
-// calls stay local: no network, no credentials, no .env copies. Branches and
-// directories are never deleted here; removal is `phasegent worktree prune`.
+// #575 P2). The host is also the authority that outranks the registry: `issue
+// close` returns the closing session to the main checkout through the OpenCode
+// API before removing its worktree, and a settled placement is reconciled against
+// a fresh host read so that relocation is never reversed and a removed worktree is
+// never re-entered by this session or a later child (issue #747 P2,
+// session-reconcile.js). Absolute paths pass through untouched, so an explicit
+// escape and the external_directory check that guards it are never rewritten. All
+// worktree calls stay local: no network, no credentials, no .env copies. Branches
+// and directories are never deleted here; removal is `phasegent worktree prune`.
 
 const PhasegentWorktreePlugin = {
   id: "phasegent-worktree",
@@ -2433,7 +2586,9 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   ensureSessionWorktree,
   moveSessionToWorktree,
   readSessionInfo,
+  readAuthoritativeDirectory,
   inheritedWorktree,
+  reconcileSessionLocation,
   readBranchBinding,
   acquireWorktree,
   readIssueLeases,

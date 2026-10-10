@@ -1,6 +1,6 @@
 ---
 source: tests/snapshots_help_contracts.rs
-expression: "help(&scratch, &[\"--help\", \"issue\", \"sync\"])"
+expression: "help(&scratch, None, &[\"--help\", \"issue\", \"sync\"])"
 ---
 Usage: issue sync [--all] [--no-clean]
 
@@ -8,6 +8,10 @@ Reconcile the local worktree leases and directories with the provider state (orc
 
 Default scope is the repository of the current working directory. --all scans every repository identity recorded in the lease table through its main checkout; a checkout that is missing or resolves to a different identity is reported under skipped_repos instead of being guessed. --no-clean is the report mode: the same candidates and the same guard verdicts with per-directory would_clean/would_keep actions, and no write at all.
 
+A directory leased by an OpenCode session (`ses_…`) is removed only once the host confirms no session is still hosted there, and the pass never moves a session: a close that could not return one leaves its directory behind, and this pass removes it once the host reports the session elsewhere. An incomplete or unreachable host answer keeps the directory with its reason. In report mode an OpenCode-associated directory is always would_keep and the host is not contacted at all.
+
 stdout is one JSON envelope {mode, all, checked, not_closed, not_found, released_leases, cleaned, kept, skipped_repos?, issues:[...]}. A remote read failure is a structured error with a non-zero exit that deletes nothing, while a remote 404 counts into not_found and the pass continues. `worktree acquire`, `worktree list`, and `worktree prune` run the same pass for their repository before doing their own work and append its warnings to stderr; --no-sync skips that pass.
+
+`phasegent worktree prune --remove` is a separate, explicit removal path and is not covered by the close guards above.
 
 Close an issue

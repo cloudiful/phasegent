@@ -58,7 +58,9 @@ pub(crate) mod git;
 pub(super) mod lease_schema;
 pub(crate) mod leases;
 mod naming;
+pub(crate) mod opencode;
 pub mod probe;
+mod raw_output;
 mod session;
 
 // The re-exports below are part of the public surface of the
@@ -84,6 +86,8 @@ pub use naming::{
 };
 #[allow(unused_imports)]
 pub use probe::{MAX_PROBE_ERRORS, ProbeError, ProbeFacts, probe_path};
+#[allow(unused_imports)]
+pub use raw_output::RawOutputRunner;
 #[allow(unused_imports)]
 pub(crate) use session::{
     MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource, resolve_session,
@@ -249,6 +253,20 @@ impl WorktreeRunner for ProcessWorktreeRunner {
             stdout: sanitized_git_output(&output.stdout),
         })
     }
+}
+
+/// Canonicalise `path`, falling back to the path itself when it no
+/// longer exists so a just-removed directory still compares equal to its
+/// recorded lease path.
+pub(crate) fn canonical_or_self(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// True when both paths name the same directory. A lease row's recorded
+/// path and a host-reported location can spell one directory differently,
+/// so every such comparison in the crate goes through here.
+pub(crate) fn same_directory(left: &Path, right: &Path) -> bool {
+    canonical_or_self(left) == canonical_or_self(right)
 }
 
 pub(crate) fn bounded(text: &str) -> String {

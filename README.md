@@ -107,6 +107,14 @@ phasegent worktree acquire --issue 123 --base main
 phasegent worktree probe --issue 123
 ```
 
+A directory leased by an OpenCode session (`ses_…`) is protected until the host
+confirms that session no longer runs there: `issue close` returns the closing
+session to the repository's main checkout through the OpenCode API
+(`opencode api session.move`) before removing anything, keeps the directory when
+that cannot be confirmed, and `issue sync` removes it once the session has moved.
+`phasegent worktree prune` is a separate, explicit removal path and is not
+covered by these guards. See [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
+
 The OpenCode worktree adapter deployed by `phasegent plugin install` is a
 generated single-file dist. Its sources are `assets/opencode/src/` plus the
 `skills/phasegent/` prompts; rebuild with `bun run build:plugin` (`bun` is a

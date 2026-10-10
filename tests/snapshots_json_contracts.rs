@@ -119,3 +119,62 @@ fn issue_sync_no_clean_stdout_snapshot() {
     );
     snapshot_stdout("issue_sync_no_clean_stdout", &scratch, document);
 }
+
+/// An OpenCode-associated worktree is reported `would_keep` in report mode
+/// with the pass's own reason, and the directory survives. Report mode
+/// promises to write nothing, so it does not even start the host
+/// conversation that would decide whether the directory is really free.
+#[test]
+fn issue_sync_no_clean_keeps_an_opencode_associated_worktree() {
+    let scratch = Scratch::new("json-sync-opencode");
+    let repo = init_repo(&scratch.join("repo"));
+    let fixture = scratch.dir("fixture");
+    let identity = open_lease_store(&scratch, &repo);
+
+    let closed = create_local_issue(
+        &scratch,
+        &fixture,
+        "Snapshot sync opencode",
+        "Closed remotely",
+    );
+    set_local_status(&scratch, &fixture, closed, "Closed");
+    let hosted = add_worktree(&repo, &scratch.join("wt-opencode"), "feat/747-hosted");
+    insert_active_lease(&scratch, &identity, closed, "ses_snapshot", &repo, &hosted);
+    let plain = add_worktree(&repo, &scratch.join("wt-plain"), "feat/747-plain");
+    insert_active_lease(&scratch, &identity, closed, "session-plain", &repo, &plain);
+
+    let args = ["--provider", "local", "issue", "sync", "--no-clean"];
+    let run = run(&scratch, &repo, Some("orchestrator"), &args);
+    assert!(
+        run.status.success(),
+        "issue sync --no-clean exited with {}: stderr={}",
+        run.status,
+        stderr_text(&run),
+    );
+    let document: serde_json::Value = serde_json::from_str(&stdout_text(&run)).expect("json");
+    let directories: Vec<&serde_json::Value> = document["issues"][0]["directories"]
+        .as_array()
+        .expect("one entry per directory")
+        .iter()
+        .collect();
+    let verdict = |needle: &str| {
+        directories
+            .iter()
+            .find(|entry| entry["path"].as_str().unwrap_or_default().ends_with(needle))
+            .unwrap_or_else(|| panic!("no verdict for {needle}: {directories:?}"))
+    };
+    assert_eq!(verdict("wt-opencode")["action"], "would_keep");
+    assert!(
+        verdict("wt-opencode")["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not probed in report mode"),
+        "the conservative reason must be reported: {directories:?}"
+    );
+    assert_eq!(
+        verdict("wt-plain")["action"],
+        "would_clean",
+        "an unassociated candidate stays a local-guard decision"
+    );
+    assert!(hosted.exists() && plain.exists());
+}

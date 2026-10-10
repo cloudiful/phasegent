@@ -24,6 +24,7 @@ import {
   markPlaced,
   moveSessionToWorktree,
   PLACEMENT_ERROR_PREFIX,
+  readAuthoritativeDirectory,
   readSessionInfo,
   rememberClosedIssue,
   rememberWorktree,
@@ -31,6 +32,7 @@ import {
   sessionWorktrees,
   worktreeForSession,
 } from "./session.js";
+import { reconcileSessionLocation } from "./session-reconcile.js";
 
 // A decided placement must fail closed: only errors raised by the move itself
 // (identified by `PLACEMENT_ERROR_PREFIX`) rethrow past the discovery guard, so
@@ -86,15 +88,27 @@ function warnRefusedPlacement(sessionId, issueId) {
 // without the phasegent CLI.
 export async function ensureSessionWorktree(context, sessionId, deps) {
   if (!sessionId) return null;
+  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
+  // in-memory registry: no host session lookup, no CLI, no acquire.
+  const discoveryDisabled = phasegentCallsDisabled();
+  // Issue 747 P2: the host, not this registry, decides where a session runs.
+  // A settled placement is reconciled against a fresh host read before its
+  // cached target is trusted, so an `issue close` relocation is never reversed
+  // and a worktree that was already removed is never re-entered. An unsettled
+  // session is untouched, so the ordinary first placement — the session is in
+  // the main checkout and must be moved into the worktree — still happens.
+  if (!discoveryDisabled) {
+    const readDirectory =
+      (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
+    if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
+  }
   const registered = sessionWorktrees.get(String(sessionId));
   if (registered) {
     // Move-only placement: a move the host cannot perform fails the prompt.
     await moveSessionToWorktree(context, sessionId, registered);
     return registered;
   }
-  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
-  // in-memory registry: no host session lookup, no CLI, no acquire.
-  if (phasegentCallsDisabled()) return await reuseRememberedWorktree(context, sessionId);
+  if (discoveryDisabled) return await reuseRememberedWorktree(context, sessionId);
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
@@ -108,6 +122,21 @@ export async function ensureSessionWorktree(context, sessionId, deps) {
     if (info && info.parentID) {
       return await inheritParentWorktree(context, sessionId, info, readInfo);
     }
+    // Issue 747 P2: the shared fallback can outlive the lease it came from.
+    // `issue close` converges the lease rows and may already have removed the
+    // directory the fallback still names, so the closed marker is consulted
+    // before the fallback is handed out, not only before a fresh acquire. The
+    // binding is read only when there is a fallback to protect, so a session
+    // with nothing remembered still costs no CLI call here.
+    if (worktreeForSession(sessionId)) {
+      const fallbackIssue = await readBinding(cwd);
+      if (fallbackIssue && (await issueConverged(fallbackIssue, cwd, readLeaseHistory))) {
+        warn(
+          `phasegent: issue ${fallbackIssue} is closed; refusing to reuse a worktree (staying put)`,
+        );
+        return null;
+      }
+    }
     const remembered = await reuseRememberedWorktree(context, sessionId);
     if (remembered) return remembered;
     const discovered = await discover(sessionId, cwd);
@@ -118,8 +147,7 @@ export async function ensureSessionWorktree(context, sessionId, deps) {
     const issueId = await readBinding(cwd);
     if (!issueId) return null;
     if (issueKnownClosed(issueId)) return null;
-    if (issueClosedLocally(await readLeaseHistory(issueId, cwd))) {
-      rememberClosedIssue(issueId);
+    if (await issueConverged(issueId, cwd, readLeaseHistory)) {
       warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
       return null;
     }
@@ -133,6 +161,17 @@ export async function ensureSessionWorktree(context, sessionId, deps) {
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
   }
+}
+
+// The local, offline closed marker: `issue close` and `issue sync` converge a
+// lease row instead of deleting it, so its "issue closed…" release reason is
+// what the adapter reads. Remembering the answer keeps the next prompt off the
+// CLI. A binding that cannot be read leaves the decision to the caller.
+async function issueConverged(issueId, cwd, readLeaseHistory) {
+  if (issueKnownClosed(issueId)) return true;
+  if (!issueClosedLocally(await readLeaseHistory(issueId, cwd))) return false;
+  rememberClosedIssue(issueId);
+  return true;
 }
 
 // The parent's registered target is the destination of a move that may still be

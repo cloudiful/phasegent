@@ -33,6 +33,8 @@ const {
   issueClosedLocally,
   ensureSessionWorktree,
   readSessionInfo,
+  readAuthoritativeDirectory,
+  reconcileSessionLocation,
   inheritedWorktree,
   acquireWorktree,
   registerWorktreeStrategy,
@@ -71,6 +73,44 @@ function restoreNoDiscover(saved) {
   } else {
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = saved;
   }
+}
+
+// `discover`/`readBinding` are stubbed so a missed placement fails loudly
+// instead of spawning the phasegent CLI; `readSessionInfo` and the
+// authoritative read stay real and read the fake host. The lazy path never
+// creates a worktree on its own (issue 616), so there is no acquire seam to
+// stub.
+const noCliDeps = {
+  discover: async () => null,
+  readBinding: async () => 567,
+  readLeaseHistory: async () => [],
+};
+
+function hostContext(sessions, moves) {
+  return {
+    location: { directory: "/repo" },
+    session: {
+      move: async (input) => moves.push(input),
+      get: async ({ sessionID }) => sessions[sessionID],
+    },
+  };
+}
+
+function promptEvent(sessionID) {
+  return { sessionID, messageID: "msg-1", prompt: { text: "do the phase" }, delivery: "steer" };
+}
+
+// Capture the adapter's console warnings for the duration of one assertion.
+async function withWarnings(run) {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    await run();
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
 }
 
 beforeEach(() => {
@@ -430,30 +470,6 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   afterEach(() => {
     restoreNoDiscover(savedNoDiscover);
   });
-
-  // `discover`/`readBinding` are stubbed so a missed inheritance fails loudly
-  // instead of spawning the phasegent CLI; `readSessionInfo` stays real and
-  // reads the fake host. The lazy path never creates a worktree on its own
-  // (issue 616), so there is no acquire seam to stub.
-  const noCliDeps = {
-    discover: async () => null,
-    readBinding: async () => 567,
-    readLeaseHistory: async () => [],
-  };
-
-  function hostContext(sessions, moves) {
-    return {
-      location: { directory: "/repo" },
-      session: {
-        move: async (input) => moves.push(input),
-        get: async ({ sessionID }) => sessions[sessionID],
-      },
-    };
-  }
-
-  function promptEvent(sessionID) {
-    return { sessionID, messageID: "msg-1", prompt: { text: "do the phase" }, delivery: "steer" };
-  }
 
   test("moves a child into the parent's registered worktree on its first prompt", async () => {
     rememberWorktree("parent-1", WORKTREE);
@@ -889,6 +905,273 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
     expect(await inheritedWorktree(context, "parent-1")).toBe(WORKTREE);
     expect(await inheritedWorktree(context, "parent-2")).toBe("/wt/host");
     expect(await inheritedWorktree(context, null)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-authoritative reconciliation (issue 747 P2)
+//
+// `issue close` returns the closing session to the repository's main checkout
+// through the OpenCode API before it removes the worktree, so a registry entry
+// — and the shared fallback built from it — can name a directory that is already
+// gone. The host is the authority that outranks both, and every case here is a
+// direction the plugin must not reverse.
+// ---------------------------------------------------------------------------
+
+describe("host-authoritative reconciliation (issue 747 P2)", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  const MAIN = "/repo";
+
+  test("an authoritative read is never served from the session cache", async () => {
+    let calls = 0;
+    let directory = MAIN;
+    const context = {
+      session: {
+        get: async () => {
+          calls += 1;
+          return { parentID: null, location: { directory } };
+        },
+      },
+    };
+    expect(await readSessionInfo(context, "s1")).toEqual({ parentID: null, directory: MAIN });
+    directory = "/repo/main";
+    // The ordinary cached lookup keeps its answer: the cache exists so an
+    // inheritance read does not reach the host on every turn.
+    expect(await readSessionInfo(context, "s1")).toEqual({ parentID: null, directory: MAIN });
+    expect(calls).toBe(1);
+    // The reconciliation is answered by the host, and refreshes the cache.
+    expect(await readAuthoritativeDirectory(context, "s1")).toBe("/repo/main");
+    expect(await readSessionInfo(context, "s1")).toEqual({
+      parentID: null,
+      directory: "/repo/main",
+    });
+    expect(calls).toBe(2);
+  });
+
+  test("an unsettled session is left alone and the first placement still happens", async () => {
+    // A session that has not settled yet legitimately sits in the main
+    // checkout: that difference is the placement, not a relocation, so it
+    // must not cancel the move.
+    rememberWorktree("session-1", WORKTREE);
+    let lookups = 0;
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async () => {
+          lookups += 1;
+          return { parentID: null, location: { directory: MAIN } };
+        },
+        move: async (input) => moves.push(input),
+      },
+    };
+    expect(await reconcileSessionLocation(context, "session-1")).toBe(true);
+    expect(lookups).toBe(0);
+    expect(worktreeForSession("session-1")).toBe(WORKTREE);
+
+    expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
+    expect(moves).toEqual([{ sessionID: "session-1", directory: WORKTREE }]);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("never reverses a session the close returned to the main checkout", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const moves = [];
+    let directory = MAIN;
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async () => ({ parentID: null, location: { directory } }),
+        move: async ({ directory: target }) => {
+          moves.push(target);
+          directory = target;
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await prompt(promptEvent("session-1"));
+    expect(moves).toEqual([WORKTREE]);
+    expect(sessionPlaced("session-1")).toBe(true);
+
+    // `issue close` asks the API to return the session to the main checkout,
+    // and the API is what decided — not this registry.
+    directory = MAIN;
+    await prompt(promptEvent("session-1"));
+    expect(moves).toEqual([WORKTREE]);
+    expect(sessionPlaced("session-1")).toBe(false);
+    // The stale target is gone for this session and for the shared fallback
+    // that would otherwise hand it to the next sub-agent.
+    expect(worktreeForSession("session-1")).toBeNull();
+    expect(worktreeForSession("unknown-session")).toBeNull();
+  });
+
+  test("an unreadable host never revives a worktree the close may have removed", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    let unavailable = false;
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async () => {
+          if (unavailable) throw new Error("session store unavailable");
+          return { parentID: null, location: { directory: WORKTREE } };
+        },
+        move: async (input) => moves.push(input),
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await prompt(promptEvent("session-1"));
+    expect(sessionPlaced("session-1")).toBe(true);
+
+    // "I cannot tell you where this session is" is not "it is still in the
+    // worktree": the directory may already be gone, so the cached target is
+    // dropped instead of being re-entered.
+    unavailable = true;
+    await prompt(promptEvent("session-1"));
+    expect(moves).toHaveLength(1);
+    expect(sessionPlaced("session-1")).toBe(false);
+    expect(worktreeForSession("session-1")).toBeNull();
+    expect(worktreeForSession("unknown-session")).toBeNull();
+  });
+
+  test("a child follows the parent to where it actually is, not the cached worktree", async () => {
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: WORKTREE } },
+      "child-1": { parentID: "parent-1", location: { directory: WORKTREE } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+    rememberWorktree("parent-1", WORKTREE);
+    await prompt(promptEvent("parent-1"));
+    expect(sessionPlaced("parent-1")).toBe(true);
+
+    // The close returns the parent to the main checkout; the child's cached
+    // worktree is the directory that is about to disappear.
+    sessions["parent-1"].location.directory = MAIN;
+    sessions["child-2"] = { parentID: "parent-1", location: { directory: WORKTREE } };
+    moves.length = 0;
+    await prompt(promptEvent("child-2"));
+
+    expect(moves).toEqual([{ sessionID: "child-2", directory: MAIN }]);
+    // The parent's settled registration is gone, and the shared fallback now
+    // points at a directory that still exists.
+    expect(sessionPlaced("parent-1")).toBe(false);
+    expect(worktreeForSession("parent-1")).not.toBe(WORKTREE);
+    expect(worktreeForSession("unknown-session")).toBe(MAIN);
+  });
+
+  test("never hands a closed issue's worktree to a new sub-agent", async () => {
+    // The shared fallback outlives the lease it came from, and the close may
+    // already have removed it, so the converged-lease marker is consulted
+    // before the fallback is handed out.
+    rememberWorktree("other-session", WORKTREE);
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: { get: async () => null, move: async (input) => moves.push(input) },
+    };
+    const warnings = await withWarnings(async () => {
+      expect(
+        await ensureSessionWorktree(context, "sub-1", {
+          readSessionInfo: async () => null,
+          discover: async () => null,
+          readBinding: async () => 747,
+          readLeaseHistory: async () => [
+            { status: "retained", release_reason: "issue closed: ses_a" },
+          ],
+        }),
+      ).toBeNull();
+    });
+    expect(moves).toEqual([]);
+    expect(warnings.join("\n")).toContain("issue 747 is closed");
+    expect(warnings.join("\n")).toContain("refusing to reuse a worktree");
+  });
+
+  test("an open issue still hands the shared fallback to a new sub-agent", async () => {
+    rememberWorktree("other-session", WORKTREE);
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: { get: async () => null, move: async (input) => moves.push(input) },
+    };
+    expect(
+      await ensureSessionWorktree(context, "sub-2", {
+        readSessionInfo: async () => null,
+        discover: async () => null,
+        readBinding: async () => 747,
+        readLeaseHistory: async () => [{ status: "active", release_reason: null }],
+      }),
+    ).toBe(WORKTREE);
+    expect(moves).toEqual([{ sessionID: "sub-2", directory: WORKTREE }]);
+  });
+
+  test("a moved session re-registers cleanly on its next issue's lease", async () => {
+    // Reconciliation drops the stale target; the ordinary discovery path is
+    // untouched, so a later, still-open issue re-registers from its own lease.
+    rememberWorktree("session-1", WORKTREE);
+    let directory = MAIN;
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async () => ({ parentID: null, location: { directory } }),
+        move: async ({ directory: target }) => {
+          directory = target;
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await prompt(promptEvent("session-1"));
+    directory = MAIN;
+    await prompt(promptEvent("session-1"));
+    expect(worktreeForSession("session-1")).toBeNull();
+
+    const next = "/repo/.worktrees/issue-748";
+    expect(
+      await ensureSessionWorktree(context, "session-1", {
+        ...noCliDeps,
+        readSessionInfo: async () => null,
+        discover: async () => next,
+        readBinding: async () => null,
+      }),
+    ).toBe(next);
+    expect(directory).toBe(next);
+  });
+
+  test("reads nothing from the host while host discovery is disabled", async () => {
+    // NO_DISCOVER keeps the adapter inert beyond the in-memory registry: no
+    // reconciliation read either, or the inert mode would reach the host.
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    try {
+      rememberWorktree("session-1", WORKTREE);
+      const moves = [];
+      let lookups = 0;
+      const context = {
+        location: { directory: MAIN },
+        session: {
+          get: async () => {
+            lookups += 1;
+            return { parentID: null, location: { directory: MAIN } };
+          },
+          move: async (input) => moves.push(input),
+        },
+      };
+      expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
+      // The placement is now settled, and the inert path still asks nothing.
+      expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
+      expect(lookups).toBe(0);
+      expect(moves).toHaveLength(1);
+    } finally {
+      restoreNoDiscover(savedNoDiscover);
+    }
   });
 });
 

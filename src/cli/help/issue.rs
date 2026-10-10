@@ -141,11 +141,11 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "close" => (
             Capability::IssueClose,
-            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Redmine preflight: when the issue has open native children (subtasks), the close fails before any status write with a bounded list of child identity/title/status; close each child individually first, then retry the parent. Phasegent never cascade-closes children. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity and this issue flipped to `retained` across every session; the release needs no session identity. --worktree-session, else PHASEGENT_SESSION_ID, is optional and only names the closer in the release_reason (\"issue closed: <session>\"); without either, the reason is the plain \"issue closed\" and no owner is guessed. A failed remote close leaves every local lease untouched, and other issues and repo identities are never affected. After the flip the close removes this issue's worktree directories in the resolved repo when the directory is clean (uncommitted or untracked files count as dirty), no active lease of another session points at it, and it is not the repository's main checkout; a kept directory emits one stderr warning naming the guard that kept it. Branches and lease rows are never deleted, and the cleanup is best-effort: it never changes the exit code or the stdout document.",
+            "Usage: issue close <NUMBER> [--worktree-session SESSION]\n\nClose the issue on the provider. Redmine preflight: when the issue has open native children (subtasks), the close fails before any status write with a bounded list of child identity/title/status; close each child individually first, then retry the parent. Phasegent never cascade-closes children. Only after the remote close succeeds are the active worktree leases matching the resolved repo identity and this issue flipped to `retained` across every session; the release needs no session identity. --worktree-session, else PHASEGENT_SESSION_ID, is optional and only names the closer in the release_reason (\"issue closed: <session>\"); without either, the reason is the plain \"issue closed\" and no owner is guessed. A failed remote close leaves every local lease untouched, and other issues and repo identities are never affected. After the flip the close removes this issue's worktree directories in the resolved repo when the directory is clean (uncommitted or untracked files count as dirty), no active lease of another session points at it, and it is not the repository's main checkout; a kept directory emits one stderr warning naming the guard that kept it.\n\nA directory whose lease belongs to an OpenCode session (`ses_…`) is protected until the host confirms the session is no longer hosted there. When the closing session is still hosted in such a directory, the close asks the OpenCode API (`opencode api session.move`) to return that one session to the repository's verified main checkout, then confirms the move with a fresh read before removing anything. Anything unproven keeps the directory and warns: an unreachable API, an incomplete listing, a session the instance does not own, another session hosted there, or a move that has not taken effect yet. No other session is ever moved, and a pure CLI worktree never reaches the API. The close never waits for the move; `issue sync` removes a deferred directory once the host reports it free. Branches and lease rows are never deleted, and the cleanup is best-effort: it never changes the exit code or the stdout document.",
         ),
         "sync" => (
             Capability::IssueClose,
-            "Usage: issue sync [--all] [--no-clean]\n\nReconcile the local worktree leases and directories with the provider state (orchestrator-only). Candidates are the issues in the lease table whose worktree directory still exists; each candidate's remote state is read, and one the provider already closed converges exactly the way `issue close` converges it locally: the issue's active leases in the scanned repository flip to `retained` with release_reason \"issue closed on the remote (issue sync)\", and its directories run the same three close guards (clean, no active lease of another session pointing at it, never the main checkout). Branches are never deleted, lease rows are never deleted, and a directory a guard keeps stays on disk with the guard's reason in the report.\n\nDefault scope is the repository of the current working directory. --all scans every repository identity recorded in the lease table through its main checkout; a checkout that is missing or resolves to a different identity is reported under skipped_repos instead of being guessed. --no-clean is the report mode: the same candidates and the same guard verdicts with per-directory would_clean/would_keep actions, and no write at all.\n\nstdout is one JSON envelope {mode, all, checked, not_closed, not_found, released_leases, cleaned, kept, skipped_repos?, issues:[...]}. A remote read failure is a structured error with a non-zero exit that deletes nothing, while a remote 404 counts into not_found and the pass continues. `worktree acquire`, `worktree list`, and `worktree prune` run the same pass for their repository before doing their own work and append its warnings to stderr; --no-sync skips that pass.",
+            "Usage: issue sync [--all] [--no-clean]\n\nReconcile the local worktree leases and directories with the provider state (orchestrator-only). Candidates are the issues in the lease table whose worktree directory still exists; each candidate's remote state is read, and one the provider already closed converges exactly the way `issue close` converges it locally: the issue's active leases in the scanned repository flip to `retained` with release_reason \"issue closed on the remote (issue sync)\", and its directories run the same three close guards (clean, no active lease of another session pointing at it, never the main checkout). Branches are never deleted, lease rows are never deleted, and a directory a guard keeps stays on disk with the guard's reason in the report.\n\nDefault scope is the repository of the current working directory. --all scans every repository identity recorded in the lease table through its main checkout; a checkout that is missing or resolves to a different identity is reported under skipped_repos instead of being guessed. --no-clean is the report mode: the same candidates and the same guard verdicts with per-directory would_clean/would_keep actions, and no write at all.\n\nA directory leased by an OpenCode session (`ses_…`) is removed only once the host confirms no session is still hosted there, and the pass never moves a session: a close that could not return one leaves its directory behind, and this pass removes it once the host reports the session elsewhere. An incomplete or unreachable host answer keeps the directory with its reason. In report mode an OpenCode-associated directory is always would_keep and the host is not contacted at all.\n\nstdout is one JSON envelope {mode, all, checked, not_closed, not_found, released_leases, cleaned, kept, skipped_repos?, issues:[...]}. A remote read failure is a structured error with a non-zero exit that deletes nothing, while a remote 404 counts into not_found and the pass continues. `worktree acquire`, `worktree list`, and `worktree prune` run the same pass for their repository before doing their own work and append its warnings to stderr; --no-sync skips that pass.\n\n`phasegent worktree prune --remove` is a separate, explicit removal path and is not covered by the close guards above.",
         ),
         "upload-attachment" => (
             Capability::IssueAttachmentUpload,
@@ -245,6 +245,23 @@ mod tests {
             text.contains("Branches and lease rows are never deleted"),
             "close help must state that branches and lease rows survive the cleanup; got: {text}"
         );
+        // Issue 747: the close owns the API return of its own session, and
+        // every way that can stay unproven must be documented as a keep.
+        assert!(
+            text.contains("opencode api session.move")
+                && text.contains("verified main checkout")
+                && text.contains("fresh read"),
+            "close help must document the API-backed session return; got: {text}"
+        );
+        assert!(
+            text.contains("No other session is ever moved")
+                && text.contains("a pure CLI worktree never reaches the API"),
+            "close help must state the move boundary; got: {text}"
+        );
+        assert!(
+            text.contains("`issue sync` removes a deferred directory"),
+            "close help must say the close never waits for the move; got: {text}"
+        );
     }
 
     /// Issue 552 Phase 2 shipped `issue sync` without a help topic; the
@@ -269,6 +286,23 @@ mod tests {
         assert!(
             text.contains("--no-sync"),
             "sync help must name the switch that disables the worktree pass; got: {text}"
+        );
+        // Issue 747: sync is the pass that never moves a session, and the
+        // report mode is the pass that never contacts the host at all.
+        assert!(
+            text.contains("the pass never moves a session")
+                && text.contains("once the host reports the session elsewhere"),
+            "sync help must document the move boundary; got: {text}"
+        );
+        assert!(
+            text.contains("the host is not contacted at all"),
+            "sync help must state the report-mode host boundary; got: {text}"
+        );
+        // Prune is an explicit, independent removal path; the help must not let
+        // the close-guard wording imply it inherits them.
+        assert!(
+            text.contains("separate, explicit removal path"),
+            "sync help must scope the guards to close and sync only; got: {text}"
         );
         assert!(
             render_issue_help(Some(Role::Orchestrator)).contains("sync"),

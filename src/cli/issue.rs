@@ -570,6 +570,15 @@ pub(crate) fn execute_issue(
                     // main checkout); a blocked directory is kept and
                     // named on stderr, branches are never deleted, and the
                     // stdout close document stays byte-identical.
+                    //
+                    // Issue 747 P1: this is the only caller that may move
+                    // a session. A candidate whose persisted `ses_` lease
+                    // session is still hosted there first asks the host to
+                    // relocate *this* close's own session into the
+                    // repository's verified main checkout, then confirms
+                    // the move with fresh evidence. Anything unproven —
+                    // unreachable API, incomplete listing, a move that has
+                    // not taken effect — keeps the directory and warns.
                     for warning in crate::lifecycle::cleanup_closed_issue_worktrees(
                         &crate::worktree::ProcessWorktreeRunner::new(),
                         &repo_path,

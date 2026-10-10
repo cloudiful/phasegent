@@ -99,6 +99,12 @@ phasegent worktree acquire --issue 123 --base main
 phasegent worktree probe --issue 123
 ```
 
+由 OpenCode 会话（`ses_…`）租用的目录会被保护，直到 host 确认该会话已不在其中：
+`issue close` 会先通过 OpenCode API（`opencode api session.move`）把结束会话送回
+仓库主 checkout，再移除目录；无法确认时保留目录，待 `issue sync` 确认会话已转移后
+再移除。`phasegent worktree prune` 是独立的显式移除路径，不受这些保护约束。详见
+[docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
+
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
 dist。真源为 `assets/opencode/src/` 和 `skills/phasegent/` 的提示词文件；用
 `bun run build:plugin` 重建（`bun` 仅开发时需要），绝不手改仓库中的 dist

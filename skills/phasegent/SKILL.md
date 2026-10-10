@@ -296,10 +296,25 @@ Boundaries:
   path.
 - A successful `issue close` flips this issue's active leases to `retained` and
   then removes a worktree directory only when it is clean, no active lease of
-  another session points at it, and it is not the repository's main checkout.
-  Branches and lease rows are never deleted, and cleanup never changes the
-  close exit code or its stdout. `issue sync` runs the same guards for issues
-  the provider already closed.
+  another session points at it, it is not the repository's main checkout, and —
+  for a directory leased by an OpenCode session (`ses_…`) — the host confirms no
+  session still runs there. Before removing such a directory the close asks the
+  OpenCode API (`opencode api session.move`) to return the closing session to the
+  repository's verified main checkout, then confirms the move with a fresh
+  authoritative read; an unreachable API, an incomplete listing, an unowned
+  session, another session hosted there, or a move that has not taken effect yet
+  keeps the directory with a warning. Only the closing session is ever moved,
+  the close never waits for the move, and a pure CLI worktree never reaches the
+  API. `issue sync` runs the same guards for issues the provider already closed
+  but never moves a session: it removes a deferred directory once the host
+  reports the session elsewhere. Branches and lease rows are never deleted, and
+  cleanup never changes the close exit code or its stdout.
+- The host outranks the adapter's registry: the plugin places a session once per
+  session and then reconciles a settled placement against a fresh host read
+  before reusing a cached target, so an API return is never reversed and a
+  removed worktree is never re-entered by that session or a later child. A
+  session that has not settled keeps its first placement, and an unreadable host
+  is never treated as proof that the cached worktree still exists.
 - Environment: `PHASEGENT_SESSION_ID` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
   call), and `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter inert beyond
