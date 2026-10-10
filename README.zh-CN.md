@@ -47,6 +47,12 @@ Redmine REST 地址是机器级的：`auth setup --api-base` 与
 `config show` 只在 `global_settings` 中报告一次。credential、已开通的身份、
 provider 选择以及 Redmine close-status id 仍是 role 级。
 
+`workflow bootstrap` 为每个 agent role 开通一个 Redmine 服务账号——
+orchestrator、executor、reviewer 和 explore——通过 admin API 读取各自的
+API key，把 key 存入 SQLite，并协调它们的直接 project membership
+（Maintainer、Developer、Reporter、Reporter）。该命令是幂等的：重复执行会
+复用已持有的全部身份，只创建缺失的账号。
+
 ## 常用命令
 
 ```sh

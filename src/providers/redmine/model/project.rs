@@ -99,6 +99,28 @@ pub const DEFAULT_REDMINE_ROLE_EXECUTOR: &str = "Developer";
 /// Default Redmine role for the reviewer user identified by the `reviewer`
 /// API key.
 pub const DEFAULT_REDMINE_ROLE_REVIEWER: &str = "Reporter";
+/// Default Redmine role for the explore (reconnaissance) user.
+pub const DEFAULT_REDMINE_ROLE_EXPLORE: &str = "Reporter";
+
+/// Default Redmine project role for one agent role, or `None` for
+/// [`crate::policy::Role::Admin`], which is the human-provisioned
+/// provisioner and never a provisioned service user.
+///
+/// Single source of truth for the agent role → Redmine role-name mapping so
+/// the bootstrap membership pass and the documented defaults cannot drift
+/// apart. Role names are resolved through the project's existing role
+/// lookup, which reports a warning instead of failing when a name is
+/// missing or ambiguous.
+pub fn default_redmine_role(role: crate::policy::Role) -> Option<&'static str> {
+    use crate::policy::Role;
+    match role {
+        Role::Orchestrator => Some(DEFAULT_REDMINE_ROLE_ORCHESTRATOR),
+        Role::Executor => Some(DEFAULT_REDMINE_ROLE_EXECUTOR),
+        Role::Reviewer => Some(DEFAULT_REDMINE_ROLE_REVIEWER),
+        Role::Explore => Some(DEFAULT_REDMINE_ROLE_EXPLORE),
+        Role::Admin => None,
+    }
+}
 
 #[derive(Debug)]
 pub struct RedmineBootstrap {

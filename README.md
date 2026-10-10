@@ -50,6 +50,13 @@ shares, and `config show` reports it once under `global_settings`. Credentials,
 provisioned identities, provider selection, and the Redmine close-status id
 stay role-scoped.
 
+`workflow bootstrap` provisions one Redmine service user per agent role —
+orchestrator, executor, reviewer, and explore — reads each one's API key
+through the admin API, stores the keys in SQLite, and reconciles their direct
+project memberships (Maintainer, Developer, Reporter, Reporter). It is
+idempotent: rerunning it reuses every identity it already holds and creates
+only the accounts that are missing.
+
 ## Common Commands
 
 ```sh

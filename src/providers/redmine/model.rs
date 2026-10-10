@@ -7,7 +7,7 @@ pub mod status;
 pub mod time;
 pub mod user;
 #[rustfmt::skip]
-pub use project::{RedmineBootstrap, RedmineProject, RedmineUserMembershipOutcome, DEFAULT_REDMINE_ROLE_EXECUTOR, DEFAULT_REDMINE_ROLE_ORCHESTRATOR, DEFAULT_REDMINE_ROLE_REVIEWER};
+pub use project::{RedmineBootstrap, RedmineProject, RedmineUserMembershipOutcome, default_redmine_role};
 #[rustfmt::skip]
 pub use error::{RedmineErrorKind, classify_redmine_error};
 #[rustfmt::skip]

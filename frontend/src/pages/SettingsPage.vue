@@ -15,13 +15,7 @@ import {
   testConnection,
 } from '@/ipc'
 import type { RoleId } from '@/types'
-
-const ROLE_ITEMS: { label: string, value: RoleId, hint: string }[] = [
-  { label: 'Admin', value: 'admin', hint: 'Bootstrap Redmine projects and provision agent users.' },
-  { label: 'Orchestrator', value: 'orchestrator', hint: 'Plan phases and advance workflow state.' },
-  { label: 'Executor', value: 'executor', hint: 'Carry out assigned phases and report results.' },
-  { label: 'Reviewer', value: 'reviewer', hint: 'Audit the code, verify acceptance, and run the tests.' },
-]
+import { ROLE_ITEMS, roleHint } from '@/pages/roleOptions'
 
 const toast = useToast()
 
@@ -45,7 +39,7 @@ const credentialInfo = ref<{ present: boolean, length: number } | null>(null)
 const provisioning = ref<{ user_id?: number | null, login?: string | null } | null>(null)
 const initialized = ref(false)
 
-const roleHint = computed(() => ROLE_ITEMS.find(item => item.value === activeRole.value)?.hint ?? '')
+const roleDescription = computed(() => roleHint(activeRole.value))
 const roleEntry = computed(() => snapshotRoleEntry(snapshot.value, activeRole.value))
 // The Redmine REST address is machine-wide; the local provider keeps no
 // remote endpoint.
@@ -276,7 +270,7 @@ async function clearCredentialAction(): Promise<void> {
       </template>
       <UFormField
         label="Active role"
-        :description="roleHint"
+        :description="roleDescription"
         name="role"
       >
         <USelect

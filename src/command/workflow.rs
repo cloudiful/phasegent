@@ -28,7 +28,7 @@ pub(crate) fn parse_workflow(args: &[String]) -> Result<Command, String> {
                     return Err(format!(
                         "workflow bootstrap {rejected} is no longer supported; \
                          direct memberships are reconciled automatically from the \
-                         orchestrator, executor, and reviewer API keys",
+                         orchestrator, executor, reviewer, and explore API keys",
                     ));
                 }
             }

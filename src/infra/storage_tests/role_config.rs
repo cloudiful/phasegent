@@ -95,6 +95,37 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
         storage.load_redmine_user(Role::Reviewer).unwrap(),
         Some((44, "phasegent-reviewer".to_owned()))
     );
+    // The explore identity round-trips like every other provisioned role and
+    // stays isolated from them.
+    assert!(storage.load_redmine_user(Role::Explore).unwrap().is_none());
+    storage
+        .save_redmine_user(Role::Explore, 55, "phasegent-explore")
+        .unwrap();
+    assert_eq!(
+        storage.load_redmine_user(Role::Explore).unwrap(),
+        Some((55, "phasegent-explore".to_owned()))
+    );
+    assert_eq!(
+        storage.load_redmine_user(Role::Reviewer).unwrap(),
+        Some((44, "phasegent-reviewer".to_owned()))
+    );
+    storage
+        .save_credential(Role::Explore, PROVIDER_REDMINE, "explore-key")
+        .unwrap();
+    assert_eq!(
+        storage
+            .load_credential(Role::Explore, PROVIDER_REDMINE)
+            .unwrap()
+            .as_deref(),
+        Some("explore-key")
+    );
+    assert_eq!(
+        storage
+            .load_credential(Role::Reviewer, PROVIDER_REDMINE)
+            .unwrap(),
+        None,
+        "explore must not overwrite another role's credential row"
+    );
     // Downstream role_credential rows remain the source for API keys.
     storage
         .save_credential(Role::Orchestrator, PROVIDER_REDMINE, "orchestrator-key")

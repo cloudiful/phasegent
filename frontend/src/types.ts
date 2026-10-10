@@ -34,7 +34,7 @@ export interface StatusSummary {
   recent: StatusEvent[]
 }
 
-export type RoleId = 'admin' | 'orchestrator' | 'executor' | 'reviewer'
+export type RoleId = 'admin' | 'orchestrator' | 'executor' | 'reviewer' | 'explore'
 
 export interface SettingsState {
   role: RoleId
