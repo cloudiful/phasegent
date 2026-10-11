@@ -90,7 +90,7 @@ function New-FakeDatabase {
     return $database
 }
 
-$propertyQuery = 'SELECT Property, Value FROM Property'
+$propertyQuery = 'SELECT `Property`, `Value` FROM `Property`'
 $propertyColumns = @('Property', 'Value')
 $emptyRows = @(Read-MsiRows -Database (New-FakeDatabase -View (New-FakeView -Rows @())) -Query $propertyQuery -Columns $propertyColumns)
 Assert-Equal 0 $emptyRows.Count 'empty query row count'
@@ -118,7 +118,7 @@ Assert-Equal 1 $singleRows.Count 'single query row count'
 Assert-True ($singleRows[0] -is [pscustomobject]) 'single result must be a PSCustomObject'
 Assert-Equal '2.26.0' $singleRows[0].Value 'single result value'
 
-$removeFileQuery = 'SELECT FileKey, Component_, FileName, DirProperty, InstallMode FROM RemoveFile'
+$removeFileQuery = 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`'
 $removeFileColumns = @('FileKey', 'Component_', 'FileName', 'DirProperty', 'InstallMode')
 $removeFileRecords = @(
     (New-FakeRecord -Values @('RemoveInstallFolder', 'PhasegentCli', '', 'INSTALLFOLDER', 2) -Nulls @($false, $false, $true, $false, $false)),
@@ -157,7 +157,7 @@ Assert-True ($null -ne $fetchError) 'Fetch errors must propagate'
 Assert-ContextualFailure $fetchError $propertyQuery 'Fetch' 'fake Fetch failure' 'Fetch errors include query context'
 Assert-Equal 0 $fetchRows.Count 'Fetch failure emits no rows'
 
-$columnQuery = 'SELECT Property, Value, MissingColumn FROM Property'
+$columnQuery = 'SELECT `Property`, `Value`, `MissingColumn` FROM `Property`'
 $columnView = New-FakeView -Rows @(
     (New-FakeRecord -Values @('ProductName', 'phasegent CLI', 'Ready') -Nulls @($false, $false, $false)),
     (New-FakeRecord -Values @('Manufacturer', '') -Nulls @($false, $false))

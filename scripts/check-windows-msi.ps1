@@ -61,7 +61,7 @@ if ([System.IO.Path]::GetExtension($fullPath) -ine '.msi' -or
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $installer.OpenDatabase($fullPath, 0)
 $properties = @{}
-foreach ($row in @(Read-MsiRows 'SELECT Property, Value FROM Property' @('Property', 'Value') -Database $database)) {
+foreach ($row in @(Read-MsiRows 'SELECT `Property`, `Value` FROM `Property`' @('Property', 'Value') -Database $database)) {
     $properties[$row.Property] = $row.Value
 }
 foreach ($property in @('ProductName', 'Manufacturer', 'ProductVersion', 'UpgradeCode')) {
@@ -95,7 +95,7 @@ if (($wordCount -band 8) -eq 0) {
     throw "MSI summary does not mark a per-user package (WordCount=$wordCount)."
 }
 
-$components = @(Read-MsiRows 'SELECT Component, ComponentId, Directory_, Attributes, KeyPath FROM Component' @('Component', 'ComponentId', 'Directory_', 'Attributes', 'KeyPath') @(4) -Database $database)
+$components = @(Read-MsiRows 'SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`' @('Component', 'ComponentId', 'Directory_', 'Attributes', 'KeyPath') @(4) -Database $database)
 if ($components.Count -ne 1 -or $components[0].Component -cne $pathComponent) {
     throw "MSI must contain exactly the single owned CLI component; found $($components.Count)."
 }
@@ -106,7 +106,7 @@ if ((Normalize-Guid $component.ComponentId 'component code') -cne $expectedCompo
 if ($component.Directory_ -cne 'INSTALLFOLDER' -or ($component.Attributes -band 256) -eq 0) {
     throw 'CLI component must be 64-bit and installed in INSTALLFOLDER.'
 }
-$directories = @(Read-MsiRows 'SELECT Directory, Directory_Parent, DefaultDir FROM Directory' @('Directory', 'Directory_Parent', 'DefaultDir') -Database $database)
+$directories = @(Read-MsiRows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' @('Directory', 'Directory_Parent', 'DefaultDir') -Database $database)
 $programs = @($directories | Where-Object { $_.Directory -ceq 'ProgramsFolder' })
 $installFolder = @($directories | Where-Object { $_.Directory -ceq 'INSTALLFOLDER' })
 if ($programs.Count -ne 1 -or $programs[0].Directory_Parent -cne 'LocalAppDataFolder' -or
@@ -116,7 +116,7 @@ if ($programs.Count -ne 1 -or $programs[0].Directory_Parent -cne 'LocalAppDataFo
     throw 'MSI must install beneath LocalAppDataFolder\Programs\phasegent-cli.'
 }
 
-$files = @(Read-MsiRows 'SELECT File, Component_, FileName FROM File' @('File', 'Component_', 'FileName') -Database $database)
+$files = @(Read-MsiRows 'SELECT `File`, `Component_`, `FileName` FROM `File`' @('File', 'Component_', 'FileName') -Database $database)
 if ($files.Count -ne 1 -or $files[0].Component_ -cne $pathComponent) {
     throw "MSI must contain only the CLI executable payload; found $($files.Count) file rows."
 }
@@ -125,7 +125,7 @@ if ($fileNames[-1] -ine 'phasegent.exe') {
     throw "Unexpected MSI payload file: $($files[0].FileName)"
 }
 
-$registryRows = @(Read-MsiRows 'SELECT Registry, Root, Key, Name, Value, Component_ FROM Registry' @('Registry', 'Root', 'Key', 'Name', 'Value', 'Component_') @(2) -Database $database)
+$registryRows = @(Read-MsiRows 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' @('Registry', 'Root', 'Key', 'Name', 'Value', 'Component_') @(2) -Database $database)
 if ($registryRows.Count -ne 1) {
     throw "MSI must author only its install-path registry value; found $($registryRows.Count) rows."
 }
@@ -136,7 +136,7 @@ if ($registry.Root -ne 1 -or $registry.Key -cne 'Software\phasegent\phasegent-cl
     throw 'MSI registry ownership must be one HKCU install-path keypath in the CLI component.'
 }
 
-$environmentRows = @(Read-MsiRows 'SELECT Environment, Name, Value, Component_ FROM Environment' @('Environment', 'Name', 'Value', 'Component_') -Database $database)
+$environmentRows = @(Read-MsiRows 'SELECT `Environment`, `Name`, `Value`, `Component_` FROM `Environment`' @('Environment', 'Name', 'Value', 'Component_') -Database $database)
 if ($environmentRows.Count -ne 1) {
     throw "MSI must author only its user PATH entry; found $($environmentRows.Count) rows."
 }
@@ -145,10 +145,10 @@ if ($environment.Environment -cne 'PhasegentUserPath' -or $environment.Name -cne
     $environment.Value -cne '[~];[INSTALLFOLDER]' -or $environment.Component_ -cne $pathComponent) {
     throw 'MSI PATH entry must append and remove only the owned user install directory.'
 }
-$removeFileRows = @(Read-MsiRows 'SELECT FileKey, Component_, FileName, DirProperty, InstallMode FROM RemoveFile' @('FileKey', 'Component_', 'FileName', 'DirProperty', 'InstallMode') @(5) @(3) -Database $database)
+$removeFileRows = @(Read-MsiRows 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`' @('FileKey', 'Component_', 'FileName', 'DirProperty', 'InstallMode') @(5) @(3) -Database $database)
 Assert-PhasegentRemoveFileRows -Rows $removeFileRows -ComponentId $pathComponent
 
-$upgrades = @(Read-MsiRows 'SELECT UpgradeCode, VersionMin, VersionMax, Attributes, ActionProperty FROM Upgrade' @('UpgradeCode', 'VersionMin', 'VersionMax', 'Attributes', 'ActionProperty') @(4) -Database $database)
+$upgrades = @(Read-MsiRows 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' @('UpgradeCode', 'VersionMin', 'VersionMax', 'Attributes', 'ActionProperty') @(4) -Database $database)
 if ($upgrades.Count -ne 2) {
     throw "MSI MajorUpgrade must author upgrade and downgrade-detection rows; found $($upgrades.Count)."
 }
@@ -161,12 +161,12 @@ if ($upgradeCodeRows.Count -ne 2 -or $upgradeRow.Count -ne 1 -or $downgradeRow.C
     ($downgradeRow[0].Attributes -band 2) -eq 0) {
     throw 'MSI Upgrade table does not encode forward upgrades and downgrade detection for this version.'
 }
-$launchConditions = @(Read-MsiRows 'SELECT Condition, Description FROM LaunchCondition' @('Condition', 'Description') -Database $database)
+$launchConditions = @(Read-MsiRows 'SELECT `Condition`, `Description` FROM `LaunchCondition`' @('Condition', 'Description') -Database $database)
 if ($launchConditions.Count -ne 1 -or $launchConditions[0].Condition -cne 'NOT WIX_DOWNGRADE_DETECTED') {
     throw 'MSI must block installation when a newer product from this family is present.'
 }
 
-$tables = @(Read-MsiRows 'SELECT Name FROM _Tables' @('Name') -Database $database | ForEach-Object { $_.Name })
+$tables = @(Read-MsiRows 'SELECT `Name` FROM `_Tables`' @('Name') -Database $database | ForEach-Object { $_.Name })
 foreach ($forbiddenTable in @('Shortcut', 'CustomAction', 'RemoveRegistry')) {
     if ($tables -contains $forbiddenTable) {
         throw "MSI must not contain a $forbiddenTable table."

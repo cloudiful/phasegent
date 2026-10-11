@@ -22,6 +22,10 @@ fn checker_uses_the_shared_noisy_output_safe_row_reader() {
         checker.matches("-Database $database").count(),
         "every MSI query passes its opened read-only database"
     );
+    assert!(
+        !checker.contains("SELECT Registry, Root, Key, Name, Value, Component_ FROM Registry"),
+        "checker queries must escape identifiers, including the reserved-word collisions"
+    );
 
     let reader = read("scripts/windows-msi/rows.ps1");
     for contract in [

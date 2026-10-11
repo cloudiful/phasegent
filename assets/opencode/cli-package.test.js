@@ -93,8 +93,14 @@ describe("release workflow structure", () => {
     const regressions = build.steps.find((step) => step.name === "Test Windows MSI PowerShell regressions");
     expect(regressions.if).toBe("runner.os == 'Windows'");
     expect(regressions.shell).toBe("pwsh");
+    expect(regressions.run).toContain("pwsh -NoProfile -File tests/windows_installer/queries.ps1");
     expect(regressions.run).toContain("pwsh -NoProfile -File tests/windows_installer/rows.ps1");
     expect(regressions.run).toContain("pwsh -NoProfile -File tests/windows_installer/cleanup.ps1");
+    // An unescaped MSI query only fails inside the real checker, after a full
+    // WiX compile, so the query contract runs first as a cheap preflight.
+    const queries = "pwsh -NoProfile -File tests/windows_installer/queries.ps1";
+    const rows = "pwsh -NoProfile -File tests/windows_installer/rows.ps1";
+    expect(regressions.run.indexOf(queries)).toBeLessThan(regressions.run.indexOf(rows));
 
     const msiBuild = build.steps.find((step) => step.name === "Build and validate Windows MSI");
     expect(msiBuild.if).toBe("runner.os == 'Windows'");

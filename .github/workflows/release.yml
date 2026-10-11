@@ -107,10 +107,15 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
+      # Query-contract first: an unescaped MSI query fails inside the real
+      # checker only after a full WiX compile, so prove the exact OpenView
+      # contract first and still keep the native check below as the real gate.
       - name: Test Windows MSI PowerShell regressions
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          pwsh -NoProfile -File tests/windows_installer/queries.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/windows_installer/rows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/windows_installer/cleanup.ps1

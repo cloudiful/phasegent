@@ -79,16 +79,22 @@ fn windows_msi_is_built_checked_and_uploaded_only_on_the_windows_runner() {
             "Windows MSI release contract must include {step:?}; got:\n{yml}"
         );
     }
-    let regression_step = "name: Test Windows MSI PowerShell regressions\n        if: runner.os == 'Windows'\n        shell: pwsh\n        run: |\n          pwsh -NoProfile -File tests/windows_installer/rows.ps1\n          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n          pwsh -NoProfile -File tests/windows_installer/cleanup.ps1\n          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
+    let regression_step = "name: Test Windows MSI PowerShell regressions\n        if: runner.os == 'Windows'\n        shell: pwsh\n        run: |\n          pwsh -NoProfile -File tests/windows_installer/queries.ps1\n          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n          pwsh -NoProfile -File tests/windows_installer/rows.ps1\n          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n          pwsh -NoProfile -File tests/windows_installer/cleanup.ps1\n          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
     let regression_index = yml
         .find(regression_step)
         .expect("Windows release must run the MSI PowerShell regressions");
+    let row_index = yml
+        .find("pwsh -NoProfile -File tests/windows_installer/rows.ps1")
+        .expect("Windows release must retain the MSI row regressions");
     let msi_build_index = yml
         .find("name: Build and validate Windows MSI")
         .expect("Windows release must retain the real MSI build and validation");
+    let query_index = yml
+        .find("pwsh -NoProfile -File tests/windows_installer/queries.ps1")
+        .expect("Windows release must run the MSI query contract before the row regressions");
     assert!(
-        regression_index < msi_build_index,
-        "MSI regression scripts must run before the real MSI build"
+        query_index > regression_index && query_index < row_index && row_index < msi_build_index,
+        "the MSI query contract must run inside the regression step, before the row regressions and the real MSI build"
     );
     assert!(
         yml.contains("dist/phasegent-*-x86_64-pc-windows-msvc.msi"),

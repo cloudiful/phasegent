@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "windows_installer/queries_contract.rs"]
+mod queries_contract;
 #[path = "windows_installer/rows_contract.rs"]
 mod rows_contract;
 
@@ -143,12 +145,12 @@ fn msi_checker_opens_the_package_read_only_and_checks_owned_tables() {
     for contract in [
         "OpenDatabase($fullPath, 0)",
         "SummaryInformation(0)",
-        "SELECT Component, ComponentId, Directory_, Attributes, KeyPath FROM Component",
-        "SELECT Directory, Directory_Parent, DefaultDir FROM Directory",
-        "SELECT File, Component_, FileName FROM File",
-        "SELECT Registry, Root, Key, Name, Value, Component_ FROM Registry",
-        "SELECT Environment, Name, Value, Component_ FROM Environment",
-        "SELECT FileKey, Component_, FileName, DirProperty, InstallMode FROM RemoveFile",
+        "SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`",
+        "SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`",
+        "SELECT `File`, `Component_`, `FileName` FROM `File`",
+        "SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`",
+        "SELECT `Environment`, `Name`, `Value`, `Component_` FROM `Environment`",
+        "SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`",
         "Assert-PhasegentRemoveFileRows -Rows $removeFileRows -ComponentId $pathComponent",
         "@(5) @(3) -Database $database)",
         "$row.FileNameIsNull -ne $true",
