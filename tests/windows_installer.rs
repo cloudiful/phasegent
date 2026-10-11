@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "windows_installer/rows_contract.rs"]
+mod rows_contract;
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -147,8 +150,7 @@ fn msi_checker_opens_the_package_read_only_and_checks_owned_tables() {
         "SELECT Environment, Name, Value, Component_ FROM Environment",
         "SELECT FileKey, Component_, FileName, DirProperty, InstallMode FROM RemoveFile",
         "Assert-PhasegentRemoveFileRows -Rows $removeFileRows -ComponentId $pathComponent",
-        "[bool]$record.IsNull($ordinal)",
-        "@(5) @(3))",
+        "@(5) @(3) -Database $database)",
         "$row.FileNameIsNull -ne $true",
         "WIX_UPGRADE_DETECTED",
         "WIX_DOWNGRADE_DETECTED",

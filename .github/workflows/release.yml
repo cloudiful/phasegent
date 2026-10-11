@@ -107,6 +107,15 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
+      - name: Test Windows MSI PowerShell regressions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tests/windows_installer/rows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/windows_installer/cleanup.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install pinned WiX CLI
         if: runner.os == 'Windows'
         run: dotnet tool install --global wix --version 6.0.2

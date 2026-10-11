@@ -90,10 +90,17 @@ describe("release workflow structure", () => {
     expect(wix.if).toBe("runner.os == 'Windows'");
     expect(wix.run).toBe("dotnet tool install --global wix --version 6.0.2");
 
+    const regressions = build.steps.find((step) => step.name === "Test Windows MSI PowerShell regressions");
+    expect(regressions.if).toBe("runner.os == 'Windows'");
+    expect(regressions.shell).toBe("pwsh");
+    expect(regressions.run).toContain("pwsh -NoProfile -File tests/windows_installer/rows.ps1");
+    expect(regressions.run).toContain("pwsh -NoProfile -File tests/windows_installer/cleanup.ps1");
+
     const msiBuild = build.steps.find((step) => step.name === "Build and validate Windows MSI");
     expect(msiBuild.if).toBe("runner.os == 'Windows'");
     expect(msiBuild.run).toContain("scripts/build-windows-msi.ps1");
     expect(msiBuild.run).toContain("$env:GITHUB_REF_NAME");
+    expect(build.steps.indexOf(regressions)).toBeLessThan(build.steps.indexOf(msiBuild));
 
     const upload = build.steps.find((step) => step.name === "Upload artifact (Windows MSI)");
     expect(upload.if).toBe("runner.os == 'Windows'");
