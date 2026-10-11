@@ -22,6 +22,13 @@ Enable the optional PostgreSQL index backend when needed:
 cargo install --path . --features postgres
 ```
 
+On Windows x64, install the matching `phasegent-<tag>-x86_64-pc-windows-msvc.msi`
+release asset. It installs for the current user under
+`%LOCALAPPDATA%\Programs\phasegent-cli` and adds that folder to the user PATH;
+open a new terminal to use `phasegent`. Uninstall it from Windows Settings > Apps
+> Installed apps. Your user configuration and credentials are kept. Windows may
+warn that the MSI is unsigned.
+
 ## Quick Start
 
 Configure a credential for each role that will use the CLI. Credentials are

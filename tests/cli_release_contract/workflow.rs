@@ -1,5 +1,5 @@
 //! Native CLI release workflow: target matrix, build features, artifact names,
-//! checksum publication, and the absence of any desktop packaging.
+//! Windows-only MSI publication, checksums, and the absence of desktop packaging.
 
 use std::path::PathBuf;
 
@@ -34,7 +34,7 @@ fn release_builds_every_native_target_with_the_full_feature_set() {
 }
 
 #[test]
-fn release_publishes_raw_native_binaries_with_checksums() {
+fn release_publishes_raw_native_binaries_and_windows_msi_with_checksums() {
     let yml = release_yml();
     for artifact in [
         "cp target/${{ matrix.target }}/release/phasegent phasegent-${{ github.ref_name }}-${{ matrix.target }}",
@@ -54,6 +54,7 @@ fn release_publishes_raw_native_binaries_with_checksums() {
         "dist/phasegent-*-aarch64-unknown-linux-gnu",
         "dist/phasegent-*-aarch64-apple-darwin",
         "dist/phasegent-*-x86_64-pc-windows-msvc.exe",
+        "dist/phasegent-*-x86_64-pc-windows-msvc.msi",
         "dist/SHA256SUMS",
     ] {
         assert!(
@@ -61,6 +62,27 @@ fn release_publishes_raw_native_binaries_with_checksums() {
             "release must publish {published}; got:\n{yml}"
         );
     }
+}
+
+#[test]
+fn windows_msi_is_built_checked_and_uploaded_only_on_the_windows_runner() {
+    let yml = release_yml();
+    for step in [
+        "name: Install pinned WiX CLI\n        if: runner.os == 'Windows'\n        run: dotnet tool install --global wix --version 6.0.2",
+        "name: Build and validate Windows MSI\n        if: runner.os == 'Windows'\n        shell: pwsh",
+        "name: Upload artifact (Windows MSI)\n        if: runner.os == 'Windows'",
+        r#"-OutputPath "phasegent-$($env:GITHUB_REF_NAME)-${{ matrix.target }}.msi""#,
+        "path: phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi",
+    ] {
+        assert!(
+            yml.contains(step),
+            "Windows MSI release contract must include {step:?}; got:\n{yml}"
+        );
+    }
+    assert!(
+        yml.contains("dist/phasegent-*-x86_64-pc-windows-msvc.msi"),
+        "release must publish only the named Windows MSI artifact; got:\n{yml}"
+    );
 }
 
 #[test]
@@ -95,7 +117,7 @@ fn release_has_no_desktop_packaging_surface() {
         "electron",
         "electron-builder",
         "dmg",
-        "msi",
+        "pkg",
         "desktop",
         "dist-hash",
         "PHASEGENT_FRONTEND_DIST_HASH",

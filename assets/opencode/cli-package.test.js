@@ -85,12 +85,37 @@ describe("release workflow structure", () => {
     expect(publish.with.files).toContain("dist/SHA256SUMS");
   });
 
-  test("has no desktop packaging step in any job", () => {
+  test("builds and publishes only the Windows CLI MSI", () => {
+    const wix = build.steps.find((step) => step.name === "Install pinned WiX CLI");
+    expect(wix.if).toBe("runner.os == 'Windows'");
+    expect(wix.run).toBe("dotnet tool install --global wix --version 6.0.2");
+
+    const msiBuild = build.steps.find((step) => step.name === "Build and validate Windows MSI");
+    expect(msiBuild.if).toBe("runner.os == 'Windows'");
+    expect(msiBuild.run).toContain("scripts/build-windows-msi.ps1");
+    expect(msiBuild.run).toContain("$env:GITHUB_REF_NAME");
+
+    const upload = build.steps.find((step) => step.name === "Upload artifact (Windows MSI)");
+    expect(upload.if).toBe("runner.os == 'Windows'");
+    expect(upload.with.path).toBe("phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi");
+
+    const msiSteps = build.steps.filter((step) =>
+      `${step.name ?? ""} ${step.run ?? ""} ${step.with?.path ?? ""}`.toLowerCase().includes("msi") ||
+      `${step.name ?? ""} ${step.run ?? ""}`.toLowerCase().includes("wix"),
+    );
+    for (const step of msiSteps) expect(step.if).toBe("runner.os == 'Windows'");
+
+    const publish = release.steps.find((step) => step.name === "Publish GitHub release");
+    expect(publish.with.files).toContain("dist/phasegent-*-x86_64-pc-windows-msvc.msi");
+    expect(publish.with.files).not.toMatch(/\.dmg|\.pkg/i);
+  });
+
+  test("does not restore Electron or macOS desktop packaging", () => {
     const steps = [...build.steps, ...release.steps].map((step) =>
       `${step.name ?? ""} ${step.run ?? ""} ${step.uses ?? ""}`.toLowerCase(),
     );
     for (const text of steps) {
-      expect(text).not.toMatch(/bun install|setup-bun|electron|dmg|\.msi|frontend|dist-hash/);
+      expect(text).not.toMatch(/bun install|setup-bun|electron|electron-builder|\.dmg|\.pkg|frontend|dist-hash/);
     }
   });
 });

@@ -9,7 +9,8 @@ name: Release
 #   agree with the release.
 # - `build` compiles one native release binary per target with the full CLI
 #   feature set (`postgres,notify-dingtalk,notify-email`) and publishes it as a
-#   raw executable named `phasegent-<tag>-<target>` (`.exe` on Windows).
+#   raw executable named `phasegent-<tag>-<target>` (`.exe` on Windows). The
+#   Windows runner also builds and inspects a per-user CLI-only MSI.
 # - `release` checksums those artifacts into `SHA256SUMS` and publishes them.
 on:
   push:
@@ -106,6 +107,15 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
+      - name: Install pinned WiX CLI
+        if: runner.os == 'Windows'
+        run: dotnet tool install --global wix --version 6.0.2
+
+      - name: Build and validate Windows MSI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows-msi.ps1 -ExecutablePath "target/${{ matrix.target }}/release/phasegent.exe" -Tag $env:GITHUB_REF_NAME -OutputPath "phasegent-$($env:GITHUB_REF_NAME)-${{ matrix.target }}.msi"
+
       # Explicit artifact paths only: no wildcards that could pick up
       # sidecars or build metadata.
       - name: Upload artifact (Unix)
@@ -122,6 +132,14 @@ jobs:
         with:
           name: phasegent-${{ matrix.target }}
           path: phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
+          if-no-files-found: error
+
+      - name: Upload artifact (Windows MSI)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: phasegent-windows-msi
+          path: phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi
           if-no-files-found: error
 
       - name: Show sccache stats
@@ -155,5 +173,6 @@ jobs:
             dist/phasegent-*-aarch64-unknown-linux-gnu
             dist/phasegent-*-aarch64-apple-darwin
             dist/phasegent-*-x86_64-pc-windows-msvc.exe
+            dist/phasegent-*-x86_64-pc-windows-msvc.msi
             dist/SHA256SUMS
           generate_release_notes: true

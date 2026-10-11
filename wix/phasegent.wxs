@@ -1,0 +1,49 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="phasegent CLI"
+    Manufacturer="phasegent"
+    Version="$(var.Version)"
+    UpgradeCode="6EC9BF6B-62FB-4464-BC19-B5AD6A8AF08A"
+    Scope="perUser"
+    InstallerVersion="500"
+    Compressed="yes">
+    <MajorUpgrade
+      AllowDowngrades="no"
+      DowngradeErrorMessage="A newer version of phasegent CLI is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="PhasegentCliFeature" Title="phasegent CLI" Level="1">
+      <ComponentGroupRef Id="PhasegentCliComponents" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="phasegent-cli" />
+      </Directory>
+    </StandardDirectory>
+    <ComponentGroup Id="PhasegentCliComponents" Directory="INSTALLFOLDER">
+      <Component Id="PhasegentCli" Guid="36547836-2B46-42AF-B453-E29B2F5AF2C1">
+        <File Id="PhasegentExe" Source="$(var.SourceExe)" KeyPath="no" />
+        <RegistryValue
+          Id="PhasegentInstallPath"
+          Root="HKCU"
+          Key="Software\phasegent\phasegent-cli"
+          Name="InstallPath"
+          Type="string"
+          Value="[INSTALLFOLDER]"
+          KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+        <Environment
+          Id="PhasegentUserPath"
+          Name="PATH"
+          Value="[INSTALLFOLDER]"
+          Action="set"
+          Part="last"
+          System="no"
+          Permanent="no" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

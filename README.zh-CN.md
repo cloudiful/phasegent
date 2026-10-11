@@ -21,6 +21,12 @@ cargo install --path .
 cargo install --path . --features postgres
 ```
 
+Windows x64 用户可安装对应版本的
+`phasegent-<tag>-x86_64-pc-windows-msvc.msi` release 文件。它只为当前用户安装到
+`%LOCALAPPDATA%\Programs\phasegent-cli`，并将该目录加入用户 PATH；打开新终端后即可使用
+`phasegent`。可在 Windows 设置 > 应用 > 已安装的应用中卸载。用户配置与 credential
+会保留。由于 MSI 未签名，Windows 可能显示安全警告。
+
 ## 快速开始
 
 为需要使用 CLI 的每个 role 配置 credential。credential 通过安全提示或 stdin

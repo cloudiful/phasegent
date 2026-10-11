@@ -31,9 +31,17 @@ Each tag publishes one native, raw `phasegent` executable per target, named
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 
-Every build uses the feature set `postgres,notify-dingtalk,notify-email`.
-The product is the CLI plus the portable OpenCode plugin and skills; there is
-no installer or desktop package.
+Every native build uses `postgres,notify-dingtalk,notify-email`. The Windows
+runner also publishes `phasegent-<tag>-x86_64-pc-windows-msvc.msi`, a compressed
+per-user package containing only `phasegent.exe`. It installs under
+`%LOCALAPPDATA%\Programs\phasegent-cli` and adds that directory to the user's
+PATH; uninstall removes the package's file, install-path registry key, and its
+own PATH entry without removing user configuration or credentials. The MSI is
+built from `wix/phasegent.wxs` by `scripts/build-windows-msi.ps1` with WiX CLI
+6.0.2 and is inspected by `scripts/check-windows-msi.ps1` before upload. The
+workflow uploads only the raw executables and MSI, and checksums those assets.
+The product is the CLI plus the portable OpenCode plugin and skills; it has no
+desktop runtime or macOS installer.
 
 ### Bump procedure
 
