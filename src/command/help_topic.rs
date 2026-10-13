@@ -120,7 +120,9 @@ pub(crate) fn help_topic(
         },
         "hooks" => match subcommand {
             None => Ok(HelpTopic::Hooks),
-            Some("install") => Ok(HelpTopic::HooksCommand("install".to_owned())),
+            Some(value) if ["install", "run"].contains(&value) => {
+                Ok(HelpTopic::HooksCommand(value.to_owned()))
+            }
             Some(value) => Err(format!("unknown hooks help topic '{value}'")),
         },
         "plugin" => match subcommand {

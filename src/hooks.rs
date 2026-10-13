@@ -26,8 +26,11 @@ pub const ORIGINAL_BACKUP_DIR: &str = "phasegent-original";
 const KNOWN_SOURCES: [&str; 6] = ["", "message", "template", "merge", "squash", "commit"];
 /// Git-generated sources whose messages must never be rewritten.
 const SKIP_SOURCES: [&str; 3] = ["merge", "squash", "commit"];
-/// Keywords recognized as Redmine reference tokens (checked case-insensitively).
-const REF_KEYWORDS: [&str; 6] = ["refs", "references", "ref", "fixes", "closes", "closed"];
+mod message;
+
+#[cfg(test)]
+#[path = "hooks_tests.rs"]
+mod tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookKind {
@@ -116,6 +119,17 @@ pub fn install_in(runner: &dyn GitRunner, working_dir: &Path) -> Result<InstallO
         )
     })?;
 
+    // Validate every declared chain before updating either wrapper.
+    for hook in [HookKind::PrepareCommitMsg, HookKind::CommitMsg] {
+        let path = hooks_dir.join(hook.name());
+        let backup = hooks_dir.join(ORIGINAL_BACKUP_DIR).join(hook.name());
+        if let Ok(current) = std::fs::read(&path)
+            && (declares_original(&current, hook, &backup)
+                || (current == render_script(hook, None).as_bytes() && backup_exists(&backup)))
+        {
+            validate_original(&backup)?;
+        }
+    }
     let mut outcome = InstallOutcome::default();
     install_hook(&hooks_dir, HookKind::PrepareCommitMsg, &mut outcome)?;
     install_hook(&hooks_dir, HookKind::CommitMsg, &mut outcome)?;
@@ -136,6 +150,9 @@ fn install_hook(
 
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if backup_exists(&backup_path) {
+                validate_original(&backup_path)?;
+            }
             write_script(
                 &path,
                 &render_script(
@@ -176,13 +193,15 @@ fn install_hook(
                     format!("cannot read existing hook {}: {error}", path.display()),
                 )
             })?;
-            if current
-                .windows(MANAGED_MARKER.len())
-                .any(|w| w == MANAGED_MARKER.as_bytes())
-            {
+            let declared = declares_original(&current, hook, &backup_path);
+            let managed = declared || current == render_script(hook, None).as_bytes();
+            if managed {
+                if declared || backup_exists(&backup_path) {
+                    validate_original(&backup_path)?;
+                }
                 let desired = render_script(
                     hook,
-                    backup_exists(&backup_path).then_some(backup_path.as_path()),
+                    (declared || backup_exists(&backup_path)).then_some(backup_path.as_path()),
                 );
                 if current != desired.as_bytes() {
                     write_script(&path, &desired)?;
@@ -190,10 +209,41 @@ fn install_hook(
                 outcome.updated.push(name);
                 return Ok(());
             }
+            validate_original(&path)?;
             displace_foreign_hook(&path, &backup_path, name, outcome)?;
             write_script(&path, &render_script(hook, Some(&backup_path)))?;
             outcome.installed.push(name);
         }
+    }
+    Ok(())
+}
+
+fn declares_original(current: &[u8], hook: HookKind, backup: &Path) -> bool {
+    current == render_script(hook, Some(backup)).as_bytes()
+        || current == render_legacy_script(hook, Some(backup)).as_bytes()
+}
+
+fn validate_original(path: &Path) -> Result<(), GitError> {
+    let safe = std::fs::symlink_metadata(path).is_ok_and(|meta| {
+        let regular = meta.is_file() && !meta.file_type().is_symlink();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            regular && meta.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            regular
+        }
+    });
+    if !safe {
+        return Err(GitError::new(
+            "conflict",
+            format!(
+                "preserved original hook {} is missing or unsafe; restore a regular executable original or manually reconcile the managed wrapper before reinstalling",
+                path.display()
+            ),
+        ));
     }
     Ok(())
 }
@@ -256,6 +306,14 @@ fn displace_foreign_hook(
 /// through PATH at runtime; no absolute developer path, credential, or issue
 /// value is ever embedded.
 fn render_script(hook: HookKind, backup: Option<&Path>) -> String {
+    render_wrapper(hook, backup, true)
+}
+
+fn render_legacy_script(hook: HookKind, backup: Option<&Path>) -> String {
+    render_wrapper(hook, backup, false)
+}
+
+fn render_wrapper(hook: HookKind, backup: Option<&Path>, preflight: bool) -> String {
     let mut script = String::from("#!/bin/sh\n");
     script.push_str(MANAGED_MARKER);
     script.push_str("\n# Installed by `phasegent hooks install`; safe to reinstall or remove.\n");
@@ -267,6 +325,9 @@ fn render_script(hook: HookKind, backup: Option<&Path>) -> String {
             "PHASEGENT_ORIGINAL_HOOK={}\n",
             shell_quote(&backup.to_string_lossy())
         ));
+        if preflight {
+            script.push_str("if [ ! -f \"$PHASEGENT_ORIGINAL_HOOK\" ] || [ ! -x \"$PHASEGENT_ORIGINAL_HOOK\" ] || [ -L \"$PHASEGENT_ORIGINAL_HOOK\" ]; then\n  printf '%s\\n' \"phasegent: preserved original hook $PHASEGENT_ORIGINAL_HOOK is missing or unsafe; restore a regular executable original or manually reconcile the managed wrapper before reinstalling\" >&2\n  exit 1\nfi\n");
+        }
         script.push_str("\"$PHASEGENT_ORIGINAL_HOOK\" \"$@\" || exit $?\n");
     }
     script.push_str(&format!(
@@ -357,7 +418,7 @@ pub fn run_with(
         ));
     }
     let path = PathBuf::from(message_file);
-    // Read lossily but never echo the contents anywhere.
+    // Read raw bytes and never echo message contents.
     let bytes = std::fs::read(&path).map_err(|error| {
         GitError::new(
             "argument",
@@ -398,16 +459,15 @@ fn prepare_commit_msg(
     let Some(issue_id) = bound_issue_id(runner)? else {
         return Ok(noop(HookKind::PrepareCommitMsg, "no branch binding"));
     };
-    let text = String::from_utf8_lossy(bytes);
-    if has_any_issue_reference(&text) {
+    let marker = comment_marker(runner)?;
+    let message = message::Message::new(bytes, &marker);
+    if !message.references().is_empty() {
         return Ok(noop(
             HookKind::PrepareCommitMsg,
             "message already references an issue",
         ));
     }
-    let body = text.trim_end_matches('\n');
-    let updated = format!("{body}\n\nRefs #{issue_id}\n");
-    atomic_write(path, updated.as_bytes(), None)?;
+    atomic_write(path, &message.insert(issue_id), None)?;
     Ok(serde_json::json!({
         "hook": HookKind::PrepareCommitMsg.name(),
         "action": "appended",
@@ -423,8 +483,10 @@ fn commit_msg(
     let Some(issue_id) = bound_issue_id(runner)? else {
         return Ok(noop(HookKind::CommitMsg, "no branch binding"));
     };
-    let text = String::from_utf8_lossy(bytes);
-    let conflicts: Vec<u64> = issue_references(&text)
+    let marker = comment_marker(runner)?;
+    let message = message::Message::new(bytes, &marker);
+    let conflicts: Vec<u64> = message
+        .references()
         .into_iter()
         .filter(|found| *found != issue_id)
         .collect();
@@ -440,7 +502,7 @@ fn commit_msg(
     // Reject duplicated generated trailers while leaving free-form body
     // mentions alone: only exact `Refs #<id>` lines count as generated.
     let generated = format!("Refs #{issue_id}");
-    let duplicates = text.lines().filter(|line| line.trim() == generated).count();
+    let duplicates = message.generated_count(issue_id);
     if duplicates > 1 {
         return Err(GitError::new(
             "conflict",
@@ -455,48 +517,58 @@ fn commit_msg(
     }))
 }
 
-fn has_any_issue_reference(text: &str) -> bool {
-    !issue_references(text).is_empty()
-}
-
-/// Collects every issue ID referenced through a Redmine keyword token such as
-/// `Refs #12` or `fixes:#34`, case-insensitive, requiring word boundaries on
-/// both sides so identifiers like `Xrefs #1` or `#12abc` do not match.
-fn issue_references(text: &str) -> Vec<u64> {
-    let lowered = text.to_lowercase();
-    let bytes = lowered.as_bytes();
-    let mut ids: Vec<u64> = Vec::new();
-    for keyword in REF_KEYWORDS {
-        let mut search_from = 0;
-        while let Some(offset) = lowered[search_from..].find(keyword) {
-            let at = search_from + offset;
-            search_from = at + keyword.len();
-            if at > 0 && bytes[at - 1].is_ascii_alphanumeric() {
-                continue;
-            }
-            let mut cursor = search_from;
-            while cursor < bytes.len() && (bytes[cursor] == b' ' || bytes[cursor] == b'\t') {
-                cursor += 1;
-            }
-            if cursor >= bytes.len() || bytes[cursor] != b'#' {
-                continue;
-            }
-            let digits_start = cursor + 1;
-            let mut digits_end = digits_start;
-            while digits_end < bytes.len() && bytes[digits_end].is_ascii_digit() {
-                digits_end += 1;
-            }
-            if digits_end == digits_start
-                || (digits_end < bytes.len() && bytes[digits_end].is_ascii_alphanumeric())
-            {
-                continue;
-            }
-            if let Ok(found) = lowered[digits_start..digits_end].parse::<u64>()
-                && !ids.contains(&found)
-            {
-                ids.push(found);
-            }
-        }
+fn comment_marker(runner: &dyn GitRunner) -> Result<Vec<u8>, GitError> {
+    let output = runner.run_raw(&[
+        "config",
+        "--null",
+        "--get-regexp",
+        "^core\\.comment(char|string)$",
+    ])?;
+    if output.status == 1 {
+        return Ok(b"#".to_vec());
     }
-    ids
+    if output.status != 0 {
+        return Err(GitError::new(
+            "git",
+            "cannot read effective Git comment configuration; message unchanged",
+        ));
+    }
+    if !output.stdout.ends_with(&[0]) {
+        return Err(GitError::new(
+            "git",
+            "invalid Git comment configuration framing",
+        ));
+    }
+    let mut marker = b"#".to_vec();
+    for record in output.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let Some(newline) = record.iter().position(|b| *b == b'\n') else {
+            return Err(GitError::new(
+                "git",
+                "invalid Git comment configuration framing",
+            ));
+        };
+        if !matches!(
+            &record[..newline],
+            b"core.commentchar" | b"core.commentstring"
+        ) {
+            return Err(GitError::new(
+                "git",
+                "unexpected Git comment configuration key",
+            ));
+        }
+        marker = record[newline + 1..].to_vec();
+    }
+    if marker == b"auto" {
+        return Err(GitError::new(
+            "argument",
+            "issue-bound hooks require a fixed core.commentChar/core.commentString; select a fixed marker instead of auto; message unchanged",
+        ));
+    }
+    if marker.is_empty() || marker.contains(&b'\n') || marker.contains(&b'\r') {
+        return Err(GitError::new(
+            "argument",
+            "invalid fixed Git comment marker; message unchanged",
+        ));
+    }
+    Ok(marker)
 }

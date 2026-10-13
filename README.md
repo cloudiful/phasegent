@@ -73,6 +73,10 @@ when every project is ready, `1` on any blocked, warned, or errored project.
 The modes may still open the local SQLite store, which can create the schema or
 database file when it is absent.
 
+Optional native Git hooks: run `phasegent hooks install` in a checkout. See
+[Git hooks](docs/git-hooks.md) for message handling, fixed comment markers, and
+safe update/recovery instructions.
+
 ## Common Commands
 
 ```sh

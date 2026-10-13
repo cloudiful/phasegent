@@ -65,6 +65,8 @@ membership 或 settings。两种模式都会打印完整 JSON report，并在所
 `0`，任一 project blocked、warning 或 error 时退出 `1`。两种模式仍可能打开
 本地 SQLite store，当 schema 或数据库文件缺失时会创建它。
 
+可选原生 Git hooks：在仓库中运行 `phasegent hooks install`。消息处理、固定注释标记及安全更新/恢复说明见 [Git hooks](docs/git-hooks.md)。
+
 ## 常用命令
 
 ```sh

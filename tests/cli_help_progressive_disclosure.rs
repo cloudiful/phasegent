@@ -94,6 +94,20 @@ fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
     command.output().expect("spawn phasegent binary")
 }
 
+#[test]
+fn hooks_run_help_routes_are_equivalent_and_unknown_topic_rejects() {
+    let global = run_help(&["--help", "hooks", "run"]);
+    let nested = run_help(&["hooks", "run", "--help"]);
+    for output in [&global, &nested] {
+        assert!(output.status.success(), "{}", stderr_text(output));
+        assert!(stdout_text(output).contains("[source [commit-object]]"));
+    }
+    assert_eq!(global.stdout, nested.stdout);
+    let typo = run_help(&["--help", "hooks", "rnu"]);
+    assert!(!typo.status.success());
+    assert!(stderr_text(&typo).contains("unknown hooks help topic 'rnu'"));
+}
+
 /// Root help must be short, must not leak the resolver chain or the
 /// role disclaimer, and must not advertise bootstrap-only flags.
 #[test]

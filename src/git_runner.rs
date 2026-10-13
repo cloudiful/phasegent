@@ -44,6 +44,17 @@ pub struct GitOutput {
 /// tested without spawning processes.
 pub trait GitRunner {
     fn run(&self, args: &[&str]) -> Result<GitOutput, GitError>;
+
+    /// Structured queries must not reconstruct bytes from sanitized output.
+    /// Test doubles which need this capability must explicitly implement it.
+    fn run_raw(&self, _args: &[&str]) -> Result<RawGitOutput, GitError> {
+        Err(GitError::new("git", "raw Git output is unavailable"))
+    }
+}
+
+pub struct RawGitOutput {
+    pub status: i32,
+    pub stdout: Vec<u8>,
 }
 
 pub struct ProcessGitRunner {
@@ -68,20 +79,33 @@ impl Default for ProcessGitRunner {
     }
 }
 
-impl GitRunner for ProcessGitRunner {
-    fn run(&self, args: &[&str]) -> Result<GitOutput, GitError> {
+impl ProcessGitRunner {
+    fn output(&self, args: &[&str]) -> Result<std::process::Output, GitError> {
         let mut command = Command::new("git");
         command.args(args);
         if let Some(workdir) = &self.workdir {
             command.current_dir(workdir);
         }
-        let output = command
+        command
             .output()
-            .map_err(|error| GitError::new("git", format!("failed to run git: {error}")))?;
-        let status = output.status.code().unwrap_or(-1);
+            .map_err(|error| GitError::new("git", format!("failed to run git: {error}")))
+    }
+}
+
+impl GitRunner for ProcessGitRunner {
+    fn run(&self, args: &[&str]) -> Result<GitOutput, GitError> {
+        let output = self.output(args)?;
         Ok(GitOutput {
-            status,
+            status: output.status.code().unwrap_or(-1),
             stdout: sanitize_output(&output.stdout),
+        })
+    }
+
+    fn run_raw(&self, args: &[&str]) -> Result<RawGitOutput, GitError> {
+        let output = self.output(args)?;
+        Ok(RawGitOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
         })
     }
 }

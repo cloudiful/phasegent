@@ -1,5 +1,9 @@
 use super::prelude::*;
 
+#[cfg(test)]
+#[path = "hooks_tests.rs"]
+mod tests;
+
 pub(crate) fn parse_hooks(args: &[String]) -> Result<Command, String> {
     let name = args.first().map(String::as_str);
     if name.is_none() || matches!(name, Some("--help" | "-h")) {
@@ -25,9 +29,8 @@ pub(crate) fn parse_hooks(args: &[String]) -> Result<Command, String> {
 }
 
 /// Parses the hidden internal `hooks run` forms invoked by generated hook
-/// scripts: `hooks run prepare-commit-msg <file> [source]` and
-/// `hooks run commit-msg <file>`. Exact argument counts are validated here
-/// and again at execution time.
+/// scripts: `hooks run prepare-commit-msg <file> [source [commit-object]]`
+/// and `hooks run commit-msg <file>`. The opaque commit object is not resolved.
 fn parse_hooks_run(args: &[String]) -> Result<Command, String> {
     let hook_name = args.get(1).map(String::as_str).ok_or_else(|| {
         "hooks run requires a hook name: prepare-commit-msg or commit-msg".to_owned()
@@ -38,16 +41,17 @@ fn parse_hooks_run(args: &[String]) -> Result<Command, String> {
     if rest.iter().any(|value| value.starts_with('-')) {
         return Err("hooks run takes only positional arguments".to_owned());
     }
-    // Exact counts: prepare-commit-msg takes a file plus optional source;
-    // commit-msg takes exactly one file.
+    // Only source=commit carries Git's optional third argument.
     let valid = match hook {
-        crate::hooks::HookKind::PrepareCommitMsg => matches!(rest.len(), 1 | 2),
+        crate::hooks::HookKind::PrepareCommitMsg => {
+            matches!(rest.len(), 1..=3) && (rest.len() != 3 || rest[1] == "commit")
+        }
         crate::hooks::HookKind::CommitMsg => rest.len() == 1,
     };
     if !valid {
         return Err(match hook {
             crate::hooks::HookKind::PrepareCommitMsg => {
-                "usage: phasegent hooks run prepare-commit-msg <message-file> [source]".to_owned()
+                "usage: phasegent hooks run prepare-commit-msg <message-file> [source [commit-object]]".to_owned()
             }
             crate::hooks::HookKind::CommitMsg => {
                 "usage: phasegent hooks run commit-msg <message-file>".to_owned()

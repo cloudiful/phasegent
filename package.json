@@ -1,7 +1,7 @@
 {
   "name": "phasegent",
   "private": true,
-  "version": "2.26.2",
+  "version": "2.27.0",
   "type": "module",
   "description": "phasegent OpenCode plugin and skills (Bun build and tests).",
   "author": "phasegent",
