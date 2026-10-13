@@ -243,6 +243,14 @@ and a reviewer never work the same mutable tree at the same time.
 - The reviewer runs the verification itself and its note carries both halves of
   that evidence: the confirmed code findings with file and line, and the
   acceptance and test results with the exact commands and the observed outcome.
+- Every finding carries concrete evidence: what was observed, the trigger and
+  impact or impacted scenario/path where applicable, and the scoped rule it
+  violates; a finding without evidence is not reported. Role-specific quality
+  and test responsibilities stay canonical in the reviewer skill.
+- Notes report the exact actual commands run and what each observed; unavailable
+  or not-run validation is listed as a limitation and never presented as PASS.
+- Separate confirmed defects, nonblocking suggestions, and validation
+  limitations; no defect-count quota manufactures findings or widens scope.
 - Notes stay compact. Evidence supports the verdict or status instead of
   restating logs, and the note remains the record under the result contracts.
 

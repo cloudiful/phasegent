@@ -110,6 +110,10 @@ genuinely needed.
   and only when you write the exact checkpoint boundary into the issue plan
   before the work reaches it; without that boundary the scope stays `final`, and
   the final audit always closes the issue.
+- The reviewer skill owns the quality, test, and evidence responsibilities; this
+  section points there instead of duplicating that checklist, and it requires no
+  extra review rounds beyond the single final audit plus a named checkpoint when
+  the plan requires one.
 - Keep orchestration serial by default: one write owner per phase, and no
   executor shares a mutable tree with a reviewer. Overlap is safe only for
   read-only recon, the reviewer observing a frozen implementation it does not

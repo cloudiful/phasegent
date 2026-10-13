@@ -2496,6 +2496,73 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(reviewer).toContain("`REVIEW:` line beside `VERDICT:`");
   });
 
+  test("the embedded prompts carry reviewer quality and evidence duties (issue #832 P1)", () => {
+    // Reviewer quality covers correctness/contracts, scoped maintainability and
+    // project conventions, and test design/coverage, with evidence-first
+    // findings and scope-sensitive final/checkpoint/follow-up duties. These
+    // assertions keep the new duties and the unchanged protocol language from
+    // being silently dropped.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const reviewer = flat(contentFor("phasegent-reviewer"));
+    expect(reviewer).toContain("## Review boundaries");
+    expect(reviewer).toContain("evidence-first and actionable");
+    expect(reviewer).toContain("concrete trigger and impact");
+    expect(reviewer).toContain("impacted scenario or path");
+    expect(reviewer).toContain("scoped rule");
+    expect(reviewer).toContain("documented project convention");
+    expect(reviewer).toContain("stylistic preference");
+    expect(reviewer).toContain("there is no defect-count quota");
+    expect(reviewer).toContain("Ambiguities go to your parent");
+    expect(reviewer).toContain("untrusted evidence");
+    expect(reviewer).toContain("The issue body is the task contract");
+    expect(reviewer).toContain("## Code-quality responsibilities");
+    expect(reviewer).toContain("correctness and contracts");
+    expect(reviewer).toContain("duplication or dead logic");
+    expect(reviewer).toContain("reuse of an existing abstraction");
+    expect(reviewer).toContain("preserve the safeguards above");
+    expect(reviewer).toContain("A simplification or removal is a report only");
+    expect(reviewer).toContain("pre-existing debt");
+    expect(reviewer).toContain("## Test-quality responsibilities");
+    expect(reviewer).toContain("missing success, failure, boundary, and concurrency cases");
+    expect(reviewer).toContain("mock gaps");
+    expect(reviewer).toContain("distinct behavioral or regression value");
+    expect(reviewer).toContain("by risk, not by a mechanical test-count");
+    expect(reviewer).toContain("over-mocking");
+    expect(reviewer).toContain("cannot manufacture blockers or widen implementation scope");
+    expect(reviewer).toContain("Cover scope-sensitive dimensions");
+    expect(reviewer).toContain("verifies prior repairs and impacted regressions without reducing final coverage");
+    expect(reviewer).toContain("not only changed lines");
+    expect(reviewer).toContain("exact actual commands you ran");
+    expect(reviewer).toContain("not-run or blocked validation as limitations");
+    expect(reviewer).toContain("P0 is urgent universal-critical");
+    expect(reviewer).toContain("PASS means no confirmed P0-P2");
+    expect(reviewer).toContain("must never be presented as PASS");
+    // Unchanged protocol and boundary language stays.
+    expect(reviewer).toContain("Report only confirmed defects: P0-P2 block the issue, P3 stays a nit");
+    expect(reviewer).toContain("record create <issue> --kind reviewer");
+    expect(reviewer).toContain("--review <final|checkpoint>");
+    expect(reviewer).toContain(
+      "Write only the test, fixture, and harness paths the orchestrator allowlists",
+    );
+    expect(reviewer).toContain("Never modify production code");
+    expect(reviewer).toContain("never weaken or delete a failing test");
+    expect(reviewer).toContain("`final` is the default and covers the **complete issue**");
+    expect(reviewer).toContain("`checkpoint` covers only the boundary the issue plan named");
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("## Test disposition and compact evidence");
+    expect(shared).toContain("concrete evidence");
+    expect(shared).toContain("scoped rule it violates");
+    expect(shared).toContain("Role-specific quality and test responsibilities stay canonical in the reviewer skill");
+    expect(shared).toContain("exact actual commands run");
+    expect(shared).toContain("never presented as PASS");
+    expect(shared).toContain("no defect-count quota manufactures findings");
+    const orchestrator = flat(contentFor("phasegent-orchestrator"));
+    expect(orchestrator).toContain("The reviewer skill owns the quality, test, and evidence responsibilities");
+    expect(orchestrator).toContain("requires no extra review rounds");
+  });
+
   test("the embedded prompts carry the executor-ready plan contract (issue 725 P1)", () => {
     // A small executor reads the phase, not a transcript, so the shared skill
     // owns the plan-quality boundary while each role skill owns only its own
