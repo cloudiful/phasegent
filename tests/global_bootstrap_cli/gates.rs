@@ -1,4 +1,4 @@
-use super::fixtures::{no_network_db, project_list, run_cli_in};
+use super::fixtures::{no_network_db, project_list, run_cli_in, run_cli_in_with_role};
 use super::support::{MockResponse, make_test_db, run_cli, start_mock_server, stderr_text};
 
 #[test]
@@ -54,7 +54,7 @@ fn all_projects_rejects_repository_before_network() {
 #[test]
 fn all_projects_is_admin_only() {
     let db = no_network_db();
-    for role in ["executor", "reviewer"] {
+    for role in ["executor", "reviewer", "orchestrator", "explore"] {
         let output = run_cli(
             &db.path,
             "http://127.0.0.1:1",
@@ -65,6 +65,58 @@ fn all_projects_is_admin_only() {
             output.status.code(),
             Some(3),
             "role {role} must hit the permission gate"
+        );
+    }
+}
+
+/// Unmanaged Operator shares the explicit admin provisioning authority
+/// through the central context (never by widening `Role::Admin::allows`).
+#[test]
+fn operator_runs_admin_bootstrap_without_a_role() {
+    let server = start_mock_server(vec![MockResponse::ok(project_list(&[]))]);
+    let db = make_test_db(&server.base_url);
+    let working_dir = db.path.parent().expect("database temp directory");
+    assert!(!working_dir.join(".git").exists());
+    let output = run_cli_in_with_role(
+        working_dir,
+        &db.path,
+        &server.base_url,
+        None,
+        None,
+        &["admin", "workflow", "bootstrap", "--all-projects"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_text(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ready"], true);
+    assert_eq!(report["projects"].as_array().unwrap().len(), 0);
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// A managed session without a role fails closed for the explicit admin
+/// surface before any network, for both present and blank markers.
+#[test]
+fn managed_without_role_fails_admin_bootstrap_before_network() {
+    let db = no_network_db();
+    for session in ["managed-session", ""] {
+        let working_dir = db.path.parent().expect("database temp directory");
+        let output = run_cli_in_with_role(
+            working_dir,
+            &db.path,
+            "http://127.0.0.1:1",
+            None,
+            Some(session),
+            &["admin", "workflow", "bootstrap", "--all-projects"],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "session {session:?}: {}",
+            stderr_text(&output)
+        );
+        assert!(
+            stderr_text(&output).contains("managed session requires a role"),
+            "managed admin bootstrap must fail closed: {}",
+            stderr_text(&output)
         );
     }
 }

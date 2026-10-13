@@ -1,6 +1,6 @@
 use crate::command::TimerCommand;
 use crate::infra::storage::{Storage, TimerRun, TimerStatusFilter};
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
 use crate::providers::api::PhasegentError;
 use serde::Serialize;
@@ -35,9 +35,10 @@ pub(crate) enum TimerListOutput {
     },
 }
 
-/// Execute a timer command. The command is intentionally orchestrator-only;
-/// executor/reviewer phases are recorded by the future prompt integration and
-/// are not direct callers of this CLI.
+/// Execute a timer command. The command is orchestrator-authorized
+/// (Operator shares it); executor/reviewer phases are recorded by the
+/// future prompt integration and are not direct callers of this CLI.
+#[allow(dead_code)]
 pub(crate) fn execute(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -46,6 +47,28 @@ pub(crate) fn execute(
     close_status_id: Option<&str>,
     command: TimerCommand,
 ) -> Result<TimerOutput, PhasegentError> {
+    let caller = CallerContext::from_role(role_value);
+    execute_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: TimerCommand,
+) -> Result<TimerOutput, PhasegentError> {
+    // Authorization uses the invocation context; start/finish helpers take
+    // the same context so Operator identity is preserved (never collapsed
+    // to an Admin agent, which would be denied as non-orchestrator).
     match command {
         TimerCommand::Start {
             issue,
@@ -55,9 +78,8 @@ pub(crate) fn execute(
             run_id,
             owner_session_id,
             owner_call_id,
-        } => super::start::execute_start(
-            role_value,
-            provider_kind,
+        } => super::start::execute_start_with_caller(
+            caller,
             issue,
             &phase,
             agent_role,
@@ -68,8 +90,8 @@ pub(crate) fn execute(
                 call_id: owner_call_id,
             },
         ),
-        TimerCommand::Finish { run_id, result } => super::finish::execute_finish(
-            role_value,
+        TimerCommand::Finish { run_id, result } => super::finish::execute_finish_with_caller(
+            caller,
             provider_kind,
             api_base,
             project_id,
@@ -92,6 +114,7 @@ pub(crate) fn execute(
 /// three surfaces never take a `--provider`; the storage layer is the
 /// source of truth and the provider only matters for `finish` /
 /// `recover` projection.
+#[allow(dead_code)]
 pub(crate) fn execute_recovery(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -100,7 +123,26 @@ pub(crate) fn execute_recovery(
     close_status_id: Option<&str>,
     command: TimerCommand,
 ) -> Result<TimerListOutput, PhasegentError> {
-    let _role = timer_orchestrator(role_value, "timer")?;
+    let caller = CallerContext::from_role(role_value);
+    execute_recovery_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_recovery_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: TimerCommand,
+) -> Result<TimerListOutput, PhasegentError> {
+    let _role = timer_orchestrator_caller(caller, "timer")?;
     match command {
         TimerCommand::List { status, limit } => {
             let filter = TimerStatusFilter::parse(&status).map_err(PhasegentError::config)?;
@@ -123,7 +165,8 @@ pub(crate) fn execute_recovery(
         }
         TimerCommand::Recover { run_id } => {
             let storage = Storage::open().map_err(timer_storage_error("timer recover"))?;
-            super::recover::handle_recover(
+            super::recover::handle_recover_with_caller(
+                caller,
                 storage,
                 &run_id,
                 provider_kind,
@@ -141,21 +184,38 @@ pub(crate) fn execute_recovery(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn timer_orchestrator(
     role_value: Option<Role>,
     operation: &str,
 ) -> Result<Role, PhasegentError> {
-    let role = role_value.ok_or_else(|| {
-        PhasegentError::config(format!(
-            "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
-        ))
-    })?;
-    if role != Role::Orchestrator {
+    let caller = CallerContext::from_role(role_value);
+    timer_orchestrator_caller(caller, operation)
+}
+
+pub(crate) fn timer_orchestrator_caller(
+    caller: CallerContext,
+    operation: &str,
+) -> Result<Role, PhasegentError> {
+    // Single canonical mapping reusing the central accessors: orchestrator
+    // authorization first, then the central credential role. Operator shares
+    // the orchestrator lifecycle authority through the central admin
+    // credential and is never collapsed to an Admin agent.
+    if !caller.is_orchestrator_authorized() {
+        if caller.is_managed_without_role() {
+            return Err(PhasegentError::config(format!(
+                "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
+            )));
+        }
         return Err(PhasegentError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
-    Ok(role)
+    caller.credential_role().ok_or_else(|| {
+        PhasegentError::config(format!(
+            "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
+        ))
+    })
 }
 
 pub(crate) fn timer_storage_error<'a>(

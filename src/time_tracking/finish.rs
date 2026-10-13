@@ -1,5 +1,5 @@
 use crate::infra::storage::{Storage, TIMER_SYNC_SYNCED, TIMER_SYNC_UNCONFIRMED, TimerRun};
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
@@ -7,24 +7,33 @@ use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
 use super::dispatch::TimerOutput;
 use super::util::{bounded_error_message, generate_projection_token, now_epoch_seconds};
 
+#[allow(dead_code)]
 fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, PhasegentError> {
-    let role = role_value.ok_or_else(|| {
-        PhasegentError::config(format!(
-            "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
-        ))
-    })?;
-    if role != Role::Orchestrator {
-        return Err(PhasegentError::config(format!(
-            "{operation} is orchestrator-only"
-        )));
-    }
-    Ok(role)
+    let caller = CallerContext::from_role(role_value);
+    timer_orchestrator_caller(caller, operation).and_then(|credential| {
+        credential.ok_or_else(|| {
+            PhasegentError::config(format!(
+                "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
+            ))
+        })
+    })
+}
+
+pub(crate) fn timer_orchestrator_caller(
+    caller: CallerContext,
+    operation: &str,
+) -> Result<Option<Role>, PhasegentError> {
+    // Reuse the canonical dispatch mapping (central authority and credential
+    // accessors) so start/finish cannot drift; explicit agent and managed
+    // errors are preserved verbatim.
+    super::dispatch::timer_orchestrator_caller(caller, operation).map(Some)
 }
 
 fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> PhasegentError + 'a {
     move |message| PhasegentError::request(operation, message)
 }
 
+#[allow(dead_code)]
 pub(crate) fn execute_finish(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -34,7 +43,29 @@ pub(crate) fn execute_finish(
     run_id: &str,
     result: &str,
 ) -> Result<TimerOutput, PhasegentError> {
-    let _role = timer_orchestrator(role_value, "timer finish")?;
+    let caller = CallerContext::from_role(role_value);
+    execute_finish_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        project_id,
+        close_status_id,
+        run_id,
+        result,
+    )
+}
+
+pub(crate) fn execute_finish_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    run_id: &str,
+    result: &str,
+) -> Result<TimerOutput, PhasegentError> {
+    let credential = timer_orchestrator_caller(caller, "timer finish")?
+        .expect("authorized timer caller has a credential");
 
     // This local transition deliberately precedes every provider/key lookup
     // and every network request. A failed projection is recoverable by
@@ -63,7 +94,8 @@ pub(crate) fn execute_finish(
     // `projecting` row without the token must not be treated as owning
     // the claim.
     let token = generate_projection_token();
-    let projection = match project_run(
+    let projection = match project_run_with_credential(
+        credential,
         &storage,
         &mut run,
         provider_kind,
@@ -115,6 +147,7 @@ pub(crate) fn execute_finish(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn project_run(
     storage: &Storage,
     run: &mut TimerRun,
@@ -124,11 +157,43 @@ pub(crate) fn project_run(
     close_status_id: Option<&str>,
     token: &str,
 ) -> Result<(), PhasegentError> {
-    let resolved = resolve_kind(Role::Orchestrator, provider_kind)?;
+    // Legacy orchestrator-only entry preserved for direct callers that
+    // already selected the orchestrator role; context-aware callers use
+    // `project_run_with_credential` with the central credential role
+    // (Admin for Operator).
+    project_run_with_credential(
+        Role::Orchestrator,
+        storage,
+        run,
+        provider_kind,
+        api_base,
+        project_id,
+        close_status_id,
+        token,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn project_run_with_credential(
+    credential: Role,
+    storage: &Storage,
+    run: &mut TimerRun,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    token: &str,
+) -> Result<(), PhasegentError> {
+    let resolved = resolve_kind(credential, provider_kind)?;
     match resolved {
         ProviderKind::Redmine => {
-            let provider =
-                redmine_provider_for_finish(Some(resolved), api_base, project_id, close_status_id)?;
+            let provider = redmine_provider_for_finish_with_credential(
+                credential,
+                Some(resolved),
+                api_base,
+                project_id,
+                close_status_id,
+            )?;
             super::projection_redmine::project_run_with_provider(storage, run, &provider, token)
         }
         // Local keeps the timer ledger in `Storage` and has no remote
@@ -140,11 +205,20 @@ pub(crate) fn project_run(
     }
 }
 
+#[allow(dead_code)]
 fn require_redmine_provider(
     provider_kind: Option<ProviderKind>,
     operation: &str,
 ) -> Result<(), PhasegentError> {
-    let resolved_provider = resolve_kind(Role::Orchestrator, provider_kind)?;
+    require_redmine_provider_with_credential(Role::Orchestrator, provider_kind, operation)
+}
+
+fn require_redmine_provider_with_credential(
+    credential: Role,
+    provider_kind: Option<ProviderKind>,
+    operation: &str,
+) -> Result<(), PhasegentError> {
+    let resolved_provider = resolve_kind(credential, provider_kind)?;
     if resolved_provider != ProviderKind::Redmine {
         return Err(PhasegentError::not_supported(
             resolved_provider.as_str(),
@@ -154,7 +228,24 @@ fn require_redmine_provider(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn redmine_provider_for_finish(
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+) -> Result<RedmineProvider, PhasegentError> {
+    redmine_provider_for_finish_with_credential(
+        Role::Orchestrator,
+        provider_kind,
+        api_base,
+        project_id,
+        close_status_id,
+    )
+}
+
+fn redmine_provider_for_finish_with_credential(
+    credential: Role,
     provider_kind: Option<ProviderKind>,
     api_base: Option<&str>,
     project_id: Option<&str>,
@@ -162,10 +253,11 @@ fn redmine_provider_for_finish(
 ) -> Result<RedmineProvider, PhasegentError> {
     // Provider and API-base arguments are resolved here, after the local
     // finish transition, so no remote call can occur before durable state.
-    // The caller has already selected the orchestrator role.
-    require_redmine_provider(provider_kind, "timer finish")?;
-    let config = RedmineConfig::resolve(Role::Orchestrator, api_base, project_id, close_status_id)?;
-    RedmineProvider::for_role(Role::Orchestrator, config)
+    // The caller has already passed the central credential role (Admin for
+    // Operator, Orchestrator for the orchestrator agent).
+    require_redmine_provider_with_credential(credential, provider_kind, "timer finish")?;
+    let config = RedmineConfig::resolve(credential, api_base, project_id, close_status_id)?;
+    RedmineProvider::for_role(credential, config)
 }
 
 /// Internal entry point used by the lifecycle auto-accounting path.

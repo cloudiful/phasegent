@@ -1,5 +1,5 @@
 use crate::command::IssueCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::IssueSummary;
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
@@ -16,6 +16,7 @@ mod create_branch;
 #[path = "sync.rs"]
 pub(crate) mod sync;
 
+#[allow(dead_code)]
 pub(crate) fn execute_issue(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -25,13 +26,46 @@ pub(crate) fn execute_issue(
     close_status_id: Option<&str>,
     command: IssueCommand,
 ) -> i32 {
+    let caller = CallerContext::from_role(role_value);
+    execute_issue_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_issue_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: IssueCommand,
+) -> i32 {
     // `issue sync` is local reconciliation, not a provider issue operation:
-    // it gates on the orchestrator role and resolves its own provider
-    // inside the sync module, so it never enters the capability table
-    // below.
+    // it gates on orchestrator authority (Operator shares it) and resolves
+    // its own provider inside the sync module, so it never enters the
+    // capability table below. Managed sessions without a role fail closed
+    // before any provider or storage access.
     if let IssueCommand::Sync { all, no_clean } = &command {
-        return sync::execute_sync(
-            super::required_role(role_value),
+        if caller.is_managed_without_role() {
+            return super::managed_denial("issue sync");
+        }
+        if !caller.is_orchestrator_authorized() {
+            let role = caller.credential_role().expect("agent has a role");
+            return crate::cli::worktree::permission_error(role, "issue sync");
+        }
+        let role = caller
+            .credential_role()
+            .expect("authorized caller has a credential");
+        return sync::execute_sync_with_caller(
+            caller,
+            role,
             provider_kind,
             api_base,
             repository,
@@ -41,21 +75,13 @@ pub(crate) fn execute_issue(
             *no_clean,
         );
     }
-    let (role, capability) = match &command {
-        IssueCommand::Get { .. } | IssueCommand::GetBatch { .. } => {
-            (super::required_role(role_value), Capability::IssueRead)
-        }
-        IssueCommand::Search { .. } => (super::required_role(role_value), Capability::IssueSearch),
-        IssueCommand::Create { .. } => (super::required_role(role_value), Capability::IssueCreate),
-        IssueCommand::Update { .. } => (
-            super::required_role(role_value),
-            Capability::IssueUpdateBody,
-        ),
-        IssueCommand::Close { .. } => (super::required_role(role_value), Capability::IssueClose),
-        IssueCommand::UploadAttachment { .. } => (
-            super::required_role(role_value),
-            Capability::IssueAttachmentUpload,
-        ),
+    let capability = match &command {
+        IssueCommand::Get { .. } | IssueCommand::GetBatch { .. } => Capability::IssueRead,
+        IssueCommand::Search { .. } => Capability::IssueSearch,
+        IssueCommand::Create { .. } => Capability::IssueCreate,
+        IssueCommand::Update { .. } => Capability::IssueUpdateBody,
+        IssueCommand::Close { .. } => Capability::IssueClose,
+        IssueCommand::UploadAttachment { .. } => Capability::IssueAttachmentUpload,
         // Local branch context commands are dispatched before provider
         // resolution and never reach this function; `issue sync` is
         // dispatched above for the same reason.
@@ -67,9 +93,16 @@ pub(crate) fn execute_issue(
             unreachable!("local-only issue commands bypass provider execution")
         }
     };
-    if !role.allows(capability) {
+    if caller.is_managed_without_role() {
+        return super::managed_denial(capability.operation());
+    }
+    if !caller.allows(capability) {
+        let role = caller.credential_role().expect("agent has a role");
         return super::permission_error(role, capability);
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
     // One-shot `--body-file` input (issue 298): read and validate the
     // local file before any provider resolution, project discovery, or
     // network access. A read/validation failure exits with the file

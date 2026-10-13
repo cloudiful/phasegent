@@ -176,3 +176,47 @@ fn cli_heartbeat_without_identity_fails_clearly() {
         .expect("row");
     assert_eq!(row.heartbeat_at, old, "a refused heartbeat must not mutate");
 }
+
+/// P1 Operator shares the orchestrator heartbeat authority; a managed
+/// session without a role fails closed before any storage mutation.
+#[test]
+fn cli_heartbeat_operator_authorized_and_managed_denied() {
+    use crate::policy::CallerContext;
+
+    let _lock = lock_workflow_tests();
+    let (_temp, storage, _env) = open_temp_db("cli-heartbeat-operator");
+    ensure_schema(&storage).expect("schema");
+    let old = now_unix_secs() - 1000;
+    insert_lease_for_identity(
+        &storage,
+        "lease-hb",
+        "/tmp/repo",
+        "session-A",
+        LEASE_STATUS_ACTIVE,
+        old,
+        "/tmp/repo",
+    );
+    let exit = crate::cli::worktree::execute_worktree_with_caller(
+        CallerContext::Operator,
+        WorktreeCommand::Heartbeat {
+            lease: "lease-hb".to_owned(),
+            session: Some("session-A".to_owned()),
+        },
+    );
+    assert_eq!(exit, 0, "operator heartbeat must succeed");
+    let row = list_for_repo(&storage, "/tmp/repo")
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-hb")
+        .expect("row");
+    assert!(row.heartbeat_at > old, "heartbeat must advance");
+
+    let denied = crate::cli::worktree::execute_worktree_with_caller(
+        CallerContext::ManagedWithoutRole,
+        WorktreeCommand::Heartbeat {
+            lease: "lease-hb".to_owned(),
+            session: Some("session-A".to_owned()),
+        },
+    );
+    assert_eq!(denied, 3, "managed heartbeat without a role must be denied");
+}

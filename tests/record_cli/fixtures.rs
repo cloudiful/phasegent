@@ -50,7 +50,28 @@ impl Scratch {
 
 /// Spawn the compiled binary against an isolated local store and a
 /// guaranteed-missing TOML overlay, so no developer environment leaks in.
+/// Clears inherited role/session env so Operator (no role, no session) and
+/// managed-missing paths stay deterministic.
 pub(super) fn run_local(db: &Path, role: &str, args: &[&str]) -> Output {
+    run_local_with_role(db, Some(role), args)
+}
+
+/// Role-optional spawn: `None` models an unmanaged Operator (no role and
+/// no managed session marker). Always clears `PHASEGENT_SESSION_ID` so a
+/// developer's managed session never leaks into the subprocess.
+pub(super) fn run_local_with_role(db: &Path, role: Option<&str>, args: &[&str]) -> Output {
+    run_local_with_session(db, role, None, args)
+}
+
+/// Fully injectable spawn: `role` models `PHASEGENT_ROLE` (`None` removes
+/// it), `session` models `PHASEGENT_SESSION_ID` (`None` removes it, `Some`
+/// sets it even when blank so managed-missing stays fail-closed).
+pub(super) fn run_local_with_session(
+    db: &Path,
+    role: Option<&str>,
+    session: Option<&str>,
+    args: &[&str],
+) -> Output {
     let missing_toml = db
         .parent()
         .map(|dir| dir.join("phasegent-missing.toml"))
@@ -59,7 +80,8 @@ pub(super) fn run_local(db: &Path, role: &str, args: &[&str]) -> Output {
     command
         .args(args)
         .env("PHASEGENT_LOCAL_DB_PATH", db.as_os_str())
-        .env("PHASEGENT_ROLE", role)
+        .env_remove("PHASEGENT_ROLE")
+        .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_DB_PATH")
@@ -77,6 +99,12 @@ pub(super) fn run_local(db: &Path, role: &str, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(role) = role {
+        command.env("PHASEGENT_ROLE", role);
+    }
+    if let Some(session) = session {
+        command.env("PHASEGENT_SESSION_ID", session);
+    }
     command.output().expect("spawn phasegent binary")
 }
 

@@ -1,29 +1,38 @@
 use crate::infra::storage::{Storage, TimerRunOwner};
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
 use crate::providers::api::PhasegentError;
 
 use super::dispatch::TimerOutput;
 use super::util::{generate_run_id, generate_run_id_with_prefix, now_epoch_seconds};
 
+#[allow(dead_code)]
 fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, PhasegentError> {
-    let role = role_value.ok_or_else(|| {
-        PhasegentError::config(format!(
-            "{operation} requires the orchestrator role; set PHASEGENT_ROLE=orchestrator"
-        ))
-    })?;
-    if role != Role::Orchestrator {
-        return Err(PhasegentError::config(format!(
-            "{operation} is orchestrator-only"
-        )));
-    }
-    Ok(role)
+    let caller = CallerContext::from_role(role_value);
+    timer_orchestrator_caller(caller, operation).and_then(|credential| {
+        credential.ok_or_else(|| {
+            PhasegentError::config(format!(
+                "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
+            ))
+        })
+    })
+}
+
+pub(crate) fn timer_orchestrator_caller(
+    caller: CallerContext,
+    operation: &str,
+) -> Result<Option<Role>, PhasegentError> {
+    // Reuse the canonical dispatch mapping (central authority and credential
+    // accessors) so start/finish cannot drift; explicit agent and managed
+    // errors are preserved verbatim.
+    super::dispatch::timer_orchestrator_caller(caller, operation).map(Some)
 }
 
 fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> PhasegentError + 'a {
     move |message| PhasegentError::request(operation, message)
 }
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_start(
     role_value: Option<Role>,
@@ -35,7 +44,21 @@ pub(crate) fn execute_start(
     run_id: Option<&str>,
     owner: &TimerRunOwner,
 ) -> Result<TimerOutput, PhasegentError> {
-    let _role = timer_orchestrator(role_value, "timer start")?;
+    let caller = CallerContext::from_role(role_value);
+    execute_start_with_caller(caller, issue, phase, agent_role, attempt, run_id, owner)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_start_with_caller(
+    caller: CallerContext,
+    issue: u64,
+    phase: &str,
+    agent_role: String,
+    attempt: u64,
+    run_id: Option<&str>,
+    owner: &TimerRunOwner,
+) -> Result<TimerOutput, PhasegentError> {
+    let _credential = timer_orchestrator_caller(caller, "timer start")?;
     let effective_role = normalise_agent_role(&agent_role)?;
     let run_id = run_id.map(str::to_owned).unwrap_or_else(generate_run_id);
     let storage = Storage::open().map_err(timer_storage_error("timer start"))?;

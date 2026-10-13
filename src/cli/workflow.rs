@@ -1,10 +1,11 @@
 use crate::command::WorkflowCommand;
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::workflow;
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_workflow(
     role_value: Option<Role>,
@@ -16,8 +17,38 @@ pub(crate) fn execute_workflow(
     global_project_id: Option<&str>,
     command: WorkflowCommand,
 ) -> i32 {
-    let role = super::required_role(role_value);
-    if role != Role::Admin {
+    let caller = CallerContext::from_role(role_value);
+    execute_workflow_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        global_repository,
+        global_close_status_id,
+        global_close_status_name,
+        global_project_id,
+        command,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_workflow_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    global_repository: Option<&str>,
+    global_close_status_id: Option<&str>,
+    global_close_status_name: Option<&str>,
+    global_project_id: Option<&str>,
+    command: WorkflowCommand,
+) -> i32 {
+    if caller.is_managed_without_role() {
+        return super::managed_denial("admin workflow bootstrap");
+    }
+    // Operator shares the explicit admin provisioning authority through the
+    // central context (never by widening `Role::Admin::allows`); explicit
+    // non-admin agents keep the existing narrow denial.
+    if !caller.is_admin_authorized() {
+        let role = caller.credential_role().expect("agent has a role");
         return super::structured_error(
             serde_json::json!({
                 "kind":"permission",
@@ -28,6 +59,9 @@ pub(crate) fn execute_workflow(
             3,
         );
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
     let provider = match resolve_kind(role, provider_kind) {
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),

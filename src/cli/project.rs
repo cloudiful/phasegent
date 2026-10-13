@@ -1,9 +1,10 @@
 use crate::command::ProjectCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 
+#[allow(dead_code)]
 pub(crate) fn execute_project(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -13,15 +14,47 @@ pub(crate) fn execute_project(
     close_status_id: Option<&str>,
     command: ProjectCommand,
 ) -> i32 {
-    let (role, capability) = match &command {
-        ProjectCommand::List => (super::required_role(role_value), Capability::ProjectRead),
-        ProjectCommand::Create { .. } => {
-            (super::required_role(role_value), Capability::ProjectCreate)
-        }
+    let caller = CallerContext::from_role(role_value);
+    execute_project_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_project_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: ProjectCommand,
+) -> i32 {
+    if caller.is_managed_without_role() {
+        let operation = match &command {
+            ProjectCommand::List => Capability::ProjectRead.operation(),
+            ProjectCommand::Create { .. } => Capability::ProjectCreate.operation(),
+        };
+        return super::managed_denial(operation);
+    }
+    let capability = match &command {
+        ProjectCommand::List => Capability::ProjectRead,
+        ProjectCommand::Create { .. } => Capability::ProjectCreate,
     };
-    if !role.allows(capability) {
+    // All executable gates use the invocation context, not the resulting
+    // credential role; the credential role only selects the stored key.
+    if !caller.allows(capability) {
+        let role = caller.credential_role().expect("agent has a role");
         return super::permission_error(role, capability);
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),

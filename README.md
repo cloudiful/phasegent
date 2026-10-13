@@ -13,14 +13,12 @@ Requirements: Rust stable and Cargo.
 ```sh
 git clone https://forgejo.cloud1ful.com/tools/phasegent.git
 cd phasegent
-cargo install --path .
+cargo install --path . --force --features postgres,notify-dingtalk,notify-email
 ```
 
-Enable the optional PostgreSQL index backend when needed:
-
-```sh
-cargo install --path . --features postgres
-```
+A checkout build (`cargo install --path .`) activates the local sources; a
+release asset activates the tagged binary; `phasegent plugin install` activates
+the OpenCode worktree adapter. Do not mix them for one verification.
 
 On Windows x64, install the matching `phasegent-<tag>-x86_64-pc-windows-msvc.msi`
 release asset. It installs for the current user under
@@ -99,6 +97,18 @@ Use `--provider redmine` or `--provider local` on a command when the selected
 provider is not the default. Use `--project-id ID` to override project
 discovery when required; `--repository OWNER/REPOSITORY` names the Git host
 repository for `workflow bootstrap` and project discovery.
+
+Ordinary human CLI needs no agent role: without `PHASEGENT_ROLE` and without
+`PHASEGENT_SESSION_ID` it runs as Operator with the admin credential resolved
+centrally. Explicit `PHASEGENT_ROLE` keeps agent-filtered help and scoped config;
+managed sessions without a role fail closed before any credential or network
+access. `PHASEGENT_ROLE`/`PHASEGENT_SESSION_ID` are routing, not authentication.
+
+Authorized `issue create` may run internal auto-bootstrap as system preparation
+with the admin credential (one match or explicit `--project-id` skips it;
+multiple matches fail before writes; no fallback, no caller admin authority).
+Operator cannot forge agent records: `record create` is denied, use
+`comment create` instead. See [docs/cli-caller-context.md](docs/cli-caller-context.md).
 
 Provisioning (`auth setup`, config writes, `workflow bootstrap`) lives under
 the human-operator `admin` group (`phasegent admin ...`) and is never invoked

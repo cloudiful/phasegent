@@ -1,8 +1,9 @@
 use crate::command::CommentCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::{IssueProvider, ProviderKind};
 
+#[allow(dead_code)]
 pub(crate) fn execute_comment(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -12,16 +13,49 @@ pub(crate) fn execute_comment(
     close_status_id: Option<&str>,
     command: CommentCommand,
 ) -> i32 {
-    let role = super::required_role(role_value);
+    let caller = CallerContext::from_role(role_value);
+    execute_comment_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_comment_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: CommentCommand,
+) -> i32 {
     let capability = match command {
         CommentCommand::Create { .. } => Capability::CommentCreate,
         CommentCommand::Get { .. } | CommentCommand::List { .. } => Capability::CommentRead,
         CommentCommand::FindMarker { .. } => Capability::CommentFindMarker,
     };
-    if !role.allows(capability) {
+    if caller.is_managed_without_role() {
+        return super::managed_denial(capability.operation());
+    }
+    if !caller.allows(capability) {
+        let role = caller.credential_role().expect("agent has a role");
         return super::permission_error(role, capability);
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
+    // Operator comments need no child `--authorized` flag; explicit
+    // orchestrator agents keep the existing exemption while executor and
+    // reviewer still require the flag. Managed sessions already failed
+    // closed above.
+    let is_operator = caller.is_operator();
     if let CommentCommand::Create { authorized, .. } = &command
+        && !is_operator
         && role != Role::Orchestrator
         && !authorized
     {

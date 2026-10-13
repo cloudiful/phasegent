@@ -316,3 +316,53 @@ fn cli_surface_acquire_unknown_status_default_off_reuses_checkout() {
 // ---------------------------------------------------------------------------
 // Issue 305 Task 2 / issue 337 Phase 1: heartbeat + prune CLI surface
 // ---------------------------------------------------------------------------
+
+/// P1 Operator: unmanaged Operator shares the orchestrator lifecycle
+/// authority for `worktree acquire`, while a managed session without a
+/// role fails closed before any storage access.
+#[test]
+fn cli_surface_acquire_operator_authorized_and_managed_denied() {
+    use crate::policy::CallerContext;
+
+    assert!(CallerContext::Operator.is_orchestrator_authorized());
+    assert!(CallerContext::Operator.is_worktree_read_authorized());
+    assert!(!CallerContext::ManagedWithoutRole.is_orchestrator_authorized());
+
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-cli-operator-acquire") else {
+        return;
+    };
+    let (db_temp, _cache_temp, _db_env, _cache_env) =
+        open_temp_db_and_cache("p1-cli-operator-acquire");
+    let _ = db_temp;
+    // Operator acquire reuses the primary checkout by default.
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(repo.dir.path()).expect("set cwd to temp repo");
+    let exit = crate::cli::worktree::execute_worktree_with_caller(
+        CallerContext::Operator,
+        WorktreeCommand::Acquire {
+            issue: 245,
+            session: Some("session-operator".to_owned()),
+            base: None,
+            format: "json".to_owned(),
+            isolate: false,
+            no_sync: true,
+        },
+    );
+    let _ = std::env::set_current_dir(&previous_cwd);
+    assert_eq!(exit, 0, "operator acquire must succeed");
+
+    // Managed without a role fails closed with the managed denial.
+    let denied = crate::cli::worktree::execute_worktree_with_caller(
+        CallerContext::ManagedWithoutRole,
+        WorktreeCommand::Acquire {
+            issue: 245,
+            session: Some("session-operator".to_owned()),
+            base: None,
+            format: "json".to_owned(),
+            isolate: false,
+            no_sync: true,
+        },
+    );
+    assert_eq!(denied, 3, "managed acquire without a role must be denied");
+}

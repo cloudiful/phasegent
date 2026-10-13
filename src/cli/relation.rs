@@ -1,5 +1,5 @@
 use crate::command::RelationCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::providers::{IssueProvider, ProviderKind};
@@ -9,6 +9,7 @@ use crate::providers::{IssueProvider, ProviderKind};
 /// orchestrator-only; the admin identity is denied all three. Local
 /// rejects every relation operation with a structured not-supported error
 /// before any network access.
+#[allow(dead_code)]
 pub(crate) fn execute_relation(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -18,15 +19,42 @@ pub(crate) fn execute_relation(
     close_status_id: Option<&str>,
     command: RelationCommand,
 ) -> i32 {
-    let role = super::required_role(role_value);
+    let caller = CallerContext::from_role(role_value);
+    execute_relation_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_relation_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: RelationCommand,
+) -> i32 {
     let capability = match &command {
         RelationCommand::List { .. } => Capability::RelationRead,
         RelationCommand::Create { .. } => Capability::RelationCreate,
         RelationCommand::Delete { .. } => Capability::RelationDelete,
     };
-    if !role.allows(capability) {
+    if caller.is_managed_without_role() {
+        return super::managed_denial(capability.operation());
+    }
+    if !caller.allows(capability) {
+        let role = caller.credential_role().expect("agent has a role");
         return super::permission_error(role, capability);
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Redmine) => {}
         // Local has no issue-relations surface; keep the structured

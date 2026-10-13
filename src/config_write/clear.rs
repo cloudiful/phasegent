@@ -1,5 +1,5 @@
 use crate::infra::storage::Storage;
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use serde_json::Value;
 
 use super::{ConfigClearOutcome, is_role_scoped_setting};
@@ -9,21 +9,30 @@ use super::{ConfigClearOutcome, is_role_scoped_setting};
 /// value was actually removed. The legacy `PHASEGENT_INDEX_BACKEND`
 /// remains clearable for compatibility but clearing it never changes
 /// backend selection; only `PHASEGENT_INDEX_PG_URL` presence selects
-/// PostgreSQL.
+/// PostgreSQL. An unmanaged Operator clears through the admin scope; a
+/// managed session without a role fails closed for role-scoped clears.
 pub fn clear_setting(
     role: Option<Role>,
     canonical: &str,
     storage: &Storage,
 ) -> Result<Value, String> {
-    if is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!(
-            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
-        ));
-    }
-    let cleared = persist_clear_value(role, canonical, storage)?;
+    let effective = if is_role_scoped_setting(canonical) {
+        match CallerContext::from_role(role) {
+            CallerContext::Operator => Some(Role::Admin),
+            CallerContext::Agent(role) => Some(role),
+            CallerContext::ManagedWithoutRole => {
+                return Err(crate::cli::managed_denial_message(&format!(
+                    "config clear {canonical}"
+                )));
+            }
+        }
+    } else {
+        role
+    };
+    let cleared = persist_clear_value(effective, canonical, storage)?;
     let outcome = ConfigClearOutcome {
         setting: canonical.to_owned(),
-        role: role.map(|r| r.as_str().to_owned()),
+        role: effective.map(|r| r.as_str().to_owned()),
         cleared,
     };
     serde_json::to_value(outcome).map_err(|e| format!("could not encode clear outcome: {e}"))

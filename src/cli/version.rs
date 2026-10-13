@@ -1,5 +1,5 @@
 use crate::command::VersionCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
@@ -7,6 +7,7 @@ use crate::providers::{IssueProvider, ProviderKind, RedmineMetadataProvider};
 /// Redmine or local project version discovery. Every role may read
 /// versions (planning is read-mostly). Local returns the empty catalogue
 /// without project discovery.
+#[allow(dead_code)]
 pub(crate) fn execute_version(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -16,11 +17,38 @@ pub(crate) fn execute_version(
     close_status_id: Option<&str>,
     command: VersionCommand,
 ) -> i32 {
-    let role = super::required_role(role_value);
+    let caller = CallerContext::from_role(role_value);
+    execute_version_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_version_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: VersionCommand,
+) -> i32 {
+    if caller.is_managed_without_role() {
+        return super::managed_denial(Capability::VersionRead.operation());
+    }
     let capability = Capability::VersionRead;
-    if !role.allows(capability) {
+    if !caller.allows(capability) {
+        let role = caller.credential_role().expect("agent has a role");
         return super::permission_error(role, capability);
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
     match resolve_kind(role, provider_kind) {
         Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
         Err(error) => return super::provider_error(error),

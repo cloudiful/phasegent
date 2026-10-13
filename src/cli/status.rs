@@ -1,5 +1,5 @@
 use crate::command::StatusCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::providers::redmine::model::StatusNextReport;
@@ -52,6 +52,7 @@ fn auto_no_route_error(report: &StatusNextReport) -> serde_json::Value {
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn execute_status(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -61,16 +62,52 @@ pub(crate) fn execute_status(
     close_status_id: Option<&str>,
     command: StatusCommand,
 ) -> i32 {
-    let role = super::required_role(role_value);
+    let caller = CallerContext::from_role(role_value);
+    execute_status_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_status_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: StatusCommand,
+) -> i32 {
+    if caller.is_managed_without_role() {
+        let operation = if matches!(
+            command,
+            StatusCommand::Set { .. } | StatusCommand::Advance { .. }
+        ) {
+            "issue status update"
+        } else {
+            Capability::IssueStatusRead.operation()
+        };
+        return super::managed_denial(operation);
+    }
     let capability = Capability::IssueStatusRead;
-    if !role.allows(capability) {
+    if !caller.allows(capability) {
+        let role = caller.credential_role().expect("agent has a role");
         return super::permission_error(role, capability);
     }
+    let role = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
     // Status transitions drive the workflow lifecycle and are
     // orchestrator-owned, mirroring issue close; executors, reviewers,
     // and the admin bootstrap identity may not move an issue's status.
-    // The check runs before any provider or network access so a denied
-    // role fails fast with a structured permission error.
+    // Operator shares the orchestrator lifecycle authority. The check runs
+    // before any provider or network access so a denied role fails fast
+    // with a structured permission error.
     // Phase 1-2 (issue 443): `status transition --to` and bare
     // `status transition` both parse to `Advance` (bare uses the
     // empty-target auto sentinel), so this guard covers the new
@@ -78,8 +115,10 @@ pub(crate) fn execute_status(
     if matches!(
         command,
         StatusCommand::Set { .. } | StatusCommand::Advance { .. }
-    ) && role != Role::Orchestrator
+    ) && !caller.is_orchestrator_authorized()
     {
+        // Explicit Agent denial keeps the exact legacy shape.
+        let role = caller.credential_role().expect("agent has a role");
         return super::structured_error(
             serde_json::json!({
                 "kind":"permission",

@@ -157,13 +157,50 @@ fn config_set_global_without_role_parses() {
 
 #[test]
 fn config_set_role_scoped_requires_role() {
+    // Unmanaged Operator parses role-scoped writes (execution uses the admin
+    // scope centrally); a managed session without a role fails closed.
     let args = ["admin", "config", "set", "redmine-close-status-id", "5"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let error = command::parse_with_role_env(&args, None)
-        .expect_err("role-scoped set without a role must error");
-    assert!(error.contains("a role is required"), "got: {error}");
+    let invocation =
+        command::parse_with_role_env(&args, None).expect("operator role-scoped set must parse");
+    assert_eq!(invocation.caller, crate::policy::CallerContext::Operator);
+    let error = command::parse_with_caller_env(&args, None, true)
+        .expect_err("managed role-scoped set without a role must error");
+    assert!(
+        error.contains("managed session requires a role"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn operator_role_scoped_set_uses_admin_scope() {
+    // Isolated persistence: Operator writes land in the admin scope with no
+    // fallback across keys.
+    with_isolated_storage("operator-admin-scope", |_db_path, storage| {
+        let outcome = config_write::set_setting_value(
+            None,
+            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
+            "6",
+            storage,
+        )
+        .expect("operator set must use admin scope");
+        assert_eq!(outcome["role"], serde_json::Value::from("admin"));
+        let stored = storage
+            .load_redmine_config(crate::policy::Role::Admin)
+            .unwrap()
+            .and_then(|config| config.close_status_id);
+        assert_eq!(stored, Some(6));
+        // No fallback: executor scope stays empty.
+        assert!(
+            storage
+                .load_redmine_config(crate::policy::Role::Executor)
+                .unwrap()
+                .and_then(|config| config.close_status_id)
+                .is_none()
+        );
+    });
 }
 
 #[test]

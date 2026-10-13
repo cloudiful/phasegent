@@ -201,17 +201,110 @@ fn unregistered_names_are_unknown_commands() {
     );
 }
 
-/// An empty argv parses to the root help for a bare launch, and a
-/// role-requiring command without any role source fails at parse time.
+/// An empty argv parses to the root help for a bare launch; an unmanaged
+/// Operator (no role, no managed session) parses ordinary business commands
+/// while a managed session without a role fails closed.
 #[test]
 fn empty_argv_is_root_help_and_role_is_required_for_operations() {
     let invocation = parse_with_role_env(&[], None).expect("empty args must parse");
     assert!(matches!(invocation.command, Command::Help(HelpTopic::Root)));
 
-    let error = parse_with_role_env(&args(&["issue", "get", "1"]), None)
-        .expect_err("issue get without a role must still fail");
+    // Unmanaged Operator parses business commands (execution uses the admin
+    // credential centrally).
+    let invocation = parse_with_role_env(&args(&["issue", "get", "1"]), None)
+        .expect("operator issue get must parse");
+    assert_eq!(invocation.caller, crate::policy::CallerContext::Operator);
+
+    // Managed session without a role fails closed before credentials.
+    let error = parse_with_caller_env(&args(&["issue", "get", "1"]), None, true)
+        .expect_err("managed issue get without a role must fail");
     assert!(
-        error.contains("a role is required"),
+        error.contains("managed session requires a role"),
         "unexpected error: {error}"
     );
+
+    // Invalid roles always error, even with a managed marker.
+    let error = parse_with_caller_env(&args(&["issue", "get", "1"]), Some("wizard"), true)
+        .expect_err("invalid role must error");
+    assert!(error.contains("PHASEGENT_ROLE is invalid"), "got: {error}");
+}
+
+#[test]
+fn operator_parses_business_commands_and_utility_stays_available_for_managed() {
+    // Operator parses every ordinary/admin surface (record create parses;
+    // execution denies it with a comment-create hint).
+    for argv in [
+        &["issue", "create", "--title", "T", "--body", "B"][..],
+        &["comment", "create", "1", "--marker", "m", "--body", "m"][..],
+        &["status", "set", "5", "--status", "Closed"][..],
+        &[
+            "timer",
+            "start",
+            "1",
+            "--phase",
+            "P1",
+            "--agent-role",
+            "executor",
+            "--attempt",
+            "1",
+        ][..],
+        &["worktree", "acquire", "--issue", "1"][..],
+        &["admin", "workflow", "bootstrap"][..],
+        &[
+            "record",
+            "create",
+            "1",
+            "--kind",
+            "executor",
+            "--key",
+            "k",
+            "--phase",
+            "P1",
+            "--attempt",
+            "1",
+            "--body",
+            "n",
+        ][..],
+    ] {
+        let invocation = parse_with_caller_env(&args(argv), None, false)
+            .unwrap_or_else(|error| panic!("operator {argv:?} must parse: {error}"));
+        assert_eq!(invocation.caller, crate::policy::CallerContext::Operator);
+    }
+    // Managed without a role keeps the roleless utility allowlist.
+    for argv in [
+        &["--help"][..],
+        &["doctor"][..],
+        &["issue", "bind", "23"][..],
+        &["issue", "status"][..],
+    ] {
+        parse_with_caller_env(&args(argv), None, true)
+            .unwrap_or_else(|error| panic!("managed utility {argv:?} must parse: {error}"));
+    }
+    // Managed without a role denies business, including role-scoped config.
+    for argv in [
+        &["issue", "create", "--title", "T", "--body", "B"][..],
+        &["status", "set", "5", "--status", "Closed"][..],
+        &["timer", "list"][..],
+        &["admin", "config", "set", "redmine-close-status-id", "5"][..],
+    ] {
+        let error =
+            parse_with_caller_env(&args(argv), None, true).expect_err("managed business must fail");
+        assert!(
+            error.contains("managed session requires a role"),
+            "argv {argv:?}: {error}"
+        );
+    }
+    // Global config stays available for managed sessions.
+    parse_with_caller_env(
+        &args(&[
+            "admin",
+            "config",
+            "set",
+            "redmine-api-base",
+            "https://example",
+        ]),
+        None,
+        true,
+    )
+    .expect("managed global config must parse");
 }

@@ -25,7 +25,9 @@ pub(crate) fn print_status_help(role: Option<Role>) {
             "  transition       Preferred status write; --to/--status names the target, or omit it to auto-route to the policy's first allowed next status (Redmine, local)"
         );
     }
-    println!("\nUse 'phasegent --help status <command>' for options.");
+    println!(
+        "\nOrdinary human Operator (no role, no session) shares orchestrator status authority; managed sessions without a role fail closed. See docs/cli-caller-context.md.\nUse 'phasegent --help status <command>' for options."
+    );
 }
 
 pub(crate) fn print_status_command_help(role: Option<Role>, command: &str) {

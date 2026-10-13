@@ -58,7 +58,7 @@ pub(crate) fn timer_help_text(role: Option<Role>) -> String {
         role,
         &header,
         &[(None, &rows)],
-        "Use 'phasegent --help timer <command>' for options.",
+        "Ordinary human Operator shares orchestrator timer authority; managed sessions without a role fail closed. See docs/cli-caller-context.md. Use 'phasegent --help timer <command>' for options.",
     )
 }
 
@@ -72,7 +72,7 @@ pub(crate) fn print_timer_help(role: Option<Role>) {
         role,
         &header,
         &[(None, &rows)],
-        "Use 'phasegent --help timer <command>' for options.",
+        "Ordinary human Operator shares orchestrator timer authority; managed sessions without a role fail closed. See docs/cli-caller-context.md. Use 'phasegent --help timer <command>' for options.",
     )
 }
 

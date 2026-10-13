@@ -1,7 +1,7 @@
 use crate::auth;
 use crate::command::{self, Command, IssueCommand};
 use crate::infra::storage::Storage;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
 use crate::providers::{ProviderDispatcher, ProviderKind, RedmineConfig};
@@ -54,6 +54,26 @@ pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Op
     }
 }
 
+/// Fully injectable entry point for deterministic caller tests: `role_env`
+/// models `PHASEGENT_ROLE`, `session_present` models `PHASEGENT_SESSION_ID`
+/// presence. Parallel tests use this instead of mutating process env.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn run_with_caller(
+    args: impl IntoIterator<Item = String>,
+    role_env: Option<&str>,
+    session_present: bool,
+) -> i32 {
+    let args = args.into_iter().collect::<Vec<_>>();
+    match command::parse_outcome_with_caller_env(&args, role_env, session_present) {
+        Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
+        Ok(command::ParseOutcome::Permission { role, operation }) => {
+            permission_denial(role, operation)
+        }
+        Err(message) => usage_error(&message),
+    }
+}
+
 /// Open the operator's platform-standard SQLite database. CLI entry
 /// points that touch [`Storage`] use this helper so the structured
 /// error path stays uniform: callers receive the same error string
@@ -80,7 +100,16 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             repository: auth_repository,
             close_status_id: auth_close_status_id,
         } => {
-            let role = required_role(invocation.role);
+            // Operator provisions through the admin scope; a managed session
+            // without a role fails closed before any credential or storage
+            // access. Explicit agents keep their own role scope.
+            let role = match invocation.caller {
+                CallerContext::Operator => Role::Admin,
+                CallerContext::Agent(role) => role,
+                CallerContext::ManagedWithoutRole => {
+                    return managed_denial("admin auth setup");
+                }
+            };
             let requested_provider = auth_provider.or(invocation.provider);
             let provider = match resolve_kind(role, requested_provider) {
                 Ok(provider) => provider,
@@ -197,8 +226,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.project_id.as_deref(),
             command,
         ),
-        Command::Issue(command) => issue::execute_issue(
-            invocation.role,
+        Command::Issue(command) => issue::execute_issue_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -206,8 +235,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::Comment(command) => comment::execute_comment(
-            invocation.role,
+        Command::Comment(command) => comment::execute_comment_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -215,8 +244,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::Record(command) => record::execute_record(
-            invocation.role,
+        Command::Record(command) => record::execute_record_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -224,8 +253,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::Project(command) => project::execute_project(
-            invocation.role,
+        Command::Project(command) => project::execute_project_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -233,8 +262,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::Status(command) => status::execute_status(
-            invocation.role,
+        Command::Status(command) => status::execute_status_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -242,8 +271,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::VersionCommand(command) => version::execute_version(
-            invocation.role,
+        Command::VersionCommand(command) => version::execute_version_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -251,8 +280,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.close_status_id.as_deref(),
             command,
         ),
-        Command::Workflow(command) => workflow::execute_workflow(
-            invocation.role,
+        Command::Workflow(command) => workflow::execute_workflow_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -261,8 +290,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             invocation.project_id.as_deref(),
             command,
         ),
-        Command::Relation(command) => relation::execute_relation(
-            invocation.role,
+        Command::Relation(command) => relation::execute_relation_with_caller(
+            invocation.caller,
             invocation.provider,
             invocation.api_base.as_deref(),
             invocation.repository.as_deref(),
@@ -272,8 +301,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         ),
         Command::Timer(command) => match &command {
             command::TimerCommand::Start { .. } | command::TimerCommand::Finish { .. } => {
-                crate::time_tracking::execute(
-                    invocation.role,
+                crate::time_tracking::execute_with_caller(
+                    invocation.caller,
                     invocation.provider,
                     invocation.api_base.as_deref(),
                     invocation.project_id.as_deref(),
@@ -284,20 +313,24 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
             command::TimerCommand::List { .. }
             | command::TimerCommand::Get { .. }
-            | command::TimerCommand::Recover { .. } => crate::time_tracking::execute_recovery(
-                invocation.role,
-                invocation.provider,
-                invocation.api_base.as_deref(),
-                invocation.project_id.as_deref(),
-                invocation.close_status_id.as_deref(),
-                command,
-            )
-            .map_or_else(crate::cli::provider_error, |output| print_json(&output)),
+            | command::TimerCommand::Recover { .. } => {
+                crate::time_tracking::execute_recovery_with_caller(
+                    invocation.caller,
+                    invocation.provider,
+                    invocation.api_base.as_deref(),
+                    invocation.project_id.as_deref(),
+                    invocation.close_status_id.as_deref(),
+                    command,
+                )
+                .map_or_else(crate::cli::provider_error, |output| print_json(&output))
+            }
         },
         Command::Hooks(command) => hooks::execute_hooks(command),
         Command::Plugin(command) => plugin::execute_plugin(command),
-        Command::Notify(command) => notify::execute_notify(invocation.role, command),
-        Command::Worktree(command) => worktree::execute_worktree(invocation.role, command),
+        Command::Notify(command) => notify::execute_notify_with_caller(invocation.caller, command),
+        Command::Worktree(command) => {
+            worktree::execute_worktree_with_caller(invocation.caller, command)
+        }
     }
 }
 
@@ -340,8 +373,29 @@ pub(crate) fn provider_for(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn required_role(role: Option<Role>) -> Role {
     role.expect("operation parsing requires a role")
+}
+
+/// Fail-closed denial for a managed session without a role attempting a
+/// business/permissioned command. Fires before any credential, provider, or
+/// side effect; utility commands never reach here.
+pub(crate) fn managed_denial(operation: &str) -> i32 {
+    structured_error(
+        serde_json::json!({
+            "kind":"permission",
+            "operation":operation,
+            "message":format!("managed session requires a role for {operation}; set PHASEGENT_ROLE")
+        }),
+        3,
+    )
+}
+
+/// Fail-closed denial for a managed session without a role at the config
+/// layer (which returns strings, not exit codes).
+pub(crate) fn managed_denial_message(operation: &str) -> String {
+    format!("managed session requires a role for {operation}; set PHASEGENT_ROLE")
 }
 
 pub(crate) fn permission_error(role: Role, capability: Capability) -> i32 {

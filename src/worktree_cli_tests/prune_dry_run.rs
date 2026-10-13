@@ -371,3 +371,44 @@ fn prune_report_mode_never_removes_a_removable_worktree() {
         .expect("row");
     assert_eq!(row.status, LEASE_STATUS_RETAINED);
 }
+
+/// P1 Operator shares the orchestrator prune authority (dry-run stays
+/// read-only); a managed session without a role fails closed.
+#[test]
+fn prune_operator_authorized_and_managed_denied() {
+    use crate::policy::CallerContext;
+
+    assert!(CallerContext::Operator.is_orchestrator_authorized());
+    assert!(!CallerContext::ManagedWithoutRole.is_orchestrator_authorized());
+
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-operator") else {
+        return;
+    };
+    let (_temp, _storage, _env) = open_temp_db("prune-operator");
+    let exit = crate::cli::worktree::execute_worktree_with_caller(
+        CallerContext::Operator,
+        crate::command::WorktreeCommand::Prune {
+            repo: Some(repo.dir.path().to_string_lossy().to_string()),
+            stale_days: 14,
+            release_stale: false,
+            remove: false,
+            reason: None,
+            no_sync: true,
+        },
+    );
+    assert_eq!(exit, 0, "operator prune dry-run must succeed");
+
+    let denied = crate::cli::worktree::execute_worktree_with_caller(
+        CallerContext::ManagedWithoutRole,
+        crate::command::WorktreeCommand::Prune {
+            repo: Some(repo.dir.path().to_string_lossy().to_string()),
+            stale_days: 14,
+            release_stale: false,
+            remove: false,
+            reason: None,
+            no_sync: true,
+        },
+    );
+    assert_eq!(denied, 3, "managed prune without a role must be denied");
+}

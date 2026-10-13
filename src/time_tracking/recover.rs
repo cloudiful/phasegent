@@ -1,14 +1,16 @@
 use crate::infra::storage::{Storage, TIMER_STATUS_RUNNING};
+use crate::policy::{CallerContext, Role};
 use crate::providers::api::PhasegentError;
 
 use super::dispatch::TimerListOutput;
-use super::finish::project_run;
+use super::finish::project_run_with_credential;
 use super::util::{bounded_error_message, generate_projection_token, now_epoch_seconds};
 
 fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> PhasegentError + 'a {
     move |message| PhasegentError::request(operation, message)
 }
 
+#[allow(dead_code)]
 pub(crate) fn handle_recover(
     storage: Storage,
     run_id: &str,
@@ -17,6 +19,34 @@ pub(crate) fn handle_recover(
     project_id: Option<&str>,
     close_status_id: Option<&str>,
 ) -> Result<TimerListOutput, PhasegentError> {
+    handle_recover_with_caller(
+        CallerContext::Agent(Role::Orchestrator),
+        storage,
+        run_id,
+        provider_kind,
+        api_base,
+        project_id,
+        close_status_id,
+    )
+}
+
+pub(crate) fn handle_recover_with_caller(
+    caller: CallerContext,
+    storage: Storage,
+    run_id: &str,
+    provider_kind: Option<crate::providers::ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+) -> Result<TimerListOutput, PhasegentError> {
+    let credential = match caller.credential_role() {
+        Some(role) => role,
+        None => {
+            return Err(PhasegentError::config(
+                "managed session requires a role for timer recover; set PHASEGENT_ROLE=orchestrator",
+            ));
+        }
+    };
     let existing = storage
         .load_timer_run(run_id)
         .map_err(timer_storage_error("timer recover"))?
@@ -52,7 +82,8 @@ pub(crate) fn handle_recover(
                         PhasegentError::config(format!("timer run '{run_id}' was not found"))
                     })?;
                 let token = generate_projection_token();
-                match project_run(
+                match project_run_with_credential(
+                    credential,
                     &storage,
                     &mut run_mut,
                     provider_kind,
@@ -164,7 +195,8 @@ pub(crate) fn handle_recover(
     // `token`. A hard-crash stale lease is handled via the
     // explicit stale-reset path above on the next retry.
     let _ = run; // keep original for potential token fallback
-    match project_run(
+    match project_run_with_credential(
+        credential,
         &storage,
         &mut run_mut,
         provider_kind,

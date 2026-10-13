@@ -15,7 +15,9 @@ pub(crate) fn print_relation_help(role: Option<Role>) {
         println!("  create           Create a Redmine issue relation (orchestrator-only)");
         println!("  delete           Delete a Redmine issue relation by id (orchestrator-only)");
     }
-    println!("\nUse 'phasegent --help relation <command>' for options.");
+    println!(
+        "\nOrdinary human Operator (no role, no session) shares orchestrator relation authority; managed sessions without a role fail closed. See docs/cli-caller-context.md.\nUse 'phasegent --help relation <command>' for options."
+    );
 }
 
 pub(crate) fn print_relation_command_help(role: Option<Role>, command: &str) {

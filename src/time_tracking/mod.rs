@@ -10,7 +10,10 @@ pub(crate) mod util;
 
 // Keep the `crate::time_tracking::*` surface aligned with the historic
 // `crate::time_tracking_cli::*` path.
-pub(crate) use dispatch::{TimerListOutput, TimerOutput, execute, execute_recovery};
+pub(crate) use dispatch::{
+    TimerListOutput, TimerOutput, execute, execute_recovery, execute_recovery_with_caller,
+    execute_with_caller,
+};
 pub(crate) use finish::auto_finish_run;
 pub(crate) use projection_redmine::{project_run_with_provider, time_entry_comments};
 pub(crate) use start::auto_start_run;

@@ -12,7 +12,7 @@
 //! runtime entry so the execution layer can return its structured
 //! not-compiled error.
 
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::ProviderKind;
 
 #[path = "registry_commands.rs"]
@@ -302,6 +302,44 @@ pub(crate) fn find(path: &[&str]) -> Option<&'static CommandSpec> {
 /// instead of duplicating a role list.
 pub(crate) fn capability(path: &[&str]) -> Option<Capability> {
     find(path).and_then(CommandSpec::capability)
+}
+
+/// Whether `caller` may run the command at `path`. Operator authorizes
+/// every registered path except the agent-authored `record create` (which
+/// stays role/kind-bound and is denied with a comment-create hint); an
+/// Agent delegates to its role; a managed session without a role
+/// authorizes nothing here so the argv utility allowlist stays the only
+/// passthrough. Unknown paths are denied so a command the registry cannot
+/// resolve is never silently accepted.
+pub(crate) fn allows_caller(caller: CallerContext, path: &[&str]) -> bool {
+    match caller {
+        CallerContext::Operator => {
+            if path == ["record", "create"] {
+                return false;
+            }
+            find(path).is_some()
+        }
+        CallerContext::Agent(role) => allows_role(role, path),
+        CallerContext::ManagedWithoutRole => false,
+    }
+}
+
+/// The permission `operation` label for a caller-denied `path`, or `None`
+/// when the path is unknown or allowed.
+pub(crate) fn denied_operation_for_caller(
+    caller: CallerContext,
+    path: &[&str],
+) -> Option<&'static str> {
+    match caller {
+        CallerContext::Operator => {
+            if path == ["record", "create"] {
+                return Some("record create");
+            }
+            None
+        }
+        CallerContext::Agent(role) => denied_operation(role, path),
+        CallerContext::ManagedWithoutRole => find(path).map(|spec| spec.operation()),
+    }
 }
 
 #[cfg(test)]

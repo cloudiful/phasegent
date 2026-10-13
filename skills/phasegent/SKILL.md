@@ -140,13 +140,21 @@ answer before updating the body or resuming work.
 
 ## Role capability matrix
 
-Source of truth: `src/policy.rs` (`Role::allows`); command-level gates keyed to
-a role rather than a capability live in *Command contract*. The five roles are
-`admin`, `orchestrator`, `executor`, `reviewer`, `explore`. The session role is
-a capability/routing policy, not identity isolation: each role's credential
-stays least-privilege and never crosses roles, and status follows the tools
+Source of truth: `src/policy.rs` (`Role::allows` for agents, `CallerContext`
+for invocation routing); command-level gates keyed to
+a role rather than a capability live in *Command contract*. The capability matrix
+below applies to explicit agent roles only (`admin`, `orchestrator`, `executor`,
+`reviewer`, `explore`). The unmanaged human Operator (no `PHASEGENT_ROLE`, no
+`PHASEGENT_SESSION_ID`) is separate invocation context, not a sixth role: it may
+run all ordinary business and administrative commands with the existing admin
+credential resolved centrally, except agent-authored `record create` (denied with
+a `comment create` hint). A managed session without a role fails closed before any
+credential, provider, or side effect; the roleless utility allowlist stays
+available. The session role is
+a capability/routing policy, not identity isolation and not authentication: each role's credential
+stays least-privilege and never crosses roles (no fallback), and status follows the tools
 automatically. `explore` is the least-privilege recon role and holds no
-credential borrowed from another role.
+credential borrowed from another role. See `docs/cli-caller-context.md`.
 
 Legend: `✓` allowed, `—` denied.
 
@@ -176,7 +184,12 @@ Legend: `✓` allowed, `—` denied.
   write/search/close, relation write, and the only non-admin role with the
   status-transition and `timer` commands.
 - **admin** is bootstrap-only — project list/create, status list/next, version
-  list, and `workflow bootstrap` — and is never an AI role.
+  list, and explicit `admin workflow bootstrap` — and is never an AI role. Explicit
+  admin commands are human-operator only and distinct from internal auto-bootstrap:
+  authorized `issue create` with zero discovery matches runs `ensure_issue_workflow`
+  as system preparation with the admin credential (one match or explicit
+  `--project-id` skips it; multiple matches fail before writes; no fallback, no
+  caller role mutation, no caller admin authority).
 - **executor** and **reviewer** share the read/comment/project/status/version/
   relation-read surface and `notify send`; both are barred from issue
   write/close/search, relation write, status, and timer.
@@ -276,11 +289,15 @@ phase is an explicit transition back to `In Progress`.
 
 - Issue body/search/create/close writes, relation and repo writes,
   `status transition`, every `timer *` command, and `worktree` lease writes are
-  orchestrator-only. Children never edit the body, label, search, or close an
+  orchestrator-only for agents; the unmanaged human Operator shares that
+  authority through the central context, while managed sessions without a role
+  fail closed. Children never edit the body, label, search, or close an
   issue, never call `status *` or `timer *`, never commit, push, tag, or mutate
   refs, and never claim another role's credential.
 - `comment create` writes under the session role: a child's note needs explicit
-  authorization through the `--authorized` CLI flag. Structured records are the
+  authorization through the `--authorized` CLI flag, while unmanaged Operator
+  comments need no flag. Operator `record create` stays denied (use `comment
+  create` instead) with no forged agent author. Structured records are the
   documented agent path instead: `record create` under the session role's own
   kind (`executor`, `reviewer`, or the explorer's authorized recon), and
   `record get`/`record list` for reads.
@@ -293,9 +310,11 @@ phase is an explicit transition back to `In Progress`.
 
 ### Admin group (never AI roles)
 
-The entire `admin` group (`admin auth setup`, `admin config set/clear`,
+The entire explicit `admin` group (`admin auth setup`, `admin config set/clear`,
 `admin config provider set/clear`, `admin workflow bootstrap`) is
-human-operator only — for every AI role, orchestrator included. Agent permission
+human-operator only — for every AI role, orchestrator included. It is distinct
+from internal auto-bootstrap, which is a permission-free caller step of an
+already-authorized operation (admin credential still required, no fallback). Agent permission
 rules deny the prefix, no role ever delegates it, and provisioning, credentials,
 and settings stay with the operator: a missing one goes back to the primary for
 a question, and credentials never travel as CLI values. Only when a configuration or provider

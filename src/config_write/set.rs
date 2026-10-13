@@ -1,11 +1,29 @@
 use crate::infra::storage::Storage;
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::config::ProviderKind;
 use serde_json::Value;
 use std::io::{self, Read};
 
 use super::common::update_redmine_config_field;
 use super::{ConfigSetOutcome, is_role_scoped_setting, is_secret_setting};
+
+/// Resolve the effective role for a config write: global settings stay
+/// roleless; role-scoped settings use the explicit agent role, or the admin
+/// scope for an unmanaged Operator. A managed session without a role fails
+/// closed.
+fn resolve_write_role(role: Option<Role>, canonical: &str) -> Result<Option<Role>, String> {
+    if !is_role_scoped_setting(canonical) {
+        return Ok(role);
+    }
+    let caller = CallerContext::from_role(role);
+    match caller {
+        CallerContext::Operator => Ok(Some(Role::Admin)),
+        CallerContext::Agent(role) => Ok(Some(role)),
+        CallerContext::ManagedWithoutRole => Err(crate::cli::managed_denial_message(&format!(
+            "config set {canonical}"
+        ))),
+    }
+}
 
 /// Persist a setting value that has already been sourced (from
 /// positional arg, stdin content, or interactive prompt). The caller
@@ -27,15 +45,11 @@ pub fn set_setting_value(
             "secret setting '{canonical}' must use --stdin or the interactive prompt"
         ));
     }
-    if is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!(
-            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
-        ));
-    }
-    persist_set_value(role, canonical, trimmed, storage)?;
+    let effective = resolve_write_role(role, canonical)?;
+    persist_set_value(effective, canonical, trimmed, storage)?;
     let outcome = ConfigSetOutcome {
         setting: canonical.to_owned(),
-        role: role.map(|r| r.as_str().to_owned()),
+        role: effective.map(|r| r.as_str().to_owned()),
         updated: true,
     };
     serde_json::to_value(outcome).map_err(|e| format!("could not encode set outcome: {e}"))
@@ -53,15 +67,11 @@ pub fn set_setting_stdin_content(
     if trimmed.is_empty() {
         return Err(format!("value for '{canonical}' cannot be empty"));
     }
-    if is_role_scoped_setting(canonical) && role.is_none() {
-        return Err(format!(
-            "a role is required for setting '{canonical}'; set PHASEGENT_ROLE"
-        ));
-    }
-    persist_set_value(role, canonical, trimmed, storage)?;
+    let effective = resolve_write_role(role, canonical)?;
+    persist_set_value(effective, canonical, trimmed, storage)?;
     let outcome = ConfigSetOutcome {
         setting: canonical.to_owned(),
-        role: role.map(|r| r.as_str().to_owned()),
+        role: effective.map(|r| r.as_str().to_owned()),
         updated: true,
     };
     serde_json::to_value(outcome).map_err(|e| format!("could not encode set outcome: {e}"))
@@ -96,10 +106,11 @@ pub fn dispatch_set(
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            persist_set_value(role, canonical, trimmed, storage)?;
+            let effective = resolve_write_role(role, canonical)?;
+            persist_set_value(effective, canonical, trimmed, storage)?;
             let outcome = ConfigSetOutcome {
                 setting: canonical.to_owned(),
-                role: role.map(|r| r.as_str().to_owned()),
+                role: effective.map(|r| r.as_str().to_owned()),
                 updated: true,
             };
             serde_json::to_value(outcome).map_err(|e| format!("could not encode set outcome: {e}"))

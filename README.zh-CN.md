@@ -12,14 +12,11 @@
 ```sh
 git clone https://forgejo.cloud1ful.com/tools/phasegent.git
 cd phasegent
-cargo install --path .
+cargo install --path . --force --features postgres,notify-dingtalk,notify-email
 ```
 
-需要 PostgreSQL 索引后端时，启用可选 feature：
-
-```sh
-cargo install --path . --features postgres
-```
+checkout 构建（`cargo install --path .`）激活本地源码；release 包激活对应 tag
+二进制；`phasegent plugin install` 激活 OpenCode worktree 适配器。一次验证不要混用。
 
 Windows x64 用户可安装对应版本的
 `phasegent-<tag>-x86_64-pc-windows-msvc.msi` release 文件。它只为当前用户安装到
@@ -92,6 +89,17 @@ phasegent doctor
 `--provider local`。可以使用 `--project-id ID` 覆盖 project 的自动发现；
 `--repository OWNER/REPOSITORY` 指定 Git 主机上的仓库，用于
 `workflow bootstrap` 与 project 发现。
+
+普通人类 CLI 无需 agent role：没有 `PHASEGENT_ROLE` 且没有
+`PHASEGENT_SESSION_ID` 时即为 Operator，集中使用 admin credential。显式
+`PHASEGENT_ROLE` 保留 agent 过滤 help 与 scoped config；无 role 的受管会话在任何
+credential 或网络访问之前 fail-closed。`PHASEGENT_ROLE`/`PHASEGENT_SESSION_ID`
+只是路由，不是身份认证。
+
+已授权的 `issue create` 可能以内建系统准备步骤触发 auto-bootstrap（admin
+credential；单匹配或显式 `--project-id` 跳过，多匹配在写入前失败；无 fallback，
+不授予调用者 admin 权限）。Operator 不能伪造 agent record：`record create`
+被拒绝，请改用 `comment create`。详见 [docs/cli-caller-context.md](docs/cli-caller-context.md)。
 
 Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。

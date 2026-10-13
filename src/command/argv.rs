@@ -5,7 +5,7 @@ use super::{
     issue, notify, plugin, project, record, registry, relation, status, timer, version, workflow,
     worktree,
 };
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 
 /// Parse the process argv, resolving the role from the `PHASEGENT_ROLE`
 /// environment variable. A managed session exports that variable for its
@@ -48,21 +48,45 @@ pub(crate) fn permission_message(role: Role, operation: &str) -> String {
 
 /// Parse the process argv with the process role environment.
 pub(crate) fn parse_outcome(args: &[String]) -> Result<ParseOutcome, String> {
-    let role_env = std::env::var("PHASEGENT_ROLE").ok();
-    parse_outcome_with_role_env(args, role_env.as_deref())
+    // Unix raw-value handling before any permissioned side effect:
+    // session presence uses `var_os` (blank and non-Unicode count as
+    // present); a non-Unicode role is an argument error, never absent.
+    // Pure tests inject `&str` via `parse_outcome_with_caller_env` and stay
+    // deterministic.
+    let role = crate::policy::role_from_env()?;
+    let session_present = crate::policy::session_present();
+    let role_env = role.map(|role| role.as_str().to_owned());
+    parse_outcome_with_caller_env(args, role_env.as_deref(), session_present)
 }
 
-/// Role-injectable parser used by `parse_outcome` and by unit tests. `role_env`
+/// Role-injectable parser used by legacy unit tests. `role_env`
 /// models `PHASEGENT_ROLE` so tests never mutate process-global state
-/// (which would race the parallel parser assertions).
+/// (which would race the parallel parser assertions). Legacy tests assume
+/// an unmanaged context (no managed session marker); pure caller-aware
+/// tests use [`parse_outcome_with_caller_env`] with an explicit session flag.
+#[allow(dead_code)]
 pub(crate) fn parse_outcome_with_role_env(
     args: &[String],
     role_env: Option<&str>,
 ) -> Result<ParseOutcome, String> {
+    parse_outcome_with_caller_env(args, role_env, false)
+}
+
+/// Fully injectable parser: `role_env` models `PHASEGENT_ROLE` and
+/// `session_present` models `PHASEGENT_SESSION_ID` presence (even blank).
+/// Pure unit tests use this so parallel assertions never read global env.
+pub(crate) fn parse_outcome_with_caller_env(
+    args: &[String],
+    role_env: Option<&str>,
+    session_present: bool,
+) -> Result<ParseOutcome, String> {
     // Role context comes only from `PHASEGENT_ROLE`, which a managed session
     // exports for its child processes. A blank value means "not provided", but
     // a non-empty invalid value is an error rather than a silent downgrade to
-    // role-less execution.
+    // role-less execution. Session presence models `PHASEGENT_SESSION_ID`
+    // (even blank counts as present) and selects unmanaged Operator vs
+    // managed-missing fail-closed; it is never TTY detection and never an
+    // identity claim.
     let role = role_env
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -72,10 +96,12 @@ pub(crate) fn parse_outcome_with_role_env(
                 .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))
         })
         .transpose()?;
+    let caller = CallerContext::from_role_and_session(role, session_present);
 
     if args.is_empty() {
         return Ok(ParseOutcome::invocation(Invocation {
             role,
+            caller,
             provider: None,
             api_base: None,
             repository: None,
@@ -105,6 +131,7 @@ pub(crate) fn parse_outcome_with_role_env(
                 })?;
                 return Ok(ParseOutcome::invocation(Invocation {
                     role,
+                    caller,
                     provider,
                     api_base,
                     repository,
@@ -117,6 +144,7 @@ pub(crate) fn parse_outcome_with_role_env(
             "--version" | "-V" => {
                 return Ok(ParseOutcome::invocation(Invocation {
                     role,
+                    caller,
                     provider,
                     api_base,
                     repository,
@@ -195,22 +223,39 @@ pub(crate) fn parse_outcome_with_role_env(
     let command = args.get(index).ok_or("a command is required")?;
     let rest = &args[index + 1..];
     let command = parse_command(command, rest).map_err(with_global_option_hint)?;
-    // Role-aware parser gate: the registry is the single source of truth for
-    // which command a role may run, so a denied command fails here with the
+    // Context-aware parser gate: an explicit Agent role consults the registry
+    // as the single source of truth, so a denied command fails here with the
     // stable permission error instead of being accepted and rejected by the
     // execution layer after provider/credential setup. Unknown commands were
-    // already rejected by `parse_command` with the distinct unknown error, and
-    // a missing role keeps the historical superset routing (checked below).
-    if let Some(role) = role
-        && let Some(path) = super::command_registry_path(&command)
-        && let Some(operation) = super::registry_denied_operation(role, &path)
-    {
-        return Ok(ParseOutcome::Permission { role, operation });
+    // already rejected by `parse_command` with the distinct unknown error.
+    // An unmanaged Operator parses every registered command (execution denies
+    // only the agent-authored `record create` with a comment-create hint);
+    // a managed session without a role fails closed for business commands
+    // while the roleless utility allowlist stays available.
+    match caller {
+        CallerContext::Agent(role) => {
+            if let Some(path) = super::command_registry_path(&command)
+                && let Some(operation) = super::registry_denied_operation(role, &path)
+            {
+                return Ok(ParseOutcome::Permission { role, operation });
+            }
+        }
+        CallerContext::Operator => {
+            // No parser denial: Operator authority is checked by the
+            // execution layer through the same context (record create is the
+            // only denial, and it fires there before any provider access).
+        }
+        CallerContext::ManagedWithoutRole => {
+            // Utility passthrough decided below; business fails here before
+            // any credential/provider access.
+        }
     }
     // Local branch context and hooks never touch provider credentials. The
     // internal `hooks run` forms are also invoked by generated Git scripts
     // without a role. `config set/clear` is allowed without a role when
-    // the target is a global setting; role-scoped settings still require it.
+    // the target is a global setting; role-scoped settings still require a
+    // concrete scope (Operator uses the admin scope at execution time, a
+    // managed session without a role fails closed).
     let no_role_allowed = match &command {
         Command::Help(_)
         | Command::Doctor
@@ -227,17 +272,23 @@ pub(crate) fn parse_outcome_with_role_env(
         Command::ConfigClear { setting } => crate::config_write::is_global_setting(setting),
         _ => false,
     };
-    if role.is_none() && !no_role_allowed {
-        return Err(
-            "a role is required for operations; set PHASEGENT_ROLE or run in a managed session"
-                .to_owned(),
-        );
+    match caller {
+        CallerContext::Agent(_) => {}
+        CallerContext::Operator => {}
+        CallerContext::ManagedWithoutRole => {
+            if !no_role_allowed {
+                return Err(
+                    "managed session requires a role for operations; set PHASEGENT_ROLE".to_owned(),
+                );
+            }
+        }
     }
     if close_status_name.is_some() && !matches!(&command, Command::Workflow(_)) {
         return Err("--close-status-name is only supported by workflow bootstrap".to_owned());
     }
     Ok(ParseOutcome::invocation(Invocation {
         role,
+        caller,
         provider,
         api_base,
         repository,
@@ -255,6 +306,19 @@ pub(crate) fn parse_with_role_env(
     role_env: Option<&str>,
 ) -> Result<Invocation, String> {
     parse_outcome_with_role_env(args, role_env).and_then(ParseOutcome::into_invocation)
+}
+
+/// Fully injectable entry point for deterministic caller tests: `role_env`
+/// models `PHASEGENT_ROLE`, `session_present` models `PHASEGENT_SESSION_ID`
+/// presence. Parallel tests use this instead of mutating process env.
+#[cfg(test)]
+pub(crate) fn parse_with_caller_env(
+    args: &[String],
+    role_env: Option<&str>,
+    session_present: bool,
+) -> Result<Invocation, String> {
+    parse_outcome_with_caller_env(args, role_env, session_present)
+        .and_then(ParseOutcome::into_invocation)
 }
 
 fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {

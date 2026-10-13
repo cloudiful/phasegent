@@ -1,4 +1,4 @@
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
 
 pub use crate::hooks::HooksCommand;
@@ -45,6 +45,9 @@ pub(crate) use argv::parse_outcome_with_role_env;
 #[cfg(test)]
 pub(crate) use argv::parse_with_role_env;
 pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use argv::{parse_outcome_with_caller_env, parse_with_caller_env};
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
 pub use local_args::{NotifyCommand, PluginCommand};
 pub(crate) use parse_helpers::{has_flag, optional_option};
@@ -59,6 +62,10 @@ pub use worktree_args::WorktreeCommand;
 #[derive(Debug)]
 pub struct Invocation {
     pub role: Option<Role>,
+    /// Invocation policy context derived from the explicit role plus the
+    /// managed-session marker. Authorization gates use this, not the raw
+    /// role; credential resolution uses its `credential_role` accessor.
+    pub caller: CallerContext,
     pub provider: Option<ProviderKind>,
     pub api_base: Option<String>,
     pub repository: Option<String>,
@@ -66,6 +73,17 @@ pub struct Invocation {
     pub close_status_id: Option<String>,
     pub close_status_name: Option<String>,
     pub command: Command,
+}
+
+impl Invocation {
+    /// Central credential routing for provider-dependent operations:
+    /// Operator resolves to the existing admin credential, an Agent to its
+    /// own role. `None` only for a managed session without a role, which
+    /// fails closed before any credential use.
+    #[allow(dead_code)]
+    pub fn credential_role(&self) -> Option<Role> {
+        self.caller.credential_role()
+    }
 }
 
 #[derive(Debug)]
@@ -184,6 +202,16 @@ pub(crate) fn registry_allows_role(role: Role, path: &[&str]) -> bool {
     registry::allows_role(role, path)
 }
 
+/// Whether `caller` may run the command at a registry `path`. Operator
+/// authorizes every registered path except the agent-authored
+/// `record create`; an Agent delegates to its role; a managed session
+/// without a role authorizes nothing here (utility passthrough is decided
+/// by the argv allowlist, not the registry).
+#[allow(dead_code)]
+pub(crate) fn registry_allows_caller(caller: CallerContext, path: &[&str]) -> bool {
+    registry::allows_caller(caller, path)
+}
+
 /// The stable reason a registry `path` is unavailable for `role`, or `None`
 /// when it is available or unknown. Used by the help gate so a feature that
 /// was not compiled and a role denial stay distinct.
@@ -195,6 +223,16 @@ pub(crate) fn registry_unavailability(role: Option<Role>, path: &[&str]) -> Opti
 /// `None` when the path is unknown, allowed, or not compiled.
 pub(crate) fn registry_denied_operation(role: Role, path: &[&str]) -> Option<&'static str> {
     registry::denied_operation(role, path)
+}
+
+/// The stable permission `operation` for a caller-denied registry path, or
+/// `None` when the path is unknown or allowed.
+#[allow(dead_code)]
+pub(crate) fn registry_denied_operation_for_caller(
+    caller: CallerContext,
+    path: &[&str],
+) -> Option<&'static str> {
+    registry::denied_operation_for_caller(caller, path)
 }
 
 /// Whether a top-level command is visible for the resolved role and provider.

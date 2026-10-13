@@ -96,6 +96,23 @@ pub(super) fn run_cli_in(
     role: &str,
     args: &[&str],
 ) -> std::process::Output {
+    run_cli_in_with_role(working_dir, db_path, api_base, Some(role), None, args)
+}
+
+/// Role/session-injectable spawn: `role` models `PHASEGENT_ROLE` (`None`
+/// removes it for unmanaged Operator), `session` models
+/// `PHASEGENT_SESSION_ID` (`None` removes it, `Some` sets it even when
+/// blank). Always clears inherited role/session env plus the Redmine
+/// overrides so Operator, managed-missing, and agent paths stay
+/// deterministic.
+pub(super) fn run_cli_in_with_role(
+    working_dir: &Path,
+    db_path: &Path,
+    api_base: &str,
+    role: Option<&str>,
+    session: Option<&str>,
+    args: &[&str],
+) -> std::process::Output {
     let config_path = working_dir.join("phasegent-missing.toml");
     let mut command = Command::new(phasegent_bin());
     command
@@ -103,7 +120,8 @@ pub(super) fn run_cli_in(
         .current_dir(working_dir)
         .env("PHASEGENT_DB_PATH", db_path.as_os_str())
         .env("PHASEGENT_REDMINE_API_BASE", api_base)
-        .env("PHASEGENT_ROLE", role)
+        .env_remove("PHASEGENT_ROLE")
+        .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_REDMINE_PROJECT_ID")
@@ -118,5 +136,11 @@ pub(super) fn run_cli_in(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(role) = role {
+        command.env("PHASEGENT_ROLE", role);
+    }
+    if let Some(session) = session {
+        command.env("PHASEGENT_SESSION_ID", session);
+    }
     command.output().expect("spawn phasegent binary")
 }

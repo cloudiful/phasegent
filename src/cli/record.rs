@@ -12,12 +12,13 @@
 mod request;
 
 use crate::command::RecordCommand;
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
 use crate::record::{self, RecordFilter};
 
 use request::Gate;
 
+#[allow(dead_code)]
 pub(crate) fn execute_record(
     role_value: Option<Role>,
     provider_kind: Option<ProviderKind>,
@@ -27,8 +28,60 @@ pub(crate) fn execute_record(
     close_status_id: Option<&str>,
     command: RecordCommand,
 ) -> i32 {
-    let role = super::required_role(role_value);
-    if !Role::RECORD_READ_ROLES.contains(&role) {
+    let caller = CallerContext::from_role(role_value);
+    execute_record_with_caller(
+        caller,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        command,
+    )
+}
+
+pub(crate) fn execute_record_with_caller(
+    caller: CallerContext,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    command: RecordCommand,
+) -> i32 {
+    // Managed sessions without a role fail closed before any provider or
+    // body-file access.
+    if caller.is_managed_without_role() {
+        let operation = match &command {
+            RecordCommand::Create { .. } => "record create",
+            RecordCommand::Get { .. } => "record get",
+            RecordCommand::List { .. } => "record list",
+        };
+        return super::managed_denial(operation);
+    }
+    // Operator may read records with the central admin credential but never
+    // authors an agent record: `record create` stays role/kind-bound with a
+    // comment-create hint and no forged actor.
+    if caller.is_operator() {
+        match &command {
+            RecordCommand::Create { .. } => {
+                return super::structured_error(
+                    serde_json::json!({
+                        "kind":"permission",
+                        "operation":"record create",
+                        "message":"operator is not allowed to perform record create; use comment create instead"
+                    }),
+                    3,
+                );
+            }
+            RecordCommand::Get { .. } | RecordCommand::List { .. } => {}
+        }
+    }
+    let role = match caller.credential_role() {
+        Some(role) => role,
+        None => return super::managed_denial("record"),
+    };
+    if !Role::RECORD_READ_ROLES.contains(&role) && !caller.is_operator() {
         return super::structured_error(
             serde_json::json!({
                 "kind":"permission",

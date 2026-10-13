@@ -43,6 +43,31 @@ fn root_help_snapshot() {
     });
 }
 
+/// P2 caller-context contract: the roleless superset stays for Operator,
+/// ordinary CLI needs no agent role, managed sessions fail closed, and role
+/// env is routing rather than authentication.
+#[test]
+fn root_help_states_operator_and_fail_closed() {
+    let scratch = Scratch::new("help-root-operator");
+    let text = help(&scratch, None, &["--help"]);
+    assert!(
+        text.contains("runs as Operator"),
+        "root help must state Operator default: {text}"
+    );
+    assert!(
+        text.contains("fail closed"),
+        "root help must state managed fail-closed: {text}"
+    );
+    assert!(
+        text.contains("routing, not authentication"),
+        "root help must state routing, not authentication: {text}"
+    );
+    assert!(
+        !text.contains("--role"),
+        "root help must not document a role flag"
+    );
+}
+
 #[test]
 fn issue_close_help_snapshot() {
     let scratch = Scratch::new("help-issue-close");

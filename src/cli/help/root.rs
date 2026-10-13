@@ -3,13 +3,13 @@ use crate::providers::ProviderKind;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Root usage block. The session role comes from the managed session or
-/// `PHASEGENT_ROLE`, so the common invocation shape never carries a role
-/// flag. `--provider` is resolved from configuration and named only in the
-/// options list, so the common invocation shape never tags it on either.
+/// Root usage block. Ordinary human CLI needs no agent role: without
+/// `PHASEGENT_ROLE` and without `PHASEGENT_SESSION_ID` the invocation is
+/// the unmanaged Operator, so the common invocation shape never carries a
+/// role flag. `--provider` is resolved from configuration and named only in
+/// the options list, so the common invocation shape never tags it on either.
 const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]";
-const ROOT_USAGE_ROLE: &str =
-    "\n\nRole resolution:\n  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.";
+const ROOT_USAGE_ROLE: &str = "\n\nCaller context:\n  No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); explicit PHASEGENT_ROLE selects agent-filtered help and scoped config; managed sessions without a role fail closed. PHASEGENT_ROLE/PHASEGENT_SESSION_ID are routing, not authentication. See 'phasegent --help admin' and docs/cli-caller-context.md.";
 
 /// The root usage block for this build.
 fn root_usage() -> String {
@@ -79,8 +79,14 @@ mod tests {
     fn root_usage_names_the_role_source() {
         let usage = root_usage();
         assert!(
-            usage.contains("Managed sessions supply the role") && usage.contains("PHASEGENT_ROLE"),
-            "root usage must state that managed sessions supply the role and other hosts set PHASEGENT_ROLE: {usage}"
+            usage.contains("runs as Operator")
+                && usage.contains("PHASEGENT_ROLE")
+                && usage.contains("fail closed"),
+            "root usage must state Operator default, explicit PHASEGENT_ROLE, and managed fail-closed: {usage}"
+        );
+        assert!(
+            usage.contains("routing, not authentication"),
+            "root usage must state role env is routing, not authentication: {usage}"
         );
         assert!(
             !usage.contains("--role"),

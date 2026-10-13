@@ -275,5 +275,90 @@ fn unknown_registry_paths_stay_denied_without_a_reason() {
     );
 }
 
+/// Operator authorizes every registered path except the agent-authored
+/// `record create`; an Agent delegates to its role; a managed session
+/// without a role authorizes nothing. The full authority is not
+/// implemented by widening `Role::Admin::allows`.
+#[test]
+fn caller_context_gates_operator_agent_and_managed_paths() {
+    use crate::policy::CallerContext;
+
+    // Operator reaches ordinary/admin surfaces but never forges records.
+    for path in [
+        &["issue", "create"][..],
+        &["comment", "create"][..],
+        &["status", "set"][..],
+        &["timer", "start"][..],
+        &["worktree", "acquire"][..],
+        &["admin", "workflow", "bootstrap"][..],
+        &["project", "list"][..],
+    ] {
+        assert!(
+            super::allows_caller(CallerContext::Operator, path),
+            "operator must allow {path:?}"
+        );
+        assert_eq!(
+            super::denied_operation_for_caller(CallerContext::Operator, path),
+            None,
+            "operator {path:?} must have no denial"
+        );
+    }
+    assert!(!super::allows_caller(
+        CallerContext::Operator,
+        &["record", "create"]
+    ));
+    assert_eq!(
+        super::denied_operation_for_caller(CallerContext::Operator, &["record", "create"]),
+        Some("record create")
+    );
+    // Operator reads stay available.
+    assert!(super::allows_caller(
+        CallerContext::Operator,
+        &["record", "list"]
+    ));
+
+    // Explicit Agent delegates exactly to its role.
+    for role in [
+        Role::Orchestrator,
+        Role::Executor,
+        Role::Reviewer,
+        Role::Admin,
+    ] {
+        let caller = CallerContext::Agent(role);
+        for (path, _spec) in collect_paths() {
+            let path_ref: Vec<&str> = path.iter().map(String::as_str).collect();
+            assert_eq!(
+                super::allows_caller(caller, &path_ref),
+                super::allows_role(role, &path_ref),
+                "agent {role} {path_ref:?} must delegate to role"
+            );
+        }
+    }
+
+    // Managed without a role authorizes nothing at the registry layer;
+    // the argv utility allowlist is the only passthrough.
+    for path in [&["issue", "get"][..], &["record", "list"][..]] {
+        assert!(!super::allows_caller(
+            CallerContext::ManagedWithoutRole,
+            path
+        ));
+        assert!(
+            super::denied_operation_for_caller(CallerContext::ManagedWithoutRole, path).is_some(),
+            "managed {path:?} must carry a denial operation"
+        );
+    }
+
+    // Full Operator authority is not a widened admin matrix.
+    assert!(!Role::Admin.allows(Capability::IssueCreate));
+    assert!(!Role::Admin.allows(Capability::Notify));
+    assert!(CallerContext::Operator.allows(Capability::IssueCreate));
+    assert!(CallerContext::Operator.allows(Capability::Notify));
+    assert_eq!(
+        CallerContext::Operator.credential_role(),
+        Some(Role::Admin),
+        "operator resolves centrally to the existing admin credential"
+    );
+}
+
 #[path = "registry_gate_tests.rs"]
 mod gate;

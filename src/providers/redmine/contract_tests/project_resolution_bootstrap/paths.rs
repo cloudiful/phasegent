@@ -6,8 +6,8 @@ use crate::infra::storage::Storage;
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::policy::Role;
 use crate::providers::redmine::contract_tests::support::{
-    MockResponse, git_mirror_response, issue_response, project_collection, project_response,
-    sequence, strings,
+    MockResponse, assert_request_with_key, git_mirror_response, issue_response, project_collection,
+    project_response, sequence, strings,
 };
 use std::fs;
 
@@ -218,4 +218,127 @@ fn explicit_repository_mismatch_does_not_use_wrong_origin() {
     assert!(!reqs.iter().any(|r| r.contains("/projects.json?limit=100")));
     server.join().unwrap();
     let _ = fs::remove_dir_all(dir);
+}
+
+/// P1 Operator: roleless unmanaged Operator executes the authorized
+/// create/auto-bootstrap with the existing admin credential as system
+/// preparation (no caller role mutation, no fallback), while restricted
+/// agents fail before discovery with no network access.
+#[test]
+fn operator_auto_bootstrap_uses_admin_credential_and_restricted_agents_fail_before_discovery() {
+    let _lock = lock_workflow_tests();
+    crate::workflow::clear_completed_bootstraps_for_tests();
+    let origin = real_origin();
+    let bootstrap_id = crate::remote::redmine_identifier(&origin.repository).unwrap();
+
+    let (storage, _guard, dir) = temp_storage();
+    seed_every_role(&storage);
+    let _mirror = EnvGuard::set("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY", "mirror-bearer-key");
+    let repo_url = format!("https://git.example.com/{}.git", origin.repository);
+    let _mirror_url = EnvGuard::set("PHASEGENT_REDMINE_REPOSITORY_URL", &repo_url);
+    let (owner, repo) = origin.repository.split_once('/').unwrap();
+    let mir_id = format!(
+        "mirror_{}_{}_{}",
+        44,
+        owner.to_ascii_lowercase(),
+        repo.to_ascii_lowercase()
+    );
+    let mut responses = vec![
+        MockResponse::ok(project_collection(0, 100, &[])),
+        MockResponse::error(404, r#"{"errors":["not found"]}"#),
+        MockResponse::ok(closed_status()),
+        MockResponse::ok(project_response(
+            44,
+            &origin.repository,
+            &bootstrap_id,
+            "Workflow",
+        )),
+    ];
+    for (id, login) in SERVICE_ROLES {
+        responses.extend(create_role(id, login, &format!("{login}-key")));
+    }
+    for _ in 0..4 {
+        responses.extend(membership_added());
+    }
+    responses.extend([
+        MockResponse::error(404, r#"{"errors":["mirror not found"]}"#),
+        MockResponse::status(
+            202,
+            git_mirror_response(
+                901,
+                44,
+                &mir_id,
+                "pending",
+                Some(&repo_url),
+                Some("/path"),
+                None,
+            ),
+        ),
+        MockResponse::ok(issue_response(92, "Bootstrapped", "Body", false, &[])),
+    ]);
+    let (base, requests, server) = sequence(responses);
+    // `None` models unmanaged Operator: no role, no managed session marker.
+    let code = crate::cli::run_with_role(
+        strings([
+            "--provider",
+            "redmine",
+            "--api-base",
+            &base,
+            "issue",
+            "create",
+            "--title",
+            "Bootstrapped",
+            "--body",
+            "Body",
+        ]),
+        None,
+    );
+    assert_eq!(code, 0, "operator create/auto-bootstrap must succeed");
+    let reqs = requests.recv().unwrap();
+    assert_eq!(reqs.len(), 31, "operator bootstrap run: {reqs:?}");
+    assert!(reqs[0].starts_with("GET /projects.json?"));
+    // Discovery runs with the central admin credential, never a borrowed
+    // agent key and never a fallback across keys.
+    assert_request_with_key(
+        &reqs[0],
+        "GET",
+        "/projects.json?",
+        None,
+        "admin-redmine-key",
+    );
+    assert!(
+        !reqs[0]
+            .to_ascii_lowercase()
+            .contains("orchestrator-test-key")
+            && !reqs[0].to_ascii_lowercase().contains("test-redmine-key"),
+        "operator discovery must use the admin credential only: {}",
+        reqs[0]
+    );
+    server.join().unwrap();
+    let _ = fs::remove_dir_all(dir);
+
+    // Restricted agents fail before discovery: permission denial (exit 3)
+    // against an unreachable base proves no network or side effect ran.
+    crate::workflow::clear_completed_bootstraps_for_tests();
+    let (storage2, _guard2, dir2) = temp_storage();
+    seed_every_role(&storage2);
+    for role in ["executor", "reviewer", "explore"] {
+        let code = crate::cli::run_with_role(
+            strings([
+                "--provider",
+                "redmine",
+                "--api-base",
+                "http://127.0.0.1:1",
+                "issue",
+                "create",
+                "--title",
+                "T",
+                "--body",
+                "B",
+            ]),
+            Some(role),
+        );
+        assert_eq!(code, 3, "restricted {role} must fail before discovery");
+    }
+    let _ = fs::remove_dir_all(dir2);
 }

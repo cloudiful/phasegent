@@ -238,6 +238,12 @@ shared skill.
 
 ## Human-only surfaces
 
-The `admin` group is human-operator only, you included: never invoke it and
+The explicit `admin` group is human-operator only, you included: never invoke it and
 never delegate it. Provisioning or credential gaps go back to the operator as a
 question, and the shared skill owns the read-only self-check paths.
+
+Authorized `issue create` may trigger internal auto-bootstrap as system
+preparation (zero discovery matches, admin credential, no fallback); this is not
+an admin invocation by you or the child, grants no admin authority, and needs no
+role switch or credential handling. One match or explicit `--project-id` skips it;
+multiple matches fail before writes.

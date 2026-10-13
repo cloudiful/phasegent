@@ -2645,6 +2645,32 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     );
   });
 
+  test("the embedded prompts carry the Operator/Agent separation and internal bootstrap (issue 837 P2)", () => {
+    // Ordinary CLI needs no agent role; managed sessions fail closed; internal
+    // auto-bootstrap is system preparation distinct from explicit admin.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("separate invocation context, not a sixth role");
+    expect(shared).toContain("fails closed before any");
+    expect(shared).toContain("not authentication");
+    expect(shared).toContain("distinct from internal auto-bootstrap");
+    expect(shared).toContain("ensure_issue_workflow");
+    expect(shared).toContain("as system preparation");
+    expect(shared).toContain("no fallback");
+    expect(shared).toContain("Operator `record create` stays denied");
+    expect(shared).toContain("docs/cli-caller-context.md");
+    const orchestrator = flat(contentFor("phasegent-orchestrator"));
+    expect(orchestrator).toContain(
+      "this is not an admin invocation by you or the child",
+    );
+    expect(orchestrator).toContain(
+      "needs no role switch or credential handling",
+    );
+    expect(orchestrator).toContain("multiple matches fail before writes");
+  });
+
   test("registerSkill adds the info through the runtime draft", async () => {
     const skills = new Map();
     const context = {

@@ -1,23 +1,38 @@
 use crate::command::NotifyCommand;
-use crate::policy::{Capability, Role};
+use crate::policy::{CallerContext, Capability, Role};
 
+#[allow(dead_code)]
 pub(crate) fn execute_notify(role_value: Option<Role>, command: NotifyCommand) -> i32 {
-    let role = super::required_role(role_value);
-    // Notify send is available to the workflow roles that produce progress;
-    // admin stays out because it only bootstraps. The gate is the shared
-    // `Capability::Notify` row the registry parser also resolves, so no
-    // command path carries its own role list.
-    if !role.allows(Capability::Notify) {
+    let caller = CallerContext::from_role(role_value);
+    execute_notify_with_caller(caller, command)
+}
+
+pub(crate) fn execute_notify_with_caller(caller: CallerContext, command: NotifyCommand) -> i32 {
+    // Managed sessions without a role fail closed before any storage access.
+    if caller.is_managed_without_role() {
+        return super::managed_denial("notify send");
+    }
+    // Operator and Agents authorize through the shared capability row;
+    // Operator allows every capability, Agents delegate to Role::allows.
+    // The credential role is only needed for the notification metadata.
+    let credential = match caller.credential_role() {
+        Some(role) => role,
+        None => return super::managed_denial("notify send"),
+    };
+    if !caller.allows(Capability::Notify) {
+        // Explicit Agent denial keeps the exact legacy shape (admin stays
+        // out because it only bootstraps).
         return super::structured_error(
             serde_json::json!({
                 "kind": "permission",
-                "role": role.as_str(),
+                "role": credential.as_str(),
                 "operation": "notify send",
                 "message": "notify send requires orchestrator, executor, or reviewer"
             }),
             3,
         );
     }
+    let role = credential;
     let NotifyCommand::Send {
         event,
         title,

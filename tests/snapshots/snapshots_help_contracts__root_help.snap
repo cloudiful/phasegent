@@ -9,8 +9,8 @@ Provider-backed workflow CLI (all roles).
 Usage:
   phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]
 
-Role resolution:
-  Managed sessions supply the role; other hosts set PHASEGENT_ROLE.
+Caller context:
+  No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); explicit PHASEGENT_ROLE selects agent-filtered help and scoped config; managed sessions without a role fail closed. PHASEGENT_ROLE/PHASEGENT_SESSION_ID are routing, not authentication. See 'phasegent --help admin' and docs/cli-caller-context.md.
 
 Options:
   --provider <NAME>      redmine or local (default: redmine)

@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 use crate::command::WorktreeCommand;
 use crate::infra::storage::Storage;
-use crate::policy::Role;
+use crate::policy::{CallerContext, Role};
 use crate::worktree::ProcessWorktreeRunner;
 use crate::worktree::WorktreeError;
 use crate::worktree::leases::ensure_schema;
@@ -48,20 +48,42 @@ pub(crate) use prune::{
     ReleaseStaleAction, ReleaseStaleSummary, prune_pass, scan_worktree_candidates,
 };
 
+#[allow(dead_code)]
 pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeCommand) -> i32 {
-    let role = super::required_role(role_value);
+    let caller = CallerContext::from_role(role_value);
+    execute_worktree_with_caller(caller, command)
+}
+
+pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: WorktreeCommand) -> i32 {
+    // Managed sessions without a role fail closed before any storage or
+    // reconciliation access.
+    if caller.is_managed_without_role() {
+        let operation = match &command {
+            WorktreeCommand::Acquire { .. } => "worktree acquire",
+            WorktreeCommand::Release { .. } => "worktree release",
+            WorktreeCommand::Status { .. } => "worktree status",
+            WorktreeCommand::List { .. } => "worktree list",
+            WorktreeCommand::Probe { .. } => "worktree probe",
+            WorktreeCommand::Prune { .. } => "worktree prune",
+            WorktreeCommand::Heartbeat { .. } => "worktree heartbeat",
+        };
+        return super::managed_denial(operation);
+    }
     // Issue 552 Phase 2: `acquire` / `list` / `prune` run one
     // reconciliation pass for the repository they operate on (`--repo`
     // when supplied, otherwise the current directory) first. The pass
     // never writes stdout and never blocks: a failure is a bounded stderr
-    // warning, and `--no-sync` skips it. The pass is orchestrator-only
-    // (like `issue sync` and the mutating worktree subcommands), so a
-    // read-only role can never trigger a lease flip or a removal by
-    // inspecting leases.
-    if role == Role::Orchestrator
+    // warning, and `--no-sync` skips it. The pass is orchestrator-authorized
+    // (Operator shares it; like `issue sync` and the mutating worktree
+    // subcommands), so a read-only role can never trigger a lease flip or
+    // a removal by inspecting leases.
+    let credential = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
+    if caller.is_orchestrator_authorized()
         && let Some((operation, repo)) = command.sync_taxi()
     {
-        for warning in crate::cli::issue::sync::taxi_sync(role, repo) {
+        for warning in crate::cli::issue::sync::taxi_sync(credential, repo) {
             super::report_local_warnings(operation, Some(warning));
         }
     }
@@ -74,8 +96,8 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             isolate,
             no_sync: _,
         } => {
-            if role != Role::Orchestrator {
-                return permission_error(role, "worktree acquire");
+            if !caller.is_orchestrator_authorized() {
+                return permission_error(credential, "worktree acquire");
             }
             acquire::execute_acquire(issue, session.as_deref(), &format, isolate, base.as_deref())
         }
@@ -85,20 +107,20 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             force,
             reason,
         } => {
-            if role != Role::Orchestrator {
-                return permission_error(role, "worktree release");
+            if !caller.is_orchestrator_authorized() {
+                return permission_error(credential, "worktree release");
             }
             acquire::execute_release(&lease, retain, force, reason)
         }
         WorktreeCommand::Status { issue } => {
-            if !is_read_role(role) {
-                return permission_error(role, "worktree status");
+            if !caller.is_worktree_read_authorized() {
+                return permission_error(credential, "worktree status");
             }
             query::execute_status(issue)
         }
         WorktreeCommand::List { repo, no_sync: _ } => {
-            if !is_read_role(role) {
-                return permission_error(role, "worktree list");
+            if !caller.is_worktree_read_authorized() {
+                return permission_error(credential, "worktree list");
             }
             query::execute_list(repo.as_deref())
         }
@@ -107,8 +129,8 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             issue,
             session,
         } => {
-            if !is_read_role(role) {
-                return permission_error(role, "worktree probe");
+            if !caller.is_worktree_read_authorized() {
+                return permission_error(credential, "worktree probe");
             }
             probe::execute_probe(path.as_deref(), issue, session.as_deref())
         }
@@ -120,20 +142,21 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
             reason,
             no_sync: _,
         } => {
-            if role != Role::Orchestrator {
-                return permission_error(role, "worktree prune");
+            if !caller.is_orchestrator_authorized() {
+                return permission_error(credential, "worktree prune");
             }
             prune::execute_prune(repo.as_deref(), stale_days, release_stale, remove, reason)
         }
         WorktreeCommand::Heartbeat { lease, session } => {
-            if role != Role::Orchestrator {
-                return permission_error(role, "worktree heartbeat");
+            if !caller.is_orchestrator_authorized() {
+                return permission_error(credential, "worktree heartbeat");
             }
             acquire::execute_heartbeat(&lease, session.as_deref())
         }
     }
 }
 
+#[allow(dead_code)]
 fn is_read_role(role: Role) -> bool {
     matches!(role, Role::Orchestrator | Role::Executor | Role::Reviewer)
 }

@@ -130,9 +130,11 @@ fn config_clear_global_without_role_and_role_scoped() {
                 .contains("\"cleared\":false")
         );
 
-        let err = config_write::clear_setting(None, "PHASEGENT_REDMINE_CLOSE_STATUS_ID", storage)
-            .unwrap_err();
-        assert!(err.contains("a role is required"), "got: {err}");
+        // Unmanaged Operator clears through the admin scope (no fallback).
+        let outcome =
+            config_write::clear_setting(None, "PHASEGENT_REDMINE_CLOSE_STATUS_ID", storage)
+                .expect("operator clear must use admin scope");
+        assert_eq!(outcome["role"], serde_json::Value::from("admin"));
 
         config_write::set_setting_value(
             Some(Role::Executor),
@@ -180,9 +182,20 @@ fn config_clear_command_parsing() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let err = command::parse_with_role_env(&args, None)
-        .expect_err("clear role-scoped without role must error");
-    assert!(err.contains("a role is required"), "got: {err}");
+    let inv =
+        command::parse_with_role_env(&args, None).expect("operator role-scoped clear must parse");
+    match inv.command {
+        Command::ConfigClear { setting } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_CLOSE_STATUS_ID")
+        }
+        other => panic!("got {other:?}"),
+    }
+    let err = command::parse_with_caller_env(&args, None, true)
+        .expect_err("managed role-scoped clear without role must error");
+    assert!(
+        err.contains("managed session requires a role"),
+        "got: {err}"
+    );
 
     let args = ["admin", "config", "clear", "redmine-close-status-id"]
         .into_iter()

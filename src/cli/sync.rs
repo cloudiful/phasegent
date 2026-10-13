@@ -171,6 +171,7 @@ pub(crate) struct SyncRequest<'a> {
     pub cwd: &'a Path,
 }
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_sync(
     role: Role,
@@ -182,7 +183,33 @@ pub(crate) fn execute_sync(
     all: bool,
     no_clean: bool,
 ) -> i32 {
-    if role != Role::Orchestrator {
+    let caller = crate::policy::CallerContext::Agent(role);
+    execute_sync_with_caller(
+        caller,
+        role,
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+        all,
+        no_clean,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_sync_with_caller(
+    caller: crate::policy::CallerContext,
+    role: Role,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    all: bool,
+    no_clean: bool,
+) -> i32 {
+    if !caller.is_orchestrator_authorized() {
         return crate::cli::worktree::permission_error(role, "issue sync");
     }
     let provider =
