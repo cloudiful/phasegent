@@ -144,17 +144,25 @@ Source of truth: `src/policy.rs` (`Role::allows` for agents, `CallerContext`
 for invocation routing); command-level gates keyed to
 a role rather than a capability live in *Command contract*. The capability matrix
 below applies to explicit agent roles only (`admin`, `orchestrator`, `executor`,
-`reviewer`, `explore`). The unmanaged human Operator (no `PHASEGENT_ROLE`, no
-`PHASEGENT_SESSION_ID`) is separate invocation context, not a sixth role: it may
+`reviewer`, `explore`). The unmanaged human Operator (no `PHASEGENT_ROLE` and
+neither managed marker) is separate invocation context, not a sixth role: it may
 run all ordinary business and administrative commands with the existing admin
 credential resolved centrally, except agent-authored `record create` (denied with
-a `comment create` hint). A managed session without a role fails closed before any
+a `comment create` hint). A managed session without a role — either
+`PHASEGENT_SESSION_ID` or the host-driven `OPENCODE_SESSION_ID` present
+without a role — fails closed before any
 credential, provider, or side effect; the roleless utility allowlist stays
 available. The session role is
 a capability/routing policy, not identity isolation and not authentication: each role's credential
 stays least-privilege and never crosses roles (no fallback), and status follows the tools
 automatically. `explore` is the least-privilege recon role and holds no
-credential borrowed from another role. See `docs/cli-caller-context.md`.
+credential borrowed from another role. Canonical agent ids are exact after
+lowercasing (`orchestrator`, `executor`, `reviewer`, `explore` only);
+compound or substring lookalikes are unknown and fail closed. Each supported
+managed shell carries its own independent per-shell env through the
+per-plugin-instance nonce bridge; the host marker is classification-only and
+never binds a worktree identity. Without a shell hook the bridge stays
+disabled with a warning and only the rewrite path applies. See `docs/cli-caller-context.md`.
 
 Legend: `✓` allowed, `—` denied.
 

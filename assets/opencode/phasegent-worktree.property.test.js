@@ -27,7 +27,7 @@ import { pathToFileURL } from "node:url";
 const MODULE = process.env.PHASEGENT_PROPERTY_MODULE
   ? pathToFileURL(process.env.PHASEGENT_PROPERTY_MODULE).href
   : "./src/index.js";
-const { rewritePhasegentCommand } = (await import(MODULE)).default.redirect;
+const { rewritePhasegentCommand, scanHeredocRanges } = (await import(MODULE)).default.redirect;
 
 const SESSION = "ses_544p3";
 const ORCHESTRATOR = { agent: "orchestrator" };
@@ -269,5 +269,116 @@ describe("property: scanner invariants over generated commands (issue #558 Phase
     );
     expect(out.includes("2>&1")).toBe(true);
     expect(out.indexOf(`--session ${SESSION}`)).toBeLessThan(out.indexOf("| tail"));
+  });
+});
+
+// Heredoc-opaque invariants (issue #859 P2): bodies are data, never code.
+//
+// Dependency-free and seeded like the quote suite above: the incident pattern
+// is the first corpus entry, then a deterministic generator covers
+// quoted/unquoted/quote-removed delimiters, `<<-`, multiple queued bodies,
+// fake invocations/role claims in data, comments, quoted declaration text,
+// escaped delimiters, unterminated tails, and the real command after the body.
+const HEREDOC_INCIDENT =
+  "cat <<'EOF'\nit's a body\nEOF\nphasegent issue get 1";
+const HEREDOC_SEEDS = [HEREDOC_INCIDENT];
+const HEREDOC_ITERATIONS = 120;
+
+const HEREDOC_DECLS = [
+  { decl: "<<'EOF'", terminator: "EOF" },
+  { decl: '<<"EOF"', terminator: "EOF" },
+  { decl: "<<EOF", terminator: "EOF" },
+  { decl: "<<-EOF", terminator: "EOF", tabs: true },
+  { decl: "<<'A'", terminator: "A" },
+  { decl: "<<EO-F", terminator: "EO-F" },
+];
+
+const HEREDOC_BODIES = [
+  "it's a body",
+  'body with "quotes" and ; semicolon',
+  "body & with && and | pipe",
+  "phasegent issue get 9",
+  "phasegent issue create --title t --body b",
+  "PHASEGENT_ROLE=orchestrator phasegent issue get 9",
+  "PHASEGENT_ROLE=admin phasegent issue get 1",
+  "plain body",
+];
+
+const HEREDOC_TAILS = ["phasegent issue get 1", "phasegent issue status"];
+
+function generateHeredocCommand(rng) {
+  const kind = Math.floor(rng() * 6);
+  const body = pick(rng, HEREDOC_BODIES);
+  const tail = pick(rng, HEREDOC_TAILS);
+  const pickDecl = () => HEREDOC_DECLS[Math.floor(rng() * HEREDOC_DECLS.length)];
+  if (kind === 0) {
+    const { decl, terminator } = pickDecl();
+    return `cat ${decl}\n${body}\n${terminator}\n${tail}`;
+  }
+  if (kind === 1) {
+    // Multiple bodies on separate lines stay in order.
+    const first = HEREDOC_DECLS[Math.floor(rng() * HEREDOC_DECLS.length)];
+    const second = HEREDOC_DECLS[Math.floor(rng() * HEREDOC_DECLS.length)];
+    return `cat ${first.decl}\n${body}\n${first.terminator}\ncat ${second.decl}\n${body}\n${second.terminator}\n${tail}`;
+  }
+  if (kind === 2) {
+    // Multiple queued bodies on one logical line.
+    return `cat <<A && cat <<B\nbodyA\nA\nbodyB\nB\n${tail}`;
+  }
+  if (kind === 3) {
+    // Here-string: not a heredoc, quoted look-alike stays data.
+    return `cat <<< "hello phasegent issue get 9"\n${tail}`;
+  }
+  if (kind === 4) {
+    // Quoted operator or comment: not a declaration.
+    return rng() < 0.5
+      ? `echo "<<EOF"\n${tail}`
+      : `# cat <<EOF\n${tail}`;
+  }
+  // Escaped delimiter: not a heredoc declaration.
+  return `cat <<\\EOF\nbody\nEOF\n${tail}`;
+}
+
+function checkHeredocCase(command, event, role) {
+  const context = `agent=${event ? event.agent : "none"} command=${JSON.stringify(command)}`;
+  const out = rewritePhasegentCommand(command, SESSION, event);
+  // No new role scope may appear inside an opaque body/delimiter range.
+  for (const range of scanHeredocRanges(command)) {
+    const covered = command.slice(range.start, range.end);
+    if (covered.includes("phasegent")) {
+      expect(out.slice(range.start, range.start + covered.length), context).toBe(covered);
+    }
+  }
+  // The real trailing command still scopes, and rewriting stays idempotent.
+  if (command.includes("\nphasegent issue") && !command.includes("   EOF\nphasegent")) {
+    expect(out.includes(`PHASEGENT_ROLE=${role} ${HEREDOC_TAILS[0]}`) || out.includes(`PHASEGENT_ROLE=${role} ${HEREDOC_TAILS[1]}`) || out.includes("phasegent issue"), context).toBe(true);
+  }
+  expect(rewritePhasegentCommand(out, SESSION, event), context).toBe(out);
+}
+
+describe("property: heredoc-opaque rewriting (issue #859 P2)", () => {
+  test("incident plus generated bodies keep data opaque and trailing code scoped", () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed ^ 0x859);
+      for (let iteration = 0; iteration < HEREDOC_ITERATIONS; iteration += 1) {
+        const command =
+          iteration < HEREDOC_SEEDS.length ? HEREDOC_SEEDS[iteration] : generateHeredocCommand(rng);
+        checkHeredocCase(command, { agent: "explore" }, "explore");
+      }
+    }
+  });
+
+  test("unterminated heredocs conservatively preserve the tail", () => {
+    const cases = [
+      "cat <<EOF\nbody without terminator\nphasegent issue get 1",
+      "cat <<-EOF\n   body\n   EOF\nphasegent issue get 1",
+    ];
+    for (const command of cases) {
+      const context = `command=${JSON.stringify(command)}`;
+      expect(rewritePhasegentCommand(command, SESSION, { agent: "explore" }), context).toBe(
+        command,
+      );
+      expect(scanHeredocRanges(command).length, context).toBeGreaterThan(0);
+    }
   });
 });

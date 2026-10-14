@@ -81,6 +81,19 @@ import {
 import { rewritePhasegentCommand } from "./command.js";
 import { discoverWorktreeForSession, ensureSessionWorktree } from "./discovery.js";
 import { createPromptHook, createRedirectHook } from "./hook.js";
+import {
+  createManagedShellBridge,
+  createShellEnvHook,
+  createToolAfterHook,
+  isShellHookSupported,
+} from "./managed-env.js";
+import {
+  maskQuoted,
+  phasegentInvocation,
+  scanHeredocRanges,
+  shellSegments,
+  transformCodeOnly,
+} from "./scanner.js";
 import { isAbsolutePath, redirectPathValue, redirectPaths } from "./paths.js";
 import { agentName, agentRole, isSubagentSession } from "./roles.js";
 import { errorText, warn } from "./runtime.js";
@@ -107,6 +120,23 @@ const PhasegentWorktreePlugin = {
   id: "phasegent-worktree",
   async setup(context) {
     const registrations = [];
+    // Per-plugin-instance managed shell bridge (issue #859 P1): one Map per
+    // setup, never a global. It is only wired into the tool hook when the
+    // host exposes the shell hook; otherwise the rewrite-only path stays.
+    let shellBridge = null;
+    let shellBridgeEnabled = false;
+    try {
+      if (isShellHookSupported(context)) {
+        shellBridge = createManagedShellBridge();
+        shellBridgeEnabled = true;
+      } else {
+        warn("phasegent: host exposes no shell hook; managed shell env is disabled, command rewriting stays available");
+      }
+    } catch (error) {
+      warn(`phasegent: managed shell bridge unavailable (${errorText(error)})`);
+      shellBridge = null;
+      shellBridgeEnabled = false;
+    }
     try {
       const strategy = await registerWorktreeStrategy(context);
       if (strategy) registrations.push(strategy);
@@ -126,16 +156,55 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: session.prompt registration failed (${errorText(error)})`);
     }
     try {
-      // The tool hook only rewrites phasegent commands, so it carries no
-      // placement state and cannot raise a placement error.
+      // The tool hook rewrites phasegent commands and, when the shell bridge
+      // is enabled, decorates the rewritten command with the inert nonce
+      // header for the shell hook to consume. It carries no placement state.
       const hook = context && context.tool && context.tool.hook;
       if (typeof hook === "function") {
-        registrations.push(await hook("execute.before", createRedirectHook()));
+        registrations.push(
+          await hook(
+            "execute.before",
+            createRedirectHook(shellBridgeEnabled ? shellBridge : null),
+          ),
+        );
+        // Best-effort after-hook cleanup for cancelled/failed calls; TTL and
+        // capacity still bound the map when the host exposes no after hook.
+        if (shellBridgeEnabled && shellBridge) {
+          try {
+            registrations.push(
+              await hook("execute.after", createToolAfterHook(shellBridge)),
+            );
+          } catch (error) {
+            warn(`phasegent: tool.execute.after registration failed (${errorText(error)})`);
+          }
+        }
       } else {
         warn("phasegent: host exposes no tool hook; command rewriting is disabled");
       }
     } catch (error) {
       warn(`phasegent: tool.execute.before registration failed (${errorText(error)})`);
+    }
+    try {
+      // The shell hook consumes the nonce header once, restores the exact
+      // rewritten bytes, and sets only the fresh env properties. It never
+      // guesses an identity for forged, mismatched, expired, or replayed
+      // headers; the host native marker then fails closed.
+      if (shellBridgeEnabled && shellBridge) {
+        const shellHook = context && context.shell && context.shell.hook;
+        if (typeof shellHook === "function") {
+          try {
+            registrations.push(
+              await shellHook("create.before", createShellEnvHook(shellBridge)),
+            );
+          } catch (error) {
+            warn(`phasegent: shell.create.before registration failed (${errorText(error)})`);
+          }
+        } else {
+          warn("phasegent: shell hook unavailable; managed shell env stays disabled");
+        }
+      }
+    } catch (error) {
+      warn(`phasegent: shell hook registration failed (${errorText(error)})`);
     }
     try {
       const skill = await registerSkill(context);
@@ -171,11 +240,20 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   isSubagentSession,
   sessionPlaced,
   rewritePhasegentCommand,
+  scanHeredocRanges,
+  maskQuoted,
+  shellSegments,
+  transformCodeOnly,
+  phasegentInvocation,
   rememberWorktree,
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
   createPromptHook,
+  createManagedShellBridge,
+  createShellEnvHook,
+  createToolAfterHook,
+  isShellHookSupported,
   pickActiveWorktreePath,
   issueClosedLocally,
   discoverWorktreeForSession,

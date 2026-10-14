@@ -198,7 +198,7 @@ function pickActiveWorktreePath(leases) {
 }
 
 // assets/opencode/src/roles.js
-// Agent-role mapping for session events (issue #541).
+// Agent-role mapping for session events (issue #541; issue #859 P1 exact match).
 //
 // `event.agent` is the agent id the host reports for the current tool call, and
 // the role decides command rewriting: the per-invocation `PHASEGENT_ROLE` scope,
@@ -207,6 +207,13 @@ function pickActiveWorktreePath(leases) {
 // role (issue #754 P3): the CLI grants it issue read plus structured `record`
 // read, and an authorized recon `record create` only — never the reviewer
 // surface, and never ordinary comment/status/admin/lease writes.
+//
+// Canonical IDs are exact after lowercasing: orchestrator, executor, reviewer,
+// explore only (issue #859 P1). Compound or substring lookalikes
+// (`task-executor`, `my-orchestrator`, `reviewer-2`) are unknown and get no
+// role, so an unknown custom agent never elevates to a privileged role. An
+// unknown agent still receives the managed session marker through the shell
+// bridge and fails closed as managed-without-role instead of Operator.
 
 const AGENT_ROLE_HINTS = [
   ["orchestrator", "orchestrator"],
@@ -219,7 +226,7 @@ function agentRole(event) {
   const agent = event && typeof event.agent === "string" ? event.agent.toLowerCase() : "";
   if (!agent) return null;
   for (const [hint, role] of AGENT_ROLE_HINTS) {
-    if (agent.includes(hint)) return role;
+    if (agent === hint) return role;
   }
   return null;
 }
@@ -235,11 +242,20 @@ function agentName(event) {
 }
 
 // assets/opencode/src/scanner.js
-// Quote-aware shell scanning (issue #541 P1).
+// Quote-aware shell scanning (issue #541 P1; heredoc-opaque issue #859 P2).
 //
 // Inside `'…'` or `"…"` a separator is data, not syntax, and outside single
 // quotes a backslash escapes the next character. An unterminated quote owns
 // the rest of the text.
+//
+// Heredoc bodies (`<<` / `<<-` with quoted, unquoted, or quote-removed
+// delimiters, multiple queued bodies in order) are opaque data: body bytes
+// (apostrophes, quotes, semicolons, `phasegent` look-alikes, role claims)
+// never pollute quote state, never split segments, and never rewrite.
+// Here-strings (`<<<`) are not heredocs. Operators inside quoted strings or
+// `#` comments are not declarations. Unterminated heredocs and ambiguous
+// quote shapes conservatively preserve the affected text and rely on the
+// execution-layer role/marker instead of inventing shell semantics.
 
 function skipQuoted(text, start) {
   const quote = text[start];
@@ -256,14 +272,301 @@ function skipQuoted(text, start) {
   return -1;
 }
 
+function isCommentStart(text, index) {
+  if (text[index] !== "#") return false;
+  if (index === 0) return true;
+  const prev = text[index - 1];
+  return (
+    prev === " " ||
+    prev === "\t" ||
+    prev === "\n" ||
+    prev === ";" ||
+    prev === "&" ||
+    prev === "|" ||
+    prev === "("
+  );
+}
+
+function isHeredocWordTerminator(char) {
+  return (
+    char === undefined ||
+    char === " " ||
+    char === "\t" ||
+    char === "\n" ||
+    char === ";" ||
+    char === "&" ||
+    char === "|" ||
+    char === "(" ||
+    char === ")" ||
+    char === "<" ||
+    char === ">" ||
+    char === "#"
+  );
+}
+
+// Scan one delimiter word starting at `pos` (after `<<[-]` plus blanks).
+// Returns `{ value, end }` where `value` is the quote-removed delimiter for
+// terminator comparison and `end` is the index after the word in original
+// bytes, or null when there is no usable delimiter (unsupported shape).
+function parseHeredocDelimiter(text, pos) {
+  const n = text.length;
+  if (pos >= n || isHeredocWordTerminator(text[pos])) return null;
+  let value = "";
+  let index = pos;
+  while (index < n && !isHeredocWordTerminator(text[index])) {
+    const char = text[index];
+    if (char === "'") {
+      const close = text.indexOf("'", index + 1);
+      // Unterminated quote inside the delimiter: ambiguous, not a heredoc.
+      // Also reject a closing quote that runs past the word (newline).
+      if (close < 0) return null;
+      const newlineBeforeClose = text.indexOf("\n", index + 1);
+      if (newlineBeforeClose >= 0 && newlineBeforeClose < close) return null;
+      value += text.slice(index + 1, close);
+      index = close + 1;
+      continue;
+    }
+    if (char === '"') {
+      let cursor = index + 1;
+      let inner = "";
+      let closed = false;
+      while (cursor < n) {
+        const innerChar = text[cursor];
+        if (innerChar === "\\" && cursor + 1 < n && text[cursor + 1] !== "\n") {
+          inner += text[cursor + 1];
+          cursor += 2;
+          continue;
+        }
+        if (innerChar === '"') {
+          closed = true;
+          cursor += 1;
+          break;
+        }
+        if (innerChar === "\n") break;
+        inner += innerChar;
+        cursor += 1;
+      }
+      if (!closed) return null;
+      value += inner;
+      index = cursor;
+      continue;
+    }
+    if (char === "\\") {
+      if (index + 1 >= n || text[index + 1] === "\n") return null;
+      value += text[index + 1];
+      index += 2;
+      continue;
+    }
+    value += char;
+    index += 1;
+  }
+  if (value.length === 0) return null;
+  return { value, end: index };
+}
+
+function terminatorLineMatches(text, lineStart, lineEnd, delimiter, stripTabs) {
+  // Strip a trailing `\r` for `CRLF` scripts without changing byte offsets:
+  // matching uses content without `\r`, ranges still cover it.
+  let contentEnd = lineEnd;
+  if (contentEnd > lineStart && text[contentEnd - 1] === "\r") contentEnd -= 1;
+  let pos = lineStart;
+  if (stripTabs) {
+    while (pos < contentEnd && text[pos] === "\t") pos += 1;
+  } else if (pos < contentEnd && (text[pos] === " " || text[pos] === "\t")) {
+    return false;
+  }
+  if (pos + delimiter.length !== contentEnd) return false;
+  return text.slice(pos, pos + delimiter.length) === delimiter;
+}
+
+// Shared lexical scan: opaque heredoc ranges (delimiter words plus bodies
+// with terminator lines, excluding the final newline so the terminator
+// newline still separates commands). Sorted, non-overlapping. Empty when
+// there is no `<<` heredoc declaration in code.
+function scanHeredocRanges(text) {
+  const ranges = [];
+  const n = text.length;
+  if (!text.includes("<<")) return ranges;
+  let index = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  // Declarations collected on the current logical line (before its newline).
+  let pending = [];
+  // Delimiter word ranges for the current line (pushed immediately so quote
+  // removal literals in data stay untouched by later transforms).
+  const pushRange = (start, end) => {
+    if (end > start) ranges.push({ start, end });
+  };
+
+  const consumePendingBodies = (newlineIndex) => {
+    // Called on an unescaped, unquoted newline with pending declarations.
+    // The declaration newline itself is heredoc syntax (not a separator), so
+    // the first body range includes it; intermediate terminator newlines are
+    // included to keep queued bodies contiguous, while the final terminator
+    // newline stays outside so it still separates the following command.
+    let bodyPos = newlineIndex;
+    for (let declIndex = 0; declIndex < pending.length; declIndex += 1) {
+      const decl = pending[declIndex];
+      const isLast = declIndex === pending.length - 1;
+      const bodyStart = bodyPos;
+      const searchFrom = declIndex === 0 ? newlineIndex + 1 : bodyPos;
+      let lineStart = searchFrom;
+      let found = false;
+      while (lineStart <= n) {
+        if (lineStart >= n) {
+          // Unterminated: rest is opaque body, no terminator.
+          pushRange(bodyStart, n);
+          bodyPos = n;
+          found = false;
+          break;
+        }
+        const newlineAt = text.indexOf("\n", lineStart);
+        const lineEnd = newlineAt < 0 ? n : newlineAt;
+        if (terminatorLineMatches(text, lineStart, lineEnd, decl.delimiter, decl.stripTabs)) {
+          if (isLast) {
+            pushRange(bodyStart, lineEnd);
+            bodyPos = newlineAt < 0 ? n : newlineAt + 1;
+          } else {
+            pushRange(bodyStart, newlineAt < 0 ? n : newlineAt + 1);
+            bodyPos = newlineAt < 0 ? n : newlineAt + 1;
+          }
+          found = true;
+          break;
+        }
+        lineStart = newlineAt < 0 ? n : newlineAt + 1;
+      }
+      if (!found && bodyPos >= n) {
+        // Unterminated rest already pushed; remaining queued bodies share it.
+        break;
+      }
+    }
+    pending = [];
+    return bodyPos;
+  };
+
+  while (index < n) {
+    const char = text[index];
+    if (inComment) {
+      if (char === "\n") {
+        inComment = false;
+        // A comment newline ends the line: bodies follow if declarations
+        // preceded the comment on the same line (e.g. `cat <<EOF # comment`).
+        if (pending.length > 0 && !inSingle && !inDouble) {
+          const next = consumePendingBodies(index);
+          // Skip the opaque bodies (and terminators) without re-scanning
+          // their quotes, separators, or fake declarations.
+          index = next;
+          continue;
+        }
+      }
+      index += 1;
+      continue;
+    }
+    if (inSingle) {
+      if (char === "'") inSingle = false;
+      index += 1;
+      continue;
+    }
+    if (inDouble) {
+      if (char === "\\" && index + 1 < n) {
+        index += 2;
+        continue;
+      }
+      if (char === '"') inDouble = false;
+      index += 1;
+      continue;
+    }
+    // In code.
+    if (char === "\\" && index + 1 < n) {
+      // Escaped char (including an escaped newline line-continuation):
+      // never an operator, quote, or line end.
+      index += 2;
+      continue;
+    }
+    if (char === "'") {
+      inSingle = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      inDouble = true;
+      index += 1;
+      continue;
+    }
+    if (char === "#" && isCommentStart(text, index)) {
+      inComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "<" && text[index + 1] === "<") {
+      if (text[index + 2] === "<") {
+        // Here-string `<<<`: not a heredoc, skip the operator.
+        index += 3;
+        continue;
+      }
+      let cursor = index + 2;
+      let stripTabs = false;
+      if (text[cursor] === "-") {
+        stripTabs = true;
+        cursor += 1;
+      }
+      let blank = cursor;
+      while (blank < n && (text[blank] === " " || text[blank] === "\t")) blank += 1;
+      const parsed = parseHeredocDelimiter(text, blank);
+      if (!parsed) {
+        // Unsupported shape (`<<` with no word, empty removal, or
+        // unterminated quote in the word): not a heredoc, keep bytes.
+        index += 2 + (stripTabs ? 1 : 0);
+        continue;
+      }
+      // Valid declaration on this line: queue its body, mark its word opaque.
+      pending.push({ delimiter: parsed.value, stripTabs });
+      pushRange(blank, parsed.end);
+      index = parsed.end;
+      continue;
+    }
+    if (char === "\n") {
+      if (pending.length > 0) {
+        const next = consumePendingBodies(index);
+        index = next;
+        continue;
+      }
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  return ranges;
+}
+
 // Replace every quoted run (and escaped character) with spaces of the same
 // length: offsets still line up with the original command, and a quoted value
 // can never be read as a flag. `balanced` is false when a quote is never closed.
+// Heredoc bodies and delimiter words are opaque first, so an apostrophe in
+// data never starts a quote that swallows a real invocation.
 function maskQuoted(text) {
+  const heredoc = scanHeredocRanges(text);
   let masked = "";
   let index = 0;
   let balanced = true;
+  let heredocPos = 0;
+  const skipHeredoc = () => {
+    while (heredocPos < heredoc.length && index >= heredoc[heredocPos].end) heredocPos += 1;
+    if (heredocPos < heredoc.length) {
+      const range = heredoc[heredocPos];
+      if (index >= range.start && index < range.end) return range;
+    }
+    return null;
+  };
   while (index < text.length) {
+    const opaque = skipHeredoc();
+    if (opaque) {
+      masked += " ".repeat(opaque.end - index);
+      index = opaque.end;
+      continue;
+    }
     const char = text[index];
     if (char === "'" || char === '"') {
       const end = skipQuoted(text, index);
@@ -288,13 +591,31 @@ function maskQuoted(text) {
   return { masked, balanced };
 }
 
-// Apply `transform` to the code spans only; quoted runs and escaped characters
-// stay byte-for-byte, so a rewrite never lands inside a value.
+// Apply `transform` to the code spans only; quoted runs, escaped characters,
+// and heredoc bodies/delimiters stay byte-for-byte, so a rewrite never lands
+// inside a value or data.
 function transformCodeOnly(text, transform) {
+  const heredoc = scanHeredocRanges(text);
   let result = "";
   let cursor = 0;
   let index = 0;
+  let heredocPos = 0;
+  const opaqueAt = () => {
+    while (heredocPos < heredoc.length && index >= heredoc[heredocPos].end) heredocPos += 1;
+    if (heredocPos < heredoc.length) {
+      const range = heredoc[heredocPos];
+      if (index >= range.start && index < range.end) return range;
+    }
+    return null;
+  };
   while (index < text.length) {
+    const opaque = opaqueAt();
+    if (opaque) {
+      result += transform(text.slice(cursor, index)) + text.slice(index, opaque.end);
+      cursor = opaque.end;
+      index = opaque.end;
+      continue;
+    }
     const char = text[index];
     if (char === "'" || char === '"') {
       const end = skipQuoted(text, index);
@@ -337,10 +658,26 @@ function separatorAt(command, index) {
 }
 
 function shellSegments(command) {
+  const heredoc = scanHeredocRanges(command);
+  let heredocPos = 0;
+  const opaqueAt = (pos) => {
+    while (heredocPos < heredoc.length && pos >= heredoc[heredocPos].end) heredocPos += 1;
+    // Note: `heredocPos` advances monotonically with `pos` because callers
+    // only move forward; ranges are sorted so this stays consistent.
+    for (const range of heredoc) {
+      if (pos >= range.start && pos < range.end) return range;
+    }
+    return null;
+  };
   const segments = [];
   let cursor = 0;
   let index = 0;
   while (index < command.length) {
+    const opaque = opaqueAt(index);
+    if (opaque) {
+      index = opaque.end;
+      continue;
+    }
     const char = command[index];
     if (char === "'" || char === '"') {
       const end = skipQuoted(command, index);
@@ -362,6 +699,10 @@ function shellSegments(command) {
     }
     cursor = index + separator.length;
     index = cursor;
+    // A separator may land inside a heredoc terminator gap? No: heredoc
+    // ranges exclude the terminator newline, so the newline after the
+    // terminator is a real separator and correctly splits here.
+    heredocPos = 0;
   }
   if (cursor < command.length) {
     segments.push({ start: cursor, end: command.length, text: command.slice(cursor) });
@@ -1128,7 +1469,7 @@ function redirectPaths(tool, workdir, args) {
 // placement state and raises no placement error.
 
 
-function createRedirectHook() {
+function createRedirectHook(bridge) {
   return async function executeBefore(event) {
     if (!event || typeof event.input !== "object") return;
     const command = event.input.command;
@@ -1136,6 +1477,31 @@ function createRedirectHook() {
     try {
       const rewritten = rewritePhasegentCommand(command, event.sessionID, event);
       if (rewritten !== command) event.input.command = rewritten;
+      // L1 managed bridge: after the existing rewrite, store the exact
+      // rewritten bytes under a fresh nonce and prepend the inert header.
+      // Unknown roles still decorate (marker with no role) so the shell
+      // fails closed instead of becoming Operator. Without a bridge (host
+      // exposes no shell hook) the rewrite-only path stays as-is.
+      if (bridge && typeof bridge.decorate === "function") {
+        try {
+          const sessionID =
+            typeof event.sessionID === "string" ? event.sessionID : null;
+          if (sessionID && sessionID.length > 0) {
+            const role = agentRole(event);
+            const toolCallId = typeof event.id === "string" ? event.id : null;
+            const decorated = bridge.decorate(
+              event.input.command,
+              sessionID,
+              role,
+              toolCallId,
+            );
+            if (typeof decorated === "string") event.input.command = decorated;
+          }
+        } catch (_) {
+          // Decoration never breaks the rewrite; a failed decorate keeps the
+          // rewritten command so the existing path still applies.
+        }
+      }
     } catch (_) {
     }
   };
@@ -1147,6 +1513,309 @@ function createPromptHook(context, deps) {
   return async function onPrompt(event) {
     if (!event) return;
     await ensureSessionWorktree(context, event.sessionID, deps);
+  };
+}
+
+// assets/opencode/src/managed-env.js
+// Managed shell execution bridge (issue #859 P1).
+//
+// Per-plugin-instance correlation between `tool.execute.before` and
+// `shell.create.before` via an opaque unique per-tool-call nonce, not a
+// command FIFO and not command-only matching.
+//
+// Flow:
+//   1. `tool.execute.before` first performs the existing phasegent command
+//      rewrite (`rewritePhasegentCommand`), then the bridge stores
+//      `{ nonce, sessionID, role, toolCallId, expected, timestamp }` where
+//      `expected` is the exact header-prefixed command, and prepends one
+//      POSIX/PowerShell-safe comment line `# phasegent-context:<nonce>\n`.
+//      The header is inert in both shells and never an identity claim.
+//   2. `shell.create.before` consumes only on exact nonce plus exact
+//      decorated-command match, once. It strips only its own leading line,
+//      restores the exact rewritten bytes, and mutates the fresh `event.env`
+//      properties only: `PHASEGENT_ROLE` when the role is trusted, otherwise
+//      it deletes any inherited `PHASEGENT_ROLE`, and always sets
+//      `PHASEGENT_SESSION_ID` to the real tool session. A real session id is
+//      required; without one the bridge decorates nothing.
+//   3. `tool.execute.after` evicts by tool call id so cancelled or failed
+//      calls never leak. Bounded TTL (5 minutes) and capacity (64 entries)
+//      evict lazily; an evicted entry only deletes, never reuses or pairs.
+//      A lost entry falls back to the host native `OPENCODE_SESSION_ID`
+//      marker rejection, never a guessed identity.
+//
+// No global `process.env` mutation, no FIFO, no mutable cross-session current
+// role. Expired, replayed, forged, or mismatched headers never provide an
+// identity. No full commands or secret data are logged; warnings stay generic.
+
+const MANAGED_CONTEXT_PREFIX = "# phasegent-context:";
+const MANAGED_ROLE_ENV = "PHASEGENT_ROLE";
+const MANAGED_SESSION_ENV = "PHASEGENT_SESSION_ID";
+const MANAGED_BRIDGE_CAPACITY = 64;
+const MANAGED_BRIDGE_TTL_MS = 5 * 60 * 1000;
+
+const NONCE_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+function defaultNow() {
+  return Date.now();
+}
+
+function defaultRandomUUID() {
+  try {
+    const cryptoObject =
+      (typeof globalThis !== "undefined" && globalThis.crypto) || null;
+    if (cryptoObject && typeof cryptoObject.randomUUID === "function") {
+      return cryptoObject.randomUUID();
+    }
+  } catch (_) {
+    // fall through to deterministic fallback below
+  }
+  // Fallback is only reached where `crypto.randomUUID` is unavailable; it is
+  // never used to reuse a live nonce because every generated value is stored
+  // and checked for collision before use.
+  const random = Math.floor(Math.random() * 0xffffffff);
+  const time = Date.now() & 0xffffffff;
+  return `fallback-${time.toString(16)}-${random.toString(16)}`;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+// Capability probe: the host must expose `context.shell.hook` before the
+// bridge decorates anything with an identity promise. A missing surface
+// degrades to the existing rewrite-only path with an explicit warning.
+function isShellHookSupported(context) {
+  return Boolean(
+    context && context.shell && typeof context.shell.hook === "function",
+  );
+}
+
+function isToolAfterHookSupported(context) {
+  return Boolean(
+    context && context.tool && typeof context.tool.hook === "function",
+  );
+}
+
+// Parse the leading `# phasegent-context:<nonce>\n` header. Returns the nonce
+// string, or null when the command carries no well-formed bridge header.
+function parseManagedNonce(command) {
+  if (typeof command !== "string") return null;
+  if (!command.startsWith(MANAGED_CONTEXT_PREFIX)) return null;
+  const newline = command.indexOf("\n");
+  if (newline < 0) return null;
+  const nonce = command.slice(MANAGED_CONTEXT_PREFIX.length, newline).trim();
+  if (!NONCE_PATTERN.test(nonce)) return null;
+  return nonce;
+}
+
+function managedHeaderFor(nonce) {
+  return `${MANAGED_CONTEXT_PREFIX}${nonce}\n`;
+}
+
+// Per-setup bridge factory. Options are injectable for deterministic tests:
+// `{ now, randomUUID, capacity, ttlMs }`. Each setup call owns an isolated
+// Map; no module-global state is shared across plugin instances.
+function createManagedShellBridge(options) {
+  const now =
+    options && typeof options.now === "function" ? options.now : defaultNow;
+  const randomUUID =
+    options && typeof options.randomUUID === "function"
+      ? options.randomUUID
+      : defaultRandomUUID;
+  const capacity =
+    options && typeof options.capacity === "number" && options.capacity > 0
+      ? Math.floor(options.capacity)
+      : MANAGED_BRIDGE_CAPACITY;
+  const ttlMs =
+    options && typeof options.ttlMs === "number" && options.ttlMs >= 0
+      ? options.ttlMs
+      : MANAGED_BRIDGE_TTL_MS;
+
+  // nonce -> { nonce, sessionID, role, toolCallId, expected, timestamp }
+  // Insertion order is the eviction order: the oldest entry is discarded
+  // first when capacity is reached. Entries are never reused or re-paired.
+  const entries = new Map();
+
+  function pruneExpired(current) {
+    for (const [nonce, entry] of entries) {
+      if (current - entry.timestamp > ttlMs) {
+        entries.delete(nonce);
+      }
+    }
+  }
+
+  function evictOldestIfNeeded() {
+    while (entries.size >= capacity) {
+      const oldest = entries.keys().next();
+      if (oldest.done) break;
+      entries.delete(oldest.value);
+    }
+  }
+
+  function generateNonce() {
+    // A stored nonce is never reused: on the vanishingly unlikely collision
+    // the generator retries instead of overwriting the live entry.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const candidate = String(randomUUID());
+      if (!NONCE_PATTERN.test(candidate)) continue;
+      if (!entries.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  // Store one tool call and return the header-prefixed command. Returns the
+  // input unchanged when decoration is impossible (missing session id or
+  // unusable nonce); the caller keeps the rewrite-only path in that case.
+  function decorate(rewritten, sessionID, role, toolCallId) {
+    if (typeof rewritten !== "string") return rewritten;
+    if (!isNonEmptyString(sessionID)) return rewritten;
+    const current = now();
+    pruneExpired(current);
+    const nonce = generateNonce();
+    if (!nonce) return rewritten;
+    evictOldestIfNeeded();
+    const header = managedHeaderFor(nonce);
+    const expected = `${header}${rewritten}`;
+    const trustedRole =
+      role === "orchestrator" ||
+      role === "executor" ||
+      role === "reviewer" ||
+      role === "explore"
+        ? role
+        : null;
+    entries.set(nonce, {
+      nonce,
+      sessionID,
+      role: trustedRole,
+      toolCallId: isNonEmptyString(toolCallId) ? toolCallId : null,
+      expected,
+      timestamp: current,
+    });
+    return expected;
+  }
+
+  // Consume one shell invocation. On exact nonce plus exact decorated-command
+  // match with a live entry, strips the header, restores the exact rewritten
+  // bytes, mutates only `event.env` properties, deletes the entry (single
+  // use), and returns `{ consumed: true }`. Every other shape — missing,
+  // forged, mismatched, expired, or replayed — leaves `event.command` and
+  // `event.env` untouched and returns `{ consumed: false }` without logging
+  // command bytes.
+  function consume(shellEvent) {
+    if (!shellEvent || typeof shellEvent.command !== "string") {
+      return { consumed: false, reason: "missing-command" };
+    }
+    const nonce = parseManagedNonce(shellEvent.command);
+    if (!nonce) return { consumed: false, reason: "no-header" };
+    const current = now();
+    const entry = entries.get(nonce);
+    if (!entry) return { consumed: false, reason: "unknown-nonce" };
+    // Single use: the entry is removed before any further check so a replay
+    // can never pair again, even on mismatch.
+    entries.delete(nonce);
+    if (current - entry.timestamp > ttlMs) {
+      return { consumed: false, reason: "expired" };
+    }
+    if (shellEvent.command !== entry.expected) {
+      return { consumed: false, reason: "mismatch" };
+    }
+    const rewritten = shellEvent.command.slice(
+      managedHeaderFor(nonce).length,
+    );
+    shellEvent.command = rewritten;
+    let env = shellEvent.env;
+    if (!env || typeof env !== "object") {
+      env = {};
+      shellEvent.env = env;
+    }
+    try {
+      if (entry.role) {
+        env[MANAGED_ROLE_ENV] = entry.role;
+      } else {
+        // Unknown role: clear any inherited role so the CLI cannot mistake
+        // ambient state for a trusted identity, but still mark the shell as
+        // managed so the CLI fails closed instead of becoming Operator.
+        delete env[MANAGED_ROLE_ENV];
+      }
+      env[MANAGED_SESSION_ENV] = entry.sessionID;
+    } catch (_) {
+      return { consumed: false, reason: "env-failed" };
+    }
+    return { consumed: true, nonce, role: entry.role, sessionID: entry.sessionID };
+  }
+
+  function cleanupByToolCallId(toolCallId) {
+    if (!isNonEmptyString(toolCallId)) return 0;
+    let removed = 0;
+    for (const [nonce, entry] of entries) {
+      if (entry.toolCallId === toolCallId) {
+        entries.delete(nonce);
+        removed += 1;
+      }
+    }
+    // Lazy expiry keeps the map bounded even when after-hooks never fire
+    // (for example a cancelled tool call whose after event is unproven).
+    pruneExpired(now());
+    return removed;
+  }
+
+  function size() {
+    pruneExpired(now());
+    return entries.size;
+  }
+
+  function clear() {
+    entries.clear();
+  }
+
+  return {
+    decorate,
+    consume,
+    cleanupByToolCallId,
+    size,
+    clear,
+    // Test-only introspection without exposing command bytes in logs.
+    _entries: entries,
+    _capacity: capacity,
+    _ttlMs: ttlMs,
+  };
+}
+
+// `shell.create.before` hook factory: property-only `event.command` /
+// `event.env` edits, no global env mutation, no identity on failure.
+function createShellEnvHook(bridge) {
+  return async function shellCreateBefore(event) {
+    if (!event || typeof event.command !== "string") return;
+    if (!bridge || typeof bridge.consume !== "function") return;
+    try {
+      bridge.consume(event);
+    } catch (_) {
+      // Never throw into a tool call; a failed consume simply leaves the
+      // command and env untouched so the host marker fails closed.
+    }
+  };
+}
+
+// `tool.execute.after` hook factory: evicts by tool call id so cancelled or
+// failed calls never leak. Carries no identity and logs no command data.
+function createToolAfterHook(bridge) {
+  return async function executeAfter(event) {
+    if (!event || !bridge || typeof bridge.cleanupByToolCallId !== "function") {
+      return;
+    }
+    try {
+      const toolCallId =
+        typeof event.id === "string"
+          ? event.id
+          : event && event.input && typeof event.input === "object"
+            ? null
+            : null;
+      // The host carries the same `id` on before and after for one tool
+      // call; fall back to scanning nothing when the shape is unknown.
+      if (toolCallId) bridge.cleanupByToolCallId(toolCallId);
+    } catch (_) {
+      // ignore: cleanup must never break a tool call
+    }
   };
 }
 
@@ -1314,17 +1983,25 @@ Source of truth: \`src/policy.rs\` (\`Role::allows\` for agents, \`CallerContext
 for invocation routing); command-level gates keyed to
 a role rather than a capability live in *Command contract*. The capability matrix
 below applies to explicit agent roles only (\`admin\`, \`orchestrator\`, \`executor\`,
-\`reviewer\`, \`explore\`). The unmanaged human Operator (no \`PHASEGENT_ROLE\`, no
-\`PHASEGENT_SESSION_ID\`) is separate invocation context, not a sixth role: it may
+\`reviewer\`, \`explore\`). The unmanaged human Operator (no \`PHASEGENT_ROLE\` and
+neither managed marker) is separate invocation context, not a sixth role: it may
 run all ordinary business and administrative commands with the existing admin
 credential resolved centrally, except agent-authored \`record create\` (denied with
-a \`comment create\` hint). A managed session without a role fails closed before any
+a \`comment create\` hint). A managed session without a role — either
+\`PHASEGENT_SESSION_ID\` or the host-driven \`OPENCODE_SESSION_ID\` present
+without a role — fails closed before any
 credential, provider, or side effect; the roleless utility allowlist stays
 available. The session role is
 a capability/routing policy, not identity isolation and not authentication: each role's credential
 stays least-privilege and never crosses roles (no fallback), and status follows the tools
 automatically. \`explore\` is the least-privilege recon role and holds no
-credential borrowed from another role. See \`docs/cli-caller-context.md\`.
+credential borrowed from another role. Canonical agent ids are exact after
+lowercasing (\`orchestrator\`, \`executor\`, \`reviewer\`, \`explore\` only);
+compound or substring lookalikes are unknown and fail closed. Each supported
+managed shell carries its own independent per-shell env through the
+per-plugin-instance nonce bridge; the host marker is classification-only and
+never binds a worktree identity. Without a shell hook the bridge stays
+disabled with a warning and only the rewrite path applies. See \`docs/cli-caller-context.md\`.
 
 Legend: \`✓\` allowed, \`—\` denied.
 
@@ -2771,6 +3448,23 @@ const PhasegentWorktreePlugin = {
   id: "phasegent-worktree",
   async setup(context) {
     const registrations = [];
+    // Per-plugin-instance managed shell bridge (issue #859 P1): one Map per
+    // setup, never a global. It is only wired into the tool hook when the
+    // host exposes the shell hook; otherwise the rewrite-only path stays.
+    let shellBridge = null;
+    let shellBridgeEnabled = false;
+    try {
+      if (isShellHookSupported(context)) {
+        shellBridge = createManagedShellBridge();
+        shellBridgeEnabled = true;
+      } else {
+        warn("phasegent: host exposes no shell hook; managed shell env is disabled, command rewriting stays available");
+      }
+    } catch (error) {
+      warn(`phasegent: managed shell bridge unavailable (${errorText(error)})`);
+      shellBridge = null;
+      shellBridgeEnabled = false;
+    }
     try {
       const strategy = await registerWorktreeStrategy(context);
       if (strategy) registrations.push(strategy);
@@ -2790,16 +3484,55 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: session.prompt registration failed (${errorText(error)})`);
     }
     try {
-      // The tool hook only rewrites phasegent commands, so it carries no
-      // placement state and cannot raise a placement error.
+      // The tool hook rewrites phasegent commands and, when the shell bridge
+      // is enabled, decorates the rewritten command with the inert nonce
+      // header for the shell hook to consume. It carries no placement state.
       const hook = context && context.tool && context.tool.hook;
       if (typeof hook === "function") {
-        registrations.push(await hook("execute.before", createRedirectHook()));
+        registrations.push(
+          await hook(
+            "execute.before",
+            createRedirectHook(shellBridgeEnabled ? shellBridge : null),
+          ),
+        );
+        // Best-effort after-hook cleanup for cancelled/failed calls; TTL and
+        // capacity still bound the map when the host exposes no after hook.
+        if (shellBridgeEnabled && shellBridge) {
+          try {
+            registrations.push(
+              await hook("execute.after", createToolAfterHook(shellBridge)),
+            );
+          } catch (error) {
+            warn(`phasegent: tool.execute.after registration failed (${errorText(error)})`);
+          }
+        }
       } else {
         warn("phasegent: host exposes no tool hook; command rewriting is disabled");
       }
     } catch (error) {
       warn(`phasegent: tool.execute.before registration failed (${errorText(error)})`);
+    }
+    try {
+      // The shell hook consumes the nonce header once, restores the exact
+      // rewritten bytes, and sets only the fresh env properties. It never
+      // guesses an identity for forged, mismatched, expired, or replayed
+      // headers; the host native marker then fails closed.
+      if (shellBridgeEnabled && shellBridge) {
+        const shellHook = context && context.shell && context.shell.hook;
+        if (typeof shellHook === "function") {
+          try {
+            registrations.push(
+              await shellHook("create.before", createShellEnvHook(shellBridge)),
+            );
+          } catch (error) {
+            warn(`phasegent: shell.create.before registration failed (${errorText(error)})`);
+          }
+        } else {
+          warn("phasegent: shell hook unavailable; managed shell env stays disabled");
+        }
+      }
+    } catch (error) {
+      warn(`phasegent: shell hook registration failed (${errorText(error)})`);
     }
     try {
       const skill = await registerSkill(context);
@@ -2835,11 +3568,20 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   isSubagentSession,
   sessionPlaced,
   rewritePhasegentCommand,
+  scanHeredocRanges,
+  maskQuoted,
+  shellSegments,
+  transformCodeOnly,
+  phasegentInvocation,
   rememberWorktree,
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
   createPromptHook,
+  createManagedShellBridge,
+  createShellEnvHook,
+  createToolAfterHook,
+  isShellHookSupported,
   pickActiveWorktreePath,
   issueClosedLocally,
   discoverWorktreeForSession,

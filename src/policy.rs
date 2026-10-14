@@ -123,11 +123,21 @@ impl FromStr for Role {
 /// Invocation policy context: unmanaged human Operator vs managed Agent roles.
 ///
 /// The environment signals are routing/policy, not authenticated identity:
-/// without `PHASEGENT_ROLE` and without `PHASEGENT_SESSION_ID` the CLI is an
-/// unmanaged Operator; an explicit valid role keeps the existing agent-role
-/// permission matrix; with `PHASEGENT_SESSION_ID` present (even blank) but no
-/// role the invocation is a managed session missing its role and fails closed
-/// for business commands. Invalid roles always error and never downgrade.
+/// without `PHASEGENT_ROLE` and without either managed marker
+/// (`PHASEGENT_SESSION_ID` or the host-driven `OPENCODE_SESSION_ID`) the CLI
+/// is an unmanaged Operator; an explicit valid role keeps the existing
+/// agent-role permission matrix; with either marker present (even blank) but
+/// no role the invocation is a managed session missing its role and fails
+/// closed for business commands. Invalid roles always error and never
+/// downgrade.
+///
+/// `OPENCODE_SESSION_ID` is classification-only: the host shell tool sets it
+/// unconditionally for every managed shell invocation, so its presence proves
+/// the process runs inside a managed shell even when the bridge left no
+/// `PHASEGENT_SESSION_ID`. It is never used to bind, acquire, or release a
+/// worktree/session identity — `src/worktree/session.rs` keeps reading only
+/// `PHASEGENT_SESSION_ID`. Ordinary shells without either marker remain
+/// Operator.
 ///
 /// Operator is invocation context, never a new agent role or persisted
 /// identity: it authorizes all ordinary business and administrative commands
@@ -149,17 +159,25 @@ pub enum CallerContext {
 /// Environment variable that marks a managed session. Presence (even blank)
 /// matters, not the value.
 pub const SESSION_ENV: &str = "PHASEGENT_SESSION_ID";
+/// Host-driven managed marker set unconditionally by the OpenCode shell tool
+/// for every managed shell invocation. Classification-only: its presence
+/// proves a managed shell even when the bridge left no `PHASEGENT_SESSION_ID`,
+/// but it never supplies a worktree/session identity.
+pub const HOST_SESSION_ENV: &str = "OPENCODE_SESSION_ID";
 /// Environment variable that carries the explicit agent role.
 #[allow(dead_code)]
 pub const ROLE_ENV: &str = "PHASEGENT_ROLE";
 
-/// Whether a managed session marker is present (even blank). Blank counts as
-/// present so an empty inheritance still fails closed instead of silently
-/// becoming an Operator. Presence is determined with `var_os` so a present
-/// Unix value that is not valid Unicode still counts as present (including
-/// blank and non-Unicode values) and fails closed instead of downgrading.
+/// Whether a managed session marker is present (even blank). Either
+/// `PHASEGENT_SESSION_ID` or the host-driven `OPENCODE_SESSION_ID` counts:
+/// blank counts as present so an empty inheritance still fails closed instead
+/// of silently becoming an Operator. Presence is determined with `var_os` so
+/// a present Unix value that is not valid Unicode still counts as present
+/// (including blank and non-Unicode values) and fails closed instead of
+/// downgrading. The host marker is classification-only and never binds a
+/// worktree identity (see `src/worktree/session.rs`).
 pub fn session_present() -> bool {
-    std::env::var_os(SESSION_ENV).is_some()
+    std::env::var_os(SESSION_ENV).is_some() || std::env::var_os(HOST_SESSION_ENV).is_some()
 }
 
 /// Resolve `PHASEGENT_ROLE` from the process environment with Unix raw-value
@@ -194,6 +212,16 @@ pub fn role_from_env() -> Result<Option<Role>, String> {
 #[allow(dead_code)]
 pub fn session_present_for(session_env: Option<&str>) -> bool {
     session_env.is_some()
+}
+
+/// Whether either managed marker as injected by tests marks a managed
+/// session. `None`/`None` means an unmanaged Operator; either `Some(_)`
+/// (even empty) means present and fails closed without a role. Pure helper
+/// for the host-marker CLI tests so parallel assertions never read global
+/// env; production uses [`session_present`].
+#[allow(dead_code)]
+pub fn session_present_for_both(session_env: Option<&str>, host_session_env: Option<&str>) -> bool {
+    session_env.is_some() || host_session_env.is_some()
 }
 
 impl CallerContext {

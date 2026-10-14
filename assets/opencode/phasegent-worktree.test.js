@@ -24,11 +24,20 @@ const {
   isSubagentSession,
   sessionPlaced,
   rewritePhasegentCommand,
+  scanHeredocRanges,
+  maskQuoted,
+  shellSegments,
+  transformCodeOnly,
+  phasegentInvocation,
   rememberWorktree,
   worktreeForSession,
   resetWorktrees,
   createRedirectHook,
   createPromptHook,
+  createManagedShellBridge,
+  createShellEnvHook,
+  createToolAfterHook,
+  isShellHookSupported,
   pickActiveWorktreePath,
   issueClosedLocally,
   ensureSessionWorktree,
@@ -458,6 +467,150 @@ describe("tool.execute.before hook (command rewriting only)", () => {
     expect(event.input.command).toContain("cannot run 'issue create|bind'");
     expect(event.input.command.endsWith("; false")).toBe(true);
     expect(event.input.command).not.toContain("--title");
+  });
+
+  test("without a bridge the hook stays rewrite-only", async () => {
+    const hook = createRedirectHook(null);
+    const event = {
+      tool: "shell",
+      sessionID: "session-1",
+      agent: "explore",
+      input: { command: "phasegent issue get 1" },
+    };
+    await hook(event);
+    expect(event.input.command).toBe("PHASEGENT_ROLE=explore phasegent issue get 1");
+    expect(event.input.command.startsWith("# phasegent-context:")).toBe(false);
+  });
+});
+
+describe("managed shell bridge wiring (issue #859 P1)", () => {
+  test("redirect hook decorates with a nonce header when a bridge is wired", async () => {
+    const bridge = createManagedShellBridge({
+      randomUUID: () => "11111111-1111-4111-8111-111111111111",
+    });
+    const hook = createRedirectHook(bridge);
+    const event = {
+      tool: "shell",
+      sessionID: "ses-1",
+      agent: "explore",
+      id: "tool-1",
+      input: { command: "phasegent issue get 1" },
+    };
+    await hook(event);
+    expect(event.input.command.startsWith("# phasegent-context:11111111-")).toBe(true);
+    expect(event.input.command.endsWith("PHASEGENT_ROLE=explore phasegent issue get 1")).toBe(true);
+    expect(bridge.size()).toBe(1);
+  });
+
+  test("shell hook strips the header and adopts env on the fresh object only", async () => {
+    const bridge = createManagedShellBridge({
+      randomUUID: () => "22222222-2222-4222-8222-222222222222",
+    });
+    const redirect = createRedirectHook(bridge);
+    const toolEvent = {
+      tool: "shell",
+      sessionID: "ses-2",
+      agent: "executor",
+      id: "tool-2",
+      input: { command: "phasegent issue get 2" },
+    };
+    await redirect(toolEvent);
+    const shellEvent = { command: toolEvent.input.command, env: { TERM: "xterm" } };
+    const shellHook = createShellEnvHook(bridge);
+    await shellHook(shellEvent);
+    expect(shellEvent.command).toBe("PHASEGENT_ROLE=executor phasegent issue get 2");
+    expect(shellEvent.env.PHASEGENT_ROLE).toBe("executor");
+    expect(shellEvent.env.PHASEGENT_SESSION_ID).toBe("ses-2");
+    expect(process.env.PHASEGENT_SESSION_ID).not.toBe("ses-2");
+  });
+
+  test("unknown agent still decorates but clears role in the shell env", async () => {
+    const bridge = createManagedShellBridge({
+      randomUUID: () => "33333333-3333-4333-8333-333333333333",
+    });
+    const redirect = createRedirectHook(bridge);
+    const toolEvent = {
+      tool: "shell",
+      sessionID: "ses-9",
+      agent: "general",
+      id: "tool-9",
+      input: { command: "phasegent issue get 9" },
+    };
+    await redirect(toolEvent);
+    expect(toolEvent.input.command.startsWith("# phasegent-context:")).toBe(true);
+    const shellEvent = {
+      command: toolEvent.input.command,
+      env: { PHASEGENT_ROLE: "executor" },
+    };
+    await createShellEnvHook(bridge)(shellEvent);
+    expect("PHASEGENT_ROLE" in shellEvent.env).toBe(false);
+    expect(shellEvent.env.PHASEGENT_SESSION_ID).toBe("ses-9");
+  });
+
+  test("setup degrades explicitly when the host exposes no shell hook", async () => {
+    const warnings = await withWarnings(async () => {
+      const registered = [];
+      const context = {
+        location: { directory: "/repo" },
+        session: {
+          move: async () => {},
+          hook: async (name, callback) => {
+            registered.push(name);
+            return { dispose: async () => {} };
+          },
+        },
+        tool: {
+          hook: async (name, callback) => {
+            registered.push(name);
+            return { dispose: async () => {} };
+          },
+        },
+        skill: { transform: async () => ({ dispose: async () => {} }) },
+        agent: { transform: async () => ({ dispose: async () => {} }) },
+      };
+      const cleanup = await PhasegentWorktreePlugin.setup(context);
+      expect(registered).toContain("execute.before");
+      expect(registered).not.toContain("create.before");
+      expect(typeof cleanup).toBe("function");
+      await cleanup();
+    });
+    expect(warnings.join("\n")).toContain("no shell hook");
+  });
+
+  test("setup registers shell and after hooks when the host supports them", async () => {
+    const registered = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async () => {},
+        hook: async (name, callback) => {
+          registered.push(name);
+          return { dispose: async () => {} };
+        },
+      },
+      tool: {
+        hook: async (name, callback) => {
+          registered.push(name);
+          return { dispose: async () => {} };
+        },
+      },
+      shell: {
+        hook: async (name, callback) => {
+          registered.push(name);
+          return { dispose: async () => {} };
+        },
+      },
+      skill: { transform: async () => ({ dispose: async () => {} }) },
+      agent: { transform: async () => ({ dispose: async () => {} }) },
+    };
+    const cleanup = await PhasegentWorktreePlugin.setup(context);
+    expect(registered).toContain("execute.before");
+    expect(registered).toContain("execute.after");
+    expect(registered).toContain("create.before");
+    expect(typeof isShellHookSupported(context)).toBe("boolean");
+    expect(isShellHookSupported(context)).toBe(true);
+    expect(typeof createToolAfterHook).toBe("function");
+    await cleanup();
   });
 });
 
@@ -1186,9 +1339,15 @@ describe("agentRole (issue #541)", () => {
     expect(agentRole({ agent: "explore" })).toBe("explore");
   });
 
-  test("is case-insensitive and matches compound agent names", () => {
+  test("is case-insensitive with exact canonical ids only (issue #859 P1)", () => {
     expect(agentRole({ agent: "Executor" })).toBe("executor");
-    expect(agentRole({ agent: "task-executor" })).toBe("executor");
+    expect(agentRole({ agent: "ORCHESTRATOR" })).toBe("orchestrator");
+    // Substring and compound lookalikes never elevate: they are unknown and
+    // fail closed as managed-without-role instead of a privileged role.
+    expect(agentRole({ agent: "task-executor" })).toBeNull();
+    expect(agentRole({ agent: "my-orchestrator" })).toBeNull();
+    expect(agentRole({ agent: "reviewer-2" })).toBeNull();
+    expect(agentRole({ agent: "explore-plus" })).toBeNull();
   });
 
   test("never guesses for unknown or missing agents", () => {
@@ -1899,6 +2058,123 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
     ).toBe(
       'PHASEGENT_WORKTREE_NO_DISCOVER="1" PHASEGENT_ROLE=executor phasegent issue status',
     );
+  });
+});
+
+describe("heredoc-opaque rewriting (issue #859 P2)", () => {
+  const EXPLORE = { agent: "explore" };
+
+  test("incident pattern: quoted heredoc with apostrophe leaves body and rewrites trailing recon", () => {
+    const command =
+      "cd /tmp && cat > /tmp/body.txt <<'BODY'\nit's the body with apostrophe\nBODY\nphasegent record create 853 --kind recon --recon mixed --key k --authorized --body-file /tmp/body.txt";
+    const out = rewritePhasegentCommand(command, "ses-1", EXPLORE);
+    expect(out).toBe(
+      "cd /tmp && cat > /tmp/body.txt <<'BODY'\nit's the body with apostrophe\nBODY\nPHASEGENT_ROLE=explore phasegent record create 853 --kind recon --recon mixed --key k --authorized --body-file /tmp/body.txt",
+    );
+    expect(out).toContain("it's the body with apostrophe");
+    // No role injected inside the body.
+    expect(out.split("it's the body")[0]).not.toContain("PHASEGENT_ROLE=explore phasegent record");
+  });
+
+  test("quoted, unquoted, and mixed delimiters keep bodies opaque", () => {
+    const cases = [
+      ["<<'EOF'", "EOF", "it's quoted\nphasegent issue get 9"],
+      ['<<"EOF"', "EOF", 'body with "quotes"\nphasegent issue get 9'],
+      ["<<EOF", "EOF", "plain body\nphasegent issue get 9"],
+      ["<<'A'", "A", "mixed bodies\nphasegent issue get 9"],
+    ];
+    for (const [decl, terminator, body] of cases) {
+      const out = rewritePhasegentCommand(`cat ${decl}\n${body}\n${terminator}\nphasegent issue get 1`, "s1", EXPLORE);
+      expect(out).toContain(body.split("\n")[0]);
+      expect(out.endsWith("PHASEGENT_ROLE=explore phasegent issue get 1")).toBe(true);
+      expect(out).toContain(`${decl}\n${body}\n${terminator}`);
+    }
+  });
+
+  test("<<- tab stripping honors leading tabs but not spaces", () => {
+    const tabbed = "cat <<-EOF\n\tbody\n\tEOF\nphasegent issue get 1";
+    expect(rewritePhasegentCommand(tabbed, "s1", EXPLORE)).toBe(
+      "cat <<-EOF\n\tbody\n\tEOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+    );
+    // Leading spaces do not terminate <<-: conservatively preserved.
+    const spaced = "cat <<-EOF\n   body\n   EOF\nphasegent issue get 1";
+    expect(rewritePhasegentCommand(spaced, "s1", EXPLORE)).toBe(spaced);
+  });
+
+  test("multiple queued bodies in order stay opaque and trailing rewrites", () => {
+    const command = "cat <<A\nbodyA\nA\ncat <<B\nbodyB\nB\nphasegent issue get 1";
+    expect(rewritePhasegentCommand(command, "s1", EXPLORE)).toBe(
+      "cat <<A\nbodyA\nA\ncat <<B\nbodyB\nB\nPHASEGENT_ROLE=explore phasegent issue get 1",
+    );
+    const queued = "cat <<A && cat <<B\nbodyA\nA\nbodyB\nB\nphasegent issue get 1";
+    const out = rewritePhasegentCommand(queued, "s1", EXPLORE);
+    expect(out.endsWith("PHASEGENT_ROLE=explore phasegent issue get 1")).toBe(true);
+    expect(out).toContain("bodyA\nA\nbodyB\nB");
+  });
+
+  test("fake elevated invocations and role claims in bodies stay untouched", () => {
+    const command =
+      "cat <<'EOF'\nphasegent issue create --title t --body b\nPHASEGENT_ROLE=orchestrator phasegent issue get 9\nADMIN phasegent issue get 1\nEOF\nphasegent issue get 2";
+    const out = rewritePhasegentCommand(command, "s1", EXPLORE);
+    expect(out).toBe(
+      "cat <<'EOF'\nphasegent issue create --title t --body b\nPHASEGENT_ROLE=orchestrator phasegent issue get 9\nADMIN phasegent issue get 1\nEOF\nPHASEGENT_ROLE=explore phasegent issue get 2",
+    );
+    // The downgrade path also leaves body literals alone for subagents.
+    const sub = rewritePhasegentCommand(command, "s1", { agent: "executor" });
+    expect(sub).toContain("PHASEGENT_ROLE=orchestrator phasegent issue get 9");
+    expect(sub.endsWith("PHASEGENT_ROLE=executor phasegent issue get 2")).toBe(true);
+  });
+
+  test("here-strings and quoted operators are not heredocs", () => {
+    expect(
+      rewritePhasegentCommand('cat <<< "hello phasegent issue get 9"\nphasegent issue get 1', "s1", EXPLORE),
+    ).toBe('cat <<< "hello phasegent issue get 9"\nPHASEGENT_ROLE=explore phasegent issue get 1');
+    expect(rewritePhasegentCommand('"<<"EOF""\nphasegent issue get 1', "s1", EXPLORE)).toContain(
+      "PHASEGENT_ROLE=explore phasegent issue get 1",
+    );
+    expect(rewritePhasegentCommand("# cat <<EOF\nphasegent issue get 1", "s1", EXPLORE)).toBe(
+      "# cat <<EOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+    );
+  });
+
+  test("escaped delimiters and quoted declaration text stay code-safe", () => {
+    expect(rewritePhasegentCommand("cat <<\\EOF\nbody\nEOF\nphasegent issue get 1", "s1", EXPLORE)).toBe(
+      "cat <<\\EOF\nbody\nEOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+    );
+    expect(rewritePhasegentCommand('echo "<<EOF"\nphasegent issue get 1', "s1", EXPLORE)).toBe(
+      'echo "<<EOF"\nPHASEGENT_ROLE=explore phasegent issue get 1',
+    );
+  });
+
+  test("unterminated heredoc conservatively preserves the tail", () => {
+    const command = "cat <<EOF\nbody without terminator\nphasegent issue get 1";
+    expect(rewritePhasegentCommand(command, "s1", EXPLORE)).toBe(command);
+    expect(scanHeredocRanges(command).length).toBeGreaterThan(0);
+  });
+
+  test("real commands before bodies still scope", () => {
+    expect(
+      rewritePhasegentCommand("phasegent issue get 0\ncat <<EOF\nbody\nEOF\nphasegent issue get 1", "s1", EXPLORE),
+    ).toBe(
+      "PHASEGENT_ROLE=explore phasegent issue get 0\ncat <<EOF\nbody\nEOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+    );
+  });
+
+  test("scanHeredocRanges, maskQuoted, shellSegments, and transformCodeOnly stay consistent", () => {
+    const command = "cat <<'EOF'\nit's data; phasegent issue get 9\nEOF\nphasegent issue get 1";
+    const ranges = scanHeredocRanges(command);
+    expect(ranges.length).toBeGreaterThan(0);
+    const { masked, balanced } = maskQuoted(command);
+    expect(balanced).toBe(true);
+    expect(masked).not.toContain("phasegent issue get 9");
+    expect(masked).toContain("phasegent issue get 1");
+    const segments = shellSegments(command);
+    expect(segments.length).toBe(2);
+    expect(segments[1].text).toContain("phasegent issue get 1");
+    const downgraded = transformCodeOnly(command, (span) =>
+      span.replace(/(^|[;&|()\s])(PHASEGENT_ROLE=)(orchestrator|admin)\b/gi, "$1$2explore"),
+    );
+    expect(downgraded).toContain("it's data");
   });
 });
 

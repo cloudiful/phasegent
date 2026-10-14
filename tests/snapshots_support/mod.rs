@@ -78,7 +78,9 @@ impl Drop for Scratch {
 
 /// Run the compiled binary from `cwd` with a hermetic `PHASEGENT_*`
 /// environment: the scratch databases are pinned and every host override a
-/// developer may have exported is removed. `role` is passed explicitly
+/// developer may have exported is removed, including both managed markers
+/// (`PHASEGENT_SESSION_ID` and host `OPENCODE_SESSION_ID`, issue #859 P1).
+/// `role` is passed explicitly
 /// through `PHASEGENT_ROLE`; `None` removes it.
 pub fn run(scratch: &Scratch, cwd: &Path, role: Option<&str>, args: &[&str]) -> Output {
     let mut command = Command::new(phasegent_bin());
@@ -102,6 +104,7 @@ pub fn run(scratch: &Scratch, cwd: &Path, role: Option<&str>, args: &[&str]) -> 
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
+        .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")

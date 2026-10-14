@@ -308,3 +308,77 @@ fn operator_parses_business_commands_and_utility_stays_available_for_managed() {
     )
     .expect("managed global config must parse");
 }
+
+/// Host marker presence (issue #859 P1): `OPENCODE_SESSION_ID` is
+/// classification-only and selects the same managed-missing gate as
+/// `PHASEGENT_SESSION_ID`. Pure helper stays deterministic via the injected
+/// bool, while the real `session_present()` reads both process markers.
+#[test]
+fn host_marker_selects_the_same_managed_missing_gate() {
+    // Either marker alone (even blank) is managed-missing without a role.
+    let error = parse_with_caller_env(&args(&["issue", "get", "1"]), None, true)
+        .expect_err("host-managed issue get without a role must fail");
+    assert!(
+        error.contains("managed session requires a role"),
+        "got: {error}"
+    );
+    // Pure helper covers both markers without touching process env.
+    assert!(crate::policy::session_present_for_both(
+        None,
+        Some("host-session")
+    ));
+    assert!(crate::policy::session_present_for_both(None, Some("")));
+    assert!(crate::policy::session_present_for_both(
+        Some("managed"),
+        None
+    ));
+    assert!(crate::policy::session_present_for_both(
+        Some("a"),
+        Some("b")
+    ));
+    assert!(!crate::policy::session_present_for_both(None, None));
+
+    // Real process probe respects both markers under the workflow lock.
+    {
+        let _lock = crate::infra::storage::test_support::lock_workflow_tests();
+        let saved_phasegent = std::env::var_os(crate::policy::SESSION_ENV);
+        let saved_host = std::env::var_os(crate::policy::HOST_SESSION_ENV);
+        // SAFETY: serialised by the workflow lock.
+        unsafe {
+            std::env::remove_var(crate::policy::SESSION_ENV);
+            std::env::remove_var(crate::policy::HOST_SESSION_ENV);
+        }
+        assert!(
+            !crate::policy::session_present(),
+            "no marker must read as Operator"
+        );
+        // SAFETY: same lock.
+        unsafe {
+            std::env::set_var(crate::policy::HOST_SESSION_ENV, "host-only");
+        }
+        assert!(
+            crate::policy::session_present(),
+            "host-only marker must read as managed"
+        );
+        // SAFETY: restore under the same lock.
+        unsafe {
+            match saved_phasegent {
+                Some(value) => std::env::set_var(crate::policy::SESSION_ENV, value),
+                None => std::env::remove_var(crate::policy::SESSION_ENV),
+            }
+            match saved_host {
+                Some(value) => std::env::set_var(crate::policy::HOST_SESSION_ENV, value),
+                None => std::env::remove_var(crate::policy::HOST_SESSION_ENV),
+            }
+        }
+    }
+
+    // An explicit role with either marker stays an Agent (marker never
+    // overrides the role).
+    let invocation = parse_with_caller_env(&args(&["issue", "get", "1"]), Some("explore"), true)
+        .expect("explicit role with a marker must parse");
+    assert_eq!(
+        invocation.caller,
+        crate::policy::CallerContext::Agent(crate::policy::Role::Explore)
+    );
+}

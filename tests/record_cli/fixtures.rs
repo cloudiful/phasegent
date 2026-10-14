@@ -57,8 +57,9 @@ pub(super) fn run_local(db: &Path, role: &str, args: &[&str]) -> Output {
 }
 
 /// Role-optional spawn: `None` models an unmanaged Operator (no role and
-/// no managed session marker). Always clears `PHASEGENT_SESSION_ID` so a
-/// developer's managed session never leaks into the subprocess.
+/// no managed session marker). Always clears `PHASEGENT_SESSION_ID` and the
+/// host `OPENCODE_SESSION_ID` so a developer's managed session never leaks
+/// into the subprocess (issue #859 P1).
 pub(super) fn run_local_with_role(db: &Path, role: Option<&str>, args: &[&str]) -> Output {
     run_local_with_session(db, role, None, args)
 }
@@ -66,10 +67,26 @@ pub(super) fn run_local_with_role(db: &Path, role: Option<&str>, args: &[&str]) 
 /// Fully injectable spawn: `role` models `PHASEGENT_ROLE` (`None` removes
 /// it), `session` models `PHASEGENT_SESSION_ID` (`None` removes it, `Some`
 /// sets it even when blank so managed-missing stays fail-closed).
+/// `host_session` models `OPENCODE_SESSION_ID` the same way; `None` removes
+/// it so ordinary Operator stays deterministic.
 pub(super) fn run_local_with_session(
     db: &Path,
     role: Option<&str>,
     session: Option<&str>,
+    args: &[&str],
+) -> Output {
+    run_local_with_both_sessions(db, role, session, None, args)
+}
+
+/// Fully injectable spawn with both managed markers: `role` models
+/// `PHASEGENT_ROLE`, `session` models `PHASEGENT_SESSION_ID`, `host_session`
+/// models `OPENCODE_SESSION_ID` (`None` removes, `Some` sets even when
+/// blank so managed-missing stays fail-closed).
+pub(super) fn run_local_with_both_sessions(
+    db: &Path,
+    role: Option<&str>,
+    session: Option<&str>,
+    host_session: Option<&str>,
     args: &[&str],
 ) -> Output {
     let missing_toml = db
@@ -82,6 +99,7 @@ pub(super) fn run_local_with_session(
         .env("PHASEGENT_LOCAL_DB_PATH", db.as_os_str())
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
+        .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_DB_PATH")
@@ -104,6 +122,9 @@ pub(super) fn run_local_with_session(
     }
     if let Some(session) = session {
         command.env("PHASEGENT_SESSION_ID", session);
+    }
+    if let Some(host_session) = host_session {
+        command.env("OPENCODE_SESSION_ID", host_session);
     }
     command.output().expect("spawn phasegent binary")
 }

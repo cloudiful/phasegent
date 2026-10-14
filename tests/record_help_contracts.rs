@@ -53,6 +53,8 @@ fn run_help(role: Option<&str>, args: &[&str]) -> Output {
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_ROLE")
+        .env_remove("PHASEGENT_SESSION_ID")
+        .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")

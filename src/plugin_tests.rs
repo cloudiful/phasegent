@@ -1067,6 +1067,19 @@ fn adapter_template_documents_redirect_contract() {
     assert!(source.contains("[\"explore\", \"explore\"]"));
     assert!(source.contains("[\"reviewer\", \"reviewer\"]"));
     assert!(!source.contains("[\"explore\", \"reviewer\"]"));
+    // issue #859 P1: canonical ids are exact (no substring elevation), the
+    // per-shell nonce bridge carries the managed env, and the host marker is
+    // classification-only.
+    assert!(source.contains("agent === hint"));
+    assert!(source.contains("createManagedShellBridge"));
+    assert!(source.contains("createShellEnvHook"));
+    assert!(source.contains("createToolAfterHook"));
+    assert!(source.contains("isShellHookSupported"));
+    assert!(source.contains("# phasegent-context:"));
+    assert!(source.contains("PHASEGENT_SESSION_ID"));
+    assert!(source.contains("\"create.before\""));
+    assert!(source.contains("\"execute.after\""));
+    assert!(source.contains("host exposes no shell hook"));
 }
 
 #[test]

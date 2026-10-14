@@ -61,7 +61,8 @@ fn run_help(args: &[&str]) -> Output {
 }
 
 /// Run help/CLI with an explicit `PHASEGENT_ROLE` so the role-aware surface can
-/// be asserted black-box.
+/// be asserted black-box. Both managed markers are cleared so help stays
+/// deterministic however the host looks (issue #859 P1).
 fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
     let db = ScratchDb::new();
     let mut command = Command::new(phasegent_bin());
@@ -71,6 +72,8 @@ fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_ROLE")
+        .env_remove("PHASEGENT_SESSION_ID")
+        .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")

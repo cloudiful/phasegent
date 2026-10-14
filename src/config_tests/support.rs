@@ -21,6 +21,12 @@ pub(crate) fn unique_temp_db_path(label: &str) -> PathBuf {
 
 pub(crate) fn with_isolated_storage<T>(label: &str, f: impl FnOnce(&Path, &Storage) -> T) -> T {
     let _lock = lock_workflow_tests();
+    // In-process caller isolation (issue #859 P1): clear both managed markers
+    // so an unmanaged Operator stays Operator however the host looks. The
+    // host `OPENCODE_SESSION_ID` is present in every managed shell, so
+    // without this a `None`-role config write would fail closed as
+    // managed-missing instead of using the admin scope.
+    let _markers = EnvRemoveGuard::remove(&["PHASEGENT_SESSION_ID", "OPENCODE_SESSION_ID"]);
     let db_path = unique_temp_db_path(label);
     let storage = Storage::open_at(&db_path).unwrap();
     let result = f(&db_path, &storage);

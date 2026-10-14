@@ -102,9 +102,10 @@ pub(super) fn run_cli_in(
 /// Role/session-injectable spawn: `role` models `PHASEGENT_ROLE` (`None`
 /// removes it for unmanaged Operator), `session` models
 /// `PHASEGENT_SESSION_ID` (`None` removes it, `Some` sets it even when
-/// blank). Always clears inherited role/session env plus the Redmine
+/// blank). Always clears inherited role/session env plus the host
+/// `OPENCODE_SESSION_ID` and the Redmine
 /// overrides so Operator, managed-missing, and agent paths stay
-/// deterministic.
+/// deterministic (issue #859 P1).
 pub(super) fn run_cli_in_with_role(
     working_dir: &Path,
     db_path: &Path,
@@ -122,6 +123,7 @@ pub(super) fn run_cli_in_with_role(
         .env("PHASEGENT_REDMINE_API_BASE", api_base)
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
+        .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_REDMINE_PROJECT_ID")

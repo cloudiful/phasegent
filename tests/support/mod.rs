@@ -425,7 +425,10 @@ pub fn phasegent_bin() -> &'static str {
 /// `PHASEGENT_CONFIG_PATH` points at a guaranteed-missing per-test path so the
 /// ProjectDirs default TOML can never shadow integration assertions. `role` is
 /// passed explicitly through `PHASEGENT_ROLE`; `None` removes it so role-less
-/// paths stay deterministic.
+/// paths stay deterministic. Both managed markers (`PHASEGENT_SESSION_ID` and
+/// the host `OPENCODE_SESSION_ID`) are removed so an ordinary Operator and a
+/// managed-missing path stay deterministic however the host looks (issue
+/// #859 P1).
 pub fn run_cli(
     db_path: &Path,
     api_base: &str,
@@ -439,6 +442,8 @@ pub fn run_cli(
         // Pin to the test api_base so resolver changes cannot drift the mock URL.
         .env("PHASEGENT_REDMINE_API_BASE", api_base)
         .env_remove("PHASEGENT_ROLE")
+        .env_remove("PHASEGENT_SESSION_ID")
+        .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_REDMINE_PROJECT_ID")

@@ -366,3 +366,68 @@ fn cli_surface_acquire_operator_authorized_and_managed_denied() {
     );
     assert_eq!(denied, 3, "managed acquire without a role must be denied");
 }
+
+/// Issue #859 P1: the host `OPENCODE_SESSION_ID` marker is
+/// classification-only and never supplies a worktree/session identity.
+/// `resolve_session` keeps reading only `PHASEGENT_SESSION_ID` (explicit
+/// flag wins, then that variable); a host-only env leaves the call without
+/// an identity and the acquire fails fast instead of booking under the host
+/// value.
+#[test]
+fn cli_acquire_ignores_host_only_session_marker() {
+    use crate::worktree::resolve_session;
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p1-host-marker-ignored") else {
+        return;
+    };
+    let (db_temp, cache_temp, _db_env, _cache_env) =
+        open_temp_db_and_cache("p1-host-marker-ignored");
+    // Isolate both markers, then set only the host one: the resolver must
+    // still report a missing identity.
+    let saved_phasegent = std::env::var_os("PHASEGENT_SESSION_ID");
+    let saved_host = std::env::var_os("OPENCODE_SESSION_ID");
+    // SAFETY: serialised by the workflow lock.
+    unsafe {
+        std::env::remove_var("PHASEGENT_SESSION_ID");
+        std::env::set_var("OPENCODE_SESSION_ID", "ses-host-only");
+    }
+    let missing = resolve_session(None);
+    assert!(
+        missing.is_err(),
+        "host-only marker must not supply a session identity"
+    );
+    // An explicit flag still wins even with the host marker present.
+    let explicit = resolve_session(Some("explicit-session")).expect("explicit must win");
+    assert_eq!(explicit.id, "explicit-session");
+    // Restore before the acquire so the failure is the resolver's, not the
+    // ambient env.
+    // SAFETY: same lock.
+    unsafe {
+        match saved_phasegent {
+            Some(value) => std::env::set_var("PHASEGENT_SESSION_ID", value),
+            None => std::env::remove_var("PHASEGENT_SESSION_ID"),
+        }
+        match saved_host {
+            Some(value) => std::env::set_var("OPENCODE_SESSION_ID", value),
+            None => std::env::remove_var("OPENCODE_SESSION_ID"),
+        }
+    }
+    // Acquire with no flag and a blank PHASEGENT marker plus a host marker
+    // still fails fast with exit 2 and records nothing.
+    let _host_env = EnvGuard::set("OPENCODE_SESSION_ID", "ses-host-only");
+    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let exit = run_cli_acquire_with_session(&repo, false, None);
+    assert_eq!(exit, 2, "host-only acquire must fail without an identity");
+    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
+    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert!(
+        rows.is_empty(),
+        "a host-only acquire must book nothing: {rows:?}"
+    );
+    assert!(
+        !cache_temp.path().join("worktrees").exists(),
+        "a host-only acquire must not create a worktree directory"
+    );
+}

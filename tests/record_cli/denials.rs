@@ -3,7 +3,8 @@
 //! before the provider is resolved.
 
 use super::fixtures::{
-    Scratch, error_envelope, run_local, run_local_with_role, run_local_with_session,
+    Scratch, error_envelope, run_local, run_local_with_both_sessions, run_local_with_role,
+    run_local_with_session,
 };
 use super::support::{stderr_text, stdout_text};
 
@@ -415,4 +416,141 @@ fn operator_admin_malformed_and_managed_record_denials() {
                 .contains("managed session requires a role")
         );
     }
+}
+
+/// Host marker classification (issue #859 P1): `OPENCODE_SESSION_ID` alone
+/// marks a managed shell and fails closed exactly like
+/// `PHASEGENT_SESSION_ID`, while an ordinary shell without either marker
+/// stays Operator. Blank presence still gates, and the worktree resolver
+/// never borrows the host identity (covered in
+/// `src/worktree_cli_tests/acquire_surface.rs`).
+#[test]
+fn host_marker_without_role_fails_closed_like_managed_session() {
+    let scratch = Scratch::new();
+    let db = scratch.local_db();
+
+    for host in [Some("host-session"), Some("")] {
+        for args in [
+            &[
+                "--provider",
+                "local",
+                "record",
+                "create",
+                "1",
+                "--kind",
+                "executor",
+                "--key",
+                "k",
+                "--phase",
+                "P1",
+                "--attempt",
+                "1",
+                "--body",
+                "n",
+                "--authorized",
+            ][..],
+            &["--provider", "local", "record", "list", "1"][..],
+            &["--provider", "local", "issue", "get", "1"][..],
+        ] {
+            let out = run_local_with_both_sessions(&db, None, None, host, args);
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "host={host:?} args={args:?}: {}",
+                stderr_text(&out)
+            );
+            assert_eq!(stdout_text(&out), "");
+            assert!(
+                error_envelope(&out)["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("managed session requires a role"),
+                "host={host:?} args={args:?}: {}",
+                stderr_text(&out)
+            );
+            assert!(
+                !db.exists(),
+                "host-marker denial must precede storage access"
+            );
+        }
+    }
+
+    // Ordinary Operator without either marker still parses business commands;
+    // `record create` reaches the role/kind gate (exit 3 with the comment
+    // hint), not the managed-missing gate (exit 2).
+    let out = run_local_with_both_sessions(
+        &db,
+        None,
+        None,
+        None,
+        &[
+            "--provider",
+            "local",
+            "record",
+            "create",
+            "1",
+            "--kind",
+            "executor",
+            "--key",
+            "k",
+            "--phase",
+            "P1",
+            "--attempt",
+            "1",
+            "--body",
+            "n",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr_text(&out));
+    assert!(
+        error_envelope(&out)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("use comment create instead"),
+        "{}",
+        stderr_text(&out)
+    );
+
+    // A known role with the host marker present stays authorized: the marker
+    // is classification-only and never overrides the explicit role.
+    super::fixtures::init_local(&db);
+    let issue = super::fixtures::seed_issue(&db, "host marker role check");
+    let id = issue.to_string();
+    let out = run_local_with_both_sessions(
+        &db,
+        Some("explore"),
+        None,
+        Some("host-session"),
+        &["--provider", "local", "record", "list", &id],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+}
+
+#[cfg(unix)]
+#[test]
+fn host_marker_non_utf8_presence_must_fail_closed() {
+    use std::os::unix::ffi::OsStrExt;
+    let scratch = Scratch::new();
+    let out = std::process::Command::new(super::support::phasegent_bin())
+        .args(["--provider", "local", "record", "list", "1"])
+        .current_dir(scratch.path())
+        .env_clear()
+        .env("PHASEGENT_CONFIG_PATH", scratch.path().join("missing.toml"))
+        .env("PHASEGENT_DB_PATH", scratch.path().join("runtime.sqlite3"))
+        .env("PHASEGENT_LOCAL_DB_PATH", scratch.local_db())
+        .env("OPENCODE_SESSION_ID", std::ffi::OsStr::from_bytes(b"\xff"))
+        .output()
+        .expect("spawn isolated host-marker verification");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stdout={} stderr={}",
+        stdout_text(&out),
+        stderr_text(&out)
+    );
+    assert!(stderr_text(&out).contains("managed session requires a role"));
+    assert!(
+        !scratch.local_db().exists(),
+        "denial must precede storage access"
+    );
 }

@@ -20,8 +20,9 @@
 import { rewritePhasegentCommand } from "./command.js";
 import { ensureSessionWorktree } from "./discovery.js";
 import { SHELL_TOOLS } from "./paths.js";
+import { agentRole } from "./roles.js";
 
-export function createRedirectHook() {
+export function createRedirectHook(bridge) {
   return async function executeBefore(event) {
     if (!event || typeof event.input !== "object") return;
     const command = event.input.command;
@@ -29,6 +30,31 @@ export function createRedirectHook() {
     try {
       const rewritten = rewritePhasegentCommand(command, event.sessionID, event);
       if (rewritten !== command) event.input.command = rewritten;
+      // L1 managed bridge: after the existing rewrite, store the exact
+      // rewritten bytes under a fresh nonce and prepend the inert header.
+      // Unknown roles still decorate (marker with no role) so the shell
+      // fails closed instead of becoming Operator. Without a bridge (host
+      // exposes no shell hook) the rewrite-only path stays as-is.
+      if (bridge && typeof bridge.decorate === "function") {
+        try {
+          const sessionID =
+            typeof event.sessionID === "string" ? event.sessionID : null;
+          if (sessionID && sessionID.length > 0) {
+            const role = agentRole(event);
+            const toolCallId = typeof event.id === "string" ? event.id : null;
+            const decorated = bridge.decorate(
+              event.input.command,
+              sessionID,
+              role,
+              toolCallId,
+            );
+            if (typeof decorated === "string") event.input.command = decorated;
+          }
+        } catch (_) {
+          // Decoration never breaks the rewrite; a failed decorate keeps the
+          // rewritten command so the existing path still applies.
+        }
+      }
     } catch (_) {
     }
   };
