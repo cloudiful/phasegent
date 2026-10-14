@@ -17,7 +17,14 @@ shared skill owns the syntax rule and the rest of the protocol.
 
 Pick exactly one tracking mode before work starts, and keep the issue body
 current — the body owns goal, constraints, acceptance criteria, phases, and
-decisions, and the mode definitions live in the shared skill. Never downgrade
+decisions, and the mode definitions live in the shared skill. The shared skill
+owns the proportional-tracking and mechanical-delivery rules; this section owns
+only role execution. When the work is tracked, use the artifact and reuse the
+original issue for a continuing goal, including its authorized delivery. When
+the work is bounded routine under `INLINE`, the primary executes directly with
+proportional validation and no mandatory delegation, issue, phase plan, or
+independent review. Write an executor-ready phase contract only when tracking
+and delegating. Never downgrade
 to `INLINE` from a qualified tracking mode.
 
 ## Write an executor-ready phase
@@ -100,8 +107,9 @@ genuinely needed.
 
 - The default review is one issue-final audit over the complete issue, run after
   every implementation phase is frozen. You do not require a review per
-  implementation phase; the `final` PASS plus a green verification gate is what
-  opens delivery.
+  implementation phase; for substantive tracked work the `final` PASS plus a
+  green verification gate is what opens delivery, while bounded mechanical
+  follow-ups use the shared scoped verification instead of a second full audit.
 - Choose one risk class per phase when you plan it — reversible and localized,
   `high-risk` (data, security, concurrency, schema/migration, a cross-module
   interface, or user-visible behavior), or `irreversible` (an applied migration,
@@ -110,6 +118,10 @@ genuinely needed.
   and only when you write the exact checkpoint boundary into the issue plan
   before the work reaches it; without that boundary the scope stays `final`, and
   the final audit always closes the issue.
+- A tag, publish, or other delivery operation for already-reviewed content never
+  creates a checkpoint by itself; a checkpoint still needs its own named
+  high-risk or irreversible implementation boundary written into the plan before
+  the work reaches it. The canonical classification lives in the shared skill.
 - The reviewer skill owns the quality, test, and evidence responsibilities; this
   section points there instead of duplicating that checklist, and it requires no
   extra review rounds beyond the single final audit plus a named checkpoint when
@@ -197,16 +209,24 @@ pending-question request on the human's behalf or fabricate a human response.
 - The canonical status flow and its command-level gates live in the shared
   skill. Children never call `status *` or `timer *`, never edit the body, and
   never label or close the issue.
-- Close at finish; a cross-project close needs the project override. A
-  successful close flips this issue's active leases to `retained` and runs the
-  guarded worktree cleanup.
+- Close at finish; a cross-project close needs the project override. When
+  authorized Git delivery is part of the task, finish and close only after the
+  requested delivery succeeds. When the task completes without delivery
+  authorization, close the source with an explicit `not committed / not
+  published` result and never claim published delivery before Git success; later
+  authorized delivery appends to the same original issue without a new issue or
+  reopen. A successful close flips this issue's active leases to `retained` and
+  runs the guarded worktree cleanup.
 
 ## Git delivery
 
 - You own commit/push/tag; children never commit, push, tag, or mutate refs.
-- Delivery opens only after the issue-final review returns `PASS` and the
-  issue's validation commands are green; never commit while review or validation
-  is open, and never treat a phase-terminal `DONE` as a delivery gate on its own.
+- For substantive tracked work, delivery opens only after the issue-final review
+  returns `PASS` and the issue's validation commands are green; bounded
+  mechanical follow-ups use the shared scoped verification on the original
+  artifact instead of a second full audit or a separate release issue. Never
+  commit while review or validation is open, and never treat a phase-terminal
+  `DONE` as a delivery gate on its own.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;

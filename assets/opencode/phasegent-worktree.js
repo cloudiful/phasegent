@@ -1918,12 +1918,40 @@ allowlist), and comment authorization. The child reads the artifact and this
 skill for the rest; never restate the mechanism, the plan, or the worktree path.
 The provider always comes from user config; this skill never picks one.
 
-1. **\`INLINE\`** — trivial or read-only work, no plan and no issue. The parent
-   prompt carries the full context; no artifact read and no audit comment.
-   Result shape: the complete result object.
+Reuse the original artifact before creating a new one: when the task continues
+an existing goal, keep its issue through implementation and authorized delivery.
+A release, version, commit, push, or tag follow-up is not a new goal by itself.
+An open original issue keeps the work; a closed original issue takes an
+append-only delivery note with SHA, tag, and validation references, never a
+forced reopen or a separate release issue. Only a truly new scope with its own
+independently executable acceptance and risk contract warrants a new issue; do
+not force unrelated work into an old issue to avoid tracking.
+
+Decide proportional work before the provider mode. Bounded routine stays
+\`INLINE\`; substantive scope takes tracking. User visibility, the number of
+changed files, or an irreversible delivery operation alone never forces a new
+issue or a full phase workflow. Small edits to several manifest files can still
+be mechanical when they only synchronize known version values; a new
+cross-module interface or new security, data, or concurrency behavior is
+substantive and never mechanical.
+
+1. **\`INLINE\`** — read-only work, bounded low-risk chores, spelling or limited
+   docs corrections, and known mechanical edits with clear requirements and
+   proportional validation, including authorized standalone mechanical delivery
+   of reviewed content. The parent prompt carries the full context; no artifact
+   read and no audit comment. The primary may execute directly with no mandatory
+   child delegation, issue, phase plan, or independent review; optional recon or
+   delegation stays available when context needs it. Example: a typo fix or a
+   reviewed version-value sync is \`INLINE\`; a new cross-module interface or an
+   unresolved security, data, concurrency, or architecture decision is not. If
+   the work reveals substantive behavior, dependency, or contract changes, or
+   unresolved security, data, concurrency, or architecture decisions, stop
+   dependent work and establish tracking before implementing them. Result shape:
+   the complete result object.
 2. **\`TRACKED_ISSUE\`** (legacy alias \`REDMINE_ISSUE\`, accept on read, never emit
    on write) — multi-phase, cross-module, API/schema/migration,
-   data/security/concurrency, high-risk, or user-visible work. The issue body on
+   data/security/concurrency, high-risk, or user-visible work that is
+   substantive under the proportional test above. The issue body on
    the configured tracking provider is the plan; comments are append-only audits.
    The child publishes exactly one authorized phase-terminal audit note.
    Result shape: the minimal note-pointer JSON.
@@ -2079,6 +2107,36 @@ CLI gates.
   intermediate reviews. The reviewer's five-token VERDICT vocabulary is
   unchanged; the note and the pointer label the review \`final\` or \`checkpoint\`
   beside the same token.
+- A tag, publish, or other delivery operation for already-reviewed content never
+  creates a checkpoint by itself; a checkpoint still needs its own named
+  high-risk or irreversible implementation boundary written into the plan before
+  the work reaches it.
+
+## Bounded mechanical follow-ups
+
+Post-\`PASS\` work that only synchronizes known version values, keeps
+root-package lock version parity under repository rules, runs
+\`commit\`/\`merge\`/\`push\`/\`tag\`, or executes an existing packaging command with
+no changed implementation, dependencies, workflow, or packaging behavior is
+mechanical. Example: synchronizing \`Cargo.toml\` and \`package.json\` to an
+authorized tag value is mechanical; resolving dependency lock churn, changing
+runtime, schema, interface, or configuration behavior, or editing packaging,
+build, or CI logic is substantive and restores review. The primary validates
+the small mechanical delta directly — scoped parity, required project checks
+as-is (for example \`cargo fmt\`, \`cargo test\`, \`cargo clippy\`), clean tree,
+pushed target, and tag checks — and records the evidence on the original
+artifact with no second whole-implementation audit and no separate release
+issue. The original \`PASS\` never covers substantive post-\`PASS\` edits: for the
+same goal amend the original plan and run fresh final verification and review
+over the changed scope without reducing required final coverage; an
+independently new goal creates a separate issue only when warranted. Missing
+authorization or ambiguous intent is \`BLOCKED\`, never a mechanical exception.
+Closure distinguishes source from delivery: when authorized Git delivery is
+part of the task, finish and close only after the requested delivery succeeds;
+when the task completes without delivery authorization, close the source with
+an explicit \`not committed / not published\` result and never claim published
+delivery before Git success; later authorized delivery appends to the same
+original issue.
 
 ## Bounded parallelism (serial by default)
 
@@ -2373,7 +2431,14 @@ shared skill owns the syntax rule and the rest of the protocol.
 
 Pick exactly one tracking mode before work starts, and keep the issue body
 current — the body owns goal, constraints, acceptance criteria, phases, and
-decisions, and the mode definitions live in the shared skill. Never downgrade
+decisions, and the mode definitions live in the shared skill. The shared skill
+owns the proportional-tracking and mechanical-delivery rules; this section owns
+only role execution. When the work is tracked, use the artifact and reuse the
+original issue for a continuing goal, including its authorized delivery. When
+the work is bounded routine under \`INLINE\`, the primary executes directly with
+proportional validation and no mandatory delegation, issue, phase plan, or
+independent review. Write an executor-ready phase contract only when tracking
+and delegating. Never downgrade
 to \`INLINE\` from a qualified tracking mode.
 
 ## Write an executor-ready phase
@@ -2456,8 +2521,9 @@ genuinely needed.
 
 - The default review is one issue-final audit over the complete issue, run after
   every implementation phase is frozen. You do not require a review per
-  implementation phase; the \`final\` PASS plus a green verification gate is what
-  opens delivery.
+  implementation phase; for substantive tracked work the \`final\` PASS plus a
+  green verification gate is what opens delivery, while bounded mechanical
+  follow-ups use the shared scoped verification instead of a second full audit.
 - Choose one risk class per phase when you plan it — reversible and localized,
   \`high-risk\` (data, security, concurrency, schema/migration, a cross-module
   interface, or user-visible behavior), or \`irreversible\` (an applied migration,
@@ -2466,6 +2532,10 @@ genuinely needed.
   and only when you write the exact checkpoint boundary into the issue plan
   before the work reaches it; without that boundary the scope stays \`final\`, and
   the final audit always closes the issue.
+- A tag, publish, or other delivery operation for already-reviewed content never
+  creates a checkpoint by itself; a checkpoint still needs its own named
+  high-risk or irreversible implementation boundary written into the plan before
+  the work reaches it. The canonical classification lives in the shared skill.
 - The reviewer skill owns the quality, test, and evidence responsibilities; this
   section points there instead of duplicating that checklist, and it requires no
   extra review rounds beyond the single final audit plus a named checkpoint when
@@ -2553,16 +2623,24 @@ pending-question request on the human's behalf or fabricate a human response.
 - The canonical status flow and its command-level gates live in the shared
   skill. Children never call \`status *\` or \`timer *\`, never edit the body, and
   never label or close the issue.
-- Close at finish; a cross-project close needs the project override. A
-  successful close flips this issue's active leases to \`retained\` and runs the
-  guarded worktree cleanup.
+- Close at finish; a cross-project close needs the project override. When
+  authorized Git delivery is part of the task, finish and close only after the
+  requested delivery succeeds. When the task completes without delivery
+  authorization, close the source with an explicit \`not committed / not
+  published\` result and never claim published delivery before Git success; later
+  authorized delivery appends to the same original issue without a new issue or
+  reopen. A successful close flips this issue's active leases to \`retained\` and
+  runs the guarded worktree cleanup.
 
 ## Git delivery
 
 - You own commit/push/tag; children never commit, push, tag, or mutate refs.
-- Delivery opens only after the issue-final review returns \`PASS\` and the
-  issue's validation commands are green; never commit while review or validation
-  is open, and never treat a phase-terminal \`DONE\` as a delivery gate on its own.
+- For substantive tracked work, delivery opens only after the issue-final review
+  returns \`PASS\` and the issue's validation commands are green; bounded
+  mechanical follow-ups use the shared scoped verification on the original
+  artifact instead of a second full audit or a separate release issue. Never
+  commit while review or validation is open, and never treat a phase-terminal
+  \`DONE\` as a delivery gate on its own.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;

@@ -2772,6 +2772,48 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(reviewer).toContain("`REVIEW:` line beside `VERDICT:`");
   });
 
+  test("the embedded prompts carry proportional tracking and original-task delivery (issue 862 P1)", () => {
+    // Bounded routine stays INLINE with direct primary execution; same-goal
+    // delivery reuses the original issue; substantive work keeps the final audit
+    // and tag safety. Stable phrases only, never whole-file equality.
+    const flat = (content) => content.split(/\s+/).join(" ");
+    const contentFor = (id) =>
+      roleSkillDefinitions().find((definition) => definition.id === id).content;
+    const shared = flat(skillDefinition().content);
+    expect(shared).toContain("Reuse the original artifact before creating a new one");
+    expect(shared).toContain("not a new goal by itself");
+    expect(shared).toContain("append-only delivery note");
+    expect(shared).toContain("never a forced reopen or a separate release issue");
+    expect(shared).toContain("alone never forces a new issue");
+    expect(shared).toContain("Small edits to several manifest files can still be mechanical");
+    expect(shared).toContain("new cross-module interface");
+    expect(shared).toContain("including authorized standalone mechanical delivery");
+    expect(shared).toContain("The primary may execute directly with no mandatory");
+    expect(shared).toContain("stop dependent work and establish tracking");
+    expect(shared).toContain("Never downgrade to `INLINE` from a qualified tracking mode");
+    expect(shared).toContain("## Bounded mechanical follow-ups");
+    expect(shared).toContain("only synchronizes known version values");
+    expect(shared).toContain(
+      "synchronizing `Cargo.toml` and `package.json` to an authorized tag value is mechanical",
+    );
+    expect(shared).toContain("is substantive and restores review");
+    expect(shared).toContain("no second whole-implementation audit and no separate release issue");
+    expect(shared).toContain("Missing authorization or ambiguous intent is `BLOCKED`");
+    expect(shared).toContain("never creates a checkpoint by itself");
+    expect(shared).toContain("not committed / not published");
+    const orchestrator = flat(contentFor("phasegent-orchestrator"));
+    expect(orchestrator).toContain("reuse the original issue for a continuing goal");
+    expect(orchestrator).toContain("primary executes directly");
+    expect(orchestrator).toContain("only when tracking and delegating");
+    expect(orchestrator).toContain("For substantive tracked work, delivery opens only after");
+    expect(orchestrator).toContain("instead of a second full audit or a separate release issue");
+    expect(orchestrator).toContain("only after the requested delivery succeeds");
+    expect(orchestrator).toContain("not committed / not published");
+    expect(orchestrator).toContain("Tag only at issue completion");
+    expect(orchestrator).toContain("manifest versions match");
+    expect(orchestrator).toContain("Never downgrade to `INLINE` from a qualified tracking mode");
+  });
+
   test("the embedded prompts carry reviewer quality and evidence duties (issue #832 P1)", () => {
     // Reviewer quality covers correctness/contracts, scoped maintainability and
     // project conventions, and test design/coverage, with evidence-first
