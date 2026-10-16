@@ -1,19 +1,21 @@
-//! Limited retirement of proven-finished Task children (issue 918 P2).
+//! Limited retirement of proven-associated Task children (issues 918 P2, 923 P1).
 //!
-//! A completed Task child can keep a leased worktree occupied after its parent
-//! has already moved on, which previously blocked `worktree prune` as a foreign
-//! occupant. The user explicitly authorized prune to relocate such a child to
-//! the repository's verified main checkout so the directory can be removed.
+//! A Task child can keep a leased worktree occupied after its parent has already
+//! moved on, which previously blocked `worktree prune` as a foreign occupant.
+//! The user explicitly authorized prune to relocate such a child to the
+//! repository's verified main checkout so the directory can be removed.
 //!
-//! The permission is deliberately narrow. Only a session that the host reports
-//! with an `outcome` of exactly `succeeded`, whose `parentID` chain reaches a
-//! persisted `ses_` lease session for this canonical directory, and which is not
-//! itself a lease owner may be moved. Every other occupant — running, unknown,
-//! non-succeeded, foreign, unreadable, cyclic, or deeper than
-//! [`MAX_PARENT_HOPS`] — keeps the whole directory with zero moves. Association
-//! is never inferred from a shared path or from idle age, and the move target is
-//! only ever the verified main checkout, never a path guessed from the current
-//! directory or a parent chain.
+//! The permission is deliberately narrow. Only a session whose `parentID` chain
+//! reaches a persisted `ses_` lease session for this canonical directory, and
+//! which is not itself a lease owner, may be moved. Its execution outcome —
+//! `succeeded`, `failed`, `interrupted`, `cancelled`, absent, or unknown — is
+//! never a cleanup criterion: outcome is not ownership and carries no filesystem
+//! safety, so it neither authorizes nor denies a move. Every other occupant —
+//! foreign, unreadable, cyclic, parentless, or deeper than [`MAX_PARENT_HOPS`] —
+//! keeps the whole directory with zero moves. Association is never inferred from
+//! a shared path or from idle age, and the move target is only ever the verified
+//! main checkout, never a path guessed from the current directory or a parent
+//! chain.
 //!
 //! Planning is read-only and may read through the scan cache; execution
 //! ([`retire`]) re-proves each child immediately before moving it and confirms
@@ -31,17 +33,14 @@ use crate::worktree::{LeaseRow, same_directory};
 /// deeper chain is uncertainty and keeps the directory.
 pub(crate) const MAX_PARENT_HOPS: usize = 8;
 
-/// The exact terminal outcome prune may retire a child from.
-const SUCCEEDED: &str = "succeeded";
-
 /// Read-only retirement decision for one canonical directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RetirementPlan {
     /// Nothing to retire: no `ses_` lease owner, or every owner is already
     /// elsewhere and no child occupies the directory.
     Vacant,
-    /// Every occupant is an individually proven finished descendant; move these
-    /// (sorted, deduplicated) child sessions.
+    /// Every occupant is an individually proven associated descendant; move
+    /// these (sorted, deduplicated) child sessions.
     Retire(Vec<String>),
     /// The directory must be kept; the bounded reason naming why.
     Keep(String),
@@ -122,7 +121,7 @@ pub(crate) fn plan(
         Ok(main) if !same_directory(main, directory) => RetirementPlan::Retire(children),
         Ok(_) => RetirementPlan::Keep("the directory is the repository's main checkout".to_owned()),
         Err(reason) => RetirementPlan::Keep(format!(
-            "no verified main checkout to move finished child sessions to: {reason}"
+            "no verified main checkout to move associated child sessions to: {reason}"
         )),
     }
 }
@@ -153,7 +152,7 @@ pub(crate) fn retire(
             return RetirementOutcome {
                 moved: Vec::new(),
                 failure: Some(format!(
-                    "no verified main checkout to move finished child sessions to: {reason}"
+                    "no verified main checkout to move associated child sessions to: {reason}"
                 )),
             };
         }
@@ -176,7 +175,7 @@ pub(crate) fn retire(
             return RetirementOutcome {
                 moved,
                 failure: Some(format!(
-                    "moving finished child session '{child}' failed: {}",
+                    "moving associated child session '{child}' failed: {}",
                     crate::worktree::bounded(&error.message)
                 )),
             };
@@ -191,7 +190,7 @@ pub(crate) fn retire(
                 return RetirementOutcome {
                     moved,
                     failure: Some(format!(
-                        "finished child session '{child}' has not moved to the main checkout yet"
+                        "associated child session '{child}' has not moved to the main checkout yet"
                     )),
                 };
             }
@@ -199,7 +198,7 @@ pub(crate) fn retire(
                 return RetirementOutcome {
                     moved,
                     failure: Some(format!(
-                        "finished child session '{child}' could not be confirmed after the move request: {}",
+                        "associated child session '{child}' could not be confirmed after the move request: {}",
                         crate::worktree::bounded(&error.message)
                     )),
                 };
@@ -239,12 +238,17 @@ fn child_eligibility(
     if !same_directory(Path::new(&session.directory), directory) {
         return ChildEligibility::AlreadyElsewhere;
     }
-    if session.outcome.as_deref() != Some(SUCCEEDED) {
-        return ChildEligibility::Reject(not_finished(id, session.outcome.as_deref()));
-    }
+    // Execution outcome is not a cleanup criterion: succeeded, failed,
+    // interrupted, cancelled, absent, or unknown all follow this same
+    // association rule. Only a proven `parentID` chain to a lease owner of this
+    // directory authorizes the move.
     let mut current = match session.parent_id.as_deref() {
         Some(parent) => parent.to_owned(),
-        None => return ChildEligibility::Reject(not_finished(id, Some("no parent"))),
+        None => {
+            return ChildEligibility::Reject(format!(
+                "OpenCode session '{id}' has no parent metadata, so it is not proven to descend from a lease owner of this directory"
+            ));
+        }
     };
     let mut visited: HashSet<String> = HashSet::new();
     visited.insert(id.to_owned());
@@ -278,15 +282,6 @@ fn child_eligibility(
     ChildEligibility::Reject(format!(
         "OpenCode session '{id}' has a parent chain deeper than {MAX_PARENT_HOPS} hops; kept safely"
     ))
-}
-
-fn not_finished(id: &str, outcome: Option<&str>) -> String {
-    match outcome {
-        Some(outcome) => format!(
-            "OpenCode session '{id}' has outcome '{outcome}', which is not a proven finished state"
-        ),
-        None => format!("OpenCode session '{id}' has no proven finished state"),
-    }
 }
 
 fn incomplete_listing(error: &ApiError) -> String {

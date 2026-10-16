@@ -180,12 +180,13 @@ recovery. It reuses the same candidate guards as close/sync — never the main
 checkout, never a path an `active` lease points at, never dirty or untracked
 contents, and never a directory the OpenCode host still occupies, checked
 read-only — with one narrow, user-authorized exception: a directory whose only
-remaining occupant is one or more individually proven finished child sessions
-(the host's exact `succeeded` outcome, a `parentID` chain of at most 8 hops
-reaching a persisted `ses_` lease session for that directory, and not itself a
-lease owner) may be cleaned after prune relocates exactly those children to the
-repository's verified main checkout and re-confirms vacancy with fresh evidence.
-A running, unknown, foreign, unreadable, non-succeeded, cyclic, or over-deep
+remaining occupant is one or more individually proven associated child sessions
+(a `parentID` chain of at most 8 hops reaching a persisted `ses_` lease session
+for that directory, and not itself a lease owner) may be cleaned after prune
+relocates exactly those children to the repository's verified main checkout and
+re-confirms vacancy with fresh evidence. The child's execution outcome, whether
+succeeded, failed, interrupted, cancelled, absent, or unknown, is never a cleanup
+criterion. A foreign, unreadable, parentless, cyclic, or over-deep
 session, an unavailable main checkout, or a failed or unconfirmed move keeps the
 directory; prune never moves a lease owner or an unrelated session. The local
 guards — main checkout, active peer, dirty or untracked contents — are decided

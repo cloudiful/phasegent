@@ -489,13 +489,13 @@ pub(crate) fn render_text(aggregate: &PruneAggregate) -> String {
                     // confirmed moves.
                     if !action.relocated_children.is_empty() {
                         lines.push(format!(
-                            "  -   relocated finished child session(s): {}",
+                            "  -   relocated associated child session(s): {}",
                             action.relocated_children.join(", ")
                         ));
                     }
                     if !action.planned_children.is_empty() {
                         lines.push(format!(
-                            "  -   would relocate finished child session(s): {}",
+                            "  -   would relocate associated child session(s): {}",
                             action.planned_children.join(", ")
                         ));
                     }

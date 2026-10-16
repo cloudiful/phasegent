@@ -2506,13 +2506,14 @@ Boundaries:
   owner), never dirty or untracked contents, and never a directory the OpenCode
   host still (or cannot be proven not to) occupy, checked read-only. Its one
   relocation exception is narrow and user-authorized: a directory whose only
-  remaining occupant is one or more individually proven *finished* child
-  sessions (the host's exact \`outcome\` is \`succeeded\`, the \`parentID\` chain of at
-  most 8 hops reaches a persisted \`ses_\` lease session for that directory, and
-  the child is not itself a lease owner) may be cleaned after prune relocates
-  exactly those children to the repository's verified main checkout and
-  re-confirms vacancy with fresh evidence. A running, unknown, foreign,
-  unreadable, non-succeeded, cyclic, or over-deep session, a hosted lease owner,
+  remaining occupant is one or more individually proven *associated* child
+  sessions (the \`parentID\` chain of at most 8 hops reaches a persisted \`ses_\`
+  lease session for that directory, and the child is not itself a lease owner)
+  may be cleaned after prune relocates exactly those children to the repository's
+  verified main checkout and re-confirms vacancy with fresh evidence. The child's
+  execution outcome — \`succeeded\`, \`failed\`, \`interrupted\`, \`cancelled\`, absent,
+  or unknown — is never a cleanup criterion. A foreign, unreadable, parentless,
+  cyclic, or over-deep session, a hosted lease owner,
   an unavailable main checkout, or a failed or unconfirmed move keeps the
   directory with zero further moves; prune never moves a lease owner or an
   unrelated session. A missing, unavailable, ambiguous, or mismatched

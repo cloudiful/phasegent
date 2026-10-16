@@ -749,9 +749,10 @@ fn prune_rejects_a_missing_explicit_repo() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue 918 P2: retire proven-finished child sessions so a completed-child
-// worktree can be cleaned, without deleting a directory a running, unknown, or
-// unrelated session still uses.
+// Issues 918 P2 / 923 P1: retire proven-associated child sessions so a
+// child-occupied worktree can be cleaned, without deleting a directory an
+// unrelated or foreign session still uses and without treating execution
+// outcome as a cleanup criterion.
 // ---------------------------------------------------------------------------
 
 /// A retained lease for `session` on a fresh real worktree, plus helpers to
@@ -768,7 +769,7 @@ fn owner_lease(storage: &Storage, identity: &str, target: &std::path::Path, sess
 }
 
 #[test]
-fn prune_retires_a_succeeded_child_and_removes_the_directory() {
+fn prune_retires_an_associated_child_and_removes_the_directory() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("prune-918-direct") else {
         return;
@@ -779,7 +780,7 @@ fn prune_retires_a_succeeded_child_and_removes_the_directory() {
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let target = add_real_worktree(&repo, "phasegent/918-direct1");
     owner_lease(&storage, &identity, &target, "ses_owner");
-    // The owner is elsewhere; a completed child still occupies the directory.
+    // The owner is elsewhere; an associated child still occupies the directory.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())
         .with_child("ses_child", &target, "ses_owner")
@@ -788,7 +789,7 @@ fn prune_retires_a_succeeded_child_and_removes_the_directory() {
     let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
     assert_eq!(
         summary.removed, 1,
-        "the completed-child directory is removed"
+        "the associated-child directory is removed"
     );
     assert!(!target.exists());
     let moves = api.moves();
@@ -805,7 +806,7 @@ fn prune_retires_a_succeeded_child_and_removes_the_directory() {
 }
 
 #[test]
-fn prune_retires_a_nested_succeeded_descendant_through_an_intermediate_parent() {
+fn prune_retires_a_nested_associated_descendant_through_an_intermediate_parent() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("prune-918-nested") else {
         return;
@@ -831,7 +832,7 @@ fn prune_retires_a_nested_succeeded_descendant_through_an_intermediate_parent() 
     let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
     assert_eq!(
         summary.removed, 1,
-        "a nested finished descendant is retired"
+        "a nested associated descendant is retired"
     );
     assert!(!target.exists());
     assert_eq!(
@@ -844,7 +845,7 @@ fn prune_retires_a_nested_succeeded_descendant_through_an_intermediate_parent() 
 }
 
 #[test]
-fn prune_retires_multiple_finished_children_together() {
+fn prune_retires_multiple_associated_children_together() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("prune-918-multi-child") else {
         return;
@@ -907,52 +908,74 @@ fn prune_never_moves_a_lease_owner_that_still_occupies_the_directory() {
 }
 
 #[test]
-fn prune_keeps_a_running_child_with_zero_moves() {
-    let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("prune-918-running") else {
-        return;
-    };
-    let (_temp, storage, _env) = open_temp_db("prune-918-running");
-    ensure_schema(&storage).expect("schema");
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let target = add_real_worktree(&repo, "phasegent/918-running1");
-    owner_lease(&storage, &identity, &target, "ses_owner");
-    // A child with no outcome is running/unfinished, never retired.
-    let api = FakeOpenCodeApi::empty()
-        .with_session("ses_owner", repo.dir.path())
-        .with_child("ses_child", &target, "ses_owner");
-    let source = ScriptedIssueStateSource::closed();
-    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
-    assert_eq!(summary.removed, 0, "a running child keeps the directory");
-    assert!(target.exists());
-    assert!(api.moves().is_empty(), "no move for a non-finished child");
+fn prune_retires_an_associated_child_regardless_of_outcome() {
+    // Execution outcome is not a cleanup criterion: every outcome for an
+    // otherwise-associable child is eligible, including a missing one.
+    for outcome in [
+        Some("succeeded"),
+        Some("failed"),
+        Some("interrupted"),
+        Some("cancelled"),
+        None,
+    ] {
+        let label = outcome.unwrap_or("missing");
+        let _lock = lock_workflow_tests();
+        let Some(repo) = TempRepo::init(&format!("prune-923-outcome-{label}")) else {
+            return;
+        };
+        let (_temp, storage, _env) = open_temp_db(&format!("prune-923-outcome-{label}"));
+        ensure_schema(&storage).expect("schema");
+        let runner = ProcessWorktreeRunner::new();
+        let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+        let target = add_real_worktree(&repo, &format!("phasegent/923-{label}1"));
+        owner_lease(&storage, &identity, &target, "ses_owner");
+        let mut api = FakeOpenCodeApi::empty()
+            .with_session("ses_owner", repo.dir.path())
+            .with_child("ses_child", &target, "ses_owner");
+        if let Some(outcome) = outcome {
+            api = api.with_outcome("ses_child", outcome);
+        }
+        let source = ScriptedIssueStateSource::closed();
+        let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+        assert_eq!(
+            summary.removed, 1,
+            "a child with outcome {label} is eligible"
+        );
+        assert!(!target.exists());
+        assert_eq!(
+            api.moves(),
+            vec![(
+                "ses_child".to_owned(),
+                repo.dir.path().to_string_lossy().into_owned()
+            )],
+            "the associated child is relocated for outcome {label}"
+        );
+    }
 }
 
 #[test]
-fn prune_keeps_a_non_succeeded_outcome_with_zero_moves() {
+fn prune_keeps_an_unassociated_child_with_zero_moves() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("prune-918-outcome") else {
+    let Some(repo) = TempRepo::init("prune-923-unassociated") else {
         return;
     };
-    let (_temp, storage, _env) = open_temp_db("prune-918-outcome");
+    let (_temp, storage, _env) = open_temp_db("prune-923-unassociated");
     ensure_schema(&storage).expect("schema");
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let target = add_real_worktree(&repo, "phasegent/918-outcome1");
+    let target = add_real_worktree(&repo, "phasegent/923-unassoc1");
     owner_lease(&storage, &identity, &target, "ses_owner");
+    // No `parentID`: the child cannot be proven to descend from the owner, so
+    // no outcome can authorize a move.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())
-        .with_child("ses_child", &target, "ses_owner")
-        .with_outcome("ses_child", "cancelled");
+        .with_session("ses_child", &target)
+        .with_outcome("ses_child", "succeeded");
     let source = ScriptedIssueStateSource::closed();
     let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
-    assert_eq!(
-        summary.removed, 0,
-        "only 'succeeded' is a proven finished state"
-    );
+    assert_eq!(summary.removed, 0, "an unproven child keeps the directory");
     assert!(target.exists());
-    assert!(api.moves().is_empty());
+    assert!(api.moves().is_empty(), "no move without association");
 }
 
 #[test]
@@ -967,7 +990,7 @@ fn prune_keeps_a_child_with_no_parent_metadata() {
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let target = add_real_worktree(&repo, "phasegent/918-noparent1");
     owner_lease(&storage, &identity, &target, "ses_owner");
-    // A succeeded session with no parentID is not a proven descendant.
+    // A session with no parentID is not a proven descendant.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())
         .with_session("ses_orphan", &target)
@@ -1064,7 +1087,7 @@ fn prune_keeps_a_foreign_occupant_with_zero_moves() {
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let target = add_real_worktree(&repo, "phasegent/918-foreign1");
     owner_lease(&storage, &identity, &target, "ses_owner");
-    // A succeeded session whose ancestry never reaches this directory's owner.
+    // A session whose ancestry never reaches this directory's owner.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())
         .with_child("ses_other", &target, "ses_elsewhere")
@@ -1171,25 +1194,27 @@ fn prune_keeps_the_directory_when_the_move_is_rejected() {
 }
 
 #[test]
-fn prune_stale_scan_defeated_by_a_running_child_at_recheck() {
+fn prune_outcome_change_between_scan_and_recheck_does_not_block_removal() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("prune-918-stale") else {
+    let Some(repo) = TempRepo::init("prune-923-stale") else {
         return;
     };
-    let (_temp, storage, _env) = open_temp_db("prune-918-stale");
+    let (_temp, storage, _env) = open_temp_db("prune-923-stale");
     ensure_schema(&storage).expect("schema");
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let target = add_real_worktree(&repo, "phasegent/918-stale001");
+    let target = add_real_worktree(&repo, "phasegent/923-stale001");
     owner_lease(&storage, &identity, &target, "ses_owner");
-    // The scan sees a finished child; the fresh host finds it running again.
+    // The scan sees a `succeeded` child; the fresh host reports `failed`. The
+    // association is unchanged, so the outcome change alone must not block.
     let scan_host = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())
         .with_child("ses_child", &target, "ses_owner")
         .with_outcome("ses_child", "succeeded");
     let fresh_host = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())
-        .with_child("ses_child", &target, "ses_owner");
+        .with_child("ses_child", &target, "ses_owner")
+        .with_outcome("ses_child", "failed");
     let rows = list_all_for_repo(&storage, &identity).expect("list");
     let pinned = pinned_active_paths(&rows);
     let scope = PruneScope {
@@ -1211,11 +1236,17 @@ fn prune_stale_scan_defeated_by_a_running_child_at_recheck() {
         &|_| {},
     );
     assert_eq!(
-        summary.removed, 0,
-        "a fresh running child defeats the stale scan plan"
+        summary.removed, 1,
+        "an outcome change between scan and recheck does not alone block"
     );
-    assert!(target.exists());
-    assert!(fresh_host.moves().is_empty());
+    assert!(!target.exists());
+    assert_eq!(
+        fresh_host.moves(),
+        vec![(
+            "ses_child".to_owned(),
+            repo.dir.path().to_string_lossy().into_owned()
+        )]
+    );
     assert!(scan_host.moves().is_empty());
 }
 
@@ -1370,7 +1401,7 @@ fn prune_keeps_a_mixed_eligible_and_foreign_directory_with_zero_moves() {
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let target = add_real_worktree(&repo, "phasegent/918-mixed001");
     owner_lease(&storage, &identity, &target, "ses_owner");
-    // One eligible finished child plus one foreign occupant: the foreign one
+    // One eligible associated child plus one foreign occupant: the foreign one
     // blocks the whole directory, so the eligible child is NOT moved either.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_owner", repo.dir.path())

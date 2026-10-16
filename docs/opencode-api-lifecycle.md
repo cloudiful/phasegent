@@ -118,14 +118,16 @@ uses only the host's in-process session APIs.
   directory when the fresh answer differs. A few progress lines stream to
   stderr, flushed before the host and closure checks, so a long scan is visibly
   working; stdout stays reserved for the final text or the single JSON document.
-- **Prune's one relocation exception is narrow and user-authorized (issue 918
-  P2).** The shared guard still never moves a session, but prune itself may
-  relocate an individually proven *finished* child so a completed-child worktree
-  can be cleaned. A child qualifies only when the host reports its exact
-  `outcome` as `succeeded`, its `parentID` chain (at most 8 hops, cycle- and
-  error-guarded) reaches a persisted `ses_` lease session for that canonical
-  directory, and the child is not itself a lease owner. Every other occupant — a
-  running, unknown, foreign, unreadable, non-succeeded, cyclic, or over-deep
+- **Prune's one relocation exception is narrow and user-authorized (issues 918
+  P2, 923 P1).** The shared guard still never moves a session, but prune itself
+  may relocate an individually proven *associated* child so a child-occupied
+  worktree can be cleaned. A child qualifies only when its `parentID` chain (at
+  most 8 hops, cycle- and error-guarded) reaches a persisted `ses_` lease session
+  for that canonical directory and the child is not itself a lease owner. Its
+  execution outcome is never a cleanup criterion: `succeeded`, `failed`,
+  `interrupted`, `cancelled`, absent, or unknown all follow the same association
+  rule, because outcome is not ownership and carries no filesystem safety.
+  Every other occupant — a foreign, unreadable, parentless, cyclic, or over-deep
   session, or a hosted lease owner — keeps the whole directory with zero moves.
   The target is the existing `TargetResolver`'s verified main checkout, never a
   path guessed from the current directory or a parent chain; a failed or merely

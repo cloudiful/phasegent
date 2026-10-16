@@ -79,10 +79,11 @@ impl OpenCodeApi for ScanHostCache<'_> {
 }
 
 /// A read-only projection over another [`OpenCodeApi`] that omits a set of
-/// already-validated finished child sessions from every listing (issue 918 P2).
+/// already-validated associated child sessions from every listing (issues 918
+/// P2, 923 P1).
 ///
 /// The shared candidate guard evaluates occupancy through this view so an
-/// eligible finished child does not read as a foreign occupant. It hides only
+/// eligible associated child does not read as a foreign occupant. It hides only
 /// the ids handed to it, never rewrites a directory, refuses
 /// [`OpenCodeApi::move_session`], and is used for the *scan* only: the removal
 /// path always re-proves vacancy through the original, uncached API.

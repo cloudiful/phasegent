@@ -483,7 +483,7 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
     // A confirmed move is factual and prints as `relocated`, even on the kept
     // directory whose final result is `skipped_protected`.
     assert!(
-        text.contains("relocated finished child session(s): ses_child1"),
+        text.contains("relocated associated child session(s): ses_child1"),
         "got: {text}"
     );
     assert!(
@@ -491,12 +491,12 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
         "got: {text}"
     );
     assert!(
-        text.contains("relocated finished child session(s): ses_child2"),
+        text.contains("relocated associated child session(s): ses_child2"),
         "got: {text}"
     );
     // A preview proposal is labelled distinctly, never as an actual move.
     assert!(
-        text.contains("would relocate finished child session(s): ses_child3"),
+        text.contains("would relocate associated child session(s): ses_child3"),
         "got: {text}"
     );
     assert!(text.contains("skipped /tmp/gone/.git"), "got: {text}");

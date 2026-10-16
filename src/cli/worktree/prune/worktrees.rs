@@ -279,8 +279,8 @@ fn classify(
     }
 }
 
-/// A directory's disposition plus the finished children a removal would first
-/// retire (issue 918 P2).
+/// A directory's disposition plus the associated children a removal would first
+/// retire (issues 918 P2, 923 P1).
 struct Classification {
     disposition: PruneDisposition,
     retire: Vec<String>,
@@ -297,7 +297,7 @@ impl Classification {
 
 /// The ordered decision for one directory: active, absent, unknown, guard,
 /// closure, removable. When the only thing keeping the directory is a set of
-/// individually proven finished child sessions, the shared guard is evaluated
+/// individually proven associated child sessions, the shared guard is evaluated
 /// through a read-only projection that hides exactly those children, and the
 /// removable result carries them for retirement at apply time.
 #[allow(clippy::too_many_arguments)]
@@ -382,7 +382,7 @@ fn classify_group(
 /// The shared guard's verdict for one directory (local guards, then occupancy,
 /// then closure), or `None` when the directory may be removed. The occupancy
 /// half reads through whatever `api` is passed: the raw host, or the read-only
-/// projection that hides already-proven finished children.
+/// projection that hides already-proven associated children.
 #[allow(clippy::too_many_arguments)]
 fn guard_verdict(
     runner: &dyn WorktreeRunner,
@@ -416,7 +416,7 @@ fn cleanup_mode_for(mode: PruneMode) -> CleanupMode {
     // session, so a preview may discover the host read-only while a removal
     // re-proves it. Only the close chain is allowed to move a session; prune's
     // own, narrowly-scoped retire step (issue 918 P2) moves only proven
-    // finished children, outside this shared guard.
+    // associated children, outside this shared guard.
     match mode {
         PruneMode::Report | PruneMode::Remove => CleanupMode::Sync,
     }
@@ -598,7 +598,7 @@ fn apply_candidate(
                 ));
                 // Re-read rows and guards immediately before removal so a
                 // state change between scan and apply keeps the directory, and
-                // retire only freshly re-proven finished children.
+                // retire only freshly re-proven associated children.
                 let outcome = recheck(
                     storage,
                     runner,
@@ -625,7 +625,7 @@ fn apply_candidate(
 }
 
 /// Re-evaluate one directory against fresh rows and guards, retiring any freshly
-/// re-proven finished children before removal. `keep_reason` is `Some` when the
+/// re-proven associated children before removal. `keep_reason` is `Some` when the
 /// directory must survive; `moved` names the children whose relocation to the
 /// main checkout was confirmed (even when a later step kept the directory).
 struct Recheck {
@@ -702,7 +702,7 @@ fn recheck(
     // original, uncached host and fresh rows before any removal.
     let owners = child_retirement::lease_owners(&fresh, &candidate.canonical_path);
     progress(&format!(
-        "retiring {} finished child session(s) from {}",
+        "retiring {} associated child session(s) from {}",
         classification.retire.len(),
         candidate.worktree_path
     ));

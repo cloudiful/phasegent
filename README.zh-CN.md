@@ -156,12 +156,12 @@ lease 引用该目录、且工作树 Git 干净时才会移除——没有等待
 显式的 `--release-stale` 恢复。它复用与 close/sync 相同的候选保护——绝不删除主
 checkout、绝不动有 `active` lease 的路径、绝不删除 dirty/untracked 内容，也绝不
 删除 OpenCode host 仍占用的目录（只读检查）。唯一的例外是一项用户显式授权的窄权限：
-当目录的唯一剩余占用者是一个或多个已单独证明完成的子会话（host 报告精确
-`outcome` 为 `succeeded`、`parentID` 链最多 8 跳可达该目录的持久 `ses_` lease
-会话、且自身不是 lease owner）时，prune 会先把这些子会话迁移到该仓库经验证的主
-checkout，并以新证据重新确认目录已空后才清理。运行中、未知、外部、不可读、非
-`succeeded`、成环或过深的会话、不可用的主 checkout，以及失败或未确认的迁移，都
-会保留目录；prune 绝不迁移 lease owner 或无关会话。本地保护——主 checkout、有
+当目录的唯一剩余占用者是一个或多个已单独证明关联的子会话（`parentID` 链最多 8 跳
+可达该目录的持久 `ses_` lease 会话、且自身不是 lease owner）时，prune 会先把这些
+子会话迁移到该仓库经验证的主 checkout，并以新证据重新确认目录已空后才清理。子会话
+的执行结果——`succeeded`、`failed`、`interrupted`、`cancelled`、缺失或未知——绝不是
+清理判据。外部、不可读、无父级、成环或过深的会话、不可用的主 checkout，以及失败或
+未确认的迁移，都会保留目录；prune 绝不迁移 lease owner 或无关会话。本地保护——主 checkout、有
 `active` lease 的路径、dirty 或 untracked 内容——先于任何 host 读取判定，因此这类
 目录会在不访问 host 的情况下被排除。报告如实反映迁移：一次移除只列出它已确认迁移
 的子会话（即便之后的占用检查最终保留了目录），而预览只列出建议迁移、绝不将其标记
