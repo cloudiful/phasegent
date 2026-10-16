@@ -26,3 +26,5 @@ gen/
 
 # Task scratch for managed shell fix (issue #859): untracked AI work area.
 /.cache/ai/
+# Playwright CLI output (may contain credentials)
+.playwright-cli/
