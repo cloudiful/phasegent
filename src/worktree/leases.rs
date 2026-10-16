@@ -557,6 +557,45 @@ pub fn list_for_repo(storage: &Storage, identity: &str) -> Result<Vec<LeaseRow>,
     )
 }
 
+/// Every lease row for `identity`, without the [`MAX_LEASES_PER_QUERY`]
+/// ceiling. The capped [`list_for_repo`] stays the read for every other
+/// caller; this uncapped read exists for the prune pass, which must consider
+/// every recorded row (a directory whose only active reference sits beyond
+/// row 256 must still block removal).
+pub fn list_all_for_repo(
+    storage: &Storage,
+    identity: &str,
+) -> Result<Vec<LeaseRow>, WorktreeError> {
+    query_leases(
+        &storage.connection,
+        &format!("{LEASE_SELECT} WHERE repo_identity = ?1 ORDER BY created_at DESC"),
+        &[&identity],
+        "repo-all",
+    )
+}
+
+/// Every repository identity the lease table records, in a deterministic
+/// order. This is the storage enumeration behind `issue sync --all` and the
+/// global `worktree prune`: it reads the table the same way `list_for_repo`
+/// does, scoped to the distinct identities, so a caller never has to walk the
+/// filesystem looking for checkouts.
+pub fn repo_identities(storage: &Storage) -> Result<Vec<String>, WorktreeError> {
+    let mut statement = storage
+        .connection
+        .prepare("SELECT DISTINCT repo_identity FROM worktree_leases ORDER BY repo_identity")
+        .map_err(|error| WorktreeError::new("storage", format!("prepare repo scan: {error}")))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| WorktreeError::new("storage", format!("repo scan: {error}")))?;
+    let mut identities = Vec::new();
+    for row in rows {
+        identities.push(
+            row.map_err(|error| WorktreeError::new("storage", format!("repo row: {error}")))?,
+        );
+    }
+    Ok(identities)
+}
+
 fn decode_lease_row(row: &rusqlite::Row<'_>) -> Result<LeaseRow, rusqlite::Error> {
     Ok(LeaseRow {
         lease_id: row.get(0)?,

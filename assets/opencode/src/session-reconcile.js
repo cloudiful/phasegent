@@ -7,15 +7,26 @@
 // be gone by the time the next prompt arrives. So the host is read fresh and
 // three rules follow from its answer:
 //
-//   * a placement this adapter already *settled* is never reversed — the host
-//     reporting somewhere else is evidence that something else moved it;
+//   * a placement this adapter already *settled and the host confirmed* is never
+//     reversed — the host reporting somewhere else is evidence that something
+//     else moved it;
+//   * a move that was only *admitted* (issue 919 P1) is not an external
+//     relocation: the host has not applied it yet, so a differing answer keeps
+//     the registered target rather than dropping it;
 //   * an unreadable host is not evidence that the placement still holds. The
 //     directory may already be gone, so the cached target is dropped rather
 //     than re-entered on an unproven assumption;
 //   * a session that is not settled is left alone, so a session still sitting
 //     in the main checkout before its first placement keeps that placement.
 
-import { forgetSessionWorktree, readAuthoritativeDirectory, sessionPlaced, sessionWorktrees } from "./session.js";
+import {
+  forgetSessionWorktree,
+  markConfirmed,
+  readAuthoritativeDirectory,
+  sessionPlaced,
+  sessionWorktrees,
+} from "./session.js";
+import { placementDiagnostic } from "./runtime.js";
 
 // True when the cached target for `sessionId` may still be used.
 //
@@ -32,7 +43,12 @@ export async function reconcileSessionLocation(context, sessionId, readDirectory
   // still names may already have been removed.
   if (!directory || (registered && directory !== registered)) {
     forgetSessionWorktree(sessionId, registered);
+    placementDiagnostic("skip", {
+      session: sessionId === undefined || sessionId === null ? undefined : String(sessionId),
+      reason: "reconciled-elsewhere",
+    });
     return false;
   }
+  markConfirmed(sessionId);
   return true;
 }

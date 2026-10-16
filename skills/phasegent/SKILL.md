@@ -399,12 +399,23 @@ owns the session identity and the lease side, so no session id, worktree path,
 or lease call travels between sessions. Wiring is automatic: never mint a fresh
 session id per command or per phase, and a child session inherits its parent's
 worktree from the session prompt hook, before the child's runner reaches its
-first tool call. Placement is decided once per session during prompt admission
-and uses `session.move`: a registered, inherited, or already leased worktree is
-entered there, while a no-worktree session continues normally and the placement
-is never repeated. If the required move is unavailable or the host rejects it,
-the prompt hook throws so the turn is not run in the old checkout, and the next
-prompt retries; only ordinary discovery failures keep the original directory.
+first tool call. The registry is exact per session (issue 919 P1): a session
+only ever uses the worktree recorded under its own id, a child only inherits its
+parent's directory, and an unknown session, unknown root, or unresolvable parent
+is never moved or redirected into another session's worktree. Placement is
+decided once per session during prompt admission and uses `session.move`: a
+fresh own-session host read — not the plugin's own location or a cached value —
+decides whether a known placement still needs a move, a read that already equals
+the target settles it with no move, and a registered, inherited, or already
+leased worktree is entered there, while a no-worktree session continues normally
+and the placement is never repeated. If the required move is unavailable, the
+host cannot report the session's current directory, or the host rejects the
+move, the prompt hook throws so the turn is not run in an unverified or old
+checkout, and the next prompt retries; only ordinary discovery failures keep the
+original directory. Each placement decision emits one bounded diagnostic line
+(session, parent, from, to, reason, outcome); an accepted move is never reported
+as confirmed. `PHASEGENT_WORKTREE_NO_DISCOVER=1` stays inert: it adds no host
+read and never auto-moves.
 
 Creating a worktree is opt-in: `issue create` and the adapter's lazy path reuse
 an existing lease, an inherited worktree, or the current checkout, and a conflict
@@ -420,10 +431,29 @@ Boundaries:
   cleanup.
 - An acquire against a base ref that does not resolve fails locally before any
   worktree, branch, or lease is written.
-- `phasegent worktree prune` reports stale active leases and removable
-  worktrees (read-only). Releasing stale leases and removing worktrees are
-  separate explicit actions, and removal only ever touches clean, expired,
-  retained worktrees; an owner is never guessed.
+- `phasegent worktree prune` is global and removal-by-default: without `--repo`
+  it enumerates every repository identity the local lease store records, and
+  `--dryrun`/`--dry-run` is the read-only preview that mutates nothing. A
+  directory is removed as soon as every issue associated with it is confirmed
+  closed on the configured provider, no active lease references it, and it is
+  Git-clean — with no waiting period, so `--stale-days` only affects the
+  explicit `--release-stale` recovery. It reuses the same guards as close/sync —
+  never the main checkout, never an active peer's path (including the same
+  owner), never dirty or untracked contents, and never a directory the OpenCode
+  host still (or cannot be proven not to) occupy, checked read-only. Its one
+  relocation exception is narrow and user-authorized: a directory whose only
+  remaining occupant is one or more individually proven *finished* child
+  sessions (the host's exact `outcome` is `succeeded`, the `parentID` chain of at
+  most 8 hops reaches a persisted `ses_` lease session for that directory, and
+  the child is not itself a lease owner) may be cleaned after prune relocates
+  exactly those children to the repository's verified main checkout and
+  re-confirms vacancy with fresh evidence. A running, unknown, foreign,
+  unreadable, non-succeeded, cyclic, or over-deep session, a hosted lease owner,
+  an unavailable main checkout, or a failed or unconfirmed move keeps the
+  directory with zero further moves; prune never moves a lease owner or an
+  unrelated session. A missing, unavailable, ambiguous, or mismatched
+  issue is never treated as closed. Default output is concise text with
+  directory-based counts; `--json` selects the machine-readable aggregate.
 - Forced release is the attributed override: it requires a reason and the lease
   row stays (rows are never deleted).
 - `worktree probe` is read-only: it reports existence,

@@ -1,6 +1,8 @@
 use super::support::*;
 use super::*;
 
+use crate::worktree::opencode::ProcessOpenCodeApi;
+
 pub(crate) fn run_cli_acquire_in_temp_repo(
     repo: &TempRepo,
     _db_path: &std::path::Path,
@@ -63,20 +65,51 @@ pub(crate) fn insert_lease_for_identity(
     .expect("insert row");
 }
 
-pub(crate) fn prune_command(
+/// Run `worktree prune` for `repo` through the injectable core with a
+/// scripted issue-state source, so no test reaches a real provider. `stale_days`
+/// is 999 by default in the issue 916 tests: directory removal must not depend
+/// on it. The production host and a no-op progress sink are used.
+pub(crate) fn run_scoped_prune(
     repo: &TempRepo,
+    stale_days: u32,
     release_stale: bool,
-    remove: bool,
     reason: Option<&str>,
-) -> WorktreeCommand {
-    WorktreeCommand::Prune {
-        repo: Some(repo.dir.path().to_string_lossy().to_string()),
-        stale_days: 14,
+    dry_run: bool,
+    format: &str,
+    source: &dyn IssueStateSource,
+) -> i32 {
+    let path = repo.dir.path().to_string_lossy().into_owned();
+    execute_prune_with_source(
+        Some(&path),
+        stale_days,
         release_stale,
-        remove,
-        reason: reason.map(str::to_owned),
-        no_sync: false,
-    }
+        reason.map(str::to_owned),
+        dry_run,
+        format,
+        source,
+        &ProcessOpenCodeApi::new(),
+        &|_| {},
+    )
+}
+
+/// Run the global (no `--repo`) prune through the injectable core.
+pub(crate) fn run_global_prune(
+    stale_days: u32,
+    dry_run: bool,
+    format: &str,
+    source: &dyn IssueStateSource,
+) -> i32 {
+    execute_prune_with_source(
+        None,
+        stale_days,
+        false,
+        None,
+        dry_run,
+        format,
+        source,
+        &ProcessOpenCodeApi::new(),
+        &|_| {},
+    )
 }
 
 /// Create a real linked worktree on a fresh generated branch and return
@@ -95,6 +128,15 @@ pub(crate) fn branch_exists(repo: &TempRepo, branch: &str) -> bool {
         .run(&["branch", "--list", branch], repo.dir.path())
         .map(|out| out.status == 0 && !out.stdout.trim().is_empty())
         .unwrap_or(false)
+}
+
+/// Run `action` with the process cwd temporarily set to `dir`.
+pub(crate) fn in_dir<T>(dir: &std::path::Path, action: impl FnOnce() -> T) -> T {
+    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::env::set_current_dir(dir).expect("set cwd");
+    let result = action();
+    let _ = std::env::set_current_dir(&previous_cwd);
+    result
 }
 
 /// Run `action` with the process cwd temporarily inside the temp repo.

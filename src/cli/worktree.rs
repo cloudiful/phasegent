@@ -42,10 +42,16 @@ mod query;
 pub(crate) use acquire::AcquireJson;
 #[allow(unused_imports)]
 pub(crate) use probe::{ProbeJson, ProbeLeaseJson, build_probe};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use prune::issue_state::test_support::ScriptedIssueStateSource;
 #[allow(unused_imports)]
 pub(crate) use prune::{
-    PruneAction, PruneCombinedSummary, PruneDisposition, PruneMode, PruneSummary,
-    ReleaseStaleAction, ReleaseStaleSummary, prune_pass, scan_worktree_candidates,
+    ComposedIssueStateSource, DirectoryCandidate, IssueClosure, IssueStateFact, IssueStateReader,
+    IssueStateSource, LinkScope, LinkScopeReader, PruneAction, PruneAggregate, PruneDisposition,
+    PruneMode, PruneRepoOutcome, PruneScope, PruneSummary, PruneTotals, ReleaseStaleAction,
+    ReleaseStaleSummary, configured_source, execute_prune_with_source, pinned_active_paths,
+    prune_pass, render_text, scan_worktree_candidates,
 };
 
 #[allow(dead_code)]
@@ -138,14 +144,26 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
             repo,
             stale_days,
             release_stale,
-            remove,
+            // Accepted compatibility no-op: removal is the default now, driven
+            // by `dry_run`.
+            remove: _,
             reason,
+            dry_run,
+            format,
             no_sync: _,
         } => {
             if !caller.is_orchestrator_authorized() {
                 return permission_error(credential, "worktree prune");
             }
-            prune::execute_prune(repo.as_deref(), stale_days, release_stale, remove, reason)
+            prune::execute_prune(
+                repo.as_deref(),
+                stale_days,
+                release_stale,
+                reason,
+                dry_run,
+                &format,
+                credential,
+            )
         }
         WorktreeCommand::Heartbeat { lease, session } => {
             if !caller.is_orchestrator_authorized() {

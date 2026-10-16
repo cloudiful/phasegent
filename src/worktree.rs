@@ -79,7 +79,9 @@ pub use git::{
     ref_resolves_to_commit, worktree_add, worktree_add_from, worktree_remove,
 };
 #[allow(unused_imports)]
-pub use leases::{ensure_schema, find_active_lease_for_probe, list_for_issue, list_for_repo};
+pub use leases::{
+    ensure_schema, find_active_lease_for_probe, list_all_for_repo, list_for_issue, list_for_repo,
+};
 #[allow(unused_imports)]
 pub use naming::{
     cache_root_in, compute_fingerprint, generate_branch, slug_from_branch, validate_ref_format,
@@ -111,7 +113,7 @@ pub const LEASE_STATUS_RELEASED: &str = "released";
 /// flood logs with arbitrary content.
 const MAX_ECHO_CHARS: usize = 200;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRow {
     pub lease_id: String,
     pub repo_identity: String,

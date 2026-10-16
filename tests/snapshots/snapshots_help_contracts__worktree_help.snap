@@ -14,4 +14,4 @@ Read-only (status/list/probe):
   list           List every lease for the resolved repo identity
   probe          Probe a checkout or lease path read-only
 
-Use 'phasegent --help worktree <command>' for options. acquire, list, and prune run their repository's sync pass first; --no-sync skips it.
+Use 'phasegent --help worktree <command>' for options. acquire and list run their repository's sync pass first; --no-sync skips it.

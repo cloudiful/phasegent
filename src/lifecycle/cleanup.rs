@@ -23,6 +23,8 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "cleanup/candidate.rs"]
+pub(crate) mod candidate;
 #[path = "cleanup/context.rs"]
 mod context;
 #[path = "cleanup/guards.rs"]
@@ -41,6 +43,9 @@ mod tests_evidence;
 #[cfg(test)]
 #[path = "cleanup/tests_modes.rs"]
 mod tests_modes;
+#[cfg(test)]
+#[path = "cleanup/tests_prune_guards.rs"]
+mod tests_prune_guards;
 
 pub(crate) use target::TargetResolver;
 
@@ -158,18 +163,16 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
         if !directory.exists() {
             continue;
         }
-        let blocked = guards::evaluate(runner, &context.rows, &context.identity, session, row)
-            .or_else(|| {
-                sessions::evaluate(
-                    api,
-                    mode,
-                    &target,
-                    &directory,
-                    &associated_sessions(&context.rows, &directory),
-                    session,
-                )
-                .keep_reason()
-            });
+        let blocked = candidate::protected_reason(
+            runner,
+            api,
+            mode,
+            &target,
+            &context.identity,
+            &context.rows,
+            session,
+            row,
+        );
         if let Some(reason) = blocked {
             kept.push(kept_entry(issue, &reason, &row.worktree_path));
             continue;

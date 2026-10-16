@@ -9,6 +9,10 @@
 // is pointed at the explicit `phasegent worktree acquire --isolate` command
 // instead. A Task-spawned child follows its parent's directory first and never
 // reaches the probes below, so it can neither acquire nor guess one.
+//
+// Issue 919 P1: the registry is exact per session. There is no cross-session
+// fallback, so an unknown session — or a child whose parent cannot be resolved —
+// stays where it is instead of being redirected into another session's worktree.
 
 import {
   issueClosedLocally,
@@ -21,6 +25,7 @@ import { errorText, locationDirectory, phasegentCallsDisabled, warn } from "./ru
 import {
   inheritedWorktree,
   issueKnownClosed,
+  markConfirmed,
   markPlaced,
   moveSessionToWorktree,
   PLACEMENT_ERROR_PREFIX,
@@ -28,8 +33,6 @@ import {
   readSessionInfo,
   rememberClosedIssue,
   rememberWorktree,
-  reuseRememberedWorktree,
-  sessionWorktrees,
   worktreeForSession,
 } from "./session.js";
 import { reconcileSessionLocation } from "./session-reconcile.js";
@@ -80,35 +83,34 @@ function warnRefusedPlacement(sessionId, issueId) {
 // The one placement decision for a session, run from the session prompt hook
 // (issue 37): a Task-spawned child follows its parent's directory first, so it
 // never reaches the probes below and can neither acquire nor guess a worktree.
-// `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the in-memory
-// registry: no host session lookup, no CLI, no acquire. The rest is guarded —
-// an ordinary discovery failure keeps the session in the current checkout — while
-// a decided placement rethrows out of the `try` so the prompt fails instead of
-// running unplaced. `deps` is an internal seam so tests can exercise that order
-// without the phasegent CLI.
+// `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the exact
+// in-memory registry: no host session lookup, no CLI, no acquire, and no
+// auto-move (the current location cannot be verified without a host read). The
+// rest is guarded — an ordinary discovery failure keeps the session in the
+// current checkout — while a decided placement rethrows out of the `try` so the
+// prompt fails instead of running unplaced. `deps` is an internal seam so tests
+// can exercise that order without the phasegent CLI.
 export async function ensureSessionWorktree(context, sessionId, deps) {
   if (!sessionId) return null;
-  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
-  // in-memory registry: no host session lookup, no CLI, no acquire.
-  const discoveryDisabled = phasegentCallsDisabled();
+  const registered = worktreeForSession(sessionId);
+  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert: the exact
+  // in-memory lookup above is local, and no host read or auto-move follows,
+  // because a move whose current location cannot be verified must never run.
+  if (phasegentCallsDisabled()) return registered;
   // Issue 747 P2: the host, not this registry, decides where a session runs.
   // A settled placement is reconciled against a fresh host read before its
   // cached target is trusted, so an `issue close` relocation is never reversed
   // and a worktree that was already removed is never re-entered. An unsettled
   // session is untouched, so the ordinary first placement — the session is in
   // the main checkout and must be moved into the worktree — still happens.
-  if (!discoveryDisabled) {
-    const readDirectory =
-      (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
-    if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
-  }
-  const registered = sessionWorktrees.get(String(sessionId));
+  const readDirectory =
+    (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
+  if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
   if (registered) {
     // Move-only placement: a move the host cannot perform fails the prompt.
     await moveSessionToWorktree(context, sessionId, registered);
     return registered;
   }
-  if (discoveryDisabled) return await reuseRememberedWorktree(context, sessionId);
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
@@ -116,29 +118,11 @@ export async function ensureSessionWorktree(context, sessionId, deps) {
   const cwd = locationDirectory(context);
   try {
     // A child inherits before the reuse probe: it takes its parent's directory
-    // or nothing at all, never the most recently remembered worktree, which
-    // could belong to a sibling.
+    // or nothing at all, never another session's worktree.
     const info = await readInfo(context, sessionId);
     if (info && info.parentID) {
       return await inheritParentWorktree(context, sessionId, info, readInfo);
     }
-    // Issue 747 P2: the shared fallback can outlive the lease it came from.
-    // `issue close` converges the lease rows and may already have removed the
-    // directory the fallback still names, so the closed marker is consulted
-    // before the fallback is handed out, not only before a fresh acquire. The
-    // binding is read only when there is a fallback to protect, so a session
-    // with nothing remembered still costs no CLI call here.
-    if (worktreeForSession(sessionId)) {
-      const fallbackIssue = await readBinding(cwd);
-      if (fallbackIssue && (await issueConverged(fallbackIssue, cwd, readLeaseHistory))) {
-        warn(
-          `phasegent: issue ${fallbackIssue} is closed; refusing to reuse a worktree (staying put)`,
-        );
-        return null;
-      }
-    }
-    const remembered = await reuseRememberedWorktree(context, sessionId);
-    if (remembered) return remembered;
     const discovered = await discover(sessionId, cwd);
     if (discovered) {
       await moveSessionToWorktree(context, sessionId, discovered);
@@ -187,6 +171,7 @@ async function inheritParentWorktree(context, sessionId, info, readInfo) {
     // The host reports the child already inside the parent's directory:
     // placement settled, nothing to move.
     markPlaced(sessionId);
+    markConfirmed(sessionId);
     return null;
   }
   rememberWorktree(sessionId, target);

@@ -49,9 +49,15 @@ const ROLE_ASSIGNMENT = /(?:^|[\s;&|(])(?:\$env:)?PHASEGENT_ROLE=("[^"]*"|'[^']*
 // nonzero `$LASTEXITCODE` is re-asserted with a silent failure so the wrapper
 // stays failed. `windows` is injectable so both forms stay testable from one
 // host.
-export function roleScope(role, windows) {
+export function roleScope(role, windows, wrapped) {
   const win = typeof windows === "boolean" ? windows : isWindowsHost();
-  if (!win) return { head: `${ROLE_ENV}=${role} `, tail: "" };
+  if (!win) {
+    // A wrapped POSIX invocation cannot take a bare `PHASEGENT_ROLE=…`
+    // assignment where the command name sits (the wrapper would try to exec
+    // the assignment), so the scope is injected through `env`, which is a real
+    // executable and scopes the role to the CLI child only (issue #917 P1).
+    return { head: wrapped ? `env ${ROLE_ENV}=${role} ` : `${ROLE_ENV}=${role} `, tail: "" };
+  }
   return {
     head: `$( ${ROLE_SAVE}=$env:${ROLE_ENV}; try { $env:${ROLE_ENV}='${role}'; `,
     tail:
@@ -143,6 +149,10 @@ export function rewritePhasegentCommand(command, sessionId, event, options) {
     // An unterminated quote leaves no injection point that is provably outside
     // the value: that segment stays byte-for-byte.
     if (!invocation.balanced) continue;
+    // A wrapped invocation is a POSIX transparent-wrapper shape; on Windows the
+    // segment has no supported interpretation, so it stays untouched rather
+    // than nesting a PowerShell scope inside a foreign wrapper (issue #917 P1).
+    if (windows && invocation.wrapped) continue;
     const tailFlags = [];
     const sessionFlag = sessionId ? sessionFlagFor(invocation.tail) : null;
     if (sessionFlag && !sessionFlag.present.test(invocation.tail)) {
@@ -155,7 +165,7 @@ export function rewritePhasegentCommand(command, sessionId, event, options) {
       // An explicit assignment wins, except that a sub-agent's differing claim
       // never outranks the managed session role.
       if (status === "absent" || (subagent && status === "differs")) {
-        scope = roleScope(role, windows);
+        scope = roleScope(role, windows, invocation.wrapped);
       }
     }
     const tail = `${tailFlags.length > 0 ? ` ${tailFlags.join(" ")}` : ""}${scope ? scope.tail : ""}`;

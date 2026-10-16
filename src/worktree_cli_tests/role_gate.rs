@@ -41,6 +41,8 @@ fn executor_cannot_prune() {
             release_stale: false,
             remove: false,
             reason: None,
+            dry_run: true,
+            format: "json".to_owned(),
             no_sync: false,
         },
     );
@@ -170,6 +172,8 @@ fn reviewer_cannot_prune() {
             release_stale: false,
             remove: false,
             reason: None,
+            dry_run: true,
+            format: "json".to_owned(),
             no_sync: false,
         },
     );

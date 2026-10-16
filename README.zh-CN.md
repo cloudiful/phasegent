@@ -149,13 +149,36 @@ phasegent worktree probe --issue 123
 由 OpenCode 会话（`ses_…`）租用的目录会被保护，直到 host 确认该会话已不在其中：
 `issue close` 会先通过 OpenCode API（`opencode api session.move`）把结束会话送回
 仓库主 checkout，再移除目录；无法确认时保留目录，待 `issue sync` 确认会话已转移后
-再移除。`phasegent worktree prune` 是独立的显式移除路径，不受这些保护约束。详见
+再移除。`phasegent worktree prune` 是全局、默认执行移除的清理：不传 `--repo` 时清理本地
+lease 存储记录的所有 repository identity，`--dryrun`（别名 `--dry-run`）为只读
+预览。只有当目录关联的每个 issue 都在配置的 provider 上确认已关闭、没有 `active`
+lease 引用该目录、且工作树 Git 干净时才会移除——没有等待期，`--stale-days` 只影响
+显式的 `--release-stale` 恢复。它复用与 close/sync 相同的候选保护——绝不删除主
+checkout、绝不动有 `active` lease 的路径、绝不删除 dirty/untracked 内容，也绝不
+删除 OpenCode host 仍占用的目录（只读检查）。唯一的例外是一项用户显式授权的窄权限：
+当目录的唯一剩余占用者是一个或多个已单独证明完成的子会话（host 报告精确
+`outcome` 为 `succeeded`、`parentID` 链最多 8 跳可达该目录的持久 `ses_` lease
+会话、且自身不是 lease owner）时，prune 会先把这些子会话迁移到该仓库经验证的主
+checkout，并以新证据重新确认目录已空后才清理。运行中、未知、外部、不可读、非
+`succeeded`、成环或过深的会话、不可用的主 checkout，以及失败或未确认的迁移，都
+会保留目录；prune 绝不迁移 lease owner 或无关会话。本地保护——主 checkout、有
+`active` lease 的路径、dirty 或 untracked 内容——先于任何 host 读取判定，因此这类
+目录会在不访问 host 的情况下被排除。报告如实反映迁移：一次移除只列出它已确认迁移
+的子会话（即便之后的占用检查最终保留了目录），而预览只列出建议迁移、绝不将其标记
+为已迁移；人类可读的失败计数只统计失败的 `git worktree remove` 调用，而非 host
+异常。默认输出为按目录
+统计的简洁文本，`--json` 输出机器可读的聚合结果。少量进度行会写入 stderr——在 host
+与闭包检查前即时 flush，让长扫描可见——stdout 仅保留最终文本或单个 JSON 文档。被
+透明 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管 agent role。详见
 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
 
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
 dist。真源为 `assets/opencode/src/` 和 `skills/phasegent/` 的提示词文件；用
 `bun run build:plugin` 重建（`bun` 仅开发时需要），绝不手改仓库中的 dist
-`assets/opencode/phasegent-worktree.js` 或已安装副本。
+`assets/opencode/phasegent-worktree.js` 或已安装副本。适配器为每个会话保留精确的
+worktree 注册：会话只会使用记录在自己 id 下的 worktree，子会话只继承其父会话的
+目录，未知会话绝不被重定向到其他会话的 worktree。host 无法核实的既定迁移会让
+prompt 失败，而不是在未核实的目录中运行。
 
 ## 许可证
 

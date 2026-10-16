@@ -170,14 +170,48 @@ confirms that session no longer runs there: `issue close` returns the closing
 session to the repository's main checkout through the OpenCode API
 (`opencode api session.move`) before removing anything, keeps the directory when
 that cannot be confirmed, and `issue sync` removes it once the session has moved.
-`phasegent worktree prune` is a separate, explicit removal path and is not
-covered by these guards. See [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
+`phasegent worktree prune` is global and removal-by-default: without `--repo`
+it cleans every repository identity the local lease store records, and
+`--dryrun` (alias `--dry-run`) is the read-only preview. A directory is removed
+as soon as every issue associated with it is confirmed closed on the configured
+provider, no `active` lease references it, and it is Git-clean — there is no
+waiting period, so `--stale-days` only affects the explicit `--release-stale`
+recovery. It reuses the same candidate guards as close/sync — never the main
+checkout, never a path an `active` lease points at, never dirty or untracked
+contents, and never a directory the OpenCode host still occupies, checked
+read-only — with one narrow, user-authorized exception: a directory whose only
+remaining occupant is one or more individually proven finished child sessions
+(the host's exact `succeeded` outcome, a `parentID` chain of at most 8 hops
+reaching a persisted `ses_` lease session for that directory, and not itself a
+lease owner) may be cleaned after prune relocates exactly those children to the
+repository's verified main checkout and re-confirms vacancy with fresh evidence.
+A running, unknown, foreign, unreadable, non-succeeded, cyclic, or over-deep
+session, an unavailable main checkout, or a failed or unconfirmed move keeps the
+directory; prune never moves a lease owner or an unrelated session. The local
+guards — main checkout, active peer, dirty or untracked contents — are decided
+before any host read, so such a directory is excluded without contacting the
+host. Reports stay faithful: a removal lists exactly the children whose move it
+confirmed, even when a later occupancy check keeps the directory, while a
+preview lists only proposed relocations and never labels them actual, and the
+human failure count covers only failed `git worktree remove` calls rather than
+host anomalies. Default output is concise text
+with directory-based counts; `--json` selects the machine-readable aggregate.
+A few progress lines stream to stderr — flushed before the host and closure
+checks so a long scan is visibly working — while stdout keeps the final text or
+the single JSON document. Invocations wrapped in a transparent `timeout`, `env`,
+or `command` still receive the managed agent role.
+See [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
 
 The OpenCode worktree adapter deployed by `phasegent plugin install` is a
 generated single-file dist. Its sources are `assets/opencode/src/` plus the
 `skills/phasegent/` prompts; rebuild with `bun run build:plugin` (`bun` is a
 development requirement only), and never hand-edit the checked-in dist
-`assets/opencode/phasegent-worktree.js` or an installed copy.
+`assets/opencode/phasegent-worktree.js` or an installed copy. The adapter keeps
+an exact per-session worktree registry: a session only ever uses the worktree
+recorded under its own id, a child inherits only its parent's directory, and an
+unknown session is never redirected into another session's worktree. A decided
+move the host cannot verify fails the prompt instead of running the turn in an
+unverified directory.
 
 ## License
 

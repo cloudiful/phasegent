@@ -13,10 +13,19 @@ use std::path::Path;
 
 use super::*;
 
-/// A stand-in host: one authoritative id → directory map, served through
+/// One scripted session: where the host says it is, plus the optional
+/// `parentID`/`outcome` the issue-918 retirement proof reads.
+#[derive(Clone)]
+struct FakeSession {
+    directory: String,
+    parent_id: Option<String>,
+    outcome: Option<String>,
+}
+
+/// A stand-in host: one authoritative id → session map, served through
 /// the same three methods the production boundary implements.
 pub(crate) struct FakeOpenCodeApi {
-    reality: RefCell<BTreeMap<String, String>>,
+    reality: RefCell<BTreeMap<String, FakeSession>>,
     /// Ids whose `session.get` fails, to model an instance that does not
     /// own a session it was asked about.
     unknown: RefCell<Vec<String>>,
@@ -66,9 +75,39 @@ impl FakeOpenCodeApi {
 
     /// A host that reports `id` as currently hosted in `directory`.
     pub(crate) fn with_session(self, id: &str, directory: &Path) -> Self {
-        self.reality
-            .borrow_mut()
-            .insert(id.to_owned(), directory.to_string_lossy().into_owned());
+        self.reality.borrow_mut().insert(
+            id.to_owned(),
+            FakeSession {
+                directory: directory.to_string_lossy().into_owned(),
+                parent_id: None,
+                outcome: None,
+            },
+        );
+        self
+    }
+
+    /// A host that reports `id` as a Task child of `parent`, hosted in
+    /// `directory`, with no `outcome` yet (a running or unfinished child).
+    pub(crate) fn with_child(self, id: &str, directory: &Path, parent: &str) -> Self {
+        self.reality.borrow_mut().insert(
+            id.to_owned(),
+            FakeSession {
+                directory: directory.to_string_lossy().into_owned(),
+                parent_id: Some(parent.to_owned()),
+                outcome: None,
+            },
+        );
+        self
+    }
+
+    /// Set the `outcome` of an already-scripted session.
+    pub(crate) fn with_outcome(self, id: &str, outcome: &str) -> Self {
+        let mut reality = self.reality.borrow_mut();
+        let entry = reality
+            .get_mut(id)
+            .unwrap_or_else(|| panic!("scripted session '{id}' before setting its outcome"));
+        entry.outcome = Some(outcome.to_owned());
+        drop(reality);
         self
     }
 
@@ -159,9 +198,11 @@ impl OpenCodeApi for FakeOpenCodeApi {
         }
         let reality = self.reality.borrow();
         match reality.get(id) {
-            Some(directory) => Ok(LocatedSession {
+            Some(session) => Ok(LocatedSession {
                 id: id.to_owned(),
-                directory: directory.clone(),
+                directory: session.directory.clone(),
+                parent_id: session.parent_id.clone(),
+                outcome: session.outcome.clone(),
             }),
             None => Err(ApiError::plain("SessionNotFoundError")),
         }
@@ -183,10 +224,12 @@ impl OpenCodeApi for FakeOpenCodeApi {
         let sessions: Vec<LocatedSession> = reality
             .iter()
             .filter(|(id, _)| !hidden.iter().any(|skipped| skipped == *id))
-            .filter(|(_, directory)| wanted.is_empty() || normalize(directory) == wanted)
-            .map(|(id, directory)| LocatedSession {
+            .filter(|(_, session)| wanted.is_empty() || normalize(&session.directory) == wanted)
+            .map(|(id, session)| LocatedSession {
                 id: id.clone(),
-                directory: directory.clone(),
+                directory: session.directory.clone(),
+                parent_id: session.parent_id.clone(),
+                outcome: session.outcome.clone(),
             })
             .collect();
         Ok(SessionPage {
@@ -203,9 +246,21 @@ impl OpenCodeApi for FakeOpenCodeApi {
             .borrow_mut()
             .push((id.to_owned(), directory.to_string_lossy().into_owned()));
         if !*self.queue_moves.borrow() {
-            self.reality
-                .borrow_mut()
-                .insert(id.to_owned(), directory.to_string_lossy().into_owned());
+            let mut reality = self.reality.borrow_mut();
+            let moved_to = directory.to_string_lossy().into_owned();
+            match reality.get_mut(id) {
+                Some(session) => session.directory = moved_to,
+                None => {
+                    reality.insert(
+                        id.to_owned(),
+                        FakeSession {
+                            directory: moved_to,
+                            parent_id: None,
+                            outcome: None,
+                        },
+                    );
+                }
+            }
         }
         Ok(())
     }

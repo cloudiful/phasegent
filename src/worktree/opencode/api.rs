@@ -26,13 +26,24 @@ use super::process::run_bounded;
 /// response small enough to parse from a single bounded read.
 pub(crate) const MAX_PAGE_SIZE: usize = 200;
 
-/// One session reduced to the two fields the occupancy check compares.
+/// One session reduced to the fields the occupancy check compares.
 /// `id` identifies the lease association, `directory` is the host's
 /// authoritative answer about where the session actually is.
+///
+/// `parent_id`/`outcome` are optional: the host may omit them, and a missing
+/// field stays `None` so no caller ever mistakes "the host did not say" for the
+/// specific value that would authorize a move. Only a caller that must prove a
+/// *finished* descendant (issue 918 P2) reads them, and it treats `None` as
+/// conservatively as any other unrecognised value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocatedSession {
     pub(crate) id: String,
     pub(crate) directory: String,
+    /// The host's `parentID`, when it reports one (a child Task session).
+    pub(crate) parent_id: Option<String>,
+    /// The host's `outcome`, when it reports one. The only terminal value this
+    /// crate recognises is exactly `succeeded`.
+    pub(crate) outcome: Option<String>,
 }
 
 /// One `session.list` page plus the opaque cursor of the next page.

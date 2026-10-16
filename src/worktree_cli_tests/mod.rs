@@ -26,9 +26,10 @@
 //! worktrees are never mutated.
 
 use crate::cli::worktree::{
-    AcquireJson, PruneAction, PruneCombinedSummary, PruneDisposition, PruneMode, PruneSummary,
-    ReleaseStaleAction, ReleaseStaleSummary, execute_worktree, prune_pass,
-    scan_worktree_candidates,
+    AcquireJson, IssueClosure, IssueStateSource, PruneAction, PruneAggregate, PruneDisposition,
+    PruneMode, PruneRepoOutcome, PruneScope, PruneSummary, PruneTotals, ReleaseStaleAction,
+    ReleaseStaleSummary, ScriptedIssueStateSource, execute_prune_with_source, execute_worktree,
+    pinned_active_paths, prune_pass, render_text, scan_worktree_candidates,
 };
 use crate::command::{Command, IssueCommand, WorktreeCommand};
 use crate::infra::storage::Storage;
@@ -38,7 +39,7 @@ use crate::worktree::leases::{NewLease, insert_lease};
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
     ProcessWorktreeRunner, WorktreeRunner, acquire_lease, auto_acquire_after_create, ensure_schema,
-    list_for_repo, now_unix_secs, repo_identity, worktree_add,
+    list_all_for_repo, list_for_repo, now_unix_secs, repo_identity, worktree_add,
 };
 use std::path::PathBuf;
 
@@ -58,5 +59,7 @@ mod parse_status_list;
 mod probe_cli;
 mod prune_cli;
 mod prune_dry_run;
+mod prune_guards;
+mod prune_issue_state;
 mod role_gate;
 mod support;

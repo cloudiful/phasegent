@@ -466,6 +466,149 @@ export function shellSegments(command) {
   return segments;
 }
 
+// One whitespace-delimited word of the masked segment starting at `pos`.
+// Quoted runs are already blanks in `masked`, so a value can never be read as
+// a flag; offsets stay aligned with the original segment.
+function nextShellToken(masked, pos) {
+  const n = masked.length;
+  let index = pos;
+  while (index < n && (masked[index] === " " || masked[index] === "\t")) index += 1;
+  if (index >= n) return null;
+  let end = index;
+  while (end < n && masked[end] !== " " && masked[end] !== "\t") end += 1;
+  return { word: masked.slice(index, end), start: index, end };
+}
+
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// `timeout` option tail: bounded arity before its command word. `null` means
+// an unsupported/ambiguous shape, so the caller leaves the bytes untouched.
+function parseTimeoutWrapper(masked, pos) {
+  let index = pos;
+  let durationSeen = false;
+  for (let guard = 0; guard < 32; guard += 1) {
+    const token = nextShellToken(masked, index);
+    if (!token) return null;
+    const word = token.word;
+    if (word === "--") {
+      return durationSeen ? token.end : null;
+    }
+    if (word === "-s" || word === "--signal" || word === "-k" || word === "--kill-after") {
+      const value = nextShellToken(masked, token.end);
+      if (!value) return null;
+      index = value.end;
+      continue;
+    }
+    if (word.startsWith("--signal=") || word.startsWith("--kill-after=")) {
+      index = token.end;
+      continue;
+    }
+    if (
+      word === "--preserve-status" ||
+      word === "--foreground" ||
+      word === "-v" ||
+      word === "--verbose"
+    ) {
+      index = token.end;
+      continue;
+    }
+    if (word.startsWith("-")) return null;
+    if (!durationSeen) {
+      durationSeen = true;
+      index = token.end;
+      continue;
+    }
+    return token.start;
+  }
+  return null;
+}
+
+// `env` option/assignment tail up to its command word (or null when
+// unsupported).
+function parseEnvWrapper(masked, pos) {
+  let index = pos;
+  for (let guard = 0; guard < 64; guard += 1) {
+    const token = nextShellToken(masked, index);
+    if (!token) return null;
+    const word = token.word;
+    if (word === "-i" || word === "--ignore-environment" || word === "--null") {
+      index = token.end;
+      continue;
+    }
+    if (
+      word === "-u" ||
+      word === "--unset" ||
+      word === "-C" ||
+      word === "--chdir" ||
+      word === "-S" ||
+      word === "--split-string"
+    ) {
+      const value = nextShellToken(masked, token.end);
+      if (!value) return null;
+      index = value.end;
+      continue;
+    }
+    if (
+      word.startsWith("--unset=") ||
+      word.startsWith("--chdir=") ||
+      word.startsWith("--split-string=")
+    ) {
+      index = token.end;
+      continue;
+    }
+    if (ASSIGNMENT_WORD.test(word)) {
+      index = token.end;
+      continue;
+    }
+    if (word.startsWith("-")) return null;
+    return token.start;
+  }
+  return null;
+}
+
+// Bounded POSIX transparent wrappers (`timeout`, `env`, `command`) plus
+// assignment words before the actual command name (issue #917 P1). Returns the
+// byte offset where the command word starts and whether any wrapper was
+// crossed; `null` means an unsupported/ambiguous shape, so the invocation is
+// left byte-for-byte instead of guessing shell semantics.
+function parseWrappers(masked, pos) {
+  let index = pos;
+  let wrapped = false;
+  for (let guard = 0; guard < 16; guard += 1) {
+    const token = nextShellToken(masked, index);
+    if (!token) return null;
+    if (ASSIGNMENT_WORD.test(token.word)) {
+      index = token.end;
+      continue;
+    }
+    if (token.word === "timeout") {
+      const after = parseTimeoutWrapper(masked, token.end);
+      if (after === null) return null;
+      index = after;
+      wrapped = true;
+      continue;
+    }
+    if (token.word === "env") {
+      const after = parseEnvWrapper(masked, token.end);
+      if (after === null) return null;
+      index = after;
+      wrapped = true;
+      continue;
+    }
+    if (token.word === "command") {
+      // `command -v`/`-V` are lookups, not executions: any option makes the
+      // shape ambiguous, so it stays untouched.
+      const next = nextShellToken(masked, token.end);
+      if (!next || next.word.startsWith("-")) return null;
+      index = token.end;
+      wrapped = true;
+      continue;
+    }
+    return { pos: token.start, wrapped };
+  }
+  return null;
+}
+
 export function phasegentInvocation(segment) {
   const { masked, balanced } = maskQuoted(segment.text);
   let text = segment.text;
@@ -480,6 +623,16 @@ export function phasegentInvocation(segment) {
     offset += env[0].length;
     text = text.slice(env[0].length);
   }
+  // Transparent wrappers (`timeout 40s env FOO=1 phasegent …`) sit between the
+  // leading assignments and the command name. The wrapper context is recorded
+  // so the rewrite can inject a valid invocation-local env (`timeout … env
+  // PHASEGENT_ROLE=… phasegent`), which an assignment inserted as an
+  // executable would not be.
+  const wrappers = parseWrappers(masked, offset - segment.start);
+  if (wrappers === null) return null;
+  const wrapped = wrappers.wrapped;
+  offset = segment.start + wrappers.pos;
+  text = segment.text.slice(wrappers.pos);
   // The command name must be a whole word followed by whitespace or the
   // segment end, and the prefix slot excludes quotes and backticks: `\b` also
   // matched before `-`/`.`/`:`/`/`, so a quoted path such as
@@ -493,5 +646,6 @@ export function phasegentInvocation(segment) {
     segmentEnd: segment.end - trailing,
     tail: masked.slice(offset - segment.start + token[0].length),
     balanced,
+    wrapped,
   };
 }

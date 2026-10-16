@@ -17,6 +17,28 @@ fn session_get_requires_a_location_directory() {
 }
 
 #[test]
+fn session_get_parses_optional_parent_and_outcome() {
+    let body = r#"{"data":{"id":"ses_child","parentID":"ses_parent","outcome":"succeeded",
+                     "location":{"directory":"/tmp/wt"}}}"#;
+    let parsed = parse::parse_session_get(body).expect("documented shape parses");
+    assert_eq!(parsed.parent_id.as_deref(), Some("ses_parent"));
+    assert_eq!(parsed.outcome.as_deref(), Some("succeeded"));
+}
+
+#[test]
+fn session_get_treats_missing_or_blank_parent_and_outcome_as_none() {
+    let body = r#"{"data":{"id":"ses_a","parentID":"","outcome":"  ",
+                     "location":{"directory":"/tmp/wt"}}}"#;
+    let parsed = parse::parse_session_get(body).expect("documented shape parses");
+    assert_eq!(parsed.parent_id, None);
+    assert_eq!(parsed.outcome, None);
+    let body = r#"{"data":{"id":"ses_a","location":{"directory":"/tmp/wt"}}}"#;
+    let parsed = parse::parse_session_get(body).expect("documented shape parses");
+    assert_eq!(parsed.parent_id, None);
+    assert_eq!(parsed.outcome, None);
+}
+
+#[test]
 fn session_get_rejects_invalid_json() {
     let error = parse::parse_session_get("not json").expect_err("invalid JSON must fail");
     assert!(

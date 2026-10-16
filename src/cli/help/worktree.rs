@@ -32,7 +32,7 @@ const PROBE_HELP: &str = "Usage: worktree probe [--path PATH | --issue N [--sess
 
 const LIST_HELP: &str = "Usage: worktree list [--repo PATH] [--no-sync]\n\nList every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ \"repo_identity\": \"...\", \"leases\": [...] }`. Available to orchestrator, executor, and reviewer. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.";
 
-const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--remove] [--no-sync]\n\nSingle pruning entry point (folds the former release-stale). With neither --release-stale nor --remove this is a read-only dry-run that reports stale active leases and prunable worktrees and changes nothing. --release-stale requires a non-empty --reason and flips exactly the active leases whose heartbeat is older than --stale-days (default 7) to `retained` in a single transaction, recording the reason; --reason without --release-stale is rejected. --remove deletes clean + expired + retained worktrees. Supplying both runs the recovery first and then the removal. A worktree is a removal candidate only when all three conditions hold: status is `retained`; heartbeat is older than stale-days days; and `git status --porcelain` reports an empty output. Dirty worktrees are never deleted (prunable=false, skipped_dirty); active and released leases are skipped; recent retained leases are skipped. `git worktree remove` is the only git command invoked, and it is never passed `--force`; branches are never deleted (no `git branch -D`). --repo defaults to the current working directory and is canonicalised through `git rev-parse --git-common-dir`. Returns a JSON envelope that records lease and directory actions separately. Orchestrator-only. Before its own work it runs a repository-scoped `issue sync` pass and forwards its warnings to stderr; --no-sync skips that pass.";
+const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--dryrun] [--json|--format json] [--remove] [--no-sync]\n\nGlobal, removal-by-default cleanup of managed worktrees, grouped by canonical directory. Without --repo it enumerates every repository identity the local lease store records (even outside Git) and resolves each through its main checkout, skipping an identity it cannot verify with a bounded reason instead of guessing; --repo PATH restricts the pass to one verified checkout. A directory is removed as soon as every issue associated with it is confirmed closed on the configured provider, no active lease references the canonical directory, and the shared candidate guards clear it (never the main checkout, never a path an `active` lease points at, never dirty or untracked, and never a directory the OpenCode host still — or cannot be proven not to — occupy, checked read-only); removal then uses `git worktree remove` without `--force` after a fresh re-check. A directory whose only remaining occupant is one or more individually proven finished child sessions may be cleaned after prune relocates exactly those children to the repository's verified main checkout — a child qualifies only when the host reports its exact `outcome` as `succeeded`, its `parentID` chain (at most 8 hops) reaches a persisted `ses_` lease session for this directory, and it is not itself a lease owner — and only after a fresh read confirms each relocation and a fresh complete listing plus fresh lease rows re-prove vacancy and safety; a running, unknown, foreign, unreadable, non-succeeded, cyclic, or over-deep session, an unavailable main checkout, or any failed or unconfirmed move keeps the directory, and prune never moves a lease owner or an unrelated session. There is no waiting period: a freshly retained closed clean directory is removed immediately, so --stale-days never gates directory deletion and exists only for the explicit --release-stale recovery below. Closure is read from the configured provider through the same current-configured-provider resolution the rest of the CLI uses; a missing, unavailable, ambiguous, or mismatched issue is never treated as closed, and a preview may read closure but never mutates. The local guards — never the main checkout, never a path an `active` lease points at, never dirty or untracked — are decided before any host or provider read, so a main-checkout or dirty directory is excluded without contacting the host. Reported relocations stay faithful: a removal pass lists exactly the children whose move it confirmed, even when a later occupancy check keeps the directory, while a preview lists only proposed relocations and never labels them actual, and the human failure count scopes to failed `git worktree remove` calls rather than to host-anomaly evidence. --dryrun (alias --dry-run) is the read-only preview: it performs the same read-only host discovery to report proposed relocations and eligibility, but never mutates any directory, lease row, or session and never moves a session. --release-stale requires a non-empty --reason unless it is a preview and flips exactly the active leases whose heartbeat is older than --stale-days to `retained` in a single transaction; a directory that held an active lease at invocation start is never removed by the same call, and --reason without --release-stale is rejected. The default stdout is concise English text with directory-based counts; --json or --format json selects the machine-readable aggregate envelope (per repository plus totals). --remove is an accepted compatibility no-op and --no-sync is accepted but no longer runs a sync pass: prune never syncs. Branches and lease rows are never deleted. A few `worktree prune:` progress lines stream to stderr, flushed before the potentially slow host and closure checks so a long scan is visibly working, while stdout stays reserved for the final text or the single JSON document; within one invocation the read-only scan shares a repeated host answer, but every removal re-checks the host live. Orchestrator-only.";
 
 const HEARTBEAT_HELP: &str = "Usage: worktree heartbeat --lease ID [--session SESSION]\n\nRefresh heartbeat_at on an active lease so a long-running session is not mistaken for stale. The update only matches when the lease is still `active` AND its stored session equals the caller's resolved session (--session, else PHASEGENT_SESSION_ID; one of the two is required). A foreign session, a terminal lease, or an unknown lease id returns a structured `state` conflict and leaves the row untouched; the conditional update also guarantees a heartbeat and a concurrent stale recovery cannot both win. Returns a JSON envelope with lease_id/issue/session/status/heartbeat_at. Never deletes a worktree or branch. Orchestrator-only for agents; ordinary human Operator shares this authority, managed sessions without a role fail closed. See docs/cli-caller-context.md.";
 
@@ -109,7 +109,7 @@ pub(crate) fn worktree_help_text(role: Option<Role>) -> String {
             (None, &mutating),
             (Some("Read-only (status/list/probe)"), &readonly),
         ],
-        "Use 'phasegent --help worktree <command>' for options. acquire, list, and prune run their repository's sync pass first; --no-sync skips it.",
+        "Use 'phasegent --help worktree <command>' for options. acquire and list run their repository's sync pass first; --no-sync skips it.",
     )
 }
 
@@ -126,7 +126,7 @@ pub(crate) fn print_worktree_help(role: Option<Role>) {
             (None, &mutating),
             (Some("Read-only (status/list/probe)"), &readonly),
         ],
-        "Use 'phasegent --help worktree <command>' for options. acquire, list, and prune run their repository's sync pass first; --no-sync skips it.",
+        "Use 'phasegent --help worktree <command>' for options. acquire and list run their repository's sync pass first; --no-sync skips it.",
     )
 }
 
@@ -276,15 +276,50 @@ mod tests {
     }
 
     #[test]
-    fn prune_help_documents_default_dry_run_and_action_flags() {
+    fn prune_help_documents_default_removal_preview_and_action_flags() {
         let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
-        assert!(text.contains("read-only dry-run"), "got: {text}");
+        assert!(text.contains("removal-by-default"), "got: {text}");
+        assert!(text.contains("--dryrun"), "got: {text}");
+        assert!(text.contains("--dry-run"), "got: {text}");
         assert!(text.contains("--release-stale"), "got: {text}");
         assert!(text.contains("--remove"), "got: {text}");
         assert!(text.contains("--reason"), "got: {text}");
+        assert!(text.contains("--json"), "got: {text}");
         assert!(
-            text.contains("records lease and directory actions separately"),
+            text.contains("machine-readable aggregate envelope"),
             "got: {text}"
+        );
+    }
+
+    /// Issue 916: the page must distinguish the immediate closed-issue
+    /// deletion rule from the age-based explicit recovery, and it must not
+    /// imply a waiting period.
+    #[test]
+    fn prune_help_separates_immediate_removal_from_stale_recovery() {
+        let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(
+            text.contains("no waiting period"),
+            "help must state there is no waiting period; got: {text}"
+        );
+        assert!(
+            text.contains("--stale-days never gates directory deletion"),
+            "help must separate stale-days from deletion; got: {text}"
+        );
+        assert!(
+            text.contains("confirmed closed"),
+            "help must name the closed-issue gate; got: {text}"
+        );
+        assert!(
+            text.contains("configured provider"),
+            "help must name the provider read; got: {text}"
+        );
+        assert!(
+            text.contains("active lease at invocation start"),
+            "help must state the invocation-start active rule; got: {text}"
+        );
+        assert!(
+            text.contains("directory-based counts"),
+            "help must state counts are directory-based; got: {text}"
         );
     }
 
@@ -308,21 +343,103 @@ mod tests {
     #[test]
     fn prune_help_documents_dirty_boundary() {
         let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(text.contains("never dirty or untracked"), "got: {text}");
+        assert!(text.contains("without `--force`"), "got: {text}");
         assert!(
-            text.contains("Dirty worktrees are never deleted"),
+            text.contains("Branches and lease rows are never deleted"),
             "got: {text}"
         );
-        assert!(text.contains("never passed `--force`"), "got: {text}");
-        assert!(text.contains("branches are never deleted"), "got: {text}");
+    }
+
+    /// Issue 918 P2: the page must describe the narrow, user-authorized
+    /// finished-child relocation and everything it refuses.
+    #[test]
+    fn prune_help_documents_limited_child_retirement() {
+        let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(
+            text.contains("finished child sessions"),
+            "help must name the finished-child case; got: {text}"
+        );
+        assert!(
+            text.contains("exact `outcome` as `succeeded`"),
+            "help must pin the exact outcome; got: {text}"
+        );
+        assert!(
+            text.contains("at most 8 hops"),
+            "help must bound the ancestry; got: {text}"
+        );
+        assert!(
+            text.contains("never moves a lease owner or an unrelated session"),
+            "help must state the refusal boundary; got: {text}"
+        );
+    }
+
+    /// Issue 917: the page must announce the stderr progress stream and that
+    /// the scan memoizes host answers while every removal re-checks live.
+    #[test]
+    fn prune_help_documents_progress_and_live_removal_check() {
+        let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(
+            text.contains("progress lines stream to stderr"),
+            "help must announce stderr progress; got: {text}"
+        );
+        assert!(
+            text.contains("shares a repeated host answer"),
+            "help must describe the scan memo; got: {text}"
+        );
+        assert!(
+            text.contains("every removal re-checks the host live"),
+            "help must state removals re-check live; got: {text}"
+        );
+    }
+
+    /// Issue 918 P2 attempt 2: the preview must no longer claim it avoids the
+    /// host, because it now performs the same read-only host discovery.
+    #[test]
+    fn prune_help_preview_documents_read_only_host_discovery() {
+        let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(
+            text.contains("read-only host discovery"),
+            "help must state the preview discovers the host read-only; got: {text}"
+        );
+        assert!(
+            !text.contains("never probes the host"),
+            "help must not claim the preview avoids the host; got: {text}"
+        );
+    }
+
+    /// Issue 919 P2: the page must state that local guards precede host reads
+    /// and that proposals and confirmed relocations are reported distinctly.
+    #[test]
+    fn prune_help_documents_local_first_prechecks_and_faithful_relocation() {
+        let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(
+            text.contains("decided before any host or provider read"),
+            "help must state local guards precede host reads; got: {text}"
+        );
+        assert!(
+            text.contains("excluded without contacting the host"),
+            "help must state a locally-excluded directory makes no host call; got: {text}"
+        );
+        assert!(
+            text.contains("never labels them actual"),
+            "help must distinguish proposals from confirmed moves; got: {text}"
+        );
+        assert!(
+            text.contains("scopes to failed `git worktree remove` calls"),
+            "help must scope the failure count; got: {text}"
+        );
     }
 
     /// Issue 552 Phase 2 added the repository-scoped reconciliation pass
-    /// that `acquire` / `list` / `prune` run before their own work; every
-    /// page it applies to must advertise the pass and its `--no-sync`
-    /// switch, and the pages it does not touch must stay silent about it.
+    /// that `acquire` / `list` run before their own work; every page it
+    /// applies to must advertise the pass and its `--no-sync` switch, and
+    /// the pages it does not touch must stay silent about it. Issue 913
+    /// removed `prune` from the set: its `--no-sync` is still accepted but
+    /// it never runs a sync pass.
     #[test]
-    fn acquire_list_and_prune_advertise_the_sync_pass_and_its_skip_switch() {
-        for command in ["acquire", "list", "prune"] {
+    fn acquire_and_list_advertise_the_sync_pass_and_its_skip_switch() {
+        for command in ["acquire", "list"] {
             let text = worktree_command_help_text(Some(Role::Orchestrator), command);
             assert!(
                 text.contains("--no-sync"),
@@ -337,6 +454,15 @@ mod tests {
         assert!(
             overview.contains("--no-sync"),
             "the overview footer must advertise the switch; got: {overview}"
+        );
+        assert!(
+            overview.contains("acquire and list run their repository's sync pass first"),
+            "the footer must name only acquire and list; got: {overview}"
+        );
+        let prune = worktree_command_help_text(Some(Role::Orchestrator), "prune");
+        assert!(
+            prune.contains("--no-sync") && !prune.contains("issue sync"),
+            "prune advertises --no-sync but no sync pass; got: {prune}"
         );
         for command in ["release", "heartbeat", "status", "probe"] {
             let text = worktree_command_help_text(Some(Role::Orchestrator), command);

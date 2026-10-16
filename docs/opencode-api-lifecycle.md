@@ -69,30 +69,82 @@ the host outranks.
   and answering "is my placement still valid?" from it is the stale answer that
   would send a session back into a removed worktree.
 - A settled session the host now reports elsewhere is not moved back. Its
-  registry entry, settled marker, in-flight move, cached host record, and the
-  shared fallback are cleared together, so neither the session nor a later
-  sub-agent re-enters the closed directory.
+  registry entry, settled and confirmed markers, in-flight move, and cached host
+  record are cleared together, so neither the session nor a later sub-agent
+  re-enters the closed directory.
 - An **unreadable** host is not proof the placement still holds. The directory
   may already be gone, so the cached target is dropped rather than re-entered on
   an unproven assumption — a known-closed worktree is never revived.
 - A session that has **not** settled is left alone. A session legitimately
   sitting in the main checkout before its first placement is the ordinary case,
   and reconciling it as a relocation would cancel that first placement.
-- A child inherits where its parent *actually* is: for a settled parent that is
-  a fresh host read, not the parent's registered target.
-- The shared remembered-worktree fallback is checked against the converged-lease
-  closed marker before it is handed out, so a fallback that outlived its lease
-  does not place a new sub-agent in a closed directory. Open inheritance and
-  fail-closed placement errors are unchanged, as are absolute-path pass-through
-  and `PHASEGENT_WORKTREE_NO_DISCOVER=1` inertness.
+- A child inherits where its parent *actually* is: for a settled and
+  host-confirmed parent that is a fresh host read; a parent whose move was only
+  admitted keeps its registered target, so a lagging host answer is never read
+  as an external relocation.
+- The registry is **exact per session** (issue 919 P1): a session's worktree is
+  the one recorded under its own id, and there is no cross-session fallback. An
+  unknown session, an unknown root, or a child whose parent cannot be resolved
+  stays where it is rather than being moved or redirected into another session's
+  worktree. A decided move whose current location the host cannot report fails
+  the prompt (prefixed `PLACEMENT_ERROR_PREFIX`) instead of running the turn in
+  an unverified directory, and a fresh own-session directory equal to the target
+  settles the placement with no move. Each placement decision emits one bounded
+  diagnostic line (session, parent, from, to, reason, outcome) on the existing
+  console channel; an accepted move is never labelled a confirmation.
+  `PHASEGENT_WORKTREE_NO_DISCOVER=1` stays inert: it adds no host read and never
+  auto-moves, since a move whose current location cannot be verified must not
+  run.
 
 The plugin never spawns the `opencode` client and never performs cleanup; it
 uses only the host's in-process session APIs.
 
 ## Limits
 
-- **`phasegent worktree prune` is a separate, explicit removal path.** The
-  close/sync guards above do not cover it; it does not inherit this protection.
+- **`phasegent worktree prune` reuses the same guards.** It is global and
+  removal-by-default (`--dryrun`/`--dry-run` is the read-only preview), and it
+  removes a directory as soon as every issue associated with it is confirmed
+  closed on the configured provider, no active lease references it, and it is
+  Git-clean — with no waiting period (`--stale-days` only affects the explicit
+  stale-active recovery). It runs the close/sync candidate protection in `Sync`
+  semantics: main checkout, active peer paths, dirty/untracked contents, and
+  host-occupied directories are all kept. The provider read is the same
+  current-configured-provider resolution used elsewhere; a missing, unavailable,
+  ambiguous, or mismatched issue is never treated as closed. Within one
+  invocation the read-only scan memoizes a repeated host answer (each
+  `session.get` and each paginated listing page, keyed by the request that
+  produced it, failures included) so a global pass does not re-ask across
+  repositories, while every removal re-checks the host live and keeps the
+  directory when the fresh answer differs. A few progress lines stream to
+  stderr, flushed before the host and closure checks, so a long scan is visibly
+  working; stdout stays reserved for the final text or the single JSON document.
+- **Prune's one relocation exception is narrow and user-authorized (issue 918
+  P2).** The shared guard still never moves a session, but prune itself may
+  relocate an individually proven *finished* child so a completed-child worktree
+  can be cleaned. A child qualifies only when the host reports its exact
+  `outcome` as `succeeded`, its `parentID` chain (at most 8 hops, cycle- and
+  error-guarded) reaches a persisted `ses_` lease session for that canonical
+  directory, and the child is not itself a lease owner. Every other occupant — a
+  running, unknown, foreign, unreadable, non-succeeded, cyclic, or over-deep
+  session, or a hosted lease owner — keeps the whole directory with zero moves.
+  The target is the existing `TargetResolver`'s verified main checkout, never a
+  path guessed from the current directory or a parent chain; a failed or merely
+  accepted move that a fresh read cannot confirm stops the cleanup with the
+  already-moved children left at the safe target (no rollback). Only after every
+  planned move is confirmed does prune re-prove vacancy through the raw, uncached
+  host and fresh lease rows before removing the directory. A preview performs
+  the same read-only discovery and reports the proposed relocations without
+  moving or releasing anything.
+- **Local guards run before any host read (issue 919 P2).** Prune decides the
+  local, Git-only guards — never the main checkout, never a path an `active`
+  lease points at, never dirty or untracked — before it consults the host, so a
+  main-checkout or dirty directory is excluded without a single host or provider
+  request. Reporting is faithful: a removal pass lists exactly the children whose
+  move it confirmed, and keeps listing them when a later occupancy check still
+  keeps the directory; a preview lists only proposed relocations in a distinct
+  field and never labels a proposal actual; and the human failure count scopes to
+  failed `git worktree remove` calls, not to kept/protected results, which can
+  include unproven host answers.
 - **A session on a standalone/private instance is conservatively retained.**
   Normal API discovery does not find it, and a missing session is treated as
   uncertainty rather than absence.

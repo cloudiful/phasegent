@@ -82,10 +82,25 @@ fn located_session(value: &Value) -> Result<LocatedSession, ApiError> {
         .and_then(Value::as_str)
         .filter(|directory| !directory.trim().is_empty())
         .ok_or_else(|| ApiError::plain("session has no location.directory"))?;
+    // Optional metadata: a missing or blank field is `None`, never a guessed
+    // value. Id/directory strictness above is unchanged.
+    let parent_id = optional_string(value, "parentID");
+    let outcome = optional_string(value, "outcome");
     Ok(LocatedSession {
         id: id.to_owned(),
         directory: directory.to_owned(),
+        parent_id,
+        outcome,
     })
+}
+
+fn optional_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 fn require_data(body: &str) -> Result<Value, ApiError> {

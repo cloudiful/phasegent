@@ -21,16 +21,22 @@
 ///   lease, or syncs. Read-only; available to orchestrator, executor,
 ///   and reviewer.
 /// * `prune [--repo PATH] [--stale-days N] [--release-stale --reason
-///   TEXT] [--remove]` is the single pruning entry point (folds the
-///   former `release-stale`). With neither `--release-stale` nor
-///   `--remove` it is a read-only dry-run that reports stale active
-///   leases and prunable worktrees and writes nothing. `--release-stale`
-///   requires a non-empty `--reason` and flips exactly the stale active
-///   leases to `retained`; `--remove` deletes clean + expired +
-///   retained worktrees. Both flags together run the recovery first and
-///   then the removal. Branches are never deleted; only
-///   `git worktree remove` (no `--force`) is invoked, and only when
-///   `is_clean` reports an empty porcelain. Orchestrator-only.
+///   TEXT] [--dryrun] [--json|--format json] [--remove] [--no-sync]` is
+///   the single pruning entry point (folds the former `release-stale`).
+///   Removal is the default and covers every repository identity the
+///   local lease store records; `--repo PATH` restricts the pass to one
+///   verified checkout and `--dryrun` (alias `--dry-run`) is the
+///   read-only preview that mutates nothing. `--release-stale` requires
+///   a non-empty `--reason` unless it is a preview and flips exactly the
+///   stale active leases to `retained`; the directory pass then removes
+///   clean + expired + retained worktrees that pass the shared candidate
+///   guards (never the main checkout, never an active peer's path, never
+///   dirty, never a directory the OpenCode host still occupies). `--json`
+///   / `--format json` select the machine-readable aggregate; the default
+///   is concise English text. `--remove` is an accepted compatibility
+///   no-op and `--no-sync` is accepted but no longer runs a sync pass.
+///   Branches are never deleted; only `git worktree remove` (no
+///   `--force`) is invoked. Orchestrator-only.
 /// * `heartbeat --lease ID [--session SESSION]` refreshes the heartbeat
 ///   of an active lease, but only when the resolved session owns the
 ///   row; a foreign session or terminal lease is a structured conflict.
@@ -94,10 +100,20 @@ pub enum WorktreeCommand {
         repo: Option<String>,
         stale_days: u32,
         release_stale: bool,
+        /// Accepted compatibility no-op: removal is the default now, so this
+        /// flag changes nothing. `--dryrun`/`--dry-run` is the explicit
+        /// preview and wins when both are present.
         remove: bool,
-        /// Required (non-empty) when `release_stale` is true so the
-        /// recovery stays attributable; rejected on its own.
+        /// Required (non-empty) when `release_stale` is true on a non-preview
+        /// run so the recovery stays attributable; optional for a preview and
+        /// rejected on its own.
         reason: Option<String>,
+        /// Explicit read-only preview (`--dryrun`/`--dry-run`): classify and
+        /// report without mutating any directory or lease row.
+        dry_run: bool,
+        /// Output selection: `"text"` (default, concise English) or `"json"`
+        /// (explicit machine-readable, via `--json` or `--format json`).
+        format: String,
         no_sync: bool,
     },
     Heartbeat {
@@ -110,11 +126,13 @@ pub enum WorktreeCommand {
 }
 
 impl WorktreeCommand {
-    /// The reconciliation pass runs before `acquire`, `list`, and `prune`;
-    /// every other subcommand returns `None`. The pair is the operation
-    /// label used for stderr warnings plus the checkout to reconcile:
-    /// `--repo` when the subcommand takes one, otherwise `None` so the
-    /// caller falls back to the current working directory.
+    /// The reconciliation pass runs before `acquire` and `list`; every
+    /// other subcommand returns `None`. `prune` was removed from this set
+    /// (issue 913): a prune pass never syncs, in global or repo mode. The
+    /// pair is the operation label used for stderr warnings plus the
+    /// checkout to reconcile: `--repo` when the subcommand takes one,
+    /// otherwise `None` so the caller falls back to the current working
+    /// directory.
     pub(crate) fn sync_taxi(&self) -> Option<(&'static str, Option<&str>)> {
         match self {
             Self::Acquire { no_sync: false, .. } => Some(("worktree acquire", None)),
@@ -122,11 +140,6 @@ impl WorktreeCommand {
                 repo,
                 no_sync: false,
             } => Some(("worktree list", repo.as_deref())),
-            Self::Prune {
-                repo,
-                no_sync: false,
-                ..
-            } => Some(("worktree prune", repo.as_deref())),
             Self::Acquire { .. }
             | Self::List { .. }
             | Self::Prune { .. }

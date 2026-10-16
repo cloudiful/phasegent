@@ -17,6 +17,24 @@ export function warn(message) {
   }
 }
 
+// Bounded placement diagnostics on the existing console channel (issue 919 P1).
+// OpenCode v2 has no structured logger on the plugin context, so diagnostics
+// reuse `warn` rather than guessing an unsupported surface. Only the fixed
+// allowlist of fields below is ever emitted — never prompts, secrets, titles, or
+// raw provider/config payloads — and the event vocabulary is stable so an
+// operator can grep one line per placement decision.
+const PLACEMENT_DIAGNOSTIC_FIELDS = ["session", "parent", "from", "to", "reason", "outcome"];
+
+export function placementDiagnostic(event, fields) {
+  const parts = [];
+  for (const key of PLACEMENT_DIAGNOSTIC_FIELDS) {
+    const value = fields && fields[key];
+    if (typeof value === "string" && value.length > 0) parts.push(`${key}=${value}`);
+  }
+  const label = typeof event === "string" && event.length > 0 ? event : "unknown";
+  warn(`phasegent: placement ${label}${parts.length > 0 ? ` ${parts.join(" ")}` : ""}`);
+}
+
 export async function safeText(command) {
   try {
     const text = (await command.text()).trim();

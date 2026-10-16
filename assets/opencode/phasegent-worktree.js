@@ -21,6 +21,24 @@ function warn(message) {
   }
 }
 
+// Bounded placement diagnostics on the existing console channel (issue 919 P1).
+// OpenCode v2 has no structured logger on the plugin context, so diagnostics
+// reuse `warn` rather than guessing an unsupported surface. Only the fixed
+// allowlist of fields below is ever emitted — never prompts, secrets, titles, or
+// raw provider/config payloads — and the event vocabulary is stable so an
+// operator can grep one line per placement decision.
+const PLACEMENT_DIAGNOSTIC_FIELDS = ["session", "parent", "from", "to", "reason", "outcome"];
+
+function placementDiagnostic(event, fields) {
+  const parts = [];
+  for (const key of PLACEMENT_DIAGNOSTIC_FIELDS) {
+    const value = fields && fields[key];
+    if (typeof value === "string" && value.length > 0) parts.push(`${key}=${value}`);
+  }
+  const label = typeof event === "string" && event.length > 0 ? event : "unknown";
+  warn(`phasegent: placement ${label}${parts.length > 0 ? ` ${parts.join(" ")}` : ""}`);
+}
+
 async function safeText(command) {
   try {
     const text = (await command.text()).trim();
@@ -710,6 +728,149 @@ function shellSegments(command) {
   return segments;
 }
 
+// One whitespace-delimited word of the masked segment starting at `pos`.
+// Quoted runs are already blanks in `masked`, so a value can never be read as
+// a flag; offsets stay aligned with the original segment.
+function nextShellToken(masked, pos) {
+  const n = masked.length;
+  let index = pos;
+  while (index < n && (masked[index] === " " || masked[index] === "\t")) index += 1;
+  if (index >= n) return null;
+  let end = index;
+  while (end < n && masked[end] !== " " && masked[end] !== "\t") end += 1;
+  return { word: masked.slice(index, end), start: index, end };
+}
+
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// `timeout` option tail: bounded arity before its command word. `null` means
+// an unsupported/ambiguous shape, so the caller leaves the bytes untouched.
+function parseTimeoutWrapper(masked, pos) {
+  let index = pos;
+  let durationSeen = false;
+  for (let guard = 0; guard < 32; guard += 1) {
+    const token = nextShellToken(masked, index);
+    if (!token) return null;
+    const word = token.word;
+    if (word === "--") {
+      return durationSeen ? token.end : null;
+    }
+    if (word === "-s" || word === "--signal" || word === "-k" || word === "--kill-after") {
+      const value = nextShellToken(masked, token.end);
+      if (!value) return null;
+      index = value.end;
+      continue;
+    }
+    if (word.startsWith("--signal=") || word.startsWith("--kill-after=")) {
+      index = token.end;
+      continue;
+    }
+    if (
+      word === "--preserve-status" ||
+      word === "--foreground" ||
+      word === "-v" ||
+      word === "--verbose"
+    ) {
+      index = token.end;
+      continue;
+    }
+    if (word.startsWith("-")) return null;
+    if (!durationSeen) {
+      durationSeen = true;
+      index = token.end;
+      continue;
+    }
+    return token.start;
+  }
+  return null;
+}
+
+// `env` option/assignment tail up to its command word (or null when
+// unsupported).
+function parseEnvWrapper(masked, pos) {
+  let index = pos;
+  for (let guard = 0; guard < 64; guard += 1) {
+    const token = nextShellToken(masked, index);
+    if (!token) return null;
+    const word = token.word;
+    if (word === "-i" || word === "--ignore-environment" || word === "--null") {
+      index = token.end;
+      continue;
+    }
+    if (
+      word === "-u" ||
+      word === "--unset" ||
+      word === "-C" ||
+      word === "--chdir" ||
+      word === "-S" ||
+      word === "--split-string"
+    ) {
+      const value = nextShellToken(masked, token.end);
+      if (!value) return null;
+      index = value.end;
+      continue;
+    }
+    if (
+      word.startsWith("--unset=") ||
+      word.startsWith("--chdir=") ||
+      word.startsWith("--split-string=")
+    ) {
+      index = token.end;
+      continue;
+    }
+    if (ASSIGNMENT_WORD.test(word)) {
+      index = token.end;
+      continue;
+    }
+    if (word.startsWith("-")) return null;
+    return token.start;
+  }
+  return null;
+}
+
+// Bounded POSIX transparent wrappers (`timeout`, `env`, `command`) plus
+// assignment words before the actual command name (issue #917 P1). Returns the
+// byte offset where the command word starts and whether any wrapper was
+// crossed; `null` means an unsupported/ambiguous shape, so the invocation is
+// left byte-for-byte instead of guessing shell semantics.
+function parseWrappers(masked, pos) {
+  let index = pos;
+  let wrapped = false;
+  for (let guard = 0; guard < 16; guard += 1) {
+    const token = nextShellToken(masked, index);
+    if (!token) return null;
+    if (ASSIGNMENT_WORD.test(token.word)) {
+      index = token.end;
+      continue;
+    }
+    if (token.word === "timeout") {
+      const after = parseTimeoutWrapper(masked, token.end);
+      if (after === null) return null;
+      index = after;
+      wrapped = true;
+      continue;
+    }
+    if (token.word === "env") {
+      const after = parseEnvWrapper(masked, token.end);
+      if (after === null) return null;
+      index = after;
+      wrapped = true;
+      continue;
+    }
+    if (token.word === "command") {
+      // `command -v`/`-V` are lookups, not executions: any option makes the
+      // shape ambiguous, so it stays untouched.
+      const next = nextShellToken(masked, token.end);
+      if (!next || next.word.startsWith("-")) return null;
+      index = token.end;
+      wrapped = true;
+      continue;
+    }
+    return { pos: token.start, wrapped };
+  }
+  return null;
+}
+
 function phasegentInvocation(segment) {
   const { masked, balanced } = maskQuoted(segment.text);
   let text = segment.text;
@@ -724,6 +885,16 @@ function phasegentInvocation(segment) {
     offset += env[0].length;
     text = text.slice(env[0].length);
   }
+  // Transparent wrappers (`timeout 40s env FOO=1 phasegent …`) sit between the
+  // leading assignments and the command name. The wrapper context is recorded
+  // so the rewrite can inject a valid invocation-local env (`timeout … env
+  // PHASEGENT_ROLE=… phasegent`), which an assignment inserted as an
+  // executable would not be.
+  const wrappers = parseWrappers(masked, offset - segment.start);
+  if (wrappers === null) return null;
+  const wrapped = wrappers.wrapped;
+  offset = segment.start + wrappers.pos;
+  text = segment.text.slice(wrappers.pos);
   // The command name must be a whole word followed by whitespace or the
   // segment end, and the prefix slot excludes quotes and backticks: `\b` also
   // matched before `-`/`.`/`:`/`/`, so a quoted path such as
@@ -737,6 +908,7 @@ function phasegentInvocation(segment) {
     segmentEnd: segment.end - trailing,
     tail: masked.slice(offset - segment.start + token[0].length),
     balanced,
+    wrapped,
   };
 }
 
@@ -789,9 +961,15 @@ const ROLE_ASSIGNMENT = /(?:^|[\s;&|(])(?:\$env:)?PHASEGENT_ROLE=("[^"]*"|'[^']*
 // nonzero `$LASTEXITCODE` is re-asserted with a silent failure so the wrapper
 // stays failed. `windows` is injectable so both forms stay testable from one
 // host.
-function roleScope(role, windows) {
+function roleScope(role, windows, wrapped) {
   const win = typeof windows === "boolean" ? windows : isWindowsHost();
-  if (!win) return { head: `${ROLE_ENV}=${role} `, tail: "" };
+  if (!win) {
+    // A wrapped POSIX invocation cannot take a bare `PHASEGENT_ROLE=…`
+    // assignment where the command name sits (the wrapper would try to exec
+    // the assignment), so the scope is injected through `env`, which is a real
+    // executable and scopes the role to the CLI child only (issue #917 P1).
+    return { head: wrapped ? `env ${ROLE_ENV}=${role} ` : `${ROLE_ENV}=${role} `, tail: "" };
+  }
   return {
     head: `$( ${ROLE_SAVE}=$env:${ROLE_ENV}; try { $env:${ROLE_ENV}='${role}'; `,
     tail:
@@ -883,6 +1061,10 @@ function rewritePhasegentCommand(command, sessionId, event, options) {
     // An unterminated quote leaves no injection point that is provably outside
     // the value: that segment stays byte-for-byte.
     if (!invocation.balanced) continue;
+    // A wrapped invocation is a POSIX transparent-wrapper shape; on Windows the
+    // segment has no supported interpretation, so it stays untouched rather
+    // than nesting a PowerShell scope inside a foreign wrapper (issue #917 P1).
+    if (windows && invocation.wrapped) continue;
     const tailFlags = [];
     const sessionFlag = sessionId ? sessionFlagFor(invocation.tail) : null;
     if (sessionFlag && !sessionFlag.present.test(invocation.tail)) {
@@ -895,7 +1077,7 @@ function rewritePhasegentCommand(command, sessionId, event, options) {
       // An explicit assignment wins, except that a sub-agent's differing claim
       // never outranks the managed session role.
       if (status === "absent" || (subagent && status === "differs")) {
-        scope = roleScope(role, windows);
+        scope = roleScope(role, windows, invocation.wrapped);
       }
     }
     const tail = `${tailFlags.length > 0 ? ` ${tailFlags.join(" ")}` : ""}${scope ? scope.tail : ""}`;
@@ -912,20 +1094,23 @@ function rewritePhasegentCommand(command, sessionId, event, options) {
 
 // assets/opencode/src/session.js
 // Acquired-worktree registry and session placement (issue #440; parent
-// inheritance issue #567; prompt-time placement issue 37).
+// inheritance issue #567; prompt-time placement issue 37; exact session
+// ownership issue 919 P1).
 //
 // `ctx.session.move` relocates a session, and the host's session info
 // (`ctx.session.get`) reports a Task-spawned child's `parentID` plus the
-// session's own `location.directory`. A child therefore inherits its parent's
-// directory — the parent's registered target first, then the directory the host
-// reports for the parent — instead of guessing from the most recently
-// remembered worktree. The registry keeps the per-session mapping, and
-// `activeWorktree` stays the fallback for sessions whose parentage the host
-// cannot report. An empty registry still tries parent inheritance, so only a
-// session with neither a recorded nor an inherited worktree stays untouched.
-// Every placement is decided once per session from the session prompt hook, so
-// no tool call is ever cancelled to move a session and no landing check has to
-// re-read the host record.
+// session's own `location.directory`. The registry is an exact per-session map:
+// a session's worktree is the one recorded under its own id, and there is no
+// cross-session fallback. An unknown session therefore has no worktree — it can
+// never be handed another session's directory — and a child inherits only its
+// parent's directory (the parent's registered target, or the directory the host
+// reports for the parent), never the most recently remembered worktree.
+//
+// The host is the only authority on where a session *is*: a fresh own-session
+// read decides whether a known placement still holds, and a decided move whose
+// source cannot be verified fails closed rather than running the turn in an
+// unverified directory. Every placement is decided once per session from the
+// session prompt hook, so no tool call is ever cancelled to move a session.
 
 
 // Every error the placement itself raises starts with this prefix (issue 37):
@@ -936,9 +1121,15 @@ function rewritePhasegentCommand(command, sessionId, event, options) {
 const PLACEMENT_ERROR_PREFIX = "phasegent: session placement";
 
 const sessionWorktrees = new Map();
-let activeWorktree = null;
 const moveAttempts = new Map();
 const placedSessions = new Set();
+// Sessions whose placement the host has actually confirmed at the registered
+// directory. `placedSessions` records an *admitted* placement (the runner
+// applies it at the next step boundary); `confirmedSessions` records that a
+// fresh host read agreed, which is the only state that lets a reconciliation
+// treat a differing host answer as an external relocation rather than a move
+// that has not landed yet.
+const confirmedSessions = new Set();
 const sessionInfo = new Map();
 const closedIssues = new Set();
 
@@ -956,6 +1147,17 @@ function markPlaced(sessionId) {
   placedSessions.add(String(sessionId));
 }
 
+// Records that a fresh host read agreed the session is at its registered
+// directory, so a later differing answer is a relocation and not a lagging host.
+function markConfirmed(sessionId) {
+  if (sessionId === undefined || sessionId === null) return;
+  confirmedSessions.add(String(sessionId));
+}
+
+function hostConfirmed(sessionId) {
+  return sessionId !== undefined && sessionId !== null && confirmedSessions.has(String(sessionId));
+}
+
 // A refused acquisition is remembered per issue: the session stays in the
 // main checkout, and the next prompt must not repeat the lease probe or
 // the warning.
@@ -967,29 +1169,28 @@ function rememberClosedIssue(issueId) {
   closedIssues.add(String(issueId));
 }
 
+// Exact per-session registration. A miss (unknown or absent session) records
+// nothing and never borrows another session's directory.
 function rememberWorktree(sessionId, directory) {
   if (typeof directory !== "string" || directory.length === 0) return;
-  activeWorktree = directory;
-  if (sessionId !== undefined && sessionId !== null) {
-    sessionWorktrees.set(String(sessionId), directory);
-  }
+  if (sessionId === undefined || sessionId === null) return;
+  sessionWorktrees.set(String(sessionId), directory);
 }
 
+// The session's own registered worktree, or `null` when it has none.
 function worktreeForSession(sessionId) {
-  if (sessionId !== undefined && sessionId !== null) {
-    const known = sessionWorktrees.get(String(sessionId));
-    if (known) return known;
-  }
-  return activeWorktree;
+  if (sessionId === undefined || sessionId === null) return null;
+  const known = sessionWorktrees.get(String(sessionId));
+  return known === undefined ? null : known;
 }
 
 function resetWorktrees() {
   sessionWorktrees.clear();
   moveAttempts.clear();
   placedSessions.clear();
+  confirmedSessions.clear();
   sessionInfo.clear();
   closedIssues.clear();
-  activeWorktree = null;
 }
 
 // `context.session.get` is the host's session lookup: `parentID` names the
@@ -1049,37 +1250,36 @@ async function readAuthoritativeDirectory(context, sessionId) {
 }
 
 // Drops every cached reference to a worktree the host no longer associates
-// with this session: its registered target, the settled-placement marker, an
-// in-flight move, the cached host record that produced the stale answer, and
-// the shared fallback — but only while that fallback still names the same dead
-// directory, so another session's worktree is never dropped with it.
-function forgetSessionWorktree(sessionId, directory) {
+// with this session: its registered target, the settled and confirmed markers,
+// an in-flight move, and the cached host record that produced the stale answer.
+function forgetSessionWorktree(sessionId, _directory) {
   if (sessionId === undefined || sessionId === null) return;
   const key = String(sessionId);
   sessionWorktrees.delete(key);
   sessionInfo.delete(key);
   placedSessions.delete(key);
+  confirmedSessions.delete(key);
   moveAttempts.delete(key);
-  if (directory && activeWorktree === directory) activeWorktree = null;
 }
 
 // The parent's registered target is the destination of a move that may still be
 // pending at the parent's next step boundary; the directory the host reports for
 // the parent is the fallback once that move has landed.
 //
-// Issue 747 P2: a parent whose placement already *settled* is the exception.
-// Nothing about the plugin keeps it there — `issue close` returns the closing
-// session to the main checkout through the OpenCode API before its worktree is
-// removed — so its registered target is stale by definition once the host
-// reports somewhere else, and the child inherits where the parent actually is
-// rather than the closed directory. A parent that has not settled keeps its
-// registered target, and that read is always fresh so a stale cache cannot
-// answer for it.
+// Issue 747 P2: a parent whose placement already *settled and was confirmed by
+// the host* is the exception. Nothing about the plugin keeps it there — `issue
+// close` returns the closing session to the main checkout through the OpenCode
+// API before its worktree is removed — so its registered target is stale by
+// definition once the host reports somewhere else, and the child inherits where
+// the parent actually is rather than the closed directory. A parent whose move
+// was only *admitted* (the host has not applied it yet) keeps its registered
+// target: a lagging host answer is not an external relocation. A parent with no
+// registration falls back to the directory the host reports for it.
 async function inheritedWorktree(context, parentId, readInfo) {
   if (parentId === undefined || parentId === null) return null;
   const registered = sessionWorktrees.get(String(parentId));
   if (registered) {
-    if (sessionPlaced(parentId)) {
+    if (sessionPlaced(parentId) && hostConfirmed(parentId)) {
       const directory = await readAuthoritativeDirectory(context, parentId);
       if (directory !== registered) {
         forgetSessionWorktree(parentId, registered);
@@ -1098,13 +1298,17 @@ async function inheritedWorktree(context, parentId, readInfo) {
 // from the session prompt hook (issue 37), which is admitted before the runner
 // reaches any tool call, so the move lands before the first tool call of the
 // turn: there is no in-flight call to protect and nothing to cancel. The move
-// itself still fails closed — a host that cannot move the session raises a
-// prefixed error that fails the prompt, so no turn is ever run unplaced.
-// `moveAttempts` joins concurrent prompts onto one placement, and a failure
-// clears with the attempt so the next prompt retries. A session that already
-// sits in the target directory (`currentDirectory`, else the plugin location)
-// is placed without a move, and every later prompt is a no-op.
-async function moveSessionToWorktree(context, sessionId, directory, currentDirectory) {
+// itself still fails closed — a host that cannot report the session's current
+// directory, or cannot move it, raises a prefixed error that fails the prompt,
+// so no turn is ever run unplaced. `moveAttempts` joins concurrent prompts onto
+// one placement, and a failure clears with the attempt so the next prompt
+// retries.
+//
+// Issue 919 P1: the *fresh own-session* directory the host reports — not
+// `context.location` and not the `currentDirectory` compatibility hint — is what
+// decides whether a move is needed. When the host cannot report it, a decided
+// placement is never guessed from plugin context.
+async function moveSessionToWorktree(context, sessionId, directory, _currentDirectory) {
   if (typeof directory !== "string" || directory.length === 0) return;
   if (sessionId === undefined || sessionId === null) return;
   const key = String(sessionId);
@@ -1121,30 +1325,57 @@ async function moveSessionToWorktree(context, sessionId, directory, currentDirec
     return;
   }
   const attempt = (async () => {
-    const current =
-      typeof currentDirectory === "string" && currentDirectory.length > 0
-        ? currentDirectory
-        : locationDirectory(context);
-    if (current === directory) {
+    // The source must be the host's fresh, authoritative answer for this very
+    // session. A cached value or the plugin's own location could be stale, and
+    // guessing could send the turn into a directory that is about to vanish.
+    const located = await readAuthoritativeDirectory(context, sessionId);
+    if (typeof located !== "string" || located.length === 0) {
+      placementDiagnostic("unverified", {
+        session: key,
+        to: directory,
+        reason: "no-authoritative-directory",
+      });
+      throw new Error(
+        `${PLACEMENT_ERROR_PREFIX} unverified for '${key}': the host could not report the ` +
+          `current directory, so '${key}' cannot be moved to ${directory}`,
+      );
+    }
+    if (located === directory) {
       placedSessions.add(key); // the session already sits in the worktree
+      markConfirmed(key);
+      placementDiagnostic("suppressed", {
+        session: key,
+        from: located,
+        to: directory,
+        reason: "already-in-target",
+      });
       return directory;
     }
     const move = context && context.session && context.session.move;
     if (typeof move !== "function") {
       throw new Error(
         `${PLACEMENT_ERROR_PREFIX} unavailable for '${key}': the host exposes no session.move, ` +
-          `so '${key}' cannot enter ${directory} and stays in ${current}`,
+          `so '${key}' cannot enter ${directory} and stays in ${located}`,
       );
     }
+    placementDiagnostic("request", { session: key, from: located, to: directory });
     try {
       await move({ sessionID: sessionId, directory });
     } catch (error) {
+      placementDiagnostic("rejected", {
+        session: key,
+        to: directory,
+        reason: "move-rejected",
+      });
       throw new Error(
         `${PLACEMENT_ERROR_PREFIX} failed for '${key}': moving to ${directory} rejected ` +
           `(${errorText(error)}); the next prompt retries`,
       );
     }
     placedSessions.add(key);
+    // The host *accepted* the move; that is not proof it relocated, so this is
+    // deliberately not labelled a confirmation.
+    placementDiagnostic("accepted", { session: key, from: located, to: directory });
     return directory;
   })();
   moveAttempts.set(key, attempt);
@@ -1155,9 +1386,8 @@ async function moveSessionToWorktree(context, sessionId, directory, currentDirec
   }
 }
 
-// The registry fallback: a sub-agent whose session id was never remembered
-// reuses the most recently remembered worktree. An empty registry means "no
-// worktree" and leaves the call untouched.
+// Exact-session reuse: a session's own registered worktree, or nothing. Never a
+// cross-session fallback.
 async function reuseRememberedWorktree(context, sessionId) {
   const known = worktreeForSession(sessionId);
   if (!known) return null;
@@ -1175,8 +1405,12 @@ async function reuseRememberedWorktree(context, sessionId) {
 // be gone by the time the next prompt arrives. So the host is read fresh and
 // three rules follow from its answer:
 //
-//   * a placement this adapter already *settled* is never reversed — the host
-//     reporting somewhere else is evidence that something else moved it;
+//   * a placement this adapter already *settled and the host confirmed* is never
+//     reversed — the host reporting somewhere else is evidence that something
+//     else moved it;
+//   * a move that was only *admitted* (issue 919 P1) is not an external
+//     relocation: the host has not applied it yet, so a differing answer keeps
+//     the registered target rather than dropping it;
 //   * an unreadable host is not evidence that the placement still holds. The
 //     directory may already be gone, so the cached target is dropped rather
 //     than re-entered on an unproven assumption;
@@ -1199,8 +1433,13 @@ async function reconcileSessionLocation(context, sessionId, readDirectory) {
   // still names may already have been removed.
   if (!directory || (registered && directory !== registered)) {
     forgetSessionWorktree(sessionId, registered);
+    placementDiagnostic("skip", {
+      session: sessionId === undefined || sessionId === null ? undefined : String(sessionId),
+      reason: "reconciled-elsewhere",
+    });
     return false;
   }
+  markConfirmed(sessionId);
   return true;
 }
 
@@ -1216,6 +1455,10 @@ async function reconcileSessionLocation(context, sessionId, readDirectory) {
 // is pointed at the explicit `phasegent worktree acquire --isolate` command
 // instead. A Task-spawned child follows its parent's directory first and never
 // reaches the probes below, so it can neither acquire nor guess one.
+//
+// Issue 919 P1: the registry is exact per session. There is no cross-session
+// fallback, so an unknown session — or a child whose parent cannot be resolved —
+// stays where it is instead of being redirected into another session's worktree.
 
 
 // A decided placement must fail closed: only errors raised by the move itself
@@ -1264,35 +1507,34 @@ function warnRefusedPlacement(sessionId, issueId) {
 // The one placement decision for a session, run from the session prompt hook
 // (issue 37): a Task-spawned child follows its parent's directory first, so it
 // never reaches the probes below and can neither acquire nor guess a worktree.
-// `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the in-memory
-// registry: no host session lookup, no CLI, no acquire. The rest is guarded —
-// an ordinary discovery failure keeps the session in the current checkout — while
-// a decided placement rethrows out of the `try` so the prompt fails instead of
-// running unplaced. `deps` is an internal seam so tests can exercise that order
-// without the phasegent CLI.
+// `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the exact
+// in-memory registry: no host session lookup, no CLI, no acquire, and no
+// auto-move (the current location cannot be verified without a host read). The
+// rest is guarded — an ordinary discovery failure keeps the session in the
+// current checkout — while a decided placement rethrows out of the `try` so the
+// prompt fails instead of running unplaced. `deps` is an internal seam so tests
+// can exercise that order without the phasegent CLI.
 async function ensureSessionWorktree(context, sessionId, deps) {
   if (!sessionId) return null;
-  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert beyond the
-  // in-memory registry: no host session lookup, no CLI, no acquire.
-  const discoveryDisabled = phasegentCallsDisabled();
+  const registered = worktreeForSession(sessionId);
+  // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert: the exact
+  // in-memory lookup above is local, and no host read or auto-move follows,
+  // because a move whose current location cannot be verified must never run.
+  if (phasegentCallsDisabled()) return registered;
   // Issue 747 P2: the host, not this registry, decides where a session runs.
   // A settled placement is reconciled against a fresh host read before its
   // cached target is trusted, so an `issue close` relocation is never reversed
   // and a worktree that was already removed is never re-entered. An unsettled
   // session is untouched, so the ordinary first placement — the session is in
   // the main checkout and must be moved into the worktree — still happens.
-  if (!discoveryDisabled) {
-    const readDirectory =
-      (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
-    if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
-  }
-  const registered = sessionWorktrees.get(String(sessionId));
+  const readDirectory =
+    (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
+  if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
   if (registered) {
     // Move-only placement: a move the host cannot perform fails the prompt.
     await moveSessionToWorktree(context, sessionId, registered);
     return registered;
   }
-  if (discoveryDisabled) return await reuseRememberedWorktree(context, sessionId);
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
@@ -1300,29 +1542,11 @@ async function ensureSessionWorktree(context, sessionId, deps) {
   const cwd = locationDirectory(context);
   try {
     // A child inherits before the reuse probe: it takes its parent's directory
-    // or nothing at all, never the most recently remembered worktree, which
-    // could belong to a sibling.
+    // or nothing at all, never another session's worktree.
     const info = await readInfo(context, sessionId);
     if (info && info.parentID) {
       return await inheritParentWorktree(context, sessionId, info, readInfo);
     }
-    // Issue 747 P2: the shared fallback can outlive the lease it came from.
-    // `issue close` converges the lease rows and may already have removed the
-    // directory the fallback still names, so the closed marker is consulted
-    // before the fallback is handed out, not only before a fresh acquire. The
-    // binding is read only when there is a fallback to protect, so a session
-    // with nothing remembered still costs no CLI call here.
-    if (worktreeForSession(sessionId)) {
-      const fallbackIssue = await readBinding(cwd);
-      if (fallbackIssue && (await issueConverged(fallbackIssue, cwd, readLeaseHistory))) {
-        warn(
-          `phasegent: issue ${fallbackIssue} is closed; refusing to reuse a worktree (staying put)`,
-        );
-        return null;
-      }
-    }
-    const remembered = await reuseRememberedWorktree(context, sessionId);
-    if (remembered) return remembered;
     const discovered = await discover(sessionId, cwd);
     if (discovered) {
       await moveSessionToWorktree(context, sessionId, discovered);
@@ -1371,6 +1595,7 @@ async function inheritParentWorktree(context, sessionId, info, readInfo) {
     // The host reports the child already inside the parent's directory:
     // placement settled, nothing to move.
     markPlaced(sessionId);
+    markConfirmed(sessionId);
     return null;
   }
   rememberWorktree(sessionId, target);
@@ -2238,12 +2463,23 @@ owns the session identity and the lease side, so no session id, worktree path,
 or lease call travels between sessions. Wiring is automatic: never mint a fresh
 session id per command or per phase, and a child session inherits its parent's
 worktree from the session prompt hook, before the child's runner reaches its
-first tool call. Placement is decided once per session during prompt admission
-and uses \`session.move\`: a registered, inherited, or already leased worktree is
-entered there, while a no-worktree session continues normally and the placement
-is never repeated. If the required move is unavailable or the host rejects it,
-the prompt hook throws so the turn is not run in the old checkout, and the next
-prompt retries; only ordinary discovery failures keep the original directory.
+first tool call. The registry is exact per session (issue 919 P1): a session
+only ever uses the worktree recorded under its own id, a child only inherits its
+parent's directory, and an unknown session, unknown root, or unresolvable parent
+is never moved or redirected into another session's worktree. Placement is
+decided once per session during prompt admission and uses \`session.move\`: a
+fresh own-session host read — not the plugin's own location or a cached value —
+decides whether a known placement still needs a move, a read that already equals
+the target settles it with no move, and a registered, inherited, or already
+leased worktree is entered there, while a no-worktree session continues normally
+and the placement is never repeated. If the required move is unavailable, the
+host cannot report the session's current directory, or the host rejects the
+move, the prompt hook throws so the turn is not run in an unverified or old
+checkout, and the next prompt retries; only ordinary discovery failures keep the
+original directory. Each placement decision emits one bounded diagnostic line
+(session, parent, from, to, reason, outcome); an accepted move is never reported
+as confirmed. \`PHASEGENT_WORKTREE_NO_DISCOVER=1\` stays inert: it adds no host
+read and never auto-moves.
 
 Creating a worktree is opt-in: \`issue create\` and the adapter's lazy path reuse
 an existing lease, an inherited worktree, or the current checkout, and a conflict
@@ -2259,10 +2495,29 @@ Boundaries:
   cleanup.
 - An acquire against a base ref that does not resolve fails locally before any
   worktree, branch, or lease is written.
-- \`phasegent worktree prune\` reports stale active leases and removable
-  worktrees (read-only). Releasing stale leases and removing worktrees are
-  separate explicit actions, and removal only ever touches clean, expired,
-  retained worktrees; an owner is never guessed.
+- \`phasegent worktree prune\` is global and removal-by-default: without \`--repo\`
+  it enumerates every repository identity the local lease store records, and
+  \`--dryrun\`/\`--dry-run\` is the read-only preview that mutates nothing. A
+  directory is removed as soon as every issue associated with it is confirmed
+  closed on the configured provider, no active lease references it, and it is
+  Git-clean — with no waiting period, so \`--stale-days\` only affects the
+  explicit \`--release-stale\` recovery. It reuses the same guards as close/sync —
+  never the main checkout, never an active peer's path (including the same
+  owner), never dirty or untracked contents, and never a directory the OpenCode
+  host still (or cannot be proven not to) occupy, checked read-only. Its one
+  relocation exception is narrow and user-authorized: a directory whose only
+  remaining occupant is one or more individually proven *finished* child
+  sessions (the host's exact \`outcome\` is \`succeeded\`, the \`parentID\` chain of at
+  most 8 hops reaches a persisted \`ses_\` lease session for that directory, and
+  the child is not itself a lease owner) may be cleaned after prune relocates
+  exactly those children to the repository's verified main checkout and
+  re-confirms vacancy with fresh evidence. A running, unknown, foreign,
+  unreadable, non-succeeded, cyclic, or over-deep session, a hosted lease owner,
+  an unavailable main checkout, or a failed or unconfirmed move keeps the
+  directory with zero further moves; prune never moves a lease owner or an
+  unrelated session. A missing, unavailable, ambiguous, or mismatched
+  issue is never treated as closed. Default output is concise text with
+  directory-based counts; \`--json\` selects the machine-readable aggregate.
 - Forced release is the attributed override: it requires a reason and the lease
   row stays (rows are never deleted).
 - \`worktree probe\` is read-only: it reports existence,

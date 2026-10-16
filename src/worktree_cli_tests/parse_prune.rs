@@ -2,7 +2,7 @@ use super::support::*;
 use super::*;
 
 #[test]
-fn parse_prune_defaults_to_read_only_and_stale_days_7() {
+fn parse_prune_defaults_to_removal_and_text_output() {
     let invocation =
         crate::command::parse_with_role_env(&strings(["worktree", "prune"]), Some("orchestrator"))
             .unwrap();
@@ -13,6 +13,8 @@ fn parse_prune_defaults_to_read_only_and_stale_days_7() {
             release_stale,
             remove,
             reason,
+            dry_run,
+            format,
             no_sync: _,
         }) => {
             assert_eq!(repo, None);
@@ -20,13 +22,32 @@ fn parse_prune_defaults_to_read_only_and_stale_days_7() {
             assert!(!release_stale);
             assert!(!remove);
             assert_eq!(reason, None);
+            assert!(!dry_run, "prune defaults to removal, not preview");
+            assert_eq!(format, "text", "default output is concise text");
         }
         other => panic!("unexpected command {other:?}"),
     }
 }
 
 #[test]
-fn parse_prune_remove_flag_round_trip() {
+fn parse_prune_dryrun_and_alias_are_recognised() {
+    for flag in ["--dryrun", "--dry-run"] {
+        let invocation = crate::command::parse_with_role_env(
+            &strings(["worktree", "prune", flag]),
+            Some("orchestrator"),
+        )
+        .unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::Prune { dry_run, .. }) => {
+                assert!(dry_run, "{flag} must request a preview");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn parse_prune_remove_is_an_accepted_compatibility_noop() {
     let invocation = crate::command::parse_with_role_env(
         &strings(["worktree", "prune", "--remove", "--stale-days", "7"]),
         Some("orchestrator"),
@@ -34,23 +55,57 @@ fn parse_prune_remove_flag_round_trip() {
     .unwrap();
     match invocation.command {
         Command::Worktree(WorktreeCommand::Prune {
-            stale_days, remove, ..
+            stale_days,
+            remove,
+            dry_run,
+            ..
         }) => {
             assert_eq!(stale_days, 7);
-            assert!(remove);
+            assert!(remove, "--remove is still parseable");
+            assert!(!dry_run, "--remove does not imply a preview");
         }
         other => panic!("unexpected command {other:?}"),
     }
 }
 
 #[test]
-fn parse_prune_rejects_removed_dry_run_flag() {
-    let err = crate::command::parse_with_role_env(
-        &strings(["worktree", "prune", "--dry-run"]),
+fn parse_prune_json_selects_machine_output() {
+    for args in [
+        strings(["worktree", "prune", "--json"]),
+        strings(["worktree", "prune", "--format", "json"]),
+    ] {
+        let invocation = crate::command::parse_with_role_env(&args, Some("orchestrator")).unwrap();
+        match invocation.command {
+            Command::Worktree(WorktreeCommand::Prune { format, .. }) => {
+                assert_eq!(format, "json");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+    let explicit_text = crate::command::parse_with_role_env(
+        &strings(["worktree", "prune", "--format", "text"]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match explicit_text.command {
+        Command::Worktree(WorktreeCommand::Prune { format, .. }) => assert_eq!(format, "text"),
+        other => panic!("unexpected command {other:?}"),
+    }
+    let bad = crate::command::parse_with_role_env(
+        &strings(["worktree", "prune", "--format", "yaml"]),
         Some("orchestrator"),
     )
     .unwrap_err();
-    assert!(err.contains("--dry-run"), "unexpected error: {err}");
+    assert!(bad.contains("--format"), "unexpected error: {bad}");
+    let contradictory = crate::command::parse_with_role_env(
+        &strings(["worktree", "prune", "--json", "--format", "text"]),
+        Some("orchestrator"),
+    )
+    .unwrap_err();
+    assert!(
+        contradictory.contains("mutually exclusive"),
+        "unexpected error: {contradictory}"
+    );
 }
 
 #[test]
@@ -80,34 +135,8 @@ fn parse_prune_rejects_negative_stale_days() {
 }
 
 #[test]
-fn parse_prune_defaults_to_read_only_scan_and_7_days() {
-    let invocation =
-        crate::command::parse_with_role_env(&strings(["worktree", "prune"]), Some("orchestrator"))
-            .unwrap();
-    match invocation.command {
-        Command::Worktree(WorktreeCommand::Prune {
-            repo,
-            stale_days,
-            release_stale,
-            remove,
-            reason,
-            no_sync: _,
-        }) => {
-            assert_eq!(repo, None);
-            assert_eq!(stale_days, 7);
-            assert!(!release_stale);
-            assert!(!remove);
-            assert_eq!(reason, None);
-        }
-        other => panic!("unexpected command {other:?}"),
-    }
-}
-
-#[test]
-fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale() {
-    // `--release-stale` is only accepted together with a non-empty `--reason`,
-    // and a bare `--reason` is rejected because it would record a dry-run
-    // reason; the combined invocation stays parseable.
+fn parse_prune_release_stale_requires_reason_unless_previewing() {
+    // A non-preview recovery records the reason, so it must be present.
     let missing_reason = crate::command::parse_with_role_env(
         &strings(["worktree", "prune", "--release-stale"]),
         Some("orchestrator"),
@@ -117,6 +146,25 @@ fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale()
         missing_reason.contains("--release-stale requires a non-empty --reason"),
         "unexpected error: {missing_reason}"
     );
+    // A preview records nothing, so the reason may be omitted.
+    let preview = crate::command::parse_with_role_env(
+        &strings(["worktree", "prune", "--release-stale", "--dryrun"]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match preview.command {
+        Command::Worktree(WorktreeCommand::Prune {
+            release_stale,
+            reason,
+            dry_run,
+            ..
+        }) => {
+            assert!(release_stale);
+            assert_eq!(reason, None);
+            assert!(dry_run);
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
     let dangling_reason = crate::command::parse_with_role_env(
         &strings(["worktree", "prune", "--reason", "cleanup"]),
         Some("orchestrator"),
@@ -126,6 +174,10 @@ fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale()
         dangling_reason.contains("--reason requires --release-stale"),
         "unexpected error: {dangling_reason}"
     );
+}
+
+#[test]
+fn parse_prune_release_stale_and_remove_round_trip() {
     let invocation = crate::command::parse_with_role_env(
         &strings([
             "worktree",
@@ -149,7 +201,7 @@ fn parse_prune_release_stale_requires_reason_and_reason_requires_release_stale()
             release_stale,
             remove,
             reason,
-            no_sync: _,
+            ..
         }) => {
             assert_eq!(repo.as_deref(), Some("/tmp/repo"));
             assert_eq!(stale_days, 3);

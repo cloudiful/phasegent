@@ -386,15 +386,18 @@ describe("redirectPaths pass-through", () => {
 });
 
 describe("worktree registry", () => {
-  test("remembers the active worktree for unknown sessions", () => {
+  test("maps a worktree only to the exact session that registered it", () => {
     rememberWorktree("session-1", WORKTREE);
     expect(worktreeForSession("session-1")).toBe(WORKTREE);
-    // Task-spawned sub-agents carry a different (or absent) session id.
-    expect(worktreeForSession("session-2")).toBe(WORKTREE);
-    expect(worktreeForSession(undefined)).toBe(WORKTREE);
+    // Issue 919 P1: no cross-session fallback. A different or absent session id
+    // never borrows session-1's directory — the reported bug where B resolved
+    // to A's worktree.
+    expect(worktreeForSession("session-2")).toBeNull();
+    expect(worktreeForSession(undefined)).toBeNull();
+    expect(worktreeForSession(null)).toBeNull();
   });
 
-  test("resetWorktrees clears the fallback so sessions pass through", () => {
+  test("resetWorktrees clears every exact mapping so sessions pass through", () => {
     rememberWorktree("session-1", WORKTREE);
     resetWorktrees();
     expect(worktreeForSession("session-1")).toBeNull();
@@ -752,10 +755,11 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
     expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
   });
 
-  test("keeps the registry-only path when host discovery is disabled", async () => {
+  test("keeps the exact registry-only path when host discovery is disabled", async () => {
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    rememberWorktree("parent-1", WORKTREE);
     rememberWorktree("child-1", WORKTREE);
+    // A different session's registration must never be borrowed.
+    rememberWorktree("other-session", "/wt/other");
     const moves = [];
     let lookups = 0;
     const context = {
@@ -770,9 +774,15 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
     };
     const prompt = createPromptHook(context, noCliDeps);
 
-    // A registered session still moves, with no parentage lookup and no CLI.
+    // Issue 919 P1: disabled discovery is inert — the exact in-memory lookup
+    // returns the session's own worktree, but no host read and no auto-move
+    // happen, because the current location cannot be verified here.
     await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
-    expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+    expect(moves).toEqual([]);
+    expect(lookups).toBe(0);
+    // An unknown session is not handed another session's worktree.
+    await expect(prompt(promptEvent("unknown-session"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
     expect(lookups).toBe(0);
   });
 
@@ -964,9 +974,14 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
 
   test("a discovered lease is reused, and a closed issue is refused", async () => {
     const moves = [];
+    // The host reports the session's current directory, so the decided move has
+    // a verified source (issue 919 P1: a decided placement never guesses it).
     const context = {
       location: { directory: "/repo" },
-      session: { move: async (input) => moves.push(input) },
+      session: {
+        get: async () => ({ parentID: null, location: { directory: "/repo" } }),
+        move: async (input) => moves.push(input),
+      },
     };
     expect(
       await ensureSessionWorktree(context, "orch-1", {
@@ -1168,6 +1183,7 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
 
   test("an unreadable host never revives a worktree the close may have removed", async () => {
     rememberWorktree("session-1", WORKTREE);
+    let directory = MAIN;
     let unavailable = false;
     const moves = [];
     const context = {
@@ -1175,13 +1191,17 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
       session: {
         get: async () => {
           if (unavailable) throw new Error("session store unavailable");
-          return { parentID: null, location: { directory: WORKTREE } };
+          return { parentID: null, location: { directory } };
         },
-        move: async (input) => moves.push(input),
+        move: async ({ directory: target }) => {
+          moves.push(target);
+          directory = target;
+        },
       },
     };
     const prompt = createPromptHook(context, noCliDeps);
     await prompt(promptEvent("session-1"));
+    expect(moves).toEqual([WORKTREE]);
     expect(sessionPlaced("session-1")).toBe(true);
 
     // "I cannot tell you where this session is" is not "it is still in the
@@ -1215,17 +1235,17 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
     await prompt(promptEvent("child-2"));
 
     expect(moves).toEqual([{ sessionID: "child-2", directory: MAIN }]);
-    // The parent's settled registration is gone, and the shared fallback now
-    // points at a directory that still exists.
+    // The parent's settled registration is gone for its own id, and no other
+    // session borrows it (issue 919 P1: no cross-session fallback).
     expect(sessionPlaced("parent-1")).toBe(false);
     expect(worktreeForSession("parent-1")).not.toBe(WORKTREE);
-    expect(worktreeForSession("unknown-session")).toBe(MAIN);
+    expect(worktreeForSession("unknown-session")).toBeNull();
   });
 
-  test("never hands a closed issue's worktree to a new sub-agent", async () => {
-    // The shared fallback outlives the lease it came from, and the close may
-    // already have removed it, so the converged-lease marker is consulted
-    // before the fallback is handed out.
+  test("never hands another session's worktree to a new sub-agent", async () => {
+    // Issue 919 P1: with no cross-session fallback, a new session with no own
+    // registration and no parent never borrows another session's worktree, no
+    // matter the other session's lease state.
     rememberWorktree("other-session", WORKTREE);
     const moves = [];
     const context = {
@@ -1246,10 +1266,10 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
     });
     expect(moves).toEqual([]);
     expect(warnings.join("\n")).toContain("issue 747 is closed");
-    expect(warnings.join("\n")).toContain("refusing to reuse a worktree");
+    expect(warnings.join("\n")).toContain("refusing to acquire a worktree");
   });
 
-  test("an open issue still hands the shared fallback to a new sub-agent", async () => {
+  test("an open issue still does not borrow another session's worktree", async () => {
     rememberWorktree("other-session", WORKTREE);
     const moves = [];
     const context = {
@@ -1263,8 +1283,8 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
         readBinding: async () => 747,
         readLeaseHistory: async () => [{ status: "active", release_reason: null }],
       }),
-    ).toBe(WORKTREE);
-    expect(moves).toEqual([{ sessionID: "sub-2", directory: WORKTREE }]);
+    ).toBeNull();
+    expect(moves).toEqual([]);
   });
 
   test("a moved session re-registers cleanly on its next issue's lease", async () => {
@@ -1318,13 +1338,284 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
         },
       };
       expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
-      // The placement is now settled, and the inert path still asks nothing.
+      // The inert path is local-only and never auto-moves: the exact lookup
+      // returns the worktree, but with no host read the current location cannot
+      // be verified, so no move is issued.
       expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
       expect(lookups).toBe(0);
-      expect(moves).toHaveLength(1);
+      expect(moves).toHaveLength(0);
     } finally {
       restoreNoDiscover(savedNoDiscover);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session-scoped placement and bounded diagnostics (issue 919 P1)
+//
+// The registry is exact per session; the host's fresh own-session directory is
+// the only authority on whether a decided move is needed; and each placement
+// decision emits one bounded diagnostic line. No cross-session fallback.
+// ---------------------------------------------------------------------------
+
+describe("session-scoped placement (issue 919 P1)", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  // A host that records every `get` and `move`, and reports the directory from
+  // a mutable map, so a test can interleave sessions without a real host.
+  function recordingHost(sessions) {
+    const gets = [];
+    const moves = [];
+    return {
+      gets,
+      moves,
+      context: {
+        location: { directory: "/repo" },
+        session: {
+          get: async ({ sessionID }) => {
+            gets.push(sessionID);
+            return sessions[sessionID];
+          },
+          move: async ({ sessionID, directory }) => {
+            moves.push({ sessionID, directory });
+            sessions[sessionID] = { ...sessions[sessionID], location: { directory } };
+          },
+        },
+      },
+    };
+  }
+
+  test("interleaves two independent roots without cross-talk", async () => {
+    const rootA = "/audit/repo-A/worktree";
+    const rootB = "/audit/repo-B/worktree";
+    rememberWorktree("root-A", rootA);
+    rememberWorktree("root-B", rootB);
+    const host = recordingHost({
+      "root-A": { parentID: null, location: { directory: "/audit/repo-A" } },
+      "root-B": { parentID: null, location: { directory: "/audit/repo-B" } },
+      "root-C": { parentID: null, location: { directory: "/audit/repo-C" } },
+    });
+    await ensureSessionWorktree(host.context, "root-A", noCliDeps);
+    await ensureSessionWorktree(host.context, "root-B", noCliDeps);
+    // An unrelated root is not moved anywhere, let alone into A's or B's tree.
+    await ensureSessionWorktree(host.context, "root-C", {
+      readSessionInfo: async () => null,
+      discover: async () => null,
+      readBinding: async () => null,
+    });
+    expect(host.moves).toEqual([
+      { sessionID: "root-A", directory: rootA },
+      { sessionID: "root-B", directory: rootB },
+    ]);
+    expect(worktreeForSession("root-C")).toBeNull();
+  });
+
+  test("never returns session A's worktree for session B", async () => {
+    rememberWorktree("A", "/audit/repo-A/worktree");
+    // The reported bug: B, which never registered, resolved to A's directory.
+    expect(worktreeForSession("B")).toBeNull();
+    // And through the placement decision B stays put rather than entering A's.
+    const host = recordingHost({ B: { parentID: null, location: { directory: "/repo" } } });
+    expect(
+      await ensureSessionWorktree(host.context, "B", {
+        readSessionInfo: async () => null,
+        discover: async () => null,
+        readBinding: async () => null,
+      }),
+    ).toBeNull();
+    expect(host.moves).toEqual([]);
+  });
+
+  test("an unknown root and an unavailable parent never move into A's worktree", async () => {
+    rememberWorktree("A", WORKTREE);
+    const host = recordingHost({
+      root: { parentID: null, location: { directory: "/repo" } },
+      orphan: { parentID: "missing-parent", location: { directory: "/repo" } },
+    });
+    expect(
+      await ensureSessionWorktree(host.context, "root", {
+        readSessionInfo: async () => null,
+        discover: async () => null,
+        readBinding: async () => null,
+      }),
+    ).toBeNull();
+    expect(
+      await ensureSessionWorktree(host.context, "orphan", {
+        readSessionInfo: async () => ({ parentID: "missing-parent", directory: "/repo" }),
+        discover: async () => null,
+        readBinding: async () => null,
+      }),
+    ).toBeNull();
+    expect(host.moves).toEqual([]);
+  });
+
+  test("a fresh own-directory read equal to the target yields zero moves despite stale context", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    // The plugin context still points at the main checkout; the host is the
+    // authority and reports the session already in the worktree.
+    const host = recordingHost({
+      "session-1": { parentID: null, location: { directory: WORKTREE } },
+    });
+    const context = { ...host.context, location: { directory: "/repo" } };
+    expect(await reconcileSessionLocation(context, "session-1")).toBe(true);
+    await expect(ensureSessionWorktree(context, "session-1", noCliDeps)).resolves.toBe(WORKTREE);
+    expect(host.moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("explicit parent inheritance still works and an unsettled parent keeps its admitted target", async () => {
+    rememberWorktree("parent-1", WORKTREE);
+    // Parent move admitted but the host has not applied it yet: it still
+    // reports the old directory. The child must follow the admitted target, not
+    // the lagging host answer.
+    const host = recordingHost({
+      "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: "/repo" } },
+    });
+    await ensureSessionWorktree(host.context, "child-1", noCliDeps);
+    expect(host.moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
+  });
+
+  test("an externally returned parent is followed, and descendants never re-enter the old worktree", async () => {
+    rememberWorktree("parent-1", WORKTREE);
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: WORKTREE } },
+    };
+    const host = recordingHost(sessions);
+    const prompt = createPromptHook(host.context, noCliDeps);
+    await prompt(promptEvent("parent-1"));
+    // The parent already sits in the worktree: settled + confirmed, no move.
+    expect(host.moves).toEqual([]);
+    expect(sessionPlaced("parent-1")).toBe(true);
+
+    // `issue close` returns the parent to the main checkout.
+    sessions["parent-1"] = { parentID: null, location: { directory: "/repo" } };
+    sessions["child-2"] = { parentID: "parent-1", location: { directory: WORKTREE } };
+    await prompt(promptEvent("child-2"));
+    expect(host.moves).toEqual([{ sessionID: "child-2", directory: "/repo" }]);
+    expect(worktreeForSession("parent-1")).not.toBe(WORKTREE);
+    expect(worktreeForSession("child-2")).toBe("/repo");
+  });
+
+  test("concurrent prompts issue only one move; a rejection permits a safe retry", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    let attempts = 0;
+    const moves = [];
+    const sessions = { "session-1": { parentID: null, location: { directory: "/repo" } } };
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        get: async () => sessions["session-1"],
+        move: async ({ directory }) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("runner not ready");
+          moves.push(directory);
+          sessions["session-1"] = { parentID: null, location: { directory } };
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    // Two concurrent prompts join the same in-flight attempt: only one move is
+    // requested, and the rejection fails both without settling.
+    const first = prompt(promptEvent("session-1")).then(
+      () => null,
+      (error) => error,
+    );
+    const second = prompt(promptEvent("session-1")).then(
+      () => null,
+      (error) => error,
+    );
+    const [firstError, secondError] = await Promise.all([first, second]);
+    expect(firstError).toBeInstanceOf(Error);
+    expect(String(firstError.message)).toContain("session placement failed");
+    expect(secondError).toBeInstanceOf(Error);
+    expect(attempts).toBe(1);
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(false);
+
+    // A later prompt retries and the admitted move settles.
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(moves).toEqual([WORKTREE]);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("an unavailable decided location fails the prompt instead of running in the old directory", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    // The host exposes move but no get: the current directory cannot be
+    // verified, so the decided placement must fail closed.
+    const moves = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: { move: async (input) => moves.push(input) },
+    };
+    await expect(ensureSessionWorktree(context, "session-1", noCliDeps)).rejects.toThrow(
+      /session placement unverified/,
+    );
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(false);
+  });
+
+  test("after a state reset a stale context still cannot author a redundant relocation", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const sessions = { "session-1": { parentID: null, location: { directory: WORKTREE } } };
+    const host = recordingHost(sessions);
+    // Module state is lost (a host reload) while the session already sits in
+    // its target; the fresh read confirms it and no move is issued.
+    resetWorktrees();
+    rememberWorktree("session-1", WORKTREE);
+    const context = { ...host.context, location: { directory: "/repo" } };
+    await ensureSessionWorktree(context, "session-1", noCliDeps);
+    expect(host.moves).toEqual([]);
+  });
+
+  test("emits bounded diagnostics only, with a single line per decision and no settled chatter", async () => {
+    const warnings = await withWarnings(async () => {
+      rememberWorktree("session-1", WORKTREE);
+      const sessions = { "session-1": { parentID: null, location: { directory: "/repo" } } };
+      const host = recordingHost(sessions);
+      await ensureSessionWorktree(host.context, "session-1", noCliDeps);
+      // A second, unchanged settled decision must not re-emit.
+      await ensureSessionWorktree(host.context, "session-1", noCliDeps);
+    });
+    const placement = warnings.filter((line) => line.includes("phasegent: placement"));
+    expect(placement.filter((line) => line.includes("request "))).toHaveLength(1);
+    expect(placement.filter((line) => line.includes("accepted "))).toHaveLength(1);
+    // `accepted` is never labelled a confirmation.
+    expect(placement.some((line) => line.includes("confirmed"))).toBe(false);
+    // Only the bounded allowlist of fields appears.
+    const allowed = new Set(["session", "parent", "from", "to", "reason", "outcome"]);
+    for (const line of placement) {
+      const fields = line.replace(/^phasegent: placement \S+/, "").trim();
+      for (const token of fields.split(/\s+/).filter(Boolean)) {
+        const key = token.slice(0, token.indexOf("="));
+        expect(allowed.has(key)).toBe(true);
+      }
+    }
+  });
+
+  test("a suppressed already-there decision emits one bounded suppression line", async () => {
+    const warnings = await withWarnings(async () => {
+      rememberWorktree("session-1", WORKTREE);
+      const host = recordingHost({
+        "session-1": { parentID: null, location: { directory: WORKTREE } },
+      });
+      await ensureSessionWorktree(host.context, "session-1", noCliDeps);
+    });
+    const suppressed = warnings.filter(
+      (line) =>
+        line.includes("phasegent: placement suppressed") &&
+        line.includes("reason=already-in-target"),
+    );
+    expect(suppressed).toHaveLength(1);
+    expect(suppressed[0]).toContain("session=session-1");
   });
 });
 
@@ -1820,6 +2111,206 @@ if (PWSH_PATH && process.platform !== "win32") {
       const out = run("phasegent issue get 1 || Write-Output fallback", { code: 4, role: "admin" });
       expect(out.stdout).toContain("fallback");
       expect(out.stdout).toContain("final=<admin> code=4");
+    });
+  });
+}
+
+// Issue #917 P1: bounded POSIX transparent wrappers (`timeout`, `env`,
+// `command`, nested) between the leading assignments and the command name.
+// The role is injected through `env` so the wrapper still execs a real command
+// rather than an assignment; unsupported/ambiguous shapes stay byte-for-byte.
+describe("POSIX transparent wrappers (issue #917 P1)", () => {
+  test("injects the role through env behind a timeout wrapper", () => {
+    expect(
+      rewritePhasegentCommand("timeout 40s phasegent issue get 1", "s1", { agent: "executor" }),
+    ).toBe("timeout 40s env PHASEGENT_ROLE=executor phasegent issue get 1");
+  });
+
+  test("keeps a user assignment before the wrapper and the session flag after", () => {
+    expect(
+      rewritePhasegentCommand(
+        "TMPDIR=/tmp timeout 40s phasegent issue create --title t",
+        "s1",
+        { agent: "orchestrator" },
+      ),
+    ).toBe(
+      "TMPDIR=/tmp timeout 40s env PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session s1",
+    );
+  });
+
+  test("handles separated, equals, flag and duration timeout options", () => {
+    expect(
+      rewritePhasegentCommand(
+        "timeout --signal=KILL -k 1s --preserve-status 40s phasegent issue status",
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe(
+      "timeout --signal=KILL -k 1s --preserve-status 40s env PHASEGENT_ROLE=executor phasegent issue status",
+    );
+    expect(
+      rewritePhasegentCommand("timeout -s TERM 40s -- phasegent issue status", "s1", {
+        agent: "executor",
+      }),
+    ).toBe("timeout -s TERM 40s -- env PHASEGENT_ROLE=executor phasegent issue status");
+  });
+
+  test("handles env assignments and command wrappers nested with timeout", () => {
+    expect(
+      rewritePhasegentCommand("env FOO=1 phasegent issue status", "s1", { agent: "executor" }),
+    ).toBe("env FOO=1 env PHASEGENT_ROLE=executor phasegent issue status");
+    expect(
+      rewritePhasegentCommand("command phasegent issue status", "s1", { agent: "executor" }),
+    ).toBe("command env PHASEGENT_ROLE=executor phasegent issue status");
+    expect(
+      rewritePhasegentCommand("timeout 5s env FOO=1 command phasegent issue status", "s1", {
+        agent: "reviewer",
+      }),
+    ).toBe("timeout 5s env FOO=1 command env PHASEGENT_ROLE=reviewer phasegent issue status");
+  });
+
+  test("is idempotent on a rewritten env prefix", () => {
+    const once = rewritePhasegentCommand("timeout 40s phasegent issue get 1", "s1", {
+      agent: "executor",
+    });
+    expect(rewritePhasegentCommand(once, "s1", { agent: "executor" })).toBe(once);
+    const userAssignment = rewritePhasegentCommand(
+      "PHASEGENT_ROLE=executor timeout 40s phasegent issue get 1",
+      "s1",
+      { agent: "executor" },
+    );
+    expect(userAssignment).toBe("PHASEGENT_ROLE=executor timeout 40s phasegent issue get 1");
+  });
+
+  test("leaves unsupported or ambiguous wrappers byte-for-byte", () => {
+    for (const command of [
+      "sudo phasegent issue status",
+      "sh -c phasegent issue status",
+      "xargs phasegent",
+      "timeout --bogus 40s phasegent issue status",
+      "timeout 40s",
+      "command -v phasegent",
+    ]) {
+      expect(rewritePhasegentCommand(command, "s1", { agent: "executor" })).toBe(command);
+    }
+  });
+
+  test("downgrades a claimed role and refuses issue create behind a wrapper", () => {
+    expect(
+      rewritePhasegentCommand(
+        "PHASEGENT_ROLE=orchestrator timeout 5s phasegent issue status",
+        "s1",
+        { agent: "executor" },
+      ),
+    ).toBe("PHASEGENT_ROLE=executor timeout 5s phasegent issue status");
+    const refused = rewritePhasegentCommand("timeout 5s phasegent issue create --title t", "s1", {
+      agent: "executor",
+    });
+    expect(refused).toContain("cannot run 'issue create|bind'");
+    expect(refused).not.toContain("--title");
+  });
+
+  test("leaves a wrapped invocation untouched on a Windows host", () => {
+    expect(
+      rewritePhasegentCommand(
+        "timeout 40s phasegent issue status",
+        "s1",
+        { agent: "executor" },
+        { windows: true },
+      ),
+    ).toBe("timeout 40s phasegent issue status");
+  });
+
+  test("injects the session role for every canonical role behind a wrapper", () => {
+    for (const agent of ["orchestrator", "executor", "reviewer", "explore"]) {
+      expect(rewritePhasegentCommand("timeout 5s phasegent issue get 1", "s1", { agent })).toBe(
+        `timeout 5s env PHASEGENT_ROLE=${agent} phasegent issue get 1`,
+      );
+    }
+  });
+
+  test("leaves quoted data and heredoc bodies untouched behind a wrapper", () => {
+    expect(
+      rewritePhasegentCommand('timeout 5s phasegent issue get 1 --body "a && b"', "s1", {
+        agent: "executor",
+      }),
+    ).toBe('timeout 5s env PHASEGENT_ROLE=executor phasegent issue get 1 --body "a && b"');
+    const heredoc =
+      "timeout 5s phasegent issue get 1 <<'EOF'\n" +
+      "timeout 5s PHASEGENT_ROLE=admin phasegent issue status\n" +
+      "EOF";
+    expect(rewritePhasegentCommand(heredoc, "s1", { agent: "executor" })).toBe(
+      "timeout 5s env PHASEGENT_ROLE=executor phasegent issue get 1 <<'EOF'\n" +
+        "timeout 5s PHASEGENT_ROLE=admin phasegent issue status\n" +
+        "EOF",
+    );
+  });
+});
+
+// The rewritten POSIX strings run unchanged against a fake `phasegent` on
+// PATH, so the `env` wrapper, wrapper syntax and exit-code propagation are
+// exercised for real (issue #917 P1).
+if (process.platform !== "win32") {
+  describe("POSIX wrapper runtime (issue #917 P1)", () => {
+    let dir;
+    const hasTimeout =
+      spawnSync("/bin/sh", ["-c", "command -v timeout"], { encoding: "utf8" }).status === 0;
+    const runtimeTest = hasTimeout ? test : test.skip;
+
+    beforeEach(async () => {
+      dir = await mkdtemp(join(tmpdir(), "phasegent-posix-"));
+      const fake = join(dir, "phasegent");
+      await writeFile(
+        fake,
+        '#!/bin/sh\nprintf "role=%s\\n" "${PHASEGENT_ROLE-<absent>}"\nexit "${FAKE_CODE:-0}"\n',
+      );
+      await chmod(fake, 0o755);
+    });
+
+    afterEach(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    function run(command, options) {
+      const { code = 0, agent = "executor" } = options || {};
+      const rewritten = rewritePhasegentCommand(command, "s1", { agent });
+      const env = {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        FAKE_CODE: String(code),
+      };
+      // The ambient role must not leak in: the assertion below proves the
+      // per-invocation scope is what sets (and clears) PHASEGENT_ROLE.
+      delete env.PHASEGENT_ROLE;
+      return spawnSync("/bin/sh", ["-c", rewritten], { env, encoding: "utf8" });
+    }
+
+    runtimeTest("injects the session role through each wrapper shape", () => {
+      for (const command of [
+        "timeout 40s phasegent issue get 1",
+        "TMPDIR=/tmp timeout 40s phasegent issue get 1",
+        "env FOO=1 phasegent issue get 1",
+        "command phasegent issue get 1",
+        "timeout 5s env FOO=1 phasegent issue get 1",
+      ]) {
+        const result = run(command);
+        expect(result.stdout).toContain("role=executor");
+        expect(result.status).toBe(0);
+      }
+    });
+
+    runtimeTest("propagates a wrapped CLI failure through && and ||", () => {
+      const and = run("timeout 40s phasegent issue get 1 && echo done", { code: 3 });
+      expect(and.stdout).toContain("role=executor");
+      expect(and.stdout).not.toContain("done");
+      const or = run("timeout 40s phasegent issue get 1 || echo fallback", { code: 3 });
+      expect(or.stdout).toContain("fallback");
+    });
+
+    runtimeTest("scopes the role to the wrapped child only", () => {
+      const out = run("timeout 40s phasegent issue get 1 && echo after=$PHASEGENT_ROLE");
+      expect(out.stdout).toContain("after=");
+      expect(out.stdout.trimEnd().endsWith("after=")).toBe(true);
     });
   });
 }

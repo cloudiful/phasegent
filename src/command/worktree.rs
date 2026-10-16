@@ -208,8 +208,15 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
     validate_options(
         args,
         0,
-        &["--repo", "--stale-days", "--reason"],
-        &["--release-stale", "--remove", "--no-sync"],
+        &["--repo", "--stale-days", "--reason", "--format"],
+        &[
+            "--release-stale",
+            "--remove",
+            "--no-sync",
+            "--dryrun",
+            "--dry-run",
+            "--json",
+        ],
         "worktree prune",
     )?;
     let repo = optional_option(args, "--repo")
@@ -222,19 +229,38 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         None => 7,
     };
     let release_stale = has_flag(args, "--release-stale");
+    // Accepted compatibility no-op: removal is the default now, so `--remove`
+    // is recorded but never changes the outcome. `--dryrun`/`--dry-run` is the
+    // explicit preview and wins when the two are combined.
     let remove = has_flag(args, "--remove");
+    let dry_run = has_flag(args, "--dryrun") || has_flag(args, "--dry-run");
+    let json_flag = has_flag(args, "--json");
+    let explicit_format =
+        optional_option(args, "--format").map(|value| value.trim().to_ascii_lowercase());
+    let format = match (explicit_format, json_flag) {
+        (Some(value), _) if value != "text" && value != "json" => {
+            return Err("worktree prune --format must be 'text' or 'json'".to_owned());
+        }
+        (Some(value), true) if value != "json" => {
+            return Err(
+                "worktree prune --json and --format text are mutually exclusive".to_owned(),
+            );
+        }
+        (Some(value), _) => value,
+        (None, true) => "json".to_owned(),
+        (None, false) => "text".to_owned(),
+    };
     let reason = optional_option(args, "--reason")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    if release_stale && reason.is_none() {
-        return Err(
-            "worktree prune --release-stale requires a non-empty --reason so the recovery stays attributable"
-                .to_owned(),
-        );
+    // A preview may omit the reason because it records nothing; an applied
+    // recovery must stay attributable.
+    if release_stale && reason.is_none() && !dry_run {
+        return Err("worktree prune --release-stale requires a non-empty --reason".to_owned());
     }
     if !release_stale && reason.is_some() {
         return Err(
-            "worktree prune --reason requires --release-stale; a dry-run records no reason"
+            "worktree prune --reason requires --release-stale; a preview records no reason"
                 .to_owned(),
         );
     }
@@ -244,6 +270,8 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         release_stale,
         remove,
         reason,
+        dry_run,
+        format,
         no_sync: has_flag(args, "--no-sync"),
     }))
 }
@@ -559,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_defaults_to_7_days_and_read_only_dry_run() {
+    fn prune_defaults_to_removal_and_text_output() {
         let invocation =
             command::parse_with_role_env(&strings(["worktree", "prune"]), Some("orchestrator"))
                 .unwrap();
@@ -570,12 +598,16 @@ mod tests {
                 release_stale,
                 remove,
                 reason,
+                dry_run,
+                format,
                 no_sync,
             }) => {
                 assert_eq!(repo, None);
                 assert_eq!(stale_days, 7);
                 assert!(!release_stale, "--release-stale must default off");
                 assert!(!remove, "--remove must default off");
+                assert!(!dry_run, "prune defaults to removal, not preview");
+                assert_eq!(format, "text");
                 assert_eq!(reason, None);
                 assert!(!no_sync, "--no-sync must default off");
             }
@@ -752,18 +784,20 @@ mod tests {
             .sync_taxi(),
             Some(("worktree acquire", None))
         );
-        assert_eq!(
+        assert!(
             WorktreeCommand::Prune {
                 repo: Some("/tmp/repo".to_owned()),
                 stale_days: 7,
                 release_stale: false,
-                remove: false,
+                remove: true,
                 reason: None,
+                dry_run: false,
+                format: "text".to_owned(),
                 no_sync: false,
             }
-            .sync_taxi(),
-            Some(("worktree prune", Some("/tmp/repo"))),
-            "the pass targets the --repo checkout the subcommand operates on"
+            .sync_taxi()
+            .is_none(),
+            "issue 913 removed prune from the reconciliation set"
         );
     }
 }
