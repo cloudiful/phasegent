@@ -135,7 +135,7 @@ fn run_pass(
     repo: &TempRepo,
     identity: &str,
     api: &dyn OpenCodeApi,
-    source: &ScriptedIssueStateSource,
+    source: &dyn IssueStateSource,
     mode: PruneMode,
 ) -> PruneSummary {
     let runner = ProcessWorktreeRunner::new();
@@ -522,6 +522,76 @@ fn prune_keeps_a_directory_whose_issue_is_not_closed() {
     assert_eq!(summary.kept_issue, 1);
     // The source is only asked once per directory.
     assert_eq!(source.asked().len(), 1);
+}
+
+/// Issue 929 P1: the removal recheck refreshes the source, so an issue that the
+/// provider reported closed during the scan but has since reopened vetoes the
+/// removal (and the scan answer alone is never enough).
+#[test]
+fn prune_reopen_between_scan_and_recheck_vetoes_removal() {
+    use std::cell::Cell;
+
+    /// Closed for the scan, then keeping once refreshed, so the only closure
+    /// read that could authorize the deletion is the refreshed one.
+    struct ReopeningSource {
+        refreshed: Cell<bool>,
+        refreshes: Cell<usize>,
+    }
+    impl IssueStateSource for ReopeningSource {
+        fn closure(&self, _repo_path: &std::path::Path, _issue: u64) -> IssueClosure {
+            if self.refreshed.get() {
+                IssueClosure::Keep("issue 7 was reopened".to_owned())
+            } else {
+                IssueClosure::Closed
+            }
+        }
+        fn refresh(&self) {
+            self.refreshes.set(self.refreshes.get() + 1);
+            self.refreshed.set(true);
+        }
+    }
+
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-929-reopen") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-929-reopen");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/929-reopen1");
+    lease(
+        &storage,
+        "lease-reopen",
+        &identity,
+        "session-A",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ReopeningSource {
+        refreshed: Cell::new(false),
+        refreshes: Cell::new(0),
+    };
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 0, "a reopened issue must veto the removal");
+    assert!(target.exists(), "the directory must survive the reopen");
+    assert_eq!(source.refreshes.get(), 1, "the recheck refreshes once");
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    assert!(
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("reopened"),
+        "got: {:?}",
+        action.message
+    );
 }
 
 #[test]

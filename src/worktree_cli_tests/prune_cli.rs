@@ -488,40 +488,54 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
             failed: 0,
         },
     };
-    let text = render_text(&aggregate);
-    assert!(text.contains("worktree prune (removal"), "got: {text}");
-    assert!(text.contains("/tmp/repo-a"), "got: {text}");
+    let text = render_text(&aggregate, std::time::Duration::from_millis(1234));
+    assert!(text.starts_with("worktree prune (removal)"), "got: {text}");
+    // Actual actions print with their paths and explanations.
+    assert!(text.contains("removed /tmp/repo-a/wt"), "got: {text}");
+    assert!(text.contains("prunable /tmp/repo-a/wt2"), "got: {text}");
+    // A kept directory is aggregated, never listed with its path.
+    assert!(
+        !text.contains("wt-kept"),
+        "kept rows are aggregated: {text}"
+    );
+    // No per-repository headings or counts in the compact default.
+    assert!(
+        !text.contains("repo /tmp/repo-a"),
+        "no per-repo heading: {text}"
+    );
     assert!(
         text.contains("removed 1, eligible 1, absent 0, kept 1, removal failures 0"),
         "got: {text}"
     );
-    assert!(text.contains("pruned /tmp/repo-a/wt"), "got: {text}");
     assert!(
-        text.contains("kept on re-check: a running session is at the directory"),
+        text.contains("kept reasons: active 0, protected 1, issue-state 0, unknown 0"),
         "got: {text}"
     );
-    assert!(text.contains("skipped /tmp/gone/.git"), "got: {text}");
+    assert!(text.contains("skipped repositories: 1"), "got: {text}");
+    assert!(text.contains("elapsed 1.234s"), "got: {text}");
+    // The default is bounded regardless of repository count.
     assert!(
-        text.contains(
-            "summary: 1 repositories, removed 1, eligible 1, absent 0, kept 1, removal failures 0"
-        ),
-        "got: {text}"
-    );
-    assert!(
-        text.contains("removal failures count only failed `git worktree remove` calls"),
-        "got: {text}"
+        text.lines().count() <= 8,
+        "bounded output, got {} lines: {text}",
+        text.lines().count()
     );
     // Prune never reports a relocation in text.
     assert!(!text.contains("relocate"), "got: {text}");
-    // The text default must not dump the lease JSON payload.
+    // The text default must not dump the lease JSON payload or skip reasons.
     assert!(!text.contains("stale_before"), "got: {text}");
+    assert!(
+        !text.contains("checkout directory is missing"),
+        "skip reasons stay in --json: {text}"
+    );
 
+    // JSON keeps the complete detail unchanged.
     let payload = serde_json::to_value(&aggregate).expect("serialise");
     assert_eq!(payload["totals"]["removed"], serde_json::json!(1));
     assert_eq!(
         payload["repos"][0]["worktrees"]["removed"],
         serde_json::json!(1)
     );
+    assert!(payload.get("elapsed").is_none(), "no elapsed JSON field");
     // Prune no longer relocates a session, so both compatibility fields are
     // always empty and omitted.
     for index in 0..3 {
@@ -561,18 +575,166 @@ fn prune_aggregate_empty_state_is_actionable() {
             failed: 0,
         },
     };
-    let text = render_text(&aggregate);
+    let text = render_text(&aggregate, std::time::Duration::ZERO);
     assert!(
         text.contains("no repositories with recorded worktree leases"),
         "got: {text}"
     );
     assert!(text.contains("dry-run preview"), "got: {text}");
     assert!(
-        text.contains(
-            "summary: 0 repositories, removed 0, eligible 0, absent 0, kept 0, removal failures 0"
-        ),
+        text.contains("removed 0, eligible 0, absent 0, kept 0, removal failures 0"),
         "got: {text}"
     );
+    assert!(text.contains("elapsed 0.000s"), "got: {text}");
+    // A no-op default is bounded.
+    assert!(
+        text.lines().count() <= 8,
+        "bounded output, got {} lines: {text}",
+        text.lines().count()
+    );
+}
+
+/// The compact default stays within the line budget even when many repositories
+/// contribute only kept directories, and it never lists a kept path.
+#[test]
+fn prune_compact_text_is_bounded_across_many_repositories() {
+    let repo_outcome = |index: usize| PruneRepoOutcome {
+        repo_identity: format!("/tmp/repo-{index}/.git"),
+        repo_path: Some(format!("/tmp/repo-{index}")),
+        skipped_reason: None,
+        leases: None,
+        worktrees: Some(PruneSummary {
+            scanned: 3,
+            removed: 0,
+            eligible: 0,
+            absent: 1,
+            kept_active: 1,
+            kept_unknown: 0,
+            kept_protected: 1,
+            kept_issue: 0,
+            failed: 0,
+            dry_run: false,
+            stale_days: 7,
+            actions: vec![
+                PruneAction {
+                    worktree_path: format!("/tmp/repo-{index}/kept-a"),
+                    branch: "phasegent/1-a".to_owned(),
+                    status: LEASE_STATUS_RETAINED.to_owned(),
+                    heartbeat_at: 0,
+                    lease_ids: vec!["lease-a".to_owned()],
+                    issues: vec![1],
+                    prunable: false,
+                    result: "skipped_protected".to_owned(),
+                    message: Some("uncommitted or untracked files".to_owned()),
+                    relocated_children: Vec::new(),
+                    planned_children: Vec::new(),
+                },
+                PruneAction {
+                    worktree_path: format!("/tmp/repo-{index}/absent"),
+                    branch: "phasegent/1-b".to_owned(),
+                    status: LEASE_STATUS_RETAINED.to_owned(),
+                    heartbeat_at: 0,
+                    lease_ids: vec!["lease-b".to_owned()],
+                    issues: vec![1],
+                    prunable: false,
+                    result: "absent".to_owned(),
+                    message: Some("worktree directory already absent".to_owned()),
+                    relocated_children: Vec::new(),
+                    planned_children: Vec::new(),
+                },
+            ],
+        }),
+    };
+    let repos: Vec<PruneRepoOutcome> = (0..19).map(repo_outcome).collect();
+    let totals = PruneTotals {
+        repositories: 19,
+        removed: 0,
+        eligible: 0,
+        absent: 19,
+        kept_active: 19,
+        kept_unknown: 0,
+        kept_protected: 19,
+        kept_issue: 0,
+        failed: 0,
+    };
+    let aggregate = PruneAggregate {
+        dry_run: false,
+        remove: true,
+        release_stale: false,
+        stale_days: 7,
+        repos,
+        totals,
+    };
+    let text = render_text(&aggregate, std::time::Duration::from_millis(42));
+    assert!(
+        text.lines().count() <= 8,
+        "19 no-op repositories must stay <=8 lines, got {}: {text}",
+        text.lines().count()
+    );
+    assert!(
+        text.contains("removed 0, eligible 0, absent 19, kept 38, removal failures 0"),
+        "got: {text}"
+    );
+    // Kept and absent paths are aggregated, never listed.
+    assert!(!text.contains("kept-a"), "got: {text}");
+    assert!(!text.contains("absent /tmp"), "got: {text}");
+}
+
+/// A `--release-stale` recovery stays visible in the compact default.
+#[test]
+fn prune_compact_text_reports_recovery_results() {
+    let aggregate = PruneAggregate {
+        dry_run: false,
+        remove: true,
+        release_stale: true,
+        stale_days: 14,
+        repos: vec![PruneRepoOutcome {
+            repo_identity: "/tmp/repo/.git".to_owned(),
+            repo_path: Some("/tmp/repo".to_owned()),
+            skipped_reason: None,
+            leases: Some(ReleaseStaleSummary {
+                repo_identity: "/tmp/repo/.git".to_owned(),
+                stale_days: 14,
+                stale_before: 100,
+                apply: true,
+                candidates: 3,
+                released: 2,
+                reason: Some("stale recovery".to_owned()),
+                leases: vec![],
+            }),
+            worktrees: Some(PruneSummary {
+                scanned: 0,
+                removed: 0,
+                eligible: 0,
+                absent: 0,
+                kept_active: 0,
+                kept_unknown: 0,
+                kept_protected: 0,
+                kept_issue: 0,
+                failed: 0,
+                dry_run: false,
+                stale_days: 14,
+                actions: vec![],
+            }),
+        }],
+        totals: PruneTotals {
+            repositories: 1,
+            removed: 0,
+            eligible: 0,
+            absent: 0,
+            kept_active: 0,
+            kept_unknown: 0,
+            kept_protected: 0,
+            kept_issue: 0,
+            failed: 0,
+        },
+    };
+    let text = render_text(&aggregate, std::time::Duration::from_millis(500));
+    assert!(
+        text.contains("leases: 3 stale candidate(s), 2 released"),
+        "recovery counts stay visible: {text}"
+    );
+    assert!(text.lines().count() <= 8, "bounded: {text}");
 }
 
 #[test]

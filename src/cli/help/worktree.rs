@@ -32,7 +32,7 @@ const PROBE_HELP: &str = "Usage: worktree probe [--path PATH | --issue N [--sess
 
 const LIST_HELP: &str = "Usage: worktree list [--repo PATH] [--no-sync]\n\nList every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ \"repo_identity\": \"...\", \"leases\": [...] }`. Available to orchestrator, executor, and reviewer. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.";
 
-const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--dryrun] [--json|--format json] [--remove] [--no-sync]\n\nGlobal, removal-by-default cleanup of managed worktrees, grouped by canonical directory. Without --repo it enumerates every repository identity the local lease store records (even outside Git) and resolves each through its main checkout, skipping an identity it cannot verify with a bounded reason instead of guessing; --repo PATH restricts the pass to one verified checkout. A directory is removed as soon as every issue associated with it is confirmed closed on the configured provider, no active lease references the canonical directory, and prune's running-session guard clears it: only a session the connected shared foreground-drain service reports as *currently running* in the directory blocks removal, checked read-only, so an inactive historical session record that still points at the directory never keeps it. Prune never enumerates historical sessions and never moves a session; coverage is that one connected service, not a whole-machine multi-service inventory. An unavailable, malformed, mismatched, or non-absolute running-session answer, or any running session (root or child) at the directory, keeps it; removal then uses `git worktree remove` without `--force` after a fresh re-check of the running-session answer and fresh lease rows. There is no waiting period: a freshly retained closed clean directory is removed immediately, so --stale-days never gates directory deletion and exists only for the explicit --release-stale recovery below. Closure is read from the configured provider through the same current-configured-provider resolution the rest of the CLI uses; a missing, unavailable, ambiguous, or mismatched issue is never treated as closed, and a preview may read closure but never mutates. The local guards — never the main checkout, never a path an `active` lease points at, never dirty or untracked — are decided before any running-session query, so a main-checkout or dirty directory makes zero host or provider calls. Because the runtime-host dependency is explicit, an unreadable service keeps even a pure-CLI candidate; the human failure count scopes to failed `git worktree remove` calls rather than to kept directories, which can include an unproven running-session answer. --dryrun (alias --dry-run) is the read-only preview: it performs the same read-only running-session discovery to report eligibility, but never mutates any directory, lease row, or session and never moves a session. --release-stale requires a non-empty --reason unless it is a preview and flips exactly the active leases whose heartbeat is older than --stale-days to `retained` in a single transaction; a directory that held an active lease at invocation start is never removed by the same call, and --reason without --release-stale is rejected. The default stdout is concise English text with directory-based counts; --json or --format json selects the machine-readable aggregate envelope (per repository plus totals). --remove is an accepted compatibility no-op and --no-sync is accepted but no longer runs a sync pass: prune never syncs. Branches and lease rows are never deleted. A few `worktree prune:` progress lines stream to stderr, flushed before the potentially slow host and closure checks so a long scan is visibly working, while stdout stays reserved for the final text or the single JSON document; within one invocation the read-only scan shares a repeated host answer, but every removal re-checks the host live. Orchestrator-only.";
+const PRUNE_HELP: &str = "Usage: worktree prune [--repo PATH] [--stale-days N] [--release-stale --reason TEXT] [--dryrun] [--json|--format json] [--remove] [--no-sync]\n\nGlobal, removal-by-default cleanup of managed worktrees, grouped by canonical directory. Without --repo it enumerates every repository identity the local lease store records (even outside Git) and resolves each through its main checkout, skipping an identity it cannot verify with a bounded reason instead of guessing; --repo PATH restricts the pass to one verified checkout. A directory is removed as soon as every issue associated with it is confirmed closed on the configured provider, no active lease references the canonical directory, and prune's running-session guard clears it: only a session the connected shared foreground-drain service reports as *currently running* in the directory blocks removal, checked read-only, so an inactive historical session record that still points at the directory never keeps it. Prune never enumerates historical sessions and never moves a session; coverage is that one connected service, not a whole-machine multi-service inventory. An unavailable, malformed, mismatched, or non-absolute running-session answer, or any running session (root or child) at the directory, keeps it; removal then uses `git worktree remove` without `--force` after a fresh re-check of the running-session answer and fresh lease rows. There is no waiting period: a freshly retained closed clean directory is removed immediately, so --stale-days never gates directory deletion and exists only for the explicit --release-stale recovery below. Closure is read from the configured provider through the same current-configured-provider resolution the rest of the CLI uses; a missing, unavailable, ambiguous, or mismatched issue is never treated as closed, and a preview may read closure but never mutates. The local guards — never the main checkout, never a path an `active` lease points at, never dirty or untracked — are decided before any running-session query, so a main-checkout or dirty directory makes zero host or provider calls. Because the runtime-host dependency is explicit, an unreadable service keeps even a pure-CLI candidate; the human failure count scopes to failed `git worktree remove` calls rather than to kept directories, which can include an unproven running-session answer. --dryrun (alias --dry-run) is the read-only preview: it performs the same read-only running-session discovery to report eligibility, but never mutates any directory, lease row, or session and never moves a session. --release-stale requires a non-empty --reason unless it is a preview and flips exactly the active leases whose heartbeat is older than --stale-days to `retained` in a single transaction; a directory that held an active lease at invocation start is never removed by the same call, and --reason without --release-stale is rejected. The default stdout is a compact summary: one heading, one line per actual removal or removal failure (and one per eligible row in a preview, never labelled as removed), one aggregate count line, one kept-reason counts line, a skipped-repository count when nonzero, and the measured elapsed time; --json or --format json selects the machine-readable aggregate envelope (per repository plus totals) and is the complete-detail inspection channel, since the default text never lists every skipped or kept path. --remove is an accepted compatibility no-op and --no-sync is accepted but no longer runs a sync pass: prune never syncs. Branches and lease rows are never deleted. One `worktree prune:` start line and at most one `verifying … before removal` notice per attempted deletion stream to stderr with actual warnings and errors, while stdout stays reserved for the final compact text or the single JSON document; within one invocation the read-only scan shares a repeated running-session answer and resolves each repository's identity once, but every removal re-checks the running-session answer, closure, and lease rows live. Orchestrator-only.";
 
 const HEARTBEAT_HELP: &str = "Usage: worktree heartbeat --lease ID [--session SESSION]\n\nRefresh heartbeat_at on an active lease so a long-running session is not mistaken for stale. The update only matches when the lease is still `active` AND its stored session equals the caller's resolved session (--session, else PHASEGENT_SESSION_ID; one of the two is required). A foreign session, a terminal lease, or an unknown lease id returns a structured `state` conflict and leaves the row untouched; the conditional update also guarantees a heartbeat and a concurrent stale recovery cannot both win. Returns a JSON envelope with lease_id/issue/session/status/heartbeat_at. Never deletes a worktree or branch. Orchestrator-only for agents; ordinary human Operator shares this authority, managed sessions without a role fail closed. See docs/cli-caller-context.md.";
 
@@ -289,6 +289,10 @@ mod tests {
             text.contains("machine-readable aggregate envelope"),
             "got: {text}"
         );
+        assert!(
+            text.contains("complete-detail inspection channel"),
+            "help must point at --json for full detail; got: {text}"
+        );
     }
 
     /// Issue 916: the page must distinguish the immediate closed-issue
@@ -318,8 +322,16 @@ mod tests {
             "help must state the invocation-start active rule; got: {text}"
         );
         assert!(
-            text.contains("directory-based counts"),
-            "help must state counts are directory-based; got: {text}"
+            text.contains("compact summary"),
+            "help must state the default output is compact; got: {text}"
+        );
+        assert!(
+            text.contains("skipped-repository count"),
+            "help must state the skipped-repository count; got: {text}"
+        );
+        assert!(
+            text.contains("measured elapsed time"),
+            "help must state the elapsed time; got: {text}"
         );
     }
 
@@ -379,22 +391,27 @@ mod tests {
         );
     }
 
-    /// Issue 917: the page must announce the stderr progress stream and that
-    /// the scan memoizes host answers while every removal re-checks live.
+    /// Issues 917 P1 and 929 P1: the page must announce the bounded stderr
+    /// progress stream and that the scan memoizes as it resolves each repository
+    /// identity once while every removal re-checks live.
     #[test]
     fn prune_help_documents_progress_and_live_removal_check() {
         let text = worktree_command_help_text(Some(Role::Orchestrator), "prune");
         assert!(
-            text.contains("progress lines stream to stderr"),
-            "help must announce stderr progress; got: {text}"
+            text.contains("stream to stderr with actual warnings and errors"),
+            "help must announce the stderr progress stream; got: {text}"
         );
         assert!(
-            text.contains("shares a repeated host answer"),
+            text.contains("shares a repeated running-session answer"),
             "help must describe the scan memo; got: {text}"
         );
         assert!(
-            text.contains("every removal re-checks the host live"),
+            text.contains("every removal re-checks the running-session answer"),
             "help must state removals re-check live; got: {text}"
+        );
+        assert!(
+            text.contains("resolves each repository's identity once"),
+            "help must describe the per-repository identity reuse; got: {text}"
         );
     }
 

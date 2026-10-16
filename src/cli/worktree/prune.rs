@@ -29,6 +29,7 @@
 //! historical session record.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -39,7 +40,7 @@ use crate::worktree::leases::{
     stale_active_leases, stale_window,
 };
 use crate::worktree::opencode::ProcessOpenCodeApi;
-use crate::worktree::{ProcessWorktreeRunner, now_unix_secs};
+use crate::worktree::{LeaseRow, ProcessWorktreeRunner, now_unix_secs};
 
 use super::{config_error, open_storage, storage_error};
 
@@ -166,6 +167,9 @@ pub(crate) fn execute_prune_with_source(
     api: &dyn crate::worktree::opencode::OpenCodeApi,
     progress: &dyn Fn(&str),
 ) -> i32 {
+    // Wall duration of the command's own work; reported in text only, never as a
+    // machine field.
+    let started = Instant::now();
     let mut storage = match open_storage() {
         Ok(storage) => storage,
         Err(message) => return config_error(&message),
@@ -211,6 +215,19 @@ pub(crate) fn execute_prune_with_source(
         Ok(scopes) => scopes,
         Err(code) => return code,
     };
+
+    // One global start notice, streamed before the first potentially slow scan
+    // and never repeated per repository; the removal recheck adds at most one
+    // truthful "verifying" notice per attempted deletion.
+    progress(&format!(
+        "scanning {} recorded {}",
+        scopes.len(),
+        if scopes.len() == 1 {
+            "repository"
+        } else {
+            "repositories"
+        }
+    ));
 
     let mut outcomes: Vec<PruneRepoOutcome> = Vec::new();
     let mut totals = PruneTotals {
@@ -280,25 +297,30 @@ pub(crate) fn execute_prune_with_source(
             },
             None => stale_scan_summary(&identity, stale_days, window.before, now, candidates),
         };
-        let rows = match list_all_for_repo(&storage, &identity) {
-            Ok(rows) => rows,
-            Err(error) => return storage_error(&error),
+        // Reuse the invocation-start row snapshot unless the applied recovery
+        // actually flipped rows: only then can the lease table differ from
+        // `start_rows`. The pinned-active set is always derived from the
+        // pre-recovery snapshot, so a directory active at invocation start
+        // stays protected either way.
+        let refreshed_rows = if lease_summary.apply && lease_summary.released > 0 {
+            match list_all_for_repo(&storage, &identity) {
+                Ok(rows) => Some(rows),
+                Err(error) => return storage_error(&error),
+            }
+        } else {
+            None
         };
+        let rows: &[LeaseRow] = refreshed_rows.as_deref().unwrap_or(&start_rows);
         let scope = PruneScope {
             identity: &identity,
             repo_path: &path,
-            rows: &rows,
+            rows,
         };
         let mode = if dry_run {
             PruneMode::Report
         } else {
             PruneMode::Remove
         };
-        progress(&format!(
-            "repo {} ({})",
-            identity,
-            if dry_run { "preview" } else { "removal" }
-        ));
         let worktree_summary = prune_pass(
             &storage,
             &runner,
@@ -344,7 +366,7 @@ pub(crate) fn execute_prune_with_source(
             return 1;
         }
     } else {
-        println!("{}", render_text(&aggregate));
+        println!("{}", render_text(&aggregate, started.elapsed()));
     }
     // A genuine removal failure keeps a non-zero exit in both output modes;
     // safety skips are not failures.
@@ -429,87 +451,86 @@ fn resolve_known_identity(runner: &ProcessWorktreeRunner, identity: String) -> S
     }
 }
 
-/// Concise English default output: a short header, one line per repository
-/// with directory-based counts, per-path detail only for removals, failures,
-/// and protections, and a final aggregate summary.
-pub(crate) fn render_text(aggregate: &PruneAggregate) -> String {
+/// Compact English default output: one heading, one line per actual removal or
+/// removal failure (and one per eligible preview row), one aggregate summary,
+/// one kept-reason counts line, a compact skipped-repository count when
+/// nonzero, and the measured elapsed time.
+///
+/// Per-repository headings, per-repository counts, and per-path kept rows are
+/// deliberately absent: the default is bounded regardless of repository count,
+/// and `--json` remains the complete-detail inspection channel. Kept directories
+/// are aggregated, never listed, so a main-checkout or dirty path never pads the
+/// output; a genuine removal failure still prints with its path and reason. A
+/// preview labels eligible rows `prunable` and never as removed.
+pub(crate) fn render_text(aggregate: &PruneAggregate, elapsed: Duration) -> String {
     let mode = if aggregate.dry_run {
         "dry-run preview"
     } else {
         "removal"
     };
-    let mut lines = vec![format!(
-        "worktree prune ({mode}; stale-days {} applies to --release-stale only)",
-        aggregate.stale_days
-    )];
+    let mut lines = vec![format!("worktree prune ({mode})")];
     if aggregate.repos.is_empty() {
         lines.push("no repositories with recorded worktree leases".to_owned());
     }
+    // Actual actions only: removals, removal failures, and (in a preview) the
+    // eligible rows. Kept directories are aggregated below, never listed.
     for repo in &aggregate.repos {
-        if let Some(reason) = &repo.skipped_reason {
-            lines.push(format!("skipped {}: {}", repo.repo_identity, reason));
+        let Some(worktrees) = &repo.worktrees else {
             continue;
-        }
-        let path = repo.repo_path.as_deref().unwrap_or("?");
-        lines.push(format!("repo {path} ({})", repo.repo_identity));
-        if let Some(worktrees) = &repo.worktrees {
-            if worktrees.scanned == 0 {
-                lines.push("  no managed worktrees".to_owned());
-            } else {
-                lines.push(format!(
-                    "  removed {}, eligible {}, absent {}, kept {}, removal failures {}",
-                    worktrees.removed,
-                    worktrees.eligible,
-                    worktrees.absent,
-                    worktrees.kept(),
-                    worktrees.failed
-                ));
-                lines.push(format!(
-                    "  kept by reason: active {}, protected {}, issue-state {}, unknown {}",
-                    worktrees.kept_active,
-                    worktrees.kept_protected,
-                    worktrees.kept_issue,
-                    worktrees.kept_unknown
-                ));
-                for action in &worktrees.actions {
-                    if !matches!(
-                        action.result.as_str(),
-                        "pruned" | "prunable" | "failed" | "skipped_protected" | "skipped_issue"
-                    ) {
-                        continue;
-                    }
-                    let mut line = format!("  - {} {}", action.result, action.worktree_path);
-                    if let Some(reason) = action.message.as_deref().filter(|text| !text.is_empty())
-                    {
-                        line.push_str(&format!(": {reason}"));
-                    }
-                    lines.push(line);
-                }
+        };
+        for action in &worktrees.actions {
+            let label = match action.result.as_str() {
+                "pruned" => "removed",
+                "failed" => "failed",
+                "prunable" => "prunable",
+                _ => continue,
+            };
+            let mut line = format!("{label} {}", action.worktree_path);
+            if let Some(reason) = action.message.as_deref().filter(|text| !text.is_empty()) {
+                line.push_str(&format!(": {reason}"));
             }
-        }
-        if let Some(leases) = &repo.leases
-            && (leases.candidates > 0 || leases.released > 0)
-        {
-            lines.push(format!(
-                "  leases: {} stale candidate(s), {} released",
-                leases.candidates, leases.released
-            ));
+            lines.push(line);
         }
     }
     let totals = &aggregate.totals;
-    let kept = totals.kept_active + totals.kept_unknown + totals.kept_protected + totals.kept_issue;
+    // The failure count scopes to failed `git worktree remove` calls only; a kept
+    // or protected directory also covers an unproven host answer and is not
+    // evidence of no anomaly.
     lines.push(format!(
-        "summary: {} repositories, removed {}, eligible {}, absent {}, kept {}, removal failures {}",
-        totals.repositories, totals.removed, totals.eligible, totals.absent, kept, totals.failed
+        "removed {}, eligible {}, absent {}, kept {}, removal failures {}",
+        totals.removed,
+        totals.eligible,
+        totals.absent,
+        totals.kept_active + totals.kept_unknown + totals.kept_protected + totals.kept_issue,
+        totals.failed
     ));
-    // Scope the failure count so it is not misread as a clean bill of health:
-    // it counts only failed removal calls, and a kept/protected result (which
-    // can be an unproven host answer) is not evidence that no host anomaly
-    // occurred.
-    lines.push(
-        "removal failures count only failed `git worktree remove` calls; kept or protected \
-         directories also cover unproven host answers and are not evidence of no anomaly"
-            .to_owned(),
-    );
+    lines.push(format!(
+        "kept reasons: active {}, protected {}, issue-state {}, unknown {}",
+        totals.kept_active, totals.kept_protected, totals.kept_issue, totals.kept_unknown
+    ));
+    // Recovery output stays visible in the compact aggregate: a nonzero stale
+    // candidate or released count is reported even though the per-lease rows
+    // move to --json.
+    let (stale_candidates, released) = aggregate
+        .repos
+        .iter()
+        .filter_map(|repo| repo.leases.as_ref())
+        .fold((0usize, 0usize), |(candidates, released), leases| {
+            (candidates + leases.candidates, released + leases.released)
+        });
+    if stale_candidates > 0 || released > 0 {
+        lines.push(format!(
+            "leases: {stale_candidates} stale candidate(s), {released} released"
+        ));
+    }
+    let skipped = aggregate
+        .repos
+        .iter()
+        .filter(|repo| repo.skipped_reason.is_some())
+        .count();
+    if skipped > 0 {
+        lines.push(format!("skipped repositories: {skipped}"));
+    }
+    lines.push(format!("elapsed {:.3}s", elapsed.as_secs_f64().max(0.0)));
     lines.join("\n")
 }

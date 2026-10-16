@@ -292,3 +292,91 @@ fn answers_are_cached_per_invocation() {
         "a repeated question is served from the cache"
     );
 }
+
+/// Issue 929 P1: the removal recheck refreshes the composed source, so a
+/// `closed` scan answer is re-read and a reopened issue vetoes removal.
+#[test]
+fn refresh_re_reads_the_provider_after_a_reopen() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    struct TogglingProvider {
+        state: Rc<RefCell<String>>,
+        calls: Rc<Cell<usize>>,
+    }
+    impl IssueStateReader for TogglingProvider {
+        fn provider(&self) -> Result<String, String> {
+            Ok("redmine".to_owned())
+        }
+        fn state(&self, _issue: u64) -> Result<Option<IssueStateFact>, String> {
+            self.calls.set(self.calls.get() + 1);
+            let state = self.state.borrow().clone();
+            Ok(Some(fact(&state, None, None)))
+        }
+    }
+
+    let state = Rc::new(RefCell::new("closed".to_owned()));
+    let calls = Rc::new(Cell::new(0));
+    let source = ComposedIssueStateSource::new(
+        Box::new(FakeLinks::none()),
+        Box::new(TogglingProvider {
+            state: Rc::clone(&state),
+            calls: Rc::clone(&calls),
+        }),
+    );
+    assert_eq!(source.closure(&repo(), 7), IssueClosure::Closed);
+    assert_eq!(source.closure(&repo(), 7), IssueClosure::Closed);
+    assert_eq!(calls.get(), 1, "the scan answer is cached");
+
+    // The issue is reopened between the scan and the removal recheck. Without a
+    // refresh the cached `closed` answer would still authorize the deletion.
+    *state.borrow_mut() = "Open".to_owned();
+    assert_eq!(source.closure(&repo(), 7), IssueClosure::Closed);
+
+    // The recheck refreshes first: the provider is re-read and vetoes removal.
+    source.refresh();
+    let verdict = source.closure(&repo(), 7);
+    assert!(
+        !verdict.is_closed(),
+        "a reopened issue must veto removal: {verdict:?}"
+    );
+    assert_eq!(calls.get(), 2, "the provider is re-read exactly once");
+}
+
+/// Issue 929 P1: a refresh also invalidates the link-scope reader, so the
+/// durable scope is re-read independently of the provider answer.
+#[test]
+fn refresh_invalidates_the_link_scope_reader() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct CountingLinks {
+        calls: Rc<Cell<usize>>,
+        refreshes: Rc<Cell<usize>>,
+    }
+    impl LinkScopeReader for CountingLinks {
+        fn scopes(&self, _repo_path: &Path, _issue: u64) -> Result<Vec<LinkScope>, String> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(Vec::new())
+        }
+        fn refresh(&self) {
+            self.refreshes.set(self.refreshes.get() + 1);
+        }
+    }
+
+    let calls = Rc::new(Cell::new(0));
+    let refreshes = Rc::new(Cell::new(0));
+    let source = ComposedIssueStateSource::new(
+        Box::new(CountingLinks {
+            calls: Rc::clone(&calls),
+            refreshes: Rc::clone(&refreshes),
+        }),
+        Box::new(FakeProvider::redmine().with_state(7, "closed")),
+    );
+    assert_eq!(source.closure(&repo(), 7), IssueClosure::Closed);
+    assert_eq!(calls.get(), 1);
+    source.refresh();
+    assert_eq!(source.closure(&repo(), 7), IssueClosure::Closed);
+    assert_eq!(calls.get(), 2, "the scope is re-read after a refresh");
+    assert_eq!(refreshes.get(), 1, "the reader's refresh is invoked");
+}

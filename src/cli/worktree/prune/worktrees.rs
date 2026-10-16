@@ -146,13 +146,6 @@ pub(crate) struct PruneSummary {
     pub actions: Vec<PruneAction>,
 }
 
-impl PruneSummary {
-    /// Directories kept for any safety reason.
-    pub(crate) fn kept(&self) -> usize {
-        self.kept_active + self.kept_unknown + self.kept_protected + self.kept_issue
-    }
-}
-
 /// One grouped directory before classification.
 struct DirectoryGroup {
     canonical_path: PathBuf,
@@ -372,28 +365,10 @@ pub(crate) fn prune_pass(
     mode: PruneMode,
     progress: &dyn Fn(&str),
 ) -> PruneSummary {
-    progress(&format!(
-        "scanning {} ({} lease record(s), mode {})",
-        scope.repo_path.display(),
-        scope.rows.len(),
-        if mode.is_report() {
-            "preview"
-        } else {
-            "removal"
-        }
-    ));
+    // The scan is silent: the pass streams one global start line (from the
+    // caller) and an at-most-one truthful "verifying … before removal" notice
+    // per attempted deletion, never per-repository scan chatter.
     let candidates = scan_worktree_candidates(runner, scan_api, scope, pinned_active, source);
-    if !mode.is_report()
-        && candidates
-            .iter()
-            .any(|c| c.disposition == PruneDisposition::Removable)
-    {
-        progress(&format!(
-            "checking running sessions and issue state for {} ({} directory(ies))",
-            scope.repo_path.display(),
-            candidates.len()
-        ));
-    }
     let actions: Vec<PruneAction> = candidates
         .iter()
         .map(|candidate| {
@@ -524,6 +499,10 @@ fn recheck(
         Ok(rows) => rows,
         Err(error) => return Some(format!("could not re-read leases: {}", error.message)),
     };
+    // Invalidate the scan's provider/scope memo so closure and the durable link
+    // scope are re-read independently: a `closed` scan answer must not authorize
+    // a deletion after the issue was reopened.
+    source.refresh();
     let fresh_scope = PruneScope {
         identity: scope.identity,
         repo_path: scope.repo_path,

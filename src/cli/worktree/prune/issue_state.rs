@@ -61,6 +61,13 @@ pub(crate) trait IssueStateSource {
     /// Closure evidence for `issue` in the repository checked out at
     /// `repo_path`. Read-only; never mutates provider or local state.
     fn closure(&self, repo_path: &Path, issue: u64) -> IssueClosure;
+
+    /// Drop any invocation-scoped memo so the next [`Self::closure`] reads the
+    /// provider and scope afresh. The prune pass calls this before every
+    /// removal recheck, so a `closed` answer from the scan can never authorize a
+    /// deletion after the issue was reopened. The default is a no-op: a source
+    /// that caches nothing has nothing to invalidate.
+    fn refresh(&self) {}
 }
 
 /// One resolved durable link scope for a number.
@@ -74,6 +81,10 @@ pub(crate) struct LinkScope {
 /// Reads the durable branch-link scopes for one number in one repository.
 pub(crate) trait LinkScopeReader {
     fn scopes(&self, repo_path: &Path, issue: u64) -> Result<Vec<LinkScope>, String>;
+
+    /// Drop any per-repository memo (resolved identity and reused store) so the
+    /// next [`Self::scopes`] re-derives them. The default is a no-op.
+    fn refresh(&self) {}
 }
 
 /// The provider's answer for one issue.
@@ -215,14 +226,48 @@ impl IssueStateSource for ComposedIssueStateSource {
         self.cache.borrow_mut().insert(key, verdict.clone());
         verdict
     }
+
+    fn refresh(&self) {
+        // Both halves are invalidated together: a reopened issue must re-read the
+        // provider *and* the durable scope before a removal is authorized, so a
+        // cached `closed` can never outlive the scan.
+        self.cache.borrow_mut().clear();
+        self.links.refresh();
+    }
 }
 
-/// Production link-scope reader: storage plus the repository's Git identity.
-pub(crate) struct GitLinkScopeReader;
+/// Production link-scope reader: one resolved repository identity and one
+/// reopened branch-link store per repository, reused for every issue that
+/// repository is asked about in one invocation.
+///
+/// The scope rows themselves are always re-queried through
+/// `branches_for_number`; only the identity resolution (an origin-URL and
+/// checkout-root Git read) and the store open are memoized. [`Self::refresh`]
+/// clears that memo so a removal recheck re-derives both — the store is not a
+/// safety cache that survives a deletion proof.
+pub(crate) struct GitLinkScopeReader {
+    repos: RefCell<HashMap<String, RepoScope>>,
+}
 
-impl LinkScopeReader for GitLinkScopeReader {
-    fn scopes(&self, repo_path: &Path, issue: u64) -> Result<Vec<LinkScope>, String> {
-        use crate::branch_links::reads::{UnknownState, branches_for_number};
+struct RepoScope {
+    key: String,
+    storage: Storage,
+}
+
+impl GitLinkScopeReader {
+    pub(crate) fn new() -> Self {
+        Self {
+            repos: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Resolve the repository identity and open the reuse store once per
+    /// repository, memoizing both under the caller's `repo_path` spelling.
+    fn ensure(&self, repo_path: &Path) -> Result<(), String> {
+        let cache_key = repo_path.to_string_lossy().into_owned();
+        if self.repos.borrow().contains_key(&cache_key) {
+            return Ok(());
+        }
         use crate::branch_links::{checkout_root, read_origin_url, resolve_repo_key};
         use crate::git_runner::ProcessGitRunner;
 
@@ -234,9 +279,30 @@ impl LinkScopeReader for GitLinkScopeReader {
             Storage::open().map_err(|error| format!("branch link store unavailable: {error}"))?;
         crate::branch_links::ensure_schema(&storage.connection)
             .map_err(|error| format!("branch link store unavailable: {error}"))?;
+        self.repos.borrow_mut().insert(
+            cache_key,
+            RepoScope {
+                key: resolved.key,
+                storage,
+            },
+        );
+        Ok(())
+    }
+}
+
+impl LinkScopeReader for GitLinkScopeReader {
+    fn scopes(&self, repo_path: &Path, issue: u64) -> Result<Vec<LinkScope>, String> {
+        use crate::branch_links::reads::{UnknownState, branches_for_number};
+
+        self.ensure(repo_path)?;
+        let cache_key = repo_path.to_string_lossy().into_owned();
+        let repos = self.repos.borrow();
+        let entry = repos
+            .get(&cache_key)
+            .expect("a repository memo was just ensured");
         let rows = branches_for_number(
-            &storage.connection,
-            &resolved.key,
+            &entry.storage.connection,
+            &entry.key,
             issue,
             false,
             &UnknownState,
@@ -250,6 +316,10 @@ impl LinkScopeReader for GitLinkScopeReader {
                 external_id: row.issue.external_id,
             })
             .collect())
+    }
+
+    fn refresh(&self) {
+        self.repos.borrow_mut().clear();
     }
 }
 
@@ -308,7 +378,7 @@ impl IssueStateReader for ConfiguredIssueStateReader {
 /// Build the production source used by the CLI executor.
 pub(crate) fn configured_source(role: Role) -> ComposedIssueStateSource {
     ComposedIssueStateSource::new(
-        Box::new(GitLinkScopeReader),
+        Box::new(GitLinkScopeReader::new()),
         Box::new(ConfiguredIssueStateReader::new(role)),
     )
 }
