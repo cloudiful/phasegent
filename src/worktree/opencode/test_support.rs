@@ -3,9 +3,14 @@
 //! Every P1 test drives the production cleanup against this fake, so no
 //! test reaches a real OpenCode instance and no test can move a real
 //! session. The fake models the one thing the cleanup depends on — where
-//! the host says a session *is* — plus the three ways an answer can fail
-//! to be usable: a session the instance does not own, a failing call, and
-//! a listing that cannot be proven complete.
+//! the host says a session *is* — plus the ways an answer can fail to be
+//! usable: a session the instance does not own, a failing call, a listing
+//! that cannot be proven complete, and (issue 928 P1) a running-session set
+//! that is unreadable, mismatched, or absent.
+//!
+//! A session recorded with [`FakeOpenCodeApi::with_session`] is a *historical
+//! record* only: it is not implicitly running. A test that wants prune to see a
+//! session as currently running must also call [`FakeOpenCodeApi::with_running`].
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -13,17 +18,14 @@ use std::path::Path;
 
 use super::*;
 
-/// One scripted session: where the host says it is, plus the optional
-/// `parentID`/`outcome` the issue-918 retirement proof reads.
+/// One scripted session: where the host says it is.
 #[derive(Clone)]
 struct FakeSession {
     directory: String,
-    parent_id: Option<String>,
-    outcome: Option<String>,
 }
 
 /// A stand-in host: one authoritative id → session map, served through
-/// the same three methods the production boundary implements.
+/// the same methods the production boundary implements.
 pub(crate) struct FakeOpenCodeApi {
     reality: RefCell<BTreeMap<String, FakeSession>>,
     /// Ids whose `session.get` fails, to model an instance that does not
@@ -41,6 +43,13 @@ pub(crate) struct FakeOpenCodeApi {
     fail_session: RefCell<bool>,
     fail_list: RefCell<bool>,
     fail_move: RefCell<bool>,
+    /// The running-session set the `session.active` query answers with. Empty
+    /// (the default) is a valid "nothing is running" answer.
+    active: RefCell<Vec<String>>,
+    /// Ids the `session.active` query reports, but whose `session.get` answers
+    /// with a different id — a mismatched active answer the guard must reject.
+    mismatched: RefCell<Vec<String>>,
+    fail_active: RefCell<bool>,
     /// A fixed `cursor.next` for every page, so a second page repeats a
     /// cursor the walk already followed and is rejected as incomplete.
     repeat_cursor: RefCell<Option<String>>,
@@ -55,7 +64,7 @@ pub(crate) struct FakeOpenCodeApi {
 }
 
 impl FakeOpenCodeApi {
-    /// An empty host: no session exists anywhere.
+    /// An empty host: no session exists anywhere and nothing is running.
     pub(crate) fn empty() -> Self {
         Self {
             reality: RefCell::new(BTreeMap::new()),
@@ -65,6 +74,9 @@ impl FakeOpenCodeApi {
             fail_session: RefCell::new(false),
             fail_list: RefCell::new(false),
             fail_move: RefCell::new(false),
+            active: RefCell::new(Vec::new()),
+            mismatched: RefCell::new(Vec::new()),
+            fail_active: RefCell::new(false),
             repeat_cursor: RefCell::new(None),
             queue_moves: RefCell::new(false),
             moves: RefCell::new(Vec::new()),
@@ -73,41 +85,32 @@ impl FakeOpenCodeApi {
         }
     }
 
-    /// A host that reports `id` as currently hosted in `directory`.
+    /// A host that reports `id` as currently hosted in `directory`. This is a
+    /// historical record: it does **not** make `id` running.
     pub(crate) fn with_session(self, id: &str, directory: &Path) -> Self {
         self.reality.borrow_mut().insert(
             id.to_owned(),
             FakeSession {
                 directory: directory.to_string_lossy().into_owned(),
-                parent_id: None,
-                outcome: None,
             },
         );
         self
     }
 
-    /// A host that reports `id` as a Task child of `parent`, hosted in
-    /// `directory`, with no `outcome` yet (a running or unfinished child).
-    pub(crate) fn with_child(self, id: &str, directory: &Path, parent: &str) -> Self {
-        self.reality.borrow_mut().insert(
-            id.to_owned(),
-            FakeSession {
-                directory: directory.to_string_lossy().into_owned(),
-                parent_id: Some(parent.to_owned()),
-                outcome: None,
-            },
-        );
+    /// Report `id` as currently running through the `session.active` query, so a
+    /// guard that reads running state sees it as an occupant. A test wires it
+    /// together with [`FakeOpenCodeApi::with_session`] to give it a location.
+    pub(crate) fn with_running(self, id: &str) -> Self {
+        self.active.borrow_mut().push(id.to_owned());
         self
     }
 
-    /// Set the `outcome` of an already-scripted session.
-    pub(crate) fn with_outcome(self, id: &str, outcome: &str) -> Self {
-        let mut reality = self.reality.borrow_mut();
-        let entry = reality
-            .get_mut(id)
-            .unwrap_or_else(|| panic!("scripted session '{id}' before setting its outcome"));
-        entry.outcome = Some(outcome.to_owned());
-        drop(reality);
+    /// Report `id` as running through `session.active` but have its
+    /// `session.get` answer with a different id, modelling a mismatched answer
+    /// the guard must reject.
+    pub(crate) fn with_mismatched_running_id(self, id: &str) -> Self {
+        self.active.borrow_mut().push(id.to_owned());
+        self.mismatched.borrow_mut().push(id.to_owned());
         self
     }
 
@@ -145,6 +148,12 @@ impl FakeOpenCodeApi {
 
     pub(crate) fn failing_move(self) -> Self {
         *self.fail_move.borrow_mut() = true;
+        self
+    }
+
+    /// Make the `session.active` query fail, modelling an unavailable host.
+    pub(crate) fn failing_active(self) -> Self {
+        *self.fail_active.borrow_mut() = true;
         self
     }
 
@@ -198,12 +207,17 @@ impl OpenCodeApi for FakeOpenCodeApi {
         }
         let reality = self.reality.borrow();
         match reality.get(id) {
-            Some(session) => Ok(LocatedSession {
-                id: id.to_owned(),
-                directory: session.directory.clone(),
-                parent_id: session.parent_id.clone(),
-                outcome: session.outcome.clone(),
-            }),
+            Some(session) => {
+                let reported_id = if self.mismatched.borrow().iter().any(|alias| alias == id) {
+                    format!("{id}-other")
+                } else {
+                    id.to_owned()
+                };
+                Ok(LocatedSession {
+                    id: reported_id,
+                    directory: session.directory.clone(),
+                })
+            }
             None => Err(ApiError::plain("SessionNotFoundError")),
         }
     }
@@ -228,8 +242,6 @@ impl OpenCodeApi for FakeOpenCodeApi {
             .map(|(id, session)| LocatedSession {
                 id: id.clone(),
                 directory: session.directory.clone(),
-                parent_id: session.parent_id.clone(),
-                outcome: session.outcome.clone(),
             })
             .collect();
         Ok(SessionPage {
@@ -255,14 +267,22 @@ impl OpenCodeApi for FakeOpenCodeApi {
                         id.to_owned(),
                         FakeSession {
                             directory: moved_to,
-                            parent_id: None,
-                            outcome: None,
                         },
                     );
                 }
             }
         }
         Ok(())
+    }
+
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        if *self.fail_active.borrow() {
+            return Err(error("session.active"));
+        }
+        let mut ids = self.active.borrow().clone();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
     }
 }
 

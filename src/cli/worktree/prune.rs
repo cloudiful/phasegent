@@ -22,9 +22,11 @@
 //!
 //! The pass never syncs a provider, never moves or releases a session, never
 //! auto-releases an active lease, and never deletes a branch or lease row.
-//! Directory removal reuses the shared candidate guards (see [`worktrees`]) so
-//! a main checkout, an active peer's path, a dirty directory, or a
-//! host-occupied directory is always kept.
+//! Directory removal reuses the shared *local* candidate guards (see
+//! [`worktrees`]) so a main checkout, an active peer's path, or a dirty
+//! directory is always kept, and adds its own running-session guard: only the
+//! connected service's current foreground drains block removal, never a
+//! historical session record.
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +43,7 @@ use crate::worktree::{ProcessWorktreeRunner, now_unix_secs};
 
 use super::{config_error, open_storage, storage_error};
 
-mod child_retirement;
+mod active_guard;
 mod host_cache;
 pub(crate) mod issue_state;
 mod leases;
@@ -482,23 +484,6 @@ pub(crate) fn render_text(aggregate: &PruneAggregate) -> String {
                         line.push_str(&format!(": {reason}"));
                     }
                     lines.push(line);
-                    // Actual relocations are factual and print as `relocated`
-                    // independently of the directory's final result; preview
-                    // proposals print as `would relocate`. The two are never
-                    // conflated, so a moved-then-kept directory still shows its
-                    // confirmed moves.
-                    if !action.relocated_children.is_empty() {
-                        lines.push(format!(
-                            "  -   relocated associated child session(s): {}",
-                            action.relocated_children.join(", ")
-                        ));
-                    }
-                    if !action.planned_children.is_empty() {
-                        lines.push(format!(
-                            "  -   would relocate associated child session(s): {}",
-                            action.planned_children.join(", ")
-                        ));
-                    }
                 }
             }
         }

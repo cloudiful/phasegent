@@ -1,7 +1,7 @@
 use super::support::*;
 use super::*;
 
-use crate::worktree::opencode::ProcessOpenCodeApi;
+use crate::worktree::opencode::OpenCodeApi;
 
 pub(crate) fn run_cli_acquire_in_temp_repo(
     repo: &TempRepo,
@@ -66,9 +66,10 @@ pub(crate) fn insert_lease_for_identity(
 }
 
 /// Run `worktree prune` for `repo` through the injectable core with a
-/// scripted issue-state source, so no test reaches a real provider. `stale_days`
-/// is 999 by default in the issue 916 tests: directory removal must not depend
-/// on it. The production host and a no-op progress sink are used.
+/// scripted issue-state source and an injected host, so no test reaches a real
+/// provider or the real running-session service. `stale_days` is 999 by default
+/// in the issue 916 tests: directory removal must not depend on it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_scoped_prune(
     repo: &TempRepo,
     stale_days: u32,
@@ -77,6 +78,7 @@ pub(crate) fn run_scoped_prune(
     dry_run: bool,
     format: &str,
     source: &dyn IssueStateSource,
+    api: &dyn OpenCodeApi,
 ) -> i32 {
     let path = repo.dir.path().to_string_lossy().into_owned();
     execute_prune_with_source(
@@ -87,17 +89,19 @@ pub(crate) fn run_scoped_prune(
         dry_run,
         format,
         source,
-        &ProcessOpenCodeApi::new(),
+        api,
         &|_| {},
     )
 }
 
-/// Run the global (no `--repo`) prune through the injectable core.
+/// Run the global (no `--repo`) prune through the injectable core with an
+/// injected host.
 pub(crate) fn run_global_prune(
     stale_days: u32,
     dry_run: bool,
     format: &str,
     source: &dyn IssueStateSource,
+    api: &dyn OpenCodeApi,
 ) -> i32 {
     execute_prune_with_source(
         None,
@@ -107,7 +111,7 @@ pub(crate) fn run_global_prune(
         dry_run,
         format,
         source,
-        &ProcessOpenCodeApi::new(),
+        api,
         &|_| {},
     )
 }

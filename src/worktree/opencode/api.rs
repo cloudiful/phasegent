@@ -1,6 +1,6 @@
 //! Injectable boundary over the OpenCode V2 session API (issue 747 P1).
 //!
-//! Three operations cover the whole cleanup contract, and nothing else is
+//! Four operations cover the whole cleanup contract, and nothing else is
 //! reachable from this module:
 //!
 //! * [`OpenCodeApi::session`] — the authoritative directory the host
@@ -13,13 +13,19 @@
 //! * [`OpenCodeApi::move_session`] — the only mutating call. Accepting it
 //!   is not proof that the session relocated, so the caller re-reads the
 //!   location afterwards.
+//! * [`OpenCodeApi::active_sessions`] — the foreground session drains the
+//!   connected service currently owns (issue 928 P1). It is the running-state
+//!   authority for `worktree prune`: an id absent from the answer is inactive,
+//!   so a historical record that still points at a directory never blocks its
+//!   removal. A host that cannot answer returns an error, which a caller must
+//!   treat as unknown, never as an empty active set.
 //!
 //! [`ProcessOpenCodeApi`] is the production implementation; tests inject
 //! their own, so no test ever moves a real session.
 
 use std::path::{Path, PathBuf};
 
-use super::parse::{parse_session_get, parse_session_page};
+use super::parse::{parse_active_sessions, parse_session_get, parse_session_page};
 use super::process::run_bounded;
 
 /// Page size requested from `session.list`. Bounding the page keeps one
@@ -29,21 +35,10 @@ pub(crate) const MAX_PAGE_SIZE: usize = 200;
 /// One session reduced to the fields the occupancy check compares.
 /// `id` identifies the lease association, `directory` is the host's
 /// authoritative answer about where the session actually is.
-///
-/// `parent_id`/`outcome` are optional: the host may omit them, and a missing
-/// field stays `None` so no caller ever mistakes "the host did not say" for the
-/// specific value that would authorize a move. Only a caller that must prove a
-/// *finished* descendant (issue 918 P2) reads them, and it treats `None` as
-/// conservatively as any other unrecognised value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocatedSession {
     pub(crate) id: String,
     pub(crate) directory: String,
-    /// The host's `parentID`, when it reports one (a child Task session).
-    pub(crate) parent_id: Option<String>,
-    /// The host's `outcome`, when it reports one. The only terminal value this
-    /// crate recognises is exactly `succeeded`.
-    pub(crate) outcome: Option<String>,
 }
 
 /// One `session.list` page plus the opaque cursor of the next page.
@@ -107,6 +102,17 @@ pub(crate) trait OpenCodeApi {
 
     /// `POST /api/session/{id}/move`.
     fn move_session(&self, id: &str, directory: &Path) -> Result<(), ApiError>;
+
+    /// `GET /api/session/active`: the ids of the foreground session drains the
+    /// connected service currently owns. Ids absent from the answer are
+    /// inactive. A host that does not implement the query — or any other host
+    /// that cannot answer — returns an error, and the caller must keep the
+    /// directory rather than read the failure as an empty active set.
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        Err(ApiError::plain(
+            "this host does not support the running-session query",
+        ))
+    }
 }
 
 /// Production boundary: the installed `opencode` client, reached through
@@ -190,6 +196,11 @@ impl OpenCodeApi for ProcessOpenCodeApi {
         // A 204 prints no body; only the exit status proves acceptance,
         // and acceptance is still not proof that the session relocated.
         check_status("session.move", output.status, &output.stdout).map(|_| ())
+    }
+
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        let body = self.get("session.active", &[])?;
+        parse_active_sessions(&body)
     }
 }
 

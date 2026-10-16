@@ -369,8 +369,7 @@ fn scan_worktree_candidates_classifies_without_writing() {
         rows: &rows,
     };
     let pinned = std::collections::BTreeSet::new();
-    let scanned =
-        scan_worktree_candidates(&runner, &api, &scope, &pinned, &source, PruneMode::Report);
+    let scanned = scan_worktree_candidates(&runner, &api, &scope, &pinned, &source);
     let by_path: std::collections::HashMap<&str, &PruneDisposition> = scanned
         .iter()
         .map(|candidate| (candidate.worktree_path.as_str(), &candidate.disposition))

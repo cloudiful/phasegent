@@ -22,6 +22,41 @@ pub(super) fn parse_session_get(body: &str) -> Result<LocatedSession, ApiError> 
     located_session(&require_data(body)?)
 }
 
+/// Parse the body of a successful `session.active` response
+/// (`{"data": {"ses_a": {"type": "running"}, ...}}`).
+///
+/// The `data` object is a map from session id to the drain's state. An empty
+/// object is a valid "nothing is running" answer. Anything else is an error:
+/// a missing or non-object `data`, an empty key (an unusable id), a value that
+/// is not an object, or a `type` that is not exactly `running`. Every error is
+/// uncertainty, and the caller keeps the directory rather than reading a
+/// malformed answer as an empty active set.
+pub(super) fn parse_active_sessions(body: &str) -> Result<Vec<String>, ApiError> {
+    let data = require_data(body)?;
+    let map = data
+        .as_object()
+        .ok_or_else(|| ApiError::plain("session active response data is not an object"))?;
+    let mut ids: Vec<String> = Vec::with_capacity(map.len());
+    for (id, drain) in map {
+        if id.trim().is_empty() {
+            return Err(ApiError::plain(
+                "session active response has an empty session id",
+            ));
+        }
+        let kind = drain
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::plain("session active entry has no type"))?;
+        if kind != "running" {
+            return Err(ApiError::plain("session active entry has an unknown type"));
+        }
+        ids.push(id.clone());
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// Parse one `session.list` response (`{"data": [...], "cursor": {...}}`).
 /// Pagination completeness is judged by the caller that owns the walk,
 /// because only it sees every cursor the walk has followed.
@@ -82,25 +117,10 @@ fn located_session(value: &Value) -> Result<LocatedSession, ApiError> {
         .and_then(Value::as_str)
         .filter(|directory| !directory.trim().is_empty())
         .ok_or_else(|| ApiError::plain("session has no location.directory"))?;
-    // Optional metadata: a missing or blank field is `None`, never a guessed
-    // value. Id/directory strictness above is unchanged.
-    let parent_id = optional_string(value, "parentID");
-    let outcome = optional_string(value, "outcome");
     Ok(LocatedSession {
         id: id.to_owned(),
         directory: directory.to_owned(),
-        parent_id,
-        outcome,
     })
-}
-
-fn optional_string(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
 }
 
 fn require_data(body: &str) -> Result<Value, ApiError> {

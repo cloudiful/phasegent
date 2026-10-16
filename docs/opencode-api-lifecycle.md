@@ -101,52 +101,36 @@ uses only the host's in-process session APIs.
 
 ## Limits
 
-- **`phasegent worktree prune` reuses the same guards.** It is global and
-  removal-by-default (`--dryrun`/`--dry-run` is the read-only preview), and it
-  removes a directory as soon as every issue associated with it is confirmed
-  closed on the configured provider, no active lease references it, and it is
-  Git-clean — with no waiting period (`--stale-days` only affects the explicit
-  stale-active recovery). It runs the close/sync candidate protection in `Sync`
-  semantics: main checkout, active peer paths, dirty/untracked contents, and
-  host-occupied directories are all kept. The provider read is the same
+- **`phasegent worktree prune` uses a running-session guard, not history
+  (issue 928 P1).** It is global and removal-by-default
+  (`--dryrun`/`--dry-run` is the read-only preview), and it removes a directory as
+  soon as every issue associated with it is confirmed closed on the configured
+  provider, no active lease references it, and it is Git-clean — with no waiting
+  period (`--stale-days` only affects the explicit stale-active recovery). It
+  reuses the close/sync *local* guards — main checkout, active peer paths,
+  dirty/untracked contents — and adds its own running-session guard: only a
+  session the connected shared service reports as currently running in the
+  directory blocks removal, so an inactive historical session record that still
+  points at the directory never keeps it. Prune never enumerates historical
+  sessions and never moves a session. The provider read is the same
   current-configured-provider resolution used elsewhere; a missing, unavailable,
   ambiguous, or mismatched issue is never treated as closed. Within one
-  invocation the read-only scan memoizes a repeated host answer (each
-  `session.get` and each paginated listing page, keyed by the request that
-  produced it, failures included) so a global pass does not re-ask across
-  repositories, while every removal re-checks the host live and keeps the
-  directory when the fresh answer differs. A few progress lines stream to
-  stderr, flushed before the host and closure checks, so a long scan is visibly
-  working; stdout stays reserved for the final text or the single JSON document.
-- **Prune's one relocation exception is narrow and user-authorized (issues 918
-  P2, 923 P1).** The shared guard still never moves a session, but prune itself
-  may relocate an individually proven *associated* child so a child-occupied
-  worktree can be cleaned. A child qualifies only when its `parentID` chain (at
-  most 8 hops, cycle- and error-guarded) reaches a persisted `ses_` lease session
-  for that canonical directory and the child is not itself a lease owner. Its
-  execution outcome is never a cleanup criterion: `succeeded`, `failed`,
-  `interrupted`, `cancelled`, absent, or unknown all follow the same association
-  rule, because outcome is not ownership and carries no filesystem safety.
-  Every other occupant — a foreign, unreadable, parentless, cyclic, or over-deep
-  session, or a hosted lease owner — keeps the whole directory with zero moves.
-  The target is the existing `TargetResolver`'s verified main checkout, never a
-  path guessed from the current directory or a parent chain; a failed or merely
-  accepted move that a fresh read cannot confirm stops the cleanup with the
-  already-moved children left at the safe target (no rollback). Only after every
-  planned move is confirmed does prune re-prove vacancy through the raw, uncached
-  host and fresh lease rows before removing the directory. A preview performs
-  the same read-only discovery and reports the proposed relocations without
-  moving or releasing anything.
-- **Local guards run before any host read (issue 919 P2).** Prune decides the
-  local, Git-only guards — never the main checkout, never a path an `active`
-  lease points at, never dirty or untracked — before it consults the host, so a
-  main-checkout or dirty directory is excluded without a single host or provider
-  request. Reporting is faithful: a removal pass lists exactly the children whose
-  move it confirmed, and keeps listing them when a later occupancy check still
-  keeps the directory; a preview lists only proposed relocations in a distinct
-  field and never labels a proposal actual; and the human failure count scopes to
-  failed `git worktree remove` calls, not to kept/protected results, which can
-  include unproven host answers.
+  invocation the read-only scan memoizes the running-session answer (the
+  `session.active` id set and each active id's `session.get` location, failures
+  included) so a global pass does not re-ask across repositories, while every
+  removal re-checks the running sessions live and keeps the directory when the
+  fresh answer differs. A few progress lines stream to
+  stderr, flushed before the running-session and closure checks, so a long scan
+  is visibly working; stdout stays reserved for the final text or the single JSON
+  document.
+- **Prune's runtime-host dependency is explicit.** A valid running-session answer
+  is required even for a pure-CLI candidate: an unsupported, unavailable,
+  malformed, mismatched, or non-absolute answer, or an active id the host will not
+  describe, keeps the directory rather than reading as vacancy. Coverage is the
+  one connected service's foreground drains, not a whole-machine multi-service
+  inventory: other processes or background work the service does not represent
+  are outside this contract. No relocation of a historical record is attempted,
+  so resuming an old session may require explicitly choosing a current checkout.
 - **A session on a standalone/private instance is conservatively retained.**
   Normal API discovery does not find it, and a missing session is treated as
   uncertainty rather than absence.

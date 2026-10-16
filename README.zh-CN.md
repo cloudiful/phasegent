@@ -153,22 +153,17 @@ phasegent worktree probe --issue 123
 lease 存储记录的所有 repository identity，`--dryrun`（别名 `--dry-run`）为只读
 预览。只有当目录关联的每个 issue 都在配置的 provider 上确认已关闭、没有 `active`
 lease 引用该目录、且工作树 Git 干净时才会移除——没有等待期，`--stale-days` 只影响
-显式的 `--release-stale` 恢复。它复用与 close/sync 相同的候选保护——绝不删除主
-checkout、绝不动有 `active` lease 的路径、绝不删除 dirty/untracked 内容，也绝不
-删除 OpenCode host 仍占用的目录（只读检查）。唯一的例外是一项用户显式授权的窄权限：
-当目录的唯一剩余占用者是一个或多个已单独证明关联的子会话（`parentID` 链最多 8 跳
-可达该目录的持久 `ses_` lease 会话、且自身不是 lease owner）时，prune 会先把这些
-子会话迁移到该仓库经验证的主 checkout，并以新证据重新确认目录已空后才清理。子会话
-的执行结果——`succeeded`、`failed`、`interrupted`、`cancelled`、缺失或未知——绝不是
-清理判据。外部、不可读、无父级、成环或过深的会话、不可用的主 checkout，以及失败或
-未确认的迁移，都会保留目录；prune 绝不迁移 lease owner 或无关会话。本地保护——主 checkout、有
-`active` lease 的路径、dirty 或 untracked 内容——先于任何 host 读取判定，因此这类
-目录会在不访问 host 的情况下被排除。报告如实反映迁移：一次移除只列出它已确认迁移
-的子会话（即便之后的占用检查最终保留了目录），而预览只列出建议迁移、绝不将其标记
-为已迁移；人类可读的失败计数只统计失败的 `git worktree remove` 调用，而非 host
-异常。默认输出为按目录
-统计的简洁文本，`--json` 输出机器可读的聚合结果。少量进度行会写入 stderr——在 host
-与闭包检查前即时 flush，让长扫描可见——stdout 仅保留最终文本或单个 JSON 文档。被
+显式的 `--release-stale` 恢复。它复用与 close/sync 相同的本地保护——绝不删除主
+checkout、绝不动有 `active` lease 的路径、绝不删除 dirty/untracked 内容——并新增
+自己的运行中会话保护：只有连接的共享前台 drain 服务报告为*当前运行*、且位于该目录
+的会话才会阻止移除（只读检查）。仅指向该目录的、已不活跃的历史会话记录不会保留目录，
+因此 prune 绝不枚举历史会话、也绝不迁移会话。覆盖范围就是这一个连接的服务，而非整机
+多服务清单。本地保护先于运行中会话查询判定，因此主 checkout 或 dirty 目录不会产生
+任何 host 调用；由于 prune 对运行时 host 的依赖是显式的，运行中会话查询不可用、格式
+错误、ID 不匹配或返回非绝对路径，都会保留目录（即便是纯 CLI 候选）。人类可读的失败
+计数只统计失败的 `git worktree remove` 调用，而非 host 异常。默认输出为按目录
+统计的简洁文本，`--json` 输出机器可读的聚合结果。少量进度行会写入 stderr——在运行
+中会话与闭包检查前即时 flush，让长扫描可见——stdout 仅保留最终文本或单个 JSON 文档。被
 透明 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管 agent role。详见
 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
 

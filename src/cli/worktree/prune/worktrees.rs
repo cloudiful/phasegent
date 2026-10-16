@@ -9,19 +9,22 @@
 //! 1. no `active` lease references it — including a row belonging to the same
 //!    session, and including the invocation-start snapshot so a stale recovery
 //!    in the same call can never make an active directory removable;
-//! 2. every associated issue is *confirmed closed* by
+//! 2. the local Git guards clear it (never the main checkout, never dirty or
+//!    untracked) — before any host or provider read;
+//! 3. the connected shared OpenCode service reports no *currently running*
+//!    session in it (issue 928 P1) — historical session records that still point
+//!    at the directory never block, and prune never moves a session;
+//! 4. every associated issue is *confirmed closed* by
 //!    [`IssueStateSource`][super::issue_state::IssueStateSource];
-//! 3. the shared candidate guards clear it (never the main checkout, never
-//!    dirty or untracked, never a directory the OpenCode host still — or
-//!    cannot be proven not to — occupy, in `Sync` semantics that never move a
-//!    session);
-//! 4. `git worktree remove` (no `--force`) succeeds after a fresh re-read of
+//! 5. `git worktree remove` (no `--force`) succeeds after a fresh re-read of
 //!    rows and guards.
 //!
-//! Age never gates directory deletion: a freshly retained, closed, clean
-//! directory is removable immediately. `--stale-days` remains only for the
-//! explicit stale-active recovery half. Lease rows and branches are preserved
-//! as history.
+//! Prune's runtime-host dependency is explicit: even a pure-CLI candidate needs
+//! a valid running-session answer before removal, and an unavailable, malformed,
+//! or mismatched answer keeps the directory. Age never gates directory deletion:
+//! a freshly retained, closed, clean directory is removable immediately.
+//! `--stale-days` remains only for the explicit stale-active recovery half.
+//! Lease rows and branches are preserved as history.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -30,9 +33,7 @@ use serde::Serialize;
 
 use crate::cli::report_local_warnings;
 use crate::infra::storage::Storage;
-use crate::lifecycle::cleanup::CleanupMode;
-use crate::lifecycle::cleanup::TargetResolver;
-use crate::lifecycle::cleanup::candidate::{local_protected_reason, protected_reason};
+use crate::lifecycle::cleanup::candidate::local_protected_reason;
 use crate::worktree::git::worktree_remove;
 use crate::worktree::leases::{list_all_for_repo, load_lease, update_status};
 use crate::worktree::opencode::OpenCodeApi;
@@ -41,8 +42,7 @@ use crate::worktree::{
     canonical_or_self,
 };
 
-use super::child_retirement;
-use super::host_cache::ProjectedHost;
+use super::active_guard;
 use super::issue_state::{IssueClosure, IssueStateSource};
 
 /// Whether a prune pass only reports candidates or also executes the
@@ -99,9 +99,6 @@ pub(crate) struct DirectoryCandidate {
     pub lease_ids: Vec<String>,
     pub issues: Vec<u64>,
     pub disposition: PruneDisposition,
-    /// Finished child sessions the read-only scan proved eligible to retire
-    /// (issue 918 P2). Empty unless the candidate is removable-by-retirement.
-    pub retire: Vec<String>,
 }
 
 /// One directory action of the prune pass. `prunable` is the explicit safety
@@ -119,15 +116,14 @@ pub(crate) struct PruneAction {
     pub result: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Finished child sessions confirmed relocated out of the directory before
-    /// removal. This is factual: a child moved and confirmed here stays listed
-    /// even when a later occupancy/closure/removal check keeps the directory.
-    /// Omitted when empty.
+    /// Retained for JSON compatibility only. Prune no longer relocates a
+    /// session, so this list is always empty and therefore omitted; it is
+    /// never populated or logged (issue 928 P1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub relocated_children: Vec<String>,
-    /// Finished child sessions a *preview* would relocate. Proposals only:
-    /// never populated by a removal pass, and the two lists are therefore
-    /// distinct. Omitted when empty.
+    /// Retained for JSON compatibility only. Prune no longer proposes a
+    /// relocation, so this list is always empty and therefore omitted; it is
+    /// never populated or logged (issue 928 P1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub planned_children: Vec<String>,
 }
@@ -215,57 +211,32 @@ fn group_rows(rows: &[LeaseRow]) -> Vec<DirectoryGroup> {
 
 /// Scan every lease row into a read-only directory candidate set. Storage is
 /// not touched and no `git` mutation runs. The issue-state source is consulted
-/// only for a directory that already passed the active, absent, unknown, and
-/// shared-guard checks, so no active/missing/main-checkout path resolves a
-/// credential.
+/// only for a directory that already passed the active, absent, unknown, local,
+/// and running-session guards, so no active/missing/main-checkout/dirty path
+/// resolves a credential.
 pub(crate) fn scan_worktree_candidates(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
-    mode: PruneMode,
 ) -> Vec<DirectoryCandidate> {
-    let target = TargetResolver::new(scope.repo_path, scope.identity);
     group_rows(scope.rows)
         .into_iter()
-        .map(|group| {
-            classify(
-                runner,
-                api,
-                scope,
-                &target,
-                pinned_active,
-                source,
-                mode,
-                group,
-            )
-        })
+        .map(|group| classify(runner, api, scope, pinned_active, source, group))
         .collect()
 }
 
 /// Classify one directory group. Read-only.
-#[allow(clippy::too_many_arguments)]
 fn classify(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
-    target: &TargetResolver<'_>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
-    mode: PruneMode,
     group: DirectoryGroup,
 ) -> DirectoryCandidate {
-    let classification = classify_group(
-        runner,
-        api,
-        scope,
-        target,
-        pinned_active,
-        source,
-        mode,
-        &group,
-    );
+    let disposition = classify_group(runner, api, scope, pinned_active, source, &group);
     DirectoryCandidate {
         canonical_path: group.canonical_path,
         worktree_path: group.worktree_path,
@@ -274,43 +245,24 @@ fn classify(
         heartbeat_at: group.heartbeat_at,
         lease_ids: group.lease_ids,
         issues: group.issues,
-        disposition: classification.disposition,
-        retire: classification.retire,
+        disposition,
     }
 }
 
-/// A directory's disposition plus the associated children a removal would first
-/// retire (issues 918 P2, 923 P1).
-struct Classification {
-    disposition: PruneDisposition,
-    retire: Vec<String>,
-}
-
-impl Classification {
-    fn kept(disposition: PruneDisposition) -> Self {
-        Self {
-            disposition,
-            retire: Vec::new(),
-        }
-    }
-}
-
-/// The ordered decision for one directory: active, absent, unknown, guard,
-/// closure, removable. When the only thing keeping the directory is a set of
-/// individually proven associated child sessions, the shared guard is evaluated
-/// through a read-only projection that hides exactly those children, and the
-/// removable result carries them for retirement at apply time.
-#[allow(clippy::too_many_arguments)]
+/// The ordered decision for one directory: active lease, unrecognised status,
+/// absent, local Git guards, current-service running occupancy, closure. The
+/// first four read nothing from the host, so a main/dirty/active-lease
+/// directory makes zero host or provider calls; the running-session query runs
+/// only for an otherwise-local-eligible existing directory, and closure is read
+/// only for one that also passed it.
 fn classify_group(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
-    target: &TargetResolver<'_>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
-    mode: PruneMode,
     group: &DirectoryGroup,
-) -> Classification {
+) -> PruneDisposition {
     let canonical = group.canonical_path.to_string_lossy().into_owned();
     if group
         .rows
@@ -318,7 +270,7 @@ fn classify_group(
         .any(|row| row.status == LEASE_STATUS_ACTIVE)
         || pinned_active.contains(&canonical)
     {
-        return Classification::kept(PruneDisposition::SkippedActive);
+        return PruneDisposition::SkippedActive;
     }
     if group.rows.iter().any(|row| {
         row.status != LEASE_STATUS_ACTIVE
@@ -327,15 +279,14 @@ fn classify_group(
     }) {
         // An unrecognised status is kept safely before anything else is
         // inferred from the path.
-        return Classification::kept(PruneDisposition::SkippedUnknownStatus);
+        return PruneDisposition::SkippedUnknownStatus;
     }
     if !group.canonical_path.exists() {
-        return Classification::kept(PruneDisposition::MissingDirectory);
+        return PruneDisposition::MissingDirectory;
     }
     // The local Git guards run first and read nothing from the host: a main
     // checkout, an active peer's path, or a dirty/untracked directory is
-    // excluded here, so it never reaches `child_retirement.plan`'s occupancy
-    // reads and cannot report an irrelevant session reason.
+    // excluded here, so it never reaches the running-session query.
     if let Some(reason) = local_protected_reason(
         runner,
         scope.identity,
@@ -343,82 +294,23 @@ fn classify_group(
         None,
         &representative(group),
     ) {
-        return Classification::kept(PruneDisposition::SkippedProtected(reason));
+        return PruneDisposition::SkippedProtected(reason);
     }
-    // Read-only retirement planning. A plan that keeps the directory reports
-    // its own precise reason; a vacant/retire plan lets the shared guard judge
-    // every remaining occupant and local guard.
-    let plan = child_retirement::plan(api, target, &group.canonical_path, scope.rows);
-    let plan_keep = match &plan {
-        child_retirement::RetirementPlan::Keep(reason) => Some(reason.clone()),
-        _ => None,
-    };
-    let children = plan.children().to_vec();
-    let projected = ProjectedHost::new(api, &children);
-    let guard_api: &dyn OpenCodeApi = if children.is_empty() { api } else { &projected };
-    match guard_verdict(runner, guard_api, scope, target, source, mode, group) {
-        Some(PruneDisposition::SkippedProtected(reason)) => {
-            // The plan's own reason is more specific than the generic
-            // "hosted here and not associated" from the shared guard.
-            Classification::kept(PruneDisposition::SkippedProtected(
-                plan_keep.unwrap_or(reason),
-            ))
-        }
-        Some(other) => Classification::kept(other),
-        None => {
-            // A plan that kept the directory must never leave it removable.
-            if let Some(reason) = plan_keep {
-                Classification::kept(PruneDisposition::SkippedProtected(reason))
-            } else {
-                Classification {
-                    disposition: PruneDisposition::Removable,
-                    retire: children,
-                }
+    // The running-session guard: occupancy is free only when the connected
+    // service gave a complete, valid answer and no running session (root or
+    // child) is currently in the directory. An unreadable, malformed, or
+    // mismatched answer keeps the directory rather than reading as vacancy.
+    match active_guard::RunningSnapshot::capture(api) {
+        Err(reason) => return PruneDisposition::SkippedProtected(reason),
+        Ok(snapshot) => {
+            if let Some(reason) = snapshot.keep_reason(&group.canonical_path) {
+                return PruneDisposition::SkippedProtected(reason);
             }
         }
     }
-}
-
-/// The shared guard's verdict for one directory (local guards, then occupancy,
-/// then closure), or `None` when the directory may be removed. The occupancy
-/// half reads through whatever `api` is passed: the raw host, or the read-only
-/// projection that hides already-proven associated children.
-#[allow(clippy::too_many_arguments)]
-fn guard_verdict(
-    runner: &dyn WorktreeRunner,
-    api: &dyn OpenCodeApi,
-    scope: &PruneScope<'_>,
-    target: &TargetResolver<'_>,
-    source: &dyn IssueStateSource,
-    mode: PruneMode,
-    group: &DirectoryGroup,
-) -> Option<PruneDisposition> {
-    if let Some(reason) = protected_reason(
-        runner,
-        api,
-        cleanup_mode_for(mode),
-        target,
-        scope.identity,
-        scope.rows,
-        None,
-        &representative(group),
-    ) {
-        return Some(PruneDisposition::SkippedProtected(reason));
-    }
     match closure_of(source, scope, group) {
-        IssueClosure::Closed => None,
-        IssueClosure::Keep(reason) => Some(PruneDisposition::SkippedIssue(reason)),
-    }
-}
-
-fn cleanup_mode_for(mode: PruneMode) -> CleanupMode {
-    // Both modes only ever *look*: `Sync` checks occupancy and never moves a
-    // session, so a preview may discover the host read-only while a removal
-    // re-proves it. Only the close chain is allowed to move a session; prune's
-    // own, narrowly-scoped retire step (issue 918 P2) moves only proven
-    // associated children, outside this shared guard.
-    match mode {
-        PruneMode::Report | PruneMode::Remove => CleanupMode::Sync,
+        IssueClosure::Closed => PruneDisposition::Removable,
+        IssueClosure::Keep(reason) => PruneDisposition::SkippedIssue(reason),
     }
 }
 
@@ -490,14 +382,14 @@ pub(crate) fn prune_pass(
             "removal"
         }
     ));
-    let candidates = scan_worktree_candidates(runner, scan_api, scope, pinned_active, source, mode);
+    let candidates = scan_worktree_candidates(runner, scan_api, scope, pinned_active, source);
     if !mode.is_report()
         && candidates
             .iter()
             .any(|c| c.disposition == PruneDisposition::Removable)
     {
         progress(&format!(
-            "checking host and issue state for {} ({} directory(ies))",
+            "checking running sessions and issue state for {} ({} directory(ies))",
             scope.repo_path.display(),
             candidates.len()
         ));
@@ -587,31 +479,23 @@ fn apply_candidate(
                 action.prunable = true;
                 action.result = "prunable".to_owned();
                 action.message = Some("dry-run: would call git worktree remove".to_owned());
-                // Report what a removal would relocate first; nothing moves, and
-                // the proposal is a distinct field so it is never labelled as an
-                // actual relocation.
-                action.planned_children = candidate.retire.clone();
             } else {
                 progress(&format!(
                     "verifying {} before removal",
                     candidate.worktree_path
                 ));
                 // Re-read rows and guards immediately before removal so a
-                // state change between scan and apply keeps the directory, and
-                // retire only freshly re-proven associated children.
-                let outcome = recheck(
+                // running session, a new active lease, or a dirty state that
+                // appeared after the scan keeps the directory.
+                match recheck(
                     storage,
                     runner,
                     api,
                     scope,
                     pinned_active,
                     source,
-                    mode,
                     candidate,
-                    progress,
-                );
-                action.relocated_children = outcome.moved;
-                match outcome.keep_reason {
+                ) {
                     Some(reason) => {
                         action.result = "skipped_protected".to_owned();
                         action.message = Some(format!("kept on re-check: {reason}"));
@@ -624,34 +508,9 @@ fn apply_candidate(
     action
 }
 
-/// Re-evaluate one directory against fresh rows and guards, retiring any freshly
-/// re-proven associated children before removal. `keep_reason` is `Some` when the
-/// directory must survive; `moved` names the children whose relocation to the
-/// main checkout was confirmed (even when a later step kept the directory).
-struct Recheck {
-    keep_reason: Option<String>,
-    moved: Vec<String>,
-}
-
-impl Recheck {
-    fn proceed() -> Self {
-        Self {
-            keep_reason: None,
-            moved: Vec::new(),
-        }
-    }
-
-    fn kept(reason: String) -> Self {
-        Self {
-            keep_reason: Some(reason),
-            moved: Vec::new(),
-        }
-    }
-}
-
-/// Re-evaluate one directory against fresh rows and guards. Returns the keep
-/// reason (if any) and the children whose relocation was confirmed.
-#[allow(clippy::too_many_arguments)]
+/// Re-evaluate one directory against fresh rows and the uncached running-session
+/// answer. Returns the keep reason when the directory must survive, or `None`
+/// when the fresh proof still allows removal.
 fn recheck(
     storage: &Storage,
     runner: &dyn WorktreeRunner,
@@ -659,20 +518,17 @@ fn recheck(
     scope: &PruneScope<'_>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
-    mode: PruneMode,
     candidate: &DirectoryCandidate,
-    progress: &dyn Fn(&str),
-) -> Recheck {
+) -> Option<String> {
     let fresh = match list_all_for_repo(storage, scope.identity) {
         Ok(rows) => rows,
-        Err(error) => return Recheck::kept(format!("could not re-read leases: {}", error.message)),
+        Err(error) => return Some(format!("could not re-read leases: {}", error.message)),
     };
     let fresh_scope = PruneScope {
         identity: scope.identity,
         repo_path: scope.repo_path,
         rows: &fresh,
     };
-    let target = TargetResolver::new(scope.repo_path, scope.identity);
     let Some(fresh_group) = group_rows(&fresh)
         .into_iter()
         .find(|group| group.canonical_path == candidate.canonical_path)
@@ -680,65 +536,18 @@ fn recheck(
         // The candidate's rows vanished between scan and apply; the scan
         // already proved the directory removable, and no row remains to
         // protect, so removal may proceed.
-        return Recheck::proceed();
+        return None;
     };
-    let classification = classify_group(
+    match classify_group(
         runner,
         api,
         &fresh_scope,
-        &target,
         pinned_active,
         source,
-        mode,
-        &fresh_group,
-    );
-    if classification.disposition != PruneDisposition::Removable {
-        return Recheck::kept(recheck_reason(classification.disposition));
-    }
-    if classification.retire.is_empty() {
-        return Recheck::proceed();
-    }
-    // Retire the freshly re-proven children, then re-prove vacancy through the
-    // original, uncached host and fresh rows before any removal.
-    let owners = child_retirement::lease_owners(&fresh, &candidate.canonical_path);
-    progress(&format!(
-        "retiring {} associated child session(s) from {}",
-        classification.retire.len(),
-        candidate.worktree_path
-    ));
-    let outcome = child_retirement::retire(
-        api,
-        &target,
-        &candidate.canonical_path,
-        &owners,
-        &classification.retire,
-    );
-    if let Some(failure) = outcome.failure {
-        return Recheck {
-            keep_reason: Some(format!("retirement stopped: {failure}")),
-            moved: outcome.moved,
-        };
-    }
-    match guard_verdict(
-        runner,
-        api,
-        &fresh_scope,
-        &target,
-        source,
-        mode,
         &fresh_group,
     ) {
-        None => Recheck {
-            keep_reason: None,
-            moved: outcome.moved,
-        },
-        Some(verdict) => Recheck {
-            keep_reason: Some(format!(
-                "kept after retirement: {}",
-                recheck_reason(verdict)
-            )),
-            moved: outcome.moved,
-        },
+        PruneDisposition::Removable => None,
+        other => Some(recheck_reason(other)),
     }
 }
 

@@ -17,28 +17,6 @@ fn session_get_requires_a_location_directory() {
 }
 
 #[test]
-fn session_get_parses_optional_parent_and_outcome() {
-    let body = r#"{"data":{"id":"ses_child","parentID":"ses_parent","outcome":"succeeded",
-                     "location":{"directory":"/tmp/wt"}}}"#;
-    let parsed = parse::parse_session_get(body).expect("documented shape parses");
-    assert_eq!(parsed.parent_id.as_deref(), Some("ses_parent"));
-    assert_eq!(parsed.outcome.as_deref(), Some("succeeded"));
-}
-
-#[test]
-fn session_get_treats_missing_or_blank_parent_and_outcome_as_none() {
-    let body = r#"{"data":{"id":"ses_a","parentID":"","outcome":"  ",
-                     "location":{"directory":"/tmp/wt"}}}"#;
-    let parsed = parse::parse_session_get(body).expect("documented shape parses");
-    assert_eq!(parsed.parent_id, None);
-    assert_eq!(parsed.outcome, None);
-    let body = r#"{"data":{"id":"ses_a","location":{"directory":"/tmp/wt"}}}"#;
-    let parsed = parse::parse_session_get(body).expect("documented shape parses");
-    assert_eq!(parsed.parent_id, None);
-    assert_eq!(parsed.outcome, None);
-}
-
-#[test]
 fn session_get_rejects_invalid_json() {
     let error = parse::parse_session_get("not json").expect_err("invalid JSON must fail");
     assert!(
@@ -115,4 +93,79 @@ fn is_opencode_session_matches_only_real_session_ids() {
     assert!(!is_opencode_session("phasegent/1-aaaaaa"));
     assert!(!is_opencode_session("session-A"));
     assert!(!is_opencode_session("SESS_abc"));
+}
+
+#[test]
+fn active_sessions_parses_a_running_map() {
+    let body = r#"{"data":{"ses_b":{"type":"running"},"ses_a":{"type":"running"}}}"#;
+    let ids = parse::parse_active_sessions(body).expect("documented shape parses");
+    assert_eq!(ids, vec!["ses_a".to_owned(), "ses_b".to_owned()]);
+}
+
+#[test]
+fn active_sessions_accepts_an_empty_map_as_nothing_running() {
+    let ids = parse::parse_active_sessions(r#"{"data":{}}"#).expect("empty is valid");
+    assert!(ids.is_empty());
+}
+
+#[test]
+fn active_sessions_rejects_invalid_json() {
+    let error =
+        parse::parse_active_sessions("not json").expect_err("invalid JSON must fail closed");
+    assert!(
+        error.message.contains("invalid JSON"),
+        "got: {}",
+        error.message
+    );
+}
+
+#[test]
+fn active_sessions_rejects_a_missing_data_envelope() {
+    let error =
+        parse::parse_active_sessions(r#"{"sessions":{}}"#).expect_err("no data must fail closed");
+    assert!(
+        error.message.contains("no data field"),
+        "got: {}",
+        error.message
+    );
+}
+
+#[test]
+fn active_sessions_rejects_a_non_object_data() {
+    let error = parse::parse_active_sessions(r#"{"data":[]}"#)
+        .expect_err("a non-object data must fail closed");
+    assert!(
+        error.message.contains("data is not an object"),
+        "got: {}",
+        error.message
+    );
+}
+
+#[test]
+fn active_sessions_rejects_an_empty_session_id() {
+    let error = parse::parse_active_sessions(r#"{"data":{"":{"type":"running"}}}"#)
+        .expect_err("an empty id must fail closed");
+    assert!(
+        error.message.contains("empty session id"),
+        "got: {}",
+        error.message
+    );
+}
+
+#[test]
+fn active_sessions_rejects_a_missing_type() {
+    let error = parse::parse_active_sessions(r#"{"data":{"ses_a":{}}}"#)
+        .expect_err("a missing type must fail closed");
+    assert!(error.message.contains("no type"), "got: {}", error.message);
+}
+
+#[test]
+fn active_sessions_rejects_an_unknown_type() {
+    let error = parse::parse_active_sessions(r#"{"data":{"ses_a":{"type":"background"}}}"#)
+        .expect_err("an unknown type must fail closed");
+    assert!(
+        error.message.contains("unknown type"),
+        "got: {}",
+        error.message
+    );
 }

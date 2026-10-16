@@ -2501,24 +2501,23 @@ Boundaries:
   directory is removed as soon as every issue associated with it is confirmed
   closed on the configured provider, no active lease references it, and it is
   Git-clean — with no waiting period, so \`--stale-days\` only affects the
-  explicit \`--release-stale\` recovery. It reuses the same guards as close/sync —
+  explicit \`--release-stale\` recovery. It reuses the close/sync *local* guards —
   never the main checkout, never an active peer's path (including the same
-  owner), never dirty or untracked contents, and never a directory the OpenCode
-  host still (or cannot be proven not to) occupy, checked read-only. Its one
-  relocation exception is narrow and user-authorized: a directory whose only
-  remaining occupant is one or more individually proven *associated* child
-  sessions (the \`parentID\` chain of at most 8 hops reaches a persisted \`ses_\`
-  lease session for that directory, and the child is not itself a lease owner)
-  may be cleaned after prune relocates exactly those children to the repository's
-  verified main checkout and re-confirms vacancy with fresh evidence. The child's
-  execution outcome — \`succeeded\`, \`failed\`, \`interrupted\`, \`cancelled\`, absent,
-  or unknown — is never a cleanup criterion. A foreign, unreadable, parentless,
-  cyclic, or over-deep session, a hosted lease owner,
-  an unavailable main checkout, or a failed or unconfirmed move keeps the
-  directory with zero further moves; prune never moves a lease owner or an
-  unrelated session. A missing, unavailable, ambiguous, or mismatched
-  issue is never treated as closed. Default output is concise text with
-  directory-based counts; \`--json\` selects the machine-readable aggregate.
+  owner), never dirty or untracked contents — and adds its own running-session
+  guard: only a session the connected shared foreground-drain service reports as
+  *currently running* in the directory blocks removal, checked read-only, so an
+  inactive historical session record that still points at the directory never
+  keeps it. Prune never enumerates historical sessions and never moves a session;
+  coverage is that one connected service, not a whole-machine multi-service
+  inventory. The local guards run before the running-session query, so a
+  main-checkout or dirty directory makes zero host calls; because the
+  runtime-host dependency is explicit, an unsupported, unavailable, malformed,
+  mismatched, or non-absolute running-session answer, or an active id the host
+  will not describe, keeps even a pure-CLI candidate. Resuming an old session may
+  require explicitly choosing a current checkout, because no relocation of a
+  historical record is attempted. A missing, unavailable, ambiguous, or
+  mismatched issue is never treated as closed. Default output is concise text
+  with directory-based counts; \`--json\` selects the machine-readable aggregate.
 - Forced release is the attributed override: it requires a reason and the lease
   row stays (rows are never deleted).
 - \`worktree probe\` is read-only: it reports existence,

@@ -5,8 +5,9 @@ use super::*;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 use crate::worktree::opencode::{ApiError, ListRequest, LocatedSession, OpenCodeApi, SessionPage};
 
-/// A host that blocks on its first session lookup until the test releases it,
-/// so a test can prove a progress notice was streamed before the check.
+/// A host that blocks on its first running-session query until the test
+/// releases it, so a test can prove a progress notice was streamed before the
+/// check.
 struct BlockingHost {
     inner: FakeOpenCodeApi,
     blocked: std::sync::mpsc::Sender<()>,
@@ -16,13 +17,6 @@ struct BlockingHost {
 
 impl OpenCodeApi for BlockingHost {
     fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
-        if !self
-            .blocked_once
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            let _ = self.blocked.send(());
-            let _ = self.release.lock().expect("release lock").recv();
-        }
         self.inner.session(id)
     }
 
@@ -32,6 +26,17 @@ impl OpenCodeApi for BlockingHost {
 
     fn move_session(&self, id: &str, directory: &std::path::Path) -> Result<(), ApiError> {
         self.inner.move_session(id, directory)
+    }
+
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        if !self
+            .blocked_once
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let _ = self.blocked.send(());
+            let _ = self.release.lock().expect("release lock").recv();
+        }
+        self.inner.active_sessions()
     }
 }
 
@@ -190,7 +195,16 @@ fn cli_prune_dry_run_does_not_mutate() {
         "/tmp/wt-stale",
     );
     let source = ScriptedIssueStateSource::closed();
-    let exit = run_scoped_prune(&repo, 14, false, None, true, "json", &source);
+    let exit = run_scoped_prune(
+        &repo,
+        14,
+        false,
+        None,
+        true,
+        "json",
+        &source,
+        &FakeOpenCodeApi::empty(),
+    );
     assert_eq!(exit, 0, "default prune preview must succeed");
     let row = list_for_repo(&storage, &identity)
         .expect("list")
@@ -232,6 +246,7 @@ fn cli_prune_release_stale_flips_candidates_and_keeps_worktree() {
         false,
         "json",
         &source,
+        &FakeOpenCodeApi::empty(),
     );
     assert_eq!(exit, 0, "prune --release-stale must succeed");
     let row = list_for_repo(&storage, &identity)
@@ -416,12 +431,10 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
                             prunable: true,
                             result: "pruned".to_owned(),
                             message: Some("git worktree remove succeeded".to_owned()),
-                            relocated_children: vec!["ses_child1".to_owned()],
+                            relocated_children: Vec::new(),
                             planned_children: Vec::new(),
                         },
-                        // A child moved and confirmed, but a later occupancy
-                        // check kept the directory: the confirmed move stays
-                        // reported as an actual relocation, next to the keep.
+                        // A directory kept on a fresh re-check.
                         PruneAction {
                             worktree_path: "/tmp/repo-a/wt-kept".to_owned(),
                             branch: "phasegent/918-kept".to_owned(),
@@ -431,11 +444,14 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
                             issues: vec![918],
                             prunable: false,
                             result: "skipped_protected".to_owned(),
-                            message: Some("kept on re-check: an incoming occupant".to_owned()),
-                            relocated_children: vec!["ses_child2".to_owned()],
+                            message: Some(
+                                "kept on re-check: a running session is at the directory"
+                                    .to_owned(),
+                            ),
+                            relocated_children: Vec::new(),
                             planned_children: Vec::new(),
                         },
-                        // Preview proposal only: no actual relocation.
+                        // A preview proposal.
                         PruneAction {
                             worktree_path: "/tmp/repo-a/wt2".to_owned(),
                             branch: "phasegent/917-b".to_owned(),
@@ -447,7 +463,7 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
                             result: "prunable".to_owned(),
                             message: Some("dry-run: would call git worktree remove".to_owned()),
                             relocated_children: Vec::new(),
-                            planned_children: vec!["ses_child3".to_owned()],
+                            planned_children: Vec::new(),
                         },
                     ],
                 }),
@@ -480,23 +496,8 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
         "got: {text}"
     );
     assert!(text.contains("pruned /tmp/repo-a/wt"), "got: {text}");
-    // A confirmed move is factual and prints as `relocated`, even on the kept
-    // directory whose final result is `skipped_protected`.
     assert!(
-        text.contains("relocated associated child session(s): ses_child1"),
-        "got: {text}"
-    );
-    assert!(
-        text.contains("kept on re-check: an incoming occupant"),
-        "got: {text}"
-    );
-    assert!(
-        text.contains("relocated associated child session(s): ses_child2"),
-        "got: {text}"
-    );
-    // A preview proposal is labelled distinctly, never as an actual move.
-    assert!(
-        text.contains("would relocate associated child session(s): ses_child3"),
+        text.contains("kept on re-check: a running session is at the directory"),
         "got: {text}"
     );
     assert!(text.contains("skipped /tmp/gone/.git"), "got: {text}");
@@ -510,6 +511,8 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
         text.contains("removal failures count only failed `git worktree remove` calls"),
         "got: {text}"
     );
+    // Prune never reports a relocation in text.
+    assert!(!text.contains("relocate"), "got: {text}");
     // The text default must not dump the lease JSON payload.
     assert!(!text.contains("stale_before"), "got: {text}");
 
@@ -519,27 +522,22 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
         payload["repos"][0]["worktrees"]["removed"],
         serde_json::json!(1)
     );
-    // The actual-only key and the additive proposal key are distinct.
-    assert_eq!(
-        payload["repos"][0]["worktrees"]["actions"][0]["relocated_children"],
-        serde_json::json!(["ses_child1"])
-    );
-    assert!(
-        payload["repos"][0]["worktrees"]["actions"][0]
-            .get("planned_children")
-            .is_none(),
-        "an empty planned_children list is omitted"
-    );
-    assert_eq!(
-        payload["repos"][0]["worktrees"]["actions"][2]["planned_children"],
-        serde_json::json!(["ses_child3"])
-    );
-    assert!(
-        payload["repos"][0]["worktrees"]["actions"][2]
-            .get("relocated_children")
-            .is_none(),
-        "a preview proposal never sets the actual-only key"
-    );
+    // Prune no longer relocates a session, so both compatibility fields are
+    // always empty and omitted.
+    for index in 0..3 {
+        assert!(
+            payload["repos"][0]["worktrees"]["actions"][index]
+                .get("relocated_children")
+                .is_none(),
+            "relocated_children is omitted"
+        );
+        assert!(
+            payload["repos"][0]["worktrees"]["actions"][index]
+                .get("planned_children")
+                .is_none(),
+            "planned_children is omitted"
+        );
+    }
     assert!(payload["repos"][1]["skipped_reason"].is_string());
 }
 
@@ -602,7 +600,16 @@ fn cli_prune_preview_with_release_stale_never_mutates() {
     // A preview that also requests a recovery, with a reason and under the
     // `--dry-run` alias, must still flip and delete nothing.
     let source = ScriptedIssueStateSource::closed();
-    let exit = run_scoped_prune(&repo, 14, true, Some("preview only"), true, "json", &source);
+    let exit = run_scoped_prune(
+        &repo,
+        14,
+        true,
+        Some("preview only"),
+        true,
+        "json",
+        &source,
+        &FakeOpenCodeApi::empty(),
+    );
     assert_eq!(exit, 0, "preview must succeed");
     // Both spellings parse to the same preview flag.
     for flag in ["--dryrun", "--dry-run"] {
@@ -676,7 +683,16 @@ fn cli_prune_remove_deletes_clean_closed_worktree_and_keeps_branch() {
     );
     let source = ScriptedIssueStateSource::closed();
     // `--stale-days 999` proves the age threshold no longer gates removal.
-    let exit = run_scoped_prune(&repo, 999, false, None, false, "json", &source);
+    let exit = run_scoped_prune(
+        &repo,
+        999,
+        false,
+        None,
+        false,
+        "json",
+        &source,
+        &FakeOpenCodeApi::empty(),
+    );
     assert_eq!(exit, 0, "default prune removal must succeed");
     assert!(!target.exists(), "removal must delete the clean worktree");
     assert!(
@@ -713,7 +729,16 @@ fn cli_prune_remove_skips_dirty_worktree() {
         &target.to_string_lossy(),
     );
     let source = ScriptedIssueStateSource::closed();
-    let exit = run_scoped_prune(&repo, 999, false, None, false, "json", &source);
+    let exit = run_scoped_prune(
+        &repo,
+        999,
+        false,
+        None,
+        false,
+        "json",
+        &source,
+        &FakeOpenCodeApi::empty(),
+    );
     assert_eq!(exit, 0, "a dirty candidate is reported, not fatal");
     assert!(target.exists(), "prune must keep a dirty worktree");
     let row = list_for_repo(&storage, &identity)
@@ -745,7 +770,16 @@ fn cli_prune_released_closed_directory_is_eligible() {
         &target.to_string_lossy(),
     );
     let source = ScriptedIssueStateSource::closed();
-    let exit = run_scoped_prune(&repo, 999, false, None, false, "json", &source);
+    let exit = run_scoped_prune(
+        &repo,
+        999,
+        false,
+        None,
+        false,
+        "json",
+        &source,
+        &FakeOpenCodeApi::empty(),
+    );
     assert_eq!(exit, 0);
     assert!(
         !target.exists(),
@@ -799,6 +833,7 @@ fn cli_prune_keeps_a_directory_at_invocation_start_active_after_recovery() {
         false,
         "json",
         &source,
+        &FakeOpenCodeApi::empty(),
     );
     assert_eq!(exit, 0, "combined prune must succeed");
     let rows = list_for_repo(&storage, &identity).expect("list");
