@@ -2991,10 +2991,14 @@ describe("v2 worktree strategy registration", () => {
 
   test("create falls back to a plain git worktree when acquire fails", async () => {
     const fallbacks = [];
+    const requests = [];
     const definition = worktreeStrategyDefinition({
       issueId: 532,
       directory: "/repo",
-      acquire: async () => null,
+      acquire: async (issueId, sessionId, cwd, options) => {
+        requests.push({ issueId, sessionId, cwd, options });
+        return null;
+      },
       gitAdd: async (input) => {
         fallbacks.push(input);
         return { directory: input.directory };
@@ -3004,17 +3008,61 @@ describe("v2 worktree strategy registration", () => {
     const input = { sourceDirectory: "/repo", directory: "/wt/new", branch: "main" };
     expect(await definition.create(input)).toEqual({ directory: "/wt/new" });
     expect(fallbacks).toEqual([input]);
+    expect(requests).toEqual([
+      { issueId: 532, sessionId: null, cwd: "/repo", options: { isolate: true } },
+    ]);
   });
 
-  test("remove never deletes a worktree or branch", async () => {
+  test("remove rejects instead of reporting a false success", async () => {
+    const calls = [];
     const definition = worktreeStrategyDefinition({
       issueId: 532,
       directory: "/repo",
-      acquire: async () => null,
-      gitAdd: async () => ({ directory: "/wt/new" }),
-      readLeases: async () => [],
+      acquire: async () => {
+        calls.push("acquire");
+        return null;
+      },
+      gitAdd: async () => {
+        calls.push("gitAdd");
+        return { directory: "/wt/new" };
+      },
+      readLeases: async () => {
+        calls.push("readLeases");
+        return [];
+      },
     });
-    expect(await definition.remove({ directory: WORKTREE, force: true })).toBeUndefined();
+    const error = await definition
+      .remove({ directory: WORKTREE, force: false })
+      .then(() => null, (failure) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain("host removal is unsupported");
+    expect(error.message).toContain("phasegent issue close");
+    expect(error.message).not.toContain("prune");
+    expect(calls).toEqual([]);
+  });
+
+  test("a forced remove is refused as well and still touches nothing", async () => {
+    const calls = [];
+    const definition = worktreeStrategyDefinition({
+      issueId: 532,
+      directory: "/repo",
+      acquire: async () => {
+        calls.push("acquire");
+        return null;
+      },
+      gitAdd: async () => {
+        calls.push("gitAdd");
+        return { directory: "/wt/new" };
+      },
+      readLeases: async () => {
+        calls.push("readLeases");
+        return [];
+      },
+    });
+    await expect(definition.remove({ directory: WORKTREE, force: true })).rejects.toThrow(
+      /host removal is unsupported/,
+    );
+    expect(calls).toEqual([]);
   });
 
 describe("acquireWorktree session guarantee (issue #651 P4)", () => {

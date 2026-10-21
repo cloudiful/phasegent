@@ -3602,7 +3602,8 @@ async function registerAgentSkills(context, deps) {
 // keeps its own git implementation. A host "create worktree" action is the
 // explicit isolation opt-in (issue 616), so `create` passes `isolate` and a
 // dedicated directory is really created instead of quietly reusing the current
-// checkout.
+// checkout. Host removal is refused: the directory, its branch and its lease
+// belong to the phasegent cleanup lifecycle.
 
 
 // Mirrors the host git strategy's command (packages/core/src/git.ts:657) so a
@@ -3647,9 +3648,13 @@ function worktreeStrategyDefinition(options) {
       return await options.gitAdd(input);
     },
     async remove() {
-      // Retain the worktree and its branch; release/removal stays with
-      // `phasegent worktree prune` so no lease is orphaned by a host action.
-      return;
+      // The host drops the worktree from its inventory once this resolves, so
+      // a silent success would hide a worktree that still exists. The
+      // directory, its branch and its lease belong to the phasegent cleanup
+      // lifecycle, so refuse.
+      throw new Error(
+        "phasegent: host removal is unsupported for phasegent worktrees; remove them through the phasegent-managed issue cleanup lifecycle (`phasegent issue close`, `phasegent issue sync`)",
+      );
     },
     async list(sourceDirectory) {
       const root = typeof sourceDirectory === "string" && sourceDirectory.length > 0

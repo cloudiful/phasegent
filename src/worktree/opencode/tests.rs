@@ -69,6 +69,39 @@ fn session_page_reports_the_final_page_without_a_cursor() {
 }
 
 #[test]
+fn session_page_keeps_a_representative_v211_shape_and_an_opaque_cursor() {
+    let body = r#"{"data":[{"id":"ses_synthetic01","parentID":"ses_synthetic02",
+                    "projectID":"project_synthetic","agent":"executor",
+                    "model":{"id":"executor","providerID":"synthetic","variant":"default"},
+                    "cost":0,"tokens":{"input":10,"output":2,"reasoning":0,
+                    "cache":{"read":0,"write":0}},
+                    "time":{"created":1700000000000,"updated":1700000001000},
+                    "title":"Synthetic session","permissions":[],
+                    "location":{"directory":"/tmp/synthetic/wt"}}],
+                    "cursor":{"previous":"cHJldmlvdXM=","next":"bmV4dC1jdXJzb3I="}}"#;
+    let page = parse::parse_session_page(body).expect("documented shape parses");
+    assert_eq!(page.sessions.len(), 1);
+    assert_eq!(page.sessions[0].id, "ses_synthetic01");
+    assert_eq!(page.sessions[0].directory, "/tmp/synthetic/wt");
+    assert_eq!(page.next_cursor.as_deref(), Some("bmV4dC1jdXJzb3I="));
+}
+
+#[test]
+fn session_get_accepts_a_representative_v211_session_envelope() {
+    let body = r#"{"data":{"id":"ses_synthetic03","parentID":null,
+                    "projectID":"project_synthetic","agent":"reviewer",
+                    "model":{"id":"reviewer","providerID":"synthetic","variant":"default"},
+                    "cost":0,"tokens":{"input":20,"output":4,"reasoning":1,
+                    "cache":{"read":0,"write":0}},
+                    "time":{"created":1700000000000,"updated":1700000002000},
+                    "title":"Synthetic session","permissions":[],
+                    "location":{"directory":"/tmp/synthetic/wt"}}}"#;
+    let parsed = parse::parse_session_get(body).expect("documented shape parses");
+    assert_eq!(parsed.id, "ses_synthetic03");
+    assert_eq!(parsed.directory, "/tmp/synthetic/wt");
+}
+
+#[test]
 fn session_page_requires_a_cursor_because_pagination_is_unproven_without_it() {
     let body = r#"{"data":[]}"#;
     let error = parse::parse_session_page(body).expect_err("no cursor means no completeness");
