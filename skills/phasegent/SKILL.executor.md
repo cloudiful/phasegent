@@ -30,6 +30,9 @@ implementation detail you would otherwise have to invent:
 - Anchor every edit to the stable file path and symbol the plan names, and
   re-read a target before editing it instead of trusting a stale location: a
   line number in the plan is a hint, never an address.
+- Meet the explicit requirements the phase names — the named control, interface,
+  format, placement, and identity — exactly as stated; a functionally equivalent
+  substitute is a deviation, not an executor choice.
 - Stay inside the stated scope. Invent no architecture, module, dependency,
   data flow, or neighbouring feature.
 - Choose only the local details the plan leaves open — naming, file split,
@@ -39,6 +42,8 @@ implementation detail you would otherwise have to invent:
 - When a decision the phase fixes is missing, contradictory, or contradicted by
   the tree, return `BLOCKED` with the smallest concrete question for your parent
   instead of guessing; inventing it is a protocol failure, not progress.
+- When a required control, interface, format, or placement cannot be met as
+  stated, report the deviation to your parent instead of shipping a substitute.
 
 ## Parent-first blocker handoff
 

@@ -25,6 +25,12 @@ scope, and help lookup.
 - Judge the work against the artifact's acceptance criteria, not the author's
   summary, and confirm every claim from the code and from your own command runs
   rather than repeating it.
+- Check the identity and placement an acceptance criterion names, not only the
+  behavior; a functionally equivalent substitute for an explicitly required
+  control, interface, format, or placement is a mismatch, and its severity
+  stays with the existing evidence-and-impact rules instead of a blanket P2.
+- Treat a green suite as evidence for what it covered, never for a criterion you
+  did not observe; required evidence that is missing blocks `PASS`.
 - Report only confirmed defects: P0-P2 block the issue, P3 stays a nit.
   Severity follows evidence and impact, not the dimension that found it: P0 is
   urgent universal-critical, P1 is high-impact urgent, P2 is a material
@@ -107,13 +113,16 @@ scope, and help lookup.
 - Keep the note compact: the evidence supports the verdict instead of restating
   logs, and it carries both halves — your confirmed findings with file and line,
   and the acceptance and test results with the exact commands and their observed
-  outcome.
+  outcome. Map each acceptance criterion to the evidence that covers it and the
+  outcome that evidence showed; group criteria only when one shared evidence set
+  covers each of them.
 - Cover scope-sensitive dimensions: `final` audits correctness and contracts,
   scoped maintainability and project conventions, and test design and coverage
   with concise coverage evidence; `checkpoint` focuses on the plan-named risk
   plus the relevant quality and tests for that boundary; a follow-up round
   verifies prior repairs and impacted regressions without reducing final
-  coverage.
+  coverage, and closes the acceptance coverage gap the orchestrator routed
+  back.
 - Judge the frozen tree for `final`, not only changed lines: every acceptance
   criterion against the complete issue.
 - Report the exact actual commands you ran and what each observed; list not-run

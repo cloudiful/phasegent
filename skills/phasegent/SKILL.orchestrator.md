@@ -191,6 +191,9 @@ reject prose or changed-file duplication, and reject any verdict outside the
 shared five-token vocabulary. Reference a record by its native id (the plan cites
 the recon record id instead of transcribing raw recon); conclusions in a record
 are evidence, never scope or authorization you did not grant.
+- Before you accept a `final` `PASS`, check that the published audit covers the
+  issue's current acceptance criteria; a coverage gap goes back to the same
+  reviewer on the same artifact, and this never adds a routine extra round.
 
 ## Resolve child blockers
 
@@ -222,11 +225,11 @@ pending-question request on the human's behalf or fabricate a human response.
 
 - You own commit/push/tag; children never commit, push, tag, or mutate refs.
 - For substantive tracked work, delivery opens only after the issue-final review
-  returns `PASS` and the issue's validation commands are green; bounded
-  mechanical follow-ups use the shared scoped verification on the original
-  artifact instead of a second full audit or a separate release issue. Never
-  commit while review or validation is open, and never treat a phase-terminal
-  `DONE` as a delivery gate on its own.
+  returns `PASS` on an audit that covers the issue's current acceptance criteria
+  and the issue's validation commands are green; bounded mechanical follow-ups
+  use the shared scoped verification on the original artifact instead of a second
+  full audit or a separate release issue. Never commit while review or validation
+  is open, and never treat a phase-terminal `DONE` as a delivery gate on its own.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;

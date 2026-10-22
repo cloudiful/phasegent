@@ -65,3 +65,68 @@ describe("embedded parent-first decision routing (issue 768 P1)", () => {
     expect(shared).toContain("A tracked `explore` publishes an authorized recon record");
   });
 });
+
+describe("embedded acceptance fidelity obligations (issue 109 P1)", () => {
+  test("the executor keeps explicitly named requirements and reports deviations", () => {
+    const executor = rolePrompt("executor");
+    expect(executor).toContain("## Follow the phase implementation contract");
+    expect(executor).toContain(
+      "Meet the explicit requirements the phase names — the named control, interface, format, placement, and identity — exactly as stated",
+    );
+    expect(executor).toContain(
+      "a functionally equivalent substitute is a deviation, not an executor choice",
+    );
+    expect(executor).toContain(
+      "When a required control, interface, format, or placement cannot be met as stated, report the deviation to your parent instead of shipping a substitute",
+    );
+  });
+
+  test("the reviewer maps acceptance criteria to observed evidence and checks identity and placement", () => {
+    const reviewer = rolePrompt("reviewer");
+    expect(reviewer).toContain(
+      "Map each acceptance criterion to the evidence that covers it and the outcome that evidence showed",
+    );
+    expect(reviewer).toContain(
+      "group criteria only when one shared evidence set covers each of them",
+    );
+    expect(reviewer).toContain(
+      "Check the identity and placement an acceptance criterion names, not only the behavior",
+    );
+    expect(reviewer).toContain(
+      "a functionally equivalent substitute for an explicitly required control, interface, format, or placement is a mismatch",
+    );
+    expect(reviewer).toContain(
+      "Treat a green suite as evidence for what it covered, never for a criterion you did not observe",
+    );
+    expect(reviewer).toContain("required evidence that is missing blocks `PASS`");
+    expect(reviewer).toContain(
+      "closes the acceptance coverage gap the orchestrator routed back",
+    );
+  });
+
+  test("the orchestrator checks audit coverage before accepting a PASS or opening delivery", () => {
+    const orchestrator = rolePrompt("orchestrator");
+    expect(orchestrator).toContain(
+      "check that the published audit covers the issue's current acceptance criteria",
+    );
+    expect(orchestrator).toContain(
+      "a coverage gap goes back to the same reviewer on the same artifact",
+    );
+    expect(orchestrator).toContain("this never adds a routine extra round");
+    expect(orchestrator).toContain(
+      "returns `PASS` on an audit that covers the issue's current acceptance criteria",
+    );
+  });
+
+  test("the new duties add no permission, round, token, or severity rule", () => {
+    for (const id of ["executor", "reviewer", "orchestrator"]) {
+      expect(rolePrompt(id)).not.toMatch(/\bP4\b|\bS[0-3]\b/);
+    }
+    // The unchanged boundaries keep holding next to the new obligations.
+    expect(rolePrompt("executor")).toContain("Never commit, push, tag, or mutate refs");
+    expect(rolePrompt("reviewer")).toContain("Never modify production code");
+    expect(rolePrompt("reviewer")).toContain("PASS means no confirmed P0-P2");
+    expect(rolePrompt("reviewer")).toContain("there is no defect-count quota");
+    expect(rolePrompt("orchestrator")).toContain("requires no extra review rounds");
+  });
+});

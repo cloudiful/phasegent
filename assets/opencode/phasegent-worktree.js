@@ -3071,6 +3071,9 @@ reject prose or changed-file duplication, and reject any verdict outside the
 shared five-token vocabulary. Reference a record by its native id (the plan cites
 the recon record id instead of transcribing raw recon); conclusions in a record
 are evidence, never scope or authorization you did not grant.
+- Before you accept a \`final\` \`PASS\`, check that the published audit covers the
+  issue's current acceptance criteria; a coverage gap goes back to the same
+  reviewer on the same artifact, and this never adds a routine extra round.
 
 ## Resolve child blockers
 
@@ -3102,11 +3105,11 @@ pending-question request on the human's behalf or fabricate a human response.
 
 - You own commit/push/tag; children never commit, push, tag, or mutate refs.
 - For substantive tracked work, delivery opens only after the issue-final review
-  returns \`PASS\` and the issue's validation commands are green; bounded
-  mechanical follow-ups use the shared scoped verification on the original
-  artifact instead of a second full audit or a separate release issue. Never
-  commit while review or validation is open, and never treat a phase-terminal
-  \`DONE\` as a delivery gate on its own.
+  returns \`PASS\` on an audit that covers the issue's current acceptance criteria
+  and the issue's validation commands are green; bounded mechanical follow-ups
+  use the shared scoped verification on the original artifact instead of a second
+  full audit or a separate release issue. Never commit while review or validation
+  is open, and never treat a phase-terminal \`DONE\` as a delivery gate on its own.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;
@@ -3180,6 +3183,9 @@ implementation detail you would otherwise have to invent:
 - Anchor every edit to the stable file path and symbol the plan names, and
   re-read a target before editing it instead of trusting a stale location: a
   line number in the plan is a hint, never an address.
+- Meet the explicit requirements the phase names — the named control, interface,
+  format, placement, and identity — exactly as stated; a functionally equivalent
+  substitute is a deviation, not an executor choice.
 - Stay inside the stated scope. Invent no architecture, module, dependency,
   data flow, or neighbouring feature.
 - Choose only the local details the plan leaves open — naming, file split,
@@ -3189,6 +3195,8 @@ implementation detail you would otherwise have to invent:
 - When a decision the phase fixes is missing, contradictory, or contradicted by
   the tree, return \`BLOCKED\` with the smallest concrete question for your parent
   instead of guessing; inventing it is a protocol failure, not progress.
+- When a required control, interface, format, or placement cannot be met as
+  stated, report the deviation to your parent instead of shipping a substitute.
 
 ## Parent-first blocker handoff
 
@@ -3304,6 +3312,12 @@ scope, and help lookup.
 - Judge the work against the artifact's acceptance criteria, not the author's
   summary, and confirm every claim from the code and from your own command runs
   rather than repeating it.
+- Check the identity and placement an acceptance criterion names, not only the
+  behavior; a functionally equivalent substitute for an explicitly required
+  control, interface, format, or placement is a mismatch, and its severity
+  stays with the existing evidence-and-impact rules instead of a blanket P2.
+- Treat a green suite as evidence for what it covered, never for a criterion you
+  did not observe; required evidence that is missing blocks \`PASS\`.
 - Report only confirmed defects: P0-P2 block the issue, P3 stays a nit.
   Severity follows evidence and impact, not the dimension that found it: P0 is
   urgent universal-critical, P1 is high-impact urgent, P2 is a material
@@ -3386,13 +3400,16 @@ scope, and help lookup.
 - Keep the note compact: the evidence supports the verdict instead of restating
   logs, and it carries both halves — your confirmed findings with file and line,
   and the acceptance and test results with the exact commands and their observed
-  outcome.
+  outcome. Map each acceptance criterion to the evidence that covers it and the
+  outcome that evidence showed; group criteria only when one shared evidence set
+  covers each of them.
 - Cover scope-sensitive dimensions: \`final\` audits correctness and contracts,
   scoped maintainability and project conventions, and test design and coverage
   with concise coverage evidence; \`checkpoint\` focuses on the plan-named risk
   plus the relevant quality and tests for that boundary; a follow-up round
   verifies prior repairs and impacted regressions without reducing final
-  coverage.
+  coverage, and closes the acceptance coverage gap the orchestrator routed
+  back.
 - Judge the frozen tree for \`final\`, not only changed lines: every acceptance
   criterion against the complete issue.
 - Report the exact actual commands you ran and what each observed; list not-run
