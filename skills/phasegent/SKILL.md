@@ -370,7 +370,9 @@ phase is an explicit transition back to `In Progress`.
 - `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope,
   `record list` is the bulk record read, and `comment list` still reads legacy
   notes.
-- `notify send` is manual-only and never automatic.
+- `notify send` runs on explicit invocation; the OpenCode adapter automatically
+  invokes it for each new local pending question form, using the current
+  notification settings and subject to ambient caller policy.
 - `issue upload-attachment` rejects uniformly as not-supported, before any file,
   network, or credential access.
 

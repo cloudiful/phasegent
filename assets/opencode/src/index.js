@@ -96,6 +96,7 @@ import {
 } from "./scanner.js";
 import { isAbsolutePath, redirectPathValue, redirectPaths } from "./paths.js";
 import { agentName, agentRole, isSubagentSession } from "./roles.js";
+import { createQuestionNotifier } from "./notify.js";
 import { errorText, warn } from "./runtime.js";
 import {
   inheritedWorktree,
@@ -218,6 +219,15 @@ const PhasegentWorktreePlugin = {
     } catch (error) {
       warn(`phasegent: agent.transform registration failed (${errorText(error)})`);
     }
+    try {
+      // Best-effort question notifications (issue #1026 P1): one bounded
+      // `phasegent notify send` per new local pending question form. The
+      // subscription degrades to a warning when the host exposes none, and the
+      // notifier's disposer joins the plugin's cleanup.
+      registrations.push({ dispose: createQuestionNotifier(context) });
+    } catch (error) {
+      warn(`phasegent: question notifier registration failed (${errorText(error)})`);
+    }
     return async () => {
       for (const registration of registrations) {
         try {
@@ -278,6 +288,7 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   roleSkillId,
   roleSkillContent,
   withSkillPrefix,
+  createQuestionNotifier,
 });
 
 export default PhasegentWorktreePlugin;

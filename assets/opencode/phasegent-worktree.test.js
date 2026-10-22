@@ -245,6 +245,47 @@ describe("plugin module shape (v2)", () => {
     expect(typeof cleanup).toBe("function");
     await cleanup();
   });
+
+  test("setup subscribes to the event stream for question notifications and disposes it", async () => {
+    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
+    try {
+      const stream = {
+        [Symbol.asyncIterator]() {
+          return {
+            next() {
+              return new Promise(() => {});
+            },
+            return() {
+              return Promise.resolve({ value: undefined, done: true });
+            },
+          };
+        },
+      };
+      let subscribeOptions = null;
+      const context = {
+        location: { directory: "/repo" },
+        event: {
+          subscribe: (options) => {
+            subscribeOptions = options;
+            return stream;
+          },
+        },
+      };
+      const cleanup = await PhasegentWorktreePlugin.setup(context);
+      expect(typeof subscribeOptions).toBe("object");
+      expect(subscribeOptions.signal).toBeDefined();
+      let aborted = false;
+      subscribeOptions.signal.addEventListener("abort", () => {
+        aborted = true;
+      });
+      expect(typeof cleanup).toBe("function");
+      await cleanup();
+      expect(aborted).toBe(true);
+    } finally {
+      restoreNoDiscover(saved);
+    }
+  });
 });
 
 describe("isAbsolutePath", () => {

@@ -140,6 +140,7 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
 
     let mut value: Option<String> = None;
     let mut stdin = false;
+    let secret_setting = crate::config_write::is_secret_setting(&canonical);
     for token in &args[1..] {
         if token == "--stdin" {
             if stdin {
@@ -147,6 +148,14 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
             }
             stdin = true;
         } else if token.starts_with('-') {
+            // A dash-prefixed token is either an unknown flag or a candidate
+            // secret value; neither may be echoed, so a secret setting gets a
+            // generic message that points at the non-argv sources instead.
+            if secret_setting {
+                return Err(format!(
+                    "secret setting '{canonical}' does not accept option-like values; use --stdin or the interactive prompt"
+                ));
+            }
             return Err(format!("unknown option '{token}' for config set"));
         } else {
             if value.is_some() {
@@ -156,8 +165,12 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
         }
     }
 
-    // Secret settings must never accept a direct value.
-    if crate::config_write::is_secret_setting(&canonical) && value.is_some() {
+    // Secret settings reject a direct value except the SMTP password, whose
+    // API-token flow accepts one; every other secret keeps --stdin/prompt.
+    if secret_setting
+        && !crate::config_write::allows_direct_secret_value(&canonical)
+        && value.is_some()
+    {
         return Err(format!(
             "secret setting '{canonical}' does not accept a direct value; use --stdin or interactive prompt"
         ));
@@ -166,7 +179,7 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
         return Err("cannot provide both a value and --stdin".to_owned());
     }
     // For non-secret, require either value or --stdin.
-    if !crate::config_write::is_secret_setting(&canonical) && value.is_none() && !stdin {
+    if !secret_setting && value.is_none() && !stdin {
         return Err(format!(
             "config set {canonical} requires a value or --stdin"
         ));

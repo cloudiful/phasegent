@@ -162,10 +162,19 @@ fn deliver_email(
     config: &NotifyConfig,
     intent_envelope: &cloudiful_notifier::MessageEnvelope,
 ) -> Result<(), String> {
-    let tls_mode = match config.email_tls.as_deref().unwrap_or("starttls") {
-        "implicit" => cloudiful_notifier::EmailTlsMode::ImplicitTls,
-        "plain" => cloudiful_notifier::EmailTlsMode::Plain,
-        _ => cloudiful_notifier::EmailTlsMode::StartTls,
+    let tls_mode = match crate::notifications::config::resolve_email_tls(
+        config.email_tls.as_deref(),
+        config.email_smtp_port,
+    ) {
+        crate::notifications::config::EmailTlsSelection::Implicit => {
+            cloudiful_notifier::EmailTlsMode::ImplicitTls
+        }
+        crate::notifications::config::EmailTlsSelection::Plain => {
+            cloudiful_notifier::EmailTlsMode::Plain
+        }
+        crate::notifications::config::EmailTlsSelection::StartTls => {
+            cloudiful_notifier::EmailTlsMode::StartTls
+        }
     };
     let channel = cloudiful_notifier::EmailChannel {
         smtp_host: config.email_smtp_host.clone().unwrap_or_default(),

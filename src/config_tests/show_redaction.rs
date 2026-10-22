@@ -126,6 +126,42 @@ fn config_show_replaces_unparseable_mirror_url_with_safe_placeholder() {
 }
 
 #[test]
+fn config_show_redacts_directly_set_email_password() {
+    with_isolated_storage("show-email-password-redact", |_db_path, storage| {
+        let secret = "cf-api-token-shhh";
+        let outcome = config_write::set_setting_value(
+            None,
+            "PHASEGENT_NOTIFY_EMAIL_PASSWORD",
+            secret,
+            storage,
+        )
+        .unwrap();
+        let outcome_text = serde_json::to_string(&outcome).unwrap();
+        assert!(
+            !outcome_text.contains(secret),
+            "set outcome leaked secret: {outcome_text}"
+        );
+
+        let snapshot = config::show(None, storage).unwrap();
+        let text = serde_json::to_string(&snapshot).unwrap();
+        assert!(
+            !text.contains(secret),
+            "snapshot leaked direct email password: {text}"
+        );
+        let entry = snapshot["global_settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "PHASEGENT_NOTIFY_EMAIL_PASSWORD")
+            .expect("email password entry");
+        assert_eq!(entry["present"], Value::Bool(true));
+        assert_eq!(entry["length"], Value::from(secret.len()));
+        assert!(entry["value"].is_null());
+        assert!(entry["sanitized_value"].is_null());
+    });
+}
+
+#[test]
 fn config_show_without_role_reports_every_role() {
     with_isolated_storage("show-global", |_db_path, storage| {
         for role in [

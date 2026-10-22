@@ -5,7 +5,9 @@ use serde_json::Value;
 use std::io::{self, Read};
 
 use super::common::update_redmine_config_field;
-use super::{ConfigSetOutcome, is_role_scoped_setting, is_secret_setting};
+use super::{
+    ConfigSetOutcome, allows_direct_secret_value, is_role_scoped_setting, is_secret_setting,
+};
 
 /// Resolve the effective role for a config write: global settings stay
 /// roleless; role-scoped settings use the explicit agent role, or the admin
@@ -40,7 +42,7 @@ pub fn set_setting_value(
     if trimmed.is_empty() {
         return Err(format!("value for '{canonical}' cannot be empty"));
     }
-    if is_secret_setting(canonical) {
+    if is_secret_setting(canonical) && !allows_direct_secret_value(canonical) {
         return Err(format!(
             "secret setting '{canonical}' must use --stdin or the interactive prompt"
         ));
@@ -89,10 +91,13 @@ pub fn dispatch_set(
     storage: &Storage,
 ) -> Result<Value, String> {
     if is_secret_setting(canonical) {
-        if value.is_some() {
+        if value.is_some() && !allows_direct_secret_value(canonical) {
             return Err(format!(
                 "secret setting '{canonical}' does not accept a direct value; use --stdin or interactive prompt"
             ));
+        }
+        if use_stdin && value.is_some() {
+            return Err("cannot provide both a value and --stdin".to_owned());
         }
         if use_stdin {
             let content = read_stdin_trimmed()?;
@@ -100,6 +105,8 @@ pub fn dispatch_set(
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
             set_setting_stdin_content(role, canonical, &content, storage)
+        } else if let Some(raw) = value {
+            set_setting_value(role, canonical, raw, storage)
         } else {
             let content = prompt_secret(canonical)?;
             let trimmed = content.trim();
@@ -300,15 +307,28 @@ fn persist_set_value(
         }
         "PHASEGENT_NOTIFY_EMAIL_TLS" => {
             let lower = trimmed.to_ascii_lowercase();
-            if !matches!(lower.as_str(), "implicit" | "starttls" | "plain") {
+            if !matches!(lower.as_str(), "auto" | "implicit" | "starttls" | "plain") {
                 return Err(format!(
-                    "invalid {canonical} '{trimmed}'; expected implicit, starttls, or plain"
+                    "invalid {canonical} '{trimmed}'; expected auto, implicit, starttls, or plain"
                 ));
             }
             storage.save_global_setting(canonical, &lower)?;
         }
-        "PHASEGENT_NOTIFY_EMAIL_USERNAME"
-        | "PHASEGENT_NOTIFY_EMAIL_FROM"
+        "PHASEGENT_NOTIFY_EMAIL_USERNAME" => {
+            if trimmed.is_empty() {
+                return Err(format!("value for '{canonical}' cannot be empty"));
+            }
+            if trimmed.chars().any(char::is_control) {
+                return Err(format!(
+                    "value for '{canonical}' must not contain control characters"
+                ));
+            }
+            if trimmed.chars().count() > 2048 {
+                return Err(format!("value for '{canonical}' is too long"));
+            }
+            storage.save_global_setting(canonical, trimmed)?;
+        }
+        "PHASEGENT_NOTIFY_EMAIL_FROM"
         | "PHASEGENT_NOTIFY_EMAIL_TO"
         | "PHASEGENT_NOTIFY_EMAIL_REPLY_TO" => {
             if trimmed.is_empty() {

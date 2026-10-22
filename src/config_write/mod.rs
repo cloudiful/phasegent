@@ -144,6 +144,15 @@ pub fn is_secret_setting(name: &str) -> bool {
     SECRET_SETTINGS.contains(&name)
 }
 
+/// Secret settings whose value may be supplied directly on the command
+/// line. Only the SMTP password is listed: Cloudflare Email Sending and
+/// similar providers hand out an API token that operators paste as the
+/// password, so a direct value is the supported flow. Every other secret
+/// keeps the `--stdin`/prompt-only source policy.
+pub fn allows_direct_secret_value(name: &str) -> bool {
+    matches!(name, "PHASEGENT_NOTIFY_EMAIL_PASSWORD")
+}
+
 pub fn is_role_scoped_setting(name: &str) -> bool {
     !is_global_setting(name)
 }

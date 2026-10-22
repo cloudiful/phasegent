@@ -86,6 +86,35 @@ pub fn is_notify_secret(canonical: &str) -> bool {
     )
 }
 
+/// Effective SMTP transport security. `Auto` is resolved from the port by
+/// [`resolve_email_tls`]; the explicit variants always override the port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "notify-email"), allow(dead_code))]
+pub enum EmailTlsSelection {
+    Implicit,
+    StartTls,
+    Plain,
+}
+
+/// Resolve the effective TLS mode. Unset and `auto` select implicit TLS on
+/// port 465 and required STARTTLS on every other or absent port; explicit
+/// `implicit`, `starttls`, and `plain` keep their port-independent meaning.
+/// Kept independent of the `notify-email` feature so offline tests can cover
+/// the matrix without a delivery build.
+#[cfg_attr(not(feature = "notify-email"), allow(dead_code))]
+pub fn resolve_email_tls(mode: Option<&str>, port: Option<u16>) -> EmailTlsSelection {
+    let normalised = mode.map(str::trim).map(str::to_ascii_lowercase);
+    match normalised.as_deref() {
+        Some("implicit") => EmailTlsSelection::Implicit,
+        Some("starttls") => EmailTlsSelection::StartTls,
+        Some("plain") => EmailTlsSelection::Plain,
+        _ => match port {
+            Some(465) => EmailTlsSelection::Implicit,
+            _ => EmailTlsSelection::StartTls,
+        },
+    }
+}
+
 /// Load the effective notify config: env wins, SQLite fills gaps.
 /// Returns `Ok(None)` when notifications are disabled or unconfigured
 /// so callers stay silent and preserve existing CLI behaviour.
@@ -244,10 +273,10 @@ fn validate_for_channel(config: &NotifyConfig) -> Result<(), String> {
                 return Err("PHASEGENT_NOTIFY_EMAIL_TO is required for channel email".to_owned());
             }
             if let Some(tls) = config.email_tls.as_deref()
-                && !matches!(tls, "implicit" | "starttls" | "plain")
+                && !matches!(tls, "auto" | "implicit" | "starttls" | "plain")
             {
                 return Err(format!(
-                    "invalid PHASEGENT_NOTIFY_EMAIL_TLS '{tls}'; expected implicit, starttls, or plain"
+                    "invalid PHASEGENT_NOTIFY_EMAIL_TLS '{tls}'; expected auto, implicit, starttls, or plain"
                 ));
             }
         }

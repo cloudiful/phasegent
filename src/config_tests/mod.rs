@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 mod config_snapshot;
 mod index_backend;
 mod index_backend_validation;
+mod notify_email;
 mod parse_show;
 mod project_list;
 mod provider_default;

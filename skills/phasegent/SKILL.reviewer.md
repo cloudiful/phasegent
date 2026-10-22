@@ -51,7 +51,8 @@ scope, and help lookup.
   never relation or repo writes, and never the `admin` group: it is
   human-operator only.
 - Never commit, push, tag, or mutate refs.
-- `notify send` is manual-only, never automatic.
+- Your own `notify send` calls stay explicit; the adapter separately notifies on
+  new pending question forms, so you gain no autonomous sending.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 
