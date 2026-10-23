@@ -344,17 +344,12 @@ pub(crate) fn fallback_or_provider_error(
         data_source: "local_index".to_owned(),
         stale: true,
     };
-    eprintln!(
-        "{}",
-        serde_json::json!({
-            "warning": {
-                "operation": "issue search",
-                "message": format!(
-                    "provider search unavailable; returning {} stale local result(s)",
-                    envelope.items.len()
-                ),
-            }
-        })
+    crate::cli::report_local_warnings(
+        "issue search",
+        Some(format!(
+            "provider search unavailable; returning {} stale local result(s)",
+            envelope.items.len()
+        )),
     );
     crate::cli::print_json(&envelope)
 }

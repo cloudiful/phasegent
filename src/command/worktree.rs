@@ -237,6 +237,10 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
     let json_flag = has_flag(args, "--json");
     let explicit_format =
         optional_option(args, "--format").map(|value| value.trim().to_ascii_lowercase());
+    // The legacy format selection. The stored default is `"text"`, but the
+    // effective output format follows the global `--output` selection unless a
+    // legacy format was requested explicitly; the parser records which case
+    // applies.
     let format = match (explicit_format, json_flag) {
         (Some(value), _) if value != "text" && value != "json" => {
             return Err("worktree prune --format must be 'text' or 'json'".to_owned());
@@ -607,7 +611,10 @@ mod tests {
                 assert!(!release_stale, "--release-stale must default off");
                 assert!(!remove, "--remove must default off");
                 assert!(!dry_run, "prune defaults to removal, not preview");
-                assert_eq!(format, "text");
+                assert_eq!(
+                    format, "text",
+                    "the stored legacy default stays text; the effective format follows the global output mode"
+                );
                 assert_eq!(reason, None);
                 assert!(!no_sync, "--no-sync must default off");
             }

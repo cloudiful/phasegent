@@ -97,6 +97,25 @@ phasegent doctor
 
 Branch links are local-only and read-only: `issue status` shows the current branch with its linked issues and cached state, and `issue branches N` lists every branch linked to that issue across all scopes in this repository.
 
+## Output
+
+Every command writes its result on stdout and diagnostics on stderr, in one of
+two formats selected by `--output auto|text|json` (default `auto`): `auto` uses
+human text for an interactive human terminal and the stable JSON document
+everywhere else (a pipe, CI, or any agent role). `--no-progress` disables the
+stderr spinner without changing warnings or errors. `--help` and `--version`
+always print text.
+
+```sh
+phasegent issue get 123                    # text in a terminal, JSON in a pipe
+phasegent --output text issue get 123      # force the human view
+phasegent --output json issue get 123      # force the machine document
+```
+
+The JSON key sets are stable, and the text views are curated per command. The
+legacy `--format`/`--json` flags on the commands that document them still work.
+See [docs/cli-output.md](docs/cli-output.md).
+
 Use `--provider redmine` or `--provider local` on a command when the selected
 provider is not the default. Use `--project-id ID` to override project
 discovery when required; `--repository OWNER/REPOSITORY` names the Git host
@@ -188,11 +207,12 @@ decided before the running-session query, so a main-checkout or dirty directory
 makes zero host calls; because prune's runtime-host dependency is explicit, an
 unavailable, malformed, mismatched, or non-absolute running-session answer keeps
 even a pure-CLI candidate, and the human failure count covers only failed
-`git worktree remove` calls rather than host anomalies. Default output is concise text
-with directory-based counts; `--json` selects the machine-readable aggregate.
-A few progress lines stream to stderr — flushed before the running-session and
-closure checks so a long scan is visibly working — while stdout keeps the final
-text or the single JSON document. Invocations wrapped in a transparent `timeout`,
+`git worktree remove` calls rather than host anomalies. Output follows the
+global `--output` selection: the concise text summary with directory-based
+counts on a human terminal, the machine-readable aggregate on a pipe or with
+`--json`. On an interactive terminal a progress spinner shows the scan and the
+per-removal check and is cleared before the result; stdout keeps the final text
+or the single JSON document. Invocations wrapped in a transparent `timeout`,
 `env`, or `command` still receive the managed agent role.
 See [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
 

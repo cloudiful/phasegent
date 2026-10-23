@@ -166,6 +166,8 @@ fn root_help_is_short_and_points_at_deep_pages() {
         "--repository",
         "--project-id",
         "--close-status-id",
+        "--output <MODE>",
+        "--no-progress",
         "-h, --help",
         "-V, --version",
     ] {
@@ -174,6 +176,62 @@ fn root_help_is_short_and_points_at_deep_pages() {
             "root help missing global option {option:?}; got:\n{stdout}",
         );
     }
+}
+
+/// The command index is grouped, every visible command sits in exactly one
+/// group, and the page advertises the presentation switches and the output
+/// contract. Grouping is presentation only: the registry still decides which
+/// rows a role or provider can see.
+#[test]
+fn root_help_groups_the_command_index_and_advertises_the_output_contract() {
+    let output = run_help(&["--provider", "redmine", "--help"]);
+    assert!(output.status.success(), "--help exited non-zero");
+    let stdout = stdout_text(&output);
+
+    let mut previous = 0;
+    for title in [
+        "Work items:",
+        "Orchestration:",
+        "Configuration and operations:",
+        "Meta:",
+    ] {
+        let at = stdout
+            .find(title)
+            .unwrap_or_else(|| panic!("root help missing group {title:?};\n{stdout}"));
+        assert!(
+            at >= previous,
+            "root help must keep the group order at {title:?};\n{stdout}",
+        );
+        previous = at;
+    }
+
+    let rows = root_rows(&stdout);
+    for command in [
+        "issue", "comment", "record", "project", "status", "version", "relation", "timer",
+        "worktree", "admin", "config", "notify", "doctor", "hooks", "plugin",
+    ] {
+        assert_eq!(
+            rows.iter().filter(|row| row.as_str() == command).count(),
+            1,
+            "{command:?} must appear in exactly one group; rows: {rows:?}",
+        );
+    }
+    assert_eq!(
+        rows.len(),
+        15,
+        "the redmine superset lists every command once; rows: {rows:?}",
+    );
+
+    for option in ["--output <MODE>", "--no-progress"] {
+        assert!(
+            stdout.contains(option),
+            "root help missing presentation option {option:?};\n{stdout}",
+        );
+    }
+    assert!(
+        stdout.contains("docs/cli-output.md"),
+        "root help must point at the output contract;\n{stdout}",
+    );
 }
 
 /// Root help rendered with a Redmine provider filter must still
@@ -450,6 +508,29 @@ fn has_root_row(stdout: &str, name: &str) -> bool {
     stdout
         .lines()
         .any(|line| line.trim_start().starts_with(&prefix))
+}
+
+/// The command rows of the root overview in print order. A row is an indented
+/// lowercase command name followed by a description column; the unindented
+/// group titles and the `--` option rows never match.
+fn root_rows(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("  ")?;
+            let name = rest.split_whitespace().next()?;
+            if name.starts_with('-')
+                || !name
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '-')
+            {
+                return None;
+            }
+            rest[name.len()..]
+                .starts_with("  ")
+                .then(|| name.to_owned())
+        })
+        .collect()
 }
 
 /// Phase 2: a role's root help lists only commands that role can run, and a

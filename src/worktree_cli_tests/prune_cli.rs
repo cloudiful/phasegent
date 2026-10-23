@@ -493,10 +493,11 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
     // Actual actions print with their paths and explanations.
     assert!(text.contains("removed /tmp/repo-a/wt"), "got: {text}");
     assert!(text.contains("prunable /tmp/repo-a/wt2"), "got: {text}");
-    // A kept directory is aggregated, never listed with its path.
+    // A kept directory is listed with the reason it was kept, so a reader
+    // knows what still blocks the removal.
     assert!(
-        !text.contains("wt-kept"),
-        "kept rows are aggregated: {text}"
+        text.contains("kept /tmp/repo-a/wt-kept:"),
+        "kept rows carry their reason: {text}"
     );
     // No per-repository headings or counts in the compact default.
     assert!(
@@ -513,9 +514,9 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
     );
     assert!(text.contains("skipped repositories: 1"), "got: {text}");
     assert!(text.contains("elapsed 1.234s"), "got: {text}");
-    // The default is bounded regardless of repository count.
+    // The default stays bounded: one line per action plus the summary lines.
     assert!(
-        text.lines().count() <= 8,
+        text.lines().count() <= 10,
         "bounded output, got {} lines: {text}",
         text.lines().count()
     );
@@ -666,17 +667,20 @@ fn prune_compact_text_is_bounded_across_many_repositories() {
         totals,
     };
     let text = render_text(&aggregate, std::time::Duration::from_millis(42));
+    // The report stays bounded by the number of actionable rows: one line per
+    // kept directory plus the summary lines.
     assert!(
-        text.lines().count() <= 8,
-        "19 no-op repositories must stay <=8 lines, got {}: {text}",
+        text.lines().count() <= 19 + 5,
+        "19 repositories must stay bounded, got {}: {text}",
         text.lines().count()
     );
     assert!(
         text.contains("removed 0, eligible 0, absent 19, kept 38, removal failures 0"),
         "got: {text}"
     );
-    // Kept and absent paths are aggregated, never listed.
-    assert!(!text.contains("kept-a"), "got: {text}");
+    // A kept directory is listed with its reason; an absent directory is
+    // reported by the counts only.
+    assert!(text.contains("kept /tmp/repo-0/kept-a:"), "got: {text}");
     assert!(!text.contains("absent /tmp"), "got: {text}");
 }
 
@@ -1023,5 +1027,45 @@ fn cli_prune_keeps_a_directory_at_invocation_start_active_after_recovery() {
     assert!(
         !retained_target.exists(),
         "the released + closed + clean candidate is removed"
+    );
+}
+
+/// The prune follows the resolved output format. Without a scoped run the
+/// explicit legacy parameter decides; inside a scoped run the scope carries
+/// the resolved global format and the explicit legacy override.
+#[test]
+fn the_prune_output_format_follows_the_resolved_context() {
+    use crate::output::context::{OutputMode, OutputOptions, OutputSelection, effective_mode};
+    use crate::policy::CallerContext;
+
+    // Without a scope the explicit parameter is the only signal.
+    assert_eq!(effective_mode("json"), OutputMode::Json);
+    assert_eq!(effective_mode("text"), OutputMode::Text);
+
+    // A scoped run decides: the scope carries the resolved global format and
+    // the explicit legacy override.
+    let options = OutputOptions {
+        selection: OutputSelection::Text,
+        no_progress: false,
+        legacy: Some(OutputMode::Json),
+    };
+    let _scope = crate::output::context::install(&options, Some(CallerContext::Operator));
+    assert_eq!(
+        effective_mode("json"),
+        OutputMode::Json,
+        "an explicit legacy override wins over the global format"
+    );
+    drop(_scope);
+
+    let options = OutputOptions {
+        selection: OutputSelection::Text,
+        no_progress: false,
+        legacy: None,
+    };
+    let _scope = crate::output::context::install(&options, Some(CallerContext::Operator));
+    assert_eq!(
+        effective_mode("text"),
+        OutputMode::Text,
+        "the resolved global format decides without a legacy override"
     );
 }

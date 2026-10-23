@@ -38,6 +38,9 @@ mod workflow;
 mod worktree;
 mod worktree_args;
 
+#[cfg(test)]
+pub(crate) use argv::caller_from;
+pub(crate) use argv::caller_from_env;
 #[allow(unused_imports)] // public parser entry used by the fuzz harness
 pub use argv::parse;
 #[cfg(test)]
@@ -48,6 +51,7 @@ pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use argv::{parse_outcome_with_caller_env, parse_with_caller_env};
+pub(crate) use global_options::prescan_presentation;
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
 pub use local_args::{NotifyCommand, PluginCommand};
 pub(crate) use parse_helpers::{has_flag, optional_option};
@@ -72,6 +76,10 @@ pub struct Invocation {
     pub project_id: Option<String>,
     pub close_status_id: Option<String>,
     pub close_status_name: Option<String>,
+    /// The presentation options of this run: the global `--output`
+    /// selection, the progress switch, and an explicit legacy per-command
+    /// format that overrides the global selection for that command.
+    pub output: crate::output::context::OutputOptions,
     pub command: Command,
 }
 

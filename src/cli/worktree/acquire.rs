@@ -112,6 +112,7 @@ pub(super) fn execute_acquire(
     };
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let runner = ProcessWorktreeRunner::new();
+    crate::output::progress::stage("worktree acquire: preparing the worktree");
     match crate::worktree::acquire_lease_with(
         &runner,
         &repo_path,

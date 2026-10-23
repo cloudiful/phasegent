@@ -1,9 +1,11 @@
 /// Worktree lease management (issue #239 Phase 2).
 ///
 /// * `acquire` returns a `(lease_id, path, branch, repo_identity,
-///   created, reason)` JSON envelope (`reason ∈ {idempotent,
+///   created, reason)` envelope (`reason ∈ {idempotent,
 ///   no_conflict, new_worktree}`) on stdout; the same session triple
-///   reuses the prior lease. An explicit `--base REF` skips the reuse /
+///   reuses the prior lease. The envelope is the machine JSON document or
+///   its readable rendering, following the global output mode. An explicit
+///   `--base REF` skips the reuse /
 ///   conflict decision table (after the idempotent home-coming) and
 ///   creates a fresh worktree/branch from `REF`. Orchestrator-only.
 /// * `release` flips the lease to `retained` (default) or `released`.
@@ -21,7 +23,7 @@
 ///   lease, or syncs. Read-only; available to orchestrator, executor,
 ///   and reviewer.
 /// * `prune [--repo PATH] [--stale-days N] [--release-stale --reason
-///   TEXT] [--dryrun] [--json|--format json] [--remove] [--no-sync]` is
+///   TEXT] [--dryrun] [--json|--format text|json] [--remove] [--no-sync]` is
 ///   the single pruning entry point (folds the former `release-stale`).
 ///   Removal is the default and covers every repository identity the
 ///   local lease store records; `--repo PATH` restricts the pass to one
@@ -31,11 +33,13 @@
 ///   stale active leases to `retained`; the directory pass then removes
 ///   clean + expired + retained worktrees that pass the shared candidate
 ///   guards (never the main checkout, never an active peer's path, never
-///   dirty, never a directory the OpenCode host still occupies). `--json`
-///   / `--format json` select the machine-readable aggregate; the default
-///   is concise English text. `--remove` is an accepted compatibility
-///   no-op and `--no-sync` is accepted but no longer runs a sync pass.
-///   Branches are never deleted; only `git worktree remove` (no
+///   dirty, never a directory the OpenCode host still occupies). The output
+///   format follows the global `--output auto|text|json` selection;
+///   `--json` / `--format json` select the machine-readable aggregate and
+///   `--format text` the concise English text, and an explicit legacy
+///   selection wins over the automatic default. `--remove` is an accepted
+///   compatibility no-op and `--no-sync` is accepted but no longer runs a
+///   sync pass. Branches are never deleted; only `git worktree remove` (no
 ///   `--force`) is invoked. Orchestrator-only.
 /// * `heartbeat --lease ID [--session SESSION]` refreshes the heartbeat
 ///   of an active lease, but only when the resolved session owns the
@@ -111,8 +115,10 @@ pub enum WorktreeCommand {
         /// Explicit read-only preview (`--dryrun`/`--dry-run`): classify and
         /// report without mutating any directory or lease row.
         dry_run: bool,
-        /// Output selection: `"text"` (default, concise English) or `"json"`
-        /// (explicit machine-readable, via `--json` or `--format json`).
+        /// The legacy output selection of the prune: `"text"` (the parse-time
+        /// default) or `"json"` (an explicit `--json` or `--format json`).
+        /// The effective format follows the resolved global output mode
+        /// unless a legacy format was requested explicitly.
         format: String,
         no_sync: bool,
     },

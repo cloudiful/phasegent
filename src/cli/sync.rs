@@ -241,6 +241,7 @@ pub(crate) fn execute_sync_with_caller(
         mode,
         cwd: &cwd,
     };
+    crate::output::progress::stage("issue sync: reconciling the worktree leases");
     match run_sync(&provider, &ProcessWorktreeRunner::new(), &storage, request) {
         Ok(report) => print_json(&report),
         Err(error) => crate::cli::provider_error(error),

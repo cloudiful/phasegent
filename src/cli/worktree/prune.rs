@@ -1,7 +1,7 @@
 //! Executor and execution model for `worktree prune`.
 //!
-//! `worktree prune` is a global cleanup with a concise human-readable default
-//! and an explicit machine-readable mode:
+//! `worktree prune` is a global cleanup whose output follows the global
+//! output mode and keeps an explicit machine-readable selection:
 //!
 //! * Without `--repo` the pass enumerates every repository identity the local
 //!   lease store records (even outside Git) and resolves each through its main
@@ -9,8 +9,13 @@
 //!   of guessing. `--repo PATH` restricts the pass to one verified checkout.
 //! * Removal is the default; `--dryrun`/`--dry-run` is the read-only preview
 //!   that mutates nothing.
-//! * The default stdout is concise English text; `--json` / `--format json`
-//!   selects the aggregate JSON envelope.
+//! * The output format follows the global `--output auto|text|json`
+//!   selection: the automatic default reads the machine document on a pipe and
+//!   for every agent role, and the concise English text on a human terminal.
+//!   `--json` / `--format json` selects the aggregate JSON envelope and
+//!   `--format text` the English text; an explicit legacy selection wins over
+//!   the automatic default and is rejected when it contradicts an explicit
+//!   global `--output`.
 //!
 //! Since issue 916 a managed worktree is removed as soon as every issue it is
 //! associated with is *confirmed closed* and no `active` lease references it —
@@ -34,6 +39,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
+use crate::output::context::OutputMode;
 use crate::policy::Role;
 use crate::worktree::leases::{
     ensure_schema, list_all_for_repo, recover_stale_active_leases, repo_identities,
@@ -63,15 +69,10 @@ pub(crate) use worktrees::{
 
 use leases::{stale_recovery_summary, stale_scan_summary};
 
-use std::io::Write;
-
-/// Write one concise, flushed `worktree prune:` progress notice to stderr, so
-/// a caller watching the terminal sees work begin before a slow host or
-/// issue-state check; stdout stays reserved for the final text or JSON
-/// document. Tests inject their own `&dyn Fn(&str)` sink.
+/// Report one progress notice of the prune pass. The notice updates the
+/// progress ticker of a human run; a machine run never sees a progress line.
 fn stderr_note(message: &str) {
-    eprintln!("worktree prune: {message}");
-    let _ = std::io::stderr().flush();
+    crate::output::progress::stage(&format!("worktree prune: {message}"));
 }
 
 /// Aggregate counts across every repository of one prune invocation, so the
@@ -361,12 +362,21 @@ pub(crate) fn execute_prune_with_source(
     };
     let failures = aggregate.totals.failed;
     let failure_code = i32::from(failures > 0);
-    if format == "json" {
-        if print_json(&aggregate) != 0 {
-            return 1;
+    // The emitter follows the resolved output format. The scoped context
+    // carries the global resolution and an explicit legacy override, so the
+    // prune never decides its own format.
+    match crate::output::context::effective_mode(format) {
+        OutputMode::Json => {
+            if print_json(&aggregate) != 0 {
+                return 1;
+            }
         }
-    } else {
-        println!("{}", render_text(&aggregate, started.elapsed()));
+        OutputMode::Text => {
+            // The ticker is cleared before the result, so the live spinner
+            // never overlaps the summary on an interactive terminal.
+            crate::output::progress::clear();
+            println!("{}", render_text(&aggregate, started.elapsed()));
+        }
     }
     // A genuine removal failure keeps a non-zero exit in both output modes;
     // safety skips are not failures.
@@ -451,86 +461,21 @@ fn resolve_known_identity(runner: &ProcessWorktreeRunner, identity: String) -> S
     }
 }
 
-/// Compact English default output: one heading, one line per actual removal or
-/// removal failure (and one per eligible preview row), one aggregate summary,
-/// one kept-reason counts line, a compact skipped-repository count when
-/// nonzero, and the measured elapsed time.
+/// The text rendering of one prune pass: the curated report and the measured
+/// elapsed time.
 ///
-/// Per-repository headings, per-repository counts, and per-path kept rows are
-/// deliberately absent: the default is bounded regardless of repository count,
-/// and `--json` remains the complete-detail inspection channel. Kept directories
-/// are aggregated, never listed, so a main-checkout or dirty path never pads the
-/// output; a genuine removal failure still prints with its path and reason. A
-/// preview labels eligible rows `prunable` and never as removed.
+/// The report names what happened: the removals, the removals that failed,
+/// the directories that were kept and why they were kept, the aggregate
+/// counts, and the skipped repositories. The elapsed time is a measured
+/// local fact and never a machine field.
 pub(crate) fn render_text(aggregate: &PruneAggregate, elapsed: Duration) -> String {
-    let mode = if aggregate.dry_run {
-        "dry-run preview"
-    } else {
-        "removal"
-    };
-    let mut lines = vec![format!("worktree prune ({mode})")];
-    if aggregate.repos.is_empty() {
-        lines.push("no repositories with recorded worktree leases".to_owned());
-    }
-    // Actual actions only: removals, removal failures, and (in a preview) the
-    // eligible rows. Kept directories are aggregated below, never listed.
-    for repo in &aggregate.repos {
-        let Some(worktrees) = &repo.worktrees else {
-            continue;
-        };
-        for action in &worktrees.actions {
-            let label = match action.result.as_str() {
-                "pruned" => "removed",
-                "failed" => "failed",
-                "prunable" => "prunable",
-                _ => continue,
-            };
-            let mut line = format!("{label} {}", action.worktree_path);
-            if let Some(reason) = action.message.as_deref().filter(|text| !text.is_empty()) {
-                line.push_str(&format!(": {reason}"));
-            }
-            lines.push(line);
-        }
-    }
-    let totals = &aggregate.totals;
-    // The failure count scopes to failed `git worktree remove` calls only; a kept
-    // or protected directory also covers an unproven host answer and is not
-    // evidence of no anomaly.
-    lines.push(format!(
-        "removed {}, eligible {}, absent {}, kept {}, removal failures {}",
-        totals.removed,
-        totals.eligible,
-        totals.absent,
-        totals.kept_active + totals.kept_unknown + totals.kept_protected + totals.kept_issue,
-        totals.failed
-    ));
-    lines.push(format!(
-        "kept reasons: active {}, protected {}, issue-state {}, unknown {}",
-        totals.kept_active, totals.kept_protected, totals.kept_issue, totals.kept_unknown
-    ));
-    // Recovery output stays visible in the compact aggregate: a nonzero stale
-    // candidate or released count is reported even though the per-lease rows
-    // move to --json.
-    let (stale_candidates, released) = aggregate
-        .repos
-        .iter()
-        .filter_map(|repo| repo.leases.as_ref())
-        .fold((0usize, 0usize), |(candidates, released), leases| {
-            (candidates + leases.candidates, released + leases.released)
-        });
-    if stale_candidates > 0 || released > 0 {
-        lines.push(format!(
-            "leases: {stale_candidates} stale candidate(s), {released} released"
-        ));
-    }
-    let skipped = aggregate
-        .repos
-        .iter()
-        .filter(|repo| repo.skipped_reason.is_some())
-        .count();
-    if skipped > 0 {
-        lines.push(format!("skipped repositories: {skipped}"));
-    }
-    lines.push(format!("elapsed {:.3}s", elapsed.as_secs_f64().max(0.0)));
-    lines.join("\n")
+    let context = crate::output::context::current_or_default();
+    let value = serde_json::to_value(aggregate).unwrap_or(serde_json::Value::Null);
+    let mut text = crate::output::human::render(
+        crate::output::context::HumanView::WorktreePrune,
+        &value,
+        &context,
+    );
+    text.push_str(&format!("\nelapsed {:.3}s", elapsed.as_secs_f64().max(0.0)));
+    text
 }

@@ -4,6 +4,12 @@ Ordinary `phasegent` CLI needs no agent role. The caller context is routing
 policy, not authenticated human identity; host permissions and credential
 isolation remain required for actual security.
 
+Presentation is not identity: the `--output` mode and the progress line are
+resolved from this same caller context plus the terminal state, and they change
+only what the CLI prints. A terminal never promotes an agent to a human, never
+grants Operator authority, and never selects a credential. See
+[cli-output.md](cli-output.md) for the format matrix and the progress rules.
+
 - **Operator** — no `PHASEGENT_ROLE` and neither managed marker
   (`PHASEGENT_SESSION_ID` nor host `OPENCODE_SESSION_ID`). This is the
   ordinary human CLI. It may run all ordinary business and administrative

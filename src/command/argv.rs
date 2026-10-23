@@ -1,10 +1,11 @@
 use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
-    Command, HelpTopic, Invocation, IssueCommand, admin, auth, comment, config, help_topic, hooks,
-    issue, notify, plugin, project, record, registry, relation, status, timer, version, workflow,
-    worktree,
+    Command, HelpTopic, Invocation, IssueCommand, WorktreeCommand, admin, auth, comment, config,
+    help_topic, hooks, issue, notify, plugin, project, record, registry, relation, status, timer,
+    version, workflow, worktree,
 };
+use crate::output::context::{OutputMode, OutputOptions, OutputSelection};
 use crate::policy::{CallerContext, Role};
 
 /// Parse the process argv, resolving the role from the `PHASEGENT_ROLE`
@@ -53,10 +54,36 @@ pub(crate) fn parse_outcome(args: &[String]) -> Result<ParseOutcome, String> {
     // present); a non-Unicode role is an argument error, never absent.
     // Pure tests inject `&str` via `parse_outcome_with_caller_env` and stay
     // deterministic.
+    parse_outcome_for_caller(args, caller_from_env()?)
+}
+
+/// Resolve the invocation caller from the process environment. The parser and
+/// the presentation pre-scan share this resolution, so both agree on the same
+/// caller context and neither re-decides a permission.
+pub(crate) fn caller_from_env() -> Result<CallerContext, String> {
     let role = crate::policy::role_from_env()?;
-    let session_present = crate::policy::session_present();
-    let role_env = role.map(|role| role.as_str().to_owned());
-    parse_outcome_with_caller_env(args, role_env.as_deref(), session_present)
+    Ok(CallerContext::from_role_and_session(
+        role,
+        crate::policy::session_present(),
+    ))
+}
+
+/// Resolve the invocation caller from an injected role value and the managed
+/// session marker.
+pub(crate) fn caller_from(
+    role_env: Option<&str>,
+    session_present: bool,
+) -> Result<CallerContext, String> {
+    let role = role_env
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<Role>()
+                .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))
+        })
+        .transpose()?;
+    Ok(CallerContext::from_role_and_session(role, session_present))
 }
 
 /// Role-injectable parser used by legacy unit tests. `role_env`
@@ -69,16 +96,25 @@ pub(crate) fn parse_outcome_with_role_env(
     args: &[String],
     role_env: Option<&str>,
 ) -> Result<ParseOutcome, String> {
-    parse_outcome_with_caller_env(args, role_env, false)
+    parse_outcome_for_caller(args, caller_from(role_env, false)?)
 }
 
 /// Fully injectable parser: `role_env` models `PHASEGENT_ROLE` and
 /// `session_present` models `PHASEGENT_SESSION_ID` presence (even blank).
 /// Pure unit tests use this so parallel assertions never read global env.
+#[allow(dead_code)] // used by the cfg(test) caller-injectable entry point
 pub(crate) fn parse_outcome_with_caller_env(
     args: &[String],
     role_env: Option<&str>,
     session_present: bool,
+) -> Result<ParseOutcome, String> {
+    parse_outcome_for_caller(args, caller_from(role_env, session_present)?)
+}
+
+/// Parse the argv against an already resolved caller.
+pub(crate) fn parse_outcome_for_caller(
+    args: &[String],
+    caller: CallerContext,
 ) -> Result<ParseOutcome, String> {
     // Role context comes only from `PHASEGENT_ROLE`, which a managed session
     // exports for its child processes. A blank value means "not provided", but
@@ -87,16 +123,7 @@ pub(crate) fn parse_outcome_with_caller_env(
     // (even blank counts as present) and selects unmanaged Operator vs
     // managed-missing fail-closed; it is never TTY detection and never an
     // identity claim.
-    let role = role_env
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value
-                .parse::<Role>()
-                .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))
-        })
-        .transpose()?;
-    let caller = CallerContext::from_role_and_session(role, session_present);
+    let role = caller.role();
 
     if args.is_empty() {
         return Ok(ParseOutcome::invocation(Invocation {
@@ -108,6 +135,7 @@ pub(crate) fn parse_outcome_with_caller_env(
             project_id: None,
             close_status_id: None,
             close_status_name: None,
+            output: OutputOptions::default(),
             command: Command::Help(HelpTopic::Root),
         }));
     }
@@ -118,6 +146,8 @@ pub(crate) fn parse_outcome_with_caller_env(
     let mut project_id = None;
     let mut close_status_id = None;
     let mut close_status_name = None;
+    let mut output_selection: Option<OutputSelection> = None;
+    let mut no_progress = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -138,6 +168,11 @@ pub(crate) fn parse_outcome_with_caller_env(
                     project_id,
                     close_status_id,
                     close_status_name,
+                    output: OutputOptions {
+                        selection: output_selection.unwrap_or(OutputSelection::Auto),
+                        no_progress,
+                        legacy: None,
+                    },
                     command: Command::Help(topic),
                 }));
             }
@@ -151,6 +186,11 @@ pub(crate) fn parse_outcome_with_caller_env(
                     project_id,
                     close_status_id,
                     close_status_name,
+                    output: OutputOptions {
+                        selection: output_selection.unwrap_or(OutputSelection::Auto),
+                        no_progress,
+                        legacy: None,
+                    },
                     command: Command::Version,
                 }));
             }
@@ -177,6 +217,18 @@ pub(crate) fn parse_outcome_with_caller_env(
             "--close-status-name" => {
                 close_status_name = Some(required_value(args, index, "--close-status-name")?);
                 index += 2;
+            }
+            "--output" => {
+                let value = required_value(args, index, "--output")?;
+                output_selection = Some(merge_output(
+                    output_selection,
+                    OutputSelection::parse(&value)?,
+                )?);
+                index += 2;
+            }
+            "--no-progress" => {
+                no_progress = true;
+                index += 1;
             }
             // Inline `--option=value` form is accepted as an escape hatch for values
             // that begin with `-` (Markdown bullets, separator lines, negative lookups).
@@ -213,6 +265,14 @@ pub(crate) fn parse_outcome_with_caller_env(
                     index += 1;
                     continue;
                 }
+                if let Some(parsed) = split_inline(value, "--output") {
+                    output_selection = Some(merge_output(
+                        output_selection,
+                        OutputSelection::parse(&parsed)?,
+                    )?);
+                    index += 1;
+                    continue;
+                }
                 return Err(format!("unknown option '{value}'"));
             }
             value if value.starts_with('-') => return Err(format!("unknown option '{value}'")),
@@ -223,6 +283,25 @@ pub(crate) fn parse_outcome_with_caller_env(
     let command = args.get(index).ok_or("a command is required")?;
     let rest = &args[index + 1..];
     let command = parse_command(command, rest).map_err(with_global_option_hint)?;
+    // A legacy per-command format flag and an explicit global `--output` must
+    // agree. The conflict is rejected here, at parse time, before any storage
+    // or host work; an automatic `--output` defers to the legacy flag.
+    let legacy = legacy_format_override(&command, rest);
+    if let (Some(selection), Some(legacy)) = (output_selection, legacy)
+        && selection != OutputSelection::Auto
+    {
+        let global = match selection {
+            OutputSelection::Text => OutputMode::Text,
+            OutputSelection::Json | OutputSelection::Auto => OutputMode::Json,
+        };
+        if global != legacy {
+            return Err(format!(
+                "worktree prune --format {} conflicts with --output {}",
+                legacy.as_str(),
+                selection.as_str()
+            ));
+        }
+    }
     // Context-aware parser gate: an explicit Agent role consults the registry
     // as the single source of truth, so a denied command fails here with the
     // stable permission error instead of being accepted and rejected by the
@@ -295,8 +374,56 @@ pub(crate) fn parse_outcome_with_caller_env(
         project_id,
         close_status_id,
         close_status_name,
+        output: OutputOptions {
+            selection: output_selection.unwrap_or(OutputSelection::Auto),
+            no_progress,
+            legacy,
+        },
         command,
     }))
+}
+
+/// A repeated `--output` is only accepted with the same value; a
+/// contradictory duplicate is a parser error before any side effect.
+fn merge_output(
+    previous: Option<OutputSelection>,
+    next: OutputSelection,
+) -> Result<OutputSelection, String> {
+    match previous {
+        Some(previous) if previous != next => {
+            Err("--output must not be given twice with different values".to_owned())
+        }
+        _ => Ok(next),
+    }
+}
+
+/// The explicit legacy format of a parsed command, when the command carries
+/// one. `worktree prune` keeps its `--json`/`--format text|json` flags: an
+/// explicit legacy format wins over the automatic default, and a contradiction
+/// with an explicit global `--output` is rejected at parse time.
+fn legacy_format_override(command: &Command, rest: &[String]) -> Option<OutputMode> {
+    match command {
+        Command::Worktree(WorktreeCommand::Prune { format, .. }) => {
+            // The parse-time default and an explicit `--format text` share the
+            // same stored value, so the explicit request is recognized from
+            // the raw flags of the subcommand.
+            if !prune_legacy_flag_present(rest) {
+                return None;
+            }
+            Some(match format.as_str() {
+                "json" => OutputMode::Json,
+                _ => OutputMode::Text,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether the prune invocation carried an explicit legacy format flag.
+fn prune_legacy_flag_present(rest: &[String]) -> bool {
+    rest.iter().any(|token| {
+        token == "--json" || token == "--format" || split_inline(token, "--format").is_some()
+    })
 }
 
 /// Role-injectable entry point for tests that assert the accepted invocation.

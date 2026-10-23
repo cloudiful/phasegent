@@ -98,6 +98,8 @@ fn global_option_hint_only_matches_global_options() {
         "--repository",
         "--project-id",
         "--close-status-id",
+        "--output",
+        "--no-progress",
     ] {
         let error = parse_with_role_env(
             &args(&["issue", "bind", "42", token, "value"]),
@@ -109,6 +111,136 @@ fn global_option_hint_only_matches_global_options() {
             "token {token}: {error}"
         );
     }
+}
+
+/// The global output selection is accepted in both spellings, and an unknown
+/// value is a parser error before any side effect.
+#[test]
+fn output_selection_is_parsed_in_both_spellings() {
+    for (argv, expected) in [
+        (vec!["--output", "text"], OutputSelection::Text),
+        (vec!["--output=text"], OutputSelection::Text),
+        (vec!["--output", "json"], OutputSelection::Json),
+        (vec!["--output=json"], OutputSelection::Json),
+        (vec!["--output", "auto"], OutputSelection::Auto),
+        (vec!["--output=auto"], OutputSelection::Auto),
+    ] {
+        let mut full = argv.clone();
+        full.push("doctor");
+        let invocation = parse_with_role_env(&args(&full), Some("orchestrator"))
+            .unwrap_or_else(|error| panic!("{argv:?} must parse: {error}"));
+        assert_eq!(invocation.output.selection, expected, "argv {argv:?}");
+    }
+}
+
+/// An unknown or missing output value is a parser error.
+#[test]
+fn an_invalid_output_value_is_rejected() {
+    let error = parse_with_role_env(&args(&["--output", "yaml", "doctor"]), Some("orchestrator"))
+        .expect_err("an unknown output value must be rejected");
+    assert!(
+        error.contains("--output must be 'auto', 'text', or 'json'"),
+        "unexpected error: {error}"
+    );
+    let missing = parse_with_role_env(&args(&["--output"]), Some("orchestrator"))
+        .expect_err("a missing output value must be rejected");
+    assert!(
+        missing.contains("--output requires a value"),
+        "got: {missing}"
+    );
+}
+
+/// A repeated `--output` is accepted with the same value and rejected with a
+/// contradictory one.
+#[test]
+fn a_contradictory_output_duplicate_is_rejected() {
+    let same = parse_with_role_env(
+        &args(&["--output", "text", "--output", "text", "doctor"]),
+        Some("orchestrator"),
+    )
+    .expect("the same selection twice must parse");
+    assert_eq!(same.output.selection, OutputSelection::Text);
+    let error = parse_with_role_env(
+        &args(&["--output", "text", "--output", "json", "doctor"]),
+        Some("orchestrator"),
+    )
+    .expect_err("a contradictory duplicate must be rejected");
+    assert!(
+        error.contains("--output must not be given twice"),
+        "unexpected error: {error}"
+    );
+}
+
+/// `--no-progress` is a global flag and never changes the output format.
+#[test]
+fn no_progress_is_parsed_as_a_global_flag() {
+    let invocation = parse_with_role_env(&args(&["--no-progress", "doctor"]), Some("orchestrator"))
+        .expect("the progress switch must parse");
+    assert!(invocation.output.no_progress);
+    assert_eq!(invocation.output.selection, OutputSelection::Auto);
+}
+
+/// A misplaced global option still gets the placement hint.
+#[test]
+fn a_misplaced_output_option_hints_at_its_position() {
+    for token in ["--output", "--output=text", "--no-progress"] {
+        let error = parse_with_role_env(
+            &args(&["issue", "close", "42", token]),
+            Some("orchestrator"),
+        )
+        .expect_err("a misplaced global option must be rejected");
+        assert!(
+            error.contains("must come before the subcommand"),
+            "token {token}: {error}"
+        );
+    }
+}
+
+/// The prune keeps its legacy format flags, and a contradiction with an
+/// explicit global `--output` is rejected at parse time.
+#[test]
+fn the_prune_legacy_format_agrees_with_the_global_selection() {
+    let plain = parse_with_role_env(&args(&["worktree", "prune"]), Some("orchestrator"))
+        .expect("the default prune must parse");
+    assert_eq!(plain.output.legacy, None, "no legacy format is requested");
+    assert_eq!(plain.output.selection, OutputSelection::Auto);
+
+    let legacy_text = parse_with_role_env(
+        &args(&["worktree", "prune", "--format", "text"]),
+        Some("orchestrator"),
+    )
+    .expect("an explicit legacy format must parse");
+    assert_eq!(legacy_text.output.legacy, Some(OutputMode::Text));
+
+    let legacy_json = parse_with_role_env(
+        &args(&["worktree", "prune", "--json"]),
+        Some("orchestrator"),
+    )
+    .expect("an explicit legacy format must parse");
+    assert_eq!(legacy_json.output.legacy, Some(OutputMode::Json));
+
+    // A matching pair is accepted.
+    parse_with_role_env(
+        &args(&["--output", "text", "worktree", "prune", "--format", "text"]),
+        Some("orchestrator"),
+    )
+    .expect("a matching global and legacy format must parse");
+
+    // A contradictory pair is rejected before any storage or host work.
+    let error = parse_with_role_env(
+        &args(&["--output", "text", "worktree", "prune", "--format", "json"]),
+        Some("orchestrator"),
+    )
+    .expect_err("a contradictory format pair must be rejected");
+    assert!(error.contains("conflicts with --output"), "got: {error}");
+
+    // An automatic global selection defers to the legacy flag.
+    let automatic = parse_with_role_env(
+        &args(&["--output", "auto", "worktree", "prune", "--format", "json"]),
+        Some("orchestrator"),
+    )
+    .expect("an automatic selection must defer to the legacy flag");
+    assert_eq!(automatic.output.legacy, Some(OutputMode::Json));
 }
 
 /// Phase 2 registry gate: a role-denied command fails at parse time with the

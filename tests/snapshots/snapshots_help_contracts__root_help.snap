@@ -18,21 +18,30 @@ Options:
   --repository <O/R>     Override the Git host repository for bootstrap/discovery
   --project-id <ID>      Override the Redmine project id
   --close-status-id <ID> Override the Redmine closed status
+  --output <MODE>        Output mode: auto (default), text, or json
+  --no-progress          Disable the progress spinner
   -h, --help             Print help
   -V, --version          Print version
 
-Commands:
+Work items:
   issue                  Issue operations
   comment                Comment operations
   record                 Structured agent records: CLI-owned metadata header with a plain note body
+
+Orchestration:
+  worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)
+
+Configuration and operations:
   admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)
   config                 Local configuration (read-only show/get; writes live under admin)
+  notify                 Bounded agent notifications
+
+Meta:
   doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)
   hooks                  Managed Git hook installation
-  notify                 Bounded agent notifications
   plugin                 Managed OpenCode plugin installation
-  worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)
 
 Use 'phasegent --help <command>' for the next level.
 Provider resolution chain and machine-wide default: 'phasegent --help config provider'.
 Role and credential guidance: 'phasegent --help admin'.
+Output modes and the stable JSON contract: docs/cli-output.md.
