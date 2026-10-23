@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::worktree::{
-    LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, WorktreeRunner, canonical_or_self, same_directory,
+    CanonicalPaths, LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, WorktreeRunner,
 };
 
 /// Evaluate the local guards for one candidate row. `None` means the
@@ -21,30 +21,43 @@ pub(super) fn evaluate(
     session: Option<&str>,
     row: &LeaseRow,
 ) -> Option<String> {
-    let directory = PathBuf::from(&row.worktree_path);
-    match is_main_checkout(runner, &directory, identity) {
-        Ok(true) => return Some("main checkout is never removed".to_owned()),
-        Ok(false) => {}
-        Err(error) => {
+    CanonicalPaths::default().protected_reason(runner, identity, rows, session, row)
+}
+
+impl CanonicalPaths {
+    pub(crate) fn protected_reason(
+        &self,
+        runner: &dyn WorktreeRunner,
+        identity: &str,
+        rows: &[LeaseRow],
+        session: Option<&str>,
+        row: &LeaseRow,
+    ) -> Option<String> {
+        let directory = PathBuf::from(&row.worktree_path);
+        match is_main_checkout_with_paths(runner, &directory, identity, self) {
+            Ok(true) => return Some("main checkout is never removed".to_owned()),
+            Ok(false) => {}
+            Err(error) => {
+                return Some(format!(
+                    "could not verify the main-checkout guard: {}",
+                    crate::lifecycle::bounded(&error.message)
+                ));
+            }
+        }
+        if let Some(other) = foreign_active_lease(rows, session, row, self) {
             return Some(format!(
-                "could not verify the main-checkout guard: {}",
-                crate::lifecycle::bounded(&error.message)
+                "session '{}' holds an active lease for issue {}",
+                other.session, other.issue
             ));
         }
-    }
-    if let Some(other) = foreign_active_lease(rows, session, row) {
-        return Some(format!(
-            "session '{}' holds an active lease for issue {}",
-            other.session, other.issue
-        ));
-    }
-    match crate::worktree::is_clean(runner, &directory) {
-        Ok(true) => None,
-        Ok(false) => Some("uncommitted or untracked files".to_owned()),
-        Err(error) => Some(format!(
-            "cleanliness probe failed: {}",
-            crate::lifecycle::bounded(&error.message)
-        )),
+        match crate::worktree::is_clean(runner, &directory) {
+            Ok(true) => None,
+            Ok(false) => Some("uncommitted or untracked files".to_owned()),
+            Err(error) => Some(format!(
+                "cleanliness probe failed: {}",
+                crate::lifecycle::bounded(&error.message)
+            )),
+        }
     }
 }
 
@@ -60,12 +73,13 @@ fn foreign_active_lease<'a>(
     rows: &'a [LeaseRow],
     session: Option<&str>,
     row: &LeaseRow,
+    paths: &CanonicalPaths,
 ) -> Option<&'a LeaseRow> {
     let directory = Path::new(&row.worktree_path);
     rows.iter().find(|other| {
         other.status == LEASE_STATUS_ACTIVE
             && session != Some(other.session.as_str())
-            && same_directory(Path::new(&other.worktree_path), directory)
+            && paths.same_directory(Path::new(&other.worktree_path), directory)
     })
 }
 
@@ -79,6 +93,15 @@ pub(super) fn is_main_checkout(
     runner: &dyn WorktreeRunner,
     directory: &Path,
     identity: &str,
+) -> Result<bool, WorktreeError> {
+    is_main_checkout_with_paths(runner, directory, identity, &CanonicalPaths::default())
+}
+
+fn is_main_checkout_with_paths(
+    runner: &dyn WorktreeRunner,
+    directory: &Path,
+    identity: &str,
+    paths: &CanonicalPaths,
 ) -> Result<bool, WorktreeError> {
     let output = runner.run(&["rev-parse", "--git-dir"], directory)?;
     if output.status != 0 {
@@ -97,8 +120,7 @@ pub(super) fn is_main_checkout(
             "git rev-parse --git-dir returned an empty path",
         ));
     }
-    Ok(canonical_or_self(&resolve_against(directory, raw))
-        == canonical_or_self(Path::new(identity)))
+    Ok(paths.same_directory(&resolve_against(directory, raw), Path::new(identity)))
 }
 
 fn resolve_against(base: &Path, raw: &str) -> PathBuf {

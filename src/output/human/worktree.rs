@@ -13,14 +13,38 @@ use crate::output::render::Lines;
 
 /// The curated `worktree list` and `worktree status` rendering.
 pub(crate) fn render_lease_list(value: &Value, context: &OutputContext) -> String {
-    let Some(leases) = value.get("leases").and_then(Value::as_array) else {
+    let paged = value.get("page").is_some();
+    let Some(leases) = value
+        .get(if paged { "items" } else { "leases" })
+        .and_then(Value::as_array)
+    else {
         return super::generic::render(value, context);
     };
     let mut lines = Lines::new(context);
     lines.heading(&lease_summary(leases));
+    if paged {
+        if let Some(identity) = value.get("repo_identity").and_then(Value::as_str) {
+            lines.field(0, "Repository", identity);
+        }
+        if let Some(issue) = value.get("issue").and_then(Value::as_u64) {
+            lines.field(0, "Issue", &format!("#{issue}"));
+        }
+    }
     if leases.is_empty() {
         lines.blank();
-        lines.text(0, "No worktree leases are recorded for this scope.");
+        lines.text(
+            0,
+            if paged
+                && value
+                    .get("total_count")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|total| total > 0)
+            {
+                "No leases on this page."
+            } else {
+                "No worktree leases are recorded for this scope."
+            },
+        );
         return lines.finish();
     }
     lines.blank();

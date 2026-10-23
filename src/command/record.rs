@@ -33,12 +33,13 @@ pub(crate) fn parse_record(args: &[String]) -> Result<Command, String> {
             validate_options(
                 args,
                 1,
-                &["--kind", "--phase", "--recon"],
+                &["--kind", "--phase", "--recon", "--page", "--limit"],
                 &[],
                 "record list",
             )?;
             Ok(Command::Record(RecordCommand::List {
                 issue: positional_number(args, 1, "record list")?,
+                page: Some(page_request(args, "record list")?),
                 kind: optional_kind(args, "--kind", "record list")?,
                 phase: optional_nonempty_option(args, "--phase", "record list")?,
                 recon: optional_nonempty_option(args, "--recon", "record list")?,
@@ -249,7 +250,10 @@ mod tests {
                 kind,
                 phase,
                 recon,
+                page: Some(page),
             }) => {
+                assert_eq!(page.page(), 1);
+                assert_eq!(page.limit(), 50);
                 assert_eq!(issue, 7);
                 assert_eq!(kind.map(|kind| kind.as_str()), Some("recon"));
                 assert_eq!(phase, None);

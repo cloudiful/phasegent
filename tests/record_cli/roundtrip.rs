@@ -74,10 +74,12 @@ fn record_create_get_and_list_round_trip_on_the_local_provider() {
         &["--provider", "local", "record", "list", &issue_s],
     );
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
-    let records: Vec<serde_json::Value> =
-        serde_json::from_str(stdout_text(&listed).trim()).unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["id"], id);
+    let records: serde_json::Value = serde_json::from_str(stdout_text(&listed).trim()).unwrap();
+    assert_eq!(records["page"], 1);
+    assert_eq!(records["limit"], 50);
+    assert_eq!(records["total_count"], 1);
+    assert_eq!(records["items"].as_array().unwrap().len(), 1);
+    assert_eq!(records["items"][0]["id"], id);
 
     let filtered = run_local(
         &db,
@@ -92,9 +94,10 @@ fn record_create_get_and_list_round_trip_on_the_local_provider() {
             "recon",
         ],
     );
-    let filtered: Vec<serde_json::Value> =
-        serde_json::from_str(stdout_text(&filtered).trim()).unwrap();
-    assert!(filtered.is_empty(), "a kind filter matches exactly");
+    let filtered: serde_json::Value = serde_json::from_str(stdout_text(&filtered).trim()).unwrap();
+    assert_eq!(filtered["items"], serde_json::json!([]));
+    assert_eq!(filtered["total_count"], 0);
+    assert_eq!(filtered["has_more"], false);
 }
 
 /// An authorized recon record is the one write explore may perform.

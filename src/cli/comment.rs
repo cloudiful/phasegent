@@ -198,7 +198,7 @@ pub(crate) fn execute_comment_with_caller(
             }
             super::print_result(provider.get_comment(issue, comment))
         }
-        CommentCommand::List { issue } => {
+        CommentCommand::List { issue, page } => {
             if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
                 role,
                 api_base,
@@ -210,6 +210,14 @@ pub(crate) fn execute_comment_with_caller(
                 issue,
             ) {
                 return super::provider_error(error);
+            }
+            if let Some(page) = page {
+                return super::print_result(provider.list_comments_page(issue, page).and_then(
+                    |page| {
+                        page.with_context(serde_json::json!({"issue": issue}))
+                            .map_err(crate::providers::api::PhasegentError::config)
+                    },
+                ));
             }
             match provider.list_comments(issue) {
                 Ok(comments) => {

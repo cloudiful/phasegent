@@ -17,11 +17,12 @@ pub enum CommentCommand {
         issue: u64,
         comment: u64,
     },
-    /// Full bodies of every comment on the issue, in provider order.
-    /// The approved bulk-read path so agents never need raw
-    /// `?include=journals` calls to see all notes at once.
+    /// Paged comment bodies for an issue, in provider order. The approved
+    /// bulk-read path; successive pages expose all notes without raw
+    /// `?include=journals` calls.
     List {
         issue: u64,
+        page: Option<crate::pagination::PageRequest>,
     },
     FindMarker {
         issue: u64,
@@ -31,7 +32,9 @@ pub enum CommentCommand {
 
 #[derive(Debug)]
 pub enum ProjectCommand {
-    List,
+    List {
+        page: Option<crate::pagination::PageRequest>,
+    },
     Create {
         name: String,
         identifier: String,
@@ -61,13 +64,16 @@ pub enum StatusCommand {
 
 #[derive(Debug)]
 pub enum VersionCommand {
-    List,
+    List {
+        page: Option<crate::pagination::PageRequest>,
+    },
 }
 
 #[derive(Debug)]
 pub enum RelationCommand {
     List {
         issue: u64,
+        page: Option<crate::pagination::PageRequest>,
     },
     Create {
         issue: u64,
@@ -98,6 +104,7 @@ pub enum TimerCommand {
     List {
         status: String,
         limit: u32,
+        page: Option<crate::pagination::PageRequest>,
     },
     /// Read-only inspection of a single row. Returns a structured error
     /// when the run id is unknown; never mutates state.

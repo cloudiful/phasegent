@@ -30,7 +30,7 @@ pub(crate) fn print_comment_command_help(role: Option<Role>, command: &str) {
         ),
         "list" => (
             Capability::CommentRead,
-            "Usage: comment list <ISSUE>\n\nFull bodies of every comment on the issue, in provider order, as {issue, comments}. The approved bulk-read path: prefer it over raw provider calls when all notes are needed at once.",
+            "Usage: comment list <ISSUE> [--page N] [--limit N]\n\nReturns `{items,page,limit,total_count,has_more,issue}` with 50 full comment bodies in provider order by default (page 1, limit 50); --page is positive and 1-based, and --limit is 1..100. total_count is exact. Local uses native database pages. Redmine pagination is output-only: all journals are fetched before slicing, with no network savings. Use successive pages for the complete note collection; prefer this command over raw provider calls. See docs/cli-pagination.md.",
         ),
         "find-marker" => (
             Capability::CommentFindMarker,

@@ -107,6 +107,9 @@ pub(crate) fn execute_version_with_caller(
         ));
     }
     match command {
-        VersionCommand::List => super::print_result(provider.list_project_versions()),
+        VersionCommand::List { page } => match page {
+            Some(page) => super::print_result(provider.list_versions_page(page)),
+            None => super::print_result(provider.list_project_versions()),
+        },
     }
 }

@@ -87,10 +87,12 @@ pub enum WorktreeCommand {
     },
     Status {
         issue: u64,
+        page: Option<crate::pagination::PageRequest>,
     },
     List {
         repo: Option<String>,
         no_sync: bool,
+        page: Option<crate::pagination::PageRequest>,
     },
     /// Read-only diagnostic (issue 595). Exactly one selector applies:
     /// `--path PATH`, or `--issue N [--session S]`, or neither (probe
@@ -145,6 +147,7 @@ impl WorktreeCommand {
             Self::List {
                 repo,
                 no_sync: false,
+                ..
             } => Some(("worktree list", repo.as_deref())),
             Self::Acquire { .. }
             | Self::List { .. }

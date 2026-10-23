@@ -224,6 +224,57 @@ pub fn branches_for_number(
     Ok(out)
 }
 
+pub(crate) fn branches_for_number_page(
+    connection: &rusqlite::Connection,
+    repo_key: &str,
+    issue_number: u64,
+    include_detached: bool,
+    states: &dyn IssueStateLookup,
+    page: crate::pagination::PageRequest,
+) -> Result<(Vec<ScopedBranch>, usize, bool), String> {
+    let number = i64::try_from(issue_number).unwrap_or(i64::MAX);
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let filter = "WHERE repo_key = ?1 AND issue_number = ?2 AND (?3 OR status = 'linked')";
+    let params = rusqlite::params![repo_key, number, include_detached];
+    let total = transaction
+        .query_row(
+            &format!("SELECT COUNT(*) FROM branch_issue_links {filter}"),
+            params,
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let scopes: usize = transaction.query_row(&format!("SELECT COUNT(*) FROM (SELECT DISTINCT provider, project, external_id FROM branch_issue_links {filter})"), params, |row| row.get(0)).map_err(|error| error.to_string())?;
+    let mut out = {
+        let sql = format!(
+            "SELECT provider, project, external_id, branch, issue_number, status, source, created_at, updated_at, detached_at, detached_reason FROM branch_issue_links {filter} ORDER BY provider, project, external_id, branch LIMIT ?4 OFFSET ?5"
+        );
+        let mut statement = transaction
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map(
+                rusqlite::params![
+                    repo_key,
+                    number,
+                    include_detached,
+                    page.limit() as i64,
+                    page.offset() as i64
+                ],
+                decode_scoped_branch_row,
+            )
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    transaction.commit().map_err(|error| error.to_string())?;
+    for entry in &mut out {
+        entry.state = states.lookup(&entry.issue);
+    }
+    Ok((out, total, scopes > 1))
+}
+
 fn decode_scoped_branch_row(row: &rusqlite::Row<'_>) -> Result<ScopedBranch, rusqlite::Error> {
     let provider: String = row.get(0)?;
     let project: String = row.get(1)?;

@@ -101,8 +101,12 @@ phasegent --output text issue get 123      # 强制人类可读视图
 phasegent --output json issue get 123      # 强制机器文档
 ```
 
-JSON 键集合保持稳定，文本视图按命令定制。命令自身文档化的
-`--format`/`--json` 旧参数仍然有效。详见 [docs/cli-output.md](docs/cli-output.md)。
+支持的 collection list 默认在文本与 JSON 中返回第 1 页、最多 50 项。JSON
+使用统一分页 envelope；使用 `--page` 和 `--limit` 选择其他页面，例如
+`phasegent worktree list --page 2 --limit 50`。OpenCode adapter 需要完整 lease collection
+时会读取全部页面。已文档化命令仍支持旧的 `--format`/`--json` 参数。
+详见[输出模式](docs/cli-output.md)、[分页](docs/cli-pagination.md)和
+[worktree 维护](docs/worktree-maintenance.md)。
 
 选择的 provider 不是默认值时，在命令上添加 `--provider redmine` 或
 `--provider local`。可以使用 `--project-id ID` 覆盖 project 的自动发现；

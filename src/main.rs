@@ -13,6 +13,7 @@ mod lifecycle;
 mod lifecycle_auto;
 mod notifications;
 mod output;
+mod pagination;
 mod plugin;
 mod policy;
 mod record;

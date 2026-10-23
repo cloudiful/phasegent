@@ -33,6 +33,39 @@ fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalCommentRow, rusqlite::E
 }
 
 impl LocalProvider {
+    pub(crate) fn list_comments_page(
+        &self,
+        issue: u64,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<CommentOutput>, PhasegentError> {
+        if issue == 0 {
+            return Err(PhasegentError::config(
+                "issue number must be greater than zero",
+            ));
+        }
+        self.with_conn("comment list", |conn| {
+            let transaction = conn.unchecked_transaction()?;
+            let total =
+                transaction.query_row(local_sql("count_comments"), [issue as i64], |row| {
+                    row.get(0)
+                })?;
+            let items = {
+                let mut statement = transaction.prepare(local_sql("page_comments"))?;
+                statement
+                    .query_map(
+                        rusqlite::params![issue as i64, page.limit() as i64, page.offset() as i64],
+                        row_from_stmt,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .map(|row| row.to_get_output())
+                    .collect()
+            };
+            transaction.commit()?;
+            Ok(crate::pagination::Paged::known(items, page, total))
+        })
+    }
+
     pub fn create_comment(
         &self,
         issue: u64,

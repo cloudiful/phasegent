@@ -3,6 +3,15 @@ use crate::providers::config::RedmineProvider;
 use crate::providers::redmine::model::RedmineIssueResponse;
 
 impl RedmineProvider {
+    pub(crate) fn list_comments_page(
+        &self,
+        issue: u64,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<CommentOutput>, PhasegentError> {
+        self.list_comments(issue)
+            .map(|comments| crate::pagination::slice(comments, page))
+    }
+
     pub fn create_comment(
         &self,
         issue: u64,

@@ -14,6 +14,7 @@ mod request;
 use crate::command::RecordCommand;
 use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
+use crate::providers::api::PhasegentError;
 use crate::record::{self, RecordFilter};
 
 use request::Gate;
@@ -215,6 +216,7 @@ pub(crate) fn execute_record_with_caller(
             kind,
             phase,
             recon,
+            page,
         } => {
             let provider = match super::provider_for(
                 role,
@@ -227,6 +229,15 @@ pub(crate) fn execute_record_with_caller(
                 Ok(provider) => provider,
                 Err(error) => return super::provider_error(error),
             };
+            if let Some(page) = page {
+                return super::print_result(
+                    record::list_page(&provider, issue, RecordFilter { kind, phase, recon }, page)
+                        .and_then(|page| {
+                            page.with_context(serde_json::json!({"issue": issue}))
+                                .map_err(PhasegentError::config)
+                        }),
+                );
+            }
             match record::list(&provider, issue, RecordFilter { kind, phase, recon }) {
                 Ok(records) => super::print_json(&records),
                 Err(error) => super::provider_error(error),

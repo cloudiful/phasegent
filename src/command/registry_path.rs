@@ -30,7 +30,7 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::Record(command) => &["record", record_name(command)],
         Command::Project(command) => &["project", project_name(command)],
         Command::Status(command) => &["status", status_name(command)],
-        Command::VersionCommand(VersionCommand::List) => &["version", "list"],
+        Command::VersionCommand(VersionCommand::List { .. }) => &["version", "list"],
         Command::Workflow(WorkflowCommand::Bootstrap { .. }) => &["admin", "workflow", "bootstrap"],
         Command::Hooks(HooksCommand::Install) => &["hooks", "install"],
         Command::Hooks(HooksCommand::Run { .. }) => &["hooks", "run"],
@@ -80,7 +80,7 @@ fn record_name(command: &RecordCommand) -> &'static str {
 
 fn project_name(command: &ProjectCommand) -> &'static str {
     match command {
-        ProjectCommand::List => "list",
+        ProjectCommand::List { .. } => "list",
         ProjectCommand::Create { .. } => "create",
     }
 }

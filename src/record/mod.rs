@@ -20,7 +20,7 @@ mod store;
 mod token;
 
 pub(crate) use kind::RecordKind;
-pub(crate) use service::{create, get, list};
+pub(crate) use service::{create, get, list, list_page};
 pub(crate) use spec::RecordSpec;
 pub(crate) use store::RecordFilter;
 

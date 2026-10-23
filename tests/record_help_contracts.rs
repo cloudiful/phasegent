@@ -120,6 +120,14 @@ fn record_get_and_list_help_document_usage() {
     assert!(get.contains("#note-<id>"), "got:\n{get}");
     let list = stdout_text(&run_help(None, &["--help", "record", "list"]));
     assert!(list.contains("Usage: record list"), "got:\n{list}");
+    assert!(
+        list.contains("--page") && list.contains("--limit"),
+        "got:\n{list}"
+    );
+    assert!(
+        list.contains("page 1") && list.contains("limit 50"),
+        "got:\n{list}"
+    );
     // And the read-only recon path/pointer is documented on the list page.
     assert!(list.contains("recon record"), "got:\n{list}");
     assert!(

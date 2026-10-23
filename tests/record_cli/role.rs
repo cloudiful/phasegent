@@ -138,10 +138,11 @@ fn operator_record_create_denied_and_reads_allowed() {
         &["--provider", "local", "record", "list", &issue_s],
     );
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
-    let records: Vec<serde_json::Value> =
-        serde_json::from_str(stdout_text(&listed).trim()).unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["id"], id);
+    let records: serde_json::Value = serde_json::from_str(stdout_text(&listed).trim()).unwrap();
+    assert_eq!(records["page"], 1);
+    assert_eq!(records["limit"], 50);
+    assert_eq!(records["items"].as_array().unwrap().len(), 1);
+    assert_eq!(records["items"][0]["id"], id);
 }
 
 /// Operator comments need no child `--authorized` flag.
@@ -215,7 +216,11 @@ fn operator_comment_create_needs_no_authorized_flag() {
     );
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     let listed_value = json_stdout(&listed);
-    let comments = listed_value["comments"].as_array().expect("comments array");
+    assert_eq!(listed_value["page"], 1);
+    assert_eq!(listed_value["limit"], 50);
+    let comments = listed_value["items"]
+        .as_array()
+        .expect("comment page items");
     assert_eq!(comments.len(), 1, "expected one comment: {listed_value:?}");
     assert_eq!(comments[0]["marker"].as_str(), Some("op-marker"));
     assert!(

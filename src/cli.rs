@@ -242,8 +242,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         // with no resolvable scope fails closed instead of writing.
         // `issue branches N` is the read-only reverse lookup across all
         // scopes in this repository (no provider, no writes).
-        Command::Issue(IssueCommand::Branches { number }) => {
-            issue_branches::execute_branches(number)
+        Command::Issue(IssueCommand::Branches { number, page }) => {
+            issue_branches::execute_branches_page(number, page)
         }
         Command::Issue(
             command @ (IssueCommand::Bind { .. }

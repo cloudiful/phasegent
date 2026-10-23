@@ -30,10 +30,10 @@ use crate::worktree::WorktreeError;
 use crate::worktree::leases::ensure_schema;
 use crate::worktree::repo_identity;
 
-mod acquire;
+pub(crate) mod acquire;
 mod probe;
 mod prune;
-mod query;
+pub(crate) mod query;
 
 // The focused integration tests drive these types and functions
 // directly instead of a full CLI round-trip, so the bin target may see
@@ -86,10 +86,15 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
     let credential = caller
         .credential_role()
         .expect("authorized caller has a credential");
+    let runner = ProcessWorktreeRunner::new();
+    let mut sync_setup = None;
     if caller.is_orchestrator_authorized()
         && let Some((operation, repo)) = command.sync_taxi()
     {
-        for warning in crate::cli::issue::sync::taxi_sync(credential, repo) {
+        let (warnings, setup) =
+            crate::cli::issue::sync::taxi_sync_with_runner(credential, repo, &runner);
+        sync_setup = setup;
+        for warning in warnings {
             super::report_local_warnings(operation, Some(warning));
         }
     }
@@ -105,7 +110,15 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
             if !caller.is_orchestrator_authorized() {
                 return permission_error(credential, "worktree acquire");
             }
-            acquire::execute_acquire(issue, session.as_deref(), &format, isolate, base.as_deref())
+            acquire::execute_acquire_seeded(
+                issue,
+                session.as_deref(),
+                &format,
+                isolate,
+                base.as_deref(),
+                sync_setup.as_ref(),
+                &runner,
+            )
         }
         WorktreeCommand::Release {
             lease,
@@ -118,17 +131,21 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
             }
             acquire::execute_release(&lease, retain, force, reason)
         }
-        WorktreeCommand::Status { issue } => {
+        WorktreeCommand::Status { issue, page } => {
             if !caller.is_worktree_read_authorized() {
                 return permission_error(credential, "worktree status");
             }
-            query::execute_status(issue)
+            query::execute_status_page(issue, page)
         }
-        WorktreeCommand::List { repo, no_sync: _ } => {
+        WorktreeCommand::List {
+            repo,
+            no_sync: _,
+            page,
+        } => {
             if !caller.is_worktree_read_authorized() {
                 return permission_error(credential, "worktree list");
             }
-            query::execute_list(repo.as_deref())
+            query::execute_list_page(repo.as_deref(), sync_setup.as_ref(), &runner, page)
         }
         WorktreeCommand::Probe {
             path,
@@ -215,6 +232,7 @@ fn storage_error(error: &WorktreeError) -> i32 {
 fn resolve_list_identity(
     storage: &Storage,
     repo: Option<&str>,
+    runner: &dyn crate::worktree::WorktreeRunner,
 ) -> Result<String, serde_json::Value> {
     let repo_path = match repo {
         Some(raw) => PathBuf::from(raw),
@@ -226,8 +244,7 @@ fn resolve_list_identity(
             "message": format!("worktree list --repo path does not exist: {}", repo_path.display()),
         }));
     }
-    let runner = ProcessWorktreeRunner::new();
-    match repo_identity(&runner, &repo_path) {
+    match repo_identity(runner, &repo_path) {
         Ok(identity) => {
             // Persist the schema if it was not present yet so a
             // `list` call also works on pre-Phase-1 databases.

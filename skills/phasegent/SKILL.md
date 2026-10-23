@@ -367,9 +367,11 @@ phase is an explicit transition back to `In Progress`.
   documented agent path instead: `record create` under the session role's own
   kind (`executor`, `reviewer`, or the explorer's authorized recon), and
   `record get`/`record list` for reads.
-- `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope,
-  `record list` is the bulk record read, and `comment list` still reads legacy
-  notes.
+- `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope.
+  `record list` is the bulk record read and `comment list` reads legacy notes;
+  both return page 1 with up to 50 entries by default. Request successive pages
+  when a task requires the complete collection. The OpenCode lease readers do
+  this traversal and reject incomplete results.
 - `notify send` runs on explicit invocation; the OpenCode adapter automatically
   invokes it for each new local pending question form, using the current
   notification settings and subject to ambient caller policy.

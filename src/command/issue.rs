@@ -121,12 +121,15 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
         // (issue 628 P5). No provider access, no writes; missing links
         // yield an empty list, not an error.
         "branches" => {
-            validate_options(args, 1, &[], &[], "issue branches")?;
+            validate_options(args, 1, &["--page", "--limit"], &[], "issue branches")?;
             let number = positional_number(args, 1, "issue branches")?;
             if number == 0 {
                 return Err("issue branches requires a positive issue id".to_owned());
             }
-            Ok(Command::Issue(IssueCommand::Branches { number }))
+            Ok(Command::Issue(IssueCommand::Branches {
+                number,
+                page: Some(page_request(args, "issue branches")?),
+            }))
         }
         "sync" => parse_issue_sync(args),
         value => Err(format!("unknown issue command '{value}'")),

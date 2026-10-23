@@ -1549,6 +1549,161 @@ fn prune_keeps_a_directory_whose_issue_is_not_closed() {
 /// provider reported closed during the scan but has since reopened vetoes the
 /// removal (and the scan answer alone is never enough).
 #[test]
+fn prune_rechecks_new_target_issues_and_new_active_leases() {
+    use std::cell::{Cell, RefCell};
+    struct Race<'a> {
+        storage: &'a Storage,
+        identity: &'a str,
+        path: String,
+        active: bool,
+        inserted: Cell<bool>,
+        invalidated: RefCell<Vec<Vec<u64>>>,
+    }
+    impl IssueStateSource for Race<'_> {
+        fn closure(&self, _: &std::path::Path, issue: u64) -> IssueClosure {
+            if !self.inserted.replace(true) {
+                insert_lease(
+                    self.storage,
+                    NewLease {
+                        lease_id: "incoming",
+                        identity: self.identity,
+                        issue: 8,
+                        session: "incoming",
+                        checkout_path: "/fixture",
+                        worktree_path: &self.path,
+                        branch: "branch",
+                        status: if self.active {
+                            LEASE_STATUS_ACTIVE
+                        } else {
+                            LEASE_STATUS_RETAINED
+                        },
+                        created_at: 1,
+                        heartbeat_at: 1,
+                    },
+                )
+                .unwrap();
+            }
+            if issue == 8 {
+                IssueClosure::Keep("incoming issue is open".to_owned())
+            } else {
+                IssueClosure::Closed
+            }
+        }
+        fn invalidate(&self, _: &std::path::Path, issues: &[u64]) {
+            self.invalidated.borrow_mut().push(issues.to_vec());
+        }
+        fn refresh(&self) {
+            panic!("recheck must target the freshly rebuilt directory");
+        }
+    }
+    let _lock = lock_workflow_tests();
+    for active in [false, true] {
+        let repo = TempRepo::init("prune-target-race").expect("fixture git");
+        let (_temp, storage, _env) = open_temp_db("prune-target-race");
+        ensure_schema(&storage).unwrap();
+        let runner = ProcessWorktreeRunner::new();
+        let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+        let target = add_real_worktree(&repo, "phasegent/1054-race");
+        lease(
+            &storage,
+            "original",
+            &identity,
+            "cli",
+            LEASE_STATUS_RETAINED,
+            &target.to_string_lossy(),
+        );
+        let source = Race {
+            storage: &storage,
+            identity: &identity,
+            path: target.display().to_string(),
+            active,
+            inserted: Cell::new(false),
+            invalidated: RefCell::new(Vec::new()),
+        };
+        let summary = run_pass(
+            &storage,
+            &repo,
+            &identity,
+            &FakeOpenCodeApi::empty(),
+            &source,
+            PruneMode::Remove,
+        );
+        assert_eq!(summary.removed, 0);
+        assert!(target.exists());
+        assert_eq!(*source.invalidated.borrow(), vec![vec![7, 8]]);
+        let message = summary.actions[0].message.as_deref().unwrap();
+        assert!(
+            message.contains(if active {
+                "active lease"
+            } else {
+                "incoming issue is open"
+            }),
+            "{message}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_retargeted_scan_alias_cannot_authorize_removal() {
+    use std::cell::Cell;
+    struct Retarget {
+        alias: std::path::PathBuf,
+        destination: std::path::PathBuf,
+        changed: Cell<bool>,
+    }
+    impl IssueStateSource for Retarget {
+        fn closure(&self, _: &std::path::Path, _: u64) -> IssueClosure {
+            if !self.changed.replace(true) {
+                std::fs::remove_file(&self.alias).unwrap();
+                std::os::unix::fs::symlink(&self.destination, &self.alias).unwrap();
+            }
+            IssueClosure::Closed
+        }
+    }
+    let _lock = lock_workflow_tests();
+    let repo = TempRepo::init("prune-retarget").expect("fixture git");
+    let (_temp, storage, _env) = open_temp_db("prune-retarget");
+    ensure_schema(&storage).unwrap();
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let original = add_real_worktree(&repo, "phasegent/1054-original");
+    let destination = add_real_worktree(&repo, "phasegent/1054-destination");
+    let alias = repo.dir.path().join("alias");
+    std::os::unix::fs::symlink(&original, &alias).unwrap();
+    lease(
+        &storage,
+        "alias",
+        &identity,
+        "cli",
+        LEASE_STATUS_RETAINED,
+        &alias.to_string_lossy(),
+    );
+    let source = Retarget {
+        alias,
+        destination: destination.clone(),
+        changed: Cell::new(false),
+    };
+    let summary = run_pass(
+        &storage,
+        &repo,
+        &identity,
+        &FakeOpenCodeApi::empty(),
+        &source,
+        PruneMode::Remove,
+    );
+    assert_eq!(summary.removed, 0);
+    assert!(original.exists() && destination.exists());
+    assert!(
+        summary.actions[0]
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("changed its target")
+    );
+}
+
+#[test]
 fn prune_reopen_between_scan_and_recheck_vetoes_removal() {
     use std::cell::Cell;
 

@@ -98,21 +98,23 @@ pub(crate) fn parse_timer(args: &[String]) -> Result<Command, String> {
             Ok(Command::Timer(TimerCommand::Finish { run_id, result }))
         }
         "list" => {
-            validate_options(args, 0, &["--status", "--limit"], &[], "timer list")?;
+            validate_options(
+                args,
+                0,
+                &["--status", "--limit", "--page"],
+                &[],
+                "timer list",
+            )?;
+            let page = page_request(args, "timer list")?;
             let status = optional_option(args, "--status").unwrap_or_else(|| "all".to_owned());
             if !matches!(status.as_str(), "running" | "finished" | "all") {
                 return Err("timer list --status must be running, finished, or all".to_owned());
             }
-            let limit = match optional_option(args, "--limit") {
-                Some(value) => value
-                    .parse::<u32>()
-                    .map_err(|_| "timer list --limit requires a non-negative integer".to_owned())?,
-                None => 100,
-            };
-            if limit == 0 {
-                return Err("timer list --limit must be greater than zero".to_owned());
-            }
-            Ok(Command::Timer(TimerCommand::List { status, limit }))
+            Ok(Command::Timer(TimerCommand::List {
+                status,
+                limit: page.limit() as u32,
+                page: Some(page),
+            }))
         }
         "get" => {
             validate_options(args, 1, &[], &[], "timer get")?;

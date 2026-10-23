@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPlugin } from "./src/build.js";
 import PhasegentWorktreePlugin from "./src/index.js";
+import { readIssueLeaseHistory, readIssueLeases } from "./src/binding.js";
 
 const {
   isAbsolutePath,
@@ -3985,6 +3986,157 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
 // checked-in dist reproducible — a stale or hand-edited file fails here instead
 // of shipping — and the runtime never reads a markdown file.
 // ---------------------------------------------------------------------------
+
+describe("complete worktree lease page readers", () => {
+  function fakePageRunner(pages, failures = []) {
+    const calls = [];
+    return {
+      calls,
+      execute: async (args) => {
+        calls.push([...args]);
+        const number = args[args.indexOf("--page") + 1];
+        const key = `${args[1]}-page-${number}`;
+        if (failures.includes(key) || pages[key] === undefined) return { ok: false };
+        return { ok: true, value: JSON.stringify(pages[key]) };
+      },
+    };
+  }
+
+  function lease(index, issue = 42, status = "active") {
+    return {
+      lease_id: `lease-${index}`,
+      repo_identity: "/repo/.git",
+      issue,
+      session: `ses-${index}`,
+      checkout_path: "/repo",
+      worktree_path: `/repo/wt-${index}`,
+      branch: `phasegent/${index}`,
+      status,
+      created_at: index + 1,
+      heartbeat_at: index + 1,
+    };
+  }
+
+  function page(items, number, total, context, extra = {}) {
+    return {
+      items,
+      page: number,
+      limit: 100,
+      total_count: total,
+      has_more: number * 100 < total,
+      ...context,
+      ...extra,
+    };
+  }
+
+  test("traverses every page and finds issue history beyond page one", async () => {
+    const active = Array.from({ length: 205 }, (_, index) => lease(index));
+    const history = Array.from({ length: 205 }, (_, index) =>
+      lease(index, index >= 200 ? 42 : 99, index >= 200 ? "retained" : "active"),
+    );
+    const pages = {};
+    for (let number = 1; number <= 3; number += 1) {
+      const start = (number - 1) * 100;
+      pages[`status-page-${number}`] = page(
+        active.slice(start, start + 100),
+        number,
+        active.length,
+        { issue: 42 },
+      );
+      pages[`list-page-${number}`] = page(
+        history.slice(start, start + 100),
+        number,
+        history.length,
+        { repo_identity: "/repo/.git" },
+      );
+    }
+    const fake = fakePageRunner(pages);
+    const activeRows = await readIssueLeases(42, "/repo", fake.execute);
+    const historyRows = await readIssueLeaseHistory(42, "/repo", fake.execute);
+    expect(activeRows).toHaveLength(205);
+    expect(historyRows.map((row) => row.lease_id)).toEqual(
+      history.slice(200).map((row) => row.lease_id),
+    );
+    expect(fake.calls).toHaveLength(6);
+    expect(fake.calls[0].join(" ")).toContain("worktree status --issue 42 --page 1 --limit 100");
+    expect(fake.calls[2].join(" ")).toContain("--page 3 --limit 100");
+    expect(fake.calls[3].join(" ")).toContain("worktree list --no-sync --page 1 --limit 100");
+    expect(fake.calls[5].join(" ")).toContain("--page 3 --limit 100");
+  });
+
+  test("accepts an unpaged legacy shape only as one complete result", async () => {
+    const legacy = [lease(1), lease(2)];
+    const fake = fakePageRunner({ "status-page-1": { issue: 42, leases: legacy } });
+    expect(await readIssueLeases(42, "/repo", fake.execute)).toEqual(legacy);
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  test("rejects a repository identity change during history traversal", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => lease(index));
+    const fake = fakePageRunner({
+      "list-page-1": page(first, 1, 101, { repo_identity: "/repo/.git" }),
+      "list-page-2": page([lease(100)], 2, 101, { repo_identity: "/other/.git" }),
+    });
+    expect(await readIssueLeaseHistory(42, "/repo", fake.execute)).toBeNull();
+    expect(fake.calls).toHaveLength(2);
+  });
+
+  test("returns null rather than partial rows after a later page failure", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => lease(index));
+    const fake = fakePageRunner(
+      { "status-page-1": page(first, 1, 150, { issue: 42 }) },
+      ["status-page-2"],
+    );
+    expect(await readIssueLeases(42, "/repo", fake.execute)).toBeNull();
+    expect(fake.calls).toHaveLength(2);
+  });
+
+  test("fails closed on malformed, duplicate, changing or nonprogressing pages", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => lease(index));
+    const next = lease(100);
+    const cases = [
+      {
+        pages: { "status-page-1": { page: 1, limit: 100, total_count: 0, has_more: false, issue: 42, leases: [] } },
+      },
+      {
+        pages: {
+          "status-page-1": page(first, 1, 101, { issue: 42 }),
+          "status-page-2": page([next], 1, 101, { issue: 42 }),
+        },
+      },
+      {
+        pages: {
+          "status-page-1": page(first, 1, 101, { issue: 42 }),
+          "status-page-2": page([lease(0)], 2, 101, { issue: 42 }),
+        },
+      },
+      {
+        pages: {
+          "status-page-1": page(first, 1, 101, { issue: 42 }),
+          "status-page-2": page([next, lease(101)], 2, 102, { issue: 42 }),
+        },
+      },
+      {
+        pages: {
+          "status-page-1": page(first, 1, 101, { issue: 42 }),
+          "status-page-2": page([next], 2, 101, { issue: 43 }),
+        },
+      },
+      {
+        pages: { "status-page-1": page(first.slice(0, 99), 1, 101, { issue: 42 }) },
+      },
+      {
+        pages: {
+          "status-page-1": page(first, 1, 1_000_001, { issue: 42 }),
+        },
+      },
+    ];
+    for (const { pages } of cases) {
+      const fake = fakePageRunner(pages);
+      expect(await readIssueLeases(42, "/repo", fake.execute)).toBeNull();
+    }
+  });
+});
 
 describe("generated dist freshness (issue #576 P1)", () => {
   const DIST = new URL("./phasegent-worktree.js", import.meta.url);

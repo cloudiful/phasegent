@@ -430,9 +430,9 @@ fn the_curated_views_answer_the_question() {
     assert!(probe.stdout.contains("State:"), "got: {}", probe.stdout);
 }
 
-/// The machine document keeps its keys; only the text rendering changed.
+/// Utility output keeps its existing keys while collection output uses the page envelope.
 #[test]
-fn the_machine_keysets_are_unchanged() {
+fn the_machine_keysets_preserve_utility_output_and_page_collections() {
     let scratch = Scratch::new("keysets");
     let probe = run_cli(&scratch, Some("orchestrator"), &["worktree", "probe"]);
     assert_eq!(probe.code, 0, "stderr: {}", probe.stderr);
@@ -461,7 +461,12 @@ fn the_machine_keysets_are_unchanged() {
     let value: serde_json::Value =
         serde_json::from_str(list.stdout.trim()).expect("the list prints one JSON document");
     assert!(value.get("repo_identity").is_some(), "got: {value}");
-    assert!(value.get("leases").is_some(), "got: {value}");
+    assert_eq!(value["page"], 1);
+    assert_eq!(value["limit"], 50);
+    assert_eq!(value["total_count"], 0);
+    assert_eq!(value["has_more"], false);
+    assert_eq!(value["items"], serde_json::json!([]));
+    assert!(value.get("leases").is_none(), "got: {value}");
 }
 
 /// The progress surface only exists for a human on an interactive terminal: a

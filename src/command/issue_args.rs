@@ -101,6 +101,7 @@ pub enum IssueCommand {
     /// state. No provider access, no writes.
     Branches {
         number: u64,
+        page: Option<crate::pagination::PageRequest>,
     },
 }
 

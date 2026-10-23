@@ -53,7 +53,7 @@ pub(crate) fn print_record_command_help(role: Option<Role>, command: &str) {
             "Usage: record get <ISSUE> <RECORD_ID>\n\nReads one record by the native reference id a create returned, as the plain note body plus its structured fields. The generated header is never shown. The id is the native reference (`#change-<id>` on Redmine, `#note-<id>` locally), so a parent cites the record id instead of transcribing the note."
         }
         "list" => {
-            "Usage: record list <ISSUE> [--kind KIND] [--phase TOKEN] [--recon TOKEN]\n\nEvery record on the issue as an array of structured fields plus the plain note body, in provider order. Filters are matched locally and exactly; ordinary comments are not records and are not listed. A tracked explorer publishes an authorized recon record and returns only its record id/url/key/provider/issue; the findings live in the record body."
+            "Usage: record list <ISSUE> [--kind KIND] [--phase TOKEN] [--recon TOKEN] [--page N] [--limit N]\n\nReturns `{items,page,limit,total_count,has_more,issue}` with 50 structured records and their plain note bodies by default (page 1, limit 50); --page is positive and 1-based, and --limit is 1..100. total_count is exact after filtering. Filters are matched locally and exactly; ordinary comments are not records and are not listed. Pagination is output-only: the complete comment collection is decoded and filtered before slicing; Redmine journal transfer is not reduced. See docs/cli-pagination.md. A tracked explorer publishes an authorized recon record and returns only its record id/url/key/provider/issue; the findings live in the record body."
         }
         _ => return,
     };

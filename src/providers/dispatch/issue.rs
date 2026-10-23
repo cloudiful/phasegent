@@ -74,6 +74,13 @@ impl IssueProvider for RedmineProvider {
     fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
         RedmineProvider::list_comments(self, issue)
     }
+    fn list_comments_page(
+        &self,
+        issue: u64,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<CommentOutput>, Self::Error> {
+        RedmineProvider::list_comments_page(self, issue, page)
+    }
 }
 
 impl IssueProvider for ProviderDispatcher {
@@ -167,6 +174,17 @@ impl IssueProvider for ProviderDispatcher {
         }
     }
 
+    fn list_comments_page(
+        &self,
+        issue: u64,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<CommentOutput>, Self::Error> {
+        match self {
+            Self::Redmine(provider) => provider.list_comments_page(issue, page),
+            Self::Local(provider) => provider.list_comments_page(issue, page),
+        }
+    }
+
     fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
         match self {
             Self::Redmine(provider) => provider.list_comments(issue),
@@ -235,5 +253,12 @@ impl IssueProvider for LocalProvider {
 
     fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error> {
         LocalProvider::list_comments(self, issue)
+    }
+    fn list_comments_page(
+        &self,
+        issue: u64,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<CommentOutput>, Self::Error> {
+        LocalProvider::list_comments_page(self, issue, page)
     }
 }

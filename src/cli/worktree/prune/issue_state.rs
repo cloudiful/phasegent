@@ -63,11 +63,15 @@ pub(crate) trait IssueStateSource {
     fn closure(&self, repo_path: &Path, issue: u64) -> IssueClosure;
 
     /// Drop any invocation-scoped memo so the next [`Self::closure`] reads the
-    /// provider and scope afresh. The prune pass calls this before every
-    /// removal recheck, so a `closed` answer from the scan can never authorize a
-    /// deletion after the issue was reopened. The default is a no-op: a source
+    /// provider and scope afresh. Sources without targeted invalidation use
+    /// this before a removal recheck. The default is a no-op: a source
     /// that caches nothing has nothing to invalidate.
     fn refresh(&self) {}
+
+    /// Invalidate the freshly rebuilt target only; legacy sources may refresh all.
+    fn invalidate(&self, _repo_path: &Path, _issues: &[u64]) {
+        self.refresh();
+    }
 }
 
 /// One resolved durable link scope for a number.
@@ -85,6 +89,11 @@ pub(crate) trait LinkScopeReader {
     /// Drop any per-repository memo (resolved identity and reused store) so the
     /// next [`Self::scopes`] re-derives them. The default is a no-op.
     fn refresh(&self) {}
+
+    /// Invalidate the freshly rebuilt target only; legacy sources may refresh all.
+    fn invalidate(&self, _repo_path: &Path, _issues: &[u64]) {
+        self.refresh();
+    }
 }
 
 /// The provider's answer for one issue.
@@ -227,6 +236,14 @@ impl IssueStateSource for ComposedIssueStateSource {
         verdict
     }
 
+    fn invalidate(&self, repo_path: &Path, issues: &[u64]) {
+        let repo = repo_path.to_string_lossy();
+        self.cache
+            .borrow_mut()
+            .retain(|(path, issue), _| path != repo.as_ref() || !issues.contains(issue));
+        self.links.invalidate(repo_path, issues);
+    }
+
     fn refresh(&self) {
         // Both halves are invalidated together: a reopened issue must re-read the
         // provider *and* the durable scope before a removal is authorized, so a
@@ -242,9 +259,9 @@ impl IssueStateSource for ComposedIssueStateSource {
 ///
 /// The scope rows themselves are always re-queried through
 /// `branches_for_number`; only the identity resolution (an origin-URL and
-/// checkout-root Git read) and the store open are memoized. [`Self::refresh`]
-/// clears that memo so a removal recheck re-derives both — the store is not a
-/// safety cache that survives a deletion proof.
+/// checkout-root Git read) and the store open are memoized. Targeted
+/// invalidation retains this setup because each scope read queries the current
+/// branch-link rows; [`Self::refresh`] still clears all setup.
 pub(crate) struct GitLinkScopeReader {
     repos: RefCell<HashMap<String, RepoScope>>,
 }
@@ -321,6 +338,10 @@ impl LinkScopeReader for GitLinkScopeReader {
     fn refresh(&self) {
         self.repos.borrow_mut().clear();
     }
+
+    fn invalidate(&self, _repo_path: &Path, _issues: &[u64]) {
+        // Scope rows are never cached; only identity and the open store survive.
+    }
 }
 
 /// Production provider reader. The dispatcher is resolved on first use so a
@@ -389,6 +410,55 @@ fn bounded_error(value: &serde_json::Value) -> String {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("provider read failed");
     crate::worktree::bounded(message)
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    #[test]
+    fn targeted_link_refresh_keeps_setup_but_reads_current_rows() {
+        let root = crate::test_scratch::root().join(format!(
+            "prune-links-{}-{}",
+            std::process::id(),
+            crate::worktree::now_unix_secs()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let reader = GitLinkScopeReader::new();
+        for name in ["one", "two"] {
+            let mut storage = Storage::open_at(&root.join(format!("{name}.sqlite3"))).unwrap();
+            crate::branch_links::ensure_schema(&storage.connection).unwrap();
+            storage.path = root.clone();
+            reader.repos.borrow_mut().insert(
+                root.join(name).display().to_string(),
+                RepoScope {
+                    key: name.to_owned(),
+                    storage,
+                },
+            );
+        }
+        let repo = root.join("one");
+        assert!(reader.scopes(&repo, 7).unwrap().is_empty());
+        reader.repos.borrow()[&repo.display().to_string()].storage.connection.execute(
+            "INSERT INTO branch_issue_links (repo_key,branch,provider,project,external_id,issue_number,status,source,created_at,updated_at) VALUES ('one','branch','local','default','7',7,'linked','test',1,1)", [],
+        ).unwrap();
+        reader.invalidate(&repo, &[7]);
+        assert_eq!(
+            reader.repos.borrow().len(),
+            2,
+            "targeted invalidation must not discard either repository setup"
+        );
+        let scopes = reader.scopes(&repo, 7).unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].external_id, "7");
+    }
 }
 
 #[cfg(test)]

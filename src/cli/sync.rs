@@ -44,11 +44,16 @@ use crate::worktree::{ProcessWorktreeRunner, bounded};
 
 #[path = "sync/engine.rs"]
 mod engine;
+#[path = "sync/host_cache.rs"]
+mod host_cache;
 #[path = "sync/scopes.rs"]
 mod scopes;
-use engine::candidate_issues;
-pub(crate) use engine::run_sync;
-use scopes::{default_provider, open_lease_storage, resolve_scopes};
+#[cfg(test)]
+#[path = "sync/tests_reuse.rs"]
+mod tests_reuse;
+use crate::providers::IssueProvider;
+pub(crate) use engine::{SyncSetup, resolve_setup, run_sync_resolved};
+use scopes::{default_provider, open_lease_storage};
 
 /// Lease `release_reason` recorded when the reconciliation converges an
 /// issue the provider already closed.
@@ -172,6 +177,27 @@ pub(crate) struct SyncRequest<'a> {
 }
 
 #[allow(dead_code)]
+pub(crate) fn run_sync(
+    provider: &crate::providers::ProviderDispatcher,
+    runner: &dyn crate::worktree::WorktreeRunner,
+    storage: &crate::infra::storage::Storage,
+    request: SyncRequest<'_>,
+) -> Result<SyncReport, crate::providers::api::PhasegentError> {
+    use scopes::IntoProviderError;
+    let (scopes, skipped) = scopes::resolve_scopes(runner, storage, request.all, request.cwd)
+        .map_err(|error| error.into_provider_error())?;
+    engine::run_sync_scopes(
+        &|issue| provider.get_issue(issue),
+        runner,
+        storage,
+        &scopes,
+        skipped,
+        request.mode,
+        request.all,
+    )
+}
+
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_sync(
     role: Role,
@@ -236,13 +262,19 @@ pub(crate) fn execute_sync_with_caller(
     } else {
         SyncMode::Clean
     };
-    let request = SyncRequest {
-        all,
-        mode,
-        cwd: &cwd,
+    let runner = ProcessWorktreeRunner::new();
+    let mut setup = match resolve_setup(&runner, storage, all, &cwd) {
+        Ok(setup) => setup,
+        Err(error) => return crate::cli::provider_error(error),
     };
     crate::output::progress::stage("issue sync: reconciling the worktree leases");
-    match run_sync(&provider, &ProcessWorktreeRunner::new(), &storage, request) {
+    match run_sync_resolved(
+        &|issue| provider.get_issue(issue),
+        &runner,
+        &mut setup,
+        mode,
+        all,
+    ) {
         Ok(report) => print_json(&report),
         Err(error) => crate::cli::provider_error(error),
     }
@@ -255,42 +287,72 @@ pub(crate) fn execute_sync_with_caller(
 /// checkout (the current directory when it was not supplied). Returns
 /// nothing when there is no local residue to reconcile, and every failure
 /// is a warning instead of an error.
+#[allow(dead_code)]
 pub(crate) fn taxi_sync(role: Role, repo: Option<&str>) -> Vec<String> {
+    taxi_sync_seeded(role, repo).0
+}
+
+#[allow(dead_code)]
+pub(crate) fn taxi_sync_seeded(role: Role, repo: Option<&str>) -> (Vec<String>, Option<SyncSetup>) {
+    taxi_sync_with_runner(role, repo, &ProcessWorktreeRunner::new())
+}
+
+pub(crate) fn taxi_sync_with_runner(
+    role: Role,
+    repo: Option<&str>,
+    runner: &dyn crate::worktree::WorktreeRunner,
+) -> (Vec<String>, Option<SyncSetup>) {
     let storage = match open_lease_storage() {
         Ok(storage) => storage,
-        Err(message) => return vec![bounded(&format!("sync skipped: {message}"))],
+        Err(message) => return (vec![bounded(&format!("sync skipped: {message}"))], None),
     };
     let cwd = match repo {
         Some(raw) => PathBuf::from(raw),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    let runner = ProcessWorktreeRunner::new();
-    // No candidate directory means nothing to reconcile: skip before any
-    // provider resolution so an idle invocation stays silent and offline.
-    match resolve_scopes(&runner, &storage, false, &cwd) {
-        Ok((scopes, _)) => {
-            if scopes
-                .iter()
-                .all(|scope| candidate_issues(&scope.rows).is_empty())
-            {
-                return Vec::new();
-            }
+    taxi_sync_in(runner, storage, &cwd, || {
+        let provider = default_provider(role)?;
+        Ok(move |issue| provider.get_issue(issue))
+    })
+}
+
+pub(crate) fn taxi_sync_in<G, R>(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    storage: crate::infra::storage::Storage,
+    cwd: &Path,
+    resolve_provider: R,
+) -> (Vec<String>, Option<SyncSetup>)
+where
+    G: Fn(u64) -> Result<crate::providers::IssueSummary, crate::providers::api::PhasegentError>,
+    R: FnOnce() -> Result<G, crate::providers::api::PhasegentError>,
+{
+    let mut setup = match resolve_setup(runner, storage, false, cwd) {
+        Ok(setup) => setup,
+        Err(error) => {
+            let message = match error {
+                crate::providers::api::PhasegentError::Request { message, .. } => message,
+                other => error_json(&other),
+            };
+            return (vec![bounded(&format!("sync skipped: {message}"))], None);
         }
-        Err(error) => return vec![bounded(&format!("sync skipped: {}", error.message))],
+    };
+    if setup.scopes.iter().all(|scope| scope.candidates.is_empty()) {
+        return (Vec::new(), Some(setup));
     }
-    let provider = match default_provider(role) {
-        Ok(provider) => provider,
-        Err(error) => return vec![bounded(&format!("sync skipped: {}", error_json(&error)))],
+    let get_issue = match resolve_provider() {
+        Ok(get_issue) => get_issue,
+        Err(error) => {
+            return (
+                vec![bounded(&format!("sync skipped: {}", error_json(&error)))],
+                Some(setup),
+            );
+        }
     };
-    let request = SyncRequest {
-        all: false,
-        mode: SyncMode::Clean,
-        cwd: &cwd,
-    };
-    match run_sync(&provider, &runner, &storage, request) {
+    let warnings = match run_sync_resolved(&get_issue, runner, &mut setup, SyncMode::Clean, false) {
         Ok(report) => report.taxi_warnings(),
         Err(error) => vec![bounded(&format!("sync skipped: {}", error_json(&error)))],
-    }
+    };
+    (warnings, Some(setup))
 }
 
 fn storage_error(message: &str) -> i32 {

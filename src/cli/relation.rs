@@ -86,6 +86,9 @@ pub(crate) fn execute_relation_with_caller(
         ));
     }
     match crate::providers::redmine::relations::execute(&provider, &command) {
+        Ok(crate::providers::redmine::relations::RelationResult::Paged(page)) => {
+            super::print_json(&page)
+        }
         Ok(crate::providers::redmine::relations::RelationResult::List(relations)) => {
             super::print_json(&relations)
         }

@@ -16,8 +16,10 @@ pub(crate) fn parse_project(args: &[String]) -> Result<Command, String> {
     }
     match name.unwrap() {
         "list" => {
-            require_exact_positionals(args, 1, "project list")?;
-            Ok(Command::Project(ProjectCommand::List))
+            validate_options(args, 0, &["--page", "--limit"], &[], "project list")?;
+            Ok(Command::Project(ProjectCommand::List {
+                page: Some(page_request(args, "project list")?),
+            }))
         }
         "create" => {
             validate_options(

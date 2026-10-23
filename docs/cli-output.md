@@ -88,9 +88,9 @@ so the summary stays actionable.
 ## JSON
 
 `--output json` writes exactly one document on stdout, with no progress and no
-diagnostic mixed in. The key sets are the stable provider-shaped documents that
-predate the presentation work: this change adds no key, removes none, and
-renames none. `jq` and the agent skills can rely on them.
+diagnostic mixed in. Supported collection commands use the shared page envelope
+by default; `--page` and `--limit` choose its slice. `--output` selects
+serialization only and never changes which rows are selected.
 
 ```console
 $ phasegent --output json doctor
@@ -105,6 +105,18 @@ $ phasegent --output json worktree prune --dryrun
 In `json` mode stderr carries only the structured diagnostics that already
 existed. The transient progress line never appears, and no cursor control or
 ANSI sequence reaches either stream.
+
+## Paged output
+
+Supported collection commands return `{items,page,limit,total_count,has_more}`
+with their scope fields on page 1 with 50 items by default. `--page` and `--limit`
+select another page or size; both use the same contract, including `timer list`.
+Known totals are numeric; a native upstream that omits its total yields `null`,
+with `has_more` established by bounded lookahead. Text mode shows the current
+entries and page/total/more summary; an empty page does not imply an empty
+collection. The CLI does not automatically traverse all pages. See
+[collection pagination](cli-pagination.md) for limits, context fields and native
+versus output-only capabilities.
 
 ## Errors and exit codes
 

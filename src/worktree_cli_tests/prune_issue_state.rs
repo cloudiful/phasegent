@@ -129,6 +129,61 @@ fn source(links: FakeLinks, provider: FakeProvider) -> ComposedIssueStateSource 
 }
 
 #[test]
+fn targeted_invalidation_preserves_unrelated_issue_and_repo_memos() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    struct Links(Rc<RefCell<Vec<(String, u64)>>>);
+    impl LinkScopeReader for Links {
+        fn scopes(&self, path: &Path, issue: u64) -> Result<Vec<LinkScope>, String> {
+            self.0
+                .borrow_mut()
+                .push((path.display().to_string(), issue));
+            Ok(Vec::new())
+        }
+        fn refresh(&self) {
+            panic!("targeted invalidation must retain repository setup");
+        }
+        fn invalidate(&self, _: &Path, _: &[u64]) {}
+    }
+    struct Provider(Rc<RefCell<Vec<u64>>>);
+    impl IssueStateReader for Provider {
+        fn provider(&self) -> Result<String, String> {
+            Ok("redmine".to_owned())
+        }
+        fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
+            self.0.borrow_mut().push(issue);
+            Ok(Some(fact("closed", None, None)))
+        }
+    }
+    let links = Rc::new(RefCell::new(Vec::new()));
+    let reads = Rc::new(RefCell::new(Vec::new()));
+    let source = ComposedIssueStateSource::new(
+        Box::new(Links(links.clone())),
+        Box::new(Provider(reads.clone())),
+    );
+    let other = Path::new("/other-repo");
+    for (path, issue) in [(repo(), 7), (repo(), 8), (other.to_path_buf(), 7)] {
+        assert!(source.closure(&path, issue).is_closed());
+    }
+    source.invalidate(&repo(), &[7]);
+    assert!(source.closure(&repo(), 8).is_closed());
+    assert!(source.closure(other, 7).is_closed());
+    assert_eq!(reads.borrow().len(), 3);
+    for _ in 0..2 {
+        assert!(source.closure(&repo(), 7).is_closed());
+    }
+    assert_eq!(*reads.borrow(), vec![7, 8, 7, 7]);
+    assert_eq!(links.borrow().len(), 4);
+    source.invalidate(&repo(), &[7]);
+    assert!(source.closure(&repo(), 7).is_closed());
+    assert_eq!(
+        reads.borrow().len(),
+        5,
+        "each removal rechecks its target again"
+    );
+}
+
+#[test]
 fn a_closed_issue_is_closed() {
     let source = source(
         FakeLinks::none(),

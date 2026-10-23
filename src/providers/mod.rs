@@ -48,12 +48,25 @@ pub trait IssueProvider {
     /// order. Backs `comment list`: one approved read path so agents
     /// never need raw `?include=journals` calls for bulk reads.
     fn list_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, Self::Error>;
+    fn list_comments_page(
+        &self,
+        issue: u64,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<CommentOutput>, Self::Error>;
 }
 
 pub trait RedmineMetadataProvider {
     type Error;
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error>;
+    fn list_projects_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineProject>, Self::Error>;
+    fn list_versions_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineVersion>, Self::Error>;
     fn create_project(
         &self,
         name: &str,

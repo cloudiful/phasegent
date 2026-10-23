@@ -7,8 +7,10 @@
 use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
+use crate::pagination::{PageRequest, Paged, truncation_warning};
+use crate::worktree::LeaseRow;
+use crate::worktree::leases::{count_leases, list_for_issue, page_leases};
 use crate::worktree::leases::{ensure_schema, list_for_repo};
-use crate::worktree::{LeaseRow, leases_for_issue};
 
 use super::{config_error, open_storage, resolve_list_identity, storage_error};
 
@@ -48,9 +50,33 @@ impl From<LeaseRow> for LeaseJson {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn execute_status(issue: u64) -> i32 {
+    execute_status_page(issue, None)
+}
+
+pub(super) fn execute_status_page(issue: u64, page: Option<PageRequest>) -> i32 {
     crate::output::progress::stage("worktree status: reading the leases");
-    match leases_for_issue(issue) {
+    let storage = match open_storage() {
+        Ok(storage) => storage,
+        Err(message) => {
+            return storage_error(&crate::worktree::WorktreeError::new("storage", message));
+        }
+    };
+    if let Err(message) = ensure_schema(&storage) {
+        return storage_error(&crate::worktree::WorktreeError::new("storage", message));
+    }
+    if let Some(page) = page {
+        return match page_payload(&storage, None, Some(issue), page) {
+            Ok(payload) => print_json(&payload),
+            Err(error) => storage_error(&error),
+        };
+    }
+    match list_for_issue(&storage, issue).and_then(|rows| {
+        let total = count_leases(&storage, None, Some(issue))?;
+        crate::cli::report_local_warnings("worktree status", truncation_warning(total, rows.len()));
+        Ok(rows)
+    }) {
         Ok(rows) => {
             let payload = serde_json::json!({
                 "issue": issue,
@@ -62,8 +88,31 @@ pub(super) fn execute_status(issue: u64) -> i32 {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn execute_list(repo: Option<&str>) -> i32 {
+    execute_list_seeded(repo, None, &crate::worktree::ProcessWorktreeRunner::new())
+}
+
+pub(crate) fn execute_list_seeded(
+    repo: Option<&str>,
+    setup: Option<&crate::cli::issue::sync::SyncSetup>,
+    runner: &dyn crate::worktree::WorktreeRunner,
+) -> i32 {
+    execute_list_page(repo, setup, runner, None)
+}
+
+pub(crate) fn execute_list_page(
+    repo: Option<&str>,
+    setup: Option<&crate::cli::issue::sync::SyncSetup>,
+    runner: &dyn crate::worktree::WorktreeRunner,
+    page: Option<PageRequest>,
+) -> i32 {
     crate::output::progress::stage("worktree list: reading the leases");
+    if let Some(setup) = setup
+        && let Some(scope) = setup.scopes.first()
+    {
+        return render_list(&setup.storage, &scope.repo_identity, page);
+    }
     let storage = match open_storage() {
         Ok(storage) => storage,
         Err(message) => return config_error(&message),
@@ -71,18 +120,57 @@ pub(super) fn execute_list(repo: Option<&str>) -> i32 {
     if let Err(message) = ensure_schema(&storage) {
         return config_error(&message);
     }
-    let identity = match resolve_list_identity(&storage, repo) {
+    let identity = match resolve_list_identity(&storage, repo, runner) {
         Ok(identity) => identity,
         Err(message) => return structured_error(message, 2),
     };
-    match list_for_repo(&storage, &identity) {
-        Ok(rows) => {
-            let payload = serde_json::json!({
-                "repo_identity": identity,
-                "leases": rows.into_iter().map(LeaseJson::from).collect::<Vec<_>>(),
-            });
-            print_json(&payload)
-        }
+    render_list(&storage, &identity, page)
+}
+
+fn render_list(
+    storage: &crate::infra::storage::Storage,
+    identity: &str,
+    page: Option<PageRequest>,
+) -> i32 {
+    let payload = match page {
+        Some(page) => page_payload(storage, Some(identity), None, page),
+        None => list_payload(storage, identity),
+    };
+    match payload {
+        Ok(payload) => print_json(&payload),
         Err(error) => storage_error(&error),
     }
+}
+
+fn page_payload(
+    storage: &crate::infra::storage::Storage,
+    identity: Option<&str>,
+    issue: Option<u64>,
+    request: PageRequest,
+) -> Result<serde_json::Value, crate::worktree::WorktreeError> {
+    let (rows, total) = page_leases(storage, identity, issue, request)?;
+    let context = match identity {
+        Some(identity) => serde_json::json!({"repo_identity": identity}),
+        None => serde_json::json!({"issue": issue}),
+    };
+    Paged::known(
+        rows.into_iter().map(LeaseJson::from).collect(),
+        request,
+        total,
+    )
+    .with_context(context)
+    .map_err(|message| crate::worktree::WorktreeError::new("serialization", message))
+}
+
+pub(crate) fn list_payload(
+    storage: &crate::infra::storage::Storage,
+    identity: &str,
+) -> Result<serde_json::Value, crate::worktree::WorktreeError> {
+    let rows = list_for_repo(storage, identity)?;
+    let total = count_leases(storage, Some(identity), None)?;
+    crate::cli::report_local_warnings("worktree list", truncation_warning(total, rows.len()));
+    Ok(serde_json::json!({
+        "repo_identity": identity,
+        "leases": rows.into_iter().map(LeaseJson::from).collect::<Vec<_>>(),
+    }))
 }

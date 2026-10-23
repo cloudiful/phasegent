@@ -10,15 +10,15 @@
 use std::path::{Path, PathBuf};
 
 use crate::infra::storage::Storage;
-use crate::worktree::leases::{ensure_schema, list_for_repo, repo_identities};
+use crate::worktree::leases::{ensure_schema, list_all_for_repo, repo_identities};
 use crate::worktree::{LeaseRow, WorktreeError, WorktreeRunner};
 
 use super::SyncSkippedRepo;
 
-pub(super) struct RepoScope {
-    pub(super) repo_identity: String,
-    pub(super) repo_path: PathBuf,
-    pub(super) rows: Vec<LeaseRow>,
+pub(crate) struct RepoScope {
+    pub(crate) repo_identity: String,
+    pub(crate) repo_path: PathBuf,
+    pub(crate) candidates: Vec<(u64, Vec<LeaseRow>)>,
 }
 
 /// Resolve the repository scopes of one pass. Without `--all` this is the
@@ -34,12 +34,12 @@ pub(super) fn resolve_scopes(
 ) -> Result<(Vec<RepoScope>, Vec<SyncSkippedRepo>), WorktreeError> {
     if !all {
         let identity = crate::worktree::repo_identity(runner, cwd)?;
-        let rows = list_for_repo(storage, &identity)?;
+        let rows = list_all_for_repo(storage, &identity)?;
         return Ok((
             vec![RepoScope {
                 repo_identity: identity,
                 repo_path: cwd.to_path_buf(),
-                rows,
+                candidates: super::engine::candidate_issues(rows),
             }],
             Vec::new(),
         ));
@@ -85,11 +85,11 @@ pub(super) fn resolve_scopes(
                 continue;
             }
         }
-        let rows = list_for_repo(storage, &identity)?;
+        let rows = list_all_for_repo(storage, &identity)?;
         scopes.push(RepoScope {
             repo_identity: identity,
             repo_path,
-            rows,
+            candidates: super::engine::candidate_issues(rows),
         });
     }
     Ok((scopes, skipped))

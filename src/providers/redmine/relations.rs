@@ -16,6 +16,7 @@ use crate::providers::{ProviderDispatcher, RedmineProvider};
 #[derive(Debug)]
 pub(crate) enum RelationResult {
     List(Vec<RelationSummary>),
+    Paged(serde_json::Value),
     Created(RelationSummary),
     Deleted(u64),
 }
@@ -42,10 +43,16 @@ fn execute_redmine(
     command: &RelationCommand,
 ) -> Result<RelationResult, PhasegentError> {
     match command {
-        RelationCommand::List { issue } => {
+        RelationCommand::List { issue, page } => {
             validate_issue(*issue, "relation list")?;
             let relations = redmine.list_relations(*issue)?;
-            Ok(RelationResult::List(relations))
+            match page {
+                Some(page) => crate::pagination::slice(relations, *page)
+                    .with_context(serde_json::json!({"issue": issue}))
+                    .map(RelationResult::Paged)
+                    .map_err(PhasegentError::config),
+                None => Ok(RelationResult::List(relations)),
+            }
         }
         RelationCommand::Create {
             issue,

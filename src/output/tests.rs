@@ -207,6 +207,33 @@ fn render_view(view: HumanView, value: &serde_json::Value, width: usize) -> Stri
     render::render_value(value, &context(view, width))
 }
 
+#[test]
+fn generic_page_summary_does_not_duplicate_metadata_or_change_issue_search() {
+    let value = json!({"items": [{"run_id": "visible-run"}], "page": 1, "limit": 50, "total_count": 1, "has_more": false});
+    let text = render_view(HumanView::Generic, &value, 80);
+    assert!(text.contains("Page 1, limit 50, total 1, no more") && text.contains("visible-run"));
+    assert!(!text.contains("Total count:") && !text.contains("Has more:"));
+    assert!(render::page_summary(&value, &context(HumanView::IssueSearch, 80)).is_none());
+}
+
+#[test]
+fn paged_lease_views_show_entries_and_distinguish_empty_pages_at_40_and_80_columns() {
+    for width in [40, 80] {
+        let value = json!({"items": [lease("lease-visible", 42, "active", "fixture-branch", "/repo/worktree")], "page": 2, "limit": 1, "total_count": 3, "has_more": true, "issue": 42});
+        let text = render_view(HumanView::WorktreeLeaseList, &value, width);
+        assert!(text.contains("Page 2") && text.contains("lease-visible") && text.contains("#42"));
+        assert!(
+            text.lines()
+                .all(|line| console::measure_text_width(line) <= width),
+            "{text}"
+        );
+        let empty = json!({"items": [], "page": 9, "limit": 1, "total_count": 3, "has_more": false, "repo_identity": "/repo/.git"});
+        let text = render_view(HumanView::WorktreeLeaseList, &empty, width);
+        assert!(text.contains("No leases on this page."));
+        assert!(!text.contains("No worktree leases are recorded"));
+    }
+}
+
 /// One lease of the `worktree list` envelope.
 fn lease(id: &str, issue: u64, state: &str, branch: &str, path: &str) -> serde_json::Value {
     json!({

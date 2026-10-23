@@ -23,6 +23,37 @@ use std::str::FromStr;
 use std::{fs, time};
 
 #[test]
+fn relation_page_is_output_only_with_exact_count_and_issue_context() {
+    let response = serde_json::json!({"relations": [
+        {"id": 1, "issue_id": 10, "issue_to_id": 20, "relation_type": "blocks"},
+        {"id": 2, "issue_id": 10, "issue_to_id": 30, "relation_type": "relates"}
+    ]})
+    .to_string();
+    let (base, requests, server) = sequence(vec![MockResponse::ok(response)]);
+    let dispatcher = ProviderDispatcher::Redmine(provider(base));
+    let result = crate::providers::redmine::relations::execute(
+        &dispatcher,
+        &RelationCommand::List {
+            issue: 10,
+            page: Some(crate::pagination::PageRequest::new(2, 1).unwrap()),
+        },
+    )
+    .unwrap();
+    let crate::providers::redmine::relations::RelationResult::Paged(page) = result else {
+        panic!("expected page");
+    };
+    assert_eq!(page["issue"], 10);
+    assert_eq!(page["total_count"], 2);
+    assert_eq!(page["items"][0]["id"], 2);
+    assert_eq!(page["has_more"], false);
+    server.join().unwrap();
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 1);
+    support::assert_request(&requests[0], "GET", "/issues/10/relations.json", None);
+    assert!(!requests[0].contains("offset="));
+}
+
+#[test]
 fn relation_parser_accepts_canonical_types_and_rejects_invalid() {
     let parsed = command::parse_with_role_env(
         &strings([
@@ -161,10 +192,16 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             Some(role),
         )
         .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Command::Relation(RelationCommand::List { issue: 10 })
-        ));
+        match parsed.command {
+            Command::Relation(RelationCommand::List {
+                issue: 10,
+                page: Some(page),
+            }) => {
+                assert_eq!(page.page(), 1);
+                assert_eq!(page.limit(), 50);
+            }
+            other => panic!("expected default relation page, got {other:?}"),
+        }
     }
     // admin is denied relation list before any network/provider access.
     assert_eq!(
