@@ -3385,6 +3385,13 @@ describe("v2 skill.transform (embedded phasegent)", () => {
     expect(orchestrator).toContain("reuse the original issue for a continuing goal");
     expect(orchestrator).toContain("primary executes directly");
     expect(orchestrator).toContain("only when tracking and delegating");
+    expect(orchestrator).toContain("prepare the baseline before the issue-final review");
+    expect(orchestrator).toContain("resolve the actual PR target from the PR or issue plan");
+    expect(orchestrator).toContain("`origin/main` or `origin/dev`");
+    expect(orchestrator).toContain("then freeze that tree for the final audit");
+    expect(orchestrator).toContain("record the target ref and SHA");
+    expect(orchestrator).toContain("reuse the reviewed baseline while it satisfies");
+    expect(orchestrator).toContain("post-`PASS` rules for scoped verification or renewed final review");
     expect(orchestrator).toContain("For substantive tracked work, delivery opens only after");
     expect(orchestrator).toContain("instead of a second full audit or a separate release issue");
     expect(orchestrator).toContain("only after the requested delivery succeeds");

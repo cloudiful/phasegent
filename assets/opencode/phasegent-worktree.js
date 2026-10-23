@@ -3336,6 +3336,15 @@ pending-question request on the human's behalf or fabricate a human response.
 ## Git delivery
 
 - You own commit/push/tag; children never commit, push, tag, or mutate refs.
+- For authorized branch integration, prepare the baseline before the issue-final
+  review: resolve the actual PR target from the PR or issue plan (for example
+  \`origin/main\` or \`origin/dev\`), fetch it, and rebase the feature branch in its
+  own worktree. Resolve conflicts and rerun the issue's validation commands,
+  then freeze that tree for the final audit and record the target ref and SHA
+  in the issue. Confirm an ambiguous target with the human before rebasing.
+- At delivery, reuse the reviewed baseline while it satisfies the repository's
+  merge requirements. A required later baseline update follows the shared
+  post-\`PASS\` rules for scoped verification or renewed final review.
 - For substantive tracked work, delivery opens only after the issue-final review
   returns \`PASS\` on an audit that covers the issue's current acceptance criteria
   and the issue's validation commands are green; bounded mechanical follow-ups
