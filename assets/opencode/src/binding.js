@@ -11,6 +11,10 @@ import { phasegentCommand, safeText, warn } from "./runtime.js";
 // `worktree acquire` is orchestrator-only; the lease reads are executor-scoped.
 const ORCHESTRATOR_ENV = { PHASEGENT_ROLE: "orchestrator" };
 const EXECUTOR_ENV = { PHASEGENT_ROLE: "executor" };
+const LEASE_PAGE_LIMIT = 100;
+const MAX_LEASE_PAGES = 10_000;
+const PAGING_FIELDS = ["items", "page", "limit", "total_count", "has_more"];
+const LEASE_STATUSES = new Set(["active", "retained", "released"]);
 
 export async function readBranchBinding(cwd) {
   const result = await safeText(phasegentCommand(["issue", "status"], cwd));
@@ -61,16 +65,134 @@ export async function acquireWorktree(issueId, sessionId, cwd, options) {
   return null;
 }
 
-export async function readIssueLeases(issueId, cwd) {
-  const args = ["worktree", "status", "--issue", String(issueId)];
-  const result = await safeText(phasegentCommand(args, cwd, EXECUTOR_ENV));
-  if (!result.ok || !result.value) return null;
-  try {
-    const parsed = JSON.parse(result.value);
-    return parsed && Array.isArray(parsed.leases) ? parsed.leases : null;
-  } catch (_) {
-    return null;
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validLease(lease) {
+  return (
+    isObject(lease) &&
+    typeof lease.lease_id === "string" && lease.lease_id.length > 0 &&
+    typeof lease.repo_identity === "string" && lease.repo_identity.length > 0 &&
+    Number.isSafeInteger(lease.issue) && lease.issue > 0 &&
+    typeof lease.session === "string" && lease.session.length > 0 &&
+    typeof lease.checkout_path === "string" && lease.checkout_path.length > 0 &&
+    typeof lease.worktree_path === "string" && lease.worktree_path.length > 0 &&
+    typeof lease.branch === "string" &&
+    LEASE_STATUSES.has(lease.status) &&
+    Number.isSafeInteger(lease.created_at) &&
+    Number.isSafeInteger(lease.heartbeat_at) &&
+    (!Object.hasOwn(lease, "release_reason") || typeof lease.release_reason === "string")
+  );
+}
+
+function validUniqueLeases(leases) {
+  if (!Array.isArray(leases)) return false;
+  const ids = new Set();
+  for (const lease of leases) {
+    if (!validLease(lease) || ids.has(lease.lease_id)) return false;
+    ids.add(lease.lease_id);
   }
+  return true;
+}
+
+function isLegacyLeaseResult(parsed) {
+  return !PAGING_FIELDS.some((field) => Object.hasOwn(parsed, field));
+}
+
+async function readCompleteLeaseCollection(argsForPage, cwd, contextField, expectedIssue, executePage) {
+  const runPage = executePage || ((args) => safeText(phasegentCommand(args, cwd, EXECUTOR_ENV)));
+  const leases = [];
+  const leaseIds = new Set();
+  let expectedContext;
+  let totalCount;
+  let pageCount;
+
+  for (let page = 1; page <= MAX_LEASE_PAGES; page += 1) {
+    const args = [...argsForPage(page), "--page", String(page), "--limit", String(LEASE_PAGE_LIMIT)];
+    const result = await runPage(args);
+    if (!result.ok || !result.value) return null;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(result.value);
+    } catch (_) {
+      return null;
+    }
+    if (!isObject(parsed)) return null;
+
+    if (page === 1 && isLegacyLeaseResult(parsed)) {
+      if (
+        !Array.isArray(parsed.leases) ||
+        !validUniqueLeases(parsed.leases) ||
+        (contextField === "issue" && parsed.issue !== expectedIssue) ||
+        (contextField === "repo_identity" &&
+          (typeof parsed.repo_identity !== "string" || parsed.repo_identity.length === 0))
+      ) {
+        return null;
+      }
+      return parsed.leases;
+    }
+
+    if (
+      parsed.page !== page ||
+      parsed.limit !== LEASE_PAGE_LIMIT ||
+      !Array.isArray(parsed.items) ||
+      parsed.items.length > LEASE_PAGE_LIMIT ||
+      typeof parsed.has_more !== "boolean" ||
+      !Number.isSafeInteger(parsed.total_count) ||
+      parsed.total_count < 0 ||
+      parsed.total_count > LEASE_PAGE_LIMIT * MAX_LEASE_PAGES
+    ) {
+      return null;
+    }
+
+    const context = parsed[contextField];
+    if (contextField === "issue") {
+      if (!Number.isSafeInteger(context) || context !== expectedIssue) return null;
+    } else if (typeof context !== "string" || context.length === 0) {
+      return null;
+    }
+    if (page === 1) {
+      expectedContext = context;
+      totalCount = parsed.total_count;
+      pageCount = Math.max(1, Math.ceil(totalCount / LEASE_PAGE_LIMIT));
+      if (pageCount > MAX_LEASE_PAGES) return null;
+    } else if (context !== expectedContext || parsed.total_count !== totalCount) {
+      return null;
+    }
+
+    if (page > pageCount) return null;
+    const expectedItems = Math.min(LEASE_PAGE_LIMIT, totalCount - leases.length);
+    if (parsed.items.length !== expectedItems) return null;
+    const expectedMore = leases.length + parsed.items.length < totalCount;
+    if (parsed.has_more !== expectedMore) return null;
+
+    for (const lease of parsed.items) {
+      if (!validLease(lease) || leaseIds.has(lease.lease_id)) return null;
+      leaseIds.add(lease.lease_id);
+      leases.push(lease);
+    }
+
+    if (!parsed.has_more) {
+      return leases.length === totalCount && page === pageCount ? leases : null;
+    }
+  }
+
+  return null;
+}
+
+export async function readIssueLeases(issueId, cwd, executePage) {
+  const issue = Number(issueId);
+  if (!Number.isSafeInteger(issue) || issue <= 0) return null;
+  const leases = await readCompleteLeaseCollection(
+    (page) => ["worktree", "status", "--issue", String(issue)],
+    cwd,
+    "issue",
+    issue,
+    executePage,
+  );
+  return leases;
 }
 
 // `worktree status` selects active rows only, so a converged issue looks empty
@@ -78,17 +200,17 @@ export async function readIssueLeases(issueId, cwd) {
 // envelope keeps every row (active and terminal) of the resolved repo
 // identity. `--no-sync` keeps the probe local and offline: no provider
 // resolution, no reconciliation pass.
-export async function readIssueLeaseHistory(issueId, cwd) {
-  const args = ["worktree", "list", "--no-sync"];
-  const result = await safeText(phasegentCommand(args, cwd, EXECUTOR_ENV));
-  if (!result.ok || !result.value) return null;
-  try {
-    const parsed = JSON.parse(result.value);
-    if (!parsed || !Array.isArray(parsed.leases)) return null;
-    return parsed.leases.filter((lease) => lease && Number(lease.issue) === Number(issueId));
-  } catch (_) {
-    return null;
-  }
+export async function readIssueLeaseHistory(issueId, cwd, executePage) {
+  const issue = Number(issueId);
+  if (!Number.isSafeInteger(issue) || issue <= 0) return null;
+  const leases = await readCompleteLeaseCollection(
+    () => ["worktree", "list", "--no-sync"],
+    cwd,
+    "repo_identity",
+    undefined,
+    executePage,
+  );
+  return leases === null ? null : leases.filter((lease) => lease.issue === issue);
 }
 
 // `issue close` and `issue sync` converge an issue's lease rows instead of

@@ -9,6 +9,44 @@ use crate::providers::redmine::model::{
 use crate::providers::redmine::pagination;
 
 impl RedmineProvider {
+    pub(crate) fn list_projects_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineProject>, PhasegentError> {
+        crate::pagination::native_page(
+            page,
+            |offset, limit| {
+                let result: RedmineProjectCollection = self.http.get(
+                    "projects.json",
+                    &[("limit", limit.to_string()), ("offset", offset.to_string())],
+                    "project list",
+                )?;
+                Ok((result.projects, result.total_count))
+            },
+            |message| PhasegentError::pagination("project list", message),
+        )
+    }
+
+    pub(crate) fn list_versions_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineVersion>, PhasegentError> {
+        let project = self.config.require_project_id()?;
+        let path = format!("projects/{project}/versions.json");
+        crate::pagination::native_page(
+            page,
+            |offset, limit| {
+                let result: RedmineVersionCollection = self.http.get(
+                    &path,
+                    &[("limit", limit.to_string()), ("offset", offset.to_string())],
+                    "version list",
+                )?;
+                Ok((result.versions, result.total_count))
+            },
+            |message| PhasegentError::pagination("version list", message),
+        )
+    }
+
     pub fn bootstrap_project(
         &self,
         repository: &str,

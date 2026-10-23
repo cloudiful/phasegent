@@ -23,6 +23,56 @@ use std::str::FromStr;
 use std::{fs, time};
 
 #[test]
+fn explicit_project_page_is_one_native_request_with_exact_metadata() {
+    let (result, request) = one(
+        MockResponse::ok(project_collection(
+            8,
+            2,
+            &[(5, "Five", "five"), (6, "Six", "six")],
+        )),
+        |redmine| redmine.list_projects_page(crate::pagination::PageRequest::new(3, 2).unwrap()),
+    );
+    let page = result.unwrap();
+    assert_eq!(
+        page.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [5, 6]
+    );
+    assert_eq!(page.total_count, Some(8));
+    assert!(page.has_more);
+    assert_eq!((page.page, page.limit), (3, 2));
+    assert!(
+        request.contains("offset=4") && request.contains("limit=2"),
+        "{request}"
+    );
+}
+
+#[test]
+fn explicit_project_page_without_total_uses_only_bounded_lookahead() {
+    let mut first: serde_json::Value = serde_json::from_str(&project_collection(
+        8,
+        2,
+        &[(5, "Five", "five"), (6, "Six", "six")],
+    ))
+    .unwrap();
+    first.as_object_mut().unwrap().remove("total_count");
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(first.to_string()),
+        MockResponse::ok(project_collection(8, 1, &[(7, "Seven", "seven")])),
+    ]);
+    let page = provider(base)
+        .list_projects_page(crate::pagination::PageRequest::new(3, 2).unwrap())
+        .unwrap();
+    server.join().unwrap();
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("offset=4") && requests[0].contains("limit=2"));
+    assert!(requests[1].contains("offset=6") && requests[1].contains("limit=1"));
+    assert_eq!(page.total_count, None);
+    assert!(page.has_more);
+    assert_eq!(page.items.len(), 2);
+}
+
+#[test]
 fn project_list_uses_redmine_collection_wrapper_and_pagination_params() {
     let response = support::project_collection(1, 100, &[(41, "Workflow", "workflow")]);
     let (result, request) = one(MockResponse::ok(response), |redmine| {

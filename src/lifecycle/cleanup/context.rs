@@ -9,12 +9,13 @@
 
 use std::path::Path;
 
+use crate::infra::storage::Storage;
 use crate::worktree::{LeaseRow, WorktreeRunner};
 
 /// The repository identity plus every lease row recorded against it.
-pub(super) struct CleanupContext {
-    pub(super) identity: String,
-    pub(super) rows: Vec<LeaseRow>,
+pub(crate) struct CleanupContext {
+    pub(crate) identity: String,
+    pub(crate) rows: Vec<LeaseRow>,
 }
 
 impl CleanupContext {
@@ -22,6 +23,20 @@ impl CleanupContext {
     /// with no row has no candidate at all, and the pass is a no-op.
     pub(super) fn has_issue(&self, issue: u64) -> bool {
         self.rows.iter().any(|row| row.issue == issue)
+    }
+
+    /// Load the current rows for an already-known repository identity.
+    /// A caller that owns the lease store reuses it instead of reopening
+    /// the database, and the read is always fresh: the cleanup guards must
+    /// see the rows as they are after any release, not a scan snapshot.
+    pub(crate) fn load(storage: &Storage, identity: &str) -> Result<Self, String> {
+        match crate::worktree::leases::list_all_for_repo(storage, identity) {
+            Ok(rows) => Ok(Self {
+                identity: identity.to_owned(),
+                rows,
+            }),
+            Err(error) => Err(error.message),
+        }
     }
 }
 

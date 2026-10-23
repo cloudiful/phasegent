@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 #[path = "cleanup/candidate.rs"]
 pub(crate) mod candidate;
 #[path = "cleanup/context.rs"]
-mod context;
+pub(crate) mod context;
 #[path = "cleanup/guards.rs"]
 mod guards;
 #[path = "cleanup/sessions.rs"]
@@ -52,6 +52,7 @@ mod tests_modes;
 #[path = "cleanup/tests_prune_guards.rs"]
 mod tests_prune_guards;
 
+pub(crate) use context::CleanupContext;
 pub(crate) use target::TargetResolver;
 
 use crate::worktree::LeaseRow;
@@ -152,6 +153,32 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
         Ok(context) => context,
         Err(reason) => return AutoCleanupOutcome::Warning { reason },
     };
+    cleanup_closed_issue_worktrees_in_context(
+        runner,
+        &candidate::DirectOccupancy(api),
+        mode,
+        context,
+        repo_path,
+        issue,
+        session,
+    )
+}
+
+/// Injected core of the guarded cleanup: the caller supplies the resolved
+/// context (repository identity plus the rows as they are *now*) and the
+/// host guard. The reconciliation pass uses this to reuse its store,
+/// identity and an invocation-local host memo, while every caller that
+/// does not inject still reaches the exact same predicate through
+/// [`cleanup_closed_issue_worktrees_with`].
+pub(crate) fn cleanup_closed_issue_worktrees_in_context(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    guard: &dyn candidate::OccupancyGuard,
+    mode: CleanupMode,
+    context: CleanupContext,
+    repo_path: &Path,
+    issue: u64,
+    session: Option<&str>,
+) -> AutoCleanupOutcome {
     if !context.has_issue(issue) {
         return AutoCleanupOutcome::Noop;
     }
@@ -168,9 +195,9 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
         if !directory.exists() {
             continue;
         }
-        let blocked = candidate::protected_reason(
+        let blocked = candidate::protected_reason_with_guard(
             runner,
-            api,
+            guard,
             mode,
             &target,
             &context.identity,

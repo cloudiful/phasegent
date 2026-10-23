@@ -13,6 +13,18 @@ use crate::providers::{
 
 impl RedmineMetadataProvider for RedmineProvider {
     type Error = PhasegentError;
+    fn list_projects_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineProject>, Self::Error> {
+        RedmineProvider::list_projects_page(self, page)
+    }
+    fn list_versions_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineVersion>, Self::Error> {
+        RedmineProvider::list_versions_page(self, page)
+    }
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
         RedmineProvider::list_projects(self)
@@ -38,6 +50,24 @@ impl RedmineMetadataProvider for RedmineProvider {
 
 impl RedmineMetadataProvider for ProviderDispatcher {
     type Error = PhasegentError;
+    fn list_projects_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineProject>, Self::Error> {
+        match self {
+            Self::Redmine(provider) => provider.list_projects_page(page),
+            Self::Local(provider) => provider.list_projects_page(page),
+        }
+    }
+    fn list_versions_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineVersion>, Self::Error> {
+        match self {
+            Self::Redmine(provider) => provider.list_versions_page(page),
+            Self::Local(provider) => provider.list_versions_page(page),
+        }
+    }
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
         match self {
@@ -75,6 +105,18 @@ impl RedmineMetadataProvider for ProviderDispatcher {
 
 impl RedmineMetadataProvider for LocalProvider {
     type Error = PhasegentError;
+    fn list_projects_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineProject>, Self::Error> {
+        LocalProvider::list_projects_page(self, page)
+    }
+    fn list_versions_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineVersion>, Self::Error> {
+        LocalProvider::list_versions_page(self, page)
+    }
 
     fn list_projects(&self) -> Result<Vec<RedmineProject>, Self::Error> {
         LocalProvider::list_projects(self)

@@ -17,12 +17,12 @@ pub(crate) struct TimerOutput {
     pub sync_warning: Option<String>,
 }
 
-/// JSON returned by `timer list` and `timer get`. `list` flattens every
-/// row's fields; `get` uses the same shape as a single run plus the
-/// surrounding envelope so the AI can pattern-match without branching.
+/// JSON returned by `timer list`, `timer get` and timer recovery. List rows
+/// use the shared page envelope; single-run commands keep their run envelope.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum TimerListOutput {
+    Paged(crate::pagination::Paged<TimerRun>),
     /// `Box<TimerRun>` keeps the enum small enough to avoid the
     /// `large_enum_variant` clippy lint while keeping the on-the-wire
     /// shape identical for `list` callers.
@@ -144,13 +144,30 @@ pub(crate) fn execute_recovery_with_caller(
 ) -> Result<TimerListOutput, PhasegentError> {
     let _role = timer_orchestrator_caller(caller, "timer")?;
     match command {
-        TimerCommand::List { status, limit } => {
+        TimerCommand::List {
+            status,
+            limit,
+            page,
+        } => {
             let filter = TimerStatusFilter::parse(&status).map_err(PhasegentError::config)?;
             let storage = Storage::open().map_err(timer_storage_error("timer list"))?;
+            if let Some(page) = page {
+                return storage
+                    .page_timer_runs(filter, page)
+                    .map(TimerListOutput::Paged)
+                    .map_err(timer_storage_error("timer list"));
+            }
             let runs = storage
                 .list_timer_runs(filter, limit)
                 .map_err(timer_storage_error("timer list"))?;
             let count = runs.len();
+            let total = storage
+                .count_timer_runs(filter)
+                .map_err(timer_storage_error("timer list"))?;
+            crate::cli::report_local_warnings(
+                "timer list",
+                crate::pagination::truncation_warning(total, count),
+            );
             Ok(TimerListOutput::Many { runs, count })
         }
         TimerCommand::Get { run_id } => {

@@ -12,6 +12,36 @@ fn row_from_stmt(row: &rusqlite::Row<'_>) -> Result<LocalProjectRow, rusqlite::E
 }
 
 impl LocalProvider {
+    pub(crate) fn list_projects_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineProject>, PhasegentError> {
+        self.with_conn("project list", |conn| {
+            let transaction = conn.unchecked_transaction()?;
+            let total = transaction.query_row(local_sql("count_projects"), [], |row| row.get(0))?;
+            let items = {
+                let mut statement = transaction.prepare(local_sql("page_projects"))?;
+                statement
+                    .query_map(
+                        rusqlite::params![page.limit() as i64, page.offset() as i64],
+                        row_from_stmt,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .map(|row| row.into_project())
+                    .collect()
+            };
+            transaction.commit()?;
+            Ok(crate::pagination::Paged::known(items, page, total))
+        })
+    }
+    pub(crate) fn list_versions_page(
+        &self,
+        page: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<RedmineVersion>, PhasegentError> {
+        Ok(crate::pagination::Paged::known(empty_versions(), page, 0))
+    }
+
     pub fn list_projects(&self) -> Result<Vec<RedmineProject>, PhasegentError> {
         let rows = self.with_conn("project list", |conn| {
             let mut stmt = conn.prepare(local_sql("list_projects"))?;

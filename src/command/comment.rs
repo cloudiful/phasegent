@@ -42,9 +42,10 @@ pub(crate) fn parse_comment(args: &[String]) -> Result<Command, String> {
             }))
         }
         "list" => {
-            require_exact_positionals(args, 2, "comment list")?;
+            validate_options(args, 1, &["--page", "--limit"], &[], "comment list")?;
             Ok(Command::Comment(CommentCommand::List {
                 issue: positional_number(args, 1, "comment list")?,
+                page: Some(page_request(args, "comment list")?),
             }))
         }
         "find-marker" => {

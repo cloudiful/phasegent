@@ -1,5 +1,29 @@
 use super::PlanningOptions;
 
+pub(crate) fn page_request(
+    args: &[String],
+    operation: &str,
+) -> Result<crate::pagination::PageRequest, String> {
+    for flag in ["--page", "--limit"] {
+        if args
+            .iter()
+            .filter(|arg| arg.as_str() == flag || split_inline(arg, flag).is_some())
+            .count()
+            > 1
+        {
+            return Err(format!("{operation}: duplicate {flag}"));
+        }
+    }
+    let parse = |flag, default| -> Result<usize, String> {
+        optional_option(args, flag).map_or(Ok(default), |raw| {
+            raw.parse::<usize>()
+                .map_err(|_| format!("{operation} {flag} requires a positive integer"))
+        })
+    };
+    crate::pagination::PageRequest::new(parse("--page", 1)?, parse("--limit", 50)?)
+        .map_err(|message| format!("{operation}: {message}"))
+}
+
 pub(crate) fn required_value(
     args: &[String],
     index: usize,

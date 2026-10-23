@@ -2,6 +2,6 @@
 source: tests/snapshots_help_contracts.rs
 expression: "help(&scratch, &[\"--help\", \"worktree\", \"list\"])"
 ---
-Usage: worktree list [--repo PATH] [--no-sync]
+Usage: worktree list [--repo PATH] [--no-sync] [--page N] [--limit N]
 
-List every lease (active + terminal) for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns a JSON envelope with `{ "repo_identity": "...", "leases": [...] }`. Available to orchestrator, executor, and reviewer. An orchestrator session runs a repository-scoped `issue sync` pass before the listing and forwards its warnings to stderr; --no-sync skips that pass, and the listing envelope is unchanged either way.
+List active and terminal leases for the resolved repo identity. --repo defaults to the current working directory; the value is canonicalised through `git rev-parse --git-common-dir` so the same physical repository yields the same identity from a main checkout, a linked worktree, or a subdirectory. Returns `{items,page,limit,total_count,has_more,repo_identity}` with page 1 and limit 50 by default. --page is positive and 1-based; --limit is 1..100. An out-of-range page is empty and retains the exact total. Available to orchestrator, executor, and reviewer. Authorized Operator/orchestrator callers run a complete repository-scoped `issue sync` before listing and forward its warnings to stderr; --no-sync skips it. Pagination does not limit that sync pass. See docs/cli-pagination.md and docs/worktree-maintenance.md.

@@ -188,12 +188,42 @@ pub fn acquire_lease_with(
     session: &str,
     options: AcquireOptions<'_>,
 ) -> Result<AcquireOutcome, WorktreeError> {
-    let AcquireOptions {
-        cache_base,
-        isolate,
-        base,
-        reuse,
-    } = options;
+    validate_acquire(issue, session, options)?;
+    let identity = repo_identity(runner, repo_path)?;
+    let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
+    acquire_lease_inner(
+        runner, &storage, &identity, repo_path, issue, session, options,
+    )
+}
+
+/// Acquire with the repository identity and lease store a caller already
+/// resolved for this invocation. The reconciliation pass runs before the
+/// acquire, so it hands its verified identity and open store through here
+/// instead of making the acquire resolve both a second time. The decision
+/// table below is the same one [`acquire_lease_with`] drives.
+#[allow(dead_code)]
+pub(crate) fn acquire_lease_seeded(
+    runner: &dyn WorktreeRunner,
+    storage: &Storage,
+    identity: &str,
+    repo_path: &Path,
+    issue: u64,
+    session: &str,
+    options: AcquireOptions<'_>,
+) -> Result<AcquireOutcome, WorktreeError> {
+    validate_acquire(issue, session, options)?;
+    acquire_lease_inner(
+        runner, storage, identity, repo_path, issue, session, options,
+    )
+}
+
+fn validate_acquire(
+    issue: u64,
+    session: &str,
+    options: AcquireOptions<'_>,
+) -> Result<(), WorktreeError> {
+    let AcquireOptions { isolate, reuse, .. } = options;
     const MAX_REF_CHARS: usize = 128;
     if issue == 0 {
         return Err(WorktreeError::new("argument", "issue must be > 0"));
@@ -215,6 +245,24 @@ pub fn acquire_lease_with(
             "explicit --isolate and --reuse are mutually exclusive; pass one or neither",
         ));
     }
+    Ok(())
+}
+
+fn acquire_lease_inner(
+    runner: &dyn WorktreeRunner,
+    storage: &Storage,
+    identity: &str,
+    repo_path: &Path,
+    issue: u64,
+    session: &str,
+    options: AcquireOptions<'_>,
+) -> Result<AcquireOutcome, WorktreeError> {
+    let AcquireOptions {
+        cache_base,
+        isolate,
+        base,
+        reuse,
+    } = options;
     // Explicit isolation request (issue #509): `--isolate` forces a
     // fresh branch/worktree on every checkout state. The path-scoped
     // conflict below isolates for callers that may create; this gate
@@ -226,16 +274,13 @@ pub fn acquire_lease_with(
     // `worktree acquire` command keeps creating on a path conflict
     // unless `--reuse` states the preference.
     let may_create = !reuse;
-    let identity = repo_identity(runner, repo_path)?;
-    let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
-    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
 
     // Rule 1: idempotent home-coming for the same triple. The dirty
     // probe is deliberately skipped here so a re-entering session is
     // never misjudged against its own tree. The post-acquire lifecycle
     // still runs so a re-entering session converges on installed hooks.
-    if let Some(existing) = find_active_lease(&storage, &identity, issue, session)? {
-        refresh_heartbeat(&storage, &existing.lease_id)?;
+    if let Some(existing) = find_active_lease(storage, identity, issue, session)? {
+        refresh_heartbeat(storage, &existing.lease_id)?;
         return with_warnings(
             Ok(AcquireOutcome {
                 lease_id: existing.lease_id,
@@ -267,8 +312,8 @@ pub fn acquire_lease_with(
         return with_warnings(
             acquire_new_worktree(
                 runner,
-                &storage,
-                &identity,
+                storage,
+                identity,
                 repo_path,
                 issue,
                 session,
@@ -299,7 +344,7 @@ pub fn acquire_lease_with(
             ));
             return with_warnings(
                 acquire_new_worktree(
-                    runner, &storage, &identity, repo_path, issue, session, cache_base, base,
+                    runner, storage, identity, repo_path, issue, session, cache_base, base,
                 ),
                 issue,
                 warnings,
@@ -337,7 +382,7 @@ pub fn acquire_lease_with(
     // command; the full occupant detail (including the lease id) goes
     // to the warning.
     let checkout = repo_path.to_string_lossy().to_string();
-    if let Some(occupant) = find_active_lease_for_path(&storage, &identity, &checkout)? {
+    if let Some(occupant) = find_active_lease_for_path(storage, identity, &checkout)? {
         let trigger = format!(
             "checkout occupied by session '{}' (issue {})",
             occupant.session, occupant.issue
@@ -352,7 +397,7 @@ pub fn acquire_lease_with(
         ));
         return with_warnings(
             acquire_new_worktree(
-                runner, &storage, &identity, repo_path, issue, session, cache_base, base,
+                runner, storage, identity, repo_path, issue, session, cache_base, base,
             ),
             issue,
             warnings,
@@ -373,7 +418,7 @@ pub fn acquire_lease_with(
         ));
         return with_warnings(
             acquire_new_worktree(
-                runner, &storage, &identity, repo_path, issue, session, cache_base, base,
+                runner, storage, identity, repo_path, issue, session, cache_base, base,
             ),
             issue,
             warnings,
@@ -384,7 +429,7 @@ pub fn acquire_lease_with(
     // warnings were queued above; nothing here stashes, resets, or
     // mutates branches.
     with_warnings(
-        acquire_reuse_current(runner, &storage, &identity, repo_path, issue, session),
+        acquire_reuse_current(runner, storage, identity, repo_path, issue, session),
         issue,
         warnings,
     )
@@ -778,7 +823,23 @@ pub fn release_active_leases_for_issue(
     if issue == 0 {
         return Err(WorktreeError::new("argument", "issue must be > 0"));
     }
-    let mut storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+    let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
-    retain_active_leases_for_issue(&mut storage, repo_identity, issue, reason, now_unix_secs())
+    release_active_leases_for_issue_with(&storage, repo_identity, issue, reason)
+}
+
+/// Release through a lease store the caller already owns. The
+/// reconciliation pass opens the store once and converges each closed
+/// issue through this entry point, so it never reopens or re-initialises
+/// the same database per issue. The flip itself is unchanged.
+pub(crate) fn release_active_leases_for_issue_with(
+    storage: &Storage,
+    repo_identity: &str,
+    issue: u64,
+    reason: &str,
+) -> Result<u64, WorktreeError> {
+    if issue == 0 {
+        return Err(WorktreeError::new("argument", "issue must be > 0"));
+    }
+    retain_active_leases_for_issue(storage, repo_identity, issue, reason, now_unix_secs())
 }

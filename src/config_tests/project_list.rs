@@ -11,8 +11,11 @@ fn project_list_parses_without_project_id() {
     let invocation = command::parse_with_role_env(&args, Some("executor"))
         .expect("project list without --project-id must parse");
     match invocation.command {
-        Command::Project(ProjectCommand::List) => {}
-        other => panic!("expected Project List, got {other:?}"),
+        Command::Project(ProjectCommand::List { page: Some(page) }) => {
+            assert_eq!(page.page(), 1);
+            assert_eq!(page.limit(), 50);
+        }
+        other => panic!("expected default project page, got {other:?}"),
     }
     // Also without role? No, project list requires role via top-level parser, but not project-id.
     // With explicit project-id should also parse.
@@ -31,7 +34,7 @@ fn project_list_parses_without_project_id() {
         .expect("project list with --project-id must parse");
     assert!(matches!(
         invocation.command,
-        Command::Project(ProjectCommand::List)
+        Command::Project(ProjectCommand::List { page: Some(_) })
     ));
     assert_eq!(invocation.project_id.as_deref(), Some("42"));
 

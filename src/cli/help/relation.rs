@@ -25,7 +25,7 @@ pub(crate) fn print_relation_command_help(role: Option<Role>, command: &str) {
         "list" => {
             if role.is_none_or(|role| role.allows(crate::policy::Capability::RelationRead)) {
                 println!(
-                    "Usage: relation list <ISSUE>\n\n{}",
+                    "Usage: relation list <ISSUE> [--page N] [--limit N]\n\n{}\n\nReturns `{{items,page,limit,total_count,has_more,issue}}` by default (page 1, limit 50); --page is positive and 1-based, and --limit is 1..100. total_count is exact. Redmine pagination is output-only: the full relation collection is fetched before slicing, with no network savings. Local relations are not supported. See docs/cli-pagination.md.",
                     crate::policy::Capability::RelationRead.description()
                 );
             } else {

@@ -5,6 +5,14 @@ use crate::infra::timer_ledger::{
 };
 use rusqlite::{OptionalExtension, params};
 
+fn timer_page_filter(status: TimerStatusFilter) -> &'static str {
+    match status {
+        TimerStatusFilter::Running => "WHERE status = 'running'",
+        TimerStatusFilter::Finished => "WHERE status <> 'running'",
+        TimerStatusFilter::All => "",
+    }
+}
+
 impl Storage {
     pub fn load_timer_run(&self, run_id: &str) -> Result<Option<TimerRun>, String> {
         let mut statement = self
@@ -76,6 +84,56 @@ impl Storage {
             runs.push(row.map_err(|error| format!("could not decode timer row: {error}"))?);
         }
         Ok(runs)
+    }
+
+    pub(crate) fn count_timer_runs(&self, status: TimerStatusFilter) -> Result<usize, String> {
+        let filter = timer_page_filter(status);
+        self.connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM execution_timer_runs {filter}"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not count timer runs: {error}"))
+    }
+
+    pub(crate) fn page_timer_runs(
+        &self,
+        status: TimerStatusFilter,
+        request: crate::pagination::PageRequest,
+    ) -> Result<crate::pagination::Paged<TimerRun>, String> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| format!("could not begin timer page: {error}"))?;
+        let filter = timer_page_filter(status);
+        let total = transaction
+            .query_row(
+                &format!("SELECT COUNT(*) FROM execution_timer_runs {filter}"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not count timer runs: {error}"))?;
+        let runs = {
+            let sql = format!(
+                "SELECT run_id, issue_id, phase, role, attempt, started_at, finished_at, status, elapsed_seconds, rounded_hours, activity_id, redmine_time_entry_id, sync_status, sync_error, owner_session_id, owner_call_id, projection_token, projection_claimed_at FROM execution_timer_runs {filter} ORDER BY started_at DESC, run_id ASC LIMIT ?1 OFFSET ?2"
+            );
+            let mut statement = transaction
+                .prepare(&sql)
+                .map_err(|error| format!("could not prepare timer page: {error}"))?;
+            statement
+                .query_map(
+                    params![request.limit() as i64, request.offset() as i64],
+                    timer_run_from_row,
+                )
+                .map_err(|error| format!("could not query timer page: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("could not decode timer page: {error}"))?
+        };
+        transaction
+            .commit()
+            .map_err(|error| format!("could not finish timer page: {error}"))?;
+        Ok(crate::pagination::Paged::known(runs, request, total))
     }
 
     /// List every still-running row whose `issue_id` matches `issue`,

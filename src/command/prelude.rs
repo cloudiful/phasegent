@@ -6,9 +6,9 @@
 //! reported as unused.
 
 pub(crate) use super::parse_helpers::{
-    has_flag, optional_nonempty_option, optional_option, planning_options, positional_number,
-    require_exact_positionals, required_nonempty_option, required_option, required_value,
-    split_inline, validate_options,
+    has_flag, optional_nonempty_option, optional_option, page_request, planning_options,
+    positional_number, require_exact_positionals, required_nonempty_option, required_option,
+    required_value, split_inline, validate_options,
 };
 pub(crate) use super::{
     Command, CommentCommand, HelpTopic, HooksCommand, IssueCommand, NotifyCommand, ProjectCommand,

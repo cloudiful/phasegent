@@ -53,7 +53,13 @@ fn executor_cannot_prune() {
 fn admin_cannot_status() {
     // Use a synthetic `status` invocation that does not touch the
     // database: the role gate fires first.
-    let exit = execute_worktree(Some(Role::Admin), WorktreeCommand::Status { issue: 1 });
+    let exit = execute_worktree(
+        Some(Role::Admin),
+        WorktreeCommand::Status {
+            issue: 1,
+            page: None,
+        },
+    );
     assert_eq!(exit, 3, "permission error must return exit code 3");
 }
 
@@ -61,7 +67,13 @@ fn admin_cannot_status() {
 fn reviewer_status_passes_role_gate() {
     let _lock = lock_workflow_tests();
     let (_temp, _storage, _env) = open_temp_db("status-reviewer");
-    let exit = execute_worktree(Some(Role::Reviewer), WorktreeCommand::Status { issue: 1 });
+    let exit = execute_worktree(
+        Some(Role::Reviewer),
+        WorktreeCommand::Status {
+            issue: 1,
+            page: None,
+        },
+    );
     assert_eq!(exit, 0, "reviewer status must pass the role gate");
 }
 
@@ -72,6 +84,7 @@ fn admin_cannot_list() {
         WorktreeCommand::List {
             repo: None,
             no_sync: false,
+            page: None,
         },
     );
     assert_eq!(exit, 3, "permission error must return exit code 3");
@@ -115,7 +128,10 @@ fn orchestrator_status_passes_role_gate_and_queries_storage() {
     let (_temp, _storage, _env) = open_temp_db("status-role");
     let exit = execute_worktree(
         Some(Role::Orchestrator),
-        WorktreeCommand::Status { issue: 1 },
+        WorktreeCommand::Status {
+            issue: 1,
+            page: None,
+        },
     );
     assert_eq!(exit, 0, "orchestrator status must pass the role gate");
 }
@@ -124,7 +140,13 @@ fn orchestrator_status_passes_role_gate_and_queries_storage() {
 fn executor_status_passes_role_gate() {
     let _lock = lock_workflow_tests();
     let (_temp, _storage, _env) = open_temp_db("status-executor");
-    let exit = execute_worktree(Some(Role::Executor), WorktreeCommand::Status { issue: 1 });
+    let exit = execute_worktree(
+        Some(Role::Executor),
+        WorktreeCommand::Status {
+            issue: 1,
+            page: None,
+        },
+    );
     assert_eq!(exit, 0, "executor status must pass the role gate");
 }
 
@@ -137,6 +159,7 @@ fn reviewer_list_passes_role_gate() {
         WorktreeCommand::List {
             repo: None,
             no_sync: false,
+            page: None,
         },
     );
     // List resolves its repo from the current directory when `--repo` is

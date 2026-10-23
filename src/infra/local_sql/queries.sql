@@ -49,6 +49,19 @@ FROM local_comments WHERE issue_id = ?1 ORDER BY id ASC;
 -- name: list_projects
 SELECT rowid, project, description FROM local_projects ORDER BY project ASC;
 
+-- name: count_projects
+SELECT COUNT(*) FROM local_projects;
+
+-- name: page_projects
+SELECT rowid, project, description FROM local_projects ORDER BY project ASC, rowid ASC LIMIT ?1 OFFSET ?2;
+
+-- name: count_comments
+SELECT COUNT(*) FROM local_comments WHERE issue_id = ?1;
+
+-- name: page_comments
+SELECT id, issue_id, role, phase, attempt, marker, body, created_at
+FROM local_comments WHERE issue_id = ?1 ORDER BY id ASC LIMIT ?2 OFFSET ?3;
+
 -- name: insert_project
 INSERT INTO local_projects (project, description, created_at) VALUES (?1, ?2, ?3);
 

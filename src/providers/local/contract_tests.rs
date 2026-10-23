@@ -229,6 +229,67 @@ fn marker_is_globally_unique_across_issues() {
 }
 
 #[test]
+fn native_project_and_comment_pages_match_full_filtered_collections() {
+    let (provider, dir) = tmp_provider("pages");
+    for n in 0..5 {
+        provider
+            .create_project("Project", &format!("project{n}"), None)
+            .unwrap();
+    }
+    let expected: Vec<_> = provider
+        .list_projects()
+        .unwrap()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let mut actual = Vec::new();
+    for page in 1..=4 {
+        let result = provider
+            .list_projects_page(crate::pagination::PageRequest::new(page, 2).unwrap())
+            .unwrap();
+        assert_eq!(result.total_count, Some(6));
+        assert_eq!(result.has_more, page < 3);
+        actual.extend(result.items.into_iter().map(|item| item.id));
+    }
+    assert_eq!(actual, expected);
+    let issue = provider.create_issue("Issue", "Body").unwrap().number;
+    let other = provider.create_issue("Other", "Body").unwrap().number;
+    for n in 0..7 {
+        provider
+            .create_comment(issue, &format!("body{n}"), &format!("key{n}"))
+            .unwrap();
+    }
+    provider
+        .create_comment(other, "outside filter", "other")
+        .unwrap();
+    let expected: Vec<_> = provider
+        .list_comments(issue)
+        .unwrap()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let mut actual = Vec::new();
+    for page in 1..=5 {
+        let result = provider
+            .list_comments_page(issue, crate::pagination::PageRequest::new(page, 2).unwrap())
+            .unwrap();
+        assert_eq!(result.total_count, Some(7));
+        assert_eq!(result.has_more, page < 4);
+        actual.extend(result.items.into_iter().map(|item| item.id));
+    }
+    assert_eq!(actual, expected);
+    assert!(local_sql("page_projects").contains("LIMIT ?1 OFFSET ?2"));
+    assert!(local_sql("page_comments").contains("LIMIT ?2 OFFSET ?3"));
+    let empty = provider
+        .list_versions_page(crate::pagination::PageRequest::new(9, 2).unwrap())
+        .unwrap();
+    assert_eq!(empty.total_count, Some(0));
+    assert!(empty.items.is_empty() && !empty.has_more);
+    drop(provider);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn metadata_projects_statuses_versions() {
     let (provider, dir) = tmp_provider("meta");
     let projects = provider.list_projects().unwrap();

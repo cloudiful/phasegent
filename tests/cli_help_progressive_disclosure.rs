@@ -56,6 +56,62 @@ impl ScratchDb {
     }
 }
 
+#[test]
+fn collection_help_advertises_page_contracts_without_changing_role_filters() {
+    for (role, topic) in [
+        ("executor", vec!["worktree", "list"]),
+        ("executor", vec!["worktree", "status"]),
+        ("orchestrator", vec!["timer", "list"]),
+        ("executor", vec!["project", "list"]),
+        ("executor", vec!["version", "list"]),
+        ("executor", vec!["comment", "list"]),
+        ("executor", vec!["record", "list"]),
+        ("executor", vec!["relation", "list"]),
+        ("executor", vec!["issue", "branches"]),
+    ] {
+        let mut args = vec!["--help"];
+        args.extend(topic.clone());
+        let output = run_help_with_role(&args, Some(role));
+        assert!(
+            output.status.success(),
+            "{topic:?}: {}",
+            stderr_text(&output)
+        );
+        let text = stdout_text(&output);
+        for required in [
+            "--page",
+            "--limit",
+            "1..100",
+            "page 1",
+            "limit 50",
+            "total_count",
+            "has_more",
+            "docs/cli-pagination.md",
+        ] {
+            assert!(
+                text.contains(required),
+                "{topic:?} missing {required}: {text}"
+            );
+        }
+        if topic[0] == "timer" {
+            assert!(text.contains("--limit alone"));
+            assert!(!text.contains("{runs,count}") && !text.contains("1000-row cap"));
+        }
+        if ["comment", "record", "relation"].contains(&topic[0]) {
+            assert!(text.contains("output-only"));
+        }
+        if topic[0] == "worktree" {
+            assert!(text.contains("active leases") || text.contains("active and terminal leases"));
+            assert!(
+                !text.contains("cap of 256") && !text.contains("warning when rows are omitted")
+            );
+        }
+        if topic[0] == "issue" {
+            assert!(text.contains("not just the visible page"));
+        }
+    }
+}
+
 fn run_help(args: &[&str]) -> Output {
     run_help_with_role(args, None)
 }

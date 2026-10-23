@@ -93,7 +93,7 @@ pub(crate) fn timer_command_help_text(role: Option<Role>, command: &str) -> Stri
         ),
         "list" => orchestrator_help(
             role,
-            "Usage: timer list [--status running|finished|all] [--limit N]\n\nRead-only listing of the local execution ledger. --status defaults to all; --limit caps the rows returned (default 100, max 1000). Never reaches the provider; never echoes secrets or full responses. Useful for spotting orphans before explicit recovery.",
+            "Usage: timer list [--status running|finished|all] [--page N] [--limit N]\n\nRead-only listing of the local execution ledger. --status defaults to all. Returns `{items,page,limit,total_count,has_more}` with page 1 and limit 50 by default; --page is positive and 1-based, and --limit is 1..100. --limit alone requests page 1. Never reaches the provider; never echoes secrets or full responses. Useful for spotting orphans before explicit recovery. See docs/cli-pagination.md.",
         ),
         "get" => orchestrator_help(
             role,

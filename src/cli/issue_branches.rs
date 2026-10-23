@@ -44,7 +44,15 @@ fn project_state(state: &Option<StateSnapshot>) -> (String, String, Option<i64>)
 /// are structured errors (there is no provider or network fallback for a
 /// numeric reverse lookup); an issue with no links yields an empty
 /// `branches` list instead of an error.
+#[allow(dead_code)]
 pub(crate) fn execute_branches(number: u64) -> i32 {
+    execute_branches_page(number, None)
+}
+
+pub(crate) fn execute_branches_page(
+    number: u64,
+    page: Option<crate::pagination::PageRequest>,
+) -> i32 {
     if number == 0 {
         return crate::cli::structured_error(
             serde_json::json!({
@@ -94,14 +102,27 @@ pub(crate) fn execute_branches(number: u64) -> i32 {
         );
     }
     let lookup = snapshot_lookup();
-    let rows = match crate::branch_links::reads::branches_for_number(
-        &storage.connection,
-        &resolved.key,
-        number,
-        true,
-        &lookup,
-    ) {
-        Ok(rows) => rows,
+    let read = match page {
+        Some(page) => crate::branch_links::reads::branches_for_number_page(
+            &storage.connection,
+            &resolved.key,
+            number,
+            true,
+            &lookup,
+            page,
+        )
+        .map(|(rows, total, ambiguous)| (rows, Some(total), Some(ambiguous))),
+        None => crate::branch_links::reads::branches_for_number(
+            &storage.connection,
+            &resolved.key,
+            number,
+            true,
+            &lookup,
+        )
+        .map(|rows| (rows, None, None)),
+    };
+    let (rows, total, paged_ambiguity) = match read {
+        Ok(result) => result,
         Err(error) => {
             return crate::cli::structured_error(
                 serde_json::json!({
@@ -136,6 +157,23 @@ pub(crate) fn execute_branches(number: u64) -> i32 {
             "state_source": state_source,
             "indexed_at": indexed_at,
         }));
+    }
+    if let Some(page) = page {
+        return match crate::pagination::Paged::known(
+            branches,
+            page,
+            total.expect("paged query includes total"),
+        )
+        .with_context(serde_json::json!({
+            "issue": number, "repo_key": resolved.key, "local_only": resolved.local_only,
+            "ambiguous": paged_ambiguity.unwrap_or(false),
+        })) {
+            Ok(payload) => crate::cli::print_json(&payload),
+            Err(message) => crate::cli::structured_error(
+                serde_json::json!({"kind": "serialization", "message": message}),
+                1,
+            ),
+        };
     }
     crate::cli::print_json(&serde_json::json!({
         "issue": number,

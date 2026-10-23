@@ -33,6 +33,7 @@ pub enum RecordCommand {
     },
     List {
         issue: u64,
+        page: Option<crate::pagination::PageRequest>,
         kind: Option<RecordKind>,
         phase: Option<String>,
         recon: Option<String>,

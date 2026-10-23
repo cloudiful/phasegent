@@ -37,13 +37,13 @@ pub(crate) fn execute_project_with_caller(
 ) -> i32 {
     if caller.is_managed_without_role() {
         let operation = match &command {
-            ProjectCommand::List => Capability::ProjectRead.operation(),
+            ProjectCommand::List { .. } => Capability::ProjectRead.operation(),
             ProjectCommand::Create { .. } => Capability::ProjectCreate.operation(),
         };
         return super::managed_denial(operation);
     }
     let capability = match &command {
-        ProjectCommand::List => Capability::ProjectRead,
+        ProjectCommand::List { .. } => Capability::ProjectRead,
         ProjectCommand::Create { .. } => Capability::ProjectCreate,
     };
     // All executable gates use the invocation context, not the resulting
@@ -77,7 +77,10 @@ pub(crate) fn execute_project_with_caller(
         ));
     }
     match command {
-        ProjectCommand::List => super::print_result(provider.list_projects()),
+        ProjectCommand::List { page } => match page {
+            Some(page) => super::print_result(provider.list_projects_page(page)),
+            None => super::print_result(provider.list_projects()),
+        },
         ProjectCommand::Create {
             name,
             identifier,

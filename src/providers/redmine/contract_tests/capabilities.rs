@@ -28,7 +28,7 @@ fn metadata_parser_requires_confirmation_and_required_fields() {
         command::parse_with_role_env(&strings(["project", "list"]), Some("executor")).unwrap();
     assert!(matches!(
         list.command,
-        Command::Project(ProjectCommand::List)
+        Command::Project(ProjectCommand::List { page: Some(_) })
     ));
 
     let status =

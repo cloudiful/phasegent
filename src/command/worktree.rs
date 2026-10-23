@@ -17,7 +17,8 @@
 //!   `cli::worktree::execute_worktree`.
 
 use super::parse_helpers::{
-    has_flag, optional_nonempty_option, optional_option, required_nonempty_option, validate_options,
+    has_flag, optional_nonempty_option, optional_option, page_request, required_nonempty_option,
+    validate_options,
 };
 use super::{Command, HelpTopic, WorktreeCommand};
 
@@ -144,7 +145,13 @@ fn parse_release(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_status(args: &[String]) -> Result<Command, String> {
-    validate_options(args, 0, &["--issue"], &[], "worktree status")?;
+    validate_options(
+        args,
+        0,
+        &["--issue", "--page", "--limit"],
+        &[],
+        "worktree status",
+    )?;
     let issue_raw = required_nonempty_option(args, "--issue", "worktree status")?;
     let issue: u64 = issue_raw
         .parse()
@@ -152,17 +159,27 @@ fn parse_status(args: &[String]) -> Result<Command, String> {
     if issue == 0 {
         return Err("worktree status --issue must be greater than zero".to_owned());
     }
-    Ok(Command::Worktree(WorktreeCommand::Status { issue }))
+    Ok(Command::Worktree(WorktreeCommand::Status {
+        issue,
+        page: Some(page_request(args, "worktree status")?),
+    }))
 }
 
 fn parse_list(args: &[String]) -> Result<Command, String> {
-    validate_options(args, 0, &["--repo"], &["--no-sync"], "worktree list")?;
+    validate_options(
+        args,
+        0,
+        &["--repo", "--page", "--limit"],
+        &["--no-sync"],
+        "worktree list",
+    )?;
     let repo = optional_option(args, "--repo")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
     Ok(Command::Worktree(WorktreeCommand::List {
         repo,
         no_sync: has_flag(args, "--no-sync"),
+        page: Some(page_request(args, "worktree list")?),
     }))
 }
 
@@ -570,7 +587,7 @@ mod tests {
         )
         .unwrap();
         match invocation.command {
-            Command::Worktree(WorktreeCommand::Status { issue }) => assert_eq!(issue, 42),
+            Command::Worktree(WorktreeCommand::Status { issue, .. }) => assert_eq!(issue, 42),
             other => panic!("unexpected command {other:?}"),
         }
     }
@@ -711,7 +728,7 @@ mod tests {
         )
         .unwrap();
         match invocation.command {
-            Command::Worktree(WorktreeCommand::List { repo, no_sync }) => {
+            Command::Worktree(WorktreeCommand::List { repo, no_sync, .. }) => {
                 assert_eq!(repo, None);
                 assert!(no_sync, "--no-sync must round-trip to the command");
             }
@@ -753,7 +770,10 @@ mod tests {
                 force: false,
                 reason: None,
             },
-            WorktreeCommand::Status { issue: 1 },
+            WorktreeCommand::Status {
+                issue: 1,
+                page: None,
+            },
             WorktreeCommand::Heartbeat {
                 lease: "lease-1".to_owned(),
                 session: None,
@@ -765,6 +785,7 @@ mod tests {
             WorktreeCommand::List {
                 repo: None,
                 no_sync: true,
+                page: None,
             }
             .sync_taxi()
             .is_none(),
@@ -774,6 +795,7 @@ mod tests {
             WorktreeCommand::List {
                 repo: None,
                 no_sync: false,
+                page: None,
             }
             .sync_taxi(),
             Some(("worktree list", None)),

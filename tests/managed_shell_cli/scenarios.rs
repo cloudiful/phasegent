@@ -359,26 +359,26 @@ fn heredoc_opaque_body_exact_and_trailing_recon_authored_explore() {
         &["--provider", "local", "record", "list", &id],
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
-    let records: Vec<serde_json::Value> =
+    let records: serde_json::Value =
         serde_json::from_str(stdout_text(&out).trim()).expect("record list JSON");
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(records[0]["actor"], "explore");
-    assert_eq!(records[0]["kind"], "recon");
-    assert_eq!(records[0]["key"], "k-heredoc-p2");
+    assert_eq!(records["items"].as_array().unwrap().len(), 1, "{records:?}");
+    assert_eq!(records["items"][0]["actor"], "explore");
+    assert_eq!(records["items"][0]["kind"], "recon");
+    assert_eq!(records["items"][0]["key"], "k-heredoc-p2");
     assert!(
-        records[0]["body"]
+        records["items"][0]["body"]
             .as_str()
             .unwrap()
             .contains("it's the body with apostrophe"),
         "{:?}",
-        records[0]
+        records["items"][0]
     );
     assert!(
-        records[0]["body"]
+        records["items"][0]["body"]
             .as_str()
             .unwrap()
             .contains("phasegent issue create"),
         "fake lines stay record body data, never a second issue: {:?}",
-        records[0]
+        records["items"][0]
     );
 }

@@ -69,7 +69,7 @@ fn issue_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>, Vec<H
         ),
         (
             "branches",
-            "List every branch linked to an issue across all scopes",
+            "List branch links for an issue across all scopes",
             &["issue", "branches"],
         ),
     ];
@@ -165,7 +165,7 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "branches" => (
             Capability::IssueRead,
-            "Usage: issue branches <NUMBER>\n\nLists every branch linked to issue <NUMBER> in this repository across all provider/project scopes, with each branch's link status/source plus its last-known local-index state/source/indexed time (missing state is unknown). Same-number rows from distinct scopes stay distinct and set ambiguous=true instead of being collapsed; detached history is included. Read-only: no provider or network access, no writes. An issue with no links yields an empty branches list.",
+            "Usage: issue branches <NUMBER> [--page N] [--limit N]\n\nReturns `{items,page,limit,total_count,has_more,issue,repo_key,local_only,ambiguous}` by default (page 1, limit 50); --page is positive and 1-based, and --limit is 1..100. Pagination uses native database queries; total_count is exact and ambiguous reflects all scopes, not just the visible page. See docs/cli-pagination.md.\n\nLists branch links for issue <NUMBER> in this repository across all provider/project scopes, with each branch's link status/source plus its last-known local-index state/source/indexed time (missing state is unknown). Same-number rows from distinct scopes stay distinct and set ambiguous=true instead of being collapsed; detached history is included. Read-only: no provider or network access, no writes. An issue with no links yields an empty branches list.",
         ),
         _ => return None,
     };

@@ -112,9 +112,13 @@ phasegent --output text issue get 123      # force the human view
 phasegent --output json issue get 123      # force the machine document
 ```
 
-The JSON key sets are stable, and the text views are curated per command. The
-legacy `--format`/`--json` flags on the commands that document them still work.
-See [docs/cli-output.md](docs/cli-output.md).
+Supported collection lists return page 1 with up to 50 items in text and JSON.
+Use `--page` and `--limit` to choose another page; JSON results share a page
+envelope, for example `phasegent worktree list --page 2 --limit 50`. The
+OpenCode adapter follows all lease pages when it needs complete collections.
+The legacy `--format`/`--json` flags on documented commands still work. See
+[output modes](docs/cli-output.md), [pagination](docs/cli-pagination.md), and
+[worktree maintenance](docs/worktree-maintenance.md).
 
 Use `--provider redmine` or `--provider local` on a command when the selected
 provider is not the default. Use `--project-id ID` to override project

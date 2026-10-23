@@ -23,6 +23,41 @@ use std::str::FromStr;
 use std::{fs, time};
 
 #[test]
+fn explicit_version_page_does_not_download_the_catalogue() {
+    let response = serde_json::json!({"versions": [{"id": 5, "name": "Five", "status": "open"}], "total_count": 7, "limit": 1}).to_string();
+    let (result, request) = one(MockResponse::ok(response), |redmine| {
+        redmine.list_versions_page(crate::pagination::PageRequest::new(5, 1).unwrap())
+    });
+    let page = result.unwrap();
+    assert_eq!(page.items[0].id, 5);
+    assert_eq!(page.total_count, Some(7));
+    assert!(page.has_more);
+    support::assert_request(&request, "GET", "/projects/42/versions.json?", None);
+    assert!(request.contains("offset=4") && request.contains("limit=1"));
+}
+
+#[test]
+fn version_page_without_total_has_exact_false_more_from_lookahead() {
+    let first =
+        serde_json::json!({"versions": [{"id": 5, "name": "Five", "status": "open"}]}).to_string();
+    let (base, requests, server) = sequence(vec![
+        MockResponse::ok(first),
+        MockResponse::ok("{\"versions\":[]}"),
+    ]);
+    let page = provider(base)
+        .list_versions_page(crate::pagination::PageRequest::new(3, 2).unwrap())
+        .unwrap();
+    server.join().unwrap();
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("offset=4"));
+    assert!(requests[1].contains("offset=5") && requests[1].contains("limit=1"));
+    assert_eq!(page.total_count, None);
+    assert!(!page.has_more);
+    assert_eq!(page.items.len(), 1);
+}
+
+#[test]
 fn version_list_decodes_redmine_wrapper_within_project_scope() {
     let response = support::version_collection(&[
         (12, "Sprint 1", "open", Some("2026-09-30")),
@@ -152,10 +187,13 @@ fn version_list_enforces_role_and_provider_boundaries() {
             Some(role),
         )
         .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Command::VersionCommand(crate::command::VersionCommand::List)
-        ));
+        match parsed.command {
+            Command::VersionCommand(crate::command::VersionCommand::List { page: Some(page) }) => {
+                assert_eq!(page.page(), 1);
+                assert_eq!(page.limit(), 50);
+            }
+            other => panic!("expected default version page, got {other:?}"),
+        }
     }
     // ...while a retired provider name is rejected at argument parsing
     // before any provider is built.

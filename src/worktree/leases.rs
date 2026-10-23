@@ -14,6 +14,8 @@ use crate::worktree::{
     LEASE_STATUS_ACTIVE, LEASE_STATUS_RETAINED, LeaseRow, WorktreeError, now_unix_secs,
 };
 
+pub(crate) use super::acquire::{acquire_lease_seeded, release_active_leases_for_issue_with};
+
 /// Seconds in a day, shared by the prune stale-window computation so
 /// the read-only scan and the transactional recovery derive the same
 /// cutoff from `stale_days` (issue 337 Phase 2).
@@ -502,19 +504,17 @@ pub(crate) fn recover_stale_active_leases(
 /// guards. Terminal rows are left untouched as audit records; the
 /// worktree directory and branch are never modified (issue 305 Task 3).
 pub(crate) fn retain_active_leases_for_issue(
-    storage: &mut Storage,
+    storage: &Storage,
     identity: &str,
     issue: u64,
     reason: &str,
     now: i64,
 ) -> Result<u64, WorktreeError> {
-    storage
-        .connection
-        .set_transaction_behavior(TransactionBehavior::Immediate);
-    let transaction = storage
-        .connection
-        .unchecked_transaction()
-        .map_err(|error| WorktreeError::new("storage", format!("begin lease release: {error}")))?;
+    let transaction = rusqlite::Transaction::new_unchecked(
+        &storage.connection,
+        TransactionBehavior::Immediate,
+    )
+    .map_err(|error| WorktreeError::new("storage", format!("begin lease release: {error}")))?;
     let updated = transaction
         .execute(
             "UPDATE worktree_leases \
@@ -534,6 +534,60 @@ pub(crate) fn retain_active_leases_for_issue(
         .commit()
         .map_err(|error| WorktreeError::new("storage", format!("commit lease release: {error}")))?;
     Ok(updated as u64)
+}
+
+const PAGE_FILTER: &str = "WHERE (?1 IS NULL OR repo_identity = ?1) AND (?2 IS NULL OR (issue = ?2 AND status = 'active'))";
+
+pub(crate) fn count_leases(
+    storage: &Storage,
+    identity: Option<&str>,
+    issue: Option<u64>,
+) -> Result<usize, WorktreeError> {
+    count_selected(&storage.connection, identity, issue)
+}
+
+fn count_selected(
+    connection: &rusqlite::Connection,
+    identity: Option<&str>,
+    issue: Option<u64>,
+) -> Result<usize, WorktreeError> {
+    connection
+        .query_row(
+            &format!("SELECT COUNT(*) FROM worktree_leases {PAGE_FILTER}"),
+            rusqlite::params![identity, issue.map(|n| n as i64)],
+            |row| row.get(0),
+        )
+        .map_err(|error| WorktreeError::new("storage", format!("count leases: {error}")))
+}
+
+pub(crate) fn page_leases(
+    storage: &Storage,
+    identity: Option<&str>,
+    issue: Option<u64>,
+    request: crate::pagination::PageRequest,
+) -> Result<(Vec<LeaseRow>, usize), WorktreeError> {
+    let transaction = storage
+        .connection
+        .unchecked_transaction()
+        .map_err(|error| WorktreeError::new("storage", format!("begin lease page: {error}")))?;
+    let total = count_selected(&transaction, identity, issue)?;
+    let rows = query_leases(
+        &transaction,
+        &format!(
+            "{LEASE_SELECT} {PAGE_FILTER} ORDER BY created_at DESC, lease_id ASC LIMIT ?3 OFFSET ?4"
+        ),
+        &[
+            &identity,
+            &issue.map(|n| n as i64),
+            &(request.limit() as i64),
+            &(request.offset() as i64),
+        ],
+        "page",
+    )?;
+    transaction
+        .commit()
+        .map_err(|error| WorktreeError::new("storage", format!("finish lease page: {error}")))?;
+    Ok((rows, total))
 }
 
 pub fn list_for_issue(storage: &Storage, issue: u64) -> Result<Vec<LeaseRow>, WorktreeError> {

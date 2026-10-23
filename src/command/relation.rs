@@ -16,9 +16,10 @@ pub(crate) fn parse_relation(args: &[String]) -> Result<Command, String> {
     }
     match name.unwrap() {
         "list" => {
-            require_exact_positionals(args, 2, "relation list")?;
+            validate_options(args, 1, &["--page", "--limit"], &[], "relation list")?;
             Ok(Command::Relation(RelationCommand::List {
                 issue: positional_number(args, 1, "relation list")?,
+                page: Some(page_request(args, "relation list")?),
             }))
         }
         "create" => {

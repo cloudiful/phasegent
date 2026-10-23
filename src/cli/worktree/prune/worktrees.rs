@@ -44,15 +44,14 @@ use serde::Serialize;
 
 use crate::cli::report_local_warnings;
 use crate::infra::storage::Storage;
-use crate::lifecycle::cleanup::candidate::local_protected_reason;
+use crate::lifecycle::cleanup::TargetResolver;
 use crate::lifecycle::cleanup::sessions::{self, SessionVerdict};
-use crate::lifecycle::cleanup::{TargetResolver, associated_sessions};
 use crate::worktree::git::worktree_remove;
 use crate::worktree::leases::{list_all_for_repo, load_lease, update_status};
 use crate::worktree::opencode::OpenCodeApi;
 use crate::worktree::{
-    LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow, WorktreeRunner,
-    canonical_or_self,
+    CanonicalPaths, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
+    WorktreeRunner, canonical_or_self,
 };
 
 use super::active_guard;
@@ -175,7 +174,7 @@ struct DirectoryGroup {
 }
 
 /// Group lease rows by canonical directory path, in a deterministic order.
-fn group_rows(rows: &[LeaseRow]) -> Vec<DirectoryGroup> {
+fn group_rows(rows: &[LeaseRow], paths: &CanonicalPaths) -> Vec<DirectoryGroup> {
     let mut groups: Vec<DirectoryGroup> = Vec::new();
     let mut index: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
     // `rows` arrive newest-first; sorting the output keeps the pass stable
@@ -183,7 +182,7 @@ fn group_rows(rows: &[LeaseRow]) -> Vec<DirectoryGroup> {
     let mut ordered: Vec<&LeaseRow> = rows.iter().collect();
     ordered.sort_by(|a, b| a.lease_id.cmp(&b.lease_id));
     for row in ordered {
-        let canonical = canonical_or_self(Path::new(&row.worktree_path));
+        let canonical = paths.resolve(Path::new(&row.worktree_path));
         match index.get(&canonical) {
             Some(position) => {
                 let group = &mut groups[*position];
@@ -230,9 +229,27 @@ pub(crate) fn scan_worktree_candidates(
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
 ) -> Vec<DirectoryCandidate> {
-    group_rows(scope.rows)
+    scan_with_paths(
+        runner,
+        api,
+        scope,
+        pinned_active,
+        source,
+        &CanonicalPaths::default(),
+    )
+}
+
+fn scan_with_paths(
+    runner: &dyn WorktreeRunner,
+    api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    pinned_active: &BTreeSet<String>,
+    source: &dyn IssueStateSource,
+    paths: &CanonicalPaths,
+) -> Vec<DirectoryCandidate> {
+    group_rows(scope.rows, paths)
         .into_iter()
-        .map(|group| classify(runner, api, scope, pinned_active, source, group))
+        .map(|group| classify(runner, api, scope, pinned_active, source, group, paths))
         .collect()
 }
 
@@ -244,8 +261,9 @@ fn classify(
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     group: DirectoryGroup,
+    paths: &CanonicalPaths,
 ) -> DirectoryCandidate {
-    let disposition = classify_group(runner, api, scope, pinned_active, source, &group);
+    let disposition = classify_group(runner, api, scope, pinned_active, source, &group, paths);
     DirectoryCandidate {
         canonical_path: group.canonical_path,
         worktree_path: group.worktree_path,
@@ -271,6 +289,7 @@ fn classify_group(
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     group: &DirectoryGroup,
+    paths: &CanonicalPaths,
 ) -> PruneDisposition {
     let canonical = group.canonical_path.to_string_lossy().into_owned();
     if group
@@ -296,7 +315,7 @@ fn classify_group(
     // The local Git guards run first and read nothing from the host: a main
     // checkout, an active peer's path, or a dirty/untracked directory is
     // excluded here, so it never reaches the running-session query.
-    if let Some(reason) = local_protected_reason(
+    if let Some(reason) = paths.protected_reason(
         runner,
         scope.identity,
         scope.rows,
@@ -522,13 +541,10 @@ fn recheck(
         Ok(rows) => rows,
         Err(error) => return Err(format!("could not re-read leases: {}", error.message)),
     };
-    // The associated sessions are read from the fresh rows: an association
-    // that appeared or disappeared after the scan decides what may be moved.
-    let associated = associated_sessions(&fresh, &candidate.canonical_path);
-    // Invalidate the scan's provider/scope memo so closure and the durable link
-    // scope are re-read independently: a `closed` scan answer must not authorize
-    // a deletion after the issue was reopened.
-    source.refresh();
+    let paths = CanonicalPaths::default();
+    if paths.resolve(Path::new(&candidate.worktree_path)) != candidate.canonical_path {
+        return Err("the directory path changed its target".to_owned());
+    }
     {
         let fresh_scope = PruneScope {
             identity: scope.identity,
@@ -536,15 +552,28 @@ fn recheck(
             rows: &fresh,
             target: scope.target,
         };
-        let Some(fresh_group) = group_rows(&fresh)
+        let fresh_group = group_rows(&fresh, &paths)
             .into_iter()
             .find(|group| group.canonical_path == candidate.canonical_path)
-        else {
-            // The candidate's rows vanished between scan and apply; the scan
-            // already proved the directory removable, and no row remains to
-            // protect, so removal may proceed.
-            return Ok(associated);
-        };
+            .unwrap_or_else(|| DirectoryGroup {
+                canonical_path: candidate.canonical_path.clone(),
+                worktree_path: candidate.worktree_path.clone(),
+                branch: candidate.branch.clone(),
+                status: candidate.status.clone(),
+                heartbeat_at: candidate.heartbeat_at,
+                lease_ids: Vec::new(),
+                issues: Vec::new(),
+                rows: Vec::new(),
+            });
+        source.invalidate(scope.repo_path, &fresh_group.issues);
+        let mut associated: Vec<String> = fresh_group
+            .rows
+            .iter()
+            .map(|row| row.session.trim().to_owned())
+            .filter(|id| crate::worktree::opencode::is_opencode_session(id))
+            .collect();
+        associated.sort();
+        associated.dedup();
         match classify_group(
             runner,
             api,
@@ -552,6 +581,7 @@ fn recheck(
             pinned_active,
             source,
             &fresh_group,
+            &paths,
         ) {
             PruneDisposition::Removable => Ok(associated),
             other => Err(recheck_reason(other)),
@@ -718,4 +748,92 @@ pub(crate) fn pinned_active_paths(rows: &[LeaseRow]) -> BTreeSet<String> {
                 .into_owned()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod path_reuse_tests {
+    use super::super::issue_state::test_support::ScriptedIssueStateSource;
+    use super::*;
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+    use crate::worktree::{GitOutput, WorktreeError};
+
+    #[test]
+    fn scan_grouping_and_guards_share_one_resolution_per_path() {
+        struct Runner;
+        impl WorktreeRunner for Runner {
+            fn run(&self, args: &[&str], _: &Path) -> Result<GitOutput, WorktreeError> {
+                Ok(GitOutput {
+                    status: 0,
+                    stdout: match args {
+                        ["rev-parse", "--git-dir"] => "/fixture/.git/worktrees/linked".to_owned(),
+                        ["status", "--porcelain"] => String::new(),
+                        _ => panic!("unexpected Git call: {args:?}"),
+                    },
+                })
+            }
+        }
+        let root = crate::test_scratch::root().join(format!(
+            "scan-paths-{}-{}",
+            std::process::id(),
+            crate::worktree::now_unix_secs()
+        ));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        for name in ["one", "two"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let rows: Vec<LeaseRow> = (0..20)
+            .map(|n| LeaseRow {
+                lease_id: format!("lease-{n}"),
+                repo_identity: "/fixture/.git".to_owned(),
+                issue: 7,
+                session: "cli".to_owned(),
+                checkout_path: root.display().to_string(),
+                worktree_path: root
+                    .join(if n % 2 == 0 { "one" } else { "two" })
+                    .display()
+                    .to_string(),
+                branch: "branch".to_owned(),
+                status: LEASE_STATUS_RETAINED.to_owned(),
+                created_at: 1,
+                heartbeat_at: 1,
+                release_reason: None,
+            })
+            .collect();
+        let target = TargetResolver::new(&root, "/fixture/.git");
+        let scope = PruneScope {
+            identity: "/fixture/.git",
+            repo_path: &root,
+            rows: &rows,
+            target: &target,
+        };
+        let paths = CanonicalPaths::default();
+        let api = FakeOpenCodeApi::empty();
+        let candidates = scan_with_paths(
+            &Runner,
+            &api,
+            &scope,
+            &BTreeSet::new(),
+            &ScriptedIssueStateSource::closed(),
+            &paths,
+        );
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.disposition == PruneDisposition::Removable)
+        );
+        assert_eq!(
+            paths.resolutions(),
+            4,
+            "20 lease rows plus shared main-checkout comparisons resolve only 2 directories, 1 git-dir and 1 identity"
+        );
+        assert_eq!(api.list_calls(), 0);
+        assert!(api.moves().is_empty());
+    }
 }

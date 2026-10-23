@@ -15,7 +15,50 @@ use crate::output::context::OutputContext;
 /// Render one result value as readable text, using the view selected for the
 /// command.
 pub fn render_value(value: &Value, context: &OutputContext) -> String {
-    crate::output::human::render(context.view, value, context)
+    let summary = page_summary(value, context);
+    let mut content;
+    let rendered_value =
+        if summary.is_some() && context.view == crate::output::context::HumanView::Generic {
+            content = value.clone();
+            if let Some(object) = content.as_object_mut() {
+                for key in ["page", "limit", "total_count", "has_more"] {
+                    object.remove(key);
+                }
+            }
+            &content
+        } else {
+            value
+        };
+    let rendered = crate::output::human::render(context.view, rendered_value, context);
+    match summary {
+        Some(summary) => format!("{summary}\n\n{rendered}"),
+        None => rendered,
+    }
+}
+
+pub(crate) fn page_summary(value: &Value, context: &OutputContext) -> Option<String> {
+    if !matches!(
+        context.view,
+        crate::output::context::HumanView::Generic
+            | crate::output::context::HumanView::WorktreeLeaseList
+    ) {
+        return None;
+    }
+    let page = value.get("page")?.as_u64()?;
+    let limit = value.get("limit")?.as_u64()?;
+    value.get("items")?.as_array()?;
+    let total = value
+        .get("total_count")
+        .and_then(Value::as_u64)
+        .map_or_else(|| "unknown".to_owned(), |total| total.to_string());
+    let more = if value.get("has_more").and_then(Value::as_bool) == Some(true) {
+        "more"
+    } else {
+        "no more"
+    };
+    let mut lines = Lines::new(context);
+    lines.row(format!("Page {page}, limit {limit}, total {total}, {more}"));
+    Some(lines.finish())
 }
 
 /// Render one diagnostic (an error or a warning) as readable text.

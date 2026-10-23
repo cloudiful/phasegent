@@ -71,6 +71,15 @@ pub(crate) fn list<P: IssueProvider<Error = PhasegentError>>(
         .collect())
 }
 
+pub(crate) fn list_page<P: IssueProvider<Error = PhasegentError>>(
+    provider: &P,
+    issue: u64,
+    filter: RecordFilter,
+    page: crate::pagination::PageRequest,
+) -> Result<crate::pagination::Paged<RecordOutput>, PhasegentError> {
+    list(provider, issue, filter).map(|records| crate::pagination::slice(records, page))
+}
+
 /// The outcome of reading the records that already own `key`.
 enum Lookup {
     /// Nothing owns the key yet.

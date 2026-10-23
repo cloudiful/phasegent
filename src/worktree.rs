@@ -264,6 +264,34 @@ pub(crate) fn canonical_or_self(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Canonical path answers for one read-only scan or one fresh recheck.
+#[derive(Default)]
+pub(crate) struct CanonicalPaths {
+    paths: std::cell::RefCell<std::collections::HashMap<PathBuf, PathBuf>>,
+}
+
+impl CanonicalPaths {
+    pub(crate) fn resolve(&self, path: &Path) -> PathBuf {
+        if let Some(resolved) = self.paths.borrow().get(path) {
+            return resolved.clone();
+        }
+        let resolved = canonical_or_self(path);
+        self.paths
+            .borrow_mut()
+            .insert(path.to_path_buf(), resolved.clone());
+        resolved
+    }
+
+    pub(crate) fn same_directory(&self, left: &Path, right: &Path) -> bool {
+        self.resolve(left) == self.resolve(right)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolutions(&self) -> usize {
+        self.paths.borrow().len()
+    }
+}
+
 /// True when both paths name the same directory. A lease row's recorded
 /// path and a host-reported location can spell one directory differently,
 /// so every such comparison in the crate goes through here.

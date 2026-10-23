@@ -84,12 +84,50 @@ impl From<crate::worktree::LeaseRow> for HeartbeatJson {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn execute_acquire(
     issue: u64,
     session: Option<&str>,
     format: &str,
     isolate: bool,
     base: Option<&str>,
+) -> i32 {
+    execute_acquire_seeded(
+        issue,
+        session,
+        format,
+        isolate,
+        base,
+        None,
+        &ProcessWorktreeRunner::new(),
+    )
+}
+
+pub(super) fn execute_acquire_seeded(
+    issue: u64,
+    session: Option<&str>,
+    format: &str,
+    isolate: bool,
+    base: Option<&str>,
+    setup: Option<&crate::cli::issue::sync::SyncSetup>,
+    runner: &dyn crate::worktree::WorktreeRunner,
+) -> i32 {
+    let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    execute_acquire_at(
+        issue, session, format, isolate, base, setup, runner, &repo_path,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_acquire_at(
+    issue: u64,
+    session: Option<&str>,
+    format: &str,
+    isolate: bool,
+    base: Option<&str>,
+    setup: Option<&crate::cli::issue::sync::SyncSetup>,
+    runner: &dyn crate::worktree::WorktreeRunner,
+    repo_path: &std::path::Path,
 ) -> i32 {
     let _ = format; // only "json" is accepted at the parser layer
     // Resolve the session before any storage / git work so a missing,
@@ -110,27 +148,35 @@ pub(super) fn execute_acquire(
             );
         }
     };
-    let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let runner = ProcessWorktreeRunner::new();
     crate::output::progress::stage("worktree acquire: preparing the worktree");
-    match crate::worktree::acquire_lease_with(
-        &runner,
-        &repo_path,
-        issue,
-        &session.id,
-        crate::worktree::AcquireOptions {
-            cache_base: None,
-            isolate,
-            base,
-            // The explicit `worktree acquire` command keeps the default
-            // conflict isolation: an occupied checkout path creates a
-            // dedicated worktree. `--reuse` states that default
-            // explicitly at the parser layer (it is mutually exclusive
-            // with `--isolate` there) and needs no separate gate here
-            // because the default table never bypasses an active lease.
-            reuse: false,
-        },
-    ) {
+    let options = crate::worktree::AcquireOptions {
+        cache_base: None,
+        isolate,
+        base,
+        // The explicit `worktree acquire` command keeps the default
+        // conflict isolation: an occupied checkout path creates a
+        // dedicated worktree. `--reuse` states that default
+        // explicitly at the parser layer (it is mutually exclusive
+        // with `--isolate` there) and needs no separate gate here
+        // because the default table never bypasses an active lease.
+        reuse: false,
+    };
+    let outcome = if let Some(setup) = setup
+        && let Some(scope) = setup.scopes.first()
+    {
+        crate::worktree::leases::acquire_lease_seeded(
+            runner,
+            &setup.storage,
+            &scope.repo_identity,
+            repo_path,
+            issue,
+            &session.id,
+            options,
+        )
+    } else {
+        crate::worktree::acquire_lease_with(runner, repo_path, issue, &session.id, options)
+    };
+    match outcome {
         Ok(outcome) => {
             let payload = AcquireJson::from(outcome);
             print_json(&payload)
