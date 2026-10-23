@@ -2950,17 +2950,29 @@ Boundaries:
   guard: only a session the connected shared foreground-drain service reports as
   *currently running* in the directory blocks removal, checked read-only, so an
   inactive historical session record that still points at the directory never
-  keeps it. Prune never enumerates historical sessions and never moves a session;
-  coverage is that one connected service, not a whole-machine multi-service
-  inventory. The local guards run before the running-session query, so a
-  main-checkout or dirty directory makes zero host calls; because the
-  runtime-host dependency is explicit, an unsupported, unavailable, malformed,
-  mismatched, or non-absolute running-session answer, or an active id the host
-  will not describe, keeps even a pure-CLI candidate. Resuming an old session may
-  require explicitly choosing a current checkout, because no relocation of a
-  historical record is attempted. A missing, unavailable, ambiguous, or
-  mismatched issue is never treated as closed. Default output is concise text
-  with directory-based counts; \`--json\` selects the machine-readable aggregate.
+  keeps it. The read-only scan never enumerates historical sessions and never
+  moves a session; the removal stage does: before it deletes a directory it
+  reads that directory's fresh occupancy and returns every associated idle
+  \`ses_\` session to the repository's verified main checkout, confirming each
+  move with a fresh authoritative read. Those checks describe the one
+  connected service at that moment, not a guarantee about session changes
+  after them. A session no lease of this repository associates keeps the
+  directory and is never moved, and an unavailable or incomplete listing, an
+  unresolvable associated session, an answer that names another session or
+  reports an unusable location, a rejected, queued, or unconfirmed move, an
+  unverifiable main checkout, and a session that started running in the
+  meantime all keep the directory. Coverage is that one connected service, not
+  a whole-machine multi-service inventory, and the fresh checks cannot promise
+  a globally atomic snapshot of every service. The local guards run before the
+  running-session query, so a main-checkout or dirty directory makes zero host
+  calls; because the runtime-host dependency is explicit, an unsupported,
+  unavailable, malformed, mismatched, or non-absolute running-session answer, or
+  an active id the host will not describe, keeps even a pure-CLI candidate. A
+  historical record that no lease associates is never relocated, so resuming
+  such an old session may require explicitly choosing a current checkout. A
+  missing, unavailable, ambiguous, or mismatched issue is never treated as
+  closed. Default output is concise text with directory-based counts; \`--json\`
+  selects the machine-readable aggregate.
 - Forced release is the attributed override: it requires a reason and the lease
   row stays (rows are never deleted).
 - \`worktree probe\` is read-only: it reports existence,

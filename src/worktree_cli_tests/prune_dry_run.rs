@@ -2,6 +2,7 @@ use super::cli_support::*;
 use super::support::*;
 use super::*;
 
+use crate::lifecycle::cleanup::TargetResolver;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 
 /// Build a scope and pinned-active set over the temp repo's rows.
@@ -16,10 +17,12 @@ fn pass(
     let runner = ProcessWorktreeRunner::new();
     let rows = list_all_for_repo(storage, identity).expect("list");
     let pinned = pinned_active_paths(&rows);
+    let target = TargetResolver::new(repo.dir.path(), identity);
     let scope = PruneScope {
         identity,
         repo_path: repo.dir.path(),
         rows: &rows,
+        target: &target,
     };
     prune_pass(
         storage,
@@ -104,10 +107,13 @@ fn prune_dry_run_classifies_every_status_correctly() {
     let source = ScriptedIssueStateSource::closed();
     let stored = list_all_for_repo(&storage, "/tmp/repo").expect("list");
     let pinned = pinned_active_paths(&stored);
+    let repo_path = std::path::Path::new("/tmp/repo");
+    let target = TargetResolver::new(repo_path, "/tmp/repo");
     let scope = PruneScope {
         identity: "/tmp/repo",
-        repo_path: std::path::Path::new("/tmp/repo"),
+        repo_path,
         rows: &stored,
+        target: &target,
     };
     let summary = prune_pass(
         &storage,
@@ -178,10 +184,13 @@ fn prune_summary_envelope_fields_are_populated() {
     let source = ScriptedIssueStateSource::closed();
     let stored = list_all_for_repo(&storage, "/tmp/repo").expect("list");
     let pinned = pinned_active_paths(&stored);
+    let repo_path = std::path::Path::new("/tmp/repo");
+    let target = TargetResolver::new(repo_path, "/tmp/repo");
     let scope = PruneScope {
         identity: "/tmp/repo",
-        repo_path: std::path::Path::new("/tmp/repo"),
+        repo_path,
         rows: &stored,
+        target: &target,
     };
     let summary = prune_pass(
         &storage,
@@ -247,10 +256,12 @@ fn prune_dry_run_against_real_temp_repo_reports_protected_directory() {
     let source = ScriptedIssueStateSource::closed();
     let stored = list_all_for_repo(&storage, &row.repo_identity).expect("list");
     let pinned = pinned_active_paths(&stored);
+    let target = TargetResolver::new(repo.dir.path(), &row.repo_identity);
     let scope = PruneScope {
         identity: &row.repo_identity,
         repo_path: repo.dir.path(),
         rows: &stored,
+        target: &target,
     };
     let summary = prune_pass(
         &storage,
@@ -363,10 +374,12 @@ fn scan_worktree_candidates_classifies_without_writing() {
     let runner = ProcessWorktreeRunner::new();
     let api = FakeOpenCodeApi::empty();
     let source = ScriptedIssueStateSource::closed();
+    let target = TargetResolver::new(repo.dir.path(), "/tmp/repo");
     let scope = PruneScope {
         identity: "/tmp/repo",
         repo_path: repo.dir.path(),
         rows: &rows,
+        target: &target,
     };
     let pinned = std::collections::BTreeSet::new();
     let scanned = scan_worktree_candidates(&runner, &api, &scope, &pinned, &source);

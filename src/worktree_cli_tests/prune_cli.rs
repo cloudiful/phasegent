@@ -2,6 +2,7 @@ use super::cli_support::*;
 use super::support::*;
 use super::*;
 
+use crate::lifecycle::cleanup::TargetResolver;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 use crate::worktree::opencode::{ApiError, ListRequest, LocatedSession, OpenCodeApi, SessionPage};
 
@@ -119,11 +120,16 @@ fn cli_prune_streams_progress_before_a_blocked_host_check() {
 }
 
 /// A `prune_pass` scope bound to the temp database's rows.
-fn scope_for<'a>(rows: &'a [LeaseRow], repo_path: &'a std::path::Path) -> PruneScope<'a> {
+fn scope_for<'a>(
+    rows: &'a [LeaseRow],
+    repo_path: &'a std::path::Path,
+    target: &'a TargetResolver<'a>,
+) -> PruneScope<'a> {
     PruneScope {
         identity: "/tmp/repo",
         repo_path,
         rows,
+        target,
     }
 }
 
@@ -148,7 +154,9 @@ fn prune_active_leases_never_mutate() {
     let source = ScriptedIssueStateSource::closed();
     let rows = list_for_repo(&storage, "/tmp/repo").expect("list");
     let pinned = pinned_active_paths(&rows);
-    let scope = scope_for(&rows, std::path::Path::new("/tmp/repo"));
+    let repo_path = std::path::Path::new("/tmp/repo");
+    let target = TargetResolver::new(repo_path, "/tmp/repo");
+    let scope = scope_for(&rows, repo_path, &target);
     let summary = prune_pass(
         &storage,
         &runner,

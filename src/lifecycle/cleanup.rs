@@ -20,6 +20,11 @@
 //! move that has not taken effect yet all keep the directory and surface
 //! one stderr warning. Lease rows are never touched and branches are never
 //! deleted.
+//!
+//! The same evidence backs `worktree prune`, which returns an associated
+//! idle session to the verified main checkout before it removes a
+//! directory: only a lease-associated `ses_` session may be moved, and a
+//! running or foreign occupant keeps the directory.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +35,7 @@ mod context;
 #[path = "cleanup/guards.rs"]
 mod guards;
 #[path = "cleanup/sessions.rs"]
-mod sessions;
+pub(crate) mod sessions;
 #[path = "cleanup/target.rs"]
 pub(crate) mod target;
 
@@ -200,7 +205,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
 
 /// Distinct OpenCode-managed sessions whose persisted lease points at
 /// `directory`, sorted so one pass reports identically every time.
-fn associated_sessions(rows: &[LeaseRow], directory: &Path) -> Vec<String> {
+pub(crate) fn associated_sessions(rows: &[LeaseRow], directory: &Path) -> Vec<String> {
     let mut ids: Vec<String> = rows
         .iter()
         .filter(|row| same_directory(Path::new(&row.worktree_path), directory))

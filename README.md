@@ -200,13 +200,23 @@ checkout, never a path an `active` lease points at, never dirty or untracked
 contents — and adds its own running-session guard: only a session the connected
 shared foreground-drain service reports as *currently running* in the directory
 blocks removal, checked read-only. An inactive historical session record that
-still points at the directory never keeps it, so prune never enumerates
-historical sessions and never moves a session. Coverage is that one connected
-service, not a whole-machine multi-service inventory. The local guards are
-decided before the running-session query, so a main-checkout or dirty directory
-makes zero host calls; because prune's runtime-host dependency is explicit, an
-unavailable, malformed, mismatched, or non-absolute running-session answer keeps
-even a pure-CLI candidate, and the human failure count covers only failed
+still points at the directory never keeps it. The read-only scan never
+enumerates historical sessions and never moves a session; the removal stage
+does: before it deletes a directory it reads that directory's fresh occupancy
+and returns every associated idle `ses_` session to the repository's verified
+main checkout, confirming each move with a fresh authoritative read. Those
+checks describe the one connected service at that moment, not a guarantee about
+session changes after them. A session no lease of this repository associates
+keeps the directory and is never moved, and an unavailable or incomplete
+listing, an unresolvable associated session, an answer that names another
+session or reports an unusable location, a rejected, queued, or unconfirmed
+move, an unverifiable main checkout, and a session that started running in the
+meantime all keep the directory. Coverage is that one connected service, not a
+whole-machine multi-service inventory. The local guards are decided before the
+running-session query, so a main-checkout or dirty directory makes zero host
+calls; because prune's runtime-host dependency is explicit, an unavailable,
+malformed, mismatched, or non-absolute running-session answer keeps even a
+pure-CLI candidate, and the human failure count covers only failed
 `git worktree remove` calls rather than host anomalies. Output follows the
 global `--output` selection: the concise text summary with directory-based
 counts on a human terminal, the machine-readable aggregate on a pipe or with
