@@ -32,6 +32,12 @@
 //!   is read again afterwards and a fresh complete listing must agree
 //!   that the session is at the target and the directory is empty.
 //!   Otherwise the candidate stays and a later pass retries.
+//!
+//! `worktree prune` reuses that evidence to *return* an associated idle
+//! session to the verified main checkout before it removes a directory: only
+//! a lease-associated `ses_` session may be moved, a running or foreign
+//! occupant keeps the directory, and every answer that names the session and
+//! reports a usable location is checked before it authorises a move.
 
 use std::path::Path;
 
@@ -44,7 +50,7 @@ use crate::worktree::same_directory;
 
 /// The guard's answer for one candidate directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SessionVerdict {
+pub(crate) enum SessionVerdict {
     /// No persisted lease associates an OpenCode session with the
     /// directory: a pure CLI candidate, decided exactly as before.
     Unmanaged,
@@ -223,6 +229,47 @@ fn confirm_associated(
     Ok(located)
 }
 
+/// The certainty pass for a pass that may *move* a session.
+///
+/// A response that names another session is a mismatched answer: it says
+/// nothing about the session that was asked about, so it is not evidence for
+/// an occupant and it never authorises a move of the id it happens to carry.
+/// A response whose location is not absolute is a malformed answer for the
+/// same reason: an unusable location is not a location, and comparing it with
+/// a candidate would read as "not there" where the truth is "not known".
+/// The close chain moves the session it was given by name and is unaffected;
+/// this helper is the strict counterpart the removal stage uses.
+fn locate_associated(
+    api: &dyn OpenCodeApi,
+    known: &[String],
+) -> Result<Vec<LocatedSession>, String> {
+    let mut located = Vec::with_capacity(known.len());
+    for id in known {
+        match api.session(id) {
+            Ok(session) if session.id != *id => {
+                return Err(format!(
+                    "the host answered for OpenCode session '{id}' with a different session '{}'",
+                    crate::lifecycle::bounded(&session.id)
+                ));
+            }
+            Ok(session) if !Path::new(&session.directory).is_absolute() => {
+                return Err(format!(
+                    "the host answered for OpenCode session '{id}' with a non-absolute location '{}'",
+                    crate::lifecycle::bounded(&session.directory)
+                ));
+            }
+            Ok(session) => located.push(session),
+            Err(error) => {
+                return Err(format!(
+                    "OpenCode session '{id}' could not be located: {}",
+                    crate::lifecycle::bounded(&error.message)
+                ));
+            }
+        }
+    }
+    Ok(located)
+}
+
 /// The associated sessions the host authoritatively reports inside
 /// `directory`, from the direct lookups alone.
 fn hosted_by_direct_answer(located: &[LocatedSession], directory: &Path) -> Vec<String> {
@@ -254,4 +301,184 @@ fn known_sessions(associated: &[String], closing: Option<&str>) -> Vec<String> {
     known.sort();
     known.dedup();
     known
+}
+
+/// The host's fresh evidence about one candidate directory.
+///
+/// Two sources are combined and neither may overrule the other: the
+/// complete occupancy listing finds occupants this crate never asked
+/// about, and the direct answer of every associated session keeps the
+/// ones the listing forgot.
+pub(crate) struct Occupancy {
+    /// Every session the complete listing reports in the directory.
+    listed: Vec<String>,
+    /// The associated sessions whose own authoritative answer places them
+    /// in the directory: the only sessions a pass may return.
+    returnable: Vec<String>,
+    /// Associated sessions the listing places in the directory while their
+    /// own answer places them elsewhere.
+    conflicting: Vec<String>,
+}
+
+impl Occupancy {
+    /// The sessions the complete listing reports in the directory.
+    fn listed(&self) -> &[String] {
+        &self.listed
+    }
+
+    /// The associated sessions this pass may return to the main checkout.
+    fn returnable(&self) -> &[String] {
+        &self.returnable
+    }
+
+    /// The associated sessions whose listing and own answer disagree.
+    fn conflicting(&self) -> &[String] {
+        &self.conflicting
+    }
+}
+
+/// Read the fresh occupancy of `directory`.
+///
+/// The listing is complete or the evidence is unusable, and every
+/// associated session must answer for itself: a session the selected
+/// instance does not own may live in a standalone or private instance, so
+/// "not found" is uncertainty, never absence, and an answer that names
+/// another session or reports an unusable location is not an answer about
+/// the session that was asked for.
+pub(crate) fn discover_occupancy(
+    api: &dyn OpenCodeApi,
+    directory: &Path,
+    associated: &[String],
+) -> Result<Occupancy, String> {
+    let occupants = occupants_of_directory(api, directory).map_err(incomplete)?;
+    let known = known_sessions(associated, None);
+    // Every answer is checked against the session that was asked about, so
+    // the ids derived below are the requested ones and never an id the host
+    // happened to mention.
+    let located = locate_associated(api, &known)?;
+    let mut listed: Vec<String> = occupants
+        .iter()
+        .map(|occupant| occupant.id.clone())
+        .collect();
+    listed.sort();
+    listed.dedup();
+    let returnable = hosted_by_direct_answer(&located, directory);
+    // A session the listing places here and its own answer places
+    // elsewhere is a disagreement, and a disagreement costs a directory,
+    // never a session.
+    let conflicting: Vec<String> = listed
+        .iter()
+        .filter(|id| known.contains(id) && !returnable.contains(id))
+        .cloned()
+        .collect();
+    Ok(Occupancy {
+        listed,
+        returnable,
+        conflicting,
+    })
+}
+
+/// Return the associated idle sessions hosted in `directory` to the
+/// verified main checkout, so the directory is not removed while one of our
+/// own sessions still sits in it.
+///
+/// Only a lease-associated session is ever moved, and only out of the
+/// directory that still hosts it. A foreign occupant, an associated
+/// session the host places elsewhere, an answer that names another session
+/// or reports an unusable location, an unreadable host, an incomplete
+/// listing, a rejected or queued move, and a move that has not taken
+/// effect yet all keep the directory with a bounded reason.
+pub(crate) fn return_associated_sessions(
+    api: &dyn OpenCodeApi,
+    target: &TargetResolver<'_>,
+    directory: &Path,
+    associated: &[String],
+    occupancy: &Occupancy,
+) -> SessionVerdict {
+    let known = known_sessions(associated, None);
+    // An occupant no lease of this repository associates is somebody
+    // else's session: it is never moved, and its directory stays.
+    if let Some(foreign) = occupancy.listed().iter().find(|id| !known.contains(id)) {
+        return SessionVerdict::Keep(format!(
+            "OpenCode session '{foreign}' is hosted here and is not associated with this repository"
+        ));
+    }
+    if let Some(conflicting) = occupancy.conflicting().first() {
+        return SessionVerdict::Keep(format!(
+            "OpenCode session '{conflicting}' is listed here but the host places it elsewhere"
+        ));
+    }
+    if occupancy.returnable().is_empty() {
+        // Nothing of ours is hosted here: the directory is free and no
+        // session has to be moved.
+        return SessionVerdict::Vacant;
+    }
+    let destination = match target.get().resolve() {
+        Ok(path) => path,
+        Err(reason) => {
+            return SessionVerdict::Keep(format!(
+                "no verified main checkout to move the associated OpenCode session to: {reason}"
+            ));
+        }
+    };
+    for id in occupancy.returnable() {
+        if let Err(error) = api.move_session(id, destination) {
+            return SessionVerdict::Keep(format!(
+                "moving the associated OpenCode session failed: {}",
+                crate::lifecycle::bounded(&error.message)
+            ));
+        }
+        // Acceptance is not relocation: a queued or still-running move
+        // leaves the session where it was, and the directory must survive
+        // that. The confirmation must also answer for the session that was
+        // moved and report a usable location: an answer naming another
+        // session, or one whose location cannot be read, proves nothing
+        // about this move.
+        match api.session(id) {
+            Ok(located) if located.id != *id => {
+                return SessionVerdict::Keep(format!(
+                    "the host answered for the moved OpenCode session '{id}' with a different session '{}'",
+                    crate::lifecycle::bounded(&located.id)
+                ));
+            }
+            Ok(located) if !Path::new(&located.directory).is_absolute() => {
+                return SessionVerdict::Keep(format!(
+                    "the host answered for the moved OpenCode session '{id}' with a non-absolute location '{}'",
+                    crate::lifecycle::bounded(&located.directory)
+                ));
+            }
+            Ok(located) if same_directory(Path::new(&located.directory), destination) => {}
+            Ok(_) => {
+                return SessionVerdict::Keep(format!(
+                    "the associated OpenCode session has not left '{id}' yet"
+                ));
+            }
+            Err(error) => {
+                return SessionVerdict::Keep(format!(
+                    "the associated OpenCode session could not be confirmed after the move request: {}",
+                    crate::lifecycle::bounded(&error.message)
+                ));
+            }
+        }
+    }
+    // One successful lookup is not a vacated directory: every associated
+    // session is read again, and a fresh complete listing must agree that
+    // nothing is hosted here any more.
+    let located = match locate_associated(api, &known) {
+        Ok(located) => located,
+        Err(reason) => return SessionVerdict::Keep(reason),
+    };
+    if let Some(still_here) = hosted_by_direct_answer(&located, directory).first() {
+        return SessionVerdict::Keep(format!(
+            "OpenCode session '{still_here}' is still hosted here after the move request"
+        ));
+    }
+    match occupants_of_directory(api, directory) {
+        Ok(occupants) if occupants.is_empty() => SessionVerdict::Vacant,
+        Ok(occupants) => SessionVerdict::Keep(format!(
+            "{} session(s) are still hosted here",
+            occupants.len()
+        )),
+        Err(error) => SessionVerdict::Keep(incomplete(error)),
+    }
 }

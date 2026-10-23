@@ -13,11 +13,22 @@
 //!    untracked) — before any host or provider read;
 //! 3. the connected shared OpenCode service reports no *currently running*
 //!    session in it (issue 928 P1) — historical session records that still point
-//!    at the directory never block, and prune never moves a session;
+//!    at the directory never block, and the scan never moves a session;
 //! 4. every associated issue is *confirmed closed* by
 //!    [`IssueStateSource`][super::issue_state::IssueStateSource];
-//! 5. `git worktree remove` (no `--force`) succeeds after a fresh re-read of
+//! 5. the removal stage proves the directory is free of sessions it may not
+//!    touch and returns the associated idle ones it may (issue 1061 P1);
+//! 6. `git worktree remove` (no `--force`) succeeds after a fresh re-read of
 //!    rows and guards.
+//!
+//! The removal stage is the only place that may move a session, and it moves
+//! only a lease-associated `ses_` session that the host reports as idle and
+//! hosted in the directory: the move goes to the repository's verified main
+//! checkout and is confirmed by a fresh authoritative read. A running session,
+//! a foreign occupant, an incomplete listing, an unresolvable associated
+//! session, an answer that names another session or reports a location that
+//! cannot be read, an unavailable host, a rejected, queued, or unconfirmed
+//! move, and an invalid target all keep the directory with a bounded reason.
 //!
 //! Prune's runtime-host dependency is explicit: even a pure-CLI candidate needs
 //! a valid running-session answer before removal, and an unavailable, malformed,
@@ -34,6 +45,8 @@ use serde::Serialize;
 use crate::cli::report_local_warnings;
 use crate::infra::storage::Storage;
 use crate::lifecycle::cleanup::candidate::local_protected_reason;
+use crate::lifecycle::cleanup::sessions::{self, SessionVerdict};
+use crate::lifecycle::cleanup::{TargetResolver, associated_sessions};
 use crate::worktree::git::worktree_remove;
 use crate::worktree::leases::{list_all_for_repo, load_lease, update_status};
 use crate::worktree::opencode::OpenCodeApi;
@@ -63,12 +76,14 @@ impl PruneMode {
 }
 
 /// One repository scope of a prune pass: its canonical identity, the
-/// checkout the shared guards validate against, and the rows recorded
-/// against it.
+/// checkout the shared guards validate against, the rows recorded
+/// against it, and the lazily resolved move target its associated idle
+/// sessions may be returned to.
 pub(crate) struct PruneScope<'a> {
     pub identity: &'a str,
     pub repo_path: &'a Path,
     pub rows: &'a [LeaseRow],
+    pub target: &'a TargetResolver<'a>,
 }
 
 /// Read-only classification of one canonical directory before any write.
@@ -116,14 +131,15 @@ pub(crate) struct PruneAction {
     pub result: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Retained for JSON compatibility only. Prune no longer relocates a
-    /// session, so this list is always empty and therefore omitted; it is
-    /// never populated or logged (issue 928 P1).
+    /// Retained for JSON compatibility only. The removal stage returns an
+    /// associated idle session to the verified main checkout, but this list
+    /// stays empty and is therefore omitted; the outcome is reported through
+    /// the existing action message (issue 1061 P1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub relocated_children: Vec<String>,
-    /// Retained for JSON compatibility only. Prune no longer proposes a
+    /// Retained for JSON compatibility only. A removal never proposes a
     /// relocation, so this list is always empty and therefore omitted; it is
-    /// never populated or logged (issue 928 P1).
+    /// never populated or logged.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub planned_children: Vec<String>,
 }
@@ -471,11 +487,17 @@ fn apply_candidate(
                     source,
                     candidate,
                 ) {
-                    Some(reason) => {
+                    Err(reason) => {
                         action.result = "skipped_protected".to_owned();
                         action.message = Some(format!("kept on re-check: {reason}"));
                     }
-                    None => apply_removal(storage, runner, scope, candidate, &mut action),
+                    Ok(associated) => match relocation_guard(api, scope, candidate, &associated) {
+                        Some(reason) => {
+                            action.result = "skipped_protected".to_owned();
+                            action.message = Some(format!("kept on re-check: {reason}"));
+                        }
+                        None => apply_removal(storage, runner, scope, candidate, &mut action),
+                    },
                 }
             }
         }
@@ -484,8 +506,9 @@ fn apply_candidate(
 }
 
 /// Re-evaluate one directory against fresh rows and the uncached running-session
-/// answer. Returns the keep reason when the directory must survive, or `None`
-/// when the fresh proof still allows removal.
+/// answer. Returns the associated sessions of the directory when the fresh
+/// proof still allows removal, or the keep reason when the directory must
+/// survive.
 fn recheck(
     storage: &Storage,
     runner: &dyn WorktreeRunner,
@@ -494,40 +517,92 @@ fn recheck(
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
-) -> Option<String> {
+) -> Result<Vec<String>, String> {
     let fresh = match list_all_for_repo(storage, scope.identity) {
         Ok(rows) => rows,
-        Err(error) => return Some(format!("could not re-read leases: {}", error.message)),
+        Err(error) => return Err(format!("could not re-read leases: {}", error.message)),
     };
+    // The associated sessions are read from the fresh rows: an association
+    // that appeared or disappeared after the scan decides what may be moved.
+    let associated = associated_sessions(&fresh, &candidate.canonical_path);
     // Invalidate the scan's provider/scope memo so closure and the durable link
     // scope are re-read independently: a `closed` scan answer must not authorize
     // a deletion after the issue was reopened.
     source.refresh();
-    let fresh_scope = PruneScope {
-        identity: scope.identity,
-        repo_path: scope.repo_path,
-        rows: &fresh,
-    };
-    let Some(fresh_group) = group_rows(&fresh)
-        .into_iter()
-        .find(|group| group.canonical_path == candidate.canonical_path)
-    else {
-        // The candidate's rows vanished between scan and apply; the scan
-        // already proved the directory removable, and no row remains to
-        // protect, so removal may proceed.
-        return None;
-    };
-    match classify_group(
-        runner,
-        api,
-        &fresh_scope,
-        pinned_active,
-        source,
-        &fresh_group,
-    ) {
-        PruneDisposition::Removable => None,
-        other => Some(recheck_reason(other)),
+    {
+        let fresh_scope = PruneScope {
+            identity: scope.identity,
+            repo_path: scope.repo_path,
+            rows: &fresh,
+            target: scope.target,
+        };
+        let Some(fresh_group) = group_rows(&fresh)
+            .into_iter()
+            .find(|group| group.canonical_path == candidate.canonical_path)
+        else {
+            // The candidate's rows vanished between scan and apply; the scan
+            // already proved the directory removable, and no row remains to
+            // protect, so removal may proceed.
+            return Ok(associated);
+        };
+        match classify_group(
+            runner,
+            api,
+            &fresh_scope,
+            pinned_active,
+            source,
+            &fresh_group,
+        ) {
+            PruneDisposition::Removable => Ok(associated),
+            other => Err(recheck_reason(other)),
+        }
     }
+}
+
+/// The removal stage's session guard (issue 1061 P1).
+///
+/// The fresh occupancy of the directory is read first, the running state is
+/// re-read immediately afterwards and before any move request, and only then
+/// is an associated idle session returned to the verified main checkout. The
+/// directory must be free of running occupancy once more before it is removed.
+fn relocation_guard(
+    api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    candidate: &DirectoryCandidate,
+    associated: &[String],
+) -> Option<String> {
+    let directory = &candidate.canonical_path;
+    let occupancy = match sessions::discover_occupancy(api, directory, associated) {
+        Ok(occupancy) => occupancy,
+        Err(reason) => return Some(reason),
+    };
+    // The running state is re-read after the occupancy discovery and
+    // immediately before a move request: a session that started running in
+    // the meantime keeps the directory.
+    match active_guard::RunningSnapshot::capture(api) {
+        Ok(snapshot) => {
+            if let Some(reason) = snapshot.keep_reason(directory) {
+                return Some(reason);
+            }
+        }
+        Err(reason) => return Some(reason),
+    }
+    match sessions::return_associated_sessions(api, scope.target, directory, associated, &occupancy)
+    {
+        SessionVerdict::Keep(reason) => return Some(reason),
+        SessionVerdict::Vacant | SessionVerdict::Unmanaged => {}
+    }
+    // The directory must still be free of running occupancy when it is
+    // removed.
+    match active_guard::RunningSnapshot::capture(api) {
+        Ok(snapshot) => {
+            if let Some(reason) = snapshot.keep_reason(directory) {
+                return Some(reason);
+            }
+        }
+        Err(reason) => return Some(reason),
+    }
+    None
 }
 
 fn recheck_reason(disposition: PruneDisposition) -> String {

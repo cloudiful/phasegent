@@ -19,19 +19,24 @@ below exists because that gap is real.
 
 ## Moving a session: CLI, never the plugin
 
-A session is relocated by `phasegent issue close`, through the OpenCode V2 API
-(`opencode api session.move`), and only in one situation: the closing session is
-itself still hosted in a worktree that close is about to remove. The target is
-the repository's main checkout, resolved from the Git worktree list and verified
-to be an inside-work-tree main checkout; a bare or invalid target keeps the
-directory instead of guessing a parent.
+A session is relocated by the CLI — `phasegent issue close` and
+`phasegent worktree prune` — through the OpenCode V2 API
+(`opencode api session.move`), and only in one situation: the session is
+itself still hosted in a worktree that the command is about to remove. The
+target is the repository's main checkout, resolved from the Git worktree list
+and verified to be an inside-work-tree main checkout; a bare or invalid target
+keeps the directory instead of guessing a parent.
 
 Four rules keep this narrow:
 
-- **Only the closing session moves.** Another session sharing the directory
-  blocks removal; it is never relocated to make room.
+- **Only an associated session moves.** `issue close` moves the closing session
+  and only the closing session. `worktree prune` moves the `ses_`-leased
+  sessions a lease associates with the directory it removes. A session no lease
+  of the repository associates is somebody else's: it keeps the directory and
+  is never relocated to make room.
 - **A lease session without the `ses_` prefix belongs to a plain CLI caller.**
-  Such a worktree keeps its pre-existing behaviour and never reaches the API.
+  Such a session is never moved, and `issue close` never reaches the API for
+  it.
 - **The close never waits.** A move request that has not taken effect leaves the
   directory in place, and `issue sync` removes it later once the host reports the
   session elsewhere. There is no polling loop.
@@ -111,8 +116,7 @@ uses only the host's in-process session APIs.
   dirty/untracked contents — and adds its own running-session guard: only a
   session the connected shared service reports as currently running in the
   directory blocks removal, so an inactive historical session record that still
-  points at the directory never keeps it. Prune never enumerates historical
-  sessions and never moves a session. The provider read is the same
+  points at the directory never keeps it. The provider read is the same
   current-configured-provider resolution used elsewhere; a missing, unavailable,
   ambiguous, or mismatched issue is never treated as closed. Within one
   invocation the read-only scan memoizes the running-session answer (the
@@ -123,14 +127,43 @@ uses only the host's in-process session APIs.
   stderr, flushed before the running-session and closure checks, so a long scan
   is visibly working; stdout stays reserved for the final text or the single JSON
   document.
+- **The removal stage returns the associated idle sessions first (issue 1061
+  P1).** The read-only scan never enumerates history and never moves a session.
+  The removal stage is different: before it deletes a directory it reads that
+  directory's fresh occupancy and the direct answer of every associated
+  `ses_`-leased session, and it returns each associated *idle* session to the
+  repository's verified main checkout, confirming every move with a fresh
+  authoritative read. Those checks describe the one connected service at that
+  moment, not a guarantee about session changes after them.
+  - Only a lease-associated session is moved, and only out of the directory that
+    still hosts it. A session that already runs elsewhere is left untouched,
+    and a session's content is never modified — an archived session is neither
+    excluded nor unarchived.
+  - Every direct answer is checked against the session that was asked about
+    before it may authorise a move: an answer that names another session, or
+    one whose location is not absolute and therefore cannot be read, is not
+    evidence about the requested session, and it never authorises a move of
+    the id it happens to carry.
+  - A session no lease of this repository associates keeps the directory and is
+    never moved.
+  - An unavailable or incomplete occupancy listing, an unresolvable associated
+    session, an answer that names another session or reports an unusable
+    location, a rejected, queued, or unconfirmed move, an unverifiable main
+    checkout, a running session, and a new occupant all keep the directory with
+    a bounded reason.
+  - The coverage limit is unchanged: one connected service, not a whole-machine
+    multi-service inventory. The fresh checks cannot promise a globally atomic
+    snapshot of every service on the machine, so they are no guarantee about
+    sessions that move or appear afterwards.
 - **Prune's runtime-host dependency is explicit.** A valid running-session answer
   is required even for a pure-CLI candidate: an unsupported, unavailable,
   malformed, mismatched, or non-absolute answer, or an active id the host will not
   describe, keeps the directory rather than reading as vacancy. Coverage is the
   one connected service's foreground drains, not a whole-machine multi-service
   inventory: other processes or background work the service does not represent
-  are outside this contract. No relocation of a historical record is attempted,
-  so resuming an old session may require explicitly choosing a current checkout.
+  are outside this contract. A historical record that no lease associates is
+  never relocated, so resuming such an old session may require explicitly
+  choosing a current checkout.
 - **A session on a standalone/private instance is conservatively retained.**
   Normal API discovery does not find it, and a missing session is treated as
   uncertainty rather than absence.

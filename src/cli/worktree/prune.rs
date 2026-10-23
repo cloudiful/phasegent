@@ -25,13 +25,24 @@
 //! [`issue_state`](self::issue_state) (the same current-configured-provider
 //! model `issue sync` uses); a preview may read closure but never mutates.
 //!
-//! The pass never syncs a provider, never moves or releases a session, never
+//! The pass never syncs a provider, never releases a session, never
 //! auto-releases an active lease, and never deletes a branch or lease row.
 //! Directory removal reuses the shared *local* candidate guards (see
 //! [`worktrees`]) so a main checkout, an active peer's path, or a dirty
 //! directory is always kept, and adds its own running-session guard: only the
 //! connected service's current foreground drains block removal, never a
 //! historical session record.
+//!
+//! The removal stage is the only place that may move a session (issue 1061
+//! P1): before it deletes a directory it returns the associated idle
+//! `ses_`-leased sessions to the repository's verified main checkout and
+//! confirms every move, so the directory is not removed while one of our own
+//! sessions still sits in it. A running session, a foreign occupant, an
+//! incomplete listing, an unresolvable associated session, an answer that names
+//! another session or reports a location that cannot be read, an unavailable
+//! host, a rejected, queued, or unconfirmed move, and an invalid target all
+//! keep the directory. The scan stays read-only: it never enumerates history
+//! and never moves a session.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -39,6 +50,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
+use crate::lifecycle::cleanup::TargetResolver;
 use crate::output::context::OutputMode;
 use crate::policy::Role;
 use crate::worktree::leases::{
@@ -312,28 +324,36 @@ pub(crate) fn execute_prune_with_source(
             None
         };
         let rows: &[LeaseRow] = refreshed_rows.as_deref().unwrap_or(&start_rows);
-        let scope = PruneScope {
-            identity: &identity,
-            repo_path: &path,
-            rows,
+        // One verified move target per repository: the associated idle
+        // sessions a removal returns are sent to this repository's main
+        // checkout, and the target is resolved lazily so a pass that never
+        // moves a session spawns no Git process.
+        let worktree_summary = {
+            let target = TargetResolver::new(&path, &identity);
+            let scope = PruneScope {
+                identity: &identity,
+                repo_path: &path,
+                rows,
+                target: &target,
+            };
+            let mode = if dry_run {
+                PruneMode::Report
+            } else {
+                PruneMode::Remove
+            };
+            prune_pass(
+                &storage,
+                &runner,
+                &scan_cache,
+                api,
+                &scope,
+                &pinned_active,
+                source,
+                stale_days,
+                mode,
+                progress,
+            )
         };
-        let mode = if dry_run {
-            PruneMode::Report
-        } else {
-            PruneMode::Remove
-        };
-        let worktree_summary = prune_pass(
-            &storage,
-            &runner,
-            &scan_cache,
-            api,
-            &scope,
-            &pinned_active,
-            source,
-            stale_days,
-            mode,
-            progress,
-        );
         totals.repositories += 1;
         totals.removed += worktree_summary.removed;
         totals.eligible += worktree_summary.eligible;
