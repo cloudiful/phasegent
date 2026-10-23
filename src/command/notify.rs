@@ -16,13 +16,36 @@ pub(crate) fn parse_notify(args: &[String]) -> Result<Command, String> {
     }
     match name.unwrap() {
         "send" => {
+            let stdin_count = args
+                .iter()
+                .filter(|value| value.as_str() == "--stdin")
+                .count();
+            if stdin_count > 1 {
+                return Err("duplicate --stdin for notify send".to_owned());
+            }
             validate_options(
                 args,
                 0,
                 &["--event", "--title", "--body", "--issue", "--phase"],
-                &[],
+                &["--stdin"],
                 "notify send",
             )?;
+            if stdin_count == 1 {
+                if args.iter().skip(1).any(|value| value.as_str() != "--stdin") {
+                    return Err(
+                        "notify send --stdin cannot be combined with event, title, body, issue, or phase"
+                            .to_owned(),
+                    );
+                }
+                return Ok(Command::Notify(NotifyCommand::Send {
+                    stdin: true,
+                    event: None,
+                    title: None,
+                    body: None,
+                    issue: None,
+                    phase: None,
+                }));
+            }
             let event_raw = required_nonempty_option(args, "--event", "notify send")?;
             let event = crate::notifications::NotificationEvent::parse(&event_raw)?;
             let title = required_nonempty_option(args, "--title", "notify send")?;
@@ -58,9 +81,10 @@ pub(crate) fn parse_notify(args: &[String]) -> Result<Command, String> {
                 return Err("notify send --body is too long".to_owned());
             }
             Ok(Command::Notify(NotifyCommand::Send {
-                event,
-                title,
-                body,
+                stdin: false,
+                event: Some(event),
+                title: Some(title),
+                body: Some(body),
                 issue,
                 phase,
             }))

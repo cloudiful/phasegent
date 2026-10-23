@@ -24,13 +24,16 @@ pub enum PluginCommand {
 /// Agent notification send. `event` is the structured kind
 /// (completion, blocked, failure, interruption_suspected,
 /// publish_failed); `title`/`body` are bounded at the envelope layer
-/// and persisted before delivery.
+/// and persisted before delivery. `stdin` selects the standalone
+/// structured question document instead of the legacy arguments; the
+/// parser guarantees the legacy fields for a non-`stdin` send.
 #[derive(Debug)]
 pub enum NotifyCommand {
     Send {
-        event: crate::notifications::NotificationEvent,
-        title: String,
-        body: String,
+        stdin: bool,
+        event: Option<crate::notifications::NotificationEvent>,
+        title: Option<String>,
+        body: Option<String>,
         issue: Option<u64>,
         phase: Option<String>,
     },

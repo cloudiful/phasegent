@@ -289,3 +289,67 @@ fn unsupported_token_is_absent_from_the_registry_and_rejected_by_the_parser() {
     let roleless = super::parse_with_role_env(&super::args(&["mcp"]), None).unwrap_err();
     assert_eq!(roleless, "unknown command 'mcp'");
 }
+
+fn parse_notify_args(args: &[&str]) -> Result<crate::command::Command, String> {
+    let owned: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
+    crate::command::notify::parse_notify(&owned)
+}
+
+/// P2 (#1026): the notify parser accepts a standalone structured `--stdin`
+/// send, keeps the legacy invocation unchanged, and rejects combinations.
+#[test]
+fn notify_send_parser_stdin_is_standalone_and_legacy_is_unchanged() {
+    match parse_notify_args(&["send", "--stdin"]).unwrap() {
+        crate::command::Command::Notify(crate::command::NotifyCommand::Send {
+            stdin,
+            event,
+            title,
+            body,
+            issue,
+            phase,
+        }) => {
+            assert!(stdin);
+            assert!(event.is_none());
+            assert!(title.is_none());
+            assert!(body.is_none());
+            assert!(issue.is_none());
+            assert!(phase.is_none());
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    for args in [
+        &["send", "--stdin", "--event", "blocked", "--title", "t"][..],
+        &["send", "--stdin", "--title", "t"][..],
+        &["send", "--stdin", "--body", "b"][..],
+        &["send", "--stdin", "--issue", "7"][..],
+        &["send", "--stdin", "--phase", "p"][..],
+        &["send", "--stdin", "--stdin"][..],
+    ] {
+        assert!(
+            parse_notify_args(args).is_err(),
+            "{args:?} must be rejected as a combined stdin request",
+        );
+    }
+
+    match parse_notify_args(&["send", "--event", "blocked", "--title", "hi"]).unwrap() {
+        crate::command::Command::Notify(crate::command::NotifyCommand::Send {
+            stdin,
+            event,
+            title,
+            ..
+        }) => {
+            assert!(!stdin);
+            assert_eq!(
+                event,
+                Some(crate::notifications::NotificationEvent::BlockedAttention)
+            );
+            assert_eq!(title.as_deref(), Some("hi"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    // The legacy rules still reject a missing event or title.
+    assert!(parse_notify_args(&["send", "--title", "hi"]).is_err());
+    assert!(parse_notify_args(&["send", "--event", "blocked"]).is_err());
+}

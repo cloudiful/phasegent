@@ -833,3 +833,29 @@ fn unsupported_command_is_rejected_at_the_process_boundary() {
         stderr_text(&deep)
     );
 }
+
+/// P2 (#1026): the `notify send` page documents the structured `--stdin`
+/// question document, its input limits, and that answering stays in OpenCode.
+#[test]
+fn notify_send_help_documents_the_stdin_question_document() {
+    for role in [
+        None,
+        Some("executor"),
+        Some("orchestrator"),
+        Some("reviewer"),
+    ] {
+        let output = run_help_with_role(&["--help", "notify", "send"], role);
+        assert!(output.status.success(), "{}", stderr_text(&output));
+        let stdout = stdout_text(&output);
+        for needle in ["--stdin", "session_id", "65536", "OpenCode", "not read"] {
+            assert!(
+                stdout.contains(needle),
+                "notify send help for {role:?} missing {needle:?}:\n{stdout}",
+            );
+        }
+    }
+    // The group page points at the structured form without the full schema.
+    let group = run_help_with_role(&["--help", "notify"], Some("executor"));
+    assert!(group.status.success(), "{}", stderr_text(&group));
+    assert!(stdout_text(&group).contains("--stdin"));
+}

@@ -15,6 +15,13 @@ pub const NOTIFICATION_TITLE_LIMIT: usize = 140;
 /// bounded detail (issue id, phase, status, short error); longer input
 /// is truncated with an ellipsis.
 pub const NOTIFICATION_BODY_LIMIT: usize = 2000;
+/// Maximum body chars kept for a rich, multiline question notification.
+/// The rich constructor preserves newlines instead of collapsing them.
+pub const QUESTION_BODY_LIMIT: usize = 12000;
+/// Maximum serialized HTML bytes kept on a rich notification. The rich
+/// renderer stays far below this for any accepted input; a value above
+/// the limit drops the HTML alternative rather than truncating a tag.
+pub const QUESTION_HTML_LIMIT_BYTES: usize = 98304;
 
 /// Structured notification kinds. One variant per manual event so
 /// persistence and delivery stay explicit about why a message exists.
@@ -68,6 +75,9 @@ pub struct NotificationIntent {
     pub event: NotificationEvent,
     pub title: String,
     pub body: String,
+    /// Optional HTML alternative for rich question mail. Never persisted:
+    /// only the bounded plain title/body reach storage.
+    pub html: Option<String>,
     pub issue_id: Option<u64>,
     pub metadata: BTreeMap<String, String>,
 }
@@ -85,6 +95,32 @@ impl NotificationIntent {
             event,
             title: bound_text(&title.into(), NOTIFICATION_TITLE_LIMIT),
             body: bound_text(&body.into(), NOTIFICATION_BODY_LIMIT),
+            html: None,
+            issue_id: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    /// Build a bounded rich question intent. The subject reuses the
+    /// 140-char title cap, the plain body keeps its newlines up to the
+    /// question body limit, and the HTML alternative is only attached
+    /// when it stays within the serialized byte cap so no tag is cut.
+    pub fn new_question(
+        subject: impl Into<String>,
+        body: impl Into<String>,
+        html: impl Into<String>,
+    ) -> Self {
+        let html = html.into();
+        let bounded_html = if html.len() <= QUESTION_HTML_LIMIT_BYTES {
+            Some(html)
+        } else {
+            None
+        };
+        Self {
+            event: NotificationEvent::BlockedAttention,
+            title: bound_text(&subject.into(), NOTIFICATION_TITLE_LIMIT),
+            body: bound_multiline(&body.into(), QUESTION_BODY_LIMIT),
+            html: bounded_html,
             issue_id: None,
             metadata: BTreeMap::new(),
         }
@@ -120,9 +156,16 @@ impl NotificationIntent {
         if let Some(issue) = self.issue_id {
             body.push_str(&format!("\nissue #{issue}"));
         }
-        body.push_str(&format!("\nevent={}", self.event.as_str()));
+        // Rich question notifications keep `event` in metadata only; legacy
+        // sends keep the greppable `event=` line.
+        if self.html.is_none() {
+            body.push_str(&format!("\nevent={}", self.event.as_str()));
+        }
         let mut envelope =
             cloudiful_notifier::MessageEnvelope::new(body).with_title(self.title.clone());
+        if let Some(html) = &self.html {
+            envelope = envelope.with_html_body(html.clone());
+        }
         for (key, value) in &self.metadata {
             envelope
                 .metadata
@@ -166,6 +209,24 @@ fn bound_text(raw: &str, limit: usize) -> String {
     }
     let keep = limit.saturating_sub(3);
     let truncated: String = collapsed.chars().take(keep).collect();
+    format!("{truncated}...")
+}
+
+/// Preserve newlines and clip to `limit` scalars for a multiline body.
+/// Only carriage returns are normalized and control chars are dropped; no
+/// space collapsing, so the rich question layout survives.
+fn bound_multiline(raw: &str, limit: usize) -> String {
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let cleaned: String = normalized
+        .chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_owned();
+    }
+    let keep = limit.saturating_sub(3);
+    let truncated: String = trimmed.chars().take(keep).collect();
     format!("{truncated}...")
 }
 

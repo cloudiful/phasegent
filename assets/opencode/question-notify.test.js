@@ -1,12 +1,12 @@
-// Focused tests for the OpenCode question-notification path (issue #1026 P1).
+// Focused tests for the OpenCode question-notification path (issue #1026 P1/P2).
 //
 // `createQuestionNotifier` is dependency-injected, so these run under `bun test`
 // without OpenCode and without the phasegent CLI: the event subscription is a
-// controllable async iterable and the child process is a fake spawn, so no
-// real notification is ever delivered.
+// controllable async iterable and the child process is a fake spawn whose stdin
+// pipe captures the structured JSON, so no real notification is ever delivered.
 
 import { describe, expect, test } from "bun:test";
-import { createQuestionNotifier } from "./src/notify.js";
+import { buildQuestionPayload, createQuestionNotifier } from "./src/notify.js";
 
 const ROLE_MARKER = "phasegent-question-notify-test-role";
 const SESSION_MARKER = "phasegent-question-notify-test-session";
@@ -58,27 +58,51 @@ function createEventStream() {
   };
 }
 
+function makeChild({ exit = 0, exitPromise, writeThrows = false } = {}) {
+  const child = {
+    writes: [],
+    ended: false,
+    killed: false,
+    stdin: {
+      write(chunk) {
+        if (writeThrows) throw new Error("stdin write failed");
+        child.writes.push(String(chunk));
+      },
+      end() {
+        child.ended = true;
+      },
+    },
+    exited: exitPromise ?? Promise.resolve(exit),
+    kill() {
+      child.killed = true;
+    },
+  };
+  return child;
+}
+
 function questionEvent({
   id = "frm_1",
   sessionID = "ses_1",
-  directory = "/repo",
-  workspaceID,
   metadata = { kind: "question" },
-  title = "Pick one secret title",
   fields,
   eventLocation,
+  directory = "/repo",
 } = {}) {
   const form = {
     id,
     sessionID,
-    title,
+    title: "Secret form title",
     metadata,
     fields: fields ?? [
       {
         key: "answer",
         type: "string",
-        title: "SECRET FIELD TITLE",
-        options: [{ value: "opt", label: "SECRET OPTION LABEL" }],
+        title: "Choice",
+        description: "Which option?",
+        options: [
+          { label: "A", label_description: "ignored", description: "First option" },
+          { label: "B" },
+        ],
       },
     ],
   };
@@ -86,7 +110,7 @@ function questionEvent({
   if (eventLocation !== undefined) {
     event.location = eventLocation;
   } else if (directory) {
-    event.location = workspaceID ? { directory, workspaceID } : { directory };
+    event.location = { directory };
   }
   return event;
 }
@@ -104,8 +128,11 @@ function createHarness(options = {}) {
       get: async (input) => {
         sessionGetInputs.push(input);
         if (options.sessionGetError) throw options.sessionGetError;
-        if (options.sessionLocation === null) return { location: {} };
-        return { location: options.sessionLocation ?? { directory: "/repo" } };
+        if (typeof options.sessionGet === "function") return options.sessionGet(input);
+        return {
+          location: options.sessionLocation ?? { directory: "/repo" },
+          title: options.sessionTitle ?? "",
+        };
       },
     },
   };
@@ -120,11 +147,16 @@ function createHarness(options = {}) {
     };
   }
 
-  const fakeSpawn = options.spawn ?? (() => ({ exited: Promise.resolve(0), kill() {} }));
+  const fakeSpawn =
+    options.spawn ??
+    ((argv, spawnOptions) => (options.child ? options.child : makeChild()));
   const dependencies = {
     spawn: (argv, spawnOptions) => {
-      spawned.push({ argv, options: spawnOptions });
-      return fakeSpawn(argv, spawnOptions);
+      const entry = { argv, options: spawnOptions, child: null };
+      spawned.push(entry);
+      const child = fakeSpawn(argv, spawnOptions);
+      entry.child = child;
+      return child;
     },
     warn: (message) => warnMessages.push(String(message)),
   };
@@ -134,66 +166,84 @@ function createHarness(options = {}) {
 }
 
 async function settle() {
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
 
-function bodyOf(call) {
-  const index = call.argv.indexOf("--body");
-  return index >= 0 ? call.argv[index + 1] : "";
+function payloadOf(entry) {
+  return JSON.parse(entry.child.writes.join(""));
 }
 
-describe("question notifier delivery (issue #1026 P1)", () => {
-  test("sends exactly one argv-only blocked notification for a local question", async () => {
-    const harness = createHarness();
+describe("question notifier structured delivery (issue #1026 P1/P2)", () => {
+  test("sends one structured --stdin notification with a bounded JSON document", async () => {
+    const harness = createHarness({
+      location: { directory: "/repo", project: { directory: "/work/phasegent" } },
+      sessionTitle: "Fix the parser",
+    });
     harness.stream.emit(questionEvent());
     await settle();
     expect(harness.spawned).toHaveLength(1);
     const call = harness.spawned[0];
-    expect(Array.isArray(call.argv)).toBe(true);
-    expect(call.argv).toEqual([
-      "phasegent",
-      "notify",
-      "send",
-      "--event",
-      "blocked",
-      "--title",
-      "OpenCode question pending",
-      "--body",
-      bodyOf(call),
-    ]);
-    expect(call.argv).not.toContain("sh");
-    expect(call.argv).not.toContain("-c");
-    const body = bodyOf(call);
-    expect(body).toContain("ses_1");
-    expect(body).toContain("1 field");
-    expect(body).toContain("Answer it in OpenCode");
-    expect(body).not.toContain("Pick one secret title");
-    expect(body).not.toContain("SECRET FIELD TITLE");
-    expect(body).not.toContain("SECRET OPTION LABEL");
+    expect(call.argv).toEqual(["phasegent", "notify", "send", "--stdin"]);
+    expect(call.options.stdin).toBe("pipe");
     expect(call.options.timeout).toBe(10000);
     expect(call.options.cwd).toBe("/repo");
-    expect(call.options.stdin).toBe("ignore");
     expect(call.options.stdout).toBe("ignore");
     expect(call.options.stderr).toBe("ignore");
+    // The payload never travels through argv.
+    expect(call.argv.join(" ")).not.toContain("Which option?");
+    expect(call.child.ended).toBe(true);
+    const payload = payloadOf(call);
+    expect(payload.event).toBe("blocked");
+    expect(payload.question.session_id).toBe("ses_1");
+    expect(payload.question.session_title).toBe("Fix the parser");
+    expect(payload.question.project).toBe("phasegent");
+    expect(payload.question.questions).toHaveLength(1);
+    const question = payload.question.questions[0];
+    expect(question.header).toBe("Choice");
+    expect(question.text).toBe("Which option?");
+    expect(question.multiple).toBe(false);
+    expect(question.options).toEqual([
+      { label: "A", description: "First option" },
+      { label: "B", description: "" },
+    ]);
     harness.dispose();
   });
 
-  test("counts multiple fields without disclosing their content", async () => {
+  test("falls back to the session id when the title lookup fails", async () => {
+    const harness = createHarness({ sessionGetError: new Error("no session info") });
+    harness.stream.emit(questionEvent());
+    await settle();
+    expect(harness.spawned).toHaveLength(1);
+    const payload = payloadOf(harness.spawned[0]);
+    expect(payload.question.session_title).toBe("");
+    expect(payload.question.session_id).toBe("ses_1");
+    harness.dispose();
+  });
+
+  test("maps multiselect and uses the title as text fallback", async () => {
     const harness = createHarness();
     harness.stream.emit(
       questionEvent({
         fields: [
-          { key: "a", type: "string", title: "A" },
-          { key: "b", type: "string", title: "B" },
-          { key: "c", type: "string", title: "C" },
+          { key: "pick", type: "multiselect", title: "Pick many", options: [{ label: "x" }] },
         ],
       }),
     );
     await settle();
-    expect(harness.spawned).toHaveLength(1);
-    expect(bodyOf(harness.spawned[0])).toContain("3 fields");
+    const question = payloadOf(harness.spawned[0]).question.questions[0];
+    expect(question.multiple).toBe(true);
+    expect(question.text).toBe("Pick many");
+    expect(question.header).toBe("Pick many");
+    harness.dispose();
+  });
+
+  test("derives project from the plugin directory basename when project is absent", async () => {
+    const harness = createHarness({ location: { directory: "/repo/phasegent" } });
+    harness.stream.emit(questionEvent({ directory: "/repo/phasegent" }));
+    await settle();
+    expect(payloadOf(harness.spawned[0]).question.project).toBe("phasegent");
     harness.dispose();
   });
 
@@ -235,36 +285,93 @@ describe("question notifier delivery (issue #1026 P1)", () => {
 
   test("skips a workspace mismatch when both workspace ids are present", async () => {
     const harness = createHarness({ location: { directory: "/repo", workspaceID: "ws_1" } });
-    harness.stream.emit(questionEvent({ workspaceID: "ws_2" }));
+    harness.stream.emit(questionEvent({ eventLocation: { directory: "/repo", workspaceID: "ws_2" } }));
     await settle();
     expect(harness.spawned).toHaveLength(0);
     harness.dispose();
   });
 
-  test("notifies when both workspace ids are present and equal", async () => {
-    const harness = createHarness({ location: { directory: "/repo", workspaceID: "ws_1" } });
-    harness.stream.emit(questionEvent({ workspaceID: "ws_1" }));
+  test("resolves an absent event location from the session and reuses it once", async () => {
+    const harness = createHarness({ sessionTitle: "Reused title" });
+    harness.stream.emit(questionEvent({ eventLocation: null }));
+    harness.stream.emit(questionEvent({ id: "frm_2", eventLocation: null }));
     await settle();
-    expect(harness.spawned).toHaveLength(1);
-    harness.dispose();
-  });
-
-  test("resolves an absent event location from the form session", async () => {
-    const harness = createHarness({ sessionLocation: { directory: "/repo", workspaceID: "ws_1" } });
-    harness.stream.emit(questionEvent({ eventLocation: undefined, directory: null }));
-    await settle();
-    expect(harness.sessionGetInputs).toEqual([{ sessionID: "ses_1" }]);
-    expect(harness.spawned).toHaveLength(1);
+    // One lookup per event, reused by delivery (no duplicate lookup).
+    expect(harness.sessionGetInputs).toEqual([{ sessionID: "ses_1" }, { sessionID: "ses_1" }]);
+    expect(harness.spawned).toHaveLength(2);
+    expect(payloadOf(harness.spawned[0]).question.session_title).toBe("Reused title");
     harness.dispose();
   });
 
   test("skips an unresolvable location with a safe warning", async () => {
     const harness = createHarness({ sessionGetError: new Error("session unavailable") });
-    harness.stream.emit(questionEvent({ eventLocation: undefined, directory: null }));
+    harness.stream.emit(questionEvent({ eventLocation: null }));
     await settle();
     expect(harness.spawned).toHaveLength(0);
     expect(harness.warnMessages.join("\n")).toContain("form location unknown");
     harness.dispose();
+  });
+
+  test("a slow missing-location lookup does not delay a later local question", async () => {
+    let resolveSlow;
+    const slow = new Promise((resolve) => {
+      resolveSlow = resolve;
+    });
+    const harness = createHarness({
+      sessionGet: (input) =>
+        input.sessionID === "ses_slow"
+          ? slow
+          : Promise.resolve({ location: { directory: "/repo" }, title: "Fast" }),
+    });
+    harness.stream.emit(questionEvent({ id: "frm_slow", sessionID: "ses_slow", eventLocation: null }));
+    harness.stream.emit(questionEvent({ id: "frm_fast", sessionID: "ses_fast" }));
+    await settle();
+    // The later local question is delivered while the slow lookup is pending.
+    expect(harness.spawned).toHaveLength(1);
+    expect(payloadOf(harness.spawned[0]).question.session_id).toBe("ses_fast");
+    resolveSlow({ location: { directory: "/repo" }, title: "Slow" });
+    await settle();
+    expect(harness.spawned).toHaveLength(2);
+    harness.dispose();
+  });
+
+  test("a duplicate form does not start a second delivery while its lookup is pending", async () => {
+    let resolveSlow;
+    const slow = new Promise((resolve) => {
+      resolveSlow = resolve;
+    });
+    const harness = createHarness({ sessionGet: () => slow });
+    harness.stream.emit(questionEvent({ id: "frm_same", eventLocation: null }));
+    harness.stream.emit(questionEvent({ id: "frm_same", eventLocation: null }));
+    await settle();
+    expect(harness.sessionGetInputs).toHaveLength(1);
+    resolveSlow({ location: { directory: "/repo" }, title: "T" });
+    await settle();
+    expect(harness.spawned).toHaveLength(1);
+    harness.dispose();
+  });
+
+  test("a missing location that resolves to another workspace is not sent", async () => {
+    const harness = createHarness({ sessionLocation: { directory: "/elsewhere" } });
+    harness.stream.emit(questionEvent({ id: "frm_foreign", eventLocation: null }));
+    await settle();
+    expect(harness.spawned).toHaveLength(0);
+    harness.dispose();
+  });
+
+  test("disposal prevents a late spawn for a pending location lookup", async () => {
+    let resolveSlow;
+    const slow = new Promise((resolve) => {
+      resolveSlow = resolve;
+    });
+    const harness = createHarness({ sessionGet: () => slow });
+    harness.stream.emit(questionEvent({ id: "frm_slow", eventLocation: null }));
+    await settle();
+    expect(harness.spawned).toHaveLength(0);
+    harness.dispose();
+    resolveSlow({ location: { directory: "/repo" }, title: "Slow" });
+    await settle();
+    expect(harness.spawned).toHaveLength(0);
   });
 
   test("ignores non-question, malformed, replied and unrelated events", async () => {
@@ -280,9 +387,168 @@ describe("question notifier delivery (issue #1026 P1)", () => {
     expect(harness.spawned).toHaveLength(0);
     harness.dispose();
   });
+
+  test("bounds the payload to the question and choice caps", async () => {
+    const harness = createHarness();
+    const manyOptions = Array.from({ length: 15 }, (_, index) => ({ label: `option ${index}` }));
+    const fields = Array.from({ length: 10 }, (_, index) => ({
+      key: `k${index}`,
+      type: "string",
+      title: `question ${index}`,
+      options: manyOptions,
+    }));
+    harness.stream.emit(questionEvent({ fields }));
+    await settle();
+    const question = payloadOf(harness.spawned[0]).question;
+    expect(question.questions).toHaveLength(8);
+    expect(question.questions[0].options).toHaveLength(12);
+    // The dropped entries are reported, never lost silently.
+    expect(question.omitted_questions).toBe(2);
+    expect(question.questions[0].omitted_options).toBe(3);
+    expect(question.questions[1].omitted_options).toBe(3);
+    harness.dispose();
+  });
+
+  test("reports every dropped entry of an oversized form", () => {
+    const fields = Array.from({ length: 10 }, (_, index) => ({
+      key: `k${index}`,
+      type: "string",
+      title: `question ${index}`,
+      description: `text ${index}`,
+      options: Array.from({ length: 15 }, (_, option) => ({ label: `option ${option}` })),
+    }));
+    const payload = buildQuestionPayload(
+      { location: { directory: "/repo" } },
+      { id: "frm_1", sessionID: "ses_1", fields },
+      null,
+    );
+    expect(payload.question.questions).toHaveLength(8);
+    expect(payload.question.omitted_questions).toBe(2);
+    expect(payload.question.questions[0].options).toHaveLength(12);
+    expect(payload.question.questions[0].omitted_options).toBe(3);
+  });
+
+  test("a header never starves the mandatory question text", () => {
+    // The reviewer's exact boundary: a heavy first question leaves only 50
+    // scalars, and the second question's 120-scalar header would consume them.
+    const heavy = {
+      type: "string",
+      title: "h".repeat(120),
+      description: "q".repeat(1500),
+      options: Array.from({ length: 12 }, (_, index) => ({
+        label: "l".repeat(160),
+        description: "d".repeat(index === 11 ? 1 : 400),
+      })),
+    };
+    const payload = buildQuestionPayload(
+      { location: { directory: "/repo" } },
+      {
+        id: "frm_1",
+        sessionID: "ses_1",
+        fields: [heavy, { title: "H".repeat(120), description: "Actual second question?" }],
+      },
+      null,
+    );
+    const document = payload.question;
+    const scalars = (value) => Array.from(value).length;
+    const content =
+      scalars(document.session_id) +
+      scalars(document.session_title) +
+      scalars(document.project) +
+      document.questions.reduce(
+        (total, question) =>
+          total +
+          scalars(question.header) +
+          scalars(question.text) +
+          question.options.reduce(
+            (sum, option) => sum + scalars(option.label) + scalars(option.description),
+            0,
+          ),
+        0,
+      );
+    expect(content).toBeLessThanOrEqual(8000);
+    const last = document.questions.at(-1);
+    // The real question text is retained (possibly visibly clipped), never
+    // replaced by an invented fallback.
+    expect(last.text.startsWith("Actual second question")).toBe(true);
+    expect(document.questions.every((question) => question.text !== "Question")).toBe(true);
+    expect(document.omitted_questions).toBe(0);
+  });
+
+  test("omits and counts a question that cannot retain real text", () => {
+    const heavy = () => ({
+      type: "string",
+      title: "h".repeat(120),
+      description: "q".repeat(1500),
+      options: Array.from({ length: 12 }, (_, index) => ({
+        label: "l".repeat(160),
+        description: "d".repeat(index === 11 ? 1 : 400),
+      })),
+    });
+    const payload = buildQuestionPayload(
+      { location: { directory: "/repo" } },
+      { id: "frm_1", sessionID: "ses_1", fields: [heavy(), heavy(), heavy()] },
+      null,
+    );
+    const document = payload.question;
+    expect(document.questions.length).toBeLessThan(3);
+    expect(document.omitted_questions).toBeGreaterThan(0);
+    expect(
+      document.questions.every(
+        (question) => question.text.length > 0 && question.text !== "…" && question.text !== "Question",
+      ),
+    ).toBe(true);
+  });
+
+  test("never invents a question for a field without real text", async () => {
+    const harness = createHarness();
+    harness.stream.emit(
+      questionEvent({ fields: [{ key: "empty", type: "string", title: "", description: "" }] }),
+    );
+    await settle();
+    // Nothing real to say: no notification, and no synthetic question text.
+    expect(harness.spawned).toHaveLength(0);
+    expect(harness.warnMessages.join("\n")).toContain("question notification skipped");
+    harness.dispose();
+  });
+
+  test("counts entries dropped by the shared budget as omissions", () => {
+    const fields = Array.from({ length: 4 }, (_, index) => ({
+      key: `k${index}`,
+      type: "string",
+      title: `question ${index}`,
+      description: "y".repeat(1500),
+      options: Array.from({ length: 6 }, (_, option) => ({
+        label: `option ${option}`,
+        description: "z".repeat(400),
+      })),
+    }));
+    const payload = buildQuestionPayload(
+      { location: { directory: "/repo" } },
+      { id: "frm_1", sessionID: "ses_1", fields },
+      null,
+    );
+    const omitted = payload.question.questions.reduce(
+      (total, question) => total + question.omitted_options,
+      0,
+    );
+    expect(omitted).toBeGreaterThan(0);
+    expect(payload.question.omitted_questions).toBeGreaterThan(0);
+  });
+
+  test("clips an oversized field with an ellipsis", () => {
+    const payload = buildQuestionPayload(
+      { location: { directory: "/repo" } },
+      { id: "frm", sessionID: "ses_1", fields: [{ title: "h", text: "x".repeat(5000), description: "y".repeat(5000) }] },
+      null,
+    );
+    const question = payload.question.questions[0];
+    expect(question.text.length).toBeLessThanOrEqual(1500);
+    expect(question.text.endsWith("…")).toBe(true);
+  });
 });
 
-describe("question notifier failure handling (issue #1026 P1)", () => {
+describe("question notifier failure handling (issue #1026 P1/P2)", () => {
   test("keeps the inherited environment unchanged, including role and session markers", async () => {
     const savedRole = process.env.PHASEGENT_ROLE;
     const savedSession = process.env.PHASEGENT_SESSION_ID;
@@ -306,15 +572,15 @@ describe("question notifier failure handling (issue #1026 P1)", () => {
     }
   });
 
-  test("survives a throwing spawn and still notifies a later question", async () => {
+  test("survives a throwing spawn error and still notifies a later question", async () => {
     let first = true;
     const harness = createHarness({
       spawn: () => {
         if (first) {
           first = false;
-          throw new Error("spawn unavailable");
+          throw new Error(`spawn unavailable ${SENSITIVE_MARKER}\ninjected-line`);
         }
-        return { exited: Promise.resolve(0), kill() {} };
+        return makeChild();
       },
     });
     harness.stream.emit(questionEvent({ id: "frm_throw" }));
@@ -324,66 +590,6 @@ describe("question notifier failure handling (issue #1026 P1)", () => {
     await settle();
     expect(harness.spawned).toHaveLength(2);
     harness.dispose();
-  });
-
-  test("survives a nonzero exit and still notifies a later question", async () => {
-    const harness = createHarness({ spawn: () => ({ exited: Promise.resolve(2), kill() {} }) });
-    harness.stream.emit(questionEvent({ id: "frm_nonzero" }));
-    await settle();
-    expect(harness.warnMessages.join("\n")).toContain("question notification delivery failed");
-    harness.stream.emit(questionEvent({ id: "frm_next" }));
-    await settle();
-    expect(harness.spawned).toHaveLength(2);
-    harness.dispose();
-  });
-
-  test("never blocks event handling on process completion", async () => {
-    const harness = createHarness({
-      spawn: () => ({ exited: new Promise(() => {}), kill() {} }),
-    });
-    harness.stream.emit(questionEvent({ id: "frm_hung_a" }));
-    harness.stream.emit(questionEvent({ id: "frm_hung_b" }));
-    await settle();
-    // The first child never exits, yet the second question is still handled.
-    expect(harness.spawned).toHaveLength(2);
-    harness.dispose();
-  });
-
-  test("reports a subscription error safely", async () => {
-    const harness = createHarness({ subscribeThrows: true });
-    await settle();
-    expect(harness.warnMessages.join("\n")).toContain("subscription failed");
-    expect(() => harness.dispose()).not.toThrow();
-  });
-
-  test("warns once and returns a harmless disposer without an event subscription", async () => {
-    const harness = createHarness({ subscribe: false });
-    expect(harness.warnMessages.join("\n")).toContain("no event subscription");
-    expect(typeof harness.dispose).toBe("function");
-    expect(() => harness.dispose()).not.toThrow();
-    await settle();
-    expect(harness.spawned).toHaveLength(0);
-  });
-
-  test("dispose aborts, terminates owned children and prevents future spawns", async () => {
-    let killed = 0;
-    const harness = createHarness({
-      spawn: () => ({
-        exited: new Promise(() => {}),
-        kill() {
-          killed += 1;
-        },
-      }),
-    });
-    harness.stream.emit(questionEvent({ id: "frm_owned" }));
-    await settle();
-    expect(harness.spawned).toHaveLength(1);
-    harness.dispose();
-    expect(killed).toBe(1);
-    expect(harness.subscribeInfo.options.signal.aborted).toBe(true);
-    harness.stream.emit(questionEvent({ id: "frm_after_dispose" }));
-    await settle();
-    expect(harness.spawned).toHaveLength(1);
   });
 
   test("sanitizes a thrown spawn error to a fixed failure category", async () => {
@@ -403,38 +609,133 @@ describe("question notifier failure handling (issue #1026 P1)", () => {
 
   test("sanitizes a rejected child exit to a fixed failure category", async () => {
     const harness = createHarness({
-      spawn: () => ({
-        exited: Promise.reject(new Error(`exit rejected ${SENSITIVE_MARKER}\ninjected-line`)),
-        kill() {},
-      }),
+      spawn: () =>
+        makeChild({ exitPromise: Promise.reject(new Error(`exit ${SENSITIVE_MARKER}\ninjected`)) }),
     });
     harness.stream.emit(questionEvent({ id: "frm_reject_secret" }));
     await settle();
     const joined = harness.warnMessages.join("\n");
     expect(joined).toContain("question notification delivery failed");
     expect(joined).not.toContain(SENSITIVE_MARKER);
-    expect(joined).not.toContain("injected-line");
+    expect(joined).not.toContain("injected");
     harness.dispose();
   });
 
-  test("sanitizes a subscription error to a fixed failure category", async () => {
+  test("survives a nonzero exit and still notifies a later question", async () => {
+    const harness = createHarness({ spawn: () => makeChild({ exit: 2 }) });
+    harness.stream.emit(questionEvent({ id: "frm_nonzero" }));
+    await settle();
+    expect(harness.warnMessages.join("\n")).toContain("question notification delivery failed");
+    harness.stream.emit(questionEvent({ id: "frm_next" }));
+    await settle();
+    expect(harness.spawned).toHaveLength(2);
+    harness.dispose();
+  });
+
+  test("reports a stdin write failure without failing the question", async () => {
+    const harness = createHarness({ spawn: () => makeChild({ writeThrows: true }) });
+    harness.stream.emit(questionEvent({ id: "frm_write" }));
+    await settle();
+    expect(harness.warnMessages.join("\n")).toContain("question notification delivery failed");
+    harness.dispose();
+  });
+
+  test("closes the pipe only after an asynchronous write has flushed", async () => {
+    const order = [];
+    const child = {
+      writes: [],
+      stdin: {
+        write(chunk) {
+          order.push("write");
+          child.writes.push(String(chunk));
+          return new Promise((resolve) =>
+            setTimeout(() => {
+              order.push("flushed");
+              resolve(child.writes.length);
+            }, 0),
+          );
+        },
+        end() {
+          order.push("end");
+        },
+      },
+      exited: Promise.resolve(0),
+      kill() {},
+    };
+    const harness = createHarness({ spawn: () => child });
+    harness.stream.emit(questionEvent({ id: "frm_async_write" }));
+    await settle();
+    expect(order).toEqual(["write", "flushed", "end"]);
+    expect(JSON.parse(child.writes.join("")).question.session_id).toBe("ses_1");
+    harness.dispose();
+  });
+
+  test("terminates the owned child at once when the stdin write fails", async () => {
+    const children = [];
+    const harness = createHarness({
+      spawn: () => {
+        const child = makeChild({ writeThrows: true, exitPromise: new Promise(() => {}) });
+        child.kills = 0;
+        child.kill = () => {
+          child.kills += 1;
+          child.killed = true;
+        };
+        children.push(child);
+        return child;
+      },
+    });
+    harness.stream.emit(questionEvent({ id: "frm_write_fail" }));
+    await settle();
+    expect(harness.warnMessages.join("\n")).toContain("question notification delivery failed");
+    // The pipe is closed and the child is terminated without waiting for an
+    // exit that may never arrive.
+    expect(children[0].ended).toBe(true);
+    expect(children[0].kills).toBe(1);
+    // Disposal does not clean the terminated child up a second time.
+    harness.dispose();
+    expect(children[0].kills).toBe(1);
+  });
+
+  test("a failed delivery does not block the next question", async () => {
+    const harness = createHarness({
+      spawn: () => makeChild({ writeThrows: true, exitPromise: new Promise(() => {}) }),
+    });
+    harness.stream.emit(questionEvent({ id: "frm_write_fail" }));
+    harness.stream.emit(questionEvent({ id: "frm_write_next" }));
+    await settle();
+    expect(harness.spawned).toHaveLength(2);
+    harness.dispose();
+  });
+
+  test("never blocks event handling on process completion", async () => {
+    const harness = createHarness({
+      spawn: () => makeChild({ exitPromise: new Promise(() => {}) }),
+    });
+    harness.stream.emit(questionEvent({ id: "frm_hung_a" }));
+    harness.stream.emit(questionEvent({ id: "frm_hung_b" }));
+    await settle();
+    expect(harness.spawned).toHaveLength(2);
+    harness.dispose();
+  });
+
+  test("reports a subscription error safely", async () => {
     const harness = createHarness({
       subscribeThrows: true,
-      subscribeError: new Error(`subscribe failed ${SENSITIVE_MARKER}\ninjected-line`),
+      subscribeError: new Error(`subscribe ${SENSITIVE_MARKER}\ninjected`),
     });
     await settle();
     const joined = harness.warnMessages.join("\n");
     expect(joined).toContain("question notification subscription failed");
     expect(joined).not.toContain(SENSITIVE_MARKER);
-    expect(joined).not.toContain("injected-line");
-    harness.dispose();
+    expect(joined).not.toContain("injected");
+    expect(() => harness.dispose()).not.toThrow();
   });
 
   test("sanitizes a session lookup error to a fixed failure category", async () => {
     const harness = createHarness({
-      sessionGetError: new Error(`session lookup failed ${SENSITIVE_MARKER}\ninjected-line`),
+      sessionGetError: new Error(`lookup ${SENSITIVE_MARKER}\ninjected-line`),
     });
-    harness.stream.emit(questionEvent({ eventLocation: undefined, directory: null }));
+    harness.stream.emit(questionEvent({ eventLocation: null }));
     await settle();
     const joined = harness.warnMessages.join("\n");
     expect(joined).toContain("form location unknown");
@@ -448,7 +749,7 @@ describe("question notifier failure handling (issue #1026 P1)", () => {
     const evil = { type: "form.created" };
     Object.defineProperty(evil, "data", {
       get() {
-        throw new Error(`handling failed ${SENSITIVE_MARKER}\ninjected-line`);
+        throw new Error(`handling ${SENSITIVE_MARKER}\ninjected-line`);
       },
     });
     harness.stream.emit(evil);
@@ -458,5 +759,30 @@ describe("question notifier failure handling (issue #1026 P1)", () => {
     expect(joined).not.toContain(SENSITIVE_MARKER);
     expect(joined).not.toContain("injected-line");
     harness.dispose();
+  });
+
+  test("warns once and returns a harmless disposer without an event subscription", async () => {
+    const harness = createHarness({ subscribe: false });
+    expect(harness.warnMessages.join("\n")).toContain("no event subscription");
+    expect(typeof harness.dispose).toBe("function");
+    expect(() => harness.dispose()).not.toThrow();
+    await settle();
+    expect(harness.spawned).toHaveLength(0);
+  });
+
+  test("dispose aborts, terminates owned children and prevents future spawns", async () => {
+    const harness = createHarness({
+      spawn: () => makeChild({ exitPromise: new Promise(() => {}) }),
+    });
+    harness.stream.emit(questionEvent({ id: "frm_owned" }));
+    await settle();
+    expect(harness.spawned).toHaveLength(1);
+    const child = harness.spawned[0].child;
+    harness.dispose();
+    expect(child.killed).toBe(true);
+    expect(harness.subscribeInfo.options.signal.aborted).toBe(true);
+    harness.stream.emit(questionEvent({ id: "frm_after_dispose" }));
+    await settle();
+    expect(harness.spawned).toHaveLength(1);
   });
 });
