@@ -310,97 +310,137 @@ impl QuestionNotification {
     }
 
     fn render_html(&self) -> String {
-        let mut out = String::with_capacity(1024);
-        out.push_str(
-            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body style=\"margin:0;padding:0;background:#f4f5f7;\">\
-<div style=\"font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2328;font-size:15px;line-height:1.5;max-width:680px;margin:0 auto;padding:24px;\">",
-        );
-        out.push_str(
-            "<p style=\"margin:0 0 4px;font-size:13px;letter-spacing:.02em;text-transform:uppercase;color:#57606a;\">OpenCode question</p>",
-        );
+        let mut out = String::with_capacity(4096);
+        out.push_str(HTML_OPEN);
         let title = if self.session_title.is_empty() {
             self.session_id.as_str()
         } else {
             self.session_title.as_str()
         };
-        out.push_str(&format!(
-            "<h1 style=\"margin:0 0 4px;font-size:20px;font-weight:600;\">{}</h1>",
-            escape_html(&clip(title, SESSION_TITLE_CAP))
-        ));
+        out.push_str("<h1 style=\"margin:0 0 6px;font-size:22px;line-height:1.3;font-weight:600;");
+        out.push_str(WRAP_STYLE);
+        out.push_str("\">");
+        out.push_str(&escape_html(&clip(title, SESSION_TITLE_CAP)));
+        out.push_str("</h1>");
         if !self.project.is_empty() {
-            out.push_str(&format!(
-                "<p style=\"margin:0 0 16px;color:#57606a;\">Project: {}</p>",
-                escape_html(&self.project)
-            ));
+            out.push_str("<p style=\"margin:0 0 24px;color:#57606a;");
+            out.push_str(WRAP_STYLE);
+            out.push_str("\">Project: ");
+            out.push_str(&escape_html(&self.project));
+            out.push_str("</p>");
         }
-        out.push_str("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;\">");
         for (index, question) in self.questions.iter().enumerate() {
             out.push_str(
-                "<tr><td style=\"padding:12px 14px;border:1px solid #d0d7de;border-radius:8px;background:#ffffff;\">",
+                "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"",
             );
-            out.push_str(&format!(
-                "<p style=\"margin:0 0 6px;font-weight:600;\">{}",
-                index + 1
-            ));
+            out.push_str(CARD_STYLE);
+            out.push_str("\"><tr><td style=\"padding:14px 16px;\">");
+            out.push_str("<p style=\"margin:0 0 6px;font-size:12px;font-weight:600;text-transform:uppercase;color:#57606a;\">Question ");
+            out.push_str(&(index + 1).to_string());
             if !question.header.is_empty() {
-                out.push_str(&format!(" &middot; {}", escape_html(&question.header)));
+                out.push_str(" &middot; ");
+                out.push_str(&escape_html(&question.header));
             }
             out.push_str("</p>");
-            out.push_str(&format!(
-                "<p style=\"margin:0 0 8px;white-space:pre-wrap;\">{}</p>",
-                escape_html(&question.text).replace('\n', "<br>")
-            ));
+            out.push_str("<p style=\"margin:0;font-size:16px;font-weight:600;line-height:1.55;");
+            out.push_str(WRAP_STYLE);
+            out.push_str("\">");
+            out.push_str(&escape_html(&question.text).replace('\n', "<br>"));
+            out.push_str("</p>");
             if question.multiple {
                 out.push_str(
-                    "<p style=\"margin:0 0 8px;color:#57606a;font-style:italic;\">Select all that apply</p>",
+                    "<p style=\"margin:8px 0 0;font-size:13px;color:#57606a;font-style:italic;\">Select all that apply</p>",
                 );
             }
             if !question.options.is_empty() {
-                out.push_str("<ul style=\"margin:0;padding-left:20px;\">");
-                for option in &question.options {
-                    let label = escape_html(&option.label);
-                    if option.description.is_empty() {
-                        out.push_str(&format!("<li>{label}</li>"));
-                    } else {
-                        out.push_str(&format!(
-                            "<li><strong>{label}</strong> &mdash; {}</li>",
-                            escape_html(&option.description)
-                        ));
+                out.push_str(
+                    "<p style=\"margin:14px 0 6px;font-size:12px;font-weight:600;text-transform:uppercase;color:#57606a;\">Options</p>",
+                );
+                // One bordered group per question: each choice is its own
+                // separated row with a display-only ordinal, a bold label and a
+                // stacked smaller description. No input, button or link is
+                // rendered.
+                out.push_str(
+                    "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"",
+                );
+                out.push_str(CHOICE_GROUP_STYLE);
+                out.push_str("\">");
+                for (option_index, option) in question.options.iter().enumerate() {
+                    out.push_str("<tr><td style=\"");
+                    out.push_str(ORDINAL_CELL_STYLE);
+                    out.push_str("\">");
+                    out.push(option_ordinal(option_index));
+                    out.push_str("</td><td style=\"");
+                    out.push_str(CHOICE_TEXT_CELL_STYLE);
+                    out.push_str("\">");
+                    if !option.label.is_empty() {
+                        out.push_str("<b>");
+                        out.push_str(&escape_html(&option.label));
+                        out.push_str("</b>");
                     }
+                    if !option.description.is_empty() {
+                        out.push_str(DESC_OPEN);
+                        out.push_str(&escape_html(&option.description));
+                        out.push_str("</div>");
+                    }
+                    out.push_str("</td></tr>");
                 }
-                if question.omitted_options > 0 {
-                    out.push_str(&format!(
-                        "<li style=\"color:#57606a;\"><em>{} more choices omitted</em></li>",
-                        question.omitted_options
-                    ));
-                }
-                out.push_str("</ul>");
-            } else if question.omitted_options > 0 {
-                // Every choice was dropped: the omission still has to be visible.
-                out.push_str(&format!(
-                    "<p style=\"margin:0;color:#57606a;\"><em>{} more choices omitted</em></p>",
-                    question.omitted_options
-                ));
+                out.push_str("</table>");
             }
-            out.push_str("</td></tr>");
+            if question.omitted_options > 0 {
+                out.push_str("<p style=\"margin:8px 0 0;font-size:13px;color:#57606a;\"><em>");
+                out.push_str(&question.omitted_options.to_string());
+                out.push_str(" more choices omitted</em></p>");
+            }
+            out.push_str("</td></tr></table>");
         }
-        out.push_str("</table>");
         if self.omitted_questions > 0 {
-            out.push_str(&format!(
-                "<p style=\"margin:12px 0 0;color:#57606a;\"><em>{} more questions omitted</em></p>",
-                self.omitted_questions
-            ));
+            out.push_str("<p style=\"margin:0 0 16px;color:#57606a;\"><em>");
+            out.push_str(&self.omitted_questions.to_string());
+            out.push_str(" more questions omitted</em></p>");
         }
         out.push_str(
             "<p style=\"margin:16px 0 0;color:#57606a;\">Answer in OpenCode. Replies to this email are not read.</p>",
         );
-        out.push_str(&format!(
-            "<p style=\"margin:4px 0 0;color:#8c959f;font-size:12px;\">Session {}</p>",
-            escape_html(&self.session_id)
-        ));
-        out.push_str("</div></body></html>");
+        out.push_str("<p style=\"margin:4px 0 0;color:#8c959f;font-size:12px;");
+        out.push_str(WRAP_STYLE);
+        out.push_str("\">Session ");
+        out.push_str(&escape_html(&self.session_id));
+        out.push_str("</p></div></body></html>");
         out
     }
+}
+
+/// Document head plus the shared outer container.
+const HTML_OPEN: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body style=\"margin:0;padding:0;background:#f4f5f7;\"><div style=\"font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2328;font-size:15px;line-height:1.5;width:100%;max-width:680px;box-sizing:border-box;margin:0 auto;padding:24px 16px;\">";
+
+/// Inline text-wrapping style shared by the HTML text blocks so a long unbroken
+/// token wraps inside a narrow viewport instead of forcing horizontal scroll.
+const WRAP_STYLE: &str = "word-wrap:break-word;overflow-wrap:anywhere;";
+
+/// One bordered card per question.
+const CARD_STYLE: &str = "width:100%;box-sizing:border-box;margin:0 0 16px;border-collapse:separate;border-spacing:0;border:1px solid #d0d7de;border-radius:8px;background:#ffffff;";
+
+/// The bordered group holding one question's choice rows. The shared styles and
+/// borders are declared once here instead of once per choice, which keeps a
+/// full-shape HTML body inside the byte budget even when every label and
+/// description expands to HTML entities.
+const CHOICE_GROUP_STYLE: &str = "width:100%;box-sizing:border-box;margin:0 0 8px;border-collapse:collapse;border:1px solid #e1e4e8;border-radius:6px;background:#f6f8fa;";
+
+/// Display-only ordinal cell of a choice row.
+const ORDINAL_CELL_STYLE: &str =
+    "width:24px;padding:8px 0 8px 10px;vertical-align:top;color:#666;border-top:1px solid #e1e4e8;";
+
+/// Label and description cell of a choice row.
+const CHOICE_TEXT_CELL_STYLE: &str = "padding:8px 10px 8px 2px;vertical-align:top;word-wrap:break-word;overflow-wrap:anywhere;border-top:1px solid #e1e4e8;";
+
+/// Opens the smaller regular description block under a choice label.
+const DESC_OPEN: &str = "<div style=\"margin-top:2px;font-size:13px;color:#57606a;\">";
+
+/// Display-only ordinal for a choice: `A` for the first, `B` for the second,
+/// and so on. The number of retained choices is capped well below the alphabet.
+fn option_ordinal(index: usize) -> char {
+    char::from(b'A' + index.min(25) as u8)
 }
 
 struct Budget {
@@ -911,5 +951,208 @@ mod tests {
         assert!(intent.body.chars().count() <= crate::notifications::QUESTION_BODY_LIMIT);
         let html = intent.html.expect("html");
         assert!(html.len() <= crate::notifications::QUESTION_HTML_LIMIT_BYTES);
+    }
+
+    fn styled_question() -> QuestionNotification {
+        parse(
+            r#"{"event":"blocked","question":{"session_id":"ses_1","session_title":"Fix the parser","project":"phasegent","questions":[{"header":"Choice","text":"Which option?","multiple":true,"options":[{"label":"Keep legacy","description":"Keeps the old path"},{"label":"Replace","description":"Drops the old path"}]}]}}"#,
+        )
+    }
+
+    fn styled_html(input: &QuestionNotification) -> String {
+        input.to_intent().html.expect("html alternative")
+    }
+
+    #[test]
+    fn html_starts_with_the_conversation_and_has_no_eyebrow() {
+        let html = styled_html(&styled_question());
+        // The redundant "OpenCode question" eyebrow is gone from the body.
+        assert!(!html.contains("OpenCode question"));
+        assert!(!html.to_lowercase().contains("opencode question"));
+        let h1 = html.find("<h1").expect("title heading");
+        // Nothing readable precedes the conversation title.
+        assert!(!html[..h1].contains("OpenCode"));
+        assert!(!html[..h1].contains("<p"));
+        assert!(html.contains("Fix the parser"));
+        assert!(html.contains("Project: phasegent"));
+        // Subject is unchanged by the body restyle.
+        assert_eq!(
+            styled_question().to_intent().title,
+            "OpenCode question: Fix the parser"
+        );
+    }
+
+    #[test]
+    fn html_separates_each_question_and_each_choice() {
+        let input = parse(
+            r#"{"event":"blocked","question":{"session_id":"ses_1","session_title":"Two questions","project":"phasegent","questions":[{"header":"Choice","text":"Which option?","multiple":true,"options":[{"label":"Keep legacy","description":"Keeps the old path"},{"label":"Replace","description":"Drops the old path"}]},{"header":"Details","text":"Any context?","options":[]}]}}"#,
+        );
+        let html = styled_html(&input);
+        // Each question is its own numbered section.
+        assert!(
+            html.contains(">Question 1</p>") || html.contains(">Question 1 &middot; Choice</p>")
+        );
+        assert!(html.contains("Question 2"));
+        assert!(html.matches(">Question ").count() == 2);
+        // Options are grouped under a concise label, once, for the question
+        // that has choices.
+        assert_eq!(html.matches(">Options</p>").count(), 1);
+        // Ordinals are their own cells, not part of the label text.
+        assert!(html.contains(">A</td>"));
+        assert!(html.contains(">B</td>"));
+        // Label and description are separate stacked blocks, not a run-on line.
+        assert!(html.contains("<b>Keep legacy</b>"));
+        assert!(html.contains(
+            "<div style=\"margin-top:2px;font-size:13px;color:#57606a;\">Keeps the old path</div>"
+        ));
+        assert!(!html.contains("&mdash;"));
+        assert!(!html.contains("<li>"));
+        assert!(html.contains("Select all that apply"));
+    }
+
+    #[test]
+    fn html_free_text_question_has_no_options_group() {
+        let input = parse(
+            r#"{"event":"blocked","question":{"session_id":"ses_1","questions":[{"header":"Detail","text":"Describe the bug"}]}}"#,
+        );
+        let html = styled_html(&input);
+        assert!(html.contains("Describe the bug"));
+        assert!(!html.contains(">Options</p>"));
+        assert!(!html.contains(">A</td>"));
+        assert!(!html.contains(">B</td>"));
+    }
+
+    #[test]
+    fn html_all_omitted_choices_keep_the_notice_without_a_group() {
+        let input = parse(
+            r#"{"event":"blocked","question":{"session_id":"ses_1","questions":[{"text":"pick","omitted_options":4}]}}"#,
+        );
+        let html = styled_html(&input);
+        assert!(html.contains("4 more choices omitted"));
+        assert!(!html.contains(">Options</p>"));
+        assert!(!html.contains(">A</td>"));
+    }
+
+    #[test]
+    fn html_has_no_interactive_answer_affordance() {
+        let html = styled_html(&styled_question());
+        for forbidden in [
+            "<button",
+            "<input",
+            "<form",
+            "<select",
+            "<textarea",
+            "<a ",
+            "href=",
+            "onclick",
+            "javascript:",
+            "role=\"button\"",
+            "type=\"submit\"",
+        ] {
+            assert!(
+                !html.contains(forbidden),
+                "rendered HTML must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_is_narrow_viewport_safe() {
+        let html = styled_html(&styled_question());
+        assert!(html.contains("max-width:680px"));
+        assert!(html.contains("width:100%"));
+        assert!(html.contains("overflow-wrap:anywhere"));
+        assert!(html.contains("word-wrap:break-word"));
+        assert!(html.contains("box-sizing:border-box"));
+        // No layout that a mail client cannot honour, and no fixed heights that
+        // would clip text or block text zoom.
+        for unsupported in ["display:flex", "display:grid", "position:fixed"] {
+            assert!(!html.contains(unsupported));
+        }
+        assert!(!html.contains("min-height"));
+        assert!(!html.contains("max-height"));
+        assert!(!html.contains(";height:"));
+        assert!(!html.contains("white-space:nowrap"));
+        assert!(!html.contains("overflow:hidden"));
+    }
+
+    #[test]
+    fn html_stays_within_the_output_cap_at_the_maximum_shape() {
+        let questions: Vec<String> = (0..8)
+            .map(|index| {
+                let options: Vec<String> = (0..12)
+                    .map(|option| {
+                        format!(
+                            r#"{{"label":"label {option}","description":"description {option}"}}"#
+                        )
+                    })
+                    .collect();
+                format!(
+                    r#"{{"header":"Header {}","text":"Question {} text?","options":[{}]}}"#,
+                    index,
+                    index,
+                    options.join(",")
+                )
+            })
+            .collect();
+        let json = format!(
+            r#"{{"event":"blocked","question":{{"session_id":"ses_1","session_title":"Many questions","project":"phasegent","questions":[{}]}}}}"#,
+            questions.join(",")
+        );
+        let input = parse(&json);
+        assert_eq!(input.questions.len(), 8);
+        assert_eq!(input.questions[0].options.len(), 12);
+        let html = styled_html(&input);
+        assert!(html.len() <= crate::notifications::QUESTION_HTML_LIMIT_BYTES);
+        // The full retained shape is rendered, not silently dropped.
+        assert_eq!(html.matches(">Options</p>").count(), 8);
+        assert!(html.contains("label 11"));
+    }
+
+    /// Full retained shape combined with worst-case entity expansion: every
+    /// label is one quote and every description is eighty quotes, so each
+    /// retained choice adds 486 escaped bytes. The HTML alternative must still
+    /// exist and stay inside the byte cap, which a silent fallback to the plain
+    /// body would otherwise hide.
+    #[test]
+    fn html_keeps_the_alternative_for_a_full_shape_with_escaped_content() {
+        let quotes = "\"".repeat(80);
+        let options: Vec<String> = (0..12)
+            .map(|_| {
+                format!(
+                    r#"{{"label":"\"","description":"{}"}}"#,
+                    quotes.replace('"', "\\\"")
+                )
+            })
+            .collect();
+        let questions: Vec<String> = (0..8)
+            .map(|_| format!(r#"{{"text":"q","options":[{}]}}"#, options.join(",")))
+            .collect();
+        let json = format!(
+            r#"{{"event":"blocked","question":{{"session_id":"ses_1","session_title":"Title","project":"repo","questions":[{}]}}}}"#,
+            questions.join(",")
+        );
+
+        let input = parse(&json);
+        assert_eq!(json.len(), 18_740, "fixture input size changed");
+        assert_eq!(content_scalars(&input), 7_798);
+        assert_eq!(input.questions.len(), 8);
+        assert_eq!(input.questions[0].options.len(), 12);
+
+        let intent = input.to_intent();
+        let html = intent
+            .html
+            .as_ref()
+            .expect("the HTML alternative must exist, not fall back to plain text");
+        assert!(
+            html.len() <= crate::notifications::QUESTION_HTML_LIMIT_BYTES,
+            "full-shape escaped HTML is {} bytes, above the cap",
+            html.len()
+        );
+        // Every retained choice and its escaped content is really rendered.
+        assert_eq!(html.matches("<b>&quot;</b>").count(), 96);
+        assert_eq!(html.matches("&quot;").count(), 96 * 81);
+        // The last ordinal is present, so no retained choice was dropped.
+        assert!(html.contains(">L</td>"));
     }
 }
