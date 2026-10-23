@@ -9,6 +9,19 @@ const GLOBAL_OPTIONS: &[(&str, &str)] = &[
     ("--repository", "owner/repo"),
     ("--project-id", "23"),
     ("--close-status-id", "5"),
+    ("--output", "text"),
+    ("--no-progress", ""),
+];
+
+/// Global options that consume a following value token. The presentation
+/// pre-scan skips these values so a value is never read as a flag.
+const VALUE_GLOBAL_OPTIONS: &[&str] = &[
+    "--provider",
+    "--api-base",
+    "--repository",
+    "--project-id",
+    "--close-status-id",
+    "--close-status-name",
 ];
 
 /// Explain option placement when a subcommand parser rejected a token that is
@@ -50,7 +63,77 @@ fn normalize_option_name(name: &str) -> String {
 }
 
 fn global_option_example(flag: &str, value: &str) -> String {
-    format!(
-        "PHASEGENT_ROLE=executor phasegent {flag} {value} issue create --title TITLE --body BODY"
-    )
+    let invocation = if value.is_empty() {
+        format!("phasegent {flag}")
+    } else {
+        format!("phasegent {flag} {value}")
+    };
+    format!("PHASEGENT_ROLE=executor {invocation} issue create --title TITLE --body BODY")
+}
+
+/// Bounded presentation pre-scan of the leading global-option prefix.
+///
+/// The scan only walks the options that precede the command, so it never
+/// inspects a subcommand's own arguments. It resolves the output preferences
+/// for parser and permission failures, which are reported before the command
+/// is known. It is not a second authorization parser: it decides presentation
+/// only, and the real argv validation stays in `argv`.
+pub(crate) fn prescan_presentation(args: &[String]) -> crate::output::context::OutputOptions {
+    use crate::output::context::{OutputOptions, OutputSelection};
+
+    let mut options = OutputOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        let token = args[index].as_str();
+        if token == "--no-progress" {
+            options.no_progress = true;
+            index += 1;
+            continue;
+        }
+        if token == "--output" {
+            if let Some(value) = args.get(index + 1) {
+                if let Ok(selection) = OutputSelection::parse(value) {
+                    options.selection = first_selection(options.selection, selection);
+                }
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(value) = super::parse_helpers::split_inline(token, "--output") {
+            if let Ok(selection) = OutputSelection::parse(&value) {
+                options.selection = first_selection(options.selection, selection);
+            }
+            index += 1;
+            continue;
+        }
+        if VALUE_GLOBAL_OPTIONS.contains(&token) {
+            index += 2;
+            continue;
+        }
+        if VALUE_GLOBAL_OPTIONS
+            .iter()
+            .any(|option| super::parse_helpers::split_inline(token, option).is_some())
+        {
+            index += 1;
+            continue;
+        }
+        // The command (or an unknown token) ends the global-option prefix.
+        break;
+    }
+    options
+}
+
+/// The first explicit selection wins for presentation; the real parser
+/// reports a contradictory duplicate.
+fn first_selection(
+    current: crate::output::context::OutputSelection,
+    next: crate::output::context::OutputSelection,
+) -> crate::output::context::OutputSelection {
+    use crate::output::context::OutputSelection;
+    match current {
+        OutputSelection::Auto => next,
+        current => current,
+    }
 }

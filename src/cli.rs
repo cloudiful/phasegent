@@ -1,6 +1,7 @@
 use crate::auth;
 use crate::command::{self, Command, IssueCommand};
 use crate::infra::storage::Storage;
+use crate::output::context::OutputMode;
 use crate::policy::{CallerContext, Capability, Role};
 use crate::providers::api::PhasegentError;
 use crate::providers::config::resolve_kind;
@@ -30,6 +31,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
     let args = args.into_iter().collect::<Vec<_>>();
+    // The presentation scope is installed before the parse, so a parser or
+    // permission failure already renders in the requested format.
+    let options = command::prescan_presentation(&args);
+    let _scope = crate::output::context::install(&options, command::caller_from_env().ok());
     match command::parse_outcome(&args) {
         Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
         Ok(command::ParseOutcome::Permission { role, operation }) => {
@@ -45,6 +50,9 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
 #[cfg(test)]
 pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Option<&str>) -> i32 {
     let args = args.into_iter().collect::<Vec<_>>();
+    let options = command::prescan_presentation(&args);
+    let caller = command::caller_from(role_env, false).ok();
+    let _scope = crate::output::context::install(&options, caller);
     match command::parse_outcome_with_role_env(&args, role_env) {
         Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
         Ok(command::ParseOutcome::Permission { role, operation }) => {
@@ -65,6 +73,9 @@ pub(crate) fn run_with_caller(
     session_present: bool,
 ) -> i32 {
     let args = args.into_iter().collect::<Vec<_>>();
+    let options = command::prescan_presentation(&args);
+    let caller = command::caller_from(role_env, session_present).ok();
+    let _scope = crate::output::context::install(&options, caller);
     match command::parse_outcome_with_caller_env(&args, role_env, session_present) {
         Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
         Ok(command::ParseOutcome::Permission { role, operation }) => {
@@ -84,6 +95,25 @@ fn open_storage() -> Result<Storage, String> {
 }
 
 fn execute(invocation: crate::command::Invocation) -> i32 {
+    // The parsed command refines the scoped presentation: the authoritative
+    // options, the human view, and the command label.
+    crate::output::context::apply(&invocation.output, invocation.caller);
+    crate::output::context::update(|context| {
+        context.view = crate::output::context::view_for(&invocation.command);
+        context.label = crate::output::context::label_for(&invocation.command).to_owned();
+    });
+    // The progress surface starts only for the command groups that may take
+    // a while. The credential, the stdin, the help, and the version surfaces
+    // never animate, and the guard clears the ticker when the command ends.
+    let context = crate::output::context::current_or_default();
+    let _progress = if shows_progress(&invocation.command) {
+        Some(crate::output::progress::ProgressGuard::start(
+            &context,
+            &context.label,
+        ))
+    } else {
+        None
+    };
     match invocation.command {
         Command::Help(topic) => {
             help::print_help(invocation.role, invocation.provider, topic);
@@ -334,11 +364,55 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
     }
 }
 
+/// The command groups that show a progress surface: the provider requests and
+/// the local worktree and sync operations. The help, the version, the
+/// credential and stdin surfaces, the read-only local checks, and the
+/// notification surface never animate.
+fn shows_progress(command: &Command) -> bool {
+    use crate::command::WorktreeCommand;
+    match command {
+        Command::Issue(_)
+        | Command::Comment(_)
+        | Command::Record(_)
+        | Command::Project(_)
+        | Command::Status(_)
+        | Command::VersionCommand(_)
+        | Command::Workflow(_)
+        | Command::Relation(_)
+        | Command::Timer(_) => true,
+        Command::Worktree(
+            WorktreeCommand::Acquire { .. }
+            | WorktreeCommand::List { .. }
+            | WorktreeCommand::Prune { .. },
+        ) => true,
+        Command::Help(_)
+        | Command::Version
+        | Command::AuthSetup { .. }
+        | Command::ConfigShow
+        | Command::ConfigSet { .. }
+        | Command::ConfigClear { .. }
+        | Command::ConfigProviderGet
+        | Command::ConfigProviderSet { .. }
+        | Command::ConfigProviderClear
+        | Command::Hooks(_)
+        | Command::Plugin(_)
+        | Command::Notify(_)
+        | Command::Doctor
+        | Command::Worktree(_) => false,
+    }
+}
+
 /// Emits bounded lifecycle warnings on stderr so stdout JSON stays compatible
 /// with the plain provider output shape.
 pub(crate) fn report_local_warnings(operation: &str, warnings: Option<String>) {
-    if let Some(reason) = warnings {
-        eprintln!(
+    let Some(reason) = warnings else {
+        return;
+    };
+    let context = crate::output::context::current_or_default();
+    // The ticker is cleared before the warning so the two never overlap.
+    crate::output::progress::clear();
+    match context.effective_mode() {
+        OutputMode::Json => eprintln!(
             "{}",
             serde_json::json!({
                 "warning": {
@@ -346,7 +420,15 @@ pub(crate) fn report_local_warnings(operation: &str, warnings: Option<String>) {
                     "message": reason,
                 }
             })
-        );
+        ),
+        OutputMode::Text => eprintln!(
+            "{}",
+            crate::output::render::render_diagnostic(
+                "warning",
+                &serde_json::json!({"operation": operation, "message": reason}),
+                context.stderr_color,
+            )
+        ),
     }
 }
 
@@ -432,17 +514,37 @@ pub(crate) fn print_result<T: Serialize>(result: Result<T, PhasegentError>) -> i
     }
 }
 
+/// The central success emitter. The call signature stays the compatibility
+/// adapter every command uses; the scoped context decides whether the result
+/// reaches stdout as the stable JSON document or as readable text.
 pub(crate) fn print_json<T: Serialize>(value: &T) -> i32 {
-    match serde_json::to_string(value) {
-        Ok(value) => {
-            println!("{value}");
-            0
-        }
-        Err(error) => structured_error(
-            serde_json::json!({"kind":"encode", "message":error.to_string()}),
-            1,
-        ),
+    let context = crate::output::context::current_or_default();
+    // The ticker is cleared before the result so the document never overlaps
+    // the progress line.
+    crate::output::progress::clear();
+    match context.effective_mode() {
+        OutputMode::Json => match serde_json::to_string(value) {
+            Ok(value) => {
+                println!("{value}");
+                0
+            }
+            Err(error) => encode_error(&error),
+        },
+        OutputMode::Text => match serde_json::to_value(value) {
+            Ok(value) => {
+                println!("{}", crate::output::render::render_value(&value, &context));
+                0
+            }
+            Err(error) => encode_error(&error),
+        },
     }
+}
+
+fn encode_error(error: &serde_json::Error) -> i32 {
+    structured_error(
+        serde_json::json!({"kind":"encode", "message":error.to_string()}),
+        1,
+    )
 }
 
 pub(crate) fn provider_error(error: PhasegentError) -> i32 {
@@ -453,7 +555,19 @@ pub(crate) fn usage_error(message: &str) -> i32 {
     structured_error(serde_json::json!({"kind":"argument", "message":message}), 2)
 }
 
+/// The central failure emitter. The JSON envelope is unchanged; the text
+/// rendering is a readable diagnostic label with the same operation and
+/// message.
 pub(crate) fn structured_error(error: serde_json::Value, code: i32) -> i32 {
-    eprintln!("{}", serde_json::json!({"error":error}));
+    let context = crate::output::context::current_or_default();
+    // The ticker is cleared before the diagnostic so the two never overlap.
+    crate::output::progress::clear();
+    match context.effective_mode() {
+        OutputMode::Json => eprintln!("{}", serde_json::json!({"error":error})),
+        OutputMode::Text => eprintln!(
+            "{}",
+            crate::output::render::render_diagnostic("error", &error, context.stderr_color)
+        ),
+    }
     code
 }

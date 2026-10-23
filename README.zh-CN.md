@@ -87,6 +87,23 @@ phasegent doctor
 
 分支关联是本地只读查询：`issue status` 显示当前分支及其关联 issue 与缓存状态，`issue branches N` 列出本仓库中关联到该 issue 的全部分支（跨全部 scope）。
 
+## 输出
+
+每个命令都把结果写到 stdout，把诊断写到 stderr；格式由 `--output
+auto|text|json` 选择（默认 `auto`）：`auto` 在交互式人类终端使用人类可读文本，
+在其他情况（管道、CI、任意 agent role）使用稳定的 JSON 文档。`--no-progress`
+只关闭 stderr 进度动画，不改变 warning 与 error。`--help` 与 `--version`
+始终输出文本。
+
+```sh
+phasegent issue get 123                    # 终端为文本，管道为 JSON
+phasegent --output text issue get 123      # 强制人类可读视图
+phasegent --output json issue get 123      # 强制机器文档
+```
+
+JSON 键集合保持稳定，文本视图按命令定制。命令自身文档化的
+`--format`/`--json` 旧参数仍然有效。详见 [docs/cli-output.md](docs/cli-output.md)。
+
 选择的 provider 不是默认值时，在命令上添加 `--provider redmine` 或
 `--provider local`。可以使用 `--project-id ID` 覆盖 project 的自动发现；
 `--repository OWNER/REPOSITORY` 指定 Git 主机上的仓库，用于
@@ -161,11 +178,11 @@ checkout、绝不动有 `active` lease 的路径、绝不删除 dirty/untracked 
 多服务清单。本地保护先于运行中会话查询判定，因此主 checkout 或 dirty 目录不会产生
 任何 host 调用；由于 prune 对运行时 host 的依赖是显式的，运行中会话查询不可用、格式
 错误、ID 不匹配或返回非绝对路径，都会保留目录（即便是纯 CLI 候选）。人类可读的失败
-计数只统计失败的 `git worktree remove` 调用，而非 host 异常。默认输出为按目录
-统计的简洁文本，`--json` 输出机器可读的聚合结果。少量进度行会写入 stderr——在运行
-中会话与闭包检查前即时 flush，让长扫描可见——stdout 仅保留最终文本或单个 JSON 文档。被
-透明 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管 agent role。详见
-[docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
+计数只统计失败的 `git worktree remove` 调用，而非 host 异常。输出遵循全局
+`--output` 选择：人类终端上为按目录统计的简洁文本，管道或 `--json` 时为机器可读聚合
+结果。交互式终端上进度动画显示扫描与逐个移除检查，并在结果前清除；stdout 仅保留最终
+文本或单个 JSON 文档。被透明 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管
+agent role。详见 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
 
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
 dist。真源为 `assets/opencode/src/` 和 `skills/phasegent/` 的提示词文件；用

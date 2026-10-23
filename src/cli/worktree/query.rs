@@ -49,6 +49,7 @@ impl From<LeaseRow> for LeaseJson {
 }
 
 pub(super) fn execute_status(issue: u64) -> i32 {
+    crate::output::progress::stage("worktree status: reading the leases");
     match leases_for_issue(issue) {
         Ok(rows) => {
             let payload = serde_json::json!({
@@ -62,6 +63,7 @@ pub(super) fn execute_status(issue: u64) -> i32 {
 }
 
 pub(super) fn execute_list(repo: Option<&str>) -> i32 {
+    crate::output::progress::stage("worktree list: reading the leases");
     let storage = match open_storage() {
         Ok(storage) => storage,
         Err(message) => return config_error(&message),

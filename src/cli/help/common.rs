@@ -22,13 +22,33 @@ pub(crate) fn render_group_help(
     sections: &[HelpSection<'_>],
     footer: &str,
 ) -> String {
+    render_group_help_visible(header, sections, footer, 14, |_, path| {
+        row_visible(role, path)
+    })
+}
+
+/// Render a group overview with an explicit per-row visibility decision and a
+/// row width.
+///
+/// A caller that also filters by the resolved provider or by a compiled
+/// feature keeps this one rendering path instead of copying the layout, and a
+/// caller with a wider options block can align the descriptions with it. An
+/// empty group is dropped, so a group whose rows are all hidden never prints a
+/// bare title.
+pub(crate) fn render_group_help_visible(
+    header: &str,
+    sections: &[HelpSection<'_>],
+    footer: &str,
+    name_width: usize,
+    visible: impl Fn(&str, &[&str]) -> bool,
+) -> String {
     let mut out = format!("{header}\n\n");
     for (index, (title, rows)) in sections.iter().enumerate() {
-        let visible: Vec<&HelpRow<'_>> = rows
+        let shown: Vec<&HelpRow<'_>> = rows
             .iter()
-            .filter(|(_, _, path)| row_visible(role, path))
+            .filter(|(name, _, path)| visible(name, path))
             .collect();
-        if visible.is_empty() {
+        if shown.is_empty() {
             continue;
         }
         if let Some(title) = title {
@@ -37,8 +57,8 @@ pub(crate) fn render_group_help(
             }
             out.push_str(&format!("{title}:\n"));
         }
-        for (name, desc, _) in visible {
-            out.push_str(&format!("  {name:<14} {desc}\n"));
+        for (name, desc, _) in shown {
+            out.push_str(&format!("  {name:<name_width$} {desc}\n"));
         }
     }
     out.push_str(&format!("\n{footer}\n"));
@@ -119,5 +139,31 @@ mod tests {
             header_at < get_at && get_at < local_at && local_at < bind_at && bind_at < footer_at,
             "sections must keep header/rows/title/rows/footer order; got: {text}"
         );
+    }
+
+    #[test]
+    fn an_explicit_visibility_drops_empty_groups_and_widens_rows() {
+        let work: &[HelpRow<'_>] = &[("issue", "Issue operations", &["issue"])];
+        let orchestration: &[HelpRow<'_>] = &[("timer", "Timer operations", &["timer"])];
+        let text = render_group_help_visible(
+            "H:",
+            &[
+                (Some("Work items"), work),
+                (Some("Orchestration"), orchestration),
+            ],
+            "F",
+            22,
+            |name, _| name != "timer",
+        );
+        assert!(text.contains("Work items:"), "got: {text}");
+        assert!(
+            text.contains("  issue                  Issue operations"),
+            "the width aligns the descriptions; got: {text}"
+        );
+        assert!(
+            !text.contains("Orchestration:"),
+            "an all-hidden group must not print a bare title; got: {text}"
+        );
+        assert!(!text.contains("timer"), "got: {text}");
     }
 }
