@@ -317,61 +317,62 @@ impl QuestionNotification {
         } else {
             self.session_title.as_str()
         };
-        out.push_str("<h1 style=\"margin:0 0 6px;font-size:22px;line-height:1.3;font-weight:600;");
+        out.push_str("<h1 style=\"margin:0 0 4px;font-size:20px;line-height:1.4;font-weight:600;");
         out.push_str(WRAP_STYLE);
         out.push_str("\">");
         out.push_str(&escape_html(&clip(title, SESSION_TITLE_CAP)));
         out.push_str("</h1>");
         if !self.project.is_empty() {
-            out.push_str("<p style=\"margin:0 0 24px;color:#57606a;");
+            out.push_str("<p style=\"margin:0 0 24px;color:#57606a;font-size:13px;");
             out.push_str(WRAP_STYLE);
             out.push_str("\">Project: ");
             out.push_str(&escape_html(&self.project));
             out.push_str("</p>");
         }
         for (index, question) in self.questions.iter().enumerate() {
-            out.push_str(
-                "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"",
-            );
-            out.push_str(CARD_STYLE);
-            out.push_str("\"><tr><td style=\"padding:14px 16px;\">");
-            out.push_str("<p style=\"margin:0 0 6px;font-size:12px;font-weight:600;text-transform:uppercase;color:#57606a;\">Question ");
+            if index > 0 {
+                out.push_str("<hr style=\"");
+                out.push_str(RULE_STYLE);
+                out.push_str("\">");
+            }
+            // The marker is a static display badge, never a control: a solid
+            // circle with the question number and no hover, cursor or link.
+            out.push_str("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;box-sizing:border-box;border-collapse:collapse;\"><tr><td style=\"width:24px;padding:0 8px 0 0;vertical-align:top;\"><div style=\"");
+            out.push_str(BADGE_STYLE);
+            out.push_str("\">");
             out.push_str(&(index + 1).to_string());
+            out.push_str(
+                "</div></td><td style=\"vertical-align:middle;font-size:15px;font-weight:600;",
+            );
+            out.push_str(WRAP_STYLE);
+            out.push_str("\">");
             if !question.header.is_empty() {
-                out.push_str(" &middot; ");
                 out.push_str(&escape_html(&question.header));
             }
-            out.push_str("</p>");
-            out.push_str("<p style=\"margin:0;font-size:16px;font-weight:600;line-height:1.55;");
+            out.push_str("</td></tr></table>");
+            out.push_str(
+                "<p style=\"margin:6px 0 0;font-size:15px;font-weight:400;line-height:1.65;",
+            );
             out.push_str(WRAP_STYLE);
             out.push_str("\">");
             out.push_str(&escape_html(&question.text).replace('\n', "<br>"));
             out.push_str("</p>");
             if question.multiple {
                 out.push_str(
-                    "<p style=\"margin:8px 0 0;font-size:13px;color:#57606a;font-style:italic;\">Select all that apply</p>",
+                    "<p style=\"margin:6px 0 0;font-size:13px;color:#57606a;font-style:italic;\">Select all that apply</p>",
                 );
             }
             if !question.options.is_empty() {
-                out.push_str(
-                    "<p style=\"margin:14px 0 6px;font-size:12px;font-weight:600;text-transform:uppercase;color:#57606a;\">Options</p>",
-                );
-                // One bordered group per question: each choice is its own
-                // separated row with a display-only ordinal, a bold label and a
-                // stacked smaller description. No input, button or link is
-                // rendered.
-                out.push_str(
-                    "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"",
-                );
-                out.push_str(CHOICE_GROUP_STYLE);
-                out.push_str("\">");
+                // Choices stay unboxed: a plain letter column, a semibold label
+                // and a stacked muted description, separated by whitespace.
+                out.push_str("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;box-sizing:border-box;margin:12px 0 0;border-collapse:collapse;\">");
                 for (option_index, option) in question.options.iter().enumerate() {
                     out.push_str("<tr><td style=\"");
-                    out.push_str(ORDINAL_CELL_STYLE);
+                    out.push_str(LETTER_CELL_STYLE);
                     out.push_str("\">");
                     out.push(option_ordinal(option_index));
                     out.push_str("</td><td style=\"");
-                    out.push_str(CHOICE_TEXT_CELL_STYLE);
+                    out.push_str(OPTION_TEXT_CELL_STYLE);
                     out.push_str("\">");
                     if !option.label.is_empty() {
                         out.push_str("<b>");
@@ -392,7 +393,6 @@ impl QuestionNotification {
                 out.push_str(&question.omitted_options.to_string());
                 out.push_str(" more choices omitted</em></p>");
             }
-            out.push_str("</td></tr></table>");
         }
         if self.omitted_questions > 0 {
             out.push_str("<p style=\"margin:0 0 16px;color:#57606a;\"><em>");
@@ -411,31 +411,30 @@ impl QuestionNotification {
     }
 }
 
-/// Document head plus the shared outer container.
-const HTML_OPEN: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body style=\"margin:0;padding:0;background:#f4f5f7;\"><div style=\"font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2328;font-size:15px;line-height:1.5;width:100%;max-width:680px;box-sizing:border-box;margin:0 auto;padding:24px 16px;\">";
+/// Document head plus the shared outer container on a single neutral surface.
+const HTML_OPEN: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body style=\"margin:0;padding:0;background:#ffffff;\"><div style=\"font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2328;font-size:15px;line-height:1.6;width:100%;max-width:680px;box-sizing:border-box;margin:0 auto;padding:24px 16px;\">";
 
 /// Inline text-wrapping style shared by the HTML text blocks so a long unbroken
 /// token wraps inside a narrow viewport instead of forcing horizontal scroll.
 const WRAP_STYLE: &str = "word-wrap:break-word;overflow-wrap:anywhere;";
 
-/// One bordered card per question.
-const CARD_STYLE: &str = "width:100%;box-sizing:border-box;margin:0 0 16px;border-collapse:separate;border-spacing:0;border:1px solid #d0d7de;border-radius:8px;background:#ffffff;";
+/// A fine rule between successive open question sections.
+const RULE_STYLE: &str = "border:0;border-top:1px solid #e5e7eb;margin:24px 0;";
 
-/// The bordered group holding one question's choice rows. The shared styles and
-/// borders are declared once here instead of once per choice, which keeps a
-/// full-shape HTML body inside the byte budget even when every label and
-/// description expands to HTML entities.
-const CHOICE_GROUP_STYLE: &str = "width:100%;box-sizing:border-box;margin:0 0 8px;border-collapse:collapse;border:1px solid #e1e4e8;border-radius:6px;background:#f6f8fa;";
+/// The display-only solid circular question numeral. Its fixed size is the one
+/// intentional icon dimension; text elsewhere is never height-constrained.
+const BADGE_STYLE: &str = "width:24px;height:24px;line-height:24px;border-radius:50%;background:#1f2328;color:#ffffff;text-align:center;font-size:13px;font-weight:600;";
 
-/// Display-only ordinal cell of a choice row.
-const ORDINAL_CELL_STYLE: &str =
-    "width:24px;padding:8px 0 8px 10px;vertical-align:top;color:#666;border-top:1px solid #e1e4e8;";
+/// The plain letter column of a choice row, with no box, border or button look.
+const LETTER_CELL_STYLE: &str =
+    "width:20px;padding:6px 8px 6px 0;vertical-align:top;color:#57606a;font-size:14px;";
 
 /// Label and description cell of a choice row.
-const CHOICE_TEXT_CELL_STYLE: &str = "padding:8px 10px 8px 2px;vertical-align:top;word-wrap:break-word;overflow-wrap:anywhere;border-top:1px solid #e1e4e8;";
+const OPTION_TEXT_CELL_STYLE: &str =
+    "padding:6px 0;vertical-align:top;word-wrap:break-word;overflow-wrap:anywhere;";
 
 /// Opens the smaller regular description block under a choice label.
-const DESC_OPEN: &str = "<div style=\"margin-top:2px;font-size:13px;color:#57606a;\">";
+const DESC_OPEN: &str = "<div style=\"margin-top:2px;font-size:14px;color:#57606a;\">";
 
 /// Display-only ordinal for a choice: `A` for the first, `B` for the second,
 /// and so on. The number of retained choices is capped well below the alphabet.
@@ -988,26 +987,51 @@ mod tests {
             r#"{"event":"blocked","question":{"session_id":"ses_1","session_title":"Two questions","project":"phasegent","questions":[{"header":"Choice","text":"Which option?","multiple":true,"options":[{"label":"Keep legacy","description":"Keeps the old path"},{"label":"Replace","description":"Drops the old path"}]},{"header":"Details","text":"Any context?","options":[]}]}}"#,
         );
         let html = styled_html(&input);
-        // Each question is its own numbered section.
-        assert!(
-            html.contains(">Question 1</p>") || html.contains(">Question 1 &middot; Choice</p>")
-        );
-        assert!(html.contains("Question 2"));
-        assert!(html.matches(">Question ").count() == 2);
-        // Options are grouped under a concise label, once, for the question
-        // that has choices.
-        assert_eq!(html.matches(">Options</p>").count(), 1);
-        // Ordinals are their own cells, not part of the label text.
+        // No literal question or options labels: the numbered badge and spacing
+        // carry the structure instead.
+        assert!(!html.contains("Question "));
+        assert!(!html.contains(">Options"));
+        assert!(!html.contains("OPTIONS"));
+        // Two open sections, each with its own solid circular numeral.
+        assert_eq!(html.matches(BADGE_STYLE).count(), 2);
+        assert!(html.contains(">1</div>"));
+        assert!(html.contains(">2</div>"));
+        // Successive sections are separated by a fine rule, not a card.
+        assert_eq!(html.matches(RULE_STYLE).count(), 1);
+        assert!(!html.contains("border-radius:8px"));
+        assert!(!html.contains("border-radius:6px"));
+        // Short headers are retained next to the badge, in semibold 15px.
+        assert!(html.contains("Choice"));
+        assert!(html.contains("Details"));
+        // Plain letters, not circled or boxed labels, and no enclosing panel.
         assert!(html.contains(">A</td>"));
         assert!(html.contains(">B</td>"));
+        assert_eq!(html.matches("border-radius:50%").count(), 2);
         // Label and description are separate stacked blocks, not a run-on line.
         assert!(html.contains("<b>Keep legacy</b>"));
         assert!(html.contains(
-            "<div style=\"margin-top:2px;font-size:13px;color:#57606a;\">Keeps the old path</div>"
+            "<div style=\"margin-top:2px;font-size:14px;color:#57606a;\">Keeps the old path</div>"
         ));
         assert!(!html.contains("&mdash;"));
         assert!(!html.contains("<li>"));
         assert!(html.contains("Select all that apply"));
+    }
+
+    #[test]
+    fn html_question_prose_is_regular_weight_and_headers_are_semibold() {
+        let html = styled_html(&styled_question());
+        // Question prose is regular 15px with generous line height, so it no
+        // longer blends into the semibold header or the choice labels.
+        assert!(html.contains(
+            "<p style=\"margin:6px 0 0;font-size:15px;font-weight:400;line-height:1.65;"
+        ));
+        // The header line is 15px semibold beside the 24px badge.
+        assert!(html.contains("vertical-align:middle;font-size:15px;font-weight:600;"));
+        assert!(html.contains("width:24px;height:24px;line-height:24px;border-radius:50%"));
+        // The badge is display-only: no cursor, hover, tabindex or control.
+        for forbidden in ["cursor:", "tabindex", "<button", "role=\"button\""] {
+            assert!(!html.contains(forbidden), "badge must not look clickable");
+        }
     }
 
     #[test]
@@ -1017,7 +1041,7 @@ mod tests {
         );
         let html = styled_html(&input);
         assert!(html.contains("Describe the bug"));
-        assert!(!html.contains(">Options</p>"));
+        assert!(!html.contains(">Options"));
         assert!(!html.contains(">A</td>"));
         assert!(!html.contains(">B</td>"));
     }
@@ -1029,7 +1053,7 @@ mod tests {
         );
         let html = styled_html(&input);
         assert!(html.contains("4 more choices omitted"));
-        assert!(!html.contains(">Options</p>"));
+        assert!(!html.contains(">Options"));
         assert!(!html.contains(">A</td>"));
     }
 
@@ -1064,14 +1088,20 @@ mod tests {
         assert!(html.contains("overflow-wrap:anywhere"));
         assert!(html.contains("word-wrap:break-word"));
         assert!(html.contains("box-sizing:border-box"));
-        // No layout that a mail client cannot honour, and no fixed heights that
-        // would clip text or block text zoom.
+        // No layout that a mail client cannot honour.
         for unsupported in ["display:flex", "display:grid", "position:fixed"] {
             assert!(!html.contains(unsupported));
         }
+        // The circular badge is the single intentional fixed dimension; no text
+        // block is height-constrained, so nothing clips or blocks text zoom.
+        assert_eq!(
+            html.matches("width:24px;height:24px;line-height:24px")
+                .count(),
+            1
+        );
         assert!(!html.contains("min-height"));
         assert!(!html.contains("max-height"));
-        assert!(!html.contains(";height:"));
+        assert_eq!(html.matches(";height:").count(), 1);
         assert!(!html.contains("white-space:nowrap"));
         assert!(!html.contains("overflow:hidden"));
     }
@@ -1105,8 +1135,10 @@ mod tests {
         let html = styled_html(&input);
         assert!(html.len() <= crate::notifications::QUESTION_HTML_LIMIT_BYTES);
         // The full retained shape is rendered, not silently dropped.
-        assert_eq!(html.matches(">Options</p>").count(), 8);
+        assert_eq!(html.matches(BADGE_STYLE).count(), 8);
+        assert_eq!(html.matches(RULE_STYLE).count(), 7);
         assert!(html.contains("label 11"));
+        assert!(html.contains(">L</td>"));
     }
 
     /// Full retained shape combined with worst-case entity expansion: every
