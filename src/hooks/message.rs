@@ -98,7 +98,13 @@ impl<'a> Message<'a> {
             .count()
     }
 
-    pub fn insert(&self, id: u64) -> Vec<u8> {
+    /// Append one `Refs #N` line per id, in the given order, as a single
+    /// trailer block. Byte preservation and EOL selection match the
+    /// historical single-id insertion exactly.
+    pub fn insert_many(&self, ids: &[u64]) -> Vec<u8> {
+        if ids.is_empty() {
+            return self.bytes.to_vec();
+        }
         let eol = predominant_eol(self.bytes);
         let mut end = self.end;
         // Remove complete line terminators only; an arbitrary trailing CR is data.
@@ -111,8 +117,10 @@ impl<'a> Message<'a> {
         let mut result = self.bytes[..end].to_vec();
         result.extend_from_slice(eol);
         result.extend_from_slice(eol);
-        result.extend_from_slice(format!("Refs #{id}").as_bytes());
-        result.extend_from_slice(eol);
+        for id in ids {
+            result.extend_from_slice(format!("Refs #{id}").as_bytes());
+            result.extend_from_slice(eol);
+        }
         result.extend_from_slice(&self.bytes[self.end..]);
         result
     }
@@ -161,10 +169,21 @@ mod tests {
     #[test]
     fn insertion_preserves_bytes_signoff_and_scissors() {
         let bytes = b"subject\xff\r\n\r\nSigned-off-by: A <a@b>\r\n\r\n# ------------------------ >8 ------------------------\r\nrefs #99\r\n";
-        let out = Message::new(bytes, b"#").insert(9);
+        let out = Message::new(bytes, b"#").insert_many(&[9]);
         assert_eq!(out, b"subject\xff\r\n\r\nSigned-off-by: A <a@b>\r\n\r\nRefs #9\r\n# ------------------------ >8 ------------------------\r\nrefs #99\r\n");
         assert_eq!(Message::new(&out, b"#").references(), vec![9]);
     }
+    #[test]
+    fn multiple_refs_share_one_trailer_block() {
+        let bytes = b"subject\xff\r\n\r\n# ------------------------ >8 ------------------------\r\nrefs #99\r\n";
+        let out = Message::new(bytes, b"#").insert_many(&[9, 10]);
+        assert_eq!(
+            out,
+            b"subject\xff\r\n\r\nRefs #9\r\nRefs #10\r\n# ------------------------ >8 ------------------------\r\nrefs #99\r\n"
+        );
+        assert_eq!(Message::new(&out, b"#").references(), vec![9, 10]);
+    }
+
     #[test]
     fn marker_and_eol_are_exact() {
         assert!(
@@ -174,6 +193,9 @@ mod tests {
         );
         assert_eq!(Message::new(b" refs #8\n", b"#").references(), vec![8]);
         assert_eq!(predominant_eol(b"a\r\nb\n"), b"\r\n");
-        assert_eq!(Message::new(b"a\r", b"#").insert(9), b"a\r\n\nRefs #9\n");
+        assert_eq!(
+            Message::new(b"a\r", b"#").insert_many(&[9]),
+            b"a\r\n\nRefs #9\n"
+        );
     }
 }

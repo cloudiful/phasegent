@@ -54,12 +54,12 @@ fn issue_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>, Vec<H
     let local: Vec<HelpRow<'static>> = vec![
         (
             "bind",
-            "Link the current branch to an issue in the durable branch-link store",
+            "Link the current branch to one or more issues in the durable branch-link store",
             &["issue", "bind"],
         ),
         (
             "unbind",
-            "Detach the current branch's linked issues in scope",
+            "Detach named issues, or every linked issue in scope, from the current branch",
             &["issue", "unbind"],
         ),
         (
@@ -153,11 +153,11 @@ pub(crate) fn issue_command_help_entry(command: &str) -> Option<(Capability, &'s
         ),
         "bind" => (
             Capability::IssueRead,
-            "Usage: issue bind <ID>\n\nLinks the current named branch to issue <ID> in the durable branch/issue store (keyed by the canonical repository origin plus the provider/project scope from global options or stored role config). A resolvable scope is required: without one the command fails with a structured scope error instead of assigning the issue to an unrelated provider/project, and it never touches local Git config. Detached HEAD is rejected, and the detected default branch cannot be bound (cached-only detection; a conventional main/master with unknown detection is refused too). A bind adds another link rather than replacing history; the command never creates a worktree implicitly.",
+            "Usage: issue bind <ID> [<ID>...]\n\nLinks the current named branch to one or more issues in the durable branch/issue store (keyed by the canonical repository origin plus the provider/project scope from global options or stored role config). Ids are positive, at most 20 distinct ids per invocation, and duplicates collapse before that cap; every id is validated before the single atomic write runs, so a partial bind is impossible. A resolvable scope is required: without one the command fails with a structured scope error instead of assigning the issues to an unrelated provider/project, and it never touches local Git config. Detached HEAD is rejected, and the detected default branch cannot be bound (cached-only detection; a conventional main/master with unknown detection is refused too). A bind adds another link rather than replacing history; the command never creates a worktree implicitly. Output keeps the single-id fields (issue_id, already_bound, replaced) and adds bound_count, issue_ids, and per-issue results.",
         ),
         "unbind" => (
             Capability::IssueRead,
-            "Usage: issue unbind\n\nDetaches every linked issue of the current branch in scope, retaining each link as detached history. Absence of links is a no-op.",
+            "Usage: issue unbind [<ID>...]\n\nDetaches the named links, or every linked issue of the current branch in scope when no id is given, retaining each link as detached history. Ids are positive, at most 20 distinct ids per invocation, and duplicates collapse before that cap; the whole request is applied in one transaction. Absence of a link is a no-op: the output reports each requested id's result (detached, already_detached, or not_linked).",
         ),
         "status" => (
             Capability::IssueRead,
@@ -511,8 +511,13 @@ mod tests {
         }
         let (_, bind_text) = issue_command_help_text("bind").expect("bind detail stays");
         assert!(
-            bind_text.contains("Usage: issue bind <ID>"),
+            bind_text.contains("Usage: issue bind <ID> [<ID>...]"),
             "got: {bind_text}"
+        );
+        let (_, unbind_text) = issue_command_help_text("unbind").expect("unbind detail stays");
+        assert!(
+            unbind_text.contains("Usage: issue unbind [<ID>...]"),
+            "got: {unbind_text}"
         );
     }
 }

@@ -100,16 +100,12 @@ pub(crate) fn parse_issue(args: &[String]) -> Result<Command, String> {
             }))
         }
         "bind" => {
-            validate_options(args, 1, &[], &[], "issue bind")?;
-            let issue_id = positional_number(args, 1, "issue bind")?;
-            if issue_id == 0 {
-                return Err("issue bind requires a positive issue id".to_owned());
-            }
-            Ok(Command::Issue(IssueCommand::Bind { issue_id }))
+            let issue_ids = super::parse_helpers::parse_issue_ids(args, 1, "issue bind", true)?;
+            Ok(Command::Issue(IssueCommand::Bind { issue_ids }))
         }
         "unbind" => {
-            require_exact_positionals(args, 1, "issue unbind")?;
-            Ok(Command::Issue(IssueCommand::Unbind))
+            let issue_ids = super::parse_helpers::parse_issue_ids(args, 1, "issue unbind", false)?;
+            Ok(Command::Issue(IssueCommand::Unbind { issue_ids }))
         }
         // Local branch context status; unrelated to the provider-backed
         // top-level `status list` command.

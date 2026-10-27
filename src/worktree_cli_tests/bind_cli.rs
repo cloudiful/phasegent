@@ -220,7 +220,31 @@ fn run_unbind(role: Option<Role>) -> i32 {
         Some(crate::providers::ProviderKind::Redmine),
         None,
         Some("tools-phasegent"),
-        IssueCommand::Unbind,
+        IssueCommand::Unbind { issue_ids: vec![] },
+    )
+}
+
+fn run_unbind_ids(role: Option<Role>, issue_ids: &[u64]) -> i32 {
+    crate::cli::branch::execute_branch_context_scoped(
+        role,
+        Some(crate::providers::ProviderKind::Redmine),
+        None,
+        Some("tools-phasegent"),
+        IssueCommand::Unbind {
+            issue_ids: issue_ids.to_vec(),
+        },
+    )
+}
+
+fn run_bind_ids(role: Option<Role>, issue_ids: &[u64]) -> i32 {
+    crate::cli::branch::execute_branch_context_scoped(
+        role,
+        Some(crate::providers::ProviderKind::Redmine),
+        None,
+        Some("tools-phasegent"),
+        IssueCommand::Bind {
+            issue_ids: issue_ids.to_vec(),
+        },
     )
 }
 
@@ -341,6 +365,82 @@ fn cli_status_branch_passes_the_executor_role_gate() {
 }
 
 #[test]
+fn cli_bind_links_a_batch_and_unbind_detaches_only_named_ids() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p117-batch-bind") else {
+        return;
+    };
+    let (db_temp, _db_env) = scoped_env("p117-batch-bind");
+    let db_path = db_temp.path().join("phasegent.sqlite3");
+    checkout_bind_branch(&repo);
+
+    let exit = in_temp_repo(&repo, || {
+        run_bind_ids(Some(Role::Orchestrator), &[628, 629, 630])
+    });
+    assert_eq!(exit, 0, "the multi-id bind must succeed");
+    let rows = linked_rows(&db_path, &repo_key(&repo), BIND_BRANCH);
+    assert_eq!(rows.len(), 3, "every id lands in one batch: {rows:?}");
+    assert!(rows.iter().all(|row| row.status == "linked"));
+
+    let exit = in_temp_repo(&repo, || run_unbind_ids(Some(Role::Orchestrator), &[629]));
+    assert_eq!(exit, 0, "the named unbind must succeed");
+    let rows = linked_rows(&db_path, &repo_key(&repo), BIND_BRANCH);
+    let detached: Vec<u64> = rows
+        .iter()
+        .filter(|row| row.status == "detached")
+        .map(|row| row.issue_number)
+        .collect();
+    assert_eq!(detached, vec![629], "only the named link is detached");
+    assert_eq!(
+        rows.iter().filter(|row| row.status == "linked").count(),
+        2,
+        "the other links stay active: {rows:?}"
+    );
+
+    let exit = in_temp_repo(&repo, || run_unbind(Some(Role::Orchestrator)));
+    assert_eq!(exit, 0, "an empty id list keeps the detach-all behavior");
+    let rows = linked_rows(&db_path, &repo_key(&repo), BIND_BRANCH);
+    assert!(
+        rows.iter().all(|row| row.status == "detached"),
+        "detach-all retires the remaining links: {rows:?}"
+    );
+}
+
+#[test]
+fn cli_bind_batch_is_idempotent_and_ignores_duplicate_ids() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p117-batch-idempotent") else {
+        return;
+    };
+    let (db_temp, _db_env) = scoped_env("p117-batch-idempotent");
+    let db_path = db_temp.path().join("phasegent.sqlite3");
+    checkout_bind_branch(&repo);
+
+    assert_eq!(
+        in_temp_repo(&repo, || {
+            run_bind_ids(Some(Role::Orchestrator), &[701, 701, 702])
+        }),
+        0
+    );
+    assert_eq!(
+        in_temp_repo(&repo, || {
+            run_bind_ids(Some(Role::Orchestrator), &[702, 701])
+        }),
+        0
+    );
+    let rows = linked_rows(&db_path, &repo_key(&repo), BIND_BRANCH);
+    assert_eq!(
+        rows.len(),
+        2,
+        "a repeated bind must not duplicate: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.status == "linked"),
+        "repeated ids stay linked: {rows:?}"
+    );
+}
+
+#[test]
 fn cli_bind_is_idempotent_for_the_same_issue() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("p3-bind-repeat") else {
@@ -361,4 +461,116 @@ fn cli_bind_is_idempotent_for_the_same_issue() {
     let rows = linked_rows(&db_path, &repo_key(&repo), BIND_BRANCH);
     assert_eq!(rows.len(), 1, "a repeat bind must not duplicate: {rows:?}");
     assert_eq!(rows[0].status, "linked");
+}
+
+#[test]
+fn batch_link_validates_every_parameter_before_any_write() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, _db_env) = scoped_env("p117-batch-atomic");
+    let db_path = db_temp.path().join("phasegent.sqlite3");
+    let storage = Storage::open_at(&db_path).expect("storage");
+    crate::branch_links::ensure_schema(&storage.connection).expect("schema");
+    let first = crate::branch_links::IssueKey::from_number("local", "default", 1).expect("key");
+    let second = crate::branch_links::IssueKey::from_number("local", "default", 2).expect("key");
+    let repo_key = "local:/tmp/phasegent-batch-atomic";
+    let params = [
+        crate::branch_links::LinkParams {
+            repo_key,
+            branch: BIND_BRANCH,
+            issue: &first,
+            issue_number: 1,
+            source: "test",
+            now: 1,
+        },
+        // An empty branch fails validation; the whole batch must land nothing.
+        crate::branch_links::LinkParams {
+            repo_key,
+            branch: "",
+            issue: &second,
+            issue_number: 2,
+            source: "test",
+            now: 1,
+        },
+    ];
+    assert!(
+        crate::branch_links::store::link_many(&storage.connection, &params).is_err(),
+        "an invalid member fails the batch"
+    );
+    let rows = crate::branch_links::issues_for_branch(
+        &storage.connection,
+        repo_key,
+        BIND_BRANCH,
+        true,
+        &crate::branch_links::UnknownState,
+    )
+    .expect("read");
+    assert!(
+        rows.is_empty(),
+        "the valid member must not be written when the batch fails: {rows:?}"
+    );
+}
+
+#[test]
+fn batch_detach_validates_every_member_before_any_write() {
+    let _lock = lock_workflow_tests();
+    let (db_temp, _db_env) = scoped_env("p117-batch-detach-atomic");
+    let db_path = db_temp.path().join("phasegent.sqlite3");
+    let storage = Storage::open_at(&db_path).expect("storage");
+    crate::branch_links::ensure_schema(&storage.connection).expect("schema");
+    let first = crate::branch_links::IssueKey::from_number("local", "default", 1).expect("key");
+    let second = crate::branch_links::IssueKey::from_number("local", "default", 2).expect("key");
+    let repo_key = "local:/tmp/phasegent-batch-detach-atomic";
+    let linked = [
+        crate::branch_links::LinkParams {
+            repo_key,
+            branch: BIND_BRANCH,
+            issue: &first,
+            issue_number: 1,
+            source: "test",
+            now: 1,
+        },
+        crate::branch_links::LinkParams {
+            repo_key,
+            branch: BIND_BRANCH,
+            issue: &second,
+            issue_number: 2,
+            source: "test",
+            now: 1,
+        },
+    ];
+    crate::branch_links::store::link_many(&storage.connection, &linked).expect("seed links");
+
+    // An invalid member fails the whole batch before the transaction opens.
+    let targets = [
+        (first.clone(), 1u64),
+        (
+            crate::branch_links::IssueKey::from_number("local", "default", 2).expect("key"),
+            0,
+        ),
+    ];
+    assert!(
+        crate::branch_links::store::detach_many(
+            &storage.connection,
+            repo_key,
+            BIND_BRANCH,
+            &targets,
+            "test",
+            2,
+        )
+        .is_err(),
+        "an invalid member fails the batch"
+    );
+    let rows = crate::branch_links::issues_for_branch(
+        &storage.connection,
+        repo_key,
+        BIND_BRANCH,
+        true,
+        &crate::branch_links::UnknownState,
+    )
+    .expect("read");
+    assert_eq!(rows.len(), 2, "both seeded links remain: {rows:?}");
+    assert!(
+        rows.iter().all(|row| row.status == "linked"),
+        "the valid member must not be detached when the batch fails: {rows:?}"
+    );
 }

@@ -85,6 +85,13 @@ mod posix {
         out
     }
 
+    /// The transcript with terminal line wrapping removed: a long path or
+    /// value is broken at the terminal column with an indented continuation
+    /// line, so whitespace is dropped before matching a contiguous token.
+    fn unwrapped(text: &str) -> String {
+        text.split_whitespace().collect()
+    }
+
     /// The transcript without the pty's newline translation, so a remaining
     /// carriage return is a real redraw rather than a line ending.
     fn without_newline_translation(text: &str) -> String {
@@ -661,8 +668,12 @@ sys.exit(code)
             "a fast command leaves no redraw behind; transcript:\n{}",
             run.transcript,
         );
+        // A long scratch root is wrapped at the terminal column with an
+        // indented continuation line, so compare against the unwrapped text
+        // instead of assuming the path stays on one rendered line.
+        let root = scratch.root.to_string_lossy();
         assert!(
-            plain(&run.transcript).contains("phasegent-output-pty-clean-exit"),
+            unwrapped(&plain(&run.transcript)).contains(root.as_ref()),
             "the run stays inside its scratch root; transcript:\n{}",
             plain(&run.transcript),
         );

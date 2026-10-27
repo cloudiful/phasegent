@@ -51,6 +51,86 @@ fn configured_markers_regions_aliases_and_overrides() {
     );
 }
 
+fn bind_issues(r: &Repo, ids: &[&str]) {
+    let mut args = vec!["--provider", "local", "issue", "bind"];
+    args.extend_from_slice(ids);
+    let out = r.cli(&args);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn multi_bound_branch_accepts_the_whole_set_and_generates_every_ref() {
+    let r = Repo::new();
+    bind_issues(&r, &["9", "10"]);
+    r.write("message", b"subject\n");
+    assert!(r.hook("prepare-commit-msg", None).status.success());
+    assert_eq!(r.read("message"), b"subject\n\nRefs #9\nRefs #10\n");
+    assert!(r.hook("commit-msg", None).status.success());
+
+    // A free-form reference to another member of the set is allowed.
+    r.write("message", b"subject\n\nrefs #10\n");
+    assert!(r.hook("commit-msg", None).status.success());
+
+    // A reference outside the set and a duplicated generated trailer for a
+    // single member both fail closed.
+    r.write("message", b"subject\n\nrefs #11\n");
+    assert!(!r.hook("commit-msg", None).status.success());
+    r.write("message", b"subject\n\nRefs #9\nRefs #10\nRefs #10\n");
+    assert!(!r.hook("commit-msg", None).status.success());
+}
+
+#[test]
+fn unbind_named_issue_narrows_the_hook_set() {
+    let r = Repo::new();
+    bind_issues(&r, &["9", "10"]);
+    assert!(
+        r.cli(&["--provider", "local", "issue", "unbind", "10"])
+            .status
+            .success()
+    );
+    r.write("message", b"subject\n");
+    assert!(r.hook("prepare-commit-msg", None).status.success());
+    assert_eq!(r.read("message"), b"subject\n\nRefs #9\n");
+    r.write("message", b"subject\n\nrefs #9\n");
+    assert!(r.hook("commit-msg", None).status.success());
+    r.write("message", b"subject\n\nrefs #10\n");
+    assert!(!r.hook("commit-msg", None).status.success());
+}
+
+#[test]
+fn same_number_across_scopes_fails_closed_in_hooks() {
+    let r = Repo::new();
+    assert!(
+        r.cli(&["--provider", "local", "issue", "bind", "5"])
+            .status
+            .success()
+    );
+    assert!(
+        r.cli(&[
+            "--provider",
+            "redmine",
+            "--project-id",
+            "p1",
+            "issue",
+            "bind",
+            "5"
+        ])
+        .status
+        .success()
+    );
+    r.write("message", b"subject\n");
+    assert!(
+        !r.hook("prepare-commit-msg", None).status.success(),
+        "an ambiguous cross-scope binding must not silently append a ref"
+    );
+    assert_eq!(r.read("message"), b"subject\n");
+    assert!(!r.hook("commit-msg", None).status.success());
+}
+
 #[test]
 fn references_duplicates_conflicts_and_raw_crlf() {
     let r = Repo::new();

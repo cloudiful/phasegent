@@ -19,7 +19,7 @@ pub(crate) mod status;
 fn restricted_operation(command: &IssueCommand) -> Option<&'static str> {
     match command {
         IssueCommand::Bind { .. } => Some("issue bind"),
-        IssueCommand::Unbind => Some("issue unbind"),
+        IssueCommand::Unbind { .. } => Some("issue unbind"),
         _ => None,
     }
 }
@@ -62,10 +62,12 @@ pub(crate) fn execute_branch_context_scoped(
         return super::structured_error(error, 3);
     }
     match command {
-        IssueCommand::Bind { issue_id } => {
-            bind::execute_bind(role, provider, repository, project_id, issue_id)
+        IssueCommand::Bind { issue_ids } => {
+            bind::execute_bind(role, provider, repository, project_id, &issue_ids)
         }
-        IssueCommand::Unbind => bind::execute_unbind(role, provider, repository, project_id),
+        IssueCommand::Unbind { issue_ids } => {
+            bind::execute_unbind(role, provider, repository, project_id, &issue_ids)
+        }
         IssueCommand::StatusBranch => {
             status::execute_status(role, provider, repository, project_id)
         }

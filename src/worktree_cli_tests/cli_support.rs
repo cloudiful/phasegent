@@ -153,5 +153,7 @@ pub(crate) fn in_temp_repo<T>(repo: &TempRepo, action: impl FnOnce() -> T) -> T 
 }
 
 pub(crate) fn bind_issue_command(issue_id: u64) -> IssueCommand {
-    IssueCommand::Bind { issue_id }
+    IssueCommand::Bind {
+        issue_ids: vec![issue_id],
+    }
 }

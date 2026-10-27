@@ -165,6 +165,30 @@ pub fn link(
     }
 }
 
+/// Batch link: validate every parameter first, then apply all links inside
+/// one transaction so a multi-id `issue bind` either lands completely or
+/// not at all. Results are returned in input order.
+pub fn link_many(
+    connection: &rusqlite::Connection,
+    params: &[LinkParams<'_>],
+) -> Result<Vec<(u64, LinkOutcome)>, String> {
+    for entry in params {
+        validate_link(entry)?;
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("could not start branch link transaction: {error}"))?;
+    let mut outcomes = Vec::with_capacity(params.len());
+    for entry in params {
+        let outcome = link(&transaction, entry)?;
+        outcomes.push((entry.issue_number, outcome));
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("could not commit branch links: {error}"))?;
+    Ok(outcomes)
+}
+
 /// Explicit manual unlink. Flips a linked row to `detached`, retaining
 /// it as history. Never deletes rows.
 pub fn detach(
@@ -203,4 +227,63 @@ pub fn detach(
         }
         Some(other) => Err(format!("unknown branch link status '{other}'")),
     }
+}
+
+/// Validate one batch detach member. Mirrors [`validate_link`] minus the
+/// source field, so a bad member fails before the transaction opens.
+fn validate_detach(
+    repo_key: &str,
+    branch: &str,
+    reason: &str,
+    issue_number: u64,
+    now: i64,
+) -> Result<(), String> {
+    for (value, field) in [
+        (repo_key, "repo_key"),
+        (branch, "branch"),
+        (reason, "reason"),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("{field} must be non-empty"));
+        }
+        if value.chars().any(|c| c.is_control()) {
+            return Err(format!("{field} must not contain control characters"));
+        }
+    }
+    if issue_number == 0 {
+        return Err("issue_number must be greater than zero".to_owned());
+    }
+    if now <= 0 {
+        return Err("now must be greater than zero".to_owned());
+    }
+    Ok(())
+}
+
+/// Batch detach: validate every member first, then detach inside one
+/// transaction so an explicit multi-id `issue unbind` either lands
+/// completely or leaves every link untouched. Results are returned in input
+/// order.
+pub fn detach_many(
+    connection: &rusqlite::Connection,
+    repo_key: &str,
+    branch: &str,
+    issues: &[(IssueKey, u64)],
+    reason: &str,
+    now: i64,
+) -> Result<Vec<(u64, DetachOutcome)>, String> {
+    for (_, issue_number) in issues {
+        validate_detach(repo_key, branch, reason, *issue_number, now)?;
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("could not start branch unlink transaction: {error}"))?;
+    let mut outcomes = Vec::with_capacity(issues.len());
+    for (issue, issue_number) in issues {
+        let outcome = detach(&transaction, repo_key, branch, issue, reason, now)?;
+        outcomes.push((*issue_number, outcome));
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("could not commit branch unlinks: {error}"))?;
+    Ok(outcomes)
 }

@@ -436,11 +436,15 @@ pub fn run_with(
 
 /// Detached HEAD carries no branch section, so it behaves like "unbound":
 /// hooks stay silent instead of blocking rebases and cherry-pick workflows.
-/// Resolution reads the durable branch links (single unambiguous number,
-/// never the detected default) with the branch-name fallback; a store
-/// failure degrades to the branch name.
-fn bound_issue_id(runner: &dyn GitRunner) -> Result<Option<u64>, GitError> {
-    link_context::resolve_hook_issue_id(runner)
+/// Resolution reads the durable branch links (every distinct
+/// provider/project/issue identity, never the detected default) with the
+/// branch-name fallback; a store failure degrades to the branch name. A
+/// same-number cross-scope ambiguity fails closed.
+fn bound_issue_ids(runner: &dyn GitRunner) -> Result<Option<Vec<u64>>, GitError> {
+    Ok(match link_context::resolve_hook_issue_ids(runner)? {
+        link_context::HookBindings::None => None,
+        link_context::HookBindings::Issues(ids) => Some(ids),
+    })
 }
 
 fn noop(hook: HookKind, reason: &str) -> serde_json::Value {
@@ -456,7 +460,7 @@ fn prepare_commit_msg(
     if source.is_some_and(|source| SKIP_SOURCES.contains(&source)) {
         return Ok(noop(HookKind::PrepareCommitMsg, "git-generated source"));
     }
-    let Some(issue_id) = bound_issue_id(runner)? else {
+    let Some(issue_ids) = bound_issue_ids(runner)? else {
         return Ok(noop(HookKind::PrepareCommitMsg, "no branch binding"));
     };
     let marker = comment_marker(runner)?;
@@ -467,12 +471,19 @@ fn prepare_commit_msg(
             "message already references an issue",
         ));
     }
-    atomic_write(path, &message.insert(issue_id), None)?;
-    Ok(serde_json::json!({
+    atomic_write(path, &message.insert_many(&issue_ids), None)?;
+    let trailers: Vec<String> = issue_ids.iter().map(|id| format!("Refs #{id}")).collect();
+    let mut document = serde_json::json!({
         "hook": HookKind::PrepareCommitMsg.name(),
         "action": "appended",
-        "trailer": format!("Refs #{issue_id}"),
-    }))
+        "issue_ids": issue_ids,
+        "trailers": trailers,
+    });
+    // The legacy single-binding field stays for existing consumers.
+    if let [issue_id] = issue_ids.as_slice() {
+        document["trailer"] = serde_json::json!(format!("Refs #{issue_id}"));
+    }
+    Ok(document)
 }
 
 fn commit_msg(
@@ -480,7 +491,7 @@ fn commit_msg(
     _path: &Path,
     bytes: &[u8],
 ) -> Result<serde_json::Value, GitError> {
-    let Some(issue_id) = bound_issue_id(runner)? else {
+    let Some(issue_ids) = bound_issue_ids(runner)? else {
         return Ok(noop(HookKind::CommitMsg, "no branch binding"));
     };
     let marker = comment_marker(runner)?;
@@ -488,28 +499,31 @@ fn commit_msg(
     let conflicts: Vec<u64> = message
         .references()
         .into_iter()
-        .filter(|found| *found != issue_id)
+        .filter(|found| !issue_ids.contains(found))
         .collect();
     if !conflicts.is_empty() {
         return Err(GitError::new(
             "conflict",
             format!(
-                "message references Redmine issue(s) {conflicts:?} but this branch is bound to issue {issue_id}; \
-                 fix the message or commit with --no-verify"
+                "message references issue(s) {conflicts:?} but this branch is bound to issue(s) \
+                 {issue_ids:?}; fix the message or commit with --no-verify"
             ),
         ));
     }
     // Reject duplicated generated trailers while leaving free-form body
-    // mentions alone: only exact `Refs #<id>` lines count as generated.
-    let generated = format!("Refs #{issue_id}");
-    let duplicates = message.generated_count(issue_id);
-    if duplicates > 1 {
-        return Err(GitError::new(
-            "conflict",
-            format!(
-                "message contains {duplicates} identical '{generated}' trailers; keep exactly one"
-            ),
-        ));
+    // mentions alone: only exact `Refs #<id>` lines count as generated, and
+    // each bound issue allows exactly one.
+    for issue_id in &issue_ids {
+        let generated = format!("Refs #{issue_id}");
+        let duplicates = message.generated_count(*issue_id);
+        if duplicates > 1 {
+            return Err(GitError::new(
+                "conflict",
+                format!(
+                    "message contains {duplicates} identical '{generated}' trailers; keep exactly one"
+                ),
+            ));
+        }
     }
     Ok(serde_json::json!({
         "hook": HookKind::CommitMsg.name(),

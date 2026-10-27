@@ -284,6 +284,76 @@ fn role_denied_commands_fail_at_parse_with_the_stable_permission_message() {
 }
 
 #[test]
+fn issue_bind_and_unbind_parse_bounded_deduplicated_id_sets() {
+    let bind = parse_with_role_env(
+        &args(&["issue", "bind", "12", "7", "12"]),
+        Some("orchestrator"),
+    )
+    .expect("a multi-id bind must parse");
+    match bind.command {
+        Command::Issue(IssueCommand::Bind { issue_ids }) => {
+            assert_eq!(issue_ids, vec![12, 7], "order is kept, duplicates collapse")
+        }
+        other => panic!("expected bind, got {other:?}"),
+    }
+
+    let single = parse_with_role_env(&args(&["issue", "bind", "42"]), Some("orchestrator"))
+        .expect("a single-id bind must parse");
+    match single.command {
+        Command::Issue(IssueCommand::Bind { issue_ids }) => assert_eq!(issue_ids, vec![42]),
+        other => panic!("expected bind, got {other:?}"),
+    }
+
+    for (argv, expected) in [
+        (vec!["issue", "unbind"], Vec::new()),
+        (vec!["issue", "unbind", "5", "5", "3"], vec![5, 3]),
+    ] {
+        let invocation = parse_with_role_env(&args(&argv), Some("orchestrator"))
+            .expect("unbind accepts zero or more ids");
+        match invocation.command {
+            Command::Issue(IssueCommand::Unbind { issue_ids }) => {
+                assert_eq!(issue_ids, expected, "{argv:?}")
+            }
+            other => panic!("expected unbind, got {other:?}"),
+        }
+    }
+
+    // Repeated ids collapse before the 20-id cap, so a long duplicate-heavy
+    // invocation with 20 distinct ids is accepted.
+    let mut repeated = vec!["issue".to_owned(), "bind".to_owned()];
+    repeated.extend((1..=20).flat_map(|id| [id.to_string(), id.to_string()]));
+    let invocation = parse_with_role_env(&repeated, Some("orchestrator"))
+        .expect("duplicates are removed before the batch cap");
+    match invocation.command {
+        Command::Issue(IssueCommand::Bind { issue_ids }) => {
+            assert_eq!(issue_ids, (1..=20).collect::<Vec<_>>())
+        }
+        other => panic!("expected bind, got {other:?}"),
+    }
+}
+
+#[test]
+fn issue_bind_and_unbind_reject_invalid_batches_before_any_write() {
+    for argv in [
+        vec!["issue", "bind"],
+        vec!["issue", "bind", "0"],
+        vec!["issue", "bind", "12", "abc"],
+        vec!["issue", "bind", "12", "0"],
+        vec!["issue", "bind", "12", "--nonsense"],
+        vec!["issue", "unbind", "12", "abc"],
+        vec!["issue", "unbind", "0"],
+    ] {
+        parse_with_role_env(&args(&argv), Some("orchestrator"))
+            .expect_err("an invalid id batch must fail at parse time");
+    }
+    let mut argv = vec!["issue".to_owned(), "bind".to_owned()];
+    argv.extend((1..=21).map(|id| id.to_string()));
+    let error = parse_with_role_env(&argv, Some("orchestrator"))
+        .expect_err("more than 20 ids must fail at parse time");
+    assert!(error.contains("at most 20 issue ids"), "got: {error}");
+}
+
+#[test]
 fn unknown_command_keeps_its_distinct_error() {
     let error = parse_with_role_env(&args(&["frobnicate"]), Some("orchestrator")).unwrap_err();
     assert_eq!(error, "unknown command 'frobnicate'");

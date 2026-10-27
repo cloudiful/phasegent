@@ -345,7 +345,7 @@ pub(crate) fn parse_outcome_for_caller(
         | Command::Hooks(_)
         | Command::Plugin(_)
         | Command::Issue(
-            IssueCommand::Bind { .. } | IssueCommand::Unbind | IssueCommand::StatusBranch,
+            IssueCommand::Bind { .. } | IssueCommand::Unbind { .. } | IssueCommand::StatusBranch,
         ) => true,
         Command::ConfigSet { setting, .. } => crate::config_write::is_global_setting(setting),
         Command::ConfigClear { setting } => crate::config_write::is_global_setting(setting),

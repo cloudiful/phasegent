@@ -87,13 +87,20 @@ pub enum IssueCommand {
         no_clean: bool,
     },
     /// Local branch context operations (no provider access). `bind`
-    /// records a durable provider/project-scoped branch link in the local
+    /// records durable provider/project-scoped branch links in the local
     /// link store; the resolved scope comes from global options or stored
-    /// role config and is never guessed.
+    /// role config and is never guessed. Every invocation, including the
+    /// single-id form, runs the same atomic batch path, and duplicate ids
+    /// are removed before any write.
     Bind {
-        issue_id: u64,
+        issue_ids: Vec<u64>,
     },
-    Unbind,
+    /// `issue unbind [<NUMBER>...]`: detaches the named links, or every
+    /// linked issue in scope when no id is given. `issue_ids` preserves
+    /// input order with duplicates removed.
+    Unbind {
+        issue_ids: Vec<u64>,
+    },
     StatusBranch,
     /// Read-only reverse lookup `issue branches N` (issue 628 P5):
     /// every branch linked to numeric issue `N` in this repository

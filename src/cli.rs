@@ -247,7 +247,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         }
         Command::Issue(
             command @ (IssueCommand::Bind { .. }
-            | IssueCommand::Unbind
+            | IssueCommand::Unbind { .. }
             | IssueCommand::StatusBranch),
         ) => branch::execute_branch_context_scoped(
             invocation.role,

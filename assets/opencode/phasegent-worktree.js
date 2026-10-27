@@ -3133,7 +3133,7 @@ Boundaries:
 
 ## Branch binding lifecycle
 
-Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and the durable provider/project-scoped link is the sole branch/issue association; \`bind\` records that link explicitly and the branch name is the only fallback when the name carries an id and no link resolves. A successful \`issue create\` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\` instead, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases). \`issue status\` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (\`linked\`/\`named\`/\`none\`), the durable linked issues with last-known local-index state/source/indexed time (\`unknown\` when missing), and the reverse branches of the active issue; \`issue branches N\` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set \`ambiguous=true\`. Both reads are read-only, never call a provider, and never guess (\`phasegent --help issue\` owns the exact flags).
+Work happens on \`<type>/<id>\` branches (e.g. \`feat/452\`) and the durable provider/project-scoped link is the sole branch/issue association; \`bind\` records one or more links explicitly (\`phasegent issue bind N [N...]\`), and the branch name is the only fallback when the name carries an id and no link resolves. Commit hooks use the whole active link set: \`commit-msg\` accepts references to any bound issue and rejects references outside the set, \`prepare-commit-msg\` adds one \`Refs #N\` per bound issue, and a number linked under more than one provider/project scope fails closed instead of guessing. \`issue unbind [N...]\` detaches the named links, or every link in scope when no id is given. A successful \`issue create\` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming \`phasegent worktree acquire --issue N --isolate\` instead, so an \`already_bound\` repeat stays an idempotent no-op (see Worktree leases). \`issue status\` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (\`linked\`/\`named\`/\`none\`), the durable linked issues with last-known local-index state/source/indexed time (\`unknown\` when missing), and the reverse branches of the active issue; \`issue branches N\` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set \`ambiguous=true\`. Both reads are read-only, never call a provider, and never guess (\`phasegent --help issue\` owns the exact flags).
 
 ## Records and the audit note
 
@@ -3498,13 +3498,14 @@ pending-question request on the human's behalf or fabricate a human response.
 ## Branch binding & lease checklist
 
 - OPEN: check the branch binding status before delegating; bind the branch to
-  its issue with \`phasegent issue bind N\` (durable provider/project-scoped
-  link) and confirm commit hooks are installed so the issue reference lands.
-  Worktree session identity is plugin-owned and needs no manual handling.
+  its issue(s) with \`phasegent issue bind N [N...]\` (durable
+  provider/project-scoped links; every id lands atomically) and confirm commit
+  hooks are installed so the issue references land. Worktree session identity
+  is plugin-owned and needs no manual handling.
 - CLOSE: after issue close, verify the branch is detached from the issue
-  (\`phasegent issue unbind\` when a link must be retired); children never bind,
-  unbind, commit, push, or mutate refs — binding and delivery stay
-  orchestrator-owned.
+  (\`phasegent issue unbind [N...]\` when links must be retired; no id detaches
+  every link in scope); children never bind, unbind, commit, push, or mutate
+  refs — binding and delivery stay orchestrator-owned.
 
 ## Worktree leases are yours alone
 

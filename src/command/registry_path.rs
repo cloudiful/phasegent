@@ -55,7 +55,7 @@ fn issue_name(command: &IssueCommand) -> &'static str {
         IssueCommand::UploadAttachment { .. } => "upload-attachment",
         IssueCommand::Sync { .. } => "sync",
         IssueCommand::Bind { .. } => "bind",
-        IssueCommand::Unbind => "unbind",
+        IssueCommand::Unbind { .. } => "unbind",
         IssueCommand::StatusBranch => "status",
         IssueCommand::Branches { .. } => "branches",
     }

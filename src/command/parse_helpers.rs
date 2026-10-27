@@ -143,6 +143,50 @@ pub(crate) fn positional_number(
         .map_err(|_| format!("{operation} requires a numeric issue number"))
 }
 
+/// Upper bound for one `issue bind` / `issue unbind` invocation, matching
+/// the `issue get` batch cap: a bounded single burst, never an unbounded
+/// crawl. The cap applies to distinct ids, so repeated ids collapse first.
+pub(crate) const MAX_BATCH_BIND_IDS: usize = 20;
+
+/// Parse a bounded list of positive issue ids for `issue bind` /
+/// `issue unbind`. Order is preserved and duplicates collapse (a repeated
+/// id is the same link, never an error and never counted against the cap);
+/// options, blank ids, zero, non-numeric values, and more than
+/// [`MAX_BATCH_BIND_IDS`] distinct ids fail the whole invocation before any
+/// write.
+pub(crate) fn parse_issue_ids(
+    args: &[String],
+    index: usize,
+    operation: &str,
+    required: bool,
+) -> Result<Vec<u64>, String> {
+    let positionals = args.get(index..).unwrap_or_default();
+    if required && positionals.is_empty() {
+        return Err(format!("{operation} requires at least one issue id"));
+    }
+    let mut ids: Vec<u64> = Vec::with_capacity(positionals.len());
+    for raw in positionals {
+        if raw.starts_with('-') {
+            return Err(format!("unknown option '{raw}'"));
+        }
+        let id: u64 = raw
+            .parse()
+            .map_err(|_| format!("{operation} requires numeric issue ids"))?;
+        if id == 0 {
+            return Err(format!("{operation} requires issue ids greater than zero"));
+        }
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.len() > MAX_BATCH_BIND_IDS {
+        return Err(format!(
+            "{operation} accepts at most {MAX_BATCH_BIND_IDS} issue ids per invocation"
+        ));
+    }
+    Ok(ids)
+}
+
 pub(crate) fn require_exact_positionals(
     args: &[String],
     expected: usize,

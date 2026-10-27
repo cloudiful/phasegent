@@ -86,7 +86,7 @@ pub(crate) fn execute_issue_with_caller(
         // resolution and never reach this function; `issue sync` is
         // dispatched above for the same reason.
         IssueCommand::Bind { .. }
-        | IssueCommand::Unbind
+        | IssueCommand::Unbind { .. }
         | IssueCommand::StatusBranch
         | IssueCommand::Branches { .. }
         | IssueCommand::Sync { .. } => {
@@ -643,7 +643,7 @@ pub(crate) fn execute_issue_with_caller(
             }
         }
         IssueCommand::Bind { .. }
-        | IssueCommand::Unbind
+        | IssueCommand::Unbind { .. }
         | IssueCommand::StatusBranch
         | IssueCommand::Branches { .. }
         | IssueCommand::Sync { .. } => {

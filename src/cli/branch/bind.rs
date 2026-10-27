@@ -4,10 +4,17 @@
 //! provider/project scope: without one the flow fails closed with the
 //! structured scope error instead of assigning the issue to an unrelated
 //! provider/project, and it never touches local Git config.
+//!
+//! Single and multi-id invocations share one atomic batch path: every id is
+//! validated and every link resolved before the transaction opens, so a
+//! partial write is impossible. The single-id output keeps its legacy
+//! fields and adds the batch fields alongside them.
 
+use crate::branch_links::store::{detach_many, link_many};
 use crate::branch_links::{
-    IssueKey, LinkParams, LinkScope, UnknownState, checkout_root, detach, detect_default_branch,
-    ensure_schema, issues_for_branch, link, read_origin_url, resolve_link_scope, resolve_repo_key,
+    DetachOutcome, IssueKey, LinkOutcome, LinkParams, LinkScope, UnknownState, checkout_root,
+    detect_default_branch, ensure_schema, issues_for_branch, read_origin_url, resolve_link_scope,
+    resolve_repo_key,
 };
 use crate::git_runner::{GitRunner, ProcessGitRunner};
 use crate::policy::Role;
@@ -60,13 +67,27 @@ fn link_scope(
     }
 }
 
-/// Database-backed `issue bind`. Requires a resolvable scope.
+fn batch_entry(issue_id: u64, outcome: LinkOutcome) -> serde_json::Value {
+    let (already_bound, replaced) = match outcome {
+        LinkOutcome::AlreadyLinked => (true, false),
+        LinkOutcome::Relinked => (false, true),
+        LinkOutcome::Created => (false, false),
+    };
+    serde_json::json!({
+        "issue_id": issue_id,
+        "already_bound": already_bound,
+        "replaced": replaced,
+    })
+}
+
+/// Database-backed `issue bind`. Requires a resolvable scope; every id is
+/// linked inside one transaction.
 pub(crate) fn execute_bind(
     role: Option<Role>,
     provider: Option<ProviderKind>,
     repository: Option<&str>,
     project_id: Option<&str>,
-    issue_id: u64,
+    issue_ids: &[u64],
 ) -> i32 {
     let runner = ProcessGitRunner::new();
     let scope = match link_scope(role, provider, repository, project_id) {
@@ -121,52 +142,82 @@ pub(crate) fn execute_bind(
             1,
         );
     }
-    let issue = match IssueKey::from_number(&scope.provider, &scope.project, issue_id) {
-        Ok(issue) => issue,
-        Err(error) => return crate::cli::structured_error(scope_error(error), 1),
-    };
+    let mut issues = Vec::with_capacity(issue_ids.len());
+    for issue_id in issue_ids {
+        match IssueKey::from_number(&scope.provider, &scope.project, *issue_id) {
+            Ok(issue) => issues.push((issue, *issue_id)),
+            Err(error) => return crate::cli::structured_error(scope_error(error), 1),
+        }
+    }
     let now = now_secs();
-    let outcome = match link(
-        &storage.connection,
-        &LinkParams {
+    let params: Vec<LinkParams<'_>> = issues
+        .iter()
+        .map(|(issue, issue_number)| LinkParams {
             repo_key: &resolved.key,
             branch: &branch,
-            issue: &issue,
-            issue_number: issue_id,
+            issue,
+            issue_number: *issue_number,
             source: "cli-bind",
             now,
-        },
-    ) {
-        Ok(outcome) => outcome,
+        })
+        .collect();
+    let outcomes = match link_many(&storage.connection, &params) {
+        Ok(outcomes) => outcomes,
         Err(error) => return crate::cli::structured_error(storage_error(error), 1),
     };
-    let (already_bound, replaced) = match outcome {
-        crate::branch_links::LinkOutcome::AlreadyLinked => (true, false),
-        crate::branch_links::LinkOutcome::Relinked => (false, true),
-        crate::branch_links::LinkOutcome::Created => (false, false),
-    };
-    // A bind adds another link rather than replacing history; `replaced`
-    // only reports a detached row that this bind re-activated.
-    crate::cli::print_json(&serde_json::json!({
+    let entries: Vec<serde_json::Value> = outcomes
+        .iter()
+        .map(|(issue_id, outcome)| batch_entry(*issue_id, *outcome))
+        .collect();
+    let mut document = serde_json::json!({
         "bound": true,
         "branch": branch,
-        "issue_id": issue_id,
-        "replaced": replaced,
-        "already_bound": already_bound,
+        "bound_count": outcomes.len(),
+        "issue_ids": issue_ids,
+        "results": entries,
         "provider": scope.provider,
         "project": scope.project,
         "repo_key": resolved.key,
         "local_only": resolved.local_only,
-    }))
+    });
+    // The legacy single-id fields stay byte-compatible for existing
+    // consumers; the batch fields above are additive.
+    if let [(issue_id, outcome)] = outcomes.as_slice() {
+        let (already_bound, replaced) = match outcome {
+            LinkOutcome::AlreadyLinked => (true, false),
+            LinkOutcome::Relinked => (false, true),
+            LinkOutcome::Created => (false, false),
+        };
+        document["issue_id"] = serde_json::json!(issue_id);
+        document["already_bound"] = serde_json::json!(already_bound);
+        document["replaced"] = serde_json::json!(replaced);
+    }
+    crate::cli::print_json(&document)
 }
 
-/// Database-backed `issue unbind`: detach every linked row for the
-/// current branch in scope, retaining each as history.
+fn detach_entry(issue_id: u64, outcome: DetachOutcome) -> serde_json::Value {
+    let (detached, status) = match outcome {
+        DetachOutcome::Detached => (true, "detached"),
+        DetachOutcome::AlreadyDetached => (false, "already_detached"),
+        DetachOutcome::NotFound => (false, "not_linked"),
+    };
+    serde_json::json!({
+        "issue_id": issue_id,
+        "detached": detached,
+        "status": status,
+    })
+}
+
+/// Database-backed `issue unbind`: detach the named links, or every linked
+/// row for the current branch in scope when no id is given, retaining each
+/// as history. All requested ids are validated and resolved before the
+/// atomic write.
 pub(crate) fn execute_unbind(
     role: Option<Role>,
     provider: Option<ProviderKind>,
     repository: Option<&str>,
     project_id: Option<&str>,
+    issue_ids: &[u64],
 ) -> i32 {
     let runner = ProcessGitRunner::new();
     let scope = match link_scope(role, provider, repository, project_id) {
@@ -189,36 +240,59 @@ pub(crate) fn execute_unbind(
         return crate::cli::structured_error(storage_error(error), 1);
     }
     let now = now_secs();
-    let rows = match issues_for_branch(
-        &storage.connection,
-        &resolved.key,
-        &branch,
-        false,
-        &UnknownState,
-    ) {
-        Ok(rows) => rows,
-        Err(error) => return crate::cli::structured_error(storage_error(error), 1),
-    };
-    let mut detached = 0usize;
-    for entry in rows.iter().filter(|entry| {
-        entry.issue.provider == scope.provider && entry.issue.project == scope.project
-    }) {
-        match detach(
+    let targets: Vec<(IssueKey, u64)> = if issue_ids.is_empty() {
+        let rows = match issues_for_branch(
             &storage.connection,
             &resolved.key,
             &branch,
-            &entry.issue,
-            "unbind",
-            now,
+            false,
+            &UnknownState,
         ) {
-            Ok(_) => detached += 1,
+            Ok(rows) => rows,
             Err(error) => return crate::cli::structured_error(storage_error(error), 1),
+        };
+        rows.iter()
+            .filter(|entry| {
+                entry.issue.provider == scope.provider && entry.issue.project == scope.project
+            })
+            .map(|entry| (entry.issue.clone(), entry.issue_number))
+            .collect()
+    } else {
+        let mut targets = Vec::with_capacity(issue_ids.len());
+        for issue_id in issue_ids {
+            match IssueKey::from_number(&scope.provider, &scope.project, *issue_id) {
+                Ok(issue) => targets.push((issue, *issue_id)),
+                Err(error) => return crate::cli::structured_error(scope_error(error), 1),
+            }
         }
-    }
+        targets
+    };
+    let outcomes = match detach_many(
+        &storage.connection,
+        &resolved.key,
+        &branch,
+        &targets,
+        "unbind",
+        now,
+    ) {
+        Ok(outcomes) => outcomes,
+        Err(error) => return crate::cli::structured_error(storage_error(error), 1),
+    };
+    let detached = outcomes
+        .iter()
+        .filter(|(_, outcome)| *outcome == DetachOutcome::Detached)
+        .count();
+    let entries: Vec<serde_json::Value> = outcomes
+        .iter()
+        .map(|(issue_id, outcome)| detach_entry(*issue_id, *outcome))
+        .collect();
+    let target_ids: Vec<u64> = targets.iter().map(|(_, issue_id)| *issue_id).collect();
     let mut document = serde_json::json!({
         "unbound": detached > 0,
         "branch": branch,
         "detached": detached,
+        "issue_ids": target_ids,
+        "results": entries,
         "provider": scope.provider,
         "project": scope.project,
         "repo_key": resolved.key,

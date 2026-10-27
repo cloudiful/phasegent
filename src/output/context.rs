@@ -451,7 +451,7 @@ pub fn label_for(command: &Command) -> &'static str {
         Command::Issue(IssueCommand::UploadAttachment { .. }) => "issue upload-attachment",
         Command::Issue(IssueCommand::Sync { .. }) => "issue sync",
         Command::Issue(IssueCommand::Bind { .. }) => "issue bind",
-        Command::Issue(IssueCommand::Unbind) => "issue unbind",
+        Command::Issue(IssueCommand::Unbind { .. }) => "issue unbind",
         Command::Issue(IssueCommand::StatusBranch) => "issue status branch",
         Command::Issue(IssueCommand::Branches { .. }) => "issue branches",
         Command::Comment(_) => "comment",

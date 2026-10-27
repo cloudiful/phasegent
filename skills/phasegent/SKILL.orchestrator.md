@@ -250,13 +250,14 @@ pending-question request on the human's behalf or fabricate a human response.
 ## Branch binding & lease checklist
 
 - OPEN: check the branch binding status before delegating; bind the branch to
-  its issue with `phasegent issue bind N` (durable provider/project-scoped
-  link) and confirm commit hooks are installed so the issue reference lands.
-  Worktree session identity is plugin-owned and needs no manual handling.
+  its issue(s) with `phasegent issue bind N [N...]` (durable
+  provider/project-scoped links; every id lands atomically) and confirm commit
+  hooks are installed so the issue references land. Worktree session identity
+  is plugin-owned and needs no manual handling.
 - CLOSE: after issue close, verify the branch is detached from the issue
-  (`phasegent issue unbind` when a link must be retired); children never bind,
-  unbind, commit, push, or mutate refs — binding and delivery stay
-  orchestrator-owned.
+  (`phasegent issue unbind [N...]` when links must be retired; no id detaches
+  every link in scope); children never bind, unbind, commit, push, or mutate
+  refs — binding and delivery stay orchestrator-owned.
 
 ## Worktree leases are yours alone
 

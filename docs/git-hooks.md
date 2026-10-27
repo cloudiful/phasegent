@@ -14,12 +14,15 @@ Restore the original as a regular executable file, or explicitly reconcile/remov
 or replace the managed wrapper manually. Reinstallation alone does not repair a
 missing original.
 
-Hooks use durable local branch links (`issue bind`) with a branch-name fallback.
-Default, detached, and unbound branches are no-ops, and hook calls require no
-credentials or role. Prepare runs before the editor; commit-msg validates after
-the editor, before Git's final cleanup. Git-generated commit, merge, and squash
-prepare sources are left unchanged. Native amend, `-c`, and `-C` calls accept
-Git's opaque third commit argument:
+Hooks use durable local branch links (`issue bind`, one or more ids per call)
+with a branch-name fallback. Default, detached, and unbound branches are no-ops,
+and hook calls require no credentials or role. A branch bound to several issues
+resolves as one deterministic set: `commit-msg` accepts references to any member
+and rejects references outside the set, and a number linked under more than one
+provider/project scope fails closed instead of guessing. Prepare runs before the
+editor; commit-msg validates after the editor, before Git's final cleanup.
+Git-generated commit, merge, and squash prepare sources are left unchanged.
+Native amend, `-c`, and `-C` calls accept Git's opaque third commit argument:
 
 ```
 phasegent hooks run prepare-commit-msg <message-file> [source [commit-object]]
@@ -40,14 +43,16 @@ Issue checks ignore column-zero comment-prefixed lines and content below the
 exact configured-marker Git scissors delimiter. Indented authored text remains
 subject to checks. The six reference keywords (`refs`, `references`, `ref`,
 `fixes`, `closes`, `closed`) are case-insensitive, accept an optional colon, and
-require a positive numeric `#N` with word boundaries. Real references to other
-issues and duplicate exact generated `Refs #N` trailers are rejected.
+require a positive numeric `#N` with word boundaries. References outside the
+bound set and duplicate exact generated `Refs #N` trailers for any bound issue
+are rejected.
 
-Prepare adds `Refs #N` only when the authored region has no issue reference,
-before scissors or otherwise at EOF. Raw bytes, signoffs and other trailers,
-comment scaffold, and scissors tail are preserved. Insertions use predominant
-CRLF/LF endings (ties use the first observed ending), removing only trailing
-line terminators in the insertion region. Message content is never printed.
+Prepare adds one `Refs #N` line per bound issue, in ascending id order, only when
+the authored region has no issue reference, before scissors or otherwise at EOF.
+Raw bytes, signoffs and other trailers, comment scaffold, and scissors tail are
+preserved. Insertions use predominant CRLF/LF endings (ties use the first
+observed ending), removing only trailing line terminators in the insertion
+region. Message content is never printed.
 
 `git commit --no-verify` skips commit-msg but **does not skip prepare-commit-msg**.
 It is not a recovery mechanism for broken preserved originals or `auto` markers.
