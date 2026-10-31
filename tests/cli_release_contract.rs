@@ -10,6 +10,8 @@
 //! under Bun, so these checks read the file text only where the layout is
 //! itself the contract.
 
+#[path = "cli_release_contract/homebrew.rs"]
+mod homebrew;
 #[path = "cli_release_contract/manifest.rs"]
 mod manifest;
 #[path = "cli_release_contract/workflow.rs"]
