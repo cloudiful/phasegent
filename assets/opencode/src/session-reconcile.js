@@ -1,54 +1,79 @@
-// Reconciling the worktree registry against the host (issue 747 P2).
+// Reconciling the worktree registry against the host.
 //
 // A lease records where a session *was*, and this registry recorded where the
 // plugin put it. Neither survives an authoritative move: `issue close` returns
 // the closing session to the repository's main checkout through the OpenCode
 // API before it removes the worktree, and the directory a cached entry names can
-// be gone by the time the next prompt arrives. So the host is read fresh and
-// three rules follow from its answer:
+// be gone by the time the next prompt arrives. A move made out of band — the
+// OpenCode API, or another operator — is invisible to the registry in exactly
+// the same way. So the host is read fresh and the answer decides:
 //
-//   * a placement this adapter already *settled and the host confirmed* is never
-//     reversed — the host reporting somewhere else is evidence that something
-//     else moved it;
-//   * a move that was only *admitted* (issue 919 P1) is not an external
-//     relocation: the host has not applied it yet, so a differing answer keeps
-//     the registered target rather than dropping it;
-//   * an unreadable host is not evidence that the placement still holds. The
-//     directory may already be gone, so the cached target is dropped rather
-//     than re-entered on an unproven assumption;
-//   * a session that is not settled is left alone, so a session still sitting
-//     in the main checkout before its first placement keeps that placement.
+//   * the host reports the registered target: the placement is settled and the
+//     host confirmed it;
+//   * the host reports the recorded origin while the target was never
+//     confirmed: the accepted move has not landed yet, so the target stays
+//     pending. Only a confirmation ends that tolerance, never the acceptance
+//     of the move itself;
+//   * the host reports any other directory — a third one, or the origin of an
+//     already confirmed target: the session was relocated, so the stale target
+//     is dropped, remembered as abandoned, and the host wins;
+//   * the host cannot be read: a settled session drops its target, because the
+//     directory may already be gone, and an unsettled one keeps it so the move
+//     itself fails closed instead of the turn running unplaced.
+//
+// A registered-but-unsettled session is reconciled too: a target whose settled
+// markers are missing used to win unconditionally, so the next prompt moved a
+// session the host had already relocated back into the stale directory.
 
 import {
   forgetSessionWorktree,
+  hostConfirmed,
   markConfirmed,
+  markTargetAbandoned,
+  placementOrigin,
   readAuthoritativeDirectory,
   sessionPlaced,
   sessionWorktrees,
 } from "./session.js";
 import { placementDiagnostic } from "./runtime.js";
 
-// True when the cached target for `sessionId` may still be used.
+// True when the registered target for `sessionId` may still be used.
 //
 // `readDirectory` is the injection seam; it defaults to the uncached host read
 // and a caller must not substitute a cached reader, because answering this
 // question from a cache is the failure this module exists to prevent.
 export async function reconcileSessionLocation(context, sessionId, readDirectory) {
-  if (!sessionPlaced(sessionId)) return true;
-  const registered = sessionWorktrees.get(String(sessionId));
+  const key = sessionId === undefined || sessionId === null ? null : String(sessionId);
+  const registered = key === null ? undefined : sessionWorktrees.get(key);
+  // A session without a registered target has nothing to reconcile.
+  if (!registered) return true;
   const read = readDirectory || readAuthoritativeDirectory;
   const directory = await read(context, sessionId);
-  // A known-closed worktree is never revived on an unproven assumption: the
-  // host would not say where the session is, and the directory the registry
-  // still names may already have been removed.
-  if (!directory || (registered && directory !== registered)) {
-    forgetSessionWorktree(sessionId, registered);
-    placementDiagnostic("skip", {
-      session: sessionId === undefined || sessionId === null ? undefined : String(sessionId),
-      reason: "reconciled-elsewhere",
-    });
-    return false;
+  if (!directory) {
+    if (sessionPlaced(sessionId)) {
+      forgetSessionWorktree(sessionId, registered);
+      placementDiagnostic("skip", { session: key, reason: "reconciled-elsewhere" });
+      return false;
+    }
+    // An unsettled placement keeps its target, so the move itself fails closed
+    // on the unreadable host instead of the turn running unplaced.
+    return true;
   }
-  markConfirmed(sessionId);
-  return true;
+  if (directory === registered) {
+    // The session sits in its target: the placement is settled and the host
+    // confirmed it.
+    markConfirmed(sessionId);
+    return true;
+  }
+  const origin = placementOrigin(sessionId);
+  if (origin && directory === origin && !hostConfirmed(sessionId)) {
+    // The accepted move has not landed yet: the target stays pending.
+    return true;
+  }
+  // The session was relocated. Its target is dropped and remembered as
+  // abandoned, so a later lease rediscovery cannot hand it back.
+  markTargetAbandoned(sessionId, registered);
+  forgetSessionWorktree(sessionId, registered);
+  placementDiagnostic("skip", { session: key, reason: "reconciled-elsewhere" });
+  return false;
 }
