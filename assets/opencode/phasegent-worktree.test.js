@@ -670,7 +670,9 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   });
 
   test("moves a child into the parent's registered worktree on its first prompt", async () => {
-    rememberWorktree("parent-1", WORKTREE);
+    // Issue 1154 P1: the parent's origin is the directory the host reports for
+    // it, so the pending target stays valid while the host still reports it.
+    rememberWorktree("parent-1", WORKTREE, "/wt/host-parent");
     // A stale global fallback must not win over the parent's own target.
     rememberWorktree("other-session", "/wt/other");
     const moves = [];
@@ -752,9 +754,12 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   });
 
   test("fails the prompt when the host rejects the move", async () => {
-    rememberWorktree("parent-1", WORKTREE);
+    // The parent's origin is where the host reports it, so its pending target
+    // is what the child follows.
+    rememberWorktree("parent-1", WORKTREE, "/repo");
     const sessions = {
       "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: "/repo" } },
     };
     const context = {
       location: { directory: "/repo" },
@@ -829,7 +834,9 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   });
 
   test("moves a registered session and leaves later prompts a no-op", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    // The origin is the directory the host reports for the session: the
+    // placement is still pending while the host reports it.
+    rememberWorktree("session-1", WORKTREE, "/repo");
     const moves = [];
     const sessions = {
       "session-1": { parentID: null, location: { directory: "/repo" } },
@@ -864,7 +871,7 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   });
 
   test("fails the prompt when the host exposes no session.move", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, "/repo");
     const sessions = {
       "session-1": { parentID: null, location: { directory: "/repo" } },
     };
@@ -878,7 +885,7 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   });
 
   test("retries a failed move on the next prompt", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, "/repo");
     let attempts = 0;
     const moves = [];
     const context = {
@@ -908,7 +915,7 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
   });
 
   test("resetWorktrees clears the settled placement so a fresh move is allowed", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, "/repo");
     const moves = [];
     const context = {
       location: { directory: "/repo" },
@@ -925,18 +932,19 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
     expect(sessionPlaced("session-1")).toBe(false);
     expect(worktreeForSession("session-1")).toBeNull();
 
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, "/repo");
     await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
     expect(moves).toHaveLength(2);
   });
 
   test("resumes an existing child whose parent moved to another worktree", async () => {
-    rememberWorktree("parent-1", WORKTREE);
+    rememberWorktree("parent-1", WORKTREE, "/repo");
     const moves = [];
     // A resumed child still sits in the checkout it was started in, while the
     // parent's registered target is a different worktree.
     const sessions = {
       "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
+      "parent-1": { parentID: null, location: { directory: "/repo" } },
     };
     const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
     await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
@@ -945,7 +953,7 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
     // The parent moves again: the child follows on its next prompt.
     const next = "/repo/.worktrees/issue-567";
     resetWorktrees();
-    rememberWorktree("parent-1", next);
+    rememberWorktree("parent-1", next, "/repo");
     moves.length = 0;
     await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
     expect(moves).toEqual([{ sessionID: "child-1", directory: next }]);
@@ -1111,8 +1119,12 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
     const context = {
       session: { get: async () => ({ parentID: null, location: { directory: "/wt/host" } }) },
     };
-    rememberWorktree("parent-1", WORKTREE);
+    // The parent's origin is where the host reports it, so the pending target
+    // is the one the child follows.
+    rememberWorktree("parent-1", WORKTREE, "/wt/host");
     expect(await inheritedWorktree(context, "parent-1")).toBe(WORKTREE);
+    // An unregistered parent has no target to keep: the child takes the fresh
+    // host location.
     expect(await inheritedWorktree(context, "parent-2")).toBe("/wt/host");
     expect(await inheritedWorktree(context, null)).toBeNull();
   });
@@ -1166,11 +1178,14 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
     expect(calls).toBe(2);
   });
 
-  test("an unsettled session is left alone and the first placement still happens", async () => {
+  test("an unsettled session keeps its target and the first placement still happens", async () => {
     // A session that has not settled yet legitimately sits in the main
     // checkout: that difference is the placement, not a relocation, so it
-    // must not cancel the move.
-    rememberWorktree("session-1", WORKTREE);
+    // must not cancel the move. Issue 1154 P1: the unsettled session is now
+    // reconciled against the host as well, so the target survives only while
+    // the host reports the origin it was decided from — and the read is the
+    // only evidence that tells the two apart.
+    rememberWorktree("session-1", WORKTREE, MAIN);
     let lookups = 0;
     const moves = [];
     const context = {
@@ -1184,7 +1199,7 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
       },
     };
     expect(await reconcileSessionLocation(context, "session-1")).toBe(true);
-    expect(lookups).toBe(0);
+    expect(lookups).toBe(1);
     expect(worktreeForSession("session-1")).toBe(WORKTREE);
 
     expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
@@ -1193,7 +1208,7 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
   });
 
   test("never reverses a session the close returned to the main checkout", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, MAIN);
     const moves = [];
     let directory = MAIN;
     const context = {
@@ -1211,6 +1226,10 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
     expect(moves).toEqual([WORKTREE]);
     expect(sessionPlaced("session-1")).toBe(true);
 
+    // The host applied the move, so this prompt confirms the placement.
+    await prompt(promptEvent("session-1"));
+    expect(moves).toEqual([WORKTREE]);
+
     // `issue close` asks the API to return the session to the main checkout,
     // and the API is what decided — not this registry.
     directory = MAIN;
@@ -1224,7 +1243,7 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
   });
 
   test("an unreadable host never revives a worktree the close may have removed", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, MAIN);
     let directory = MAIN;
     let unavailable = false;
     const moves = [];
@@ -1332,7 +1351,7 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
   test("a moved session re-registers cleanly on its next issue's lease", async () => {
     // Reconciliation drops the stale target; the ordinary discovery path is
     // untouched, so a later, still-open issue re-registers from its own lease.
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, MAIN);
     let directory = MAIN;
     const context = {
       location: { directory: MAIN },
@@ -1344,6 +1363,8 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
       },
     };
     const prompt = createPromptHook(context, noCliDeps);
+    await prompt(promptEvent("session-1"));
+    // The host applied the move, so this prompt confirms the placement.
     await prompt(promptEvent("session-1"));
     directory = MAIN;
     await prompt(promptEvent("session-1"));
@@ -1437,8 +1458,10 @@ describe("session-scoped placement (issue 919 P1)", () => {
   test("interleaves two independent roots without cross-talk", async () => {
     const rootA = "/audit/repo-A/worktree";
     const rootB = "/audit/repo-B/worktree";
-    rememberWorktree("root-A", rootA);
-    rememberWorktree("root-B", rootB);
+    // Each root's origin is the directory its own host reports, so the two
+    // independent placements never read as each other's relocation.
+    rememberWorktree("root-A", rootA, "/audit/repo-A");
+    rememberWorktree("root-B", rootB, "/audit/repo-B");
     const host = recordingHost({
       "root-A": { parentID: null, location: { directory: "/audit/repo-A" } },
       "root-B": { parentID: null, location: { directory: "/audit/repo-B" } },
@@ -1513,10 +1536,10 @@ describe("session-scoped placement (issue 919 P1)", () => {
   });
 
   test("explicit parent inheritance still works and an unsettled parent keeps its admitted target", async () => {
-    rememberWorktree("parent-1", WORKTREE);
     // Parent move admitted but the host has not applied it yet: it still
     // reports the old directory. The child must follow the admitted target, not
     // the lagging host answer.
+    rememberWorktree("parent-1", WORKTREE, "/repo");
     const host = recordingHost({
       "child-1": { parentID: "parent-1", location: { directory: "/repo" } },
       "parent-1": { parentID: null, location: { directory: "/repo" } },
@@ -1547,7 +1570,7 @@ describe("session-scoped placement (issue 919 P1)", () => {
   });
 
   test("concurrent prompts issue only one move; a rejection permits a safe retry", async () => {
-    rememberWorktree("session-1", WORKTREE);
+    rememberWorktree("session-1", WORKTREE, "/repo");
     let attempts = 0;
     const moves = [];
     const sessions = { "session-1": { parentID: null, location: { directory: "/repo" } } };
@@ -1620,7 +1643,7 @@ describe("session-scoped placement (issue 919 P1)", () => {
 
   test("emits bounded diagnostics only, with a single line per decision and no settled chatter", async () => {
     const warnings = await withWarnings(async () => {
-      rememberWorktree("session-1", WORKTREE);
+      rememberWorktree("session-1", WORKTREE, "/repo");
       const sessions = { "session-1": { parentID: null, location: { directory: "/repo" } } };
       const host = recordingHost(sessions);
       await ensureSessionWorktree(host.context, "session-1", noCliDeps);
@@ -1658,6 +1681,796 @@ describe("session-scoped placement (issue 919 P1)", () => {
     );
     expect(suppressed).toHaveLength(1);
     expect(suppressed[0]).toContain("session=session-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// External relocation reconciliation (issue 1154 P1)
+//
+// A session can be moved out of band — the OpenCode API, or an operator — and
+// the plugin's per-session state never sees it. The host is the authority, so
+// a fresh read decides whether a registered target is still the session's
+// destination. The origin recorded with the target is what separates the two
+// remaining cases: a move that was accepted but has not landed yet keeps the
+// session at its origin, while a session the host reports anywhere else was
+// relocated and its stale target is dropped.
+// ---------------------------------------------------------------------------
+
+describe("external relocation reconciliation (issue 1154 P1)", () => {
+  let savedNoDiscover;
+  beforeEach(() => {
+    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
+  });
+  afterEach(() => {
+    restoreNoDiscover(savedNoDiscover);
+  });
+
+  const MAIN = "/repo";
+  const STALE = "/repo/.worktrees/issue-1154";
+  const RELOCATED = "/repo/.worktrees/issue-other";
+
+  test("an old unconfirmed target never overrides an externally changed host directory", async () => {
+    // The session is registered for the worktree but never settled there, and
+    // the host now reports a different directory: the stale target is dropped
+    // and the session is not moved back into it.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: RELOCATED } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(worktreeForSession("session-1")).toBeNull();
+    expect(sessionPlaced("session-1")).toBe(false);
+  });
+
+  test("a third-directory relocation invalidates the parent's registered target", async () => {
+    // The parent's registered worktree is stale and the host reports a third
+    // directory, so the child follows the host and never the stale target.
+    rememberWorktree("parent-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: RELOCATED } },
+      "child-1": { parentID: "parent-1", location: { directory: MAIN } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+    expect(worktreeForSession("parent-1")).toBeNull();
+  });
+
+  test("a parent's target without a proven origin never overrides the host", async () => {
+    // No origin was proven for the parent's target, so it cannot justify
+    // overriding the host's fresh directory: the child follows the host.
+    rememberWorktree("parent-1", STALE);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: RELOCATED } },
+      "child-1": { parentID: "parent-1", location: { directory: MAIN } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+    expect(worktreeForSession("parent-1")).toBeNull();
+  });
+
+  test("an own target without a proven origin never overrides the host", async () => {
+    // The same rule for the session's own target: with no proven origin it
+    // cannot justify a move against the host's fresh directory.
+    rememberWorktree("session-1", STALE);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: RELOCATED } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(worktreeForSession("session-1")).toBeNull();
+  });
+
+  test("a confirmed target moved back to its origin is an external relocation", async () => {
+    // The parent was confirmed in the worktree and the host now reports its
+    // origin again: after a confirmation even a move back to the origin is a
+    // relocation, so the child follows the host.
+    rememberWorktree("parent-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: STALE } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    // The parent sits in its target: the placement is settled and confirmed.
+    await expect(prompt(promptEvent("parent-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("parent-1")).toBe(true);
+
+    // The parent is returned to its origin.
+    sessions["parent-1"] = { parentID: null, location: { directory: MAIN } };
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: MAIN }]);
+    expect(worktreeForSession("parent-1")).toBeNull();
+  });
+
+  test("a stale parent session record never places the child", async () => {
+    // The parent's cached session record names the old directory, but the host
+    // reports where the parent actually is: the fresh answer wins.
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: MAIN } },
+    };
+    const context = hostContext(sessions, moves);
+    expect(await readSessionInfo(context, "parent-1")).toEqual({
+      parentID: null,
+      directory: STALE,
+    });
+
+    // The parent is relocated, and it has no registration of its own.
+    sessions["parent-1"] = { parentID: null, location: { directory: RELOCATED } };
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+  });
+
+  test("an unreadable host never falls back to a stale target", async () => {
+    // The host cannot report where the session is, so the placement fails
+    // closed instead of guessing a directory.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async () => {
+          throw new Error("session store unavailable");
+        },
+        move: async (input) => moves.push(input),
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("session-1"))).rejects.toThrow(
+      /session placement unverified/,
+    );
+    expect(moves).toEqual([]);
+  });
+
+  test("an equal directory needs no move", async () => {
+    // The host reports the session in its registered target: the placement is
+    // settled and confirmed, and nothing is moved.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: STALE } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(true);
+    expect(worktreeForSession("session-1")).toBe(STALE);
+  });
+
+  test("a true first placement still happens from the recorded origin", async () => {
+    // The session sits in the origin its target was decided from: the
+    // placement is still pending, so the move happens as before.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: MAIN } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "session-1", directory: STALE }]);
+    expect(sessionPlaced("session-1")).toBe(true);
+  });
+
+  test("an admitted pending move from a known origin keeps the target", async () => {
+    // The parent's move was accepted but the host has not applied it yet: it
+    // still reports the origin, so the child follows the pending target
+    // instead of the lagging host answer.
+    rememberWorktree("parent-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: MAIN } },
+      "child-1": { parentID: "parent-1", location: { directory: MAIN } },
+    };
+    const context = hostContext(sessions, moves);
+
+    await ensureSessionWorktree(context, "parent-1", noCliDeps);
+    expect(moves).toEqual([{ sessionID: "parent-1", directory: STALE }]);
+
+    // The host has not applied the accepted move yet.
+    sessions["parent-1"] = { parentID: null, location: { directory: MAIN } };
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([
+      { sessionID: "parent-1", directory: STALE },
+      { sessionID: "child-1", directory: STALE },
+    ]);
+  });
+
+  test("consecutive own prompts do not rediscover the externally abandoned target", async () => {
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const context = hostContext({
+      "session-1": { parentID: null, location: { directory: RELOCATED } },
+    }, moves);
+    const deps = {
+      ...noCliDeps,
+      discover: async (sessionId) => {
+        rememberWorktree(sessionId, STALE);
+        return STALE;
+      },
+    };
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([]);
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([]);
+  });
+
+  test("consecutive child prompts do not re-inherit its externally abandoned target", async () => {
+    rememberWorktree("child-1", STALE, MAIN);
+    const moves = [];
+    const context = hostContext({
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: RELOCATED } },
+    }, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+    await prompt(promptEvent("child-1"));
+    expect(moves).toEqual([]);
+    await prompt(promptEvent("child-1"));
+    expect(moves).toEqual([]);
+  });
+
+  test("a known-origin accepted pending target survives its own next prompt", async () => {
+    rememberWorktree("parent-1", STALE, MAIN);
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async ({ sessionID }) => ({
+          parentID: sessionID === "child-1" ? "parent-1" : null,
+          location: { directory: MAIN },
+        }),
+        move: async (input) => moves.push(input),
+      },
+    };
+    await ensureSessionWorktree(context, "parent-1", noCliDeps);
+    expect(sessionPlaced("parent-1")).toBe(true);
+    await ensureSessionWorktree(context, "parent-1", noCliDeps);
+    await ensureSessionWorktree(context, "child-1", noCliDeps);
+    expect(moves).toEqual([
+      { sessionID: "parent-1", directory: STALE },
+      { sessionID: "child-1", directory: STALE },
+    ]);
+    expect(worktreeForSession("parent-1")).toBe(STALE);
+  });
+
+  test("repeated prompts of a child of a relocated parent produce zero stale moves", async () => {
+    rememberWorktree("parent-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: RELOCATED } },
+      "child-1": { parentID: "parent-1", location: { directory: RELOCATED } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    for (let round = 0; round < 3; round += 1) {
+      await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    }
+    // The child already sits where the parent is: no stale target is applied
+    // on any of the prompts.
+    expect(moves).toEqual([]);
+    expect(worktreeForSession("parent-1")).toBeNull();
+    // The child records the inherited target it already occupies, so a later
+    // external relocation of the child can be reconciled.
+    expect(worktreeForSession("child-1")).toBe(RELOCATED);
+  });
+
+  test("the dropped target takes its origin with it", async () => {
+    // The origin belongs to the target it justified, so it cannot survive the
+    // target and make a later registration look like a pending move.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "session-1": { parentID: null, location: { directory: RELOCATED } },
+    };
+    const context = hostContext(sessions, moves);
+
+    expect(await reconcileSessionLocation(context, "session-1")).toBe(false);
+    expect(worktreeForSession("session-1")).toBeNull();
+
+    // A fresh registration for the same session starts from its own origin.
+    rememberWorktree("session-1", STALE, RELOCATED);
+    expect(await reconcileSessionLocation(context, "session-1")).toBe(true);
+    expect(worktreeForSession("session-1")).toBe(STALE);
+    expect(moves).toEqual([]);
+  });
+
+  test("a close before the placement is confirmed leaves the target pending", async () => {
+    // The accepted move was never confirmed and the session is back at its
+    // origin: that is indistinguishable from a move that has not landed yet,
+    // so the target stays pending and the session is not moved back into it.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    let directory = MAIN;
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async () => ({ parentID: null, location: { directory } }),
+        move: async ({ directory: target }) => {
+          moves.push(target);
+          directory = target;
+        },
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([STALE]);
+
+    // The session is back at its origin before the placement was confirmed.
+    directory = MAIN;
+    await expect(prompt(promptEvent("session-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([STALE]);
+    expect(worktreeForSession("session-1")).toBe(STALE);
+  });
+
+  test("an abandoned target does not block a different one", async () => {
+    // The suppression is target-specific: another worktree, a new issue, is
+    // still placed.
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const context = hostContext({
+      "session-1": { parentID: null, location: { directory: RELOCATED } },
+    }, moves);
+    const other = "/repo/.worktrees/issue-other-lease";
+    const deps = {
+      ...noCliDeps,
+      discover: async (sessionId) => {
+        rememberWorktree(sessionId, other);
+        return other;
+      },
+    };
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([]);
+
+    // The next prompt rediscovers the same, different target and places it.
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([{ sessionID: "session-1", directory: other }]);
+  });
+
+  test("a parent's relocated target is abandoned for the parent itself", async () => {
+    rememberWorktree("parent-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: RELOCATED } },
+      "child-1": { parentID: "parent-1", location: { directory: MAIN } },
+    };
+    const context = hostContext(sessions, moves);
+    const deps = {
+      ...noCliDeps,
+      discover: async (sessionId) => {
+        rememberWorktree(sessionId, STALE);
+        return STALE;
+      },
+    };
+    const prompt = createPromptHook(context, deps);
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+
+    // The parent's own rediscovery cannot resurrect the target it was moved
+    // out of either.
+    await expect(prompt(promptEvent("parent-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+  });
+
+  test("a reset clears the abandoned target", async () => {
+    rememberWorktree("session-1", STALE, MAIN);
+    const moves = [];
+    const context = hostContext({
+      "session-1": { parentID: null, location: { directory: RELOCATED } },
+    }, moves);
+    const deps = {
+      ...noCliDeps,
+      discover: async (sessionId) => {
+        rememberWorktree(sessionId, STALE);
+        return STALE;
+      },
+    };
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([]);
+    // The abandoned target is still refused on the next admission.
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([]);
+
+    // A reset clears the record, so the target may be placed again.
+    resetWorktrees();
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(moves).toEqual([{ sessionID: "session-1", directory: STALE }]);
+  });
+
+  test("the discovery probes run in the session's own directory", async () => {
+    // The plugin's context location is not the session's directory, so the
+    // probes follow the host.
+    const probes = [];
+    const moves = [];
+    const context = {
+      location: { directory: "/plugin/context" },
+      session: {
+        get: async () => ({ parentID: null, location: { directory: RELOCATED } }),
+        move: async (input) => moves.push(input),
+      },
+    };
+    const deps = {
+      ...noCliDeps,
+      discover: async (sessionId, cwd) => {
+        probes.push(cwd);
+        return null;
+      },
+    };
+    await ensureSessionWorktree(context, "session-1", deps);
+    expect(probes).toEqual([RELOCATED]);
+  });
+
+  test("a co-located child follows a different fresh parent target without reset", async () => {
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: STALE } },
+    };
+    const prompt = createPromptHook(hostContext(sessions, moves), noCliDeps);
+    await prompt(promptEvent("child-1"));
+    expect(moves).toEqual([]);
+    sessions["parent-1"] = { parentID: null, location: { directory: RELOCATED } };
+    await prompt(promptEvent("child-1"));
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+  });
+
+  test("repeated child admissions preserve the known origin of an accepted pending move", async () => {
+    const moves = [];
+    const context = {
+      location: { directory: MAIN },
+      session: {
+        get: async ({ sessionID }) => ({
+          parentID: sessionID === "child-1" ? "parent-1" : null,
+          location: { directory: sessionID === "child-1" ? MAIN : STALE },
+        }),
+        move: async (input) => moves.push(input),
+      },
+    };
+    const prompt = createPromptHook(context, noCliDeps);
+    for (let round = 0; round < 3; round += 1) {
+      await prompt(promptEvent("child-1"));
+    }
+    expect(moves).toEqual([{ sessionID: "child-1", directory: STALE }]);
+    expect(worktreeForSession("child-1")).toBe(STALE);
+  });
+
+  test("a superseded in-flight placement cannot move back to the old target", async () => {
+    const { moveSessionToWorktree } = await import("./src/session.js");
+    let releaseOldRead;
+    let signalOldRead;
+    const oldReadStarted = new Promise((resolve) => { signalOldRead = resolve; });
+    const oldRead = new Promise((resolve) => { releaseOldRead = resolve; });
+    const moves = [];
+    let reads = 0;
+    const context = {
+      session: {
+        get: async () => {
+          if (++reads === 1) {
+            signalOldRead();
+            return await oldRead;
+          }
+          return { parentID: null, location: { directory: MAIN } };
+        },
+        move: async (input) => moves.push(input),
+      },
+    };
+    rememberWorktree("child-1", STALE, MAIN);
+    const oldAttempt = moveSessionToWorktree(context, "child-1", STALE);
+    await oldReadStarted;
+    rememberWorktree("child-1", RELOCATED, MAIN);
+    await moveSessionToWorktree(context, "child-1", RELOCATED);
+    releaseOldRead({ parentID: null, location: { directory: MAIN } });
+    await oldAttempt;
+    expect(worktreeForSession("child-1")).toBe(RELOCATED);
+    expect(moves).toEqual([{ sessionID: "child-1", directory: RELOCATED }]);
+  });
+
+  test("a new target waits for the in-flight host move of the old target", async () => {
+    const { moveSessionToWorktree } = await import("./src/session.js");
+    let releaseOldMove;
+    let signalOldMove;
+    const oldMoveStarted = new Promise((resolve) => { signalOldMove = resolve; });
+    const oldMove = new Promise((resolve) => { releaseOldMove = resolve; });
+    const moves = [];
+    const context = {
+      session: {
+        get: async () => ({ parentID: null, location: { directory: MAIN } }),
+        move: async (input) => {
+          moves.push(input);
+          if (input.directory === STALE) {
+            signalOldMove();
+            await oldMove;
+          }
+        },
+      },
+    };
+    rememberWorktree("child-1", STALE, MAIN);
+    const oldAttempt = moveSessionToWorktree(context, "child-1", STALE);
+    await oldMoveStarted;
+    rememberWorktree("child-1", RELOCATED, MAIN);
+    const newAttempt = moveSessionToWorktree(context, "child-1", RELOCATED);
+
+    // The new request is not dispatched while the earlier host move is still
+    // in flight, so it cannot be overtaken by its completion.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(moves).toEqual([{ sessionID: "child-1", directory: STALE }]);
+
+    releaseOldMove();
+    await Promise.all([oldAttempt, newAttempt]);
+    expect(moves).toEqual([
+      { sessionID: "child-1", directory: STALE },
+      { sessionID: "child-1", directory: RELOCATED },
+    ]);
+    expect(worktreeForSession("child-1")).toBe(RELOCATED);
+  });
+
+  test("equal-target suppression waits for an earlier dispatched move to finish", async () => {
+    const { moveSessionToWorktree } = await import("./src/session.js");
+    let releaseOldMove;
+    let signalOldMove;
+    const oldMoveStarted = new Promise((resolve) => { signalOldMove = resolve; });
+    const oldMove = new Promise((resolve) => { releaseOldMove = resolve; });
+    let directory = MAIN;
+    const context = {
+      session: {
+        get: async () => ({ parentID: null, location: { directory } }),
+        move: async (input) => {
+          if (input.directory === STALE) {
+            signalOldMove();
+            await oldMove;
+          }
+          directory = input.directory;
+        },
+      },
+    };
+    rememberWorktree("child-1", STALE, MAIN);
+    const oldAttempt = moveSessionToWorktree(context, "child-1", STALE);
+    await oldMoveStarted;
+    rememberWorktree("child-1", MAIN);
+    const newAttempt = moveSessionToWorktree(context, "child-1", MAIN);
+    releaseOldMove();
+    await Promise.all([oldAttempt, newAttempt]);
+    expect(worktreeForSession("child-1")).toBe(MAIN);
+    expect(directory).toBe(MAIN);
+  });
+
+  test("the final host location follows the serialized request order", async () => {
+    const { moveSessionToWorktree } = await import("./src/session.js");
+    let releaseOldMove;
+    let signalOldMove;
+    const oldMoveStarted = new Promise((resolve) => { signalOldMove = resolve; });
+    const oldMove = new Promise((resolve) => { releaseOldMove = resolve; });
+    const moves = [];
+    let directory = MAIN;
+    const context = {
+      session: {
+        get: async () => ({ parentID: null, location: { directory } }),
+        // The host applies the move it is given, in the order it was asked for.
+        move: async (input) => {
+          if (input.directory === STALE) {
+            signalOldMove();
+            await oldMove;
+          }
+          moves.push(input);
+          directory = input.directory;
+        },
+      },
+    };
+    rememberWorktree("child-1", STALE, MAIN);
+    const oldAttempt = moveSessionToWorktree(context, "child-1", STALE);
+    await oldMoveStarted;
+    rememberWorktree("child-1", RELOCATED, MAIN);
+    const newAttempt = moveSessionToWorktree(context, "child-1", RELOCATED);
+    releaseOldMove();
+    await Promise.all([oldAttempt, newAttempt]);
+
+    // The requests keep their order, and the session ends in the newer target.
+    expect(moves.map((move) => move.directory)).toEqual([STALE, RELOCATED]);
+    expect(directory).toBe(RELOCATED);
+    expect(worktreeForSession("child-1")).toBe(RELOCATED);
+  });
+
+  test("a superseded attempt's rejection leaves the newer attempt intact", async () => {
+    const { moveSessionToWorktree } = await import("./src/session.js");
+    let releaseOldMove;
+    let signalOldMove;
+    const oldMoveStarted = new Promise((resolve) => { signalOldMove = resolve; });
+    const oldMove = new Promise((resolve, reject) => {
+      releaseOldMove = () => reject(new Error("runner not ready"));
+    });
+    const moves = [];
+    const context = {
+      session: {
+        get: async () => ({ parentID: null, location: { directory: MAIN } }),
+        move: async (input) => {
+          moves.push(input);
+          if (input.directory === STALE) {
+            signalOldMove();
+            await oldMove;
+          }
+        },
+      },
+    };
+    rememberWorktree("child-1", STALE, MAIN);
+    const oldAttempt = moveSessionToWorktree(context, "child-1", STALE);
+    await oldMoveStarted;
+    rememberWorktree("child-1", RELOCATED, MAIN);
+    const newAttempt = moveSessionToWorktree(context, "child-1", RELOCATED);
+
+    // The superseded attempt fails: its own cleanup must not retire the newer
+    // attempt, and its failure must not fail the newer placement.
+    releaseOldMove();
+    await expect(oldAttempt).rejects.toThrow(/session placement failed/);
+    await newAttempt;
+    expect(moves).toEqual([
+      { sessionID: "child-1", directory: STALE },
+      { sessionID: "child-1", directory: RELOCATED },
+    ]);
+    expect(worktreeForSession("child-1")).toBe(RELOCATED);
+  });
+
+  test("the registration state follows the target lifecycle matrix", async () => {
+    // The origin and the placement markers belong to one target: the same
+    // target keeps them, a different target starts without them.
+    const OTHER = "/repo/.worktrees/issue-other-target";
+
+    // Brings a session into one placement state: never moved, a move that was
+    // accepted but never confirmed, or a placement the host confirmed.
+    async function establish(state) {
+      resetWorktrees();
+      rememberWorktree("session-1", STALE, MAIN);
+      const moves = [];
+      let directory = state === "confirmed" ? STALE : MAIN;
+      const context = {
+        location: { directory: MAIN },
+        session: {
+          get: async () => ({ parentID: null, location: { directory } }),
+          // The host accepts the move without applying it, so the placement
+          // stays unconfirmed.
+          move: async (input) => moves.push(input),
+        },
+      };
+      if (state !== "unplaced") {
+        await createPromptHook(context, noCliDeps)(promptEvent("session-1"));
+        moves.length = 0;
+      }
+      return { context, moves, setDirectory: (value) => { directory = value; } };
+    }
+
+    const cases = [
+      // Same target: the host's answer decides whether it survives.
+      { state: "unplaced", host: MAIN, kept: true, moved: true },
+      { state: "unplaced", host: STALE, kept: true, moved: false },
+      { state: "unplaced", host: RELOCATED, kept: false, moved: false },
+      { state: "accepted", host: MAIN, kept: true, moved: false },
+      { state: "accepted", host: STALE, kept: true, moved: false },
+      { state: "accepted", host: RELOCATED, kept: false, moved: false },
+      { state: "confirmed", host: MAIN, kept: false, moved: false },
+      { state: "confirmed", host: STALE, kept: true, moved: false },
+      { state: "confirmed", host: RELOCATED, kept: false, moved: false },
+    ];
+    for (const { state, host, kept, moved } of cases) {
+      const { context, moves, setDirectory } = await establish(state);
+      setDirectory(host);
+      await createPromptHook(context, noCliDeps)(promptEvent("session-1"));
+      expect({ state, host, target: worktreeForSession("session-1") }).toEqual({
+        state,
+        host,
+        target: kept ? STALE : null,
+      });
+      expect({ state, host, moves: moves.length }).toEqual({
+        state,
+        host,
+        moves: moved ? 1 : 0,
+      });
+    }
+
+    // A different target invalidates the previous state: the old placed flag
+    // never suppresses the new move.
+    for (const state of ["unplaced", "accepted", "confirmed"]) {
+      const { context, moves, setDirectory } = await establish(state);
+      setDirectory(MAIN);
+      rememberWorktree("session-1", OTHER, MAIN);
+      await createPromptHook(context, noCliDeps)(promptEvent("session-1"));
+      expect({ state, target: worktreeForSession("session-1") }).toEqual({
+        state,
+        target: OTHER,
+      });
+      expect({ state, moves: moves.length }).toEqual({ state, moves: 1 });
+    }
+  });
+
+  test("an initially co-located child records the inherited target without a move", async () => {
+    // The child already sits in the parent's directory: the placement is
+    // recorded, so a later external relocation of the child can be reconciled,
+    // and the equal directory needs no move.
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: STALE } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(sessionPlaced("child-1")).toBe(true);
+    expect(worktreeForSession("child-1")).toBe(STALE);
+
+    // The next prompt keeps the same placement and issues no move either.
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+    expect(worktreeForSession("child-1")).toBe(STALE);
+  });
+
+  test("a child-only external move is reconciled and never moved back", async () => {
+    // The parent stays in the old target while the host moved the child out of
+    // it: the child's own target is dropped and abandoned, and no later prompt
+    // puts the child back into it.
+    rememberWorktree("child-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: RELOCATED } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    for (let round = 0; round < 3; round += 1) {
+      await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    }
+    expect(moves).toEqual([]);
+    expect(worktreeForSession("child-1")).toBeNull();
+  });
+
+  test("a different inherited target stays eligible after an abandonment", async () => {
+    // The child abandoned one target; the parent moving to another directory
+    // is still eligible for the child.
+    rememberWorktree("child-1", STALE, MAIN);
+    const moves = [];
+    const sessions = {
+      "parent-1": { parentID: null, location: { directory: STALE } },
+      "child-1": { parentID: "parent-1", location: { directory: RELOCATED } },
+    };
+    const context = hostContext(sessions, moves);
+    const prompt = createPromptHook(context, noCliDeps);
+
+    // The child's own target is abandoned by the first prompt.
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([]);
+
+    // The parent moved to a third directory: the child follows it.
+    const third = "/repo/.worktrees/issue-third";
+    sessions["parent-1"] = { parentID: null, location: { directory: third } };
+    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
+    expect(moves).toEqual([{ sessionID: "child-1", directory: third }]);
   });
 });
 

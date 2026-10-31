@@ -27,6 +27,27 @@ import { errorText, placementDiagnostic } from "./runtime.js";
 export const PLACEMENT_ERROR_PREFIX = "phasegent: session placement";
 
 export const sessionWorktrees = new Map();
+// The directory a session occupied when its registered target was decided.
+//
+// The host reports where a session *is*, never whether an accepted move has
+// landed yet, so the registry keeps this origin to tell the two apart: a
+// target whose move is still pending keeps the session at its origin, while a
+// session the host reports anywhere else was relocated. It comes from
+// authoritative host metadata only, never from the plugin's context or from the
+// cached session record.
+const placementOrigins = new Map();
+// Targets the host moved a session out of.
+//
+// A relocation the host made is authoritative and stays authoritative for that
+// session, so a later lease rediscovery must not hand the same target back.
+// The record is session-local and target-specific: another target, a new issue
+// or another worktree is never blocked.
+const abandonedTargets = new Map();
+// The placement attempt a session runs, the target it moves to, and the host
+// move it dispatched. A superseded attempt keeps its dispatch promise, so the
+// attempt that replaces it waits for the earlier host move instead of
+// overtaking it, while the superseded attempt itself skips the host move it
+// never dispatched and publishes no placement state.
 const moveAttempts = new Map();
 const placedSessions = new Set();
 // Sessions whose placement the host has actually confirmed at the registered
@@ -60,8 +81,25 @@ export function markConfirmed(sessionId) {
   confirmedSessions.add(String(sessionId));
 }
 
-function hostConfirmed(sessionId) {
+// True when a fresh host read agreed the session sits at its registered
+// directory. Only a confirmation ends the tolerance for a pending target.
+export function hostConfirmed(sessionId) {
   return sessionId !== undefined && sessionId !== null && confirmedSessions.has(String(sessionId));
+}
+
+// The attempt this session runs, or `null` when no attempt is current: none
+// was started, or the one that ran was superseded by another target.
+function currentAttempt(key) {
+  const record = moveAttempts.get(key);
+  return record && record.attempt ? record.attempt : null;
+}
+
+// Retires the attempt this session runs without dropping the host move it
+// already dispatched: the next attempt waits for that move instead of
+// overtaking it.
+function supersedeAttempt(key) {
+  const record = moveAttempts.get(key);
+  if (record) record.attempt = null;
 }
 
 // A refused acquisition is remembered per issue: the session stays in the
@@ -77,10 +115,64 @@ export function rememberClosedIssue(issueId) {
 
 // Exact per-session registration. A miss (unknown or absent session) records
 // nothing and never borrows another session's directory.
-export function rememberWorktree(sessionId, directory) {
+//
+// `origin` is the directory the session occupied when this target was decided.
+// It is the evidence that keeps a pending target valid while the host still
+// reports the origin, so a later relocation cannot be mistaken for a move that
+// has not landed yet.
+//
+// The origin and the placement markers belong to one target. Registering the
+// same target again keeps them, so a repeated admission cannot destroy the
+// evidence of a move that is still pending; registering a different target
+// drops them, so markers of the previous target never decide the placement of
+// the new one.
+export function rememberWorktree(sessionId, directory, origin) {
   if (typeof directory !== "string" || directory.length === 0) return;
   if (sessionId === undefined || sessionId === null) return;
-  sessionWorktrees.set(String(sessionId), directory);
+  const key = String(sessionId);
+  const previous = sessionWorktrees.get(key);
+  if (previous !== undefined && previous !== directory) {
+    placementOrigins.delete(key);
+    placedSessions.delete(key);
+    confirmedSessions.delete(key);
+    // The attempt in flight belongs to the previous target: it must not
+    // suppress the new move and the new target must not join it. Its dispatched
+    // host move stays recorded, so the new move waits for it.
+    supersedeAttempt(key);
+  }
+  sessionWorktrees.set(key, directory);
+  if (typeof origin === "string" && origin.length > 0) placementOrigins.set(key, origin);
+}
+
+// The origin recorded for a session's registered target, or `null` when none
+// was proven.
+export function placementOrigin(sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  const known = placementOrigins.get(String(sessionId));
+  return known === undefined ? null : known;
+}
+
+// Remembers that the host moved this session out of `directory`. The record
+// survives the target it belonged to, so a later lease rediscovery cannot
+// resurrect a target the session was relocated away from.
+export function markTargetAbandoned(sessionId, directory) {
+  if (sessionId === undefined || sessionId === null) return;
+  if (typeof directory !== "string" || directory.length === 0) return;
+  const key = String(sessionId);
+  let targets = abandonedTargets.get(key);
+  if (!targets) {
+    targets = new Set();
+    abandonedTargets.set(key, targets);
+  }
+  targets.add(directory);
+}
+
+// True when the host moved this session out of `directory`.
+export function targetAbandoned(sessionId, directory) {
+  if (sessionId === undefined || sessionId === null) return false;
+  if (typeof directory !== "string" || directory.length === 0) return false;
+  const targets = abandonedTargets.get(String(sessionId));
+  return targets ? targets.has(directory) : false;
 }
 
 // The session's own registered worktree, or `null` when it has none.
@@ -92,6 +184,8 @@ export function worktreeForSession(sessionId) {
 
 export function resetWorktrees() {
   sessionWorktrees.clear();
+  placementOrigins.clear();
+  abandonedTargets.clear();
   moveAttempts.clear();
   placedSessions.clear();
   confirmedSessions.clear();
@@ -156,47 +250,62 @@ export async function readAuthoritativeDirectory(context, sessionId) {
 }
 
 // Drops every cached reference to a worktree the host no longer associates
-// with this session: its registered target, the settled and confirmed markers,
-// an in-flight move, and the cached host record that produced the stale answer.
+// with this session: its registered target, the origin that justified it, the
+// settled and confirmed markers, an in-flight move, and the cached host record
+// that produced the stale answer. The state is cleared together, so no
+// obsolete target can outlive the evidence that supported it. The record of a
+// target the host moved the session out of survives: it is the evidence that
+// keeps a later rediscovery from handing that target back.
 export function forgetSessionWorktree(sessionId, _directory) {
   if (sessionId === undefined || sessionId === null) return;
   const key = String(sessionId);
   sessionWorktrees.delete(key);
+  placementOrigins.delete(key);
   sessionInfo.delete(key);
   placedSessions.delete(key);
   confirmedSessions.delete(key);
-  moveAttempts.delete(key);
+  supersedeAttempt(key);
 }
 
-// The parent's registered target is the destination of a move that may still be
-// pending at the parent's next step boundary; the directory the host reports for
-// the parent is the fallback once that move has landed.
+// The parent's directory is the destination a child follows.
 //
-// Issue 747 P2: a parent whose placement already *settled and was confirmed by
-// the host* is the exception. Nothing about the plugin keeps it there — `issue
-// close` returns the closing session to the main checkout through the OpenCode
-// API before its worktree is removed — so its registered target is stale by
-// definition once the host reports somewhere else, and the child inherits where
-// the parent actually is rather than the closed directory. A parent whose move
-// was only *admitted* (the host has not applied it yet) keeps its registered
-// target: a lagging host answer is not an external relocation. A parent with no
-// registration falls back to the directory the host reports for it.
-export async function inheritedWorktree(context, parentId, readInfo) {
+// The host is the only authority on where the parent runs, so the parent is
+// read fresh on every inheritance: the cached session record can name a
+// directory the parent was moved out of long ago. A registered parent target is
+// then reconciled against that fresh answer:
+//
+//   * the host reports the target: the parent sits in it, the child follows;
+//   * the host reports the recorded origin and the target was never confirmed:
+//     the accepted move has not landed yet, so the child follows the pending
+//     target rather than the lagging host answer;
+//   * the host reports any other directory — a third one, or the origin of an
+//     already confirmed target: the parent was relocated, so its stale target
+//     is dropped and the child follows the host.
+//
+// A parent the host cannot describe gives the child nothing at all: no cached
+// directory, no issue-lease discovery, and never a stale target.
+export async function inheritedWorktree(context, parentId, readDirectory) {
   if (parentId === undefined || parentId === null) return null;
-  const registered = sessionWorktrees.get(String(parentId));
-  if (registered) {
-    if (sessionPlaced(parentId) && hostConfirmed(parentId)) {
-      const directory = await readAuthoritativeDirectory(context, parentId);
-      if (directory !== registered) {
-        forgetSessionWorktree(parentId, registered);
-        return directory;
-      }
-    }
+  const key = String(parentId);
+  const registered = sessionWorktrees.get(key);
+  const read = readDirectory || readAuthoritativeDirectory;
+  const directory = await read(context, parentId);
+  if (!directory) return null;
+  if (!registered) return directory;
+  if (directory === registered) {
+    markConfirmed(parentId);
     return registered;
   }
-  const read = readInfo || readSessionInfo;
-  const info = await read(context, parentId);
-  return info ? info.directory : null;
+  const origin = placementOrigin(parentId);
+  if (origin && directory === origin && !hostConfirmed(parentId)) {
+    // The parent's accepted move has not landed yet: the child follows the
+    // pending target instead of the lagging host answer.
+    return registered;
+  }
+  markTargetAbandoned(parentId, registered);
+  forgetSessionWorktree(parentId, registered);
+  placementDiagnostic("skip", { session: key, reason: "reconciled-elsewhere" });
+  return directory;
 }
 
 // `context.session.move` hands an active runner the placement at its next step
@@ -225,16 +334,39 @@ export async function moveSessionToWorktree(context, sessionId, directory, _curr
         `cannot enter ${directory}`,
     );
   }
-  const pending = moveAttempts.get(key);
+  const pending = currentAttempt(key);
   if (pending) {
     await pending;
     return;
   }
-  const attempt = (async () => {
+  const record = moveAttempts.get(key);
+  const earlier = record ? record.dispatched : null;
+  let attempt = null;
+  attempt = (async () => {
+    if (earlier) {
+      // An earlier host move may still be in flight. The dispatched moves are
+      // serialized, so this request cannot overtake it and be overwritten by
+      // its completion. The earlier attempt's own failure is its own.
+      try {
+        await earlier;
+      } catch (_) {
+        // The superseded attempt reported its own failure.
+      }
+      // The attempt may have been superseded while it waited: it must neither
+      // read for a placement nor move the session.
+      if (currentAttempt(key) !== attempt) return null;
+    }
     // The source must be the host's fresh, authoritative answer for this very
     // session. A cached value or the plugin's own location could be stale, and
     // guessing could send the turn into a directory that is about to vanish.
+    // The read follows the wait above, so the answer reflects the earlier host
+    // move and cannot be invalidated by it.
     const located = await readAuthoritativeDirectory(context, sessionId);
+    // The read can outlive the decision: the session may have moved on to
+    // another target while it was in flight. A superseded attempt must
+    // neither move the session nor publish placement state, so it checks that
+    // it is still the attempt this session runs.
+    if (currentAttempt(key) !== attempt) return null;
     if (typeof located !== "string" || located.length === 0) {
       placementDiagnostic("unverified", {
         session: key,
@@ -257,6 +389,12 @@ export async function moveSessionToWorktree(context, sessionId, directory, _curr
       });
       return directory;
     }
+    // The fresh read is the session's origin: the directory it occupies before
+    // this move. Recording it here gives the next prompt the evidence that
+    // separates a move which has not landed yet from a session that was
+    // relocated elsewhere, and it is written before the move is requested so a
+    // rejected move still leaves the origin known.
+    if (!placementOrigins.has(key)) placementOrigins.set(key, located);
     const move = context && context.session && context.session.move;
     if (typeof move !== "function") {
       throw new Error(
@@ -266,7 +404,10 @@ export async function moveSessionToWorktree(context, sessionId, directory, _curr
     }
     placementDiagnostic("request", { session: key, from: located, to: directory });
     try {
-      await move({ sessionID: sessionId, directory });
+      const dispatched = move({ sessionID: sessionId, directory });
+      const running = moveAttempts.get(key);
+      if (running) running.dispatched = dispatched;
+      await dispatched;
     } catch (error) {
       placementDiagnostic("rejected", {
         session: key,
@@ -278,17 +419,20 @@ export async function moveSessionToWorktree(context, sessionId, directory, _curr
           `(${errorText(error)}); the next prompt retries`,
       );
     }
-    placedSessions.add(key);
+    // The host may have taken long enough for the attempt to be superseded, so
+    // the placement state is published only while the attempt still runs.
+    if (currentAttempt(key) === attempt) placedSessions.add(key);
     // The host *accepted* the move; that is not proof it relocated, so this is
     // deliberately not labelled a confirmation.
     placementDiagnostic("accepted", { session: key, from: located, to: directory });
     return directory;
   })();
-  moveAttempts.set(key, attempt);
+  moveAttempts.set(key, { target: directory, attempt, dispatched: earlier || null });
   try {
     await attempt;
   } finally {
-    if (moveAttempts.get(key) === attempt) moveAttempts.delete(key);
+    const running = moveAttempts.get(key);
+    if (running && running.attempt === attempt) moveAttempts.delete(key);
   }
 }
 

@@ -13,6 +13,12 @@
 // Issue 919 P1: the registry is exact per session. There is no cross-session
 // fallback, so an unknown session — or a child whose parent cannot be resolved —
 // stays where it is instead of being redirected into another session's worktree.
+//
+// The host is the authority for both an own registered target and an inherited
+// one, and it is read fresh for every placement decision. A cached session
+// record or the plugin's own context is never placement evidence, so a session
+// the host relocated out of band is never moved back to a stale directory, and
+// a target it was moved out of is not handed back by a later rediscovery.
 
 import {
   issueClosedLocally,
@@ -21,8 +27,9 @@ import {
   readIssueLeaseHistory,
   readIssueLeases,
 } from "./binding.js";
-import { errorText, locationDirectory, phasegentCallsDisabled, warn } from "./runtime.js";
+import { errorText, phasegentCallsDisabled, warn } from "./runtime.js";
 import {
+  forgetSessionWorktree,
   inheritedWorktree,
   issueKnownClosed,
   markConfirmed,
@@ -33,6 +40,7 @@ import {
   readSessionInfo,
   rememberClosedIssue,
   rememberWorktree,
+  targetAbandoned,
   worktreeForSession,
 } from "./session.js";
 import { reconcileSessionLocation } from "./session-reconcile.js";
@@ -56,7 +64,13 @@ export async function discoverWorktreeForSession(sessionId, cwd) {
     const leases = await readIssueLeases(issueId, cwd);
     if (!leases) return null;
     const path = pickActiveWorktreePath(leases);
-    if (path) rememberWorktree(sessionId, path);
+    if (!path) return null;
+    // A target the host moved this session out of stays abandoned: the
+    // relocation is authoritative and rediscovery must not resurrect it. The
+    // origin of the target is recorded from authoritative host metadata by the
+    // move that follows this registration, never from the plugin's context.
+    if (targetAbandoned(sessionId, path)) return null;
+    rememberWorktree(sessionId, path);
     return path;
   } catch (_) {
     return null;
@@ -92,39 +106,50 @@ function warnRefusedPlacement(sessionId, issueId) {
 // can exercise that order without the phasegent CLI.
 export async function ensureSessionWorktree(context, sessionId, deps) {
   if (!sessionId) return null;
-  const registered = worktreeForSession(sessionId);
   // `PHASEGENT_WORKTREE_NO_DISCOVER` keeps the adapter inert: the exact
-  // in-memory lookup above is local, and no host read or auto-move follows,
+  // in-memory lookup is local, and no host read or auto-move follows,
   // because a move whose current location cannot be verified must never run.
-  if (phasegentCallsDisabled()) return registered;
-  // Issue 747 P2: the host, not this registry, decides where a session runs.
-  // A settled placement is reconciled against a fresh host read before its
-  // cached target is trusted, so an `issue close` relocation is never reversed
+  if (phasegentCallsDisabled()) return worktreeForSession(sessionId);
+  // The host, not this registry, decides where a session runs. A settled *and*
+  // an unsettled placement are reconciled against a fresh host read before its
+  // cached target is trusted, so a relocation the host made is never reversed
   // and a worktree that was already removed is never re-entered. An unsettled
-  // session is untouched, so the ordinary first placement — the session is in
-  // the main checkout and must be moved into the worktree — still happens.
+  // session is untouched otherwise, so the ordinary first placement still
+  // happens.
   const readDirectory =
     (deps && deps.readAuthoritativeDirectory) || readAuthoritativeDirectory;
   if (!(await reconcileSessionLocation(context, sessionId, readDirectory))) return null;
-  if (registered) {
-    // Move-only placement: a move the host cannot perform fails the prompt.
-    await moveSessionToWorktree(context, sessionId, registered);
-    return registered;
-  }
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
   const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
-  const cwd = locationDirectory(context);
   try {
-    // A child inherits before the reuse probe: it takes its parent's directory
-    // or nothing at all, never another session's worktree.
+    // A child inherits before its own registration and before the reuse probe:
+    // it takes its parent's current directory or nothing at all, never another
+    // session's worktree. The parent's fresh location is the authority, so a
+    // child whose parent moved follows it.
     const info = await readInfo(context, sessionId);
     if (info && info.parentID) {
-      return await inheritParentWorktree(context, sessionId, info, readInfo);
+      return await inheritParentWorktree(context, sessionId, info, readDirectory);
     }
+    const registered = worktreeForSession(sessionId);
+    if (registered) {
+      // Move-only placement: a move the host cannot perform fails the prompt.
+      await moveSessionToWorktree(context, sessionId, registered);
+      return registered;
+    }
+    // The probes run where the session actually is: the plugin's own context
+    // location and the cached session record are not the session's directory and
+    // never decide where a session is placed.
+    const cwd = await readDirectory(context, sessionId);
     const discovered = await discover(sessionId, cwd);
     if (discovered) {
+      if (targetAbandoned(sessionId, discovered)) {
+        // The host moved this session out of that target, so the rediscovery
+        // must not put it back.
+        forgetSessionWorktree(sessionId, discovered);
+        return null;
+      }
       await moveSessionToWorktree(context, sessionId, discovered);
       return discovered;
     }
@@ -164,15 +189,31 @@ async function issueConverged(issueId, cwd, readLeaseHistory) {
 // yet, so the child's move is admitted and the turn continues: it lands before
 // the child's first tool call. A parent with no resolvable directory is not an
 // error — the child simply stays where it is.
-async function inheritParentWorktree(context, sessionId, info, readInfo) {
-  const target = await inheritedWorktree(context, info.parentID, readInfo);
+//
+// The parent's location comes from the host, never from the cached session
+// record, and the parent's own stale target is reconciled before the child
+// follows it. The child's target is registered here and its origin comes from
+// the authoritative read inside the move below.
+async function inheritParentWorktree(context, sessionId, info, readDirectory) {
+  const target = await inheritedWorktree(context, info.parentID, readDirectory);
   if (!target) return null;
+  // The host moved this child out of that target before: the inherited target
+  // must not put the child back into it.
+  if (targetAbandoned(sessionId, target)) return null;
   if (info.directory === target) {
-    // The host reports the child already inside the parent's directory:
-    // placement settled, nothing to move.
-    markPlaced(sessionId);
-    markConfirmed(sessionId);
-    return null;
+    // The cached record suggests the child already sits in the parent's
+    // directory. That is a placement decision, so the host confirms it with a
+    // fresh read before the child is treated as placed.
+    const located = await readDirectory(context, sessionId);
+    if (located === target) {
+      // The child already occupies the parent's directory. The target and its
+      // origin are recorded anyway, so a later external relocation of the child
+      // can be reconciled, and the child is placed without being moved.
+      rememberWorktree(sessionId, target, located);
+      markPlaced(sessionId);
+      markConfirmed(sessionId);
+      return null;
+    }
   }
   rememberWorktree(sessionId, target);
   await moveSessionToWorktree(context, sessionId, target, info.directory);
