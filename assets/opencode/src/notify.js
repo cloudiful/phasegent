@@ -1,13 +1,14 @@
 // Best-effort question-awaiting-user notification (issue #1026 P1/P2).
 //
-// The adapter subscribes to the host event stream and, for each *new* local
-// pending question form, invokes the existing `phasegent notify send --stdin`
-// CLI once with a structured, bounded JSON document on stdin. It never answers
-// a question, never blocks or fails the question tool, and never inspects
-// credentials or local databases: delivery is one bounded, argv-only child
-// process that reuses the operator's configured channel and inherits the
-// environment unchanged (including any role/session markers the ambient caller
-// already carries).
+// The adapter subscribes to the host event stream and tracks each *new* local
+// pending question form. A form still unanswered after five minutes invokes the
+// existing `phasegent notify send --stdin` CLI once with a structured, bounded
+// JSON document on stdin; reply, cancellation, session deletion, disposal, and
+// stream loss cancel the pending reminder. It never answers a question, never
+// blocks or fails the question tool, and never inspects credentials or local
+// databases: delivery is one bounded, argv-only child process that reuses the
+// operator's configured channel and inherits the environment unchanged
+// (including any role/session markers the ambient caller already carries).
 //
 // The official v2 subscription is an AsyncIterable (`context.event.subscribe`),
 // the payload lives in `event.data.form`, and a question is a `form.created`
@@ -20,7 +21,7 @@ import { locationDirectory, warn } from "./runtime.js";
 
 export const QUESTION_NOTIFY_TITLE = "OpenCode question pending";
 export const QUESTION_NOTIFY_TIMEOUT_MS = 10000;
-export const QUESTION_DEDUP_LIMIT = 256;
+export const QUESTION_NOTIFY_DELAY_MS = 300000;
 
 // Keep the plugin's proactive bounds equivalent to the CLI normalization so a
 // normal oversized form produces a bounded readable notification instead of a
@@ -44,14 +45,6 @@ const ARGV = ["phasegent", "notify", "send", "--stdin"];
 
 function defaultSpawn(argv, options) {
   return Bun.spawn(argv, options);
-}
-
-function rememberForm(seen, id) {
-  seen.add(id);
-  while (seen.size > QUESTION_DEDUP_LIMIT) {
-    const oldest = seen.values().next().value;
-    seen.delete(oldest);
-  }
 }
 
 function isQuestionForm(form) {
@@ -219,10 +212,20 @@ export function buildQuestionPayload(context, form, session) {
 // `createQuestionNotifier` starts one abortable background subscriber and returns
 // a disposer. `dependencies.spawn`/`dependencies.warn` are injectable so the
 // delivery path is deterministic in tests; production uses `Bun.spawn` and the
-// console warning channel.
+// console warning channel. `dependencies.schedule`/`cancel`/`now` are the
+// injectable timer seam, defaulting to `setTimeout`/`clearTimeout`/`Date.now`.
 export function createQuestionNotifier(context, dependencies = {}) {
   const spawn = typeof dependencies.spawn === "function" ? dependencies.spawn : defaultSpawn;
   const report = typeof dependencies.warn === "function" ? dependencies.warn : warn;
+  const schedule =
+    typeof dependencies.schedule === "function"
+      ? dependencies.schedule
+      : (callback, delay) => setTimeout(callback, delay);
+  const cancel =
+    typeof dependencies.cancel === "function"
+      ? dependencies.cancel
+      : (handle) => clearTimeout(handle);
+  const now = typeof dependencies.now === "function" ? dependencies.now : Date.now;
   const subscribe = context && context.event && context.event.subscribe;
   if (typeof subscribe !== "function") {
     report("phasegent: host exposes no event subscription; question notifications are disabled");
@@ -230,10 +233,12 @@ export function createQuestionNotifier(context, dependencies = {}) {
   }
 
   const controller = new AbortController();
-  const seen = new Set();
+  const pending = new Map();
+  const settled = new Set();
+  const deletedSessions = new Set();
   const children = new Set();
-  const inFlight = new Set();
   let disposed = false;
+  let streamEnded = false;
 
   const killChild = (child) => {
     if (child && typeof child.kill === "function") {
@@ -271,25 +276,77 @@ export function createQuestionNotifier(context, dependencies = {}) {
     if (typeof sink.end === "function") sink.end();
   };
 
-  const deliver = (form, session) => {
+  const clearTimer = (entry) => {
+    if (entry && entry.timer !== null) {
+      cancel(entry.timer);
+      entry.timer = null;
+    }
+  };
+
+  // A resolved identifier stays a compact lifetime tombstone even when its
+  // create event was not tracked yet, so a late or replayed create can never
+  // rearm an answered or delivered form. The tombstone holds no form payload and
+  // is released with the notifier instance.
+  const settleForm = (id) => {
+    if (typeof id !== "string" || id.length === 0) return;
+    settled.add(id);
+    const entry = pending.get(id);
+    if (!entry) return;
+    entry.settled = true;
+    clearTimer(entry);
+    pending.delete(id);
+  };
+
+  // A deleted session is remembered independently of its current pending forms.
+  // It rejects later creates for that session and releases matching timers and
+  // payload entries at once.
+  const settleSession = (sessionID) => {
+    if (typeof sessionID !== "string" || sessionID.length === 0) return;
+    deletedSessions.add(sessionID);
+    for (const [id, entry] of pending) {
+      if (entry.sessionID === sessionID) settleForm(id);
+    }
+  };
+
+  const clearPending = () => {
+    for (const entry of pending.values()) {
+      entry.settled = true;
+      clearTimer(entry);
+    }
+    pending.clear();
+  };
+
+  const isActive = (entry) =>
+    !disposed &&
+    !streamEnded &&
+    !entry.settled &&
+    pending.get(entry.id) === entry;
+
+  const deliver = (entry) => {
     // Each delivery runs in an isolated task and is never awaited by the event
     // loop, so a slow or hung CLI (or session-title lookup) cannot stall event
-    // handling or the question.
+    // handling or another question's deadline.
     const task = (async () => {
-      if (disposed) return;
+      if (!isActive(entry) || entry.delivering) return;
+      entry.delivering = true;
       let child = null;
       try {
-        // Reuse the session already fetched during location validation; only
-        // fetch for the title here when event.location carried the directory.
-        const enriched = session || (await readFormSession(context, form.sessionID));
-        if (disposed) return;
-        const document = buildQuestionPayload(context, form, enriched);
+        // Reuse the session already fetched during location validation. A form
+        // whose directory arrived with the event fetches only its title here.
+        const enriched =
+          entry.session || (await readFormSession(context, entry.form.sessionID));
+        if (!isActive(entry)) return;
+        const document = buildQuestionPayload(context, entry.form, enriched);
         if (document.question.questions.length === 0) {
           // Nothing but omissions: a question notification without a single
           // real question would have to invent one, so it is not sent.
           report("phasegent: question notification skipped: no question text");
+          settleForm(entry.id);
           return;
         }
+        // Resolution events are handled synchronously, so this is the last
+        // eligibility check before the CLI is spawned.
+        if (!isActive(entry)) return;
         const payload = JSON.stringify(document);
         const cwd = locationDirectory(context);
         child = spawn(ARGV, {
@@ -301,7 +358,8 @@ export function createQuestionNotifier(context, dependencies = {}) {
           timeout: QUESTION_NOTIFY_TIMEOUT_MS,
         });
         if (child && typeof child === "object") children.add(child);
-        if (disposed) {
+        settleForm(entry.id);
+        if (disposed || streamEnded) {
           killChild(child);
           return;
         }
@@ -325,9 +383,57 @@ export function createQuestionNotifier(context, dependencies = {}) {
         terminateChild(child);
       } finally {
         if (child) children.delete(child);
+        if (pending.get(entry.id) === entry) settleForm(entry.id);
       }
     })();
     task.catch(() => {});
+  };
+
+  const onTimer = (entry) => {
+    entry.timer = null;
+    if (!isActive(entry)) return;
+    const remaining = entry.deadline - now();
+    if (remaining > 0) {
+      entry.timer = schedule(() => onTimer(entry), remaining);
+      return;
+    }
+    // A missing-location lookup may still be running. Waiting for this entry's
+    // own lookup never delays another question, and the original deadline is
+    // kept because no new deadline is recorded.
+    const task = (async () => {
+      if (entry.ready) await entry.ready;
+      if (!isActive(entry) || entry.local !== true) return;
+      deliver(entry);
+    })();
+    task.catch(() => {
+      if (!disposed) report("phasegent: question notification handling failed");
+    });
+  };
+
+  const track = (event, form) => {
+    if (pending.has(form.id) || settled.has(form.id)) return null;
+    const eventLocation =
+      event.location && typeof event.location === "object" ? event.location : null;
+    const hasEventDirectory = Boolean(
+      eventLocation && typeof eventLocation.directory === "string",
+    );
+    const entry = {
+      id: form.id,
+      sessionID: typeof form.sessionID === "string" ? form.sessionID : "",
+      form,
+      event,
+      session: null,
+      local: hasEventDirectory ? true : null,
+      settled: false,
+      delivering: false,
+      deadline: now() + QUESTION_NOTIFY_DELAY_MS,
+      timer: null,
+      ready: null,
+    };
+    pending.set(form.id, entry);
+    entry.timer = schedule(() => onTimer(entry), QUESTION_NOTIFY_DELAY_MS);
+    if (!hasEventDirectory) resolveLocation(entry);
+    return entry;
   };
 
   // The form belongs to this plugin instance only when its directory equals the
@@ -364,51 +470,54 @@ export function createQuestionNotifier(context, dependencies = {}) {
     return true;
   };
 
-  // A form whose event carries no location is resolved in its own task, so one
-  // slow session lookup never delays another question. The form id is reserved
-  // while the lookup runs, so a duplicate event cannot start a second delivery.
-  const resolveMissingLocation = (event, form) => {
-    if (inFlight.has(form.id)) return;
-    inFlight.add(form.id);
-    const task = (async () => {
-      const session = await readFormSession(context, form.sessionID);
-      if (disposed) return;
-      if (!formBelongsToInstance(event, session)) return;
-      if (seen.has(form.id)) return;
-      rememberForm(seen, form.id);
-      deliver(form, session);
-    })();
-    task.then(
-      () => {
-        inFlight.delete(form.id);
-      },
-      () => {
-        inFlight.delete(form.id);
-        if (!disposed) report("phasegent: question notification handling failed");
-      },
-    );
+  // Resolve a missing event location in the entry's own task. The pending entry
+  // is already armed, so a duplicate created event neither resets the deadline
+  // nor starts a second lookup.
+  const resolveLocation = (entry) => {
+    entry.ready = (async () => {
+      const session = await readFormSession(context, entry.form.sessionID);
+      if (!isActive(entry)) return null;
+      if (!formBelongsToInstance(entry.event, session)) {
+        settleForm(entry.id);
+        return null;
+      }
+      entry.session = session;
+      entry.local = true;
+      return session;
+    })().catch(() => {
+      if (isActive(entry)) {
+        settleForm(entry.id);
+        report("phasegent: question notification handling failed");
+      }
+      return null;
+    });
   };
 
   const handleEvent = (event) => {
-    if (disposed) return;
-    if (!event || event.type !== "form.created") return;
+    if (disposed || streamEnded) return;
+    if (!event || typeof event !== "object") return;
+    if (event.type === "form.replied" || event.type === "form.cancelled") {
+      const data = event.data && typeof event.data === "object" ? event.data : null;
+      settleForm(data && data.id);
+      return;
+    }
+    if (event.type === "session.deleted") {
+      const data = event.data && typeof event.data === "object" ? event.data : null;
+      settleSession(data && data.sessionID);
+      return;
+    }
+    if (event.type !== "form.created") return;
     const form = event.data && event.data.form;
     if (!isQuestionForm(form)) return;
+    if (pending.has(form.id) || settled.has(form.id)) return;
+    if (deletedSessions.has(form.sessionID)) return;
     const eventLocation =
       event.location && typeof event.location === "object" ? event.location : null;
     const hasEventDirectory = Boolean(
       eventLocation && typeof eventLocation.directory === "string",
     );
-    if (!hasEventDirectory) {
-      // The location is unknown, so it is resolved independently of the stream.
-      if (seen.has(form.id)) return;
-      resolveMissingLocation(event, form);
-      return;
-    }
-    if (!formBelongsToInstance(event, null)) return;
-    if (seen.has(form.id)) return;
-    rememberForm(seen, form.id);
-    deliver(form, null);
+    if (hasEventDirectory && !formBelongsToInstance(event, null)) return;
+    track(event, form);
   };
 
   const consume = (async () => {
@@ -423,6 +532,9 @@ export function createQuestionNotifier(context, dependencies = {}) {
       }
     } catch (_) {
       if (!disposed) report("phasegent: question notification subscription failed");
+    } finally {
+      streamEnded = true;
+      clearPending();
     }
   })();
   consume.catch(() => {});
@@ -430,11 +542,13 @@ export function createQuestionNotifier(context, dependencies = {}) {
   return () => {
     if (disposed) return;
     disposed = true;
+    clearPending();
+    settled.clear();
+    deletedSessions.clear();
     try {
       controller.abort();
     } catch (_) {}
     for (const child of children) killChild(child);
     children.clear();
-    inFlight.clear();
   };
 }

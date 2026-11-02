@@ -71,8 +71,10 @@ relay it to your parent rather than escalating directly.
   acquire`/`release`/`prune`, `issue bind`, or `issue create` — they are refused
   for a child session.
 - Publish one audit note and return the note-pointer JSON. Your own `notify send`
-  calls stay explicit; the adapter separately notifies on new pending question
-  forms, so you gain no autonomous sending.
+  calls stay explicit; the adapter separately notifies on a local question form
+  still unanswered after five minutes from observed stream events, with no
+  form-state recheck and no reminder recovery after reload or stream loss, so you
+  gain no autonomous sending.
 - Prefer an existing helper, type, or module over new logic, and test the
   project's own behavior rather than framework internals.
 - Consult `phasegent --help` only for the command you are about to run; the
