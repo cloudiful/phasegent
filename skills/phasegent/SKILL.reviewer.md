@@ -58,7 +58,9 @@ scope, and help lookup.
   human-operator only.
 - Never commit, push, tag, or mutate refs.
 - Your own `notify send` calls stay explicit; the adapter separately notifies on
-  new pending question forms, so you gain no autonomous sending.
+  a local question form still unanswered after five minutes from observed stream
+  events, with no form-state recheck and no reminder recovery after reload or
+  stream loss, so you gain no autonomous sending.
 - Consult `phasegent --help` only for the command you are about to run; the
   shared skill owns the syntax rule and the rest of the protocol.
 

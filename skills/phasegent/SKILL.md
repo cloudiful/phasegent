@@ -373,8 +373,12 @@ phase is an explicit transition back to `In Progress`.
   when a task requires the complete collection. The OpenCode lease readers do
   this traversal and reject incomplete results.
 - `notify send` runs on explicit invocation; the OpenCode adapter automatically
-  invokes it for each new local pending question form, using the current
-  notification settings and subject to ambient caller policy.
+  invokes it once for a local pending question form still unanswered after five
+  minutes, using the current notification settings and subject to ambient caller
+  policy. Reply, cancellation, session deletion, disposal, or event-stream loss
+  cancels a pending reminder. Eligibility relies only on observed stream events:
+  no authoritative form-state recheck is available, and in-memory timers are
+  discarded on reload or stream loss without recovery.
 - `issue upload-attachment` rejects uniformly as not-supported, before any file,
   network, or credential access.
 

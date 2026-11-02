@@ -996,3 +996,27 @@ fn notify_send_help_documents_the_stdin_question_document() {
     assert!(group.status.success(), "{}", stderr_text(&group));
     assert!(stdout_text(&group).contains("--stdin"));
 }
+
+/// P1 (#1170): both notify pages distinguish the adapter's five-minute
+/// unanswered reminder from an explicit, immediate `notify send`.
+#[test]
+fn notify_help_documents_the_five_minute_adapter_delay() {
+    for args in [vec!["--help", "notify"], vec!["--help", "notify", "send"]] {
+        let output = run_help_with_role(&args, Some("executor"));
+        assert!(output.status.success(), "{}", stderr_text(&output));
+        let stdout = stdout_text(&output);
+        for needle in [
+            "five minutes",
+            "still unanswered",
+            "explicit invocation",
+            "observed stream events",
+            "form-state recheck",
+            "without recovery",
+        ] {
+            assert!(
+                stdout.contains(needle),
+                "notify help {args:?} missing {needle:?}:\n{stdout}",
+            );
+        }
+    }
+}
