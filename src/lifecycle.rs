@@ -24,6 +24,8 @@ pub(crate) use cleanup::{
 };
 #[path = "lifecycle/issue_switch.rs"]
 mod issue_switch;
+#[path = "lifecycle/restore.rs"]
+pub(crate) mod restore;
 // `CreateSwitchOutcome` is named by phase3 tests and P5 flows; the
 // production create arm only calls `.warning()` on the value.
 #[allow(unused_imports)]

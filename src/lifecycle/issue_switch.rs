@@ -270,7 +270,36 @@ pub fn create_link_and_switch(
             reason,
         };
     }
-    match git.run(&["checkout", branch]) {
+    // The pending baseline must be durable before the checkout runs: without
+    // it a later close could not restore this checkout, so a failed capture
+    // leaves the verified baseline branch untouched instead of switching.
+    let baseline_scope = match super::restore::prepare_pending(&super::restore::CaptureParams {
+        storage: &storage,
+        worktree: wt,
+        repo_path: params.repo_path,
+        repo_key: &repo_key,
+        provider: params.scope_provider,
+        project,
+        issue_number: issue_id,
+        issue_branch: branch,
+        baseline_branch: &current,
+        default_branch: default.as_deref(),
+    }) {
+        super::restore::CaptureOutcome::Pending { scope } => Some(scope),
+        super::restore::CaptureOutcome::Skipped { .. } => None,
+        super::restore::CaptureOutcome::Failed { reason } => {
+            return CreateSwitchOutcome::LinkedOnly {
+                branch: branch.to_owned(),
+                issue_id,
+                reason: format!(
+                    "linked '{branch}' but could not record the pre-switch baseline ({reason}); \
+                     leaving '{current}' untouched — run `git switch {branch}` by hand once \
+                     verified"
+                ),
+            };
+        }
+    };
+    let outcome = match git.run(&["checkout", branch]) {
         Ok(result) if result.status == 0 => CreateSwitchOutcome::Switched {
             branch: branch.to_owned(),
             issue_id,
@@ -285,5 +314,11 @@ pub fn create_link_and_switch(
         Err(error) => CreateSwitchOutcome::Warning {
             reason: format!("linked '{branch}' but checkout failed: {}", error.message),
         },
+    };
+    if let Some(scope) = baseline_scope {
+        // A failed finalize leaves the row pending, which close-time recovery
+        // treats conservatively; it never changes the already-decided outcome.
+        let _ = super::restore::finalize_after_checkout(wt, &storage, &scope);
     }
+    outcome
 }

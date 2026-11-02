@@ -193,6 +193,12 @@ confirms that session no longer runs there: `issue close` returns the closing
 session to the repository's main checkout through the OpenCode API
 (`opencode api session.move`) before removing anything, keeps the directory when
 that cannot be confirmed, and `issue sync` removes it once the session has moved.
+After that cleanup, a successful close also restores the captured pre-issue
+branch in the verified main checkout when that checkout is clean and safe, then
+fast-forwards only that branch's own configured upstream. Every unsafe, missing,
+or conflicting state keeps the checkout untouched with a warning; repeat
+`issue close` retries an incomplete upstream update and is a no-op after success
+or when the branch has no configured upstream.
 `phasegent worktree prune` is global and removal-by-default: without `--repo`
 it cleans every repository identity the local lease store records, and
 `--dryrun` (alias `--dry-run`) is the read-only preview. A directory is removed
