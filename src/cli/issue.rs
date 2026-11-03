@@ -579,6 +579,31 @@ pub(crate) fn execute_issue_with_caller(
                     let release_session = session.as_ref().map(|context| context.id.as_str());
                     let repo_path =
                         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    // Resolve the verified main checkout before cleanup: a
+                    // dedicated closing worktree may be removed below, and
+                    // restoration must still have a usable main path.
+                    let restore_target = crate::lifecycle::restore::resolve_close_target(
+                        &crate::worktree::ProcessWorktreeRunner::new(),
+                        &repo_path,
+                    );
+                    let restore_scope =
+                        crate::providers::index_store::provider_scope(&provider).ok();
+                    // Resolve any unavailable-preparation warning while the
+                    // caller's directory still exists; cleanup may remove it.
+                    let restore_unavailable_warning = match &restore_target {
+                        Ok(_) => None,
+                        Err(reason) => restore_scope.as_ref().and_then(|scope| {
+                            let storage = crate::infra::storage::Storage::open().ok()?;
+                            crate::lifecycle::restore::close_restore_unavailable_warning(
+                                &storage,
+                                &repo_path,
+                                Some(&scope.source),
+                                Some(&scope.project),
+                                number,
+                                reason,
+                            )
+                        }),
+                    };
                     super::report_local_warnings(
                         "issue close",
                         crate::lifecycle::release_closed_issue_leases(
@@ -618,6 +643,50 @@ pub(crate) fn execute_issue_with_caller(
                     .warnings()
                     {
                         super::report_local_warnings("issue close", Some(warning));
+                    }
+                    // Restoration is best-effort after close and cleanup; its
+                    // warnings never change the successful close result.
+                    if let Some(warning) = &restore_unavailable_warning {
+                        super::report_local_warnings("issue close", Some(warning.clone()));
+                    }
+                    if let Ok(target) = &restore_target {
+                        match crate::infra::storage::Storage::open() {
+                            Ok(storage) => {
+                                let git = crate::git_runner::ProcessGitRunner::in_directory(
+                                    &target.main_checkout,
+                                );
+                                let api = crate::worktree::opencode::ProcessOpenCodeApi::new();
+                                let runner = crate::worktree::ProcessWorktreeRunner::new();
+                                for warning in crate::lifecycle::restore::restore_on_close(
+                                    &crate::lifecycle::restore::CloseRestoreParams {
+                                        storage: &storage,
+                                        git: &git,
+                                        worktree: &runner,
+                                        api: &api,
+                                        target,
+                                        provider: restore_scope
+                                            .as_ref()
+                                            .map(|scope| scope.source.as_str()),
+                                        project: restore_scope
+                                            .as_ref()
+                                            .map(|scope| scope.project.as_str()),
+                                        issue_number: number,
+                                        session: release_session,
+                                    },
+                                )
+                                .warnings()
+                                {
+                                    super::report_local_warnings("issue close", Some(warning));
+                                }
+                            }
+                            Err(error) => super::report_local_warnings(
+                                "issue close",
+                                Some(format!(
+                                    "issue {number} closed; checkout restoration skipped because \
+                                     the baseline store could not be opened: {error}"
+                                )),
+                            ),
+                        }
                     }
                     // Phase 3 relation auto: fire the helper after a
                     // successful close. The shared issue DTO does not

@@ -218,8 +218,12 @@ pending-question request on the human's behalf or fabricate a human response.
   authorization, close the source with an explicit `not committed / not
   published` result and never claim published delivery before Git success; later
   authorized delivery appends to the same original issue without a new issue or
-  reopen. A successful close flips this issue's active leases to `retained` and
-  runs the guarded worktree cleanup.
+  reopen. A successful close flips this issue's active leases to `retained`,
+  runs the guarded worktree cleanup, and then best-effort restores the captured
+  pre-issue branch in the verified main checkout plus its own configured
+  upstream when every safety gate holds. Restoration skips or warns without
+  changing the close result; repeat close retries only an incomplete upstream
+  update and is a no-op after completion or a terminal no-upstream result.
 
 ## Git delivery
 

@@ -43,6 +43,17 @@ Four rules keep this narrow:
 - **The close's stdout and exit code never change.** Cleanup stays best-effort
   and reports through stderr warnings.
 
+## Branch restoration and session occupancy
+
+Close-time restoration of the pre-issue branch changes the main checkout, not a
+session location. It therefore reuses the same complete host occupancy evidence
+as cleanup: a `session.list` walk must finish without a failed page, repeated
+cursor or exhausted page budget, and only the closing OpenCode session or no
+session may be hosted in the main checkout. A sessionless close, a plain CLI
+session id, or an unavailable host answer skips the restoration with a bounded
+warning; idle peer sessions also block it. Restoration never moves a session and
+does not change the cleanup move rules.
+
 ## Occupancy evidence must be complete
 
 Before removing an OpenCode-associated directory, the CLI enumerates the

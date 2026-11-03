@@ -495,7 +495,18 @@ Boundaries:
   API. `issue sync` runs the same guards for issues the provider already closed
   but never moves a session: it removes a deferred directory once the host
   reports the session elsewhere. Branches and lease rows are never deleted, and
-  cleanup never changes the close exit code or its stdout.
+  cleanup never changes the close exit code or its stdout. After that cleanup,
+  close may restore the captured pre-issue branch in the verified main checkout
+  and fast-forward only that branch's configured upstream when the checkout is
+  clean, no active lease or other hosted session occupies it, and the closing
+  session identity is verifiable. Missing/unsafe/conflicting evidence keeps the
+  checkout untouched with a warning; a deleted captured branch is never
+  recreated from a remote-tracking namesake, and an unresolvable main checkout
+  warns only when recorded baseline evidence exists. The restoration never
+  forces, stashes, resets, cleans, deletes a branch, or creates a merge commit.
+  Repeating close
+  retries only an incomplete upstream update and is a no-op after completion or
+  a terminal no-upstream result; sync and prune never restore branches.
 - The host outranks the adapter's registry: the plugin places a session once per
   session and then reconciles a settled placement against a fresh host read
   before reusing a cached target, so an API return is never reversed and a

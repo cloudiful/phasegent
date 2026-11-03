@@ -170,7 +170,11 @@ phasegent worktree probe --issue 123
 由 OpenCode 会话（`ses_…`）租用的目录会被保护，直到 host 确认该会话已不在其中：
 `issue close` 会先通过 OpenCode API（`opencode api session.move`）把结束会话送回
 仓库主 checkout，再移除目录；无法确认时保留目录，待 `issue sync` 确认会话已转移后
-再移除。`phasegent worktree prune` 是全局、默认执行移除的清理：不传 `--repo` 时清理本地
+再移除。清理完成后，成功的 close 还会在已核实的主 checkout 干净且安全时恢复
+issue 创建前的分支，并只对配置给该分支的上游执行 fast-forward。任何缺失、不安全或
+冲突状态都会保留 checkout 原状并给出 warning；重复执行 `issue close` 会重试未完成的
+上游更新，成功更新后或分支没有配置上游时则为 no-op。
+`phasegent worktree prune` 是全局、默认执行移除的清理：不传 `--repo` 时清理本地
 lease 存储记录的所有 repository identity，`--dryrun`（别名 `--dry-run`）为只读
 预览。只有当目录关联的每个 issue 都在配置的 provider 上确认已关闭、没有 `active`
 lease 引用该目录、且工作树 Git 干净时才会移除——没有等待期，`--stale-days` 只影响
