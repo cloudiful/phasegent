@@ -219,7 +219,9 @@ pending-question request on the human's behalf or fabricate a human response.
   published` result and never claim published delivery before Git success; later
   authorized delivery appends to the same original issue without a new issue or
   reopen. A successful close flips this issue's active leases to `retained`,
-  runs the guarded worktree cleanup, and then best-effort restores the captured
+  runs the guarded worktree cleanup — returning the idle members of each
+  candidate's lease family to the verified main checkout before anything is
+  removed — and then best-effort restores the captured
   pre-issue branch in the verified main checkout plus its own configured
   upstream when every safety gate holds. Restoration skips or warns without
   changing the close result; repeat close retries only an incomplete upstream

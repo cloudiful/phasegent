@@ -1,22 +1,49 @@
 //! Coverage for the shared candidate guard ([`super::candidate`]) that
 //! `issue close`, `issue sync`, and `worktree prune` all drive.
 //!
-//! These drive [`super::candidate::protected_reason`] directly against a real
+//! These drive the shared local and host guards directly against a real
 //! temp repository and a scripted OpenCode host, so they pin the two things
 //! the shared extraction must preserve: every local guard fires for every
 //! caller, and [`CleanupMode::Sync`] never moves a session (it only ever keeps
 //! a directory it cannot prove free).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::CleanupMode;
-use super::candidate::protected_reason;
+use super::candidate::{local_protected_reason, occupancy_reason};
 use super::target::TargetResolver;
+use crate::worktree::opencode::OpenCodeApi;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 use crate::worktree::{
     LEASE_STATUS_ACTIVE, LEASE_STATUS_RETAINED, LeaseRow, ProcessWorktreeRunner, WorktreeRunner,
     repo_identity, worktree_add,
 };
+
+/// The complete local + host protection check for one candidate row, the
+/// composition every caller performs.
+#[allow(clippy::too_many_arguments)]
+fn protected_reason(
+    runner: &dyn WorktreeRunner,
+    api: &dyn OpenCodeApi,
+    mode: CleanupMode,
+    target: &TargetResolver<'_>,
+    identity: &str,
+    rows: &[LeaseRow],
+    closing: Option<&str>,
+    row: &LeaseRow,
+) -> Option<String> {
+    local_protected_reason(runner, identity, rows, closing, row).or_else(|| {
+        let directory = Path::new(&row.worktree_path);
+        occupancy_reason(
+            api,
+            mode,
+            target,
+            directory,
+            &super::associated_sessions(rows, directory),
+            closing,
+        )
+    })
+}
 
 fn scratch(label: &str) -> PathBuf {
     let dir = crate::test_scratch::root().join(format!(

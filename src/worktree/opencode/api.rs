@@ -6,7 +6,9 @@
 //! * [`OpenCodeApi::session`] — the authoritative directory the host
 //!   reports for one session. A missing session is *uncertainty*, never
 //!   evidence that a directory is free: the selected instance may simply
-//!   not own it.
+//!   not own it. The same answer carries the session's lineage edge
+//!   (`parentID`), which is what proves that a descendant belongs to the
+//!   same lease family as its root.
 //! * [`OpenCodeApi::list`] — one page of sessions for a directory. The
 //!   caller must follow `next_cursor` to exhaustion before treating the
 //!   result as occupancy evidence.
@@ -34,11 +36,15 @@ pub(crate) const MAX_PAGE_SIZE: usize = 200;
 
 /// One session reduced to the fields the occupancy check compares.
 /// `id` identifies the lease association, `directory` is the host's
-/// authoritative answer about where the session actually is.
+/// authoritative answer about where the session actually is, and
+/// `parent_id` is the lineage edge the host reports for the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocatedSession {
     pub(crate) id: String,
     pub(crate) directory: String,
+    /// The session this one descends from, as the host reports it. `None`
+    /// means the session is a root: it has no parent session.
+    pub(crate) parent_id: Option<String>,
 }
 
 /// One `session.list` page plus the opaque cursor of the next page.

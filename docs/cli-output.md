@@ -83,7 +83,11 @@ elapsed 0.001s
 
 Text is width-aware and indented for a terminal, and long values wrap instead
 of being truncated silently. A kept or failed prune directory names its reason,
-so the summary stays actionable.
+so the summary stays actionable. The preview reads each candidate's occupancy
+and lineage read-only, so its kept reasons are the blockers the removal would
+meet, and an eligible directory names how many idle sessions the removal would
+return to the main checkout first. The existing action message carries that
+summary; the JSON fields are unchanged.
 
 ## JSON
 

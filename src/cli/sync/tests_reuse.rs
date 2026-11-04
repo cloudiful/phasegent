@@ -24,6 +24,7 @@ impl OpenCodeApi for Host {
         }
         Ok(LocatedSession {
             id: id.to_owned(),
+            parent_id: None,
             directory: self.directory.borrow().clone(),
         })
     }
@@ -77,6 +78,7 @@ fn listing_is_reused_across_directories_when_cached_evidence_keeps() {
     *host.directory.borrow_mut() = "/main".to_owned();
     *host.occupant.borrow_mut() = Some(LocatedSession {
         id: "ses_foreign".to_owned(),
+        parent_id: None,
         directory: "/two".to_owned(),
     });
     let cache = SyncHostCache::new(&host);
@@ -95,6 +97,7 @@ fn cached_free_with_new_foreign_occupant_keeps() {
     assert_eq!(check(&guard, "/one"), None);
     *host.occupant.borrow_mut() = Some(LocatedSession {
         id: "ses_foreign".to_owned(),
+        parent_id: None,
         directory: "/two".to_owned(),
     });
     assert!(check(&guard, "/two").unwrap().contains("ses_foreign"));

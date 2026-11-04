@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::infra::storage::Storage;
+use crate::lifecycle::cleanup::closure::DenyOtherIssues;
 use crate::lifecycle::cleanup::{CleanupContext, cleanup_closed_issue_worktrees_in_context};
 use crate::lifecycle::{AutoCleanupOutcome, CleanupMode};
 use crate::providers::IssueSummary;
@@ -237,6 +238,7 @@ fn clean_issue(
             &scope.repo_path,
             issue,
             None,
+            &DenyOtherIssues,
         ),
         Err(message) => AutoCleanupOutcome::Warning {
             reason: format!(
@@ -322,6 +324,7 @@ fn report_verdict(
         repo_path,
         issue,
         Some(row.session.as_str()),
+        &DenyOtherIssues,
     );
     if dry_run.removed(&row.worktree_path) {
         return ("would_clean".to_owned(), None);

@@ -3398,15 +3398,22 @@ Boundaries:
   *currently running* in the directory blocks removal, checked read-only, so an
   inactive historical session record that still points at the directory never
   keeps it. The read-only scan never enumerates historical sessions and never
-  moves a session; the removal stage does: before it deletes a directory it
-  reads that directory's fresh occupancy and returns every associated idle
-  \`ses_\` session to the repository's verified main checkout, confirming each
+  moves a session; the preview reads each candidate's fresh occupancy and the
+  lineage the host reports, so it reports the same blockers and the same move
+  eligibility the removal would meet, without moving, deleting, or writing
+  anything. The removal stage does move sessions: before it deletes a directory
+  it reads that directory's fresh occupancy and returns every idle member of
+  its lease family — the associated \`ses_\` sessions and the descendants whose
+  bounded \`parentID\` chain reaches one of them — to the repository's verified
+  main checkout, confirming each
   move with a fresh authoritative read. Those checks describe the one
   connected service at that moment, not a guarantee about session changes
-  after them. A session no lease of this repository associates keeps the
+  after them. A session no lease of this repository associates, and no lineage
+  reaches one of them, keeps the
   directory and is never moved, and an unavailable or incomplete listing, an
   unresolvable associated session, an answer that names another session or
-  reports an unusable location, a rejected, queued, or unconfirmed move, an
+  reports an unusable location, an unreadable, mismatched, or cyclic lineage,
+  a rejected, queued, or unconfirmed move, an
   unverifiable main checkout, and a session that started running in the
   meantime all keep the directory. Coverage is that one connected service, not
   a whole-machine multi-service inventory, and the fresh checks cannot promise
@@ -3431,16 +3438,21 @@ Boundaries:
   then removes a worktree directory only when it is clean, no active lease of
   another session points at it, it is not the repository's main checkout, and —
   for a directory leased by an OpenCode session (\`ses_…\`) — the host confirms no
-  session still runs there. Before removing such a directory the close asks the
-  OpenCode API (\`opencode api session.move\`) to return the closing session to the
-  repository's verified main checkout, then confirms the move with a fresh
+  session still runs there. Before removing such a directory the close reads its
+  occupancy and the lineage the host reports, and asks the
+  OpenCode API (\`opencode api session.move\`) to return the idle members of its
+  lease family — the sessions its leases name and the descendants that descend
+  from them — to the
+  repository's verified main checkout, then confirms every move with a fresh
   authoritative read; an unreachable API, an incomplete listing, an unowned
-  session, another session hosted there, or a move that has not taken effect yet
-  keeps the directory with a warning. Only the closing session is ever moved,
-  the close never waits for the move, and a pure CLI worktree never reaches the
+  session, a session of another family, a running family member other than the
+  closing session the close is finishing, or a move that has not taken effect yet
+  keeps the directory with a warning. The other issues the directory is
+  associated with must be confirmed closed on the configured provider first. The
+  close never waits for the moves, and a pure CLI worktree never reaches the
   API. \`issue sync\` runs the same guards for issues the provider already closed
   but never moves a session: it removes a deferred directory once the host
-  reports the session elsewhere. Branches and lease rows are never deleted, and
+  reports the sessions elsewhere. Branches and lease rows are never deleted, and
   cleanup never changes the close exit code or its stdout. After that cleanup,
   close may restore the captured pre-issue branch in the verified main checkout
   and fast-forward only that branch's configured upstream when the checkout is
@@ -3801,7 +3813,9 @@ pending-question request on the human's behalf or fabricate a human response.
   published\` result and never claim published delivery before Git success; later
   authorized delivery appends to the same original issue without a new issue or
   reopen. A successful close flips this issue's active leases to \`retained\`,
-  runs the guarded worktree cleanup, and then best-effort restores the captured
+  runs the guarded worktree cleanup — returning the idle members of each
+  candidate's lease family to the verified main checkout before anything is
+  removed — and then best-effort restores the captured
   pre-issue branch in the verified main checkout plus its own configured
   upstream when every safety gate holds. Restoration skips or warns without
   changing the close result; repeat close retries only an incomplete upstream

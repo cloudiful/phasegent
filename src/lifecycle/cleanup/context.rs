@@ -6,6 +6,10 @@
 //! pre-existing shape of the helper, kept intact: a remote close has
 //! already succeeded, so an unreadable identity or lease store degrades to
 //! one bounded warning rather than an error.
+//!
+//! The lease read is the uncapped repository read: a directory whose only
+//! active reference or open-issue link sits beyond a row ceiling must still
+//! protect that directory, so incomplete evidence is never a permission.
 
 use std::path::Path;
 
@@ -30,14 +34,21 @@ impl CleanupContext {
     /// the database, and the read is always fresh: the cleanup guards must
     /// see the rows as they are after any release, not a scan snapshot.
     pub(crate) fn load(storage: &Storage, identity: &str) -> Result<Self, String> {
-        match crate::worktree::leases::list_all_for_repo(storage, identity) {
+        match load_repository(storage, identity) {
             Ok(rows) => Ok(Self {
                 identity: identity.to_owned(),
                 rows,
             }),
-            Err(error) => Err(error.message),
+            Err(error) => Err(error),
         }
     }
+}
+
+/// Every lease row recorded against `identity`, uncapped. The lifecycle's
+/// own readers call this through the pass's already-open store or a fresh
+/// one; an error here is a keep, never a permission.
+pub(crate) fn load_repository(storage: &Storage, identity: &str) -> Result<Vec<LeaseRow>, String> {
+    crate::worktree::leases::list_all_for_repo(storage, identity).map_err(|error| error.message)
 }
 
 /// Resolve the pass's context, or the bounded reason it could not be
@@ -80,12 +91,12 @@ pub(super) fn resolve(
             &error,
         ));
     }
-    match crate::worktree::leases::list_for_repo(&storage, &identity) {
+    match load_repository(&storage, &identity) {
         Ok(rows) => Ok(CleanupContext { identity, rows }),
         Err(error) => Err(warning(
             issue,
             "could not read worktree leases for cleanup",
-            &error.message,
+            &error,
         )),
     }
 }

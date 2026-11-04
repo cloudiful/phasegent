@@ -14,6 +14,50 @@ fn session_get_requires_a_location_directory() {
     let parsed = parse::parse_session_get(body).expect("documented shape parses");
     assert_eq!(parsed.id, "ses_a");
     assert_eq!(parsed.directory, "/tmp/wt");
+    assert_eq!(parsed.parent_id, None);
+}
+
+#[test]
+fn session_get_reads_the_parent_lineage_edge() {
+    let body = r#"{"data":{"id":"ses_child","parentID":"ses_parent",
+                    "location":{"directory":"/tmp/wt"}}}"#;
+    let parsed = parse::parse_session_get(body).expect("documented shape parses");
+    assert_eq!(parsed.parent_id, Some("ses_parent".to_owned()));
+}
+
+#[test]
+fn session_get_reads_a_null_parent_as_a_root() {
+    let body = r#"{"data":{"id":"ses_root","parentID":null,
+                    "location":{"directory":"/tmp/wt"}}}"#;
+    let parsed = parse::parse_session_get(body).expect("documented shape parses");
+    assert_eq!(parsed.parent_id, None);
+}
+
+#[test]
+fn session_get_rejects_an_empty_parent_id() {
+    let error = parse::parse_session_get(
+        r#"{"data":{"id":"ses_a","parentID":"","location":{"directory":"/wt"}}}"#,
+    )
+    .expect_err("an empty parent id is not a lineage edge");
+    assert!(error.message.contains("parentID"), "got: {}", error.message);
+}
+
+#[test]
+fn session_get_rejects_a_parent_id_that_is_not_a_session_id() {
+    let error = parse::parse_session_get(
+        r#"{"data":{"id":"ses_a","parentID":"phasegent/1-aaaaaa","location":{"directory":"/wt"}}}"#,
+    )
+    .expect_err("a parent that is not a session id is not a lineage edge");
+    assert!(error.message.contains("parentID"), "got: {}", error.message);
+}
+
+#[test]
+fn session_get_rejects_a_parent_id_of_the_wrong_type() {
+    let error = parse::parse_session_get(
+        r#"{"data":{"id":"ses_a","parentID":7,"location":{"directory":"/wt"}}}"#,
+    )
+    .expect_err("a non-string parent id is not a lineage edge");
+    assert!(error.message.contains("parentID"), "got: {}", error.message);
 }
 
 #[test]

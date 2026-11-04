@@ -629,16 +629,22 @@ pub(crate) fn execute_issue_with_caller(
                     // Issue 747 P1: this is the only caller that may move
                     // a session. A candidate whose persisted `ses_` lease
                     // session is still hosted there first asks the host to
-                    // relocate *this* close's own session into the
+                    // relocate the idle members of its lease family into the
                     // repository's verified main checkout, then confirms
-                    // the move with fresh evidence. Anything unproven —
+                    // every move with fresh evidence. Anything unproven —
                     // unreachable API, incomplete listing, a move that has
                     // not taken effect — keeps the directory and warns.
+                    // The other issues the directory is associated with are
+                    // confirmed closed through the scope-aware resolver
+                    // before anything may move.
+                    let closure =
+                        crate::cli::issue_closure::CurrentIssueClosure::new(&repo_path, role);
                     for warning in crate::lifecycle::cleanup_closed_issue_worktrees(
                         &crate::worktree::ProcessWorktreeRunner::new(),
                         &repo_path,
                         number,
                         release_session,
+                        &closure,
                     )
                     .warnings()
                     {

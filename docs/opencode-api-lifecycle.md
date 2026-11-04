@@ -29,11 +29,15 @@ keeps the directory instead of guessing a parent.
 
 Four rules keep this narrow:
 
-- **Only an associated session moves.** `issue close` moves the closing session
-  and only the closing session. `worktree prune` moves the `ses_`-leased
-  sessions a lease associates with the directory it removes. A session no lease
-  of the repository associates is somebody else's: it keeps the directory and
-  is never relocated to make room.
+- **Only a proven family member moves.** `worktree prune` and the preview share
+  one family assessment with `issue close`: the roots of a family are the
+  distinct `ses_` sessions the persisted leases associate with the candidate
+  directory, and a session is related when it is a root or when its
+  authoritative `parentID` chain reaches a root (bounded to 64 edges, checked
+  for cycles). Idle members of that family move; the close additionally may
+  finish its own closing session even while it is running, and nothing else is
+  ever exempted. A session of another family keeps the directory and is never
+  relocated to make room.
 - **A lease session without the `ses_` prefix belongs to a plain CLI caller.**
   Such a session is never moved, and `issue close` never reaches the API for
   it.
@@ -138,25 +142,34 @@ uses only the host's in-process session APIs.
   stderr, flushed before the running-session and closure checks, so a long scan
   is visibly working; stdout stays reserved for the final text or the single JSON
   document.
-- **The removal stage returns the associated idle sessions first (issue 1061
-  P1).** The read-only scan never enumerates history and never moves a session.
-  The removal stage is different: before it deletes a directory it reads that
-  directory's fresh occupancy and the direct answer of every associated
-  `ses_`-leased session, and it returns each associated *idle* session to the
-  repository's verified main checkout, confirming every move with a fresh
-  authoritative read. Those checks describe the one connected service at that
-  moment, not a guarantee about session changes after them.
-  - Only a lease-associated session is moved, and only out of the directory that
-    still hosts it. A session that already runs elsewhere is left untouched,
-    and a session's content is never modified — an archived session is neither
-    excluded nor unarchived.
+- **The removal stage returns the idle lease family first (issues 1061 P1,
+  1195 P1).** The read-only scan never enumerates history and never moves a
+  session. The removal stage is different: before it deletes a directory it
+  reads that directory's fresh occupancy and the direct answer of every
+  associated `ses_`-leased session, and it returns each *idle* member of that
+  directory's lease family — the sessions the leases name and the descendants
+  that descend from them — to the repository's verified main checkout,
+  confirming every move with a fresh authoritative read. The `--dryrun`
+  preview reads the same occupancy and lineage evidence and reports the same
+  blockers and move eligibility without moving anything. Those checks describe
+  the one connected service at that moment, not a guarantee about session
+  changes after them.
+  - **Only a lease-associated session is moved, and only out of the directory that
+    still hosts it.** The family is proven from the occupancy listing, which
+    carries each occupant's lineage edge: a descendant is related when its
+    bounded `parentID` chain reaches one of the directory's lease roots, and
+    the parent may live anywhere. A session that already runs elsewhere is left
+    untouched, and a session's content is never modified — an archived session
+    is neither excluded nor unarchived.
   - Every direct answer is checked against the session that was asked about
     before it may authorise a move: an answer that names another session, or
     one whose location is not absolute and therefore cannot be read, is not
     evidence about the requested session, and it never authorises a move of
-    the id it happens to carry.
-  - A session no lease of this repository associates keeps the directory and is
-    never moved.
+    the id it happens to carry. A lineage whose `parentID` is empty, not a
+    session id, or unreadable fails closed the same way: the occupant's family
+    stays unknown and the directory survives.
+  - A session no lease of this repository associates, and no lineage reaches
+    one of them, keeps the directory and is never moved.
   - An unavailable or incomplete occupancy listing, an unresolvable associated
     session, an answer that names another session or reports an unusable
     location, a rejected, queued, or unconfirmed move, an unverifiable main

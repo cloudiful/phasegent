@@ -1,4 +1,5 @@
-//! Injectable issue-closure evidence for `worktree prune` (issue 916).
+//! Injectable issue-closure evidence for the worktree finalization
+//! (issues 916, 1195).
 //!
 //! Immediate directory cleanup needs one external fact the local lease table
 //! cannot supply: whether every issue a worktree is associated with is
@@ -25,12 +26,17 @@
 //! is kept, so a known-local issue is never dispatched to Redmine or vice
 //! versa. Any error, not-found, ambiguity, or mismatch is a keep, never a
 //! silent "closed".
+//!
+//! [`CurrentIssueClosure`] adapts the same resolver to the lifecycle's narrow
+//! closure seam, so `issue close` confirms the *other* issues a directory is
+//! associated with before it moves a session out of it.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::infra::storage::Storage;
+use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
 use crate::policy::Role;
 use crate::providers::{IssueProvider, ProviderDispatcher};
 
@@ -402,6 +408,61 @@ pub(crate) fn configured_source(role: Role) -> ComposedIssueStateSource {
         Box::new(GitLinkScopeReader::new()),
         Box::new(ConfiguredIssueStateReader::new(role)),
     )
+}
+
+/// The close-path adapter for the lifecycle's closure seam.
+///
+/// The issue being closed is closed by definition — the remote close already
+/// succeeded before the cleanup ran — so it is never re-read. Every *other*
+/// issue the candidate directory is associated with is confirmed through the
+/// same scope-aware resolver the prune pass uses, so an open, ambiguous, or
+/// mismatched issue keeps the directory.
+pub(crate) struct CurrentIssueClosure {
+    repo_path: PathBuf,
+    source: ComposedIssueStateSource,
+}
+
+impl CurrentIssueClosure {
+    pub(crate) fn new(repo_path: &Path, role: Role) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            source: configured_source(role),
+        }
+    }
+
+    /// The adapter over an explicit resolver, for the tests that pin the
+    /// adapter's own short-circuit.
+    #[cfg(test)]
+    pub(crate) fn with_source(repo_path: &Path, source: ComposedIssueStateSource) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+impl DirectoryIssueClosure for CurrentIssueClosure {
+    fn confirm_others_closed(&self, current_issue: u64, issues: &[u64]) -> Result<(), String> {
+        for issue in issues {
+            if *issue == current_issue {
+                continue;
+            }
+            let verdict = self.source.closure(&self.repo_path, *issue);
+            if !verdict.is_closed() {
+                return Err(verdict
+                    .keep_reason()
+                    .unwrap_or("the issue is not confirmed closed")
+                    .to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh(&self) {
+        // A movement invalidates the memo: the post-move recheck must read
+        // provider and scope evidence afresh, never the pre-move answers.
+        self.source.refresh();
+    }
 }
 
 fn bounded_error(value: &serde_json::Value) -> String {

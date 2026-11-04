@@ -15,6 +15,7 @@ mod help;
 mod hooks;
 pub(crate) mod issue;
 pub(crate) mod issue_branches;
+pub(crate) mod issue_closure;
 mod notify;
 pub(crate) mod plugin;
 mod project;

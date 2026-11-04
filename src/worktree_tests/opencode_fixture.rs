@@ -10,8 +10,10 @@
 use super::support::*;
 use super::*;
 
+use crate::lifecycle::cleanup::closure::{DenyOtherIssues, DirectoryIssueClosure};
 use crate::lifecycle::{AutoCleanupOutcome, CleanupMode, cleanup_closed_issue_worktrees_with};
 use crate::worktree::leases::{NewLease, ensure_schema, insert_lease};
+use crate::worktree::opencode::OpenCodeApi;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 
 pub(crate) const ISSUE: u64 = 7;
@@ -89,12 +91,52 @@ impl Fixture {
         .expect("lease row inserts");
     }
 
+    /// Record a lease for another issue pointing at the candidate, so the
+    /// closure guards can be exercised against a shared directory.
+    pub(crate) fn lease_for_issue(&self, issue: u64, session: &str) {
+        self.lease_for_issue_at(issue, session, LEASE_STATUS_RETAINED);
+    }
+
+    /// Record a lease for another issue with an explicit status.
+    pub(crate) fn lease_for_issue_at(&self, issue: u64, session: &str, status: &str) {
+        let storage = Storage::open().expect("temp storage opens");
+        let lease_id = format!("lease-{issue}-{}", self.candidate.display());
+        insert_lease(
+            &storage,
+            NewLease {
+                lease_id: lease_id.as_str(),
+                identity: &self.identity,
+                issue,
+                session,
+                checkout_path: &self.main.to_string_lossy(),
+                worktree_path: &self.candidate.to_string_lossy(),
+                branch: "feat/7-aaaaaa",
+                status,
+                created_at: 1,
+                heartbeat_at: 1,
+            },
+        )
+        .expect("lease row inserts");
+    }
+
     /// Drive the production cleanup for this fixture's issue.
     pub(crate) fn clean(
         &self,
         api: &FakeOpenCodeApi,
         mode: CleanupMode,
         session: Option<&str>,
+    ) -> AutoCleanupOutcome {
+        self.clean_with(api, mode, session, &DenyOtherIssues)
+    }
+
+    /// Drive the production cleanup with an explicit closure seam over an
+    /// explicit host.
+    pub(crate) fn clean_with_api(
+        &self,
+        api: &dyn OpenCodeApi,
+        mode: CleanupMode,
+        session: Option<&str>,
+        closure: &dyn DirectoryIssueClosure,
     ) -> AutoCleanupOutcome {
         cleanup_closed_issue_worktrees_with(
             &ProcessWorktreeRunner::new(),
@@ -103,7 +145,19 @@ impl Fixture {
             &self.main,
             ISSUE,
             session,
+            closure,
         )
+    }
+
+    /// Drive the production cleanup with an explicit closure seam.
+    pub(crate) fn clean_with(
+        &self,
+        api: &FakeOpenCodeApi,
+        mode: CleanupMode,
+        session: Option<&str>,
+        closure: &dyn DirectoryIssueClosure,
+    ) -> AutoCleanupOutcome {
+        self.clean_with_api(api, mode, session, closure)
     }
 }
 

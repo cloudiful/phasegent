@@ -2,6 +2,8 @@ use super::cli_support::*;
 use super::support::*;
 use super::*;
 
+use std::path::Path;
+
 use crate::lifecycle::cleanup::TargetResolver;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 use crate::worktree::opencode::{ApiError, ListRequest, LocatedSession, OpenCodeApi, SessionPage};
@@ -31,6 +33,7 @@ impl OpenCodeApi for MismatchedIdHost {
             return Ok(LocatedSession {
                 id: format!("{id}-other"),
                 directory: located.directory,
+                parent_id: None,
             });
         }
         Ok(located)
@@ -124,6 +127,7 @@ impl OpenCodeApi for MismatchedAfterMoveHost {
                 return Ok(LocatedSession {
                     id: format!("{id}-other"),
                     directory: located.directory,
+                    parent_id: None,
                 });
             }
         }
@@ -227,6 +231,7 @@ impl OpenCodeApi for RelativeAfterMoveHost {
             if reads == self.relative_at {
                 return Ok(LocatedSession {
                     id: id.to_owned(),
+                    parent_id: None,
                     directory: "relative/unknown".to_owned(),
                 });
             }
@@ -970,7 +975,7 @@ fn prune_keeps_a_directory_when_the_move_is_rejected() {
             .message
             .as_deref()
             .unwrap_or_default()
-            .contains("moving the associated OpenCode session failed"),
+            .contains("moving the OpenCode session 'ses_a' failed"),
         "got: {:?}",
         action.message
     );
@@ -1329,6 +1334,7 @@ fn prune_keeps_a_directory_when_a_new_occupant_appears_while_the_sessions_return
         FakeOpenCodeApi::empty().with_session("ses_owner", &target),
         LocatedSession {
             id: "ses_new".to_owned(),
+            parent_id: None,
             directory: target.to_string_lossy().into_owned(),
         },
     );
@@ -2510,8 +2516,8 @@ fn prune_preview_reports_prunable_without_mutating() {
     assert!(api.moves().is_empty(), "preview never moves a session");
     assert_eq!(
         api.list_calls(),
-        0,
-        "preview never enumerates historical sessions"
+        1,
+        "the preview reads the directory's occupancy once"
     );
     let action = summary
         .actions
@@ -2601,4 +2607,486 @@ fn prune_keeps_a_dirty_directory_with_zero_host_reads() {
         0,
         "a dirty directory is kept with zero host reads"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The preview and the removal share one family assessment (issue 1195 P1)
+// ---------------------------------------------------------------------------
+
+/// The preview reads the same occupancy and lineage evidence the removal
+/// stage would meet, so it reports the blocker the removal would find.
+#[test]
+fn the_preview_reports_the_occupancy_blocker_the_removal_would_meet() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-preview-blocker") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-preview-blocker");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-block01");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    // A session no lease associates is somebody else's: it keeps the
+    // directory and is never moved.
+    let api = FakeOpenCodeApi::empty()
+        .with_session("ses_owner", &target)
+        .with_session("ses_foreign", &target);
+    let source = ScriptedIssueStateSource::closed();
+
+    let preview = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Report);
+    assert_eq!(preview.removed, 0);
+    assert!(target.exists(), "the preview never deletes a directory");
+    assert!(api.moves().is_empty(), "the preview never moves a session");
+    let previewed = preview
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(previewed.result, "skipped_protected");
+    assert!(
+        previewed
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ses_foreign"),
+        "the preview must name the blocker, got: {:?}",
+        previewed.message
+    );
+    assert!(
+        !previewed.prunable,
+        "a blocked directory is never reported as prunable"
+    );
+
+    let removal = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(removal.removed, 0, "the blocker keeps the directory");
+    assert!(target.exists());
+    assert!(api.moves().is_empty(), "a foreign occupant is never moved");
+}
+
+/// The preview reports which of the family's idle sessions the removal
+/// would return to the main checkout, and performs no move of its own.
+#[test]
+fn the_preview_reports_the_sessions_the_removal_would_return() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-preview-move") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-preview-move");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-move001");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    let api = FakeOpenCodeApi::empty().with_session("ses_owner", &target);
+    let source = ScriptedIssueStateSource::closed();
+
+    let preview = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Report);
+    assert_eq!(preview.removed, 0);
+    assert!(target.exists(), "the preview never deletes a directory");
+    assert!(api.moves().is_empty(), "the preview never moves a session");
+    let previewed = preview
+        .actions
+        .iter()
+        .find(|action| action.result == "prunable")
+        .expect("a proposed removal");
+    assert!(
+        previewed
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("would return 1 idle OpenCode session"),
+        "the preview must report the move eligibility, got: {:?}",
+        previewed.message
+    );
+    assert!(
+        previewed.relocated_children.is_empty() && previewed.planned_children.is_empty(),
+        "the preview never populates the legacy relocation lists"
+    );
+    let rows = list_all_for_repo(&storage, &identity).expect("list");
+    assert!(
+        rows.iter().all(|row| row.status == LEASE_STATUS_RETAINED),
+        "the preview never writes a lease row"
+    );
+}
+
+/// The removal returns the idle family to the verified main checkout and
+/// removes the clean directory afterwards.
+#[test]
+fn the_removal_returns_the_idle_family_and_removes_the_directory() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-remove") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-remove");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-remove01");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    let api = FakeOpenCodeApi::empty().with_session("ses_owner", &target);
+    let source = ScriptedIssueStateSource::closed();
+
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 1, "the clean candidate must be removed");
+    assert!(!target.exists());
+    assert_eq!(
+        api.moves(),
+        vec![(
+            "ses_owner".to_owned(),
+            repo.dir.path().to_string_lossy().into_owned()
+        )],
+        "the family is returned to the verified main checkout"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Post-movement re-verification (issue 1195 P1 attempt 2)
+// ---------------------------------------------------------------------------
+
+/// A host that injects an active lease the moment it accepts the family's
+/// first move. The pre-move recheck saw nothing; the post-move re-read must.
+struct RaceOnMove<'a> {
+    inner: FakeOpenCodeApi,
+    storage: &'a Storage,
+    identity: &'a str,
+    worktree_path: String,
+    status: &'static str,
+    armed: std::cell::Cell<bool>,
+}
+
+impl RaceOnMove<'_> {
+    fn inject(&self) {
+        if self.armed.replace(false) {
+            insert_lease(
+                self.storage,
+                NewLease {
+                    lease_id: "lease-incoming",
+                    identity: self.identity,
+                    issue: 9,
+                    session: "ses_incoming",
+                    checkout_path: "/fixture",
+                    worktree_path: &self.worktree_path,
+                    branch: "branch",
+                    status: self.status,
+                    created_at: 2,
+                    heartbeat_at: 2,
+                },
+            )
+            .unwrap();
+        }
+    }
+}
+
+impl OpenCodeApi for RaceOnMove<'_> {
+    fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
+        self.inner.session(id)
+    }
+    fn list(&self, request: &ListRequest) -> Result<SessionPage, ApiError> {
+        self.inner.list(request)
+    }
+    fn move_session(&self, id: &str, directory: &Path) -> Result<(), ApiError> {
+        let accepted = self.inner.move_session(id, directory);
+        if accepted.is_ok() {
+            self.inject();
+        }
+        accepted
+    }
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        self.inner.active_sessions()
+    }
+}
+
+/// A new active owner that acquires the candidate during the family's
+/// relocation keeps the directory: the post-move lease re-read decides.
+#[test]
+fn prune_keeps_a_directory_when_a_new_active_owner_appears_during_the_moves() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-move-race") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-move-race");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-race001");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    let api = RaceOnMove {
+        inner: FakeOpenCodeApi::empty().with_session("ses_owner", &target),
+        storage: &storage,
+        identity: &identity,
+        worktree_path: target.to_string_lossy().into_owned(),
+        status: LEASE_STATUS_ACTIVE,
+        armed: std::cell::Cell::new(true),
+    };
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(
+        summary.removed, 0,
+        "a new active owner during the moves keeps the directory"
+    );
+    assert!(target.exists());
+    assert!(
+        !api.inner.moves().is_empty(),
+        "the race must be injected through an accepted move"
+    );
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    assert!(
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("an active lease re-appeared"),
+        "got: {:?}",
+        action.message
+    );
+}
+
+#[test]
+fn prune_keeps_a_new_open_issue_associated_during_the_moves() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-open-move-race") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-open-move-race");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-openrace");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    let api = RaceOnMove {
+        inner: FakeOpenCodeApi::empty().with_session("ses_owner", &target),
+        storage: &storage,
+        identity: &identity,
+        worktree_path: target.to_string_lossy().into_owned(),
+        status: LEASE_STATUS_RETAINED,
+        armed: std::cell::Cell::new(true),
+    };
+    let source = ScriptedIssueStateSource::closed().with_issue(
+        9,
+        crate::cli::issue_closure::IssueClosure::Keep("issue 9 is open".to_owned()),
+    );
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 0);
+    assert!(target.exists());
+    assert!(!api.inner.moves().is_empty());
+    assert!(source.asked().iter().any(|(_, issue)| *issue == 9));
+    assert!(summary.actions.iter().any(|action| {
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("issue 9 is open")
+    }));
+}
+
+/// The removal still succeeds when nothing changes during the moves: the
+/// post-move recheck must not turn conservative into never-removing.
+#[test]
+fn prune_removes_when_the_post_move_recheck_confirms_the_state() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-move-clean") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-move-clean");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-clean001");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    let api = FakeOpenCodeApi::empty().with_session("ses_owner", &target);
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 1, "an unchanged post-move state removes");
+    assert!(!target.exists());
+    assert_eq!(
+        api.moves(),
+        vec![(
+            "ses_owner".to_owned(),
+            repo.dir.path().to_string_lossy().into_owned()
+        )]
+    );
+}
+
+/// The preview resolves the read-only move target whenever it would propose
+/// moving an occupant: an unverifiable main checkout reports the same keep
+/// reason the removal would, with zero mutations.
+#[test]
+fn the_preview_reports_a_missing_main_checkout_for_a_proposed_move() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-preview-target") else {
+        return;
+    };
+    let elsewhere = TempDir::new("prune-1195-preview-target-noop");
+    let (_temp, storage, _env) = open_temp_db("prune-1195-preview-target");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-ptarget1");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    // The idle occupant sits in the candidate, so the preview would propose
+    // a move — and must therefore resolve the (unverifiable) target.
+    let api = FakeOpenCodeApi::empty().with_session("ses_owner", &target);
+    let source = ScriptedIssueStateSource::closed();
+    let rows = list_all_for_repo(&storage, &identity).expect("list");
+    let pinned = pinned_active_paths(&rows);
+    let resolver = TargetResolver::new(elsewhere.path(), &identity);
+    let scope = PruneScope {
+        identity: &identity,
+        repo_path: elsewhere.path(),
+        rows: &rows,
+        target: &resolver,
+    };
+    let summary = prune_pass(
+        &storage,
+        &runner,
+        &api,
+        &api,
+        &scope,
+        &pinned,
+        &source,
+        999,
+        PruneMode::Report,
+        &|_| {},
+    );
+    assert_eq!(summary.removed, 0);
+    assert_eq!(
+        summary.eligible, 0,
+        "a proposed move without a target is kept"
+    );
+    assert!(target.exists(), "the preview never deletes a directory");
+    assert!(api.moves().is_empty(), "the preview never moves a session");
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    assert!(
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no verified main checkout"),
+        "the preview must name the blocker the removal would meet, got: {:?}",
+        action.message
+    );
+}
+
+/// A provider memo that keeps answering its first verdict until it is
+/// invalidated, modelling a cached scope/provider answer. The directory's
+/// issue flips open while the family is being moved, so only the post-move
+/// refresh may see it.
+struct CachedClosedThenOpen {
+    flipped: std::rc::Rc<std::cell::Cell<bool>>,
+    cached: std::cell::RefCell<Option<IssueClosure>>,
+    reads: std::cell::Cell<usize>,
+}
+
+impl CachedClosedThenOpen {
+    fn new(flipped: std::rc::Rc<std::cell::Cell<bool>>) -> Self {
+        Self {
+            flipped,
+            cached: std::cell::RefCell::new(None),
+            reads: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl IssueStateSource for CachedClosedThenOpen {
+    fn closure(&self, _: &Path, _: u64) -> IssueClosure {
+        if let Some(answer) = self.cached.borrow().clone() {
+            return answer;
+        }
+        self.reads.set(self.reads.get() + 1);
+        let answer = if self.flipped.get() {
+            IssueClosure::Keep("issue reopened after the moves".to_owned())
+        } else {
+            IssueClosure::Closed
+        };
+        *self.cached.borrow_mut() = Some(answer.clone());
+        answer
+    }
+
+    fn invalidate(&self, _: &Path, _: &[u64]) {
+        *self.cached.borrow_mut() = None;
+    }
+
+    fn refresh(&self) {
+        *self.cached.borrow_mut() = None;
+    }
+}
+
+/// A host that flips the shared provider flag the moment it accepts the
+/// family's first move.
+struct FlipOnMove {
+    inner: FakeOpenCodeApi,
+    flipped: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl OpenCodeApi for FlipOnMove {
+    fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
+        self.inner.session(id)
+    }
+    fn list(&self, request: &ListRequest) -> Result<SessionPage, ApiError> {
+        self.inner.list(request)
+    }
+    fn move_session(&self, id: &str, directory: &Path) -> Result<(), ApiError> {
+        let accepted = self.inner.move_session(id, directory);
+        if accepted.is_ok() {
+            self.flipped.set(true);
+        }
+        accepted
+    }
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        self.inner.active_sessions()
+    }
+}
+
+/// A cached `closed` answer must not authorize the removal once the issue
+/// reopened during the moves: the post-move recheck invalidates the memo and
+/// reads the provider afresh.
+#[test]
+fn prune_refreshes_a_cached_closed_answer_after_the_moves() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1195-cached-open") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1195-cached-open");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1195-cached01");
+    owner_lease(&storage, &identity, &target, "ses_owner");
+    let flipped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let api = FlipOnMove {
+        inner: FakeOpenCodeApi::empty().with_session("ses_owner", &target),
+        flipped: std::rc::Rc::clone(&flipped),
+    };
+    let source = CachedClosedThenOpen::new(std::rc::Rc::clone(&flipped));
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(
+        summary.removed, 0,
+        "a reopened issue after the moves keeps the directory"
+    );
+    assert!(target.exists());
+    assert!(!api.inner.moves().is_empty(), "the move happened first");
+    assert!(flipped.get(), "the provider answer changed during the move");
+    assert!(
+        source.reads.get() >= 2,
+        "the post-move recheck re-read rather than reusing the memo, got {} reads",
+        source.reads.get()
+    );
+    assert!(summary.actions.iter().any(|action| {
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("issue reopened after the moves")
+    }));
 }

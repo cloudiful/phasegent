@@ -15,7 +15,7 @@
 //!    session in it (issue 928 P1) — historical session records that still point
 //!    at the directory never block, and the scan never moves a session;
 //! 4. every associated issue is *confirmed closed* by
-//!    [`IssueStateSource`][super::issue_state::IssueStateSource];
+//!    [`IssueStateSource`][crate::cli::issue_closure::IssueStateSource];
 //! 5. the removal stage proves the directory is free of sessions it may not
 //!    touch and returns the associated idle ones it may (issue 1061 P1);
 //! 6. `git worktree remove` (no `--force`) succeeds after a fresh re-read of
@@ -45,7 +45,8 @@ use serde::Serialize;
 use crate::cli::report_local_warnings;
 use crate::infra::storage::Storage;
 use crate::lifecycle::cleanup::TargetResolver;
-use crate::lifecycle::cleanup::sessions::{self, SessionVerdict};
+use crate::lifecycle::cleanup::sessions::{self, FamilyOutcome};
+use crate::lifecycle::cleanup::{CleanupMode, associated_sessions};
 use crate::worktree::git::worktree_remove;
 use crate::worktree::leases::{list_all_for_repo, load_lease, update_status};
 use crate::worktree::opencode::OpenCodeApi;
@@ -55,7 +56,7 @@ use crate::worktree::{
 };
 
 use super::active_guard;
-use super::issue_state::{IssueClosure, IssueStateSource};
+use crate::cli::issue_closure::{IssueClosure, IssueStateSource};
 
 /// Whether a prune pass only reports candidates or also executes the
 /// actions it classified. The executor maps a non-preview invocation onto
@@ -486,9 +487,26 @@ fn apply_candidate(
         }
         PruneDisposition::Removable => {
             if mode.is_report() {
-                action.prunable = true;
-                action.result = "prunable".to_owned();
-                action.message = Some("dry-run: would call git worktree remove".to_owned());
+                // The preview probes the same occupancy and lineage evidence
+                // the removal stage would meet, so it reports the blockers
+                // and the move eligibility it finds. It never moves a
+                // session, deletes a directory, or writes a lease row.
+                match preview_family(api, scope, candidate) {
+                    FamilyOutcome::Keep(reason) => {
+                        action.result = "skipped_protected".to_owned();
+                        action.message = Some(reason);
+                    }
+                    FamilyOutcome::Releasable { sessions } => {
+                        action.prunable = true;
+                        action.result = "prunable".to_owned();
+                        action.message = Some(dry_run_message(sessions.len()));
+                    }
+                    _ => {
+                        action.prunable = true;
+                        action.result = "prunable".to_owned();
+                        action.message = Some("dry-run: would call git worktree remove".to_owned());
+                    }
+                }
             } else {
                 progress(&format!(
                     "verifying {} before removal",
@@ -510,18 +528,86 @@ fn apply_candidate(
                         action.result = "skipped_protected".to_owned();
                         action.message = Some(format!("kept on re-check: {reason}"));
                     }
-                    Ok(associated) => match relocation_guard(api, scope, candidate, &associated) {
-                        Some(reason) => {
-                            action.result = "skipped_protected".to_owned();
-                            action.message = Some(format!("kept on re-check: {reason}"));
+                    Ok(associated) => {
+                        // The shared family assessment is the removal stage's
+                        // session guard: it proves that every session hosted
+                        // here belongs to this directory's lease family,
+                        // returns the idle ones to the verified main
+                        // checkout, and confirms the result with fresh
+                        // evidence before anything is removed.
+                        match sessions::finalize_family(
+                            api,
+                            CleanupMode::Prune,
+                            scope.target,
+                            &candidate.canonical_path,
+                            &associated,
+                            None,
+                        ) {
+                            FamilyOutcome::Keep(reason) => {
+                                action.result = "skipped_protected".to_owned();
+                                action.message = Some(format!("kept on re-check: {reason}"));
+                            }
+                            // The moves are not a permission: rows, local
+                            // guards and closure evidence are re-read now,
+                            // after any movement, because a new active owner
+                            // or a newly linked open issue that appeared
+                            // during the moves must keep the directory.
+                            _ => match post_move_recheck(
+                                storage,
+                                runner,
+                                api,
+                                scope,
+                                pinned_active,
+                                source,
+                                candidate,
+                            ) {
+                                Err(reason) => {
+                                    action.result = "skipped_protected".to_owned();
+                                    action.message = Some(format!("kept on re-check: {reason}"));
+                                }
+                                Ok(()) => {
+                                    apply_removal(storage, runner, scope, candidate, &mut action)
+                                }
+                            },
                         }
-                        None => apply_removal(storage, runner, scope, candidate, &mut action),
-                    },
+                    }
                 }
             }
         }
     }
     action
+}
+
+/// The preview's read-only probe of the removal stage's evidence. It shares
+/// the assessment with the removal stage, so the blockers it reports are the
+/// blockers the removal would meet.
+fn preview_family(
+    api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    candidate: &DirectoryCandidate,
+) -> FamilyOutcome {
+    let associated = associated_sessions(scope.rows, &candidate.canonical_path);
+    sessions::finalize_family(
+        api,
+        CleanupMode::Preview,
+        scope.target,
+        &candidate.canonical_path,
+        &associated,
+        None,
+    )
+}
+
+/// The bounded preview message: the directory is removable, and this is how
+/// many of the family's idle sessions the removal would return to the main
+/// checkout first.
+fn dry_run_message(sessions: usize) -> String {
+    match sessions {
+        0 => "dry-run: would call git worktree remove".to_owned(),
+        1 => "dry-run: would return 1 idle OpenCode session to the main checkout, then call git worktree remove".to_owned(),
+        many => format!(
+            "dry-run: would return {many} idle OpenCode sessions to the main checkout, then call git worktree remove"
+        ),
+    }
 }
 
 /// Re-evaluate one directory against fresh rows and the uncached running-session
@@ -589,52 +675,6 @@ fn recheck(
     }
 }
 
-/// The removal stage's session guard (issue 1061 P1).
-///
-/// The fresh occupancy of the directory is read first, the running state is
-/// re-read immediately afterwards and before any move request, and only then
-/// is an associated idle session returned to the verified main checkout. The
-/// directory must be free of running occupancy once more before it is removed.
-fn relocation_guard(
-    api: &dyn OpenCodeApi,
-    scope: &PruneScope<'_>,
-    candidate: &DirectoryCandidate,
-    associated: &[String],
-) -> Option<String> {
-    let directory = &candidate.canonical_path;
-    let occupancy = match sessions::discover_occupancy(api, directory, associated) {
-        Ok(occupancy) => occupancy,
-        Err(reason) => return Some(reason),
-    };
-    // The running state is re-read after the occupancy discovery and
-    // immediately before a move request: a session that started running in
-    // the meantime keeps the directory.
-    match active_guard::RunningSnapshot::capture(api) {
-        Ok(snapshot) => {
-            if let Some(reason) = snapshot.keep_reason(directory) {
-                return Some(reason);
-            }
-        }
-        Err(reason) => return Some(reason),
-    }
-    match sessions::return_associated_sessions(api, scope.target, directory, associated, &occupancy)
-    {
-        SessionVerdict::Keep(reason) => return Some(reason),
-        SessionVerdict::Vacant | SessionVerdict::Unmanaged => {}
-    }
-    // The directory must still be free of running occupancy when it is
-    // removed.
-    match active_guard::RunningSnapshot::capture(api) {
-        Ok(snapshot) => {
-            if let Some(reason) = snapshot.keep_reason(directory) {
-                return Some(reason);
-            }
-        }
-        Err(reason) => return Some(reason),
-    }
-    None
-}
-
 fn recheck_reason(disposition: PruneDisposition) -> String {
     match disposition {
         PruneDisposition::Removable => String::new(),
@@ -644,6 +684,62 @@ fn recheck_reason(disposition: PruneDisposition) -> String {
             reason
         }
         PruneDisposition::MissingDirectory => "the directory vanished".to_owned(),
+    }
+}
+
+/// The post-movement re-verification: after the family has been relocated,
+/// the complete lease rows, the local guards, and the directory's issue
+/// closures are re-read, so a new active owner or a newly linked open issue
+/// that appeared during the (possibly slow) moves keeps the directory.
+/// The pre-move recheck is not enough on its own.
+#[allow(clippy::too_many_arguments)]
+fn post_move_recheck(
+    storage: &Storage,
+    runner: &dyn WorktreeRunner,
+    api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    pinned_active: &BTreeSet<String>,
+    source: &dyn IssueStateSource,
+    candidate: &DirectoryCandidate,
+) -> Result<(), String> {
+    let fresh = match list_all_for_repo(storage, scope.identity) {
+        Ok(rows) => rows,
+        Err(error) => return Err(format!("could not re-read leases: {}", error.message)),
+    };
+    let paths = CanonicalPaths::default();
+    if paths.resolve(Path::new(&candidate.worktree_path)) != candidate.canonical_path {
+        return Err("the directory path changed its target".to_owned());
+    }
+    let fresh_scope = PruneScope {
+        identity: scope.identity,
+        repo_path: scope.repo_path,
+        rows: &fresh,
+        target: scope.target,
+    };
+    let fresh_group = group_rows(&fresh, &paths)
+        .into_iter()
+        .find(|group| group.canonical_path == candidate.canonical_path)
+        .ok_or_else(|| {
+            format!(
+                "the candidate's lease row is gone after the moves ({})",
+                candidate.worktree_path
+            )
+        })?;
+    source.invalidate(scope.repo_path, &fresh_group.issues);
+    // The classification re-reads the running-session answer, the closure
+    // evidence and the local guards against the post-move rows; the host
+    // vacancy itself was just proven and is not re-derived here.
+    match classify_group(
+        runner,
+        api,
+        &fresh_scope,
+        pinned_active,
+        source,
+        &fresh_group,
+        &paths,
+    ) {
+        PruneDisposition::Removable => Ok(()),
+        other => Err(recheck_reason(other)),
     }
 }
 
@@ -752,8 +848,8 @@ pub(crate) fn pinned_active_paths(rows: &[LeaseRow]) -> BTreeSet<String> {
 
 #[cfg(test)]
 mod path_reuse_tests {
-    use super::super::issue_state::test_support::ScriptedIssueStateSource;
     use super::*;
+    use crate::cli::issue_closure::test_support::ScriptedIssueStateSource;
     use crate::worktree::opencode::test_support::FakeOpenCodeApi;
     use crate::worktree::{GitOutput, WorktreeError};
 

@@ -89,17 +89,23 @@ Each actual removal has a new verification window, independent of scan memo:
 4. Recheck active leases, main-checkout identity, dirty/untracked files and
    running sessions with current evidence, then require every target issue to
    be confirmed closed through fresh branch-link and provider reads.
-5. Read fresh complete occupancy. Only lease-associated idle `ses_` sessions
-   may be returned to the verified main checkout. A foreign occupant is never
-   moved and keeps the directory.
+5. Read fresh complete occupancy and the lineage the host reports. Only the
+   idle members of the directory's lease family — the sessions its leases name
+   and the descendants whose bounded `parentID` chain reaches them — may be
+   returned to the verified main checkout. A foreign occupant is never moved
+   and keeps the directory.
 6. Check running state immediately before moves and again afterwards. Confirm
    every requested move through fresh session locations; after moves, fresh
-   associated-session reads and a complete listing must agree the directory is
-   free before removal proceeds.
+   family reads and a complete listing must agree the directory is free before
+   removal proceeds.
 
 An unavailable or incomplete listing, missing/mismatched session answer,
-unusable location, rejected/queued/unconfirmed move or unverifiable main
-checkout keeps the directory. Local Git guards run before host reads, so a
+unusable location, unreadable/mismatched/cyclic lineage,
+rejected/queued/unconfirmed move or unverifiable main
+checkout keeps the directory. The `--dryrun` preview runs the same occupancy
+and lineage reads and reports the same blockers and move eligibility without
+moving, deleting, or writing anything. Local Git guards run before host reads,
+so a
 main checkout or dirty path does not need host access to be kept. Removal uses
 `git worktree remove` without force. Branches and lease rows are retained as
 history.

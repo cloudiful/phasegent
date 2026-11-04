@@ -25,11 +25,13 @@
 //! integration test also uses its own temp git repo so production
 //! worktrees are never mutated.
 
+use crate::cli::issue_closure::test_support::ScriptedIssueStateSource;
+use crate::cli::issue_closure::{IssueClosure, IssueStateSource};
 use crate::cli::worktree::{
-    AcquireJson, IssueClosure, IssueStateSource, PruneAction, PruneAggregate, PruneDisposition,
-    PruneMode, PruneRepoOutcome, PruneScope, PruneSummary, PruneTotals, ReleaseStaleAction,
-    ReleaseStaleSummary, ScriptedIssueStateSource, execute_prune_with_source, execute_worktree,
-    pinned_active_paths, prune_pass, render_text, scan_worktree_candidates,
+    AcquireJson, PruneAction, PruneAggregate, PruneDisposition, PruneMode, PruneRepoOutcome,
+    PruneScope, PruneSummary, PruneTotals, ReleaseStaleAction, ReleaseStaleSummary,
+    execute_prune_with_source, execute_worktree, pinned_active_paths, prune_pass, render_text,
+    scan_worktree_candidates,
 };
 use crate::command::{Command, IssueCommand, WorktreeCommand};
 use crate::infra::storage::Storage;
