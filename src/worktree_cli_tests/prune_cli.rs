@@ -516,8 +516,11 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
         text.contains("removed 1, eligible 1, absent 0, kept 1, removal failures 0"),
         "got: {text}"
     );
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        text.contains("kept reasons: active 0, protected 1, issue-state 0, unknown 0"),
+        normalized.contains(
+            "kept reasons: active 0, main 0, waiting-move 0, other-protected 1, issue-state 0, unknown 0"
+        ),
         "got: {text}"
     );
     assert!(text.contains("skipped repositories: 1"), "got: {text}");
@@ -678,7 +681,7 @@ fn prune_compact_text_is_bounded_across_many_repositories() {
     // The report stays bounded by the number of actionable rows: one line per
     // kept directory plus the summary lines.
     assert!(
-        text.lines().count() <= 19 + 5,
+        text.lines().count() <= 19 + 8,
         "19 repositories must stay bounded, got {}: {text}",
         text.lines().count()
     );

@@ -333,6 +333,27 @@ and a reviewer never work the same mutable tree at the same time.
 - Notes stay compact. Evidence supports the verdict or status instead of
   restating logs, and the note remains the record under the result contracts.
 
+## Task-finish hygiene
+
+- Before finishing a task or phase, remove only disposable artifacts and scratch
+  cache this task created and no longer needs — temporary plans and notes, task
+  test scripts and data, logs, and task-owned scratch. Preserve preexisting,
+  user-owned, and other-task contents, formal documentation, regression tests,
+  requested deliverables, and ordinary build outputs and caches.
+- `.cache`, a directory name, or an untracked path is never blanket permission:
+  delete only the proven task-owned disposable subset, never shared or global
+  caches, `node_modules`, build outputs, or another writer's files. If ownership
+  is unclear, retain and report instead of guessing.
+- Stop task-owned background processes before disposal, keep dependencies alive
+  until their final use, and never sweep unrelated files. Cleanup failure or a
+  retained task-owned process is reported, never hidden.
+- Children report their cleanup outcome and any residual dirty paths and reasons
+  in the authorized record or brief body; the minimal note-pointer shape never
+  gains these fields. Never reproduce file contents or secrets. Children never
+  commit, and the owning primary performs the post-delivery status check and
+  final disclosure. Prompt rules never widen a role's tools or grant `git
+  clean`/`reset`/`stash`/`restore` authority.
+
 ## Command contract
 
 Source of truth: `src/cli/help/` role-filter plus `src/policy.rs`.
@@ -436,7 +457,13 @@ Boundaries:
   Absolute paths pass through untouched, so an explicit escape and the
   `external_directory` permission check are never rewritten.
 - Never delete a lease row, a branch, or a dirty or untracked worktree to force
-  cleanup.
+  cleanup; the only shared dirty exception is a verified root `.cache`-only
+  worktree (a real root `.cache` directory with no tracked paths and only `??`
+  entries under that exact root, cleared only after a bounded inventory of
+  reliable identity/change evidence matches the initial eligibility baseline and
+  every lease/local/closure/host gate is re-checked after clearance, then
+  followed by the normal no-force removal; a platform without reliable identity
+  fails closed for this exception).
 - An acquire against a base ref that does not resolve fails locally before any
   worktree, branch, or lease is written.
 - `phasegent worktree prune` is global and removal-by-default: without `--repo`
@@ -459,8 +486,9 @@ Boundaries:
   it reads that directory's fresh occupancy and returns every idle member of
   its lease family — the associated `ses_` sessions and the descendants whose
   bounded `parentID` chain reaches one of them — to the repository's verified
-  main checkout, confirming each
-  move with a fresh authoritative read. Those checks describe the one
+  main checkout. It requests every safe family member once before any wait,
+  immediately types each response, and then confirms all still-pending accepted
+  moves round-robin inside one shared short budget without reissuing. Those checks describe the one
   connected service at that moment, not a guarantee about session changes
   after them. A session no lease of this repository associates, and no lineage
   reaches one of them, keeps the
@@ -497,8 +525,9 @@ Boundaries:
   OpenCode API (`opencode api session.move`) to return the idle members of its
   lease family — the sessions its leases name and the descendants that descend
   from them — to the
-  repository's verified main checkout, then confirms every move with a fresh
-  authoritative read; an unreachable API, an incomplete listing, an unowned
+  repository's verified main checkout: it requests every safe family member once
+  before any wait, observes each response immediately, and keeps without polling
+  if any request remains pending; an unreachable API, an incomplete listing, an unowned
   session, a session of another family, a running family member other than the
   closing session the close is finishing, or a move that has not taken effect yet
   keeps the directory with a warning. The other issues the directory is
@@ -566,6 +595,8 @@ Rules:
   to it, and a child's record needs explicit authorization. A LOCAL_ISSUE note
   uses the local provider explicitly, and `phasegent --help record create` owns the
   body-file lifecycle (unchanged from `comment create`).
+- The note body carries the role's task-owned cleanup outcome and any retained
+  dirty paths and reasons; the minimal pointer never gains these fields.
 - A reviewer note labels its review `final` or `checkpoint` through `--review`
   and on the `REVIEW:` line beside the unchanged `VERDICT:` line, so a checkpoint
   round and the final audit stay distinguishable without a new token.

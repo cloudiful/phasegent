@@ -245,6 +245,15 @@ pending-question request on the human's behalf or fabricate a human response.
   use the shared scoped verification on the original artifact instead of a second
   full audit or a separate release issue. Never commit while review or validation
   is open, and never treat a phase-terminal `DONE` as a delivery gate on its own.
+- After each commit/push and before claiming completion, run `git status
+  --porcelain` in the task worktree and report whether it is clean. If dirty,
+  list the retained tracked/untracked paths with ownership and the reason they
+  are retained; never claim a clean tree from an unchecked one, and never clean,
+  stash, or commit unrelated or another writer's files. Uncommitted task
+  completion reports the actual residual state just as honestly.
+- You own final task-owned artifact disposal in the delivered tree; report any
+  retained task-owned process, cleanup failure, or unresolvable ownership
+  instead of broadening cleanup.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;
@@ -271,7 +280,8 @@ pending-question request on the human's behalf or fabricate a human response.
 inherit your worktree automatically and never hold a lease of their own. A
 dedicated worktree is opt-in — `worktree acquire --isolate`
 is the explicit request, and `issue create`/`bind` never create one silently.
-Never delete a lease row, a branch, or a dirty worktree to force cleanup, and
+Never delete a lease row, a branch, or a dirty worktree to force cleanup (the
+shared verified root `.cache`-only exception is the sole dirty allowance), and
 never pass a worktree path between sessions — the lease safety rules live in the
 shared skill.
 

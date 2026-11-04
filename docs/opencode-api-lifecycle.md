@@ -41,9 +41,10 @@ Four rules keep this narrow:
 - **A lease session without the `ses_` prefix belongs to a plain CLI caller.**
   Such a session is never moved, and `issue close` never reaches the API for
   it.
-- **The close never waits.** A move request that has not taken effect leaves the
-  directory in place, and `issue sync` removes it later once the host reports the
-  session elsewhere. There is no polling loop.
+- **The close never waits.** It requests every safe member of the lease family
+  once, observes each request immediately, and keeps the directory without
+  polling if any request remains pending; `issue sync` removes it later once the
+  host reports the sessions elsewhere.
 - **The close's stdout and exit code never change.** Cleanup stays best-effort
   and reports through stderr warnings.
 
@@ -128,7 +129,9 @@ uses only the host's in-process session APIs.
   provider, no active lease references it, and it is Git-clean — with no waiting
   period (`--stale-days` only affects the explicit stale-active recovery). It
   reuses the close/sync *local* guards — main checkout, active peer paths,
-  dirty/untracked contents — and adds its own running-session guard: only a
+  dirty/untracked contents, with the one shared verified root `.cache`-only
+  exception backed by reliable identity/change evidence and a post-clearance
+  gate re-check — and adds its own running-session guard: only a
   session the connected shared service reports as currently running in the
   directory blocks removal, so an inactive historical session record that still
   points at the directory never keeps it. The provider read is the same
@@ -148,8 +151,10 @@ uses only the host's in-process session APIs.
   reads that directory's fresh occupancy and the direct answer of every
   associated `ses_`-leased session, and it returns each *idle* member of that
   directory's lease family — the sessions the leases name and the descendants
-  that descend from them — to the repository's verified main checkout,
-  confirming every move with a fresh authoritative read. The `--dryrun`
+  that descend from them — to the repository's verified main checkout. It
+  requests every safe family member once before any wait, then confirms all
+  pending accepted requests round-robin inside one shared short budget, never
+  reissuing a move. The `--dryrun`
   preview reads the same occupancy and lineage evidence and reports the same
   blockers and move eligibility without moving anything. Those checks describe
   the one connected service at that moment, not a guarantee about session

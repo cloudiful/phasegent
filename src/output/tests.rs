@@ -1233,3 +1233,48 @@ fn a_stage_outside_a_progress_run_is_dropped() {
     crate::output::progress::clear();
     assert!(!crate::output::progress::active());
 }
+
+/// The human kept-reason breakdown stays arithmetically tied to the aggregate
+/// kept total and names the distinct stable categories (issue 1196 P1).
+#[test]
+fn prune_kept_reasons_split_main_waiting_and_other_protected() {
+    let value = json!({
+        "dry_run": false,
+        "repos": [{
+            "repo_identity": "/r/.git",
+            "worktrees": {
+                "actions": [
+                    {"worktree_path": "/r/main", "result": "skipped_protected",
+                     "message": "main checkout is never removed"},
+                    {"worktree_path": "/r/wait", "result": "skipped_protected",
+                     "message": "the OpenCode session 'ses_a' has not left the directory yet (bounded wait expired)"},
+                    {"worktree_path": "/r/dirty", "result": "skipped_protected",
+                     "message": "uncommitted or untracked files"},
+                    {"worktree_path": "/r/active", "result": "skipped_active"},
+                    {"worktree_path": "/r/issue", "result": "skipped_issue"},
+                    {"worktree_path": "/r/unknown", "result": "skipped_unknown"},
+                    {"worktree_path": "/r/gone", "result": "absent"}
+                ]
+            }
+        }],
+        "totals": {
+            "repositories": 1, "removed": 0, "eligible": 0, "absent": 1,
+            "kept_active": 1, "kept_unknown": 1, "kept_protected": 3,
+            "kept_issue": 1, "failed": 0
+        }
+    });
+    let text = render_view(HumanView::WorktreePrune, &value, 120);
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalized.contains(
+            "kept reasons: active 1, main 1, waiting-move 1, other-protected 1, issue-state 1, unknown 1"
+        ),
+        "got: {text}"
+    );
+    assert!(
+        normalized.contains(
+            "absent: 1 recorded worktree path(s) no longer exist on disk (historical lease evidence, not an OpenCode registration state)"
+        ),
+        "got: {text}"
+    );
+}

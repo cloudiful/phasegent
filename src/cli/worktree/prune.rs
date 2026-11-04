@@ -51,6 +51,7 @@ use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
 use crate::lifecycle::cleanup::TargetResolver;
+use crate::lifecycle::cleanup::wait::{MoveBudget, MovePolicy};
 use crate::output::context::OutputMode;
 use crate::policy::Role;
 use crate::worktree::leases::{
@@ -72,7 +73,7 @@ use host_cache::ScanHostCache;
 pub(crate) use leases::{ReleaseStaleAction, ReleaseStaleSummary};
 pub(crate) use worktrees::{
     DirectoryCandidate, PruneAction, PruneDisposition, PruneMode, PruneScope, PruneSummary,
-    pinned_active_paths, prune_pass, scan_worktree_candidates,
+    pinned_active_paths, prune_pass, prune_pass_with_policy, scan_worktree_candidates,
 };
 
 use leases::{stale_recovery_summary, stale_scan_summary};
@@ -179,6 +180,10 @@ pub(crate) fn execute_prune_with_source(
     // Wall duration of the command's own work; reported in text only, never as a
     // machine field.
     let started = Instant::now();
+    // One scheduling budget for every pending move of a removal invocation;
+    // the deadline begins at the first pending accepted move and never resets
+    // per directory or session. The preview always keeps the no-wait policy.
+    let move_budget = MoveBudget::new();
     let mut storage = match open_storage() {
         Ok(storage) => storage,
         Err(message) => return config_error(&message),
@@ -337,7 +342,12 @@ pub(crate) fn execute_prune_with_source(
             } else {
                 PruneMode::Remove
             };
-            prune_pass(
+            let confirmation = if dry_run {
+                MovePolicy::NoWait
+            } else {
+                MovePolicy::Bounded(&move_budget)
+            };
+            prune_pass_with_policy(
                 &storage,
                 &runner,
                 &scan_cache,
@@ -347,6 +357,7 @@ pub(crate) fn execute_prune_with_source(
                 source,
                 stale_days,
                 mode,
+                confirmation,
                 progress,
             )
         };

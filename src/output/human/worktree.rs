@@ -299,13 +299,42 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         lines.row(format!(
             "removed {removed}, eligible {eligible}, absent {absent}, kept {kept}, removal failures {failed}"
         ));
+        let mut main = 0u64;
+        let mut waiting = 0u64;
+        for repo in repos.into_iter().flatten() {
+            let Some(actions) = repo
+                .get("worktrees")
+                .and_then(|worktrees| worktrees.get("actions"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for action in actions {
+                if action.get("result").and_then(Value::as_str) != Some("skipped_protected") {
+                    continue;
+                }
+                let Some(message) = action.get("message").and_then(Value::as_str) else {
+                    continue;
+                };
+                match protected_reason_category(message) {
+                    ProtectedCategory::Main => main += 1,
+                    ProtectedCategory::WaitingMove => waiting += 1,
+                    ProtectedCategory::Other => {}
+                }
+            }
+        }
+        let other = count("kept_protected").saturating_sub(main + waiting);
         lines.row(format!(
-            "kept reasons: active {}, protected {}, issue-state {}, unknown {}",
+            "kept reasons: active {}, main {main}, waiting-move {waiting}, other-protected {other}, issue-state {}, unknown {}",
             count("kept_active"),
-            count("kept_protected"),
             count("kept_issue"),
             count("kept_unknown")
         ));
+        if absent > 0 {
+            lines.row(format!(
+                "absent: {absent} recorded worktree path(s) no longer exist on disk (historical lease evidence, not an OpenCode registration state)"
+            ));
+        }
     }
     // The stale-lease recovery stays visible in the aggregate.
     let (candidates, released) = repos
@@ -336,6 +365,27 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         lines.row(format!("skipped repositories: {skipped}"));
     }
     lines.finish()
+}
+
+/// The stable classification of one kept-protected message for the human
+/// summary. It matches the canonical reason prefixes the shared guards emit,
+/// never a caller-specific substring, so the arithmetic keeps matching the
+/// aggregate kept total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedCategory {
+    Main,
+    WaitingMove,
+    Other,
+}
+
+fn protected_reason_category(message: &str) -> ProtectedCategory {
+    if message.starts_with("main checkout is never removed") {
+        return ProtectedCategory::Main;
+    }
+    if message.contains("has not left the directory yet") {
+        return ProtectedCategory::WaitingMove;
+    }
+    ProtectedCategory::Other
 }
 
 /// Render one prune action. The removals, the failures, and the kept

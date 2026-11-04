@@ -209,7 +209,15 @@ provider, no `active` lease references it, and it is Git-clean — there is no
 waiting period, so `--stale-days` only affects the explicit `--release-stale`
 recovery. It reuses the same local guards as close/sync — never the main
 checkout, never a path an `active` lease points at, never dirty or untracked
-contents — and adds its own running-session guard: only a session the connected
+contents except one verified root `.cache`-only worktree (a real root `.cache`
+directory with no tracked paths, only `??` entries under that root, and a
+bounded symlink-free inventory re-read identically immediately before a guarded
+cache removal; the inventory records reliable device/inode and high-resolution
+change evidence, the initial eligibility baseline is carried across session
+movement, and a platform without reliable identity fails closed for this
+exception; the normal no-force `git worktree remove` follows only after every
+applicable lease, local, closure, and fresh host gate is re-checked) — and adds its
+own running-session guard: only a session the connected
 shared foreground-drain service reports as *currently running* in the directory
 blocks removal, checked read-only. An inactive historical session record that
 still points at the directory never keeps it. The read-only scan never
@@ -218,7 +226,14 @@ does: before it deletes a directory it reads that directory's fresh occupancy
 and the lineage the host reports, and returns every associated idle `ses_`
 session — the sessions its leases name and the descendants that descend from
 them — to the repository's verified
-main checkout, confirming each move with a fresh authoritative read. Those
+main checkout. Every safe family member is requested once before any
+confirmation wait; the first read after each request is immediate and a pending
+sibling never suppresses a later one. Only an actual prune may then poll all
+still-pending accepted moves round-robin inside one invocation-shared 3-second
+budget (100 ms apart, never reset per directory or session, never reissuing the
+move), and the preview and close never wait. A recorded worktree path that no longer exists on disk is counted as
+absent and converges once to `released` without rewriting an already-released
+row. Those
 checks describe the one connected service at that moment, not a guarantee about
 session changes after them. A session no lease of this repository associates,
 and no lineage reaches one of them,
