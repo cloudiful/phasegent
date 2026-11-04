@@ -90,6 +90,7 @@ pub(crate) fn occupancy_reason(
 /// is the same `guards::evaluate` call the host guard is layered on, not a
 /// parallel copy, so the two can never disagree. `closing` preserves the
 /// close/sync caller's own-session exemption; prune passes `None`.
+#[allow(dead_code)]
 pub(crate) fn local_protected_reason(
     runner: &dyn WorktreeRunner,
     identity: &str,
@@ -97,5 +98,17 @@ pub(crate) fn local_protected_reason(
     closing: Option<&str>,
     row: &LeaseRow,
 ) -> Option<String> {
+    guards::evaluate(runner, rows, identity, closing, row).protected_reason
+}
+
+/// The full local guard outcome: a protected reason or the exact root `.cache`
+/// assessment to carry through the later removal.
+pub(crate) fn local_guard(
+    runner: &dyn WorktreeRunner,
+    identity: &str,
+    rows: &[LeaseRow],
+    closing: Option<&str>,
+    row: &LeaseRow,
+) -> guards::LocalGuard {
     guards::evaluate(runner, rows, identity, closing, row)
 }

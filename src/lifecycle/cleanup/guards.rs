@@ -10,21 +10,100 @@ use std::path::{Path, PathBuf};
 
 use crate::worktree::{
     CanonicalPaths, LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, WorktreeRunner,
+    cache::CacheInventory,
 };
 
-/// Evaluate the local guards for one candidate row. `None` means the
-/// directory passed every guard and may be removed.
+/// The result of the local Git-only guards for one candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalGuard {
+    pub(crate) protected_reason: Option<String>,
+    /// Present only when the worktree is dirty solely because of an exact root
+    /// `.cache`. Callers must carry this assessment forward as the expected
+    /// inventory for the later guarded removal.
+    pub(crate) cache: Option<CacheInventory>,
+}
+
+impl LocalGuard {
+    fn allowed() -> Self {
+        Self {
+            protected_reason: None,
+            cache: None,
+        }
+    }
+
+    fn allowed_cache_only(cache: CacheInventory) -> Self {
+        Self {
+            protected_reason: None,
+            cache: Some(cache),
+        }
+    }
+
+    fn protected(reason: impl Into<String>) -> Self {
+        Self {
+            protected_reason: Some(reason.into()),
+            cache: None,
+        }
+    }
+}
+
+/// Evaluate the local guards for one candidate row. A protected reason means
+/// the directory must be kept; otherwise the carried cache assessment is the
+/// only dirty state the shared removal may clear.
 pub(super) fn evaluate(
     runner: &dyn WorktreeRunner,
     rows: &[LeaseRow],
     identity: &str,
     session: Option<&str>,
     row: &LeaseRow,
-) -> Option<String> {
-    CanonicalPaths::default().protected_reason(runner, identity, rows, session, row)
+) -> LocalGuard {
+    CanonicalPaths::default().evaluate_guards(runner, identity, rows, session, row)
 }
 
 impl CanonicalPaths {
+    pub(crate) fn evaluate_guards(
+        &self,
+        runner: &dyn WorktreeRunner,
+        identity: &str,
+        rows: &[LeaseRow],
+        session: Option<&str>,
+        row: &LeaseRow,
+    ) -> LocalGuard {
+        let directory = PathBuf::from(&row.worktree_path);
+        match is_main_checkout_with_paths(runner, &directory, identity, self) {
+            Ok(true) => return LocalGuard::protected("main checkout is never removed"),
+            Ok(false) => {}
+            Err(error) => {
+                return LocalGuard::protected(format!(
+                    "could not verify the main-checkout guard: {}",
+                    crate::lifecycle::bounded(&error.message)
+                ));
+            }
+        }
+        if let Some(other) = foreign_active_lease(rows, session, row, self) {
+            return LocalGuard::protected(format!(
+                "session '{}' holds an active lease for issue {}",
+                other.session, other.issue
+            ));
+        }
+        match crate::worktree::is_clean(runner, &directory) {
+            Ok(true) => LocalGuard::allowed(),
+            Ok(false) => match crate::worktree::cache::inspect(runner, &directory) {
+                Ok(crate::worktree::cache::CacheInspection::CacheOnly(cache)) => {
+                    LocalGuard::allowed_cache_only(cache)
+                }
+                Ok(crate::worktree::cache::CacheInspection::NotCacheOnly) => {
+                    LocalGuard::protected("uncommitted or untracked files")
+                }
+                Err(reason) => LocalGuard::protected(reason),
+            },
+            Err(error) => LocalGuard::protected(format!(
+                "cleanliness probe failed: {}",
+                crate::lifecycle::bounded(&error.message)
+            )),
+        }
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn protected_reason(
         &self,
         runner: &dyn WorktreeRunner,
@@ -33,31 +112,8 @@ impl CanonicalPaths {
         session: Option<&str>,
         row: &LeaseRow,
     ) -> Option<String> {
-        let directory = PathBuf::from(&row.worktree_path);
-        match is_main_checkout_with_paths(runner, &directory, identity, self) {
-            Ok(true) => return Some("main checkout is never removed".to_owned()),
-            Ok(false) => {}
-            Err(error) => {
-                return Some(format!(
-                    "could not verify the main-checkout guard: {}",
-                    crate::lifecycle::bounded(&error.message)
-                ));
-            }
-        }
-        if let Some(other) = foreign_active_lease(rows, session, row, self) {
-            return Some(format!(
-                "session '{}' holds an active lease for issue {}",
-                other.session, other.issue
-            ));
-        }
-        match crate::worktree::is_clean(runner, &directory) {
-            Ok(true) => None,
-            Ok(false) => Some("uncommitted or untracked files".to_owned()),
-            Err(error) => Some(format!(
-                "cleanliness probe failed: {}",
-                crate::lifecycle::bounded(&error.message)
-            )),
-        }
+        self.evaluate_guards(runner, identity, rows, session, row)
+            .protected_reason
     }
 }
 

@@ -128,7 +128,9 @@ uses only the host's in-process session APIs.
   provider, no active lease references it, and it is Git-clean — with no waiting
   period (`--stale-days` only affects the explicit stale-active recovery). It
   reuses the close/sync *local* guards — main checkout, active peer paths,
-  dirty/untracked contents — and adds its own running-session guard: only a
+  dirty/untracked contents, with the one shared verified root `.cache`-only
+  exception backed by reliable identity/change evidence and a post-clearance
+  gate re-check — and adds its own running-session guard: only a
   session the connected shared service reports as currently running in the
   directory blocks removal, so an inactive historical session record that still
   points at the directory never keeps it. The provider read is the same

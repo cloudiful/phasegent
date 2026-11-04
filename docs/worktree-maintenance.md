@@ -95,9 +95,12 @@ Each actual removal has a new verification window, independent of scan memo:
    returned to the verified main checkout. A foreign occupant is never moved
    and keeps the directory.
 6. Check running state immediately before moves and again afterwards. Confirm
-   every requested move through fresh session locations; after moves, fresh
-   family reads and a complete listing must agree the directory is free before
-   removal proceeds.
+   every requested move through fresh session locations. The first read is
+   immediate; an actual prune may poll a still-pending accept inside one
+   invocation-shared 3-second budget (100 ms apart, never reset per directory
+   or session, never reissuing the move), while close, sync, and the preview
+   never wait. After moves, fresh family reads and a complete listing must
+   agree the directory is free before removal proceeds.
 
 An unavailable or incomplete listing, missing/mismatched session answer,
 unusable location, unreadable/mismatched/cyclic lineage,
@@ -106,9 +109,25 @@ checkout keeps the directory. The `--dryrun` preview runs the same occupancy
 and lineage reads and reports the same blockers and move eligibility without
 moving, deleting, or writing anything. Local Git guards run before host reads,
 so a
-main checkout or dirty path does not need host access to be kept. Removal uses
-`git worktree remove` without force. Branches and lease rows are retained as
-history.
+main checkout or dirty path does not need host access to be kept. One shared
+dirty exception is a verified root `.cache`-only worktree: `.cache` is a real
+root directory (never a file, symlink, `.cache2`, or nested `other/.cache`),
+Git tracks nothing below it, porcelain status names only `??` paths under that
+exact root, and a bounded symlink-free inventory (at most 4096 entries) of
+reliable device/inode and high-resolution change evidence matches the initial
+eligibility baseline across session movement and re-reads identically
+immediately before the guarded cache removal. A platform without reliable
+identity fails closed for this exception, and a same-length replacement or root
+replacement keeps. After that removal Git status is checked again, every
+applicable lease, local, closure, and fresh host gate is re-checked once more,
+and then the ordinary no-force `git worktree remove`
+runs; every other path is preserved. Removal uses `git worktree remove` without
+force. Branches and lease rows are retained as history.
+
+A recorded worktree path that no longer exists on disk is counted as absent; its
+still-open lease rows converge once to `released`, and a repeated run leaves an
+already-released row and its heartbeat untouched. A filesystem error or a
+symlink entry is never read as absence.
 
 These checks cover the one connected OpenCode service at the time of the
 reads, not a whole-machine inventory or a guarantee against later session

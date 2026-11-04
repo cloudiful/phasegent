@@ -87,6 +87,10 @@ relay it to your parent rather than escalating directly.
   for the reviewer's independent verification.
 - You remain the only write owner for the phase: never share the mutable tree
   with a reviewer, and never overlap a write owner.
+- Before publishing the terminal record, remove only the disposable artifacts
+  and scratch cache you created for this phase; stop task-owned processes. Record
+  the cleanup outcome and any retained dirty paths and reasons in the note body,
+  never the pointer, and never commit or touch another writer's files.
 - Keep the note compact — evidence supports the status instead of restating logs
   or duplicating another role's report.
 

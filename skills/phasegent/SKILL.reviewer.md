@@ -76,6 +76,10 @@ scope, and help lookup.
   reach.
 - Run the allowlisted focused tests and any bounded command needed to confirm a
   behavioral failure, and report what you ran and what it observed.
+- Before publishing the review record, remove only your own authorized test
+  scratch and disposable artifacts; record the cleanup outcome and any retained
+  paths or reasons in the note body, where review evidence belongs, never the
+  pointer. Never clean another writer's files or production paths.
 
 ## Code-quality responsibilities
 

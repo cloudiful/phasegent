@@ -53,6 +53,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::infra::storage::Storage;
 
 mod acquire;
+pub(crate) mod cache;
 mod create_hook;
 pub(crate) mod git;
 pub(super) mod lease_schema;

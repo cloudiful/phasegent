@@ -34,6 +34,7 @@ use std::path::Path;
 
 use super::CleanupMode;
 use super::target::TargetResolver;
+use super::wait::MovePolicy;
 use crate::worktree::opencode::{
     ApiError, LocatedSession, OpenCodeApi, is_opencode_session, occupants_of_directory,
 };
@@ -87,6 +88,30 @@ pub(crate) fn finalize_family(
     directory: &Path,
     associated: &[String],
     closing: Option<&str>,
+) -> FamilyOutcome {
+    finalize_family_with(
+        api,
+        mode,
+        target,
+        directory,
+        associated,
+        closing,
+        MovePolicy::NoWait,
+    )
+}
+
+/// [`finalize_family`] with an explicit move-confirmation policy. Only an
+/// actual prune passes [`MovePolicy::Bounded`]; every other caller keeps the
+/// historical immediate read.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finalize_family_with(
+    api: &dyn OpenCodeApi,
+    mode: CleanupMode,
+    target: &TargetResolver<'_>,
+    directory: &Path,
+    associated: &[String],
+    closing: Option<&str>,
+    confirmation: MovePolicy<'_>,
 ) -> FamilyOutcome {
     let roots = root_sessions(associated);
     let close_root = close_root(mode, closing);
@@ -183,6 +208,12 @@ pub(crate) fn finalize_family(
         }
         movable.push(id.clone());
     }
+    // A revalidation pass reads current occupancy and running state, keeps
+    // whenever any session is still hosted, and never moves anything.
+    if mode == CleanupMode::Verify {
+        let ids: Vec<String> = hosted.iter().map(|(id, _)| id.clone()).collect();
+        return FamilyOutcome::Keep(hosted_reason(&ids));
+    }
     // The reconciliation pass never moves a session: a directory that still
     // hosts one of ours waits for a later pass.
     if mode == CleanupMode::Sync {
@@ -211,6 +242,7 @@ pub(crate) fn finalize_family(
         movable,
         &family,
         close_root.as_deref(),
+        confirmation,
     )
 }
 
@@ -231,6 +263,7 @@ fn release_family(
     movable: Vec<String>,
     family: &[String],
     close_root: Option<&str>,
+    confirmation: MovePolicy<'_>,
 ) -> FamilyOutcome {
     let destination = match target.get().resolve() {
         Ok(path) => path.to_path_buf(),
@@ -304,33 +337,12 @@ fn release_family(
         }
         // Acceptance is not relocation: a queued or still-running move leaves
         // the session where it was, and the directory must survive that. The
-        // confirmation must also answer for the session that was moved and
-        // report a usable location.
-        match api.session(id) {
-            Ok(located) if located.id != *id => {
-                return FamilyOutcome::Keep(format!(
-                    "the host answered for the moved OpenCode session '{id}' with a different session '{}'",
-                    crate::lifecycle::bounded(&located.id)
-                ));
-            }
-            Ok(located) if !Path::new(&located.directory).is_absolute() => {
-                return FamilyOutcome::Keep(format!(
-                    "the host answered for the moved OpenCode session '{id}' with a non-absolute location '{}'",
-                    crate::lifecycle::bounded(&located.directory)
-                ));
-            }
-            Ok(located) if same_directory(Path::new(&located.directory), &destination) => {}
-            Ok(_) => {
-                return FamilyOutcome::Keep(format!(
-                    "the OpenCode session '{id}' has not left the directory yet"
-                ));
-            }
-            Err(error) => {
-                return FamilyOutcome::Keep(format!(
-                    "the OpenCode session '{id}' could not be confirmed after the move request: {}",
-                    crate::lifecycle::bounded(&error.message)
-                ));
-            }
+        // first read is immediate; only the bounded prune policy may then
+        // poll the exact session, and it never reissues the move.
+        if let Err(reason) = confirmation.confirm(api, id, directory, &destination, || {
+            running_blocker(api, directory, close_root, Some(id), &returned)
+        }) {
+            return FamilyOutcome::Keep(reason);
         }
         returned.push(id.clone());
     }

@@ -77,7 +77,7 @@ Roles:
 $ phasegent --output text worktree prune --dryrun
 worktree prune (dry-run preview)
 removed 0, eligible 0, absent 0, kept 0, removal failures 0
-kept reasons: active 0, protected 0, issue-state 0, unknown 0
+kept reasons: active 0, main 0, waiting-move 0, other-protected 0, issue-state 0, unknown 0
 elapsed 0.001s
 ```
 
@@ -86,8 +86,13 @@ of being truncated silently. A kept or failed prune directory names its reason,
 so the summary stays actionable. The preview reads each candidate's occupancy
 and lineage read-only, so its kept reasons are the blockers the removal would
 meet, and an eligible directory names how many idle sessions the removal would
-return to the main checkout first. The existing action message carries that
-summary; the JSON fields are unchanged.
+return to the main checkout first. The kept-reason line splits active leases,
+the main checkout, pending-move waits, other protected states, issue state, and
+unknown state, and its parts sum to the kept total. A nonzero absent count adds
+one line describing historical lease paths that no longer exist on disk. A
+cache-only candidate names the root `.cache` entry count it would delete; a
+bounded pending-move wait appears in the same existing action message. The
+existing action message carries that summary; the JSON fields are unchanged.
 
 ## JSON
 

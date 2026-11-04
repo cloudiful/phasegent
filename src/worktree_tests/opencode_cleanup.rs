@@ -583,3 +583,231 @@ fn a_new_open_issue_during_the_moves_keeps_the_directory() {
     );
     assert!(fixture.candidate.exists());
 }
+
+/// The root `.cache` exception is shared cleanup policy: close accepts a
+/// cache-only candidate, clears the exact root cache, and then runs the
+/// ordinary no-force worktree removal.
+#[test]
+fn close_clears_a_cache_only_candidate_before_removing_it() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = Fixture::new("p1-cache-only") else {
+        return;
+    };
+    fixture.lease("phasegent-cli");
+    std::fs::create_dir_all(fixture.candidate.join(".cache/ai")).expect("cache dir");
+    std::fs::write(fixture.candidate.join(".cache/ai/scratch"), "scratch").expect("cache file");
+    let api = FakeOpenCodeApi::empty();
+    let outcome = fixture.clean(&api, CleanupMode::Close, None);
+    let (removed, kept) = classified(outcome);
+    assert_eq!(removed, 1, "a cache-only candidate is removable");
+    assert!(kept.is_empty());
+    assert!(!fixture.candidate.exists());
+    assert!(api.moves().is_empty());
+}
+
+/// Any other untracked path keeps the candidate and leaves the root cache in
+/// place; the exception never becomes a general untracked-file cleanup.
+#[test]
+fn close_keeps_other_untracked_content_beside_the_root_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = Fixture::new("p1-cache-other") else {
+        return;
+    };
+    fixture.lease("phasegent-cli");
+    std::fs::create_dir_all(fixture.candidate.join(".cache")).expect("cache dir");
+    std::fs::write(fixture.candidate.join(".cache/scratch"), "scratch").expect("cache file");
+    std::fs::write(fixture.candidate.join("notes.txt"), "user content").expect("other file");
+    let api = FakeOpenCodeApi::empty();
+    let outcome = fixture.clean(&api, CleanupMode::Close, None);
+    let (removed, kept) = classified(outcome);
+    assert_eq!(removed, 0);
+    assert_eq!(kept.len(), 1);
+    assert!(
+        kept[0].contains("uncommitted or untracked files"),
+        "got: {}",
+        kept[0]
+    );
+    assert!(fixture.candidate.join("notes.txt").exists());
+    assert!(fixture.candidate.join(".cache/scratch").exists());
+}
+
+struct CacheClearRunner {
+    inner: ProcessWorktreeRunner,
+    target: usize,
+    calls: std::cell::Cell<usize>,
+    action: std::cell::RefCell<Option<Box<dyn Fn()>>>,
+}
+
+impl WorktreeRunner for CacheClearRunner {
+    fn run(
+        &self,
+        args: &[&str],
+        workdir: &Path,
+    ) -> Result<crate::worktree::GitOutput, crate::worktree::WorktreeError> {
+        if let ["ls-files", "--", ".cache"] = args {
+            let calls = self.calls.get() + 1;
+            self.calls.set(calls);
+            if calls == self.target
+                && let Some(action) = self.action.borrow_mut().take()
+            {
+                action();
+            }
+        }
+        self.inner.run(args, workdir)
+    }
+}
+
+#[test]
+fn close_rechecks_a_new_active_lease_after_cache_cleanup() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = Fixture::new("p1-cache-lease-race") else {
+        return;
+    };
+    fixture.lease("phasegent-cli");
+    std::fs::create_dir_all(fixture.candidate.join(".cache")).expect("cache dir");
+    std::fs::write(fixture.candidate.join(".cache/scratch"), "scratch").expect("cache file");
+    let runner = CacheClearRunner {
+        inner: ProcessWorktreeRunner::new(),
+        target: 3,
+        calls: std::cell::Cell::new(0),
+        action: std::cell::RefCell::new(Some(Box::new({
+            let identity = fixture.identity.clone();
+            let main = fixture.main.clone();
+            let candidate = fixture.candidate.clone();
+            move || {
+                let storage = crate::infra::storage::Storage::open().expect("temp storage");
+                crate::worktree::leases::insert_lease(
+                    &storage,
+                    crate::worktree::leases::NewLease {
+                        lease_id: "lease-peer-active",
+                        identity: &identity,
+                        issue: 7,
+                        session: "peer",
+                        checkout_path: &main.to_string_lossy(),
+                        worktree_path: &candidate.to_string_lossy(),
+                        branch: "feat/7-aaaaaa",
+                        status: crate::worktree::LEASE_STATUS_ACTIVE,
+                        created_at: 1,
+                        heartbeat_at: 1,
+                    },
+                )
+                .expect("active lease insert");
+            }
+        }))),
+    };
+    let api = FakeOpenCodeApi::empty();
+    let outcome = crate::lifecycle::cleanup_closed_issue_worktrees_with(
+        &runner,
+        &api,
+        CleanupMode::Close,
+        &fixture.main,
+        super::opencode_fixture::ISSUE,
+        None,
+        &ConfirmAllClosed,
+    );
+    let (removed, kept) = classified(outcome);
+    assert_eq!(removed, 0, "a new active owner keeps the directory");
+    assert!(fixture.candidate.exists());
+    assert!(!fixture.candidate.join(".cache").exists());
+    assert!(kept[0].contains("active lease"), "got: {}", kept[0]);
+}
+
+struct RacyHost {
+    inner: FakeOpenCodeApi,
+    flag: std::rc::Rc<std::cell::Cell<bool>>,
+    id: String,
+    at: PathBuf,
+    elsewhere: PathBuf,
+}
+
+impl crate::worktree::opencode::OpenCodeApi for RacyHost {
+    fn session(
+        &self,
+        id: &str,
+    ) -> Result<crate::worktree::opencode::LocatedSession, crate::worktree::opencode::ApiError>
+    {
+        if id == self.id {
+            return Ok(crate::worktree::opencode::LocatedSession {
+                id: id.to_owned(),
+                directory: if self.flag.get() {
+                    self.at.to_string_lossy().into_owned()
+                } else {
+                    self.elsewhere.to_string_lossy().into_owned()
+                },
+                parent_id: None,
+            });
+        }
+        self.inner.session(id)
+    }
+
+    fn list(
+        &self,
+        request: &crate::worktree::opencode::ListRequest,
+    ) -> Result<crate::worktree::opencode::SessionPage, crate::worktree::opencode::ApiError> {
+        let mut page = self.inner.list(request)?;
+        if self.flag.get() {
+            page.sessions.retain(|session| session.id != self.id);
+            page.sessions
+                .push(crate::worktree::opencode::LocatedSession {
+                    id: self.id.clone(),
+                    directory: self.at.to_string_lossy().into_owned(),
+                    parent_id: None,
+                });
+        }
+        Ok(page)
+    }
+
+    fn move_session(
+        &self,
+        id: &str,
+        directory: &Path,
+    ) -> Result<(), crate::worktree::opencode::ApiError> {
+        self.inner.move_session(id, directory)
+    }
+
+    fn active_sessions(&self) -> Result<Vec<String>, crate::worktree::opencode::ApiError> {
+        self.inner.active_sessions()
+    }
+}
+
+#[test]
+fn sync_rechecks_a_hosted_session_after_cache_cleanup() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = Fixture::new("p1-cache-host-race") else {
+        return;
+    };
+    fixture.lease("ses_a");
+    std::fs::create_dir_all(fixture.candidate.join(".cache")).expect("cache dir");
+    std::fs::write(fixture.candidate.join(".cache/scratch"), "scratch").expect("cache file");
+    let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+    let runner = CacheClearRunner {
+        inner: ProcessWorktreeRunner::new(),
+        target: 2,
+        calls: std::cell::Cell::new(0),
+        action: std::cell::RefCell::new(Some(Box::new({
+            let flag = flag.clone();
+            move || flag.set(true)
+        }))),
+    };
+    let api = RacyHost {
+        inner: FakeOpenCodeApi::empty(),
+        flag: flag.clone(),
+        id: "ses_a".to_owned(),
+        at: fixture.candidate.clone(),
+        elsewhere: fixture.main.clone(),
+    };
+    let outcome = crate::lifecycle::cleanup_closed_issue_worktrees_with(
+        &runner,
+        &api,
+        CleanupMode::Sync,
+        &fixture.main,
+        super::opencode_fixture::ISSUE,
+        None,
+        &ConfirmAllClosed,
+    );
+    let (removed, kept) = classified(outcome);
+    assert_eq!(removed, 0, "a newly hosted session keeps the directory");
+    assert!(fixture.candidate.exists());
+    assert!(!fixture.candidate.join(".cache").exists());
+    assert!(kept[0].contains("still hosted here"), "got: {}", kept[0]);
+}

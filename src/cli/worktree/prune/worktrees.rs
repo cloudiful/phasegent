@@ -46,6 +46,7 @@ use crate::cli::report_local_warnings;
 use crate::infra::storage::Storage;
 use crate::lifecycle::cleanup::TargetResolver;
 use crate::lifecycle::cleanup::sessions::{self, FamilyOutcome};
+use crate::lifecycle::cleanup::wait::MovePolicy;
 use crate::lifecycle::cleanup::{CleanupMode, associated_sessions};
 use crate::worktree::git::worktree_remove;
 use crate::worktree::leases::{list_all_for_repo, load_lease, update_status};
@@ -112,8 +113,14 @@ pub(crate) struct DirectoryCandidate {
     pub status: String,
     pub heartbeat_at: i64,
     pub lease_ids: Vec<String>,
+    /// The subset of `lease_ids` whose persisted row is already terminal
+    /// `released`. A repeated absent run must not rewrite their heartbeat.
+    pub released_lease_ids: Vec<String>,
     pub issues: Vec<u64>,
     pub disposition: PruneDisposition,
+    /// The exact root `.cache` baseline assessed before any host or session
+    /// movement; the later removal must still match it.
+    pub cache: Option<crate::worktree::cache::CacheInventory>,
 }
 
 /// One directory action of the prune pass. `prunable` is the explicit safety
@@ -254,6 +261,23 @@ fn scan_with_paths(
         .collect()
 }
 
+/// One classification: the ordered disposition plus the exact root `.cache`
+/// baseline assessed before any host or session movement.
+#[derive(Debug, Clone)]
+struct Classification {
+    disposition: PruneDisposition,
+    cache: Option<crate::worktree::cache::CacheInventory>,
+}
+
+impl Classification {
+    fn keep(disposition: PruneDisposition) -> Self {
+        Self {
+            disposition,
+            cache: None,
+        }
+    }
+}
+
 /// Classify one directory group. Read-only.
 fn classify(
     runner: &dyn WorktreeRunner,
@@ -264,7 +288,13 @@ fn classify(
     group: DirectoryGroup,
     paths: &CanonicalPaths,
 ) -> DirectoryCandidate {
-    let disposition = classify_group(runner, api, scope, pinned_active, source, &group, paths);
+    let classification = classify_group(runner, api, scope, pinned_active, source, &group, paths);
+    let released_lease_ids = group
+        .rows
+        .iter()
+        .filter(|row| row.status == LEASE_STATUS_RELEASED)
+        .map(|row| row.lease_id.clone())
+        .collect();
     DirectoryCandidate {
         canonical_path: group.canonical_path,
         worktree_path: group.worktree_path,
@@ -272,8 +302,10 @@ fn classify(
         status: group.status,
         heartbeat_at: group.heartbeat_at,
         lease_ids: group.lease_ids,
+        released_lease_ids,
         issues: group.issues,
-        disposition,
+        disposition: classification.disposition,
+        cache: classification.cache,
     }
 }
 
@@ -291,7 +323,7 @@ fn classify_group(
     source: &dyn IssueStateSource,
     group: &DirectoryGroup,
     paths: &CanonicalPaths,
-) -> PruneDisposition {
+) -> Classification {
     let canonical = group.canonical_path.to_string_lossy().into_owned();
     if group
         .rows
@@ -299,7 +331,7 @@ fn classify_group(
         .any(|row| row.status == LEASE_STATUS_ACTIVE)
         || pinned_active.contains(&canonical)
     {
-        return PruneDisposition::SkippedActive;
+        return Classification::keep(PruneDisposition::SkippedActive);
     }
     if group.rows.iter().any(|row| {
         row.status != LEASE_STATUS_ACTIVE
@@ -308,38 +340,50 @@ fn classify_group(
     }) {
         // An unrecognised status is kept safely before anything else is
         // inferred from the path.
-        return PruneDisposition::SkippedUnknownStatus;
+        return Classification::keep(PruneDisposition::SkippedUnknownStatus);
     }
-    if !group.canonical_path.exists() {
-        return PruneDisposition::MissingDirectory;
+    match path_entry(&group.canonical_path) {
+        PathEntry::Present => {}
+        PathEntry::Missing => return Classification::keep(PruneDisposition::MissingDirectory),
+        PathEntry::Unreadable(reason) => {
+            return Classification::keep(PruneDisposition::SkippedProtected(reason));
+        }
     }
     // The local Git guards run first and read nothing from the host: a main
     // checkout, an active peer's path, or a dirty/untracked directory is
-    // excluded here, so it never reaches the running-session query.
-    if let Some(reason) = paths.protected_reason(
+    // excluded here, so it never reaches the running-session query. A
+    // cache-only verdict carries the initial inventory baseline forward.
+    let local = paths.evaluate_guards(
         runner,
         scope.identity,
         scope.rows,
         None,
         &representative(group),
-    ) {
-        return PruneDisposition::SkippedProtected(reason);
+    );
+    if let Some(reason) = local.protected_reason {
+        return Classification::keep(PruneDisposition::SkippedProtected(reason));
     }
+    let cache = local.cache;
     // The running-session guard: occupancy is free only when the connected
     // service gave a complete, valid answer and no running session (root or
     // child) is currently in the directory. An unreadable, malformed, or
     // mismatched answer keeps the directory rather than reading as vacancy.
     match active_guard::RunningSnapshot::capture(api) {
-        Err(reason) => return PruneDisposition::SkippedProtected(reason),
+        Err(reason) => {
+            return Classification::keep(PruneDisposition::SkippedProtected(reason));
+        }
         Ok(snapshot) => {
             if let Some(reason) = snapshot.keep_reason(&group.canonical_path) {
-                return PruneDisposition::SkippedProtected(reason);
+                return Classification::keep(PruneDisposition::SkippedProtected(reason));
             }
         }
     }
     match closure_of(source, scope, group) {
-        IssueClosure::Closed => PruneDisposition::Removable,
-        IssueClosure::Keep(reason) => PruneDisposition::SkippedIssue(reason),
+        IssueClosure::Closed => Classification {
+            disposition: PruneDisposition::Removable,
+            cache,
+        },
+        IssueClosure::Keep(reason) => Classification::keep(PruneDisposition::SkippedIssue(reason)),
     }
 }
 
@@ -359,6 +403,25 @@ fn representative(group: &DirectoryGroup) -> LeaseRow {
     })
 }
 
+/// The filesystem entry state of a candidate path. Only a genuine `NotFound`
+/// is absence; a permission or I/O error, and a dangling or resolvable symlink
+/// entry, are never silently treated as a missing directory.
+enum PathEntry {
+    Present,
+    Missing,
+    Unreadable(String),
+}
+
+fn path_entry(path: &Path) -> PathEntry {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => PathEntry::Present,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PathEntry::Missing,
+        Err(error) => PathEntry::Unreadable(format!(
+            "could not verify the worktree directory: {}",
+            crate::worktree::bounded(&error.to_string())
+        )),
+    }
+}
 /// Closure requires *every* associated issue to be confirmed closed.
 fn closure_of(
     source: &dyn IssueStateSource,
@@ -388,6 +451,7 @@ fn closure_of(
 /// `scan_api` may be a memoizing view for the classification pass, but every
 /// removal authorization re-reads through `fresh_api`, so a stale scan answer
 /// can never authorize a deletion.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prune_pass(
     storage: &Storage,
@@ -399,6 +463,38 @@ pub(crate) fn prune_pass(
     source: &dyn IssueStateSource,
     stale_days: u32,
     mode: PruneMode,
+    progress: &dyn Fn(&str),
+) -> PruneSummary {
+    prune_pass_with_policy(
+        storage,
+        runner,
+        scan_api,
+        fresh_api,
+        scope,
+        pinned_active,
+        source,
+        stale_days,
+        mode,
+        MovePolicy::NoWait,
+        progress,
+    )
+}
+
+/// [`prune_pass`] with an explicit move-confirmation policy. The production
+/// pass supplies one invocation-shared bounded budget in removal mode; every
+/// test that does not care keeps the no-wait default.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prune_pass_with_policy(
+    storage: &Storage,
+    runner: &dyn WorktreeRunner,
+    scan_api: &dyn OpenCodeApi,
+    fresh_api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    pinned_active: &BTreeSet<String>,
+    source: &dyn IssueStateSource,
+    stale_days: u32,
+    mode: PruneMode,
+    confirmation: MovePolicy<'_>,
     progress: &dyn Fn(&str),
 ) -> PruneSummary {
     // The scan is silent: the pass streams one global start line (from the
@@ -417,6 +513,7 @@ pub(crate) fn prune_pass(
                 source,
                 candidate,
                 mode,
+                confirmation,
                 progress,
             )
         })
@@ -434,6 +531,7 @@ fn apply_candidate(
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
     mode: PruneMode,
+    confirmation: MovePolicy<'_>,
     progress: &dyn Fn(&str),
 ) -> PruneAction {
     let mut action = PruneAction {
@@ -468,20 +566,32 @@ fn apply_candidate(
         }
         PruneDisposition::MissingDirectory => {
             action.result = "absent".to_owned();
-            action.message = Some("worktree directory already absent".to_owned());
+            action.message = Some(
+                "worktree directory already absent; the historical lease path stays recorded"
+                    .to_owned(),
+            );
             if mode == PruneMode::Remove {
-                // The directory is gone; converge every absent row to
-                // `released` so the audit trail matches reality. No branch,
-                // directory, or unrelated row is touched.
+                // Converge only rows that are not already terminal. A
+                // repeated run over the same absent path must not rewrite a
+                // released row's heartbeat or re-read it.
+                let mut changed = false;
                 for lease_id in &candidate.lease_ids {
+                    if candidate.released_lease_ids.iter().any(|id| id == lease_id) {
+                        continue;
+                    }
                     if let Err(error) = update_status(storage, lease_id, LEASE_STATUS_RELEASED) {
                         action.result = "failed".to_owned();
                         action.message = Some(format!("could not mark released: {error}"));
                         break;
                     }
+                    changed = true;
                 }
-                if action.result == "absent" {
-                    reload_statuses(storage, &candidate.lease_ids, &mut action);
+                if action.result == "absent"
+                    && changed
+                    && let Err(reason) = reload_statuses(storage, &candidate.lease_ids, &mut action)
+                {
+                    action.result = "failed".to_owned();
+                    action.message = Some(format!("could not re-read lease status: {reason}"));
                 }
             }
         }
@@ -491,21 +601,22 @@ fn apply_candidate(
                 // the removal stage would meet, so it reports the blockers
                 // and the move eligibility it finds. It never moves a
                 // session, deletes a directory, or writes a lease row.
-                match preview_family(api, scope, candidate) {
+                let base = match preview_family(api, scope, candidate) {
                     FamilyOutcome::Keep(reason) => {
                         action.result = "skipped_protected".to_owned();
                         action.message = Some(reason);
+                        None
                     }
-                    FamilyOutcome::Releasable { sessions } => {
-                        action.prunable = true;
-                        action.result = "prunable".to_owned();
-                        action.message = Some(dry_run_message(sessions.len()));
-                    }
-                    _ => {
-                        action.prunable = true;
-                        action.result = "prunable".to_owned();
-                        action.message = Some("dry-run: would call git worktree remove".to_owned());
-                    }
+                    FamilyOutcome::Releasable { sessions } => Some(dry_run_message(sessions.len())),
+                    _ => Some("dry-run: would call git worktree remove".to_owned()),
+                };
+                if let Some(base) = base {
+                    action.prunable = true;
+                    action.result = "prunable".to_owned();
+                    action.message = Some(match preview_cache_detail(runner, candidate) {
+                        Some(detail) => format!("{base}; {detail}"),
+                        None => base,
+                    });
                 }
             } else {
                 progress(&format!(
@@ -528,47 +639,65 @@ fn apply_candidate(
                         action.result = "skipped_protected".to_owned();
                         action.message = Some(format!("kept on re-check: {reason}"));
                     }
-                    Ok(associated) => {
-                        // The shared family assessment is the removal stage's
-                        // session guard: it proves that every session hosted
-                        // here belongs to this directory's lease family,
-                        // returns the idle ones to the verified main
-                        // checkout, and confirms the result with fresh
-                        // evidence before anything is removed.
-                        match sessions::finalize_family(
-                            api,
-                            CleanupMode::Prune,
-                            scope.target,
-                            &candidate.canonical_path,
-                            &associated,
-                            None,
-                        ) {
-                            FamilyOutcome::Keep(reason) => {
-                                action.result = "skipped_protected".to_owned();
-                                action.message = Some(format!("kept on re-check: {reason}"));
-                            }
-                            // The moves are not a permission: rows, local
-                            // guards and closure evidence are re-read now,
-                            // after any movement, because a new active owner
-                            // or a newly linked open issue that appeared
-                            // during the moves must keep the directory.
-                            _ => match post_move_recheck(
-                                storage,
-                                runner,
+                    Ok((associated, fresh_cache)) => {
+                        if fresh_cache != candidate.cache {
+                            action.result = "skipped_protected".to_owned();
+                            action.message = Some(
+                                "kept on re-check: the root .cache inventory changed before the moves"
+                                    .to_owned(),
+                            );
+                        } else {
+                            // The shared family assessment is the removal stage's
+                            // session guard: it proves that every session hosted
+                            // here belongs to this directory's lease family,
+                            // returns the idle ones to the verified main
+                            // checkout, and confirms the result with fresh
+                            // evidence before anything is removed.
+                            match sessions::finalize_family_with(
                                 api,
-                                scope,
-                                pinned_active,
-                                source,
-                                candidate,
+                                CleanupMode::Prune,
+                                scope.target,
+                                &candidate.canonical_path,
+                                &associated,
+                                None,
+                                confirmation,
                             ) {
-                                Err(reason) => {
+                                FamilyOutcome::Keep(reason) => {
                                     action.result = "skipped_protected".to_owned();
                                     action.message = Some(format!("kept on re-check: {reason}"));
                                 }
-                                Ok(()) => {
-                                    apply_removal(storage, runner, scope, candidate, &mut action)
-                                }
-                            },
+                                // The moves are not a permission: rows, local
+                                // guards and closure evidence are re-read now,
+                                // after any movement, because a new active owner
+                                // or a newly linked open issue that appeared
+                                // during the moves must keep the directory.
+                                _ => match post_move_recheck(
+                                    storage,
+                                    runner,
+                                    api,
+                                    scope,
+                                    pinned_active,
+                                    source,
+                                    candidate,
+                                    true,
+                                ) {
+                                    Err(reason) => {
+                                        action.result = "skipped_protected".to_owned();
+                                        action.message =
+                                            Some(format!("kept on re-check: {reason}"));
+                                    }
+                                    Ok(()) => apply_removal(
+                                        storage,
+                                        runner,
+                                        api,
+                                        scope,
+                                        pinned_active,
+                                        source,
+                                        candidate,
+                                        &mut action,
+                                    ),
+                                },
+                            }
                         }
                     }
                 }
@@ -600,6 +729,22 @@ fn preview_family(
 /// The bounded preview message: the directory is removable, and this is how
 /// many of the family's idle sessions the removal would return to the main
 /// checkout first.
+/// The preview's read-only cache detail: the exact root `.cache` the removal
+/// would delete, with its bounded entry count. `None` when the worktree is
+/// clean or cannot be inspected; the preview never mutates either way.
+fn preview_cache_detail(
+    runner: &dyn WorktreeRunner,
+    candidate: &DirectoryCandidate,
+) -> Option<String> {
+    match crate::worktree::cache::inspect(runner, &candidate.canonical_path) {
+        Ok(crate::worktree::cache::CacheInspection::CacheOnly(inventory)) => Some(format!(
+            "would delete cache-only .cache ({} entries, no tracked files)",
+            inventory.len()
+        )),
+        _ => None,
+    }
+}
+
 fn dry_run_message(sessions: usize) -> String {
     match sessions {
         0 => "dry-run: would call git worktree remove".to_owned(),
@@ -622,7 +767,7 @@ fn recheck(
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<crate::worktree::cache::CacheInventory>), String> {
     let fresh = match list_all_for_repo(storage, scope.identity) {
         Ok(rows) => rows,
         Err(error) => return Err(format!("could not re-read leases: {}", error.message)),
@@ -660,7 +805,7 @@ fn recheck(
             .collect();
         associated.sort();
         associated.dedup();
-        match classify_group(
+        let classification = classify_group(
             runner,
             api,
             &fresh_scope,
@@ -668,8 +813,9 @@ fn recheck(
             source,
             &fresh_group,
             &paths,
-        ) {
-            PruneDisposition::Removable => Ok(associated),
+        );
+        match classification.disposition {
+            PruneDisposition::Removable => Ok((associated, classification.cache)),
             other => Err(recheck_reason(other)),
         }
     }
@@ -701,6 +847,7 @@ fn post_move_recheck(
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
+    compare_cache: bool,
 ) -> Result<(), String> {
     let fresh = match list_all_for_repo(storage, scope.identity) {
         Ok(rows) => rows,
@@ -729,7 +876,7 @@ fn post_move_recheck(
     // The classification re-reads the running-session answer, the closure
     // evidence and the local guards against the post-move rows; the host
     // vacancy itself was just proven and is not re-derived here.
-    match classify_group(
+    let classification = classify_group(
         runner,
         api,
         &fresh_scope,
@@ -737,20 +884,79 @@ fn post_move_recheck(
         source,
         &fresh_group,
         &paths,
-    ) {
-        PruneDisposition::Removable => Ok(()),
-        other => Err(recheck_reason(other)),
+    );
+    if compare_cache && classification.cache != candidate.cache {
+        return Err("the root .cache inventory changed after the moves".to_owned());
     }
+    match classification.disposition {
+        PruneDisposition::Removable => {}
+        other => return Err(recheck_reason(other)),
+    }
+    if !compare_cache {
+        // The post-cache revalidation must see a fresh complete occupancy
+        // listing, including an idle occupant no lease associates, and never
+        // move a session. Any hosted, foreign, incomplete, or unreadable
+        // answer keeps the directory.
+        let associated = associated_sessions(&fresh, &candidate.canonical_path);
+        if let FamilyOutcome::Keep(reason) = sessions::finalize_family(
+            api,
+            CleanupMode::Verify,
+            scope.target,
+            &candidate.canonical_path,
+            &associated,
+            None,
+        ) {
+            return Err(reason);
+        }
+    }
+    Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_removal(
     storage: &Storage,
     runner: &dyn WorktreeRunner,
+    api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
+    pinned_active: &BTreeSet<String>,
+    source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
     action: &mut PruneAction,
 ) {
     let worktree_path = PathBuf::from(&candidate.worktree_path);
+    // The shared cache-only clearance runs after every gate, immediately
+    // before the no-force removal: it compares the initial baseline, deletes
+    // only the exact root `.cache`, and re-runs Git status afterwards.
+    let removed_cache = match crate::worktree::cache::clear_cache_only(
+        runner,
+        &worktree_path,
+        candidate.cache.as_ref(),
+    ) {
+        Ok(count) => count,
+        Err(reason) => {
+            action.result = "skipped_protected".to_owned();
+            action.message = Some(format!("kept on re-check: {reason}"));
+            return;
+        }
+    };
+    // Clearing the cache can take a while, so the complete local, lease,
+    // closure, and fresh host evidence is re-read once more before the
+    // no-force removal. A new active owner, reopened issue, or occupant keeps
+    // the directory; the cache is never rolled back.
+    if let Err(reason) = post_move_recheck(
+        storage,
+        runner,
+        api,
+        scope,
+        pinned_active,
+        source,
+        candidate,
+        false,
+    ) {
+        action.result = "skipped_protected".to_owned();
+        action.message = Some(format!("kept after cache cleanup: {reason}"));
+        return;
+    }
     match worktree_remove(runner, scope.repo_path, &worktree_path) {
         Ok(()) => {
             let mut flip_failed = false;
@@ -769,7 +975,12 @@ fn apply_removal(
             if !flip_failed {
                 action.prunable = true;
                 action.result = "pruned".to_owned();
-                action.message = Some("git worktree remove succeeded".to_owned());
+                action.message = Some(match removed_cache {
+                    Some(count) => format!(
+                        "removed cache-only .cache ({count} entries); git worktree remove succeeded"
+                    ),
+                    None => "git worktree remove succeeded".to_owned(),
+                });
             }
         }
         Err(error) => {
@@ -787,12 +998,21 @@ fn apply_removal(
     }
 }
 
-fn reload_statuses(storage: &Storage, lease_ids: &[String], action: &mut PruneAction) {
+fn reload_statuses(
+    storage: &Storage,
+    lease_ids: &[String],
+    action: &mut PruneAction,
+) -> Result<(), String> {
     for lease_id in lease_ids {
-        if let Ok(Some(updated)) = load_lease(storage, lease_id) {
-            action.status = updated.status;
+        match load_lease(storage, lease_id) {
+            Ok(Some(updated)) => action.status = updated.status,
+            Ok(None) => {
+                return Err(format!("lease row '{lease_id}' disappeared"));
+            }
+            Err(error) => return Err(error.message),
         }
     }
+    Ok(())
 }
 
 fn summarize(

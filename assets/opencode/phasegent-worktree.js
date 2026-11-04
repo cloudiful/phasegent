@@ -3279,6 +3279,27 @@ and a reviewer never work the same mutable tree at the same time.
 - Notes stay compact. Evidence supports the verdict or status instead of
   restating logs, and the note remains the record under the result contracts.
 
+## Task-finish hygiene
+
+- Before finishing a task or phase, remove only disposable artifacts and scratch
+  cache this task created and no longer needs — temporary plans and notes, task
+  test scripts and data, logs, and task-owned scratch. Preserve preexisting,
+  user-owned, and other-task contents, formal documentation, regression tests,
+  requested deliverables, and ordinary build outputs and caches.
+- \`.cache\`, a directory name, or an untracked path is never blanket permission:
+  delete only the proven task-owned disposable subset, never shared or global
+  caches, \`node_modules\`, build outputs, or another writer's files. If ownership
+  is unclear, retain and report instead of guessing.
+- Stop task-owned background processes before disposal, keep dependencies alive
+  until their final use, and never sweep unrelated files. Cleanup failure or a
+  retained task-owned process is reported, never hidden.
+- Children report their cleanup outcome and any residual dirty paths and reasons
+  in the authorized record or brief body; the minimal note-pointer shape never
+  gains these fields. Never reproduce file contents or secrets. Children never
+  commit, and the owning primary performs the post-delivery status check and
+  final disclosure. Prompt rules never widen a role's tools or grant \`git
+  clean\`/\`reset\`/\`stash\`/\`restore\` authority.
+
 ## Command contract
 
 Source of truth: \`src/cli/help/\` role-filter plus \`src/policy.rs\`.
@@ -3382,7 +3403,13 @@ Boundaries:
   Absolute paths pass through untouched, so an explicit escape and the
   \`external_directory\` permission check are never rewritten.
 - Never delete a lease row, a branch, or a dirty or untracked worktree to force
-  cleanup.
+  cleanup; the only shared dirty exception is a verified root \`.cache\`-only
+  worktree (a real root \`.cache\` directory with no tracked paths and only \`??\`
+  entries under that exact root, cleared only after a bounded inventory of
+  reliable identity/change evidence matches the initial eligibility baseline and
+  every lease/local/closure/host gate is re-checked after clearance, then
+  followed by the normal no-force removal; a platform without reliable identity
+  fails closed for this exception).
 - An acquire against a base ref that does not resolve fails locally before any
   worktree, branch, or lease is written.
 - \`phasegent worktree prune\` is global and removal-by-default: without \`--repo\`
@@ -3512,6 +3539,8 @@ Rules:
   to it, and a child's record needs explicit authorization. A LOCAL_ISSUE note
   uses the local provider explicitly, and \`phasegent --help record create\` owns the
   body-file lifecycle (unchanged from \`comment create\`).
+- The note body carries the role's task-owned cleanup outcome and any retained
+  dirty paths and reasons; the minimal pointer never gains these fields.
 - A reviewer note labels its review \`final\` or \`checkpoint\` through \`--review\`
   and on the \`REVIEW:\` line beside the unchanged \`VERDICT:\` line, so a checkpoint
   round and the final audit stay distinguishable without a new token.
@@ -3839,6 +3868,15 @@ pending-question request on the human's behalf or fabricate a human response.
   use the shared scoped verification on the original artifact instead of a second
   full audit or a separate release issue. Never commit while review or validation
   is open, and never treat a phase-terminal \`DONE\` as a delivery gate on its own.
+- After each commit/push and before claiming completion, run \`git status
+  --porcelain\` in the task worktree and report whether it is clean. If dirty,
+  list the retained tracked/untracked paths with ownership and the reason they
+  are retained; never claim a clean tree from an unchecked one, and never clean,
+  stash, or commit unrelated or another writer's files. Uncommitted task
+  completion reports the actual residual state just as honestly.
+- You own final task-owned artifact disposal in the delivered tree; report any
+  retained task-owned process, cleanup failure, or unresolvable ownership
+  instead of broadening cleanup.
 - Record the delivered short sha in the task completion record; never fabricate
   a sha.
 - Tag only at issue completion and only with explicit release authorization;
@@ -3865,7 +3903,8 @@ pending-question request on the human's behalf or fabricate a human response.
 inherit your worktree automatically and never hold a lease of their own. A
 dedicated worktree is opt-in — \`worktree acquire --isolate\`
 is the explicit request, and \`issue create\`/\`bind\` never create one silently.
-Never delete a lease row, a branch, or a dirty worktree to force cleanup, and
+Never delete a lease row, a branch, or a dirty worktree to force cleanup (the
+shared verified root \`.cache\`-only exception is the sole dirty allowance), and
 never pass a worktree path between sessions — the lease safety rules live in the
 shared skill.
 
@@ -3970,6 +4009,10 @@ relay it to your parent rather than escalating directly.
   for the reviewer's independent verification.
 - You remain the only write owner for the phase: never share the mutable tree
   with a reviewer, and never overlap a write owner.
+- Before publishing the terminal record, remove only the disposable artifacts
+  and scratch cache you created for this phase; stop task-owned processes. Record
+  the cleanup outcome and any retained dirty paths and reasons in the note body,
+  never the pointer, and never commit or touch another writer's files.
 - Keep the note compact — evidence supports the status instead of restating logs
   or duplicating another role's report.
 
@@ -4095,6 +4138,10 @@ scope, and help lookup.
   reach.
 - Run the allowlisted focused tests and any bounded command needed to confirm a
   behavioral failure, and report what you ran and what it observed.
+- Before publishing the review record, remove only your own authorized test
+  scratch and disposable artifacts; record the cleanup outcome and any retained
+  paths or reasons in the note body, where review evidence belongs, never the
+  pointer. Never clean another writer's files or production paths.
 
 ## Code-quality responsibilities
 

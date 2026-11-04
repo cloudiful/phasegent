@@ -404,7 +404,26 @@ fn run_pass(
     source: &dyn IssueStateSource,
     mode: PruneMode,
 ) -> PruneSummary {
-    let runner = ProcessWorktreeRunner::new();
+    run_pass_with(
+        storage,
+        repo,
+        identity,
+        api,
+        source,
+        mode,
+        &ProcessWorktreeRunner::new(),
+    )
+}
+
+fn run_pass_with(
+    storage: &Storage,
+    repo: &TempRepo,
+    identity: &str,
+    api: &dyn OpenCodeApi,
+    source: &dyn IssueStateSource,
+    mode: PruneMode,
+    runner: &dyn WorktreeRunner,
+) -> PruneSummary {
     let rows = list_all_for_repo(storage, identity).expect("list");
     let pinned = pinned_active_paths(&rows);
     let target = TargetResolver::new(repo.dir.path(), identity);
@@ -416,7 +435,7 @@ fn run_pass(
     };
     prune_pass(
         storage,
-        &runner,
+        runner,
         api,
         api,
         &scope,
@@ -3089,4 +3108,560 @@ fn prune_refreshes_a_cached_closed_answer_after_the_moves() {
             .unwrap_or_default()
             .contains("issue reopened after the moves")
     }));
+}
+
+fn write_cache_file(worktree: &Path, relative: &str, contents: &str) {
+    let path = worktree.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("cache parent");
+    }
+    std::fs::write(path, contents).expect("cache file");
+}
+
+#[test]
+fn prune_repeated_absent_release_keeps_the_heartbeat_and_makes_no_host_calls() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-absent-repeat") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-absent-repeat");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let missing = format!(
+        "/tmp/phasegent-1196-absent-{}-{}",
+        std::process::id(),
+        now_unix_secs()
+    );
+    lease(
+        &storage,
+        "lease-absent-repeat",
+        &identity,
+        "ses_absent",
+        LEASE_STATUS_RETAINED,
+        &missing,
+    );
+    let api = CountingHost::new(FakeOpenCodeApi::empty());
+    let source = ScriptedIssueStateSource::closed();
+    let first = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(first.absent, 1);
+    let after_first = list_all_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-absent-repeat")
+        .expect("row");
+    assert_eq!(after_first.status, LEASE_STATUS_RELEASED);
+    assert_eq!(api.reads(), 0, "an absent path makes no host call");
+    let second = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(second.absent, 1);
+    let after_second = list_all_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-absent-repeat")
+        .expect("row");
+    assert_eq!(after_second.status, LEASE_STATUS_RELEASED);
+    assert_eq!(
+        after_second.heartbeat_at, after_first.heartbeat_at,
+        "a repeated absent run must not rewrite an already-released row"
+    );
+    assert_eq!(api.reads(), 0, "still no host call on the repeated run");
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_keeps_a_dangling_symlink_without_releasing_its_lease() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-dangling") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-dangling");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let holder = crate::test_scratch::root().join(format!(
+        "phasegent-1196-dangling-{}-{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    std::fs::create_dir_all(&holder).expect("holder");
+    let link = holder.join("worktree");
+    std::os::unix::fs::symlink(holder.join("missing-target"), &link).expect("symlink");
+    lease(
+        &storage,
+        "lease-dangling",
+        &identity,
+        "ses_dangling",
+        LEASE_STATUS_RETAINED,
+        &link.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 0);
+    let row = list_all_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-dangling")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RETAINED);
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == link.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    let _ = std::fs::remove_dir_all(&holder);
+}
+
+#[test]
+fn prune_removes_a_cache_only_root_and_reports_the_entry_count() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-only") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-cache-only");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1196-cache01");
+    write_cache_file(&target, ".cache/ai/one.txt", "scratch");
+    write_cache_file(&target, ".cache/other/two.txt", "scratch");
+    lease(
+        &storage,
+        "lease-cache",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 1, "a cache-only root is removable");
+    assert!(!target.exists());
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "pruned");
+    assert!(
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("removed cache-only .cache (4 entries)"),
+        "got: {:?}",
+        action.message
+    );
+}
+
+#[test]
+fn prune_preview_reports_cache_only_contents_without_mutating() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-preview") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-cache-preview");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1196-cacheprev");
+    write_cache_file(&target, ".cache/ai/one.txt", "scratch");
+    lease(
+        &storage,
+        "lease-cache-preview",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Report);
+    assert!(target.exists());
+    assert!(target.join(".cache/ai/one.txt").exists());
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "prunable");
+    assert!(
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("would delete cache-only .cache (2 entries"),
+        "got: {:?}",
+        action.message
+    );
+}
+
+#[test]
+fn prune_keeps_a_candidate_with_other_untracked_content_beside_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-other") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-cache-other");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1196-cacheother");
+    write_cache_file(&target, ".cache/ai/one.txt", "scratch");
+    std::fs::write(target.join("notes.txt"), "keep me").expect("other file");
+    lease(
+        &storage,
+        "lease-cache-other",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 0);
+    assert!(target.join(".cache/ai/one.txt").exists());
+    assert!(target.join("notes.txt").exists());
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    assert_eq!(
+        action.message.as_deref(),
+        Some("uncommitted or untracked files")
+    );
+}
+
+#[test]
+fn prune_keeps_cache2_and_nested_other_cache_directories() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-name") else {
+        return;
+    };
+    for (label, relative) in [
+        ("cache2", ".cache2/one.txt"),
+        ("nested", "other/.cache/one.txt"),
+    ] {
+        let (_temp, storage, _env) = open_temp_db(&format!("prune-1196-{label}"));
+        ensure_schema(&storage).expect("schema");
+        let runner = ProcessWorktreeRunner::new();
+        let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+        let target = add_real_worktree(&repo, &format!("phasegent/1196-{label}"));
+        write_cache_file(&target, relative, "scratch");
+        lease(
+            &storage,
+            &format!("lease-{label}"),
+            &identity,
+            "phasegent-cli",
+            LEASE_STATUS_RETAINED,
+            &target.to_string_lossy(),
+        );
+        let api = FakeOpenCodeApi::empty();
+        let source = ScriptedIssueStateSource::closed();
+        let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+        assert_eq!(summary.removed, 0, "{label} is not the root .cache");
+        assert!(target.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_keeps_a_symlinked_cache_or_a_symlink_inside_it() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-symlink") else {
+        return;
+    };
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    for (label, link_at_cache) in [("root", true), ("child", false)] {
+        let (_temp, storage, _env) = open_temp_db(&format!("prune-1196-symlink-{label}"));
+        ensure_schema(&storage).expect("schema");
+        let target = add_real_worktree(&repo, &format!("phasegent/1196-symlink{label}"));
+        let outside = crate::test_scratch::root().join(format!(
+            "phasegent-1196-outside-{}-{}-{}",
+            std::process::id(),
+            label,
+            now_unix_secs()
+        ));
+        std::fs::create_dir_all(&outside).expect("outside");
+        if link_at_cache {
+            std::os::unix::fs::symlink(&outside, target.join(".cache")).expect("cache symlink");
+        } else {
+            write_cache_file(&target, ".cache/ai/one.txt", "scratch");
+            std::os::unix::fs::symlink(&outside, target.join(".cache/ai/link"))
+                .expect("child link");
+        }
+        lease(
+            &storage,
+            &format!("lease-symlink-{label}"),
+            &identity,
+            "phasegent-cli",
+            LEASE_STATUS_RETAINED,
+            &target.to_string_lossy(),
+        );
+        let api = FakeOpenCodeApi::empty();
+        let source = ScriptedIssueStateSource::closed();
+        let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+        assert_eq!(summary.removed, 0, "{label} symlink keeps the directory");
+        assert!(target.exists());
+        assert!(outside.exists(), "a symlink target is never deleted");
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+}
+
+/// A runner that runs one side effect on the Nth `ls-files -- .cache` read,
+/// which is the cache-eligibility/clearance stage, without touching real
+/// services.
+struct CacheStageRunner {
+    inner: ProcessWorktreeRunner,
+    target: usize,
+    calls: std::cell::Cell<usize>,
+    action: std::cell::RefCell<Option<Box<dyn Fn()>>>,
+}
+
+impl WorktreeRunner for CacheStageRunner {
+    fn run(
+        &self,
+        args: &[&str],
+        workdir: &Path,
+    ) -> Result<crate::worktree::GitOutput, crate::worktree::WorktreeError> {
+        if let ["ls-files", "--", ".cache"] = args {
+            let calls = self.calls.get() + 1;
+            self.calls.set(calls);
+            if calls == self.target
+                && let Some(action) = self.action.borrow_mut().take()
+            {
+                action();
+            }
+        }
+        self.inner.run(args, workdir)
+    }
+}
+
+struct ReopensAfterCache<R: Fn() -> bool> {
+    reopened: R,
+}
+
+impl<R: Fn() -> bool> IssueStateSource for ReopensAfterCache<R> {
+    fn closure(&self, _repo_path: &Path, _issue: u64) -> IssueClosure {
+        if (self.reopened)() {
+            IssueClosure::Keep("issue reopened after cache cleanup".to_owned())
+        } else {
+            IssueClosure::Closed
+        }
+    }
+}
+
+#[test]
+fn prune_rechecks_closure_after_cache_cleanup() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-closure-race") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-cache-closure-race");
+    ensure_schema(&storage).expect("schema");
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1196-cacheclosed");
+    write_cache_file(&target, ".cache/ai/one.txt", "scratch");
+    lease(
+        &storage,
+        "lease-cache-closure",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let reopened = std::rc::Rc::new(std::cell::Cell::new(false));
+    let runner = CacheStageRunner {
+        inner: ProcessWorktreeRunner::new(),
+        target: 4,
+        calls: std::cell::Cell::new(0),
+        action: std::cell::RefCell::new(Some(Box::new({
+            let reopened = reopened.clone();
+            move || reopened.set(true)
+        }))),
+    };
+    let source = ReopensAfterCache {
+        reopened: {
+            let reopened = reopened.clone();
+            move || reopened.get()
+        },
+    };
+    let api = FakeOpenCodeApi::empty();
+    let summary = run_pass_with(
+        &storage,
+        &repo,
+        &identity,
+        &api,
+        &source,
+        PruneMode::Remove,
+        &runner,
+    );
+    assert_eq!(summary.removed, 0, "a reopened issue keeps the directory");
+    assert!(target.exists());
+    assert!(
+        !target.join(".cache").exists(),
+        "the cache was cleared first"
+    );
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    assert!(
+        action
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("kept after cache cleanup"),
+        "got: {:?}",
+        action.message
+    );
+}
+
+#[test]
+fn prune_keeps_foreign_idle_occupant_arriving_during_cache_cleanup() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-cache-foreign-race") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-cache-foreign-race");
+    ensure_schema(&storage).expect("schema");
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1196-cacheforeign");
+    write_cache_file(&target, ".cache/ai/one.txt", "scratch");
+    lease(
+        &storage,
+        "lease-cache-foreign",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let api =
+        std::rc::Rc::new(FakeOpenCodeApi::empty().with_session("ses_foreign", repo.dir.path()));
+    let runner = CacheStageRunner {
+        inner: ProcessWorktreeRunner::new(),
+        target: 4,
+        calls: std::cell::Cell::new(0),
+        action: std::cell::RefCell::new(Some(Box::new({
+            let api = api.clone();
+            let target = target.clone();
+            move || api.move_session("ses_foreign", &target).unwrap()
+        }))),
+    };
+    let source = ReopensAfterCache { reopened: || false };
+    let summary = run_pass_with(
+        &storage,
+        &repo,
+        &identity,
+        api.as_ref(),
+        &source,
+        PruneMode::Remove,
+        &runner,
+    );
+    assert_eq!(
+        summary.removed, 0,
+        "foreign idle occupant must keep directory"
+    );
+    assert!(target.exists());
+}
+
+#[test]
+fn prune_checks_a_reappearing_absent_path_instead_of_caching_absence() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-reappear") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-reappear");
+    ensure_schema(&storage).expect("schema");
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let path = crate::test_scratch::root().join(format!(
+        "phasegent-1196-reappear-{}-{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    lease(
+        &storage,
+        "lease-reappear",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &path.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let first = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(first.absent, 1);
+    std::fs::create_dir_all(&path).expect("reappearing directory");
+    let second = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(second.absent, 0, "the reappeared path is no longer absent");
+    let row = list_all_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-reappear")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RELEASED);
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_keeps_an_inaccessible_path_without_releasing_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-inaccessible") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-inaccessible");
+    ensure_schema(&storage).expect("schema");
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let holder = crate::test_scratch::root().join(format!(
+        "phasegent-1196-inaccessible-{}-{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let locked = holder.join("locked");
+    let target = locked.join("worktree");
+    std::fs::create_dir_all(&locked).expect("locked dir");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("lock");
+    if std::fs::symlink_metadata(&target).is_ok() {
+        // A privileged test runner can still read it; this case needs an
+        // unprivileged filesystem answer.
+        let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_dir_all(&holder);
+        return;
+    }
+    lease(
+        &storage,
+        "lease-inaccessible",
+        &identity,
+        "phasegent-cli",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.absent, 0, "a permission error is not absence");
+    let action = summary
+        .actions
+        .iter()
+        .find(|action| action.worktree_path == target.to_string_lossy())
+        .expect("action");
+    assert_eq!(action.result, "skipped_protected");
+    let row = list_all_for_repo(&storage, &identity)
+        .expect("list")
+        .into_iter()
+        .find(|row| row.lease_id == "lease-inaccessible")
+        .expect("row");
+    assert_eq!(row.status, LEASE_STATUS_RETAINED);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("unlock");
+    let _ = std::fs::remove_dir_all(&holder);
 }
