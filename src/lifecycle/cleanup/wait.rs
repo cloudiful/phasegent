@@ -110,47 +110,87 @@ enum Placement {
     NonAbsolute(String),
 }
 
+/// The immediate result of one accepted move request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RequestOutcome {
+    /// The exact session already sits at the verified destination.
+    Confirmed,
+    /// The request was accepted and the session still reports the old candidate.
+    Pending,
+    /// The answer is unsafe; stop issuing new requests.
+    Unsafe(String),
+}
+
 impl<'a> MovePolicy<'a> {
-    /// Confirm one accepted move. `Ok(())` means the exact session is at the
-    /// destination; `Err(reason)` is the bounded keep reason.
-    pub(crate) fn confirm(
+    /// Observe one accepted move immediately without starting the wait budget.
+    pub(crate) fn observe_request(
         &self,
         api: &dyn OpenCodeApi,
         id: &str,
         old: &Path,
         destination: &Path,
+    ) -> RequestOutcome {
+        match self.observe(api, id, old, destination) {
+            Ok(Placement::Destination) => RequestOutcome::Confirmed,
+            Ok(Placement::Old) => RequestOutcome::Pending,
+            Ok(other) => RequestOutcome::Unsafe(self.keep_reason(id, other)),
+            Err(reason) => RequestOutcome::Unsafe(reason),
+        }
+    }
+
+    /// Confirm all pending accepted moves in stable round-robin order under the
+    /// shared budget. `NoWait` never sleeps; `Bounded` starts one lazy
+    /// invocation-shared deadline at its first actual wait phase.
+    pub(crate) fn wait_pending(
+        &self,
+        api: &dyn OpenCodeApi,
+        pending: &mut Vec<String>,
+        old: &Path,
+        destination: &Path,
         mut running_check: impl FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
-        match self.observe(api, id, old, destination)? {
-            Placement::Destination => Ok(()),
-            Placement::Old => match self {
-                Self::NoWait => Err(not_left(id)),
-                Self::Bounded(budget) => loop {
-                    if budget.expired() {
-                        return Err(wait_expired(id));
-                    }
-                    running_check()?;
-                    // The host check itself may consume the remaining budget;
-                    // never schedule a poll or a new observation past it.
-                    if budget.expired() {
-                        return Err(wait_expired(id));
-                    }
-                    let remaining = budget.remaining();
-                    if remaining.is_zero() {
-                        return Err(wait_expired(id));
-                    }
-                    budget.poll(remaining.min(MOVE_POLL_INTERVAL));
-                    if budget.expired() {
-                        return Err(wait_expired(id));
-                    }
-                    match self.observe(api, id, old, destination)? {
-                        Placement::Destination => return Ok(()),
-                        Placement::Old => {}
-                        other => return Err(self.keep_reason(id, other)),
-                    }
-                },
-            },
-            other => Err(self.keep_reason(id, other)),
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let budget = match self {
+            Self::NoWait => return Err(not_left(&pending[0])),
+            Self::Bounded(budget) => *budget,
+        };
+        loop {
+            if budget.expired() {
+                return Err(wait_expired(&pending[0]));
+            }
+            running_check()?;
+            if budget.expired() {
+                return Err(wait_expired(&pending[0]));
+            }
+            let remaining = budget.remaining();
+            if remaining.is_zero() {
+                return Err(wait_expired(&pending[0]));
+            }
+            budget.poll(remaining.min(MOVE_POLL_INTERVAL));
+            if budget.expired() {
+                return Err(wait_expired(&pending[0]));
+            }
+            let mut still: Vec<String> = Vec::with_capacity(pending.len());
+            for id in pending.iter() {
+                // Every observation is itself an external call that may consume
+                // the remaining budget; never start a later sibling probe once
+                // the shared deadline has passed.
+                if budget.expired() {
+                    return Err(wait_expired(id));
+                }
+                match self.observe(api, id, old, destination) {
+                    Ok(Placement::Destination) => {}
+                    Ok(Placement::Old) => still.push(id.clone()),
+                    Ok(other) => return Err(self.keep_reason(id, other)),
+                    Err(reason) => return Err(reason),
+                }
+            }
+            *pending = still;
+            if pending.is_empty() {
+                return Ok(());
+            }
         }
     }
 
@@ -164,13 +204,10 @@ impl<'a> MovePolicy<'a> {
                 "the host answered for the moved OpenCode session '{id}' with a non-absolute location '{}'",
                 bounded(&location)
             ),
-            Placement::Third(location) => match self {
-                Self::NoWait => not_left(id),
-                Self::Bounded(_) => format!(
-                    "OpenCode session '{id}' is now in '{}', not the directory it was to be returned from",
-                    bounded(&location)
-                ),
-            },
+            Placement::Third(location) => format!(
+                "OpenCode session '{id}' is now in '{}', not the directory it was to be returned from",
+                bounded(&location)
+            ),
             Placement::Destination | Placement::Old => String::new(),
         }
     }

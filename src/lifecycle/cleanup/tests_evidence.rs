@@ -556,3 +556,347 @@ fn a_partial_remainder_is_clamped_and_never_polls_past_the_deadline() {
         "the poll is clamped to the remaining deadline"
     );
 }
+
+/// A host that accepts every move without applying it, for batch-stage tests
+/// that only need to count requests.
+fn queueing_batch_host(ids: &[&str]) -> FakeOpenCodeApi {
+    let mut api = FakeOpenCodeApi::empty().queueing_moves();
+    for id in ids {
+        api = api.with_session(id, &candidate());
+    }
+    api
+}
+
+#[test]
+fn batch_stops_scheduling_observations_when_an_inflight_read_exhausts_the_budget() {
+    use crate::lifecycle::cleanup::wait::{Clock, MovePolicy};
+    use crate::worktree::opencode::{
+        ApiError, ListRequest, LocatedSession, OpenCodeApi, SessionPage,
+    };
+
+    struct SlowObservation {
+        inner: FakeOpenCodeApi,
+        clock: std::rc::Rc<FakeClock>,
+        reads: std::cell::Cell<usize>,
+    }
+    impl OpenCodeApi for SlowObservation {
+        fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
+            let count = self.reads.get() + 1;
+            self.reads.set(count);
+            if count == 1 {
+                self.clock.sleep(std::time::Duration::from_secs(3));
+            }
+            self.inner.session(id)
+        }
+        fn list(&self, request: &ListRequest) -> Result<SessionPage, ApiError> {
+            self.inner.list(request)
+        }
+        fn move_session(&self, id: &str, directory: &Path) -> Result<(), ApiError> {
+            self.inner.move_session(id, directory)
+        }
+        fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+            self.inner.active_sessions()
+        }
+    }
+    let clock = FakeClock::new();
+    let budget = bounded_budget(&clock);
+    let api = SlowObservation {
+        inner: queueing_batch_host(&["ses_a", "ses_b"]),
+        clock,
+        reads: std::cell::Cell::new(0),
+    };
+    let mut pending = vec!["ses_a".to_owned(), "ses_b".to_owned()];
+    let result = MovePolicy::Bounded(&budget).wait_pending(
+        &api,
+        &mut pending,
+        &candidate(),
+        Path::new("/tmp/pg-p1-main"),
+        || Ok(()),
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        api.reads.get(),
+        1,
+        "no new poll may be scheduled after the deadline"
+    );
+}
+
+#[test]
+fn a_first_pending_sibling_never_suppresses_later_requests() {
+    use crate::lifecycle::cleanup::wait::MovePolicy;
+    let api = queueing_batch_host(&["ses_a", "ses_b", "ses_c"]);
+    let clock = FakeClock::new();
+    let budget = bounded_budget(&clock);
+    let verdict = super::sessions::finalize_family_with(
+        &api,
+        CleanupMode::Prune,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_a".to_owned(), "ses_b".to_owned(), "ses_c".to_owned()],
+        None,
+        MovePolicy::Bounded(&budget),
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("a queued batch must keep the candidate, got {verdict:?}");
+    };
+    assert!(reason.contains("has not left"), "got: {reason}");
+    let moves = api.moves();
+    assert_eq!(
+        moves.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        vec!["ses_a", "ses_b", "ses_c"],
+        "every safe sibling is requested once before waiting"
+    );
+    assert_eq!(moves.len(), 3);
+}
+
+struct LaterReadyHost {
+    inner: FakeOpenCodeApi,
+    moved: std::cell::Cell<bool>,
+    reads: std::cell::Cell<usize>,
+}
+
+impl crate::worktree::opencode::OpenCodeApi for LaterReadyHost {
+    fn session(
+        &self,
+        id: &str,
+    ) -> Result<crate::worktree::opencode::LocatedSession, crate::worktree::opencode::ApiError>
+    {
+        if id == "ses_b" && self.moved.get() {
+            let reads = self.reads.get() + 1;
+            self.reads.set(reads);
+            if reads >= 2 {
+                return Ok(crate::worktree::opencode::LocatedSession {
+                    id: id.to_owned(),
+                    directory: "/tmp/pg-p1-main".to_owned(),
+                    parent_id: None,
+                });
+            }
+        }
+        self.inner.session(id)
+    }
+    fn list(
+        &self,
+        request: &crate::worktree::opencode::ListRequest,
+    ) -> Result<crate::worktree::opencode::SessionPage, crate::worktree::opencode::ApiError> {
+        self.inner.list(request)
+    }
+    fn move_session(
+        &self,
+        id: &str,
+        directory: &Path,
+    ) -> Result<(), crate::worktree::opencode::ApiError> {
+        let result = self.inner.move_session(id, directory);
+        if result.is_ok() && id == "ses_b" {
+            self.moved.set(true);
+        }
+        result
+    }
+    fn active_sessions(&self) -> Result<Vec<String>, crate::worktree::opencode::ApiError> {
+        self.inner.active_sessions()
+    }
+}
+
+#[test]
+fn round_robin_advances_a_later_ready_pending_id_without_reissue() {
+    use crate::lifecycle::cleanup::wait::MovePolicy;
+    let api = LaterReadyHost {
+        inner: queueing_batch_host(&["ses_a", "ses_b"]),
+        moved: std::cell::Cell::new(false),
+        reads: std::cell::Cell::new(0),
+    };
+    let clock = FakeClock::new();
+    let budget = bounded_budget(&clock);
+    let verdict = super::sessions::finalize_family_with(
+        &api,
+        CleanupMode::Prune,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_a".to_owned(), "ses_b".to_owned()],
+        None,
+        MovePolicy::Bounded(&budget),
+    );
+    let moves = api.inner.moves();
+    assert_eq!(moves.len(), 2, "both siblings requested exactly once");
+    assert_eq!(moves[1].0, "ses_b");
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("the still-pending sibling must keep the candidate, got {verdict:?}");
+    };
+    assert!(reason.contains("ses_a"), "got: {reason}");
+    assert_eq!(
+        api.inner
+            .moves()
+            .iter()
+            .filter(|(id, _)| id == "ses_b")
+            .count(),
+        1,
+        "a confirmed sibling is never reissued"
+    );
+}
+
+struct UnsafeSiblingHost {
+    inner: FakeOpenCodeApi,
+    b_moved: std::cell::Cell<bool>,
+}
+
+impl crate::worktree::opencode::OpenCodeApi for UnsafeSiblingHost {
+    fn session(
+        &self,
+        id: &str,
+    ) -> Result<crate::worktree::opencode::LocatedSession, crate::worktree::opencode::ApiError>
+    {
+        if id == "ses_b" && self.b_moved.get() {
+            return Ok(crate::worktree::opencode::LocatedSession {
+                id: id.to_owned(),
+                directory: "/tmp/pg-p1-third".to_owned(),
+                parent_id: None,
+            });
+        }
+        self.inner.session(id)
+    }
+    fn list(
+        &self,
+        request: &crate::worktree::opencode::ListRequest,
+    ) -> Result<crate::worktree::opencode::SessionPage, crate::worktree::opencode::ApiError> {
+        self.inner.list(request)
+    }
+    fn move_session(
+        &self,
+        id: &str,
+        directory: &Path,
+    ) -> Result<(), crate::worktree::opencode::ApiError> {
+        let result = self.inner.move_session(id, directory);
+        if result.is_ok() && id == "ses_b" {
+            self.b_moved.set(true);
+        }
+        result
+    }
+    fn active_sessions(&self) -> Result<Vec<String>, crate::worktree::opencode::ApiError> {
+        self.inner.active_sessions()
+    }
+}
+
+#[test]
+fn an_unsafe_sibling_stops_new_requests_and_waiting() {
+    use crate::lifecycle::cleanup::wait::MovePolicy;
+    let api = UnsafeSiblingHost {
+        inner: queueing_batch_host(&["ses_a", "ses_b", "ses_c"]),
+        b_moved: std::cell::Cell::new(false),
+    };
+    let clock = FakeClock::new();
+    let budget = bounded_budget(&clock);
+    let verdict = super::sessions::finalize_family_with(
+        &api,
+        CleanupMode::Prune,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_a".to_owned(), "ses_b".to_owned(), "ses_c".to_owned()],
+        None,
+        MovePolicy::Bounded(&budget),
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("an unsafe sibling must keep the candidate, got {verdict:?}");
+    };
+    assert!(reason.contains("pg-p1-third"), "got: {reason}");
+    assert_eq!(
+        api.inner
+            .moves()
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ses_a", "ses_b"],
+        "the later sibling is never requested after an unsafe answer"
+    );
+    assert_eq!(clock.sleeps.get(), 0, "an unsafe sibling never waits");
+}
+
+struct SlowRequestHost {
+    inner: OpenCodeApiBatch,
+    clock: std::rc::Rc<FakeClock>,
+}
+
+type OpenCodeApiBatch = FakeOpenCodeApi;
+
+impl crate::worktree::opencode::OpenCodeApi for SlowRequestHost {
+    fn session(
+        &self,
+        id: &str,
+    ) -> Result<crate::worktree::opencode::LocatedSession, crate::worktree::opencode::ApiError>
+    {
+        self.inner.session(id)
+    }
+    fn list(
+        &self,
+        request: &crate::worktree::opencode::ListRequest,
+    ) -> Result<crate::worktree::opencode::SessionPage, crate::worktree::opencode::ApiError> {
+        self.inner.list(request)
+    }
+    fn move_session(
+        &self,
+        id: &str,
+        directory: &Path,
+    ) -> Result<(), crate::worktree::opencode::ApiError> {
+        use crate::lifecycle::cleanup::wait::Clock;
+        let result = self.inner.move_session(id, directory);
+        self.clock.sleep(std::time::Duration::from_secs(2));
+        result
+    }
+    fn active_sessions(&self) -> Result<Vec<String>, crate::worktree::opencode::ApiError> {
+        self.inner.active_sessions()
+    }
+}
+
+#[test]
+fn request_latency_does_not_start_the_wait_budget() {
+    use crate::lifecycle::cleanup::wait::MovePolicy;
+    let clock = FakeClock::new();
+    let api = SlowRequestHost {
+        inner: queueing_batch_host(&["ses_a", "ses_b", "ses_c"]),
+        clock: clock.clone(),
+    };
+    let budget = bounded_budget(&clock);
+    let verdict = super::sessions::finalize_family_with(
+        &api,
+        CleanupMode::Prune,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_a".to_owned(), "ses_b".to_owned(), "ses_c".to_owned()],
+        None,
+        MovePolicy::Bounded(&budget),
+    );
+    assert!(matches!(verdict, FamilyOutcome::Keep(_)));
+    let durations = clock.durations.borrow();
+    assert_eq!(&durations[..3], &[std::time::Duration::from_secs(2); 3]);
+    assert!(
+        durations[3..]
+            .iter()
+            .all(|duration| *duration == std::time::Duration::from_millis(100)),
+        "the budget starts only at the wait phase: {durations:?}"
+    );
+    assert!(
+        durations
+            .iter()
+            .filter(|d| **d == std::time::Duration::from_millis(100))
+            .count()
+            == 30
+    );
+}
+
+#[test]
+fn close_batches_requests_with_no_wait_and_keeps_pending() {
+    use crate::lifecycle::cleanup::wait::MovePolicy;
+    let api = queueing_batch_host(&["ses_a", "ses_b"]);
+    let verdict = super::sessions::finalize_family_with(
+        &api,
+        CleanupMode::Close,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_a".to_owned(), "ses_b".to_owned()],
+        Some("ses_a"),
+        MovePolicy::NoWait,
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("close must keep a pending batch, got {verdict:?}");
+    };
+    assert!(reason.contains("has not left"), "got: {reason}");
+    assert_eq!(api.moves().len(), 2, "close queues the whole safe family");
+}

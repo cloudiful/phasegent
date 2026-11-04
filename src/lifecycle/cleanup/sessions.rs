@@ -273,7 +273,10 @@ fn release_family(
             ));
         }
     };
-    let mut returned: Vec<String> = Vec::with_capacity(movable.len());
+    let mut accepted: Vec<String> = Vec::with_capacity(movable.len());
+    let mut pending: Vec<String> = Vec::with_capacity(movable.len());
+    // Stage A: prove and request every safe sibling before waiting for any
+    // accepted request to land.
     for id in &movable {
         // The exact session, as the host answers for it now.
         let located = match api.session(id) {
@@ -312,7 +315,7 @@ fn release_family(
             }
         }
         // The session must still be where it was to be returned from. One
-        // that already reached the main checkout needs no move; one that
+        // that already reached the main checkout needs no request; one that
         // moved anywhere else is not reclaimed from unrelated work.
         if same_directory(Path::new(&located.directory), &destination) {
             continue;
@@ -324,9 +327,9 @@ fn release_family(
             ));
         }
         // Fresh running evidence for every candidate occupant, the intended
-        // session, and anything this pass already returned: a session that
-        // started running after an earlier move blocks the next one.
-        if let Err(reason) = running_blocker(api, directory, close_root, Some(id), &returned) {
+        // session, and everything this pass already requested: a session that
+        // started running after an earlier request blocks the next one.
+        if let Err(reason) = running_blocker(api, directory, close_root, Some(id), &accepted) {
             return FamilyOutcome::Keep(reason);
         }
         if let Err(error) = api.move_session(id, &destination) {
@@ -335,16 +338,25 @@ fn release_family(
                 crate::lifecycle::bounded(&error.message)
             ));
         }
-        // Acceptance is not relocation: a queued or still-running move leaves
-        // the session where it was, and the directory must survive that. The
-        // first read is immediate; only the bounded prune policy may then
-        // poll the exact session, and it never reissues the move.
-        if let Err(reason) = confirmation.confirm(api, id, directory, &destination, || {
-            running_blocker(api, directory, close_root, Some(id), &returned)
-        }) {
-            return FamilyOutcome::Keep(reason);
+        accepted.push(id.clone());
+        // Acceptance is not relocation. Observe immediately, without starting
+        // the wait budget: pending continues to the next sibling, while an
+        // unsafe answer stops new requests and leaves accepted moves in place.
+        match confirmation.observe_request(api, id, directory, &destination) {
+            crate::lifecycle::cleanup::wait::RequestOutcome::Confirmed => {}
+            crate::lifecycle::cleanup::wait::RequestOutcome::Pending => pending.push(id.clone()),
+            crate::lifecycle::cleanup::wait::RequestOutcome::Unsafe(reason) => {
+                return FamilyOutcome::Keep(reason);
+            }
         }
-        returned.push(id.clone());
+    }
+    // Stage B: one shared wait phase for all pending accepted requests.
+    if let Err(reason) =
+        confirmation.wait_pending(api, &mut pending, directory, &destination, || {
+            running_blocker(api, directory, close_root, None, &accepted)
+        })
+    {
+        return FamilyOutcome::Keep(reason);
     }
     // One successful lookup is not a vacated directory: a fresh complete
     // listing and the family's own answers must agree that nothing of ours
@@ -374,8 +386,8 @@ fn release_family(
         Err(reason) => return FamilyOutcome::Keep(reason),
     }
     // The directory must still be free of running occupancy, and a session
-    // this pass returned must not have started running either.
-    if let Err(reason) = running_blocker(api, directory, close_root, None, &returned) {
+    // this pass requested must not have started running either.
+    if let Err(reason) = running_blocker(api, directory, close_root, None, &accepted) {
         return FamilyOutcome::Keep(reason);
     }
     FamilyOutcome::Released { sessions: movable }

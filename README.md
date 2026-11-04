@@ -226,11 +226,12 @@ does: before it deletes a directory it reads that directory's fresh occupancy
 and the lineage the host reports, and returns every associated idle `ses_`
 session — the sessions its leases name and the descendants that descend from
 them — to the repository's verified
-main checkout, confirming each move with a fresh authoritative read. The first
-read is immediate; only an actual prune may poll a still-pending accepted move
-inside one invocation-shared 3-second budget (100 ms apart, never reset per
-directory or session, never reissuing the move), and the preview and close never
-wait. A recorded worktree path that no longer exists on disk is counted as
+main checkout. Every safe family member is requested once before any
+confirmation wait; the first read after each request is immediate and a pending
+sibling never suppresses a later one. Only an actual prune may then poll all
+still-pending accepted moves round-robin inside one invocation-shared 3-second
+budget (100 ms apart, never reset per directory or session, never reissuing the
+move), and the preview and close never wait. A recorded worktree path that no longer exists on disk is counted as
 absent and converges once to `released` without rewriting an already-released
 row. Those
 checks describe the one connected service at that moment, not a guarantee about

@@ -3665,3 +3665,64 @@ fn prune_keeps_an_inaccessible_path_without_releasing_it() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("unlock");
     let _ = std::fs::remove_dir_all(&holder);
 }
+
+#[test]
+fn prune_batches_all_safe_requests_then_removes_on_a_later_confirmed_run() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-1196-batch") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-1196-batch");
+    ensure_schema(&storage).expect("schema");
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/1196-batch");
+    lease(
+        &storage,
+        "lease-batch-a",
+        &identity,
+        "ses_a",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    lease(
+        &storage,
+        "lease-batch-b",
+        &identity,
+        "ses_b",
+        LEASE_STATUS_RETAINED,
+        &target.to_string_lossy(),
+    );
+    let first_host = FakeOpenCodeApi::empty()
+        .with_session("ses_a", &target)
+        .with_session("ses_b", &target)
+        .queueing_moves();
+    let source = ScriptedIssueStateSource::closed();
+    let first = run_pass(
+        &storage,
+        &repo,
+        &identity,
+        &first_host,
+        &source,
+        PruneMode::Remove,
+    );
+    assert_eq!(first.removed, 0, "accepted requests are not relocation");
+    assert!(target.exists());
+    assert_eq!(
+        first_host.moves().len(),
+        2,
+        "both proven siblings are requested before the wait"
+    );
+    let second_host = FakeOpenCodeApi::empty()
+        .with_session("ses_a", repo.dir.path())
+        .with_session("ses_b", repo.dir.path());
+    let second = run_pass(
+        &storage,
+        &repo,
+        &identity,
+        &second_host,
+        &source,
+        PruneMode::Remove,
+    );
+    assert_eq!(second.removed, 1, "a later confirmed vacant run removes");
+    assert!(!target.exists());
+}

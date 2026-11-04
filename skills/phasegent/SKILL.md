@@ -486,8 +486,9 @@ Boundaries:
   it reads that directory's fresh occupancy and returns every idle member of
   its lease family — the associated `ses_` sessions and the descendants whose
   bounded `parentID` chain reaches one of them — to the repository's verified
-  main checkout, confirming each
-  move with a fresh authoritative read. Those checks describe the one
+  main checkout. It requests every safe family member once before any wait,
+  immediately types each response, and then confirms all still-pending accepted
+  moves round-robin inside one shared short budget without reissuing. Those checks describe the one
   connected service at that moment, not a guarantee about session changes
   after them. A session no lease of this repository associates, and no lineage
   reaches one of them, keeps the
@@ -524,8 +525,9 @@ Boundaries:
   OpenCode API (`opencode api session.move`) to return the idle members of its
   lease family — the sessions its leases name and the descendants that descend
   from them — to the
-  repository's verified main checkout, then confirms every move with a fresh
-  authoritative read; an unreachable API, an incomplete listing, an unowned
+  repository's verified main checkout: it requests every safe family member once
+  before any wait, observes each response immediately, and keeps without polling
+  if any request remains pending; an unreachable API, an incomplete listing, an unowned
   session, a session of another family, a running family member other than the
   closing session the close is finishing, or a move that has not taken effect yet
   keeps the directory with a warning. The other issues the directory is

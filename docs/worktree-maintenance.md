@@ -94,13 +94,17 @@ Each actual removal has a new verification window, independent of scan memo:
    and the descendants whose bounded `parentID` chain reaches them — may be
    returned to the verified main checkout. A foreign occupant is never moved
    and keeps the directory.
-6. Check running state immediately before moves and again afterwards. Confirm
-   every requested move through fresh session locations. The first read is
-   immediate; an actual prune may poll a still-pending accept inside one
-   invocation-shared 3-second budget (100 ms apart, never reset per directory
-   or session, never reissuing the move), while close, sync, and the preview
-   never wait. After moves, fresh family reads and a complete listing must
-   agree the directory is free before removal proceeds.
+6. Check running state immediately before every request and again afterwards.
+   Every safe member of the lease family is requested once before any wait; an
+   immediately pending request does not suppress a later sibling. The first read
+   after each request is immediate and typed pending (old location), confirmed
+   (destination), or unsafe (stop new requests and waiting without rollback).
+   Only then does an actual prune start one invocation-shared 3-second wait
+   phase (100 ms round-robin, never reset per directory or session, never
+   reissuing a move), while close uses the same batch requests with no waiting
+   and sync/report/preview never move. After all pending requests confirm, fresh
+   family reads and a complete listing must agree the directory is free before
+   removal proceeds.
 
 An unavailable or incomplete listing, missing/mismatched session answer,
 unusable location, unreadable/mismatched/cyclic lineage,
