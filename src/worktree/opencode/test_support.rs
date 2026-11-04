@@ -18,10 +18,12 @@ use std::path::Path;
 
 use super::*;
 
-/// One scripted session: where the host says it is.
+/// One scripted session: where the host says it is, and which session it
+/// descends from.
 #[derive(Clone)]
 struct FakeSession {
     directory: String,
+    parent_id: Option<String>,
 }
 
 /// A stand-in host: one authoritative id → session map, served through
@@ -92,6 +94,34 @@ impl FakeOpenCodeApi {
             id.to_owned(),
             FakeSession {
                 directory: directory.to_string_lossy().into_owned(),
+                parent_id: None,
+            },
+        );
+        self
+    }
+
+    /// A host that reports `id` as hosted in `directory` and as a descendant
+    /// of `parent`. The parent may live anywhere; only the lineage edge
+    /// matters.
+    pub(crate) fn with_child(self, id: &str, directory: &Path, parent: &str) -> Self {
+        self.reality.borrow_mut().insert(
+            id.to_owned(),
+            FakeSession {
+                directory: directory.to_string_lossy().into_owned(),
+                parent_id: Some(parent.to_owned()),
+            },
+        );
+        self
+    }
+
+    /// A host that reports `id` as hosted in `directory` and names a parent
+    /// the shape rules cannot read. The lineage must fail closed on it.
+    pub(crate) fn with_unusable_parent(self, id: &str, directory: &Path, parent: &str) -> Self {
+        self.reality.borrow_mut().insert(
+            id.to_owned(),
+            FakeSession {
+                directory: directory.to_string_lossy().into_owned(),
+                parent_id: Some(parent.to_owned()),
             },
         );
         self
@@ -216,6 +246,7 @@ impl OpenCodeApi for FakeOpenCodeApi {
                 Ok(LocatedSession {
                     id: reported_id,
                     directory: session.directory.clone(),
+                    parent_id: session.parent_id.clone(),
                 })
             }
             None => Err(ApiError::plain("SessionNotFoundError")),
@@ -242,6 +273,7 @@ impl OpenCodeApi for FakeOpenCodeApi {
             .map(|(id, session)| LocatedSession {
                 id: id.clone(),
                 directory: session.directory.clone(),
+                parent_id: session.parent_id.clone(),
             })
             .collect();
         Ok(SessionPage {
@@ -267,6 +299,7 @@ impl OpenCodeApi for FakeOpenCodeApi {
                         id.to_owned(),
                         FakeSession {
                             directory: moved_to,
+                            parent_id: None,
                         },
                     );
                 }

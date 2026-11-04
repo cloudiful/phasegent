@@ -10,10 +10,10 @@
 //! 4. no OpenCode session is still hosted in it (issue 747 P1).
 //!
 //! The fourth guard is the one that needs the host. A lease records where
-//! a session *was*; the OpenCode API reports where it *is*. Only persisted
-//! `ses_`-prefixed lease sessions mark a candidate as OpenCode-associated,
-//! so a pure CLI close never reaches the API and keeps its previous
-//! behaviour exactly.
+//! a session *was*; the OpenCode API reports where it *is*, and which
+//! session it descends from. Only persisted `ses_`-prefixed lease sessions
+//! mark a candidate as OpenCode-associated, so a pure CLI close never reaches
+//! the API and keeps its previous behaviour exactly.
 //!
 //! Everything is best-effort: the remote close already succeeded, so an
 //! unreachable API, an incomplete listing, an unproven main checkout, or a
@@ -21,15 +21,18 @@
 //! one stderr warning. Lease rows are never touched and branches are never
 //! deleted.
 //!
-//! The same evidence backs `worktree prune`, which returns an associated
-//! idle session to the verified main checkout before it removes a
-//! directory: only a lease-associated `ses_` session may be moved, and a
-//! running or foreign occupant keeps the directory.
+//! The same evidence backs `worktree prune`, which returns the idle members
+//! of a candidate's lease family to the verified main checkout before it
+//! removes a directory: only a lease-associated `ses_` session — or a
+//! descendant of one — may be moved, and a running or foreign occupant keeps
+//! the directory.
 
 use std::path::{Path, PathBuf};
 
 #[path = "cleanup/candidate.rs"]
 pub(crate) mod candidate;
+#[path = "cleanup/closure.rs"]
+pub(crate) mod closure;
 #[path = "cleanup/context.rs"]
 pub(crate) mod context;
 #[path = "cleanup/guards.rs"]
@@ -95,8 +98,16 @@ impl AutoCleanupOutcome {
 /// report pass does not probe at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CleanupMode {
-    /// `issue close`: may request a move for the closing session only.
+    /// `issue close`: may request a move for the closing session and for the
+    /// idle members of its lease family.
     Close,
+    /// `worktree prune --remove`: may request a move for the idle members of
+    /// the candidate's lease family. There is no running exemption here.
+    Prune,
+    /// `worktree prune --dryrun`: the read-only preview of the removal
+    /// stage. It probes the same occupancy and lineage evidence and reports
+    /// what the removal would do, but it never moves anything.
+    Preview,
     /// `issue sync` clean mode: occupancy is checked, sessions are never
     /// moved, so a directory the close could not release stays until a
     /// later pass finds it free.
@@ -107,10 +118,26 @@ pub(crate) enum CleanupMode {
 }
 
 impl CleanupMode {
-    /// Whether this pass may relocate the closing session out of a
-    /// candidate. Only the close chain may, and only for its own session.
+    /// Whether this pass may relocate an idle member of the candidate's
+    /// lease family out of it. Only the close and prune chains may.
     pub(crate) fn may_move_sessions(self) -> bool {
-        self == Self::Close
+        matches!(self, Self::Close | Self::Prune)
+    }
+
+    /// Whether this pass reads the connected service's running-session set.
+    /// The reconciliation pass does not: it never moves a session, so
+    /// "idle" is not a question it has to answer.
+    pub(crate) fn reads_running_state(self) -> bool {
+        matches!(self, Self::Close | Self::Prune | Self::Preview)
+    }
+
+    /// Whether a candidate without a lease-associated OpenCode session is
+    /// still enumerated. The close and reconciliation chains decide such a
+    /// candidate by the local guards alone and never reach the host; the
+    /// prune chain enumerates it, because an occupant no lease associates is
+    /// somebody else's session and keeps the directory.
+    pub(crate) fn enumerates_unmanaged_candidates(self) -> bool {
+        matches!(self, Self::Prune | Self::Preview)
     }
 }
 
@@ -127,6 +154,7 @@ pub fn cleanup_closed_issue_worktrees(
     repo_path: &Path,
     issue: u64,
     session: Option<&str>,
+    closure: &dyn closure::DirectoryIssueClosure,
 ) -> AutoCleanupOutcome {
     cleanup_closed_issue_worktrees_with(
         runner,
@@ -135,12 +163,14 @@ pub fn cleanup_closed_issue_worktrees(
         repo_path,
         issue,
         session,
+        closure,
     )
 }
 
 /// Injected core of [`cleanup_closed_issue_worktrees`]. `api` and `mode`
 /// are the only knobs the tests turn; every predicate below is the
 /// production one.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cleanup_closed_issue_worktrees_with(
     runner: &dyn crate::worktree::WorktreeRunner,
     api: &dyn OpenCodeApi,
@@ -148,6 +178,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
     repo_path: &Path,
     issue: u64,
     session: Option<&str>,
+    closure: &dyn closure::DirectoryIssueClosure,
 ) -> AutoCleanupOutcome {
     let context = match context::resolve(runner, repo_path, issue) {
         Ok(context) => context,
@@ -161,15 +192,24 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
         repo_path,
         issue,
         session,
+        closure,
     )
 }
 
 /// Injected core of the guarded cleanup: the caller supplies the resolved
-/// context (repository identity plus the rows as they are *now*) and the
-/// host guard. The reconciliation pass uses this to reuse its store,
-/// identity and an invocation-local host memo, while every caller that
-/// does not inject still reaches the exact same predicate through
+/// context (repository identity plus the rows as they are *now*), the host
+/// guard, and the closure evidence for the directory's other issues. The
+/// reconciliation pass uses this to reuse its store, identity and an
+/// invocation-local host memo, while every caller that does not inject
+/// still reaches the exact same predicate through
 /// [`cleanup_closed_issue_worktrees_with`].
+///
+/// The pass re-reads the complete lease evidence after every family
+/// movement and immediately before each removal: a new active owner or a
+/// newly associated open issue that appeared during the (possibly slow)
+/// moves keeps the directory. The initial snapshot alone never authorizes
+/// a deletion.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cleanup_closed_issue_worktrees_in_context(
     runner: &dyn crate::worktree::WorktreeRunner,
     guard: &dyn candidate::OccupancyGuard,
@@ -178,13 +218,14 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
     repo_path: &Path,
     issue: u64,
     session: Option<&str>,
+    closure: &dyn closure::DirectoryIssueClosure,
 ) -> AutoCleanupOutcome {
     if !context.has_issue(issue) {
         return AutoCleanupOutcome::Noop;
     }
     let session = session.map(str::trim).filter(|value| !value.is_empty());
     // The move target is only needed by an OpenCode-associated candidate
-    // and only by the close chain, so it is resolved at most once per
+    // and only by a pass that may move, so it is resolved at most once per
     // pass — and never at all for a pure CLI close, a reconciliation
     // pass, or a read-only report.
     let target = TargetResolver::new(repo_path, &context.identity);
@@ -195,17 +236,55 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
         if !directory.exists() {
             continue;
         }
-        let blocked = candidate::protected_reason_with_guard(
+        // The local guards run first and read nothing from the host: a main
+        // checkout, an active peer's path, or a dirty/untracked directory is
+        // excluded here, so it never reaches the host or the provider.
+        if let Some(reason) = candidate::local_protected_reason(
             runner,
-            guard,
-            mode,
-            &target,
             &context.identity,
             &context.rows,
             session,
             row,
+        ) {
+            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+            continue;
+        }
+        // The closure of the directory's *other* issues is read before any
+        // session may be moved: a directory an open issue shares is kept,
+        // and moving one of our sessions out of it would be a side effect
+        // of a removal that must not happen.
+        let issues = associated_issues(&context.rows, &directory);
+        if let Err(reason) = closure.confirm_others_closed(issue, &issues) {
+            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+            continue;
+        }
+        let blocked = guard.keep_reason(
+            mode,
+            &target,
+            &directory,
+            &associated_sessions(&context.rows, &directory),
+            session,
         );
         if let Some(reason) = blocked {
+            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+            continue;
+        }
+        // The guard moved the family (or found it already gone). Its answers
+        // are not a permission: rows, local guards, and closure evidence are
+        // re-read *now*, after any movement, because a new active owner or a
+        // newly linked open issue that appeared during the moves must keep
+        // the directory. The candidate's own rows are re-derived from the
+        // fresh read, never from the invocation-start snapshot.
+        if let Err(reason) = reverify_after_movement(
+            runner,
+            closure,
+            mode,
+            &context.identity,
+            issue,
+            session,
+            &directory,
+            &row.worktree_path,
+        ) {
             kept.push(kept_entry(issue, &reason, &row.worktree_path));
             continue;
         }
@@ -228,6 +307,72 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
         return AutoCleanupOutcome::Noop;
     }
     AutoCleanupOutcome::Cleaned { removed, kept }
+}
+
+/// The post-movement re-verification every removal path shares: reload the
+/// complete lease rows, re-check the candidate's own local guards against
+/// them, and re-validate the directory's other issue closures with the
+/// memo dropped. An unreadable lease store, a vanished candidate row, a new
+/// active owner, dirt, or an open neighbour each keep the directory.
+///
+/// A pass that cannot move anything never changed local or provider state,
+/// so re-reading it would answer the same question twice; the movement
+/// window is what makes the re-read necessary.
+#[allow(clippy::too_many_arguments)]
+fn reverify_after_movement(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    closure: &dyn closure::DirectoryIssueClosure,
+    mode: CleanupMode,
+    identity: &str,
+    issue: u64,
+    session: Option<&str>,
+    directory: &Path,
+    worktree_path: &str,
+) -> Result<(), String> {
+    if !mode.may_move_sessions() {
+        return Ok(());
+    }
+    closure.refresh();
+    let fresh = match context::load_repository(&crate::infra::storage::Storage::open()?, identity) {
+        Ok(rows) => rows,
+        Err(reason) => {
+            return Err(format!(
+                "the lease evidence could not be re-read after the moves: {reason}"
+            ));
+        }
+    };
+    let fresh_row = fresh
+        .iter()
+        .find(|row| same_directory(Path::new(&row.worktree_path), directory))
+        .ok_or_else(|| {
+            format!(
+                "the candidate's lease row is gone after the moves ({worktree_path}); the directory survives"
+            )
+        })?;
+    if let Some(reason) =
+        candidate::local_protected_reason(runner, identity, &fresh, session, fresh_row)
+    {
+        return Err(format!("the directory changed after the moves ({reason})"));
+    }
+    let fresh_issues = associated_issues(&fresh, directory);
+    if let Err(reason) = closure.confirm_others_closed(issue, &fresh_issues) {
+        return Err(format!(
+            "the directory's issue closures changed after the moves ({reason})"
+        ));
+    }
+    Ok(())
+}
+
+/// The distinct issues the persisted leases associate with one directory.
+pub(crate) fn associated_issues(rows: &[LeaseRow], directory: &Path) -> Vec<u64> {
+    let mut issues: Vec<u64> = rows
+        .iter()
+        .filter(|row| same_directory(Path::new(&row.worktree_path), directory))
+        .map(|row| row.issue)
+        .collect();
+    issues.sort_unstable();
+    issues.dedup();
+    issues
 }
 
 /// Distinct OpenCode-managed sessions whose persisted lease points at

@@ -7,7 +7,8 @@
 //!
 //! Anything that is not exactly the documented shape — invalid JSON, a
 //! missing `data`, a session without the required `location.directory`, a
-//! `SessionsResponse` without `data`/`cursor` — is an error. The cleanup
+//! `parentID` that is not a session id, a `SessionsResponse` without
+//! `data`/`cursor` — is an error. The cleanup
 //! treats every error as uncertainty and keeps the directory, so a
 //! lenient parser could only ever remove a directory it failed to
 //! understand.
@@ -102,8 +103,8 @@ fn next_cursor(cursor: &Value) -> Result<Option<String>, ApiError> {
     }
 }
 
-/// Reduce any session document to the `(id, directory)` pair the occupancy
-/// check compares. `session.get`'s single `data` object and
+/// Reduce any session document to the `(id, directory, parent)` triple the
+/// occupancy check compares. `session.get`'s single `data` object and
 /// `session.list`'s per-item objects carry the same required fields.
 fn located_session(value: &Value) -> Result<LocatedSession, ApiError> {
     let id = value
@@ -117,10 +118,37 @@ fn located_session(value: &Value) -> Result<LocatedSession, ApiError> {
         .and_then(Value::as_str)
         .filter(|directory| !directory.trim().is_empty())
         .ok_or_else(|| ApiError::plain("session has no location.directory"))?;
+    let parent_id = parent_id(value)?;
     Ok(LocatedSession {
         id: id.to_owned(),
         directory: directory.to_owned(),
+        parent_id,
     })
+}
+
+/// Read the lineage edge of a session document.
+///
+/// `parentID` absent or `null` means the session is a root. A non-empty
+/// `ses_…` string names the parent session. Every other shape — an empty
+/// string, a string that is not a session id, or a value that is not a
+/// string at all — is malformed and fails closed: a lineage the host
+/// describes in a shape this crate cannot read is never treated as "this
+/// session has no parent", because that would silently promote an
+/// unrelated session into the lease family.
+fn parent_id(value: &Value) -> Result<Option<String>, ApiError> {
+    match value.get("parentID") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(parent)) => {
+            if parent.is_empty() {
+                return Err(ApiError::plain("session parentID is empty"));
+            }
+            if !super::is_opencode_session(parent) {
+                return Err(ApiError::plain("session parentID is not a session id"));
+            }
+            Ok(Some(parent.clone()))
+        }
+        Some(_) => Err(ApiError::plain("session parentID is not a string")),
+    }
 }
 
 fn require_data(body: &str) -> Result<Value, ApiError> {

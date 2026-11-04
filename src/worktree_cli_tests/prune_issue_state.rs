@@ -4,14 +4,15 @@
 //! reader and a scripted provider reader, so every state, scope conflict, and
 //! mismatch is exercised without a real provider or network. The prune pass
 //! itself is covered elsewhere with a plain
-//! [`ScriptedIssueStateSource`](crate::cli::worktree::ScriptedIssueStateSource).
+//! [`ScriptedIssueStateSource`](crate::cli::issue_closure::test_support::ScriptedIssueStateSource).
 
 use super::*;
 
-use crate::cli::worktree::{
+use crate::cli::issue_closure::{
     ComposedIssueStateSource, IssueClosure, IssueStateFact, IssueStateReader, LinkScope,
     LinkScopeReader,
 };
+use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
 use std::path::{Path, PathBuf};
 
 /// Scripted link scopes keyed by issue number.
@@ -434,4 +435,91 @@ fn refresh_invalidates_the_link_scope_reader() {
     assert_eq!(source.closure(&repo(), 7), IssueClosure::Closed);
     assert_eq!(calls.get(), 2, "the scope is re-read after a refresh");
     assert_eq!(refreshes.get(), 1, "the reader's refresh is invoked");
+}
+
+// ---------------------------------------------------------------------------
+// The close-path adapter
+// ---------------------------------------------------------------------------
+
+/// The issue being closed is closed by definition: the adapter never
+/// re-reads it, and every other issue is confirmed through the same
+/// scope-aware resolver the prune pass uses.
+#[test]
+fn the_close_adapter_short_circuits_the_current_issue() {
+    use crate::cli::issue_closure::CurrentIssueClosure;
+    let closure = CurrentIssueClosure::with_source(
+        &repo(),
+        source(
+            FakeLinks::none().with(7, "redmine", "tools", "7"),
+            FakeProvider::redmine().with_state(7, "open"),
+        ),
+    );
+    assert!(
+        closure.confirm_others_closed(7, &[7]).is_ok(),
+        "the issue the close already closed is never re-read"
+    );
+}
+
+#[test]
+fn the_close_adapter_keeps_an_open_neighbour() {
+    use crate::cli::issue_closure::CurrentIssueClosure;
+    let closure = CurrentIssueClosure::with_source(
+        &repo(),
+        source(
+            FakeLinks::none().with(8, "redmine", "tools", "8"),
+            FakeProvider::redmine().with_state(8, "open"),
+        ),
+    );
+    let reason = closure
+        .confirm_others_closed(7, &[7, 8])
+        .expect_err("an open neighbour keeps the directory");
+    assert!(reason.contains("8"), "got: {reason}");
+}
+
+#[test]
+fn the_close_adapter_accepts_a_closed_neighbour() {
+    use crate::cli::issue_closure::CurrentIssueClosure;
+    let closure = CurrentIssueClosure::with_source(
+        &repo(),
+        source(
+            FakeLinks::none().with(8, "redmine", "tools", "8"),
+            FakeProvider::redmine().with_state(8, "closed"),
+        ),
+    );
+    assert!(
+        closure.confirm_others_closed(7, &[7, 8]).is_ok(),
+        "a confirmed-closed neighbour no longer protects the directory"
+    );
+}
+
+#[test]
+fn the_close_adapter_keeps_an_ambiguous_neighbour() {
+    use crate::cli::issue_closure::CurrentIssueClosure;
+    let links = FakeLinks::none()
+        .with(8, "redmine", "tools", "8")
+        .with(8, "local", "default", "8");
+    let closure = CurrentIssueClosure::with_source(
+        &repo(),
+        source(links, FakeProvider::redmine().with_state(8, "closed")),
+    );
+    let reason = closure
+        .confirm_others_closed(7, &[7, 8])
+        .expect_err("an ambiguous scope keeps the directory");
+    assert!(reason.contains("conflicting link scopes"), "got: {reason}");
+}
+
+#[test]
+fn the_close_adapter_keeps_a_neighbour_the_provider_does_not_know() {
+    use crate::cli::issue_closure::CurrentIssueClosure;
+    let closure = CurrentIssueClosure::with_source(
+        &repo(),
+        source(
+            FakeLinks::none().with(8, "redmine", "tools", "8"),
+            FakeProvider::redmine().missing(8),
+        ),
+    );
+    let reason = closure
+        .confirm_others_closed(7, &[7, 8])
+        .expect_err("a missing issue keeps the directory");
+    assert!(reason.contains("was not found"), "got: {reason}");
 }

@@ -11,7 +11,7 @@
 //! these cases may end in a removal the host never agreed to.
 
 use super::CleanupMode;
-use super::sessions::SessionVerdict;
+use super::sessions::FamilyOutcome;
 use super::tests::{candidate, evaluate_with, fixed, main_checkout};
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 use std::path::Path;
@@ -35,7 +35,7 @@ fn a_listing_that_omits_a_hosted_session_never_reads_as_vacant() {
         &["ses_a"],
         None,
     );
-    let SessionVerdict::Keep(reason) = verdict else {
+    let FamilyOutcome::Keep(reason) = verdict else {
         panic!("an omitted occupant must keep the candidate, got {verdict:?}");
     };
     assert!(reason.contains("still hosted here"), "got: {reason}");
@@ -57,7 +57,12 @@ fn an_omitted_own_session_is_returned_rather_than_assumed_free() {
         &["ses_a"],
         Some("ses_a"),
     );
-    assert_eq!(verdict, SessionVerdict::Vacant);
+    assert_eq!(
+        verdict,
+        FamilyOutcome::Released {
+            sessions: vec!["ses_a".to_owned()]
+        }
+    );
     assert_eq!(
         api.moves(),
         vec![("ses_a".to_owned(), "/tmp/pg-p1-main".to_owned())],
@@ -110,7 +115,7 @@ fn a_closing_opencode_argument_does_not_manage_a_pure_cli_candidate() {
         &["phasegent-cli"],
         Some("ses_x"),
     );
-    assert_eq!(verdict, SessionVerdict::Unmanaged);
+    assert_eq!(verdict, FamilyOutcome::Unmanaged);
     assert_eq!(api.list_calls(), 0, "an unmanaged candidate is not probed");
     assert!(api.moves().is_empty());
 }
@@ -125,7 +130,7 @@ fn a_candidate_with_no_lease_at_all_is_unmanaged_even_with_a_closing_session() {
         &[],
         Some("ses_x"),
     );
-    assert_eq!(verdict, SessionVerdict::Unmanaged);
+    assert_eq!(verdict, FamilyOutcome::Unmanaged);
     assert_eq!(api.list_calls(), 0);
     assert!(api.moves().is_empty());
 }
@@ -135,10 +140,11 @@ fn a_candidate_with_no_lease_at_all_is_unmanaged_even_with_a_closing_session() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_omitted_second_session_blocks_the_move_before_any_request() {
+fn an_omitted_second_session_is_returned_with_the_first() {
     // The listing never showed `ses_b`, so a listing-only decision would
-    // see one occupant and move. The kept direct answer makes it two, and
-    // a directory with two occupants is not one this pass may empty.
+    // move one session and declare the directory free. The kept direct
+    // answer makes it two, and the family is returned as a whole: the
+    // directory is only removed once every member of it has left.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_a", &candidate())
         .with_session("ses_b", &candidate())
@@ -150,13 +156,19 @@ fn an_omitted_second_session_blocks_the_move_before_any_request() {
         &["ses_a", "ses_b"],
         Some("ses_a"),
     );
-    let SessionVerdict::Keep(reason) = verdict else {
-        panic!("two occupants must keep the candidate, got {verdict:?}");
-    };
-    assert!(reason.contains("2 OpenCode sessions"), "got: {reason}");
-    assert!(
-        api.moves().is_empty(),
-        "an unseen occupant must be discovered before anything moves"
+    assert_eq!(
+        verdict,
+        FamilyOutcome::Released {
+            sessions: vec!["ses_a".to_owned(), "ses_b".to_owned()]
+        }
+    );
+    assert_eq!(
+        api.moves(),
+        vec![
+            ("ses_a".to_owned(), "/tmp/pg-p1-main".to_owned()),
+            ("ses_b".to_owned(), "/tmp/pg-p1-main".to_owned()),
+        ],
+        "an unseen occupant must be discovered before anything is removed"
     );
 }
 
@@ -177,7 +189,7 @@ fn a_session_the_host_stops_describing_after_the_move_keeps_the_directory() {
         &["ses_a", "ses_b"],
         Some("ses_a"),
     );
-    let SessionVerdict::Keep(reason) = verdict else {
+    let FamilyOutcome::Keep(reason) = verdict else {
         panic!("an unconfirmable session must keep the candidate, got {verdict:?}");
     };
     assert!(reason.contains("ses_b"), "got: {reason}");

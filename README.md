@@ -189,10 +189,12 @@ phasegent worktree probe --issue 123
 ```
 
 A directory leased by an OpenCode session (`ses_…`) is protected until the host
-confirms that session no longer runs there: `issue close` returns the closing
-session to the repository's main checkout through the OpenCode API
-(`opencode api session.move`) before removing anything, keeps the directory when
-that cannot be confirmed, and `issue sync` removes it once the session has moved.
+confirms that session no longer runs there: `issue close` returns the idle
+members of that directory's lease family — the sessions its leases name and the
+descendants that descend from them — to the repository's main checkout through
+the OpenCode API (`opencode api session.move`) before removing anything, keeps
+the directory when that cannot be confirmed, and `issue sync` removes it once
+the sessions have moved.
 After that cleanup, a successful close also restores the captured pre-issue
 branch in the verified main checkout when that checkout is clean and safe, then
 fast-forwards only that branch's own configured upstream. Every unsafe, missing,
@@ -213,13 +215,17 @@ blocks removal, checked read-only. An inactive historical session record that
 still points at the directory never keeps it. The read-only scan never
 enumerates historical sessions and never moves a session; the removal stage
 does: before it deletes a directory it reads that directory's fresh occupancy
-and returns every associated idle `ses_` session to the repository's verified
+and the lineage the host reports, and returns every associated idle `ses_`
+session — the sessions its leases name and the descendants that descend from
+them — to the repository's verified
 main checkout, confirming each move with a fresh authoritative read. Those
 checks describe the one connected service at that moment, not a guarantee about
-session changes after them. A session no lease of this repository associates
+session changes after them. A session no lease of this repository associates,
+and no lineage reaches one of them,
 keeps the directory and is never moved, and an unavailable or incomplete
 listing, an unresolvable associated session, an answer that names another
-session or reports an unusable location, a rejected, queued, or unconfirmed
+session or reports an unusable location, an unreadable, mismatched, or cyclic
+lineage, a rejected, queued, or unconfirmed
 move, an unverifiable main checkout, and a session that started running in the
 meantime all keep the directory. Coverage is that one connected service, not a
 whole-machine multi-service inventory. The local guards are decided before the

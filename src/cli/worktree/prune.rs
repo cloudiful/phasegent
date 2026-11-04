@@ -22,7 +22,7 @@
 //! there is no waiting period. Age never gates directory deletion;
 //! `--stale-days` survives only for the explicit `--release-stale` recovery.
 //! Closure is read from the configured provider through
-//! [`issue_state`](self::issue_state) (the same current-configured-provider
+//! [`crate::cli::issue_closure`] (the same current-configured-provider
 //! model `issue sync` uses); a preview may read closure but never mutates.
 //!
 //! The pass never syncs a provider, never releases a session, never
@@ -64,15 +64,11 @@ use super::{config_error, open_storage, storage_error};
 
 mod active_guard;
 mod host_cache;
-pub(crate) mod issue_state;
 mod leases;
 mod worktrees;
 
+pub(crate) use crate::cli::issue_closure::{IssueStateSource, configured_source};
 use host_cache::ScanHostCache;
-pub(crate) use issue_state::{
-    ComposedIssueStateSource, IssueClosure, IssueStateFact, IssueStateReader, IssueStateSource,
-    LinkScope, LinkScopeReader, configured_source,
-};
 pub(crate) use leases::{ReleaseStaleAction, ReleaseStaleSummary};
 pub(crate) use worktrees::{
     DirectoryCandidate, PruneAction, PruneDisposition, PruneMode, PruneScope, PruneSummary,

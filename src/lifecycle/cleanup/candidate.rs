@@ -13,12 +13,14 @@
 //!    session still occupies, the host is the authority and an unreadable,
 //!    incomplete, or unresolvable answer keeps the directory.
 //!
-//! `mode` decides who may act on the host's answer. Only
-//! [`CleanupMode::Close`] may move the closing session; the reconciliation pass
-//! and `worktree prune` (both [`CleanupMode::Sync`]) never move a session, so a
-//! directory that is still occupied is kept for a later pass.
+//! `mode` decides who may act on the host's answer. [`CleanupMode::Close`]
+//! and [`CleanupMode::Prune`] may return the candidate's idle lease family
+//! to the verified main checkout; the reconciliation pass
+//! ([`CleanupMode::Sync`]) never moves a session, so a directory that is
+//! still occupied is kept for a later pass; and [`CleanupMode::Preview`]
+//! reports what a removal would do without touching anything.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::worktree::LeaseRow;
 use crate::worktree::WorktreeRunner;
@@ -26,7 +28,7 @@ use crate::worktree::opencode::OpenCodeApi;
 
 use super::CleanupMode;
 use super::target::TargetResolver;
-use super::{associated_sessions, guards, sessions};
+use super::{guards, sessions};
 
 /// One source of the host half of the candidate guard.
 ///
@@ -77,70 +79,17 @@ pub(crate) fn occupancy_reason(
     associated: &[String],
     closing: Option<&str>,
 ) -> Option<String> {
-    sessions::evaluate(api, mode, target, directory, associated, closing).keep_reason()
+    sessions::finalize_family(api, mode, target, directory, associated, closing).keep_reason()
 }
 
-/// The complete local + host protection check for one candidate row.
-///
-/// Returns `None` only when the directory passed every guard and may be
-/// removed. A `Some` value is the bounded operator-facing reason it was kept.
-#[allow(dead_code, clippy::too_many_arguments)]
-pub(crate) fn protected_reason(
-    runner: &dyn WorktreeRunner,
-    api: &dyn OpenCodeApi,
-    mode: CleanupMode,
-    target: &TargetResolver<'_>,
-    identity: &str,
-    rows: &[LeaseRow],
-    closing: Option<&str>,
-    row: &LeaseRow,
-) -> Option<String> {
-    protected_reason_with_guard(
-        runner,
-        &DirectOccupancy(api),
-        mode,
-        target,
-        identity,
-        rows,
-        closing,
-        row,
-    )
-}
-
-/// [`protected_reason`] with an injectable host source. The local guards are
-/// identical for every source and still run first, so an unverifiable or
-/// dirty directory never reaches the host.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn protected_reason_with_guard(
-    runner: &dyn WorktreeRunner,
-    guard: &dyn OccupancyGuard,
-    mode: CleanupMode,
-    target: &TargetResolver<'_>,
-    identity: &str,
-    rows: &[LeaseRow],
-    closing: Option<&str>,
-    row: &LeaseRow,
-) -> Option<String> {
-    let directory = PathBuf::from(&row.worktree_path);
-    local_protected_reason(runner, identity, rows, closing, row).or_else(|| {
-        guard.keep_reason(
-            mode,
-            target,
-            &directory,
-            &associated_sessions(rows, &directory),
-            closing,
-        )
-    })
-}
-
-/// The local, Git-only half of [`protected_reason`]: never the main checkout,
+/// The local, Git-only half of the candidate guard: never the main checkout,
 /// never an `active` peer's path, never dirty or untracked. It runs no host or
 /// provider read, so a caller that must decide a directory's fate before
 /// touching the host — `worktree prune` classifies before it plans child
 /// retirement — can use it to exclude a main/dirty path with zero host I/O. It
-/// is the same `guards::evaluate` call `protected_reason` makes, not a parallel
-/// copy, so the two can never disagree. `closing` preserves the close/sync
-/// caller's own-session exemption; prune passes `None`.
+/// is the same `guards::evaluate` call the host guard is layered on, not a
+/// parallel copy, so the two can never disagree. `closing` preserves the
+/// close/sync caller's own-session exemption; prune passes `None`.
 pub(crate) fn local_protected_reason(
     runner: &dyn WorktreeRunner,
     identity: &str,
