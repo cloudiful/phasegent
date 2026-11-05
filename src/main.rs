@@ -36,6 +36,9 @@ mod worktree_tests;
 mod worktree_cli_tests;
 
 #[cfg(test)]
+mod forgejo_cli_tests;
+
+#[cfg(test)]
 mod plugin_tests;
 
 #[cfg(test)]

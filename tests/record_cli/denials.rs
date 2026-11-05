@@ -554,3 +554,56 @@ fn host_marker_non_utf8_presence_must_fail_closed() {
         "denial must precede storage access"
     );
 }
+
+/// Issue 1201 P3 G6: the create preflight (role/kind/authorization/marker/body)
+/// runs before provider, credential, scope, or store access. A disallowed kind
+/// must report the permission denial even when the explicitly selected Forgejo
+/// provider has no credential and its endpoint is unreachable.
+#[cfg(unix)]
+#[test]
+fn record_create_permission_denial_precedes_unavailable_forgejo_provider() {
+    let scratch = Scratch::new();
+    let out = isolated_raw_context(
+        &scratch,
+        "PHASEGENT_PROVIDER",
+        std::ffi::OsStr::new("forgejo"),
+        &[
+            "--provider",
+            "forgejo",
+            "--api-base",
+            "http://127.0.0.1:1",
+            "--repository",
+            "owner/repo",
+            "record",
+            "create",
+            "7",
+            "--kind",
+            "reviewer",
+            "--key",
+            "k",
+            "--phase",
+            "P1",
+            "--attempt",
+            "1",
+            "--review",
+            "final",
+            "--body",
+            "note",
+            "--authorized",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stdout={} stderr={}",
+        stdout_text(&out),
+        stderr_text(&out)
+    );
+    let envelope = error_envelope(&out);
+    assert_eq!(envelope["error"]["kind"], "permission");
+    assert_eq!(envelope["error"]["operation"], "record create");
+    assert!(
+        !scratch.path().join("runtime.sqlite3").exists(),
+        "the permission denial must precede any provider or credential store access"
+    );
+}

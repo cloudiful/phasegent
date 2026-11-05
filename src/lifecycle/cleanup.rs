@@ -202,6 +202,62 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
         issue,
         session,
         closure,
+        None,
+    )
+}
+
+/// Injected core of [`cleanup_closed_issue_worktrees`] for a provider-scoped
+/// close: the exact resolved `(provider, project, external_id)` scope the
+/// closed issue was resolved under. A directory whose scoped leases all
+/// match it exactly may proceed through the same guards; mixed, foreign,
+/// and unscoped-context directories keep. Every other guard is unchanged.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cleanup_closed_issue_worktrees_with_scope(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    api: &dyn OpenCodeApi,
+    mode: CleanupMode,
+    repo_path: &Path,
+    issue: u64,
+    session: Option<&str>,
+    closure: &dyn closure::DirectoryIssueClosure,
+    allowed_scope: &crate::worktree::LeaseScope,
+) -> AutoCleanupOutcome {
+    let context = match context::resolve(runner, repo_path, issue) {
+        Ok(context) => context,
+        Err(reason) => return AutoCleanupOutcome::Warning { reason },
+    };
+    cleanup_closed_issue_worktrees_in_context(
+        runner,
+        &candidate::DirectOccupancy(api),
+        mode,
+        context,
+        repo_path,
+        issue,
+        session,
+        closure,
+        Some(allowed_scope),
+    )
+}
+
+/// Public scoped close cleanup: the production close path for an explicitly
+/// resolved Forgejo issue.
+pub fn cleanup_closed_issue_worktrees_scoped(
+    runner: &dyn crate::worktree::WorktreeRunner,
+    repo_path: &Path,
+    issue: u64,
+    session: Option<&str>,
+    closure: &dyn closure::DirectoryIssueClosure,
+    allowed_scope: &crate::worktree::LeaseScope,
+) -> AutoCleanupOutcome {
+    cleanup_closed_issue_worktrees_with_scope(
+        runner,
+        &ProcessOpenCodeApi::new(),
+        CleanupMode::Close,
+        repo_path,
+        issue,
+        session,
+        closure,
+        allowed_scope,
     )
 }
 
@@ -228,6 +284,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
     issue: u64,
     session: Option<&str>,
     closure: &dyn closure::DirectoryIssueClosure,
+    allowed_scope: Option<&crate::worktree::LeaseScope>,
 ) -> AutoCleanupOutcome {
     if !context.has_issue(issue) {
         return AutoCleanupOutcome::Noop;
@@ -240,9 +297,29 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
     let target = TargetResolver::new(repo_path, &context.identity);
     let mut removed = 0u64;
     let mut kept: Vec<String> = Vec::new();
-    for row in context.rows.iter().filter(|row| row.issue == issue) {
+    // A provider-scoped pass only considers the closed issue's own scoped
+    // leases: a same-number legacy row, or a row of another provider scope,
+    // is never a candidate of this pass (it stays untouched).
+    for row in
+        context
+            .rows
+            .iter()
+            .filter(|row| row.issue == issue)
+            .filter(|row| match allowed_scope {
+                Some(scope) => context.scopes.get(&row.lease_id) == Some(scope),
+                None => true,
+            })
+    {
         let directory = PathBuf::from(&row.worktree_path);
         if !directory.exists() {
+            continue;
+        }
+        if !context.directory_scope_allowed(&directory, allowed_scope) {
+            kept.push(kept_entry(
+                issue,
+                "scoped provider lease requires provider-aware cleanup",
+                &row.worktree_path,
+            ));
             continue;
         }
         // The local guards run first and read nothing from the host: a main
@@ -292,6 +369,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
             &directory,
             &row.worktree_path,
             cache.as_ref(),
+            allowed_scope,
         ) {
             kept.push(kept_entry(issue, &reason, &row.worktree_path));
             continue;
@@ -326,6 +404,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
                 session,
                 &directory,
                 closure,
+                allowed_scope,
             ) {
                 kept.push(kept_entry(
                     issue,
@@ -376,19 +455,25 @@ fn reverify_after_movement(
     directory: &Path,
     worktree_path: &str,
     expected_cache: Option<&crate::worktree::cache::CacheInventory>,
+    allowed_scope: Option<&crate::worktree::LeaseScope>,
 ) -> Result<(), String> {
     if !mode.may_move_sessions() {
         return Ok(());
     }
     closure.refresh();
-    let fresh = match context::load_repository(&crate::infra::storage::Storage::open()?, identity) {
-        Ok(rows) => rows,
-        Err(reason) => {
-            return Err(format!(
-                "the lease evidence could not be re-read after the moves: {reason}"
-            ));
-        }
-    };
+    let fresh_context =
+        match CleanupContext::load(&crate::infra::storage::Storage::open()?, identity) {
+            Ok(context) => context,
+            Err(reason) => {
+                return Err(format!(
+                    "the lease evidence could not be re-read after the moves: {reason}"
+                ));
+            }
+        };
+    if !fresh_context.directory_scope_allowed(directory, allowed_scope) {
+        return Err("scoped provider lease requires provider-aware cleanup".to_owned());
+    }
+    let fresh = fresh_context.rows;
     let fresh_row = fresh
         .iter()
         .find(|row| same_directory(Path::new(&row.worktree_path), directory))
@@ -429,12 +514,20 @@ fn recheck_after_cache(
     session: Option<&str>,
     directory: &Path,
     closure: &dyn closure::DirectoryIssueClosure,
+    allowed_scope: Option<&crate::worktree::LeaseScope>,
 ) -> Result<(), String> {
     closure.refresh();
-    let fresh = match context::load_repository(&crate::infra::storage::Storage::open()?, identity) {
-        Ok(rows) => rows,
-        Err(reason) => return Err(format!("the lease evidence could not be re-read: {reason}")),
-    };
+    let fresh_context =
+        match CleanupContext::load(&crate::infra::storage::Storage::open()?, identity) {
+            Ok(context) => context,
+            Err(reason) => {
+                return Err(format!("the lease evidence could not be re-read: {reason}"));
+            }
+        };
+    if !fresh_context.directory_scope_allowed(directory, allowed_scope) {
+        return Err("scoped provider lease requires provider-aware cleanup".to_owned());
+    }
+    let fresh = fresh_context.rows;
     let fresh_row = fresh
         .iter()
         .find(|row| same_directory(Path::new(&row.worktree_path), directory))

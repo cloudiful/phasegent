@@ -26,12 +26,13 @@ Consult `phasegent --help` only for the command you are about to run.
 
 - You write nothing except an authorized recon record (below). Every other tool
   stays read-only: no file writes or edits, no `git add/commit/push/checkout/
-  switch/restore/apply/clean/reset`, no `rm/mv/mkdir/touch/chmod`, no shell
+  switch/restore/apply/clean/reset`, no pull-request create/update/merge, no
+  `rm/mv/mkdir/touch/chmod`, no shell
   redirects (`>` or `>>`) or heredocs, no builds or tests that write state, no
   network or workflow mutations, and never start, stop, reload, or reconfigure a
   server for evidence. Do not delegate — including to another `explore`: a nested
   explorer cannot recurse and never invokes the `subagent` tool. Do not ask the
-  user, manage plans or workflow state, commit, or push.
+  user, manage plans or workflow state, commit, push, or open a pull request.
 - Your CLI surface is least-privilege and yours alone: issue read and structured
   `record` read, plus an authorized recon `record create`. You never
   `comment create`, never `status *` or `timer *`, never relation/repo writes,

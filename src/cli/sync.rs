@@ -52,8 +52,10 @@ mod scopes;
 #[path = "sync/tests_reuse.rs"]
 mod tests_reuse;
 use crate::providers::IssueProvider;
+#[cfg(test)]
+pub(crate) use engine::set_retention_interleave_hook;
 pub(crate) use engine::{SyncSetup, resolve_setup, run_sync_resolved};
-use scopes::{default_provider, open_lease_storage};
+use scopes::open_lease_storage;
 
 /// Lease `release_reason` recorded when the reconciliation converges an
 /// issue the provider already closed.
@@ -186,8 +188,14 @@ pub(crate) fn run_sync(
     use scopes::IntoProviderError;
     let (scopes, skipped) = scopes::resolve_scopes(runner, storage, request.all, request.cwd)
         .map_err(|error| error.into_provider_error())?;
+    let provider_scope = crate::providers::index_store::provider_scope(provider)
+        .ok()
+        .map(|scope| (scope.source, scope.project));
     engine::run_sync_scopes(
         &|issue| provider.get_issue(issue),
+        provider_scope
+            .as_ref()
+            .map(|(a, b)| (a.as_str(), b.as_str())),
         runner,
         storage,
         &scopes,
@@ -238,20 +246,17 @@ pub(crate) fn execute_sync_with_caller(
     if !caller.is_orchestrator_authorized() {
         return crate::cli::worktree::permission_error(role, "issue sync");
     }
-    let provider =
-        match crate::providers::config::resolve_kind(role, provider_kind).and_then(|kind| {
-            crate::cli::provider_for(
-                role,
-                Some(kind),
-                api_base,
-                repository,
-                project_id,
-                close_status_id,
-            )
-        }) {
-            Ok(provider) => provider,
-            Err(error) => return crate::cli::provider_error(error),
-        };
+    let context = crate::cli::provider_context::ProviderContext::from_parts(
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+    );
+    let provider = match context.resolve(role) {
+        Ok(provider) => provider,
+        Err(error) => return crate::cli::provider_error(error),
+    };
     let storage = match open_lease_storage() {
         Ok(storage) => storage,
         Err(message) => return storage_error(&message),
@@ -268,8 +273,14 @@ pub(crate) fn execute_sync_with_caller(
         Err(error) => return crate::cli::provider_error(error),
     };
     crate::output::progress::stage("issue sync: reconciling the worktree leases");
+    let provider_scope = crate::providers::index_store::provider_scope(&provider)
+        .ok()
+        .map(|scope| (scope.source, scope.project));
     match run_sync_resolved(
         &|issue| provider.get_issue(issue),
+        provider_scope
+            .as_ref()
+            .map(|(a, b)| (a.as_str(), b.as_str())),
         &runner,
         &mut setup,
         mode,
@@ -294,11 +305,21 @@ pub(crate) fn taxi_sync(role: Role, repo: Option<&str>) -> Vec<String> {
 
 #[allow(dead_code)]
 pub(crate) fn taxi_sync_seeded(role: Role, repo: Option<&str>) -> (Vec<String>, Option<SyncSetup>) {
-    taxi_sync_with_runner(role, repo, &ProcessWorktreeRunner::new())
+    taxi_sync_scoped(
+        role,
+        &crate::cli::provider_context::ProviderContext::default(),
+        repo,
+        &ProcessWorktreeRunner::new(),
+    )
 }
 
-pub(crate) fn taxi_sync_with_runner(
+/// The explicit-provider taxi pass: a `--provider forgejo` worktree
+/// invocation must reconcile through that same provider scope, so a
+/// matching scoped group is processed and a foreign one keeps.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn taxi_sync_scoped(
     role: Role,
+    context: &crate::cli::provider_context::ProviderContext,
     repo: Option<&str>,
     runner: &dyn crate::worktree::WorktreeRunner,
 ) -> (Vec<String>, Option<SyncSetup>) {
@@ -311,8 +332,11 @@ pub(crate) fn taxi_sync_with_runner(
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
     taxi_sync_in(runner, storage, &cwd, || {
-        let provider = default_provider(role)?;
-        Ok(move |issue| provider.get_issue(issue))
+        let provider = context.resolve(role)?;
+        let scope = crate::providers::index_store::provider_scope(&provider)
+            .ok()
+            .map(|scope| (scope.source, scope.project));
+        Ok((scope, move |issue| provider.get_issue(issue)))
     })
 }
 
@@ -324,7 +348,7 @@ pub(crate) fn taxi_sync_in<G, R>(
 ) -> (Vec<String>, Option<SyncSetup>)
 where
     G: Fn(u64) -> Result<crate::providers::IssueSummary, crate::providers::api::PhasegentError>,
-    R: FnOnce() -> Result<G, crate::providers::api::PhasegentError>,
+    R: FnOnce() -> Result<(Option<(String, String)>, G), crate::providers::api::PhasegentError>,
 {
     let mut setup = match resolve_setup(runner, storage, false, cwd) {
         Ok(setup) => setup,
@@ -339,8 +363,8 @@ where
     if setup.scopes.iter().all(|scope| scope.candidates.is_empty()) {
         return (Vec::new(), Some(setup));
     }
-    let get_issue = match resolve_provider() {
-        Ok(get_issue) => get_issue,
+    let (provider_scope, get_issue) = match resolve_provider() {
+        Ok(result) => result,
         Err(error) => {
             return (
                 vec![bounded(&format!("sync skipped: {}", error_json(&error)))],
@@ -348,7 +372,16 @@ where
             );
         }
     };
-    let warnings = match run_sync_resolved(&get_issue, runner, &mut setup, SyncMode::Clean, false) {
+    let warnings = match run_sync_resolved(
+        &get_issue,
+        provider_scope
+            .as_ref()
+            .map(|(a, b)| (a.as_str(), b.as_str())),
+        runner,
+        &mut setup,
+        SyncMode::Clean,
+        false,
+    ) {
         Ok(report) => report.taxi_warnings(),
         Err(error) => vec![bounded(&format!("sync skipped: {}", error_json(&error)))],
     };

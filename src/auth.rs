@@ -81,6 +81,30 @@ pub fn setup_provider(
             "provider": provider
         }));
     }
+    if provider == crate::infra::storage::PROVIDER_FORGEJO {
+        let base = api_base
+            .as_deref()
+            .ok_or_else(|| "Forgejo --api-base is required".to_owned())?;
+        let repo = repository
+            .as_deref()
+            .ok_or_else(|| "Forgejo --repository is required".to_owned())?;
+        let config = crate::providers::forgejo::ForgejoConfig::new(base, repo)
+            .map_err(|error| error.to_string())?;
+        let credential = read_credential("Forgejo token", read_stdin)?;
+        if credential.trim().is_empty() {
+            return Err("Forgejo token cannot be empty".to_owned());
+        }
+        let storage = Storage::open()?;
+        storage.save_forgejo_auth(
+            role,
+            config.api_base(),
+            config.repository(),
+            credential.trim(),
+        )?;
+        return Ok(
+            serde_json::json!({"configured": true, "role": role.as_str(), "provider": provider}),
+        );
+    }
     if provider != PROVIDER_REDMINE {
         return Err(format!("unsupported provider '{provider}'"));
     }
@@ -116,7 +140,9 @@ fn validate_provider_options(
     if provider == PROVIDER_LOCAL && repository.is_some() {
         return Err("--repository is not a local option".to_owned());
     }
-    if provider == PROVIDER_LOCAL && close_status_id.is_some() {
+    if (provider == PROVIDER_LOCAL || provider == crate::infra::storage::PROVIDER_FORGEJO)
+        && close_status_id.is_some()
+    {
         return Err("--close-status-id requires the redmine provider".to_owned());
     }
     Ok(())
@@ -137,13 +163,33 @@ fn read_credential(label: &str, read_stdin: bool) -> Result<String, String> {
 }
 
 pub fn load_config(role: Role, storage: &Storage) -> Result<Option<StoredConfig>, String> {
+    load_config_if_present(role, Some(storage))
+}
+
+/// The admission-time form: a missing or older store yields no persisted
+/// base, while the TOML role overlay still applies. Never opens or migrates.
+pub fn load_config_if_present(
+    role: Role,
+    storage: Option<&Storage>,
+) -> Result<Option<StoredConfig>, String> {
     // Effective role config: TOML overlays legacy SQLite so direct file
     // edits affect the same resolver paths used by normal commands.
     // Precedence for the provider field is TOML > SQLite; callers apply
     // explicit CLI > env before this stored-effective value. Credentials
     // never consult TOML. Overlay parse/secret errors propagate instead of
     // falling back so malformed TOML cannot be silently ignored.
-    let base = storage.load_role_config(role)?;
+    let base = match storage {
+        Some(storage)
+            if storage.table_exists("role_config")?
+                && storage.table_has_column("role_config", "role")?
+                && storage.table_has_column("role_config", "provider")?
+                && storage.table_has_column("role_config", "api_base")?
+                && storage.table_has_column("role_config", "repository")? =>
+        {
+            storage.load_role_config(role)?
+        }
+        _ => None,
+    };
     let overlay = crate::infra::config_overlay::load_overlay()?;
     let Some(overlay) = overlay else {
         return Ok(base);

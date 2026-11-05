@@ -57,6 +57,8 @@ pub(crate) mod cache;
 mod create_hook;
 pub(crate) mod git;
 pub(super) mod lease_schema;
+pub(crate) mod lease_scope;
+pub use lease_scope::LeaseScope;
 pub(crate) mod leases;
 mod naming;
 pub(crate) mod opencode;
@@ -74,6 +76,8 @@ pub use acquire::{
     AcquireOptions, acquire_lease, acquire_lease_with, heartbeat_lease,
     release_active_leases_for_issue, release_lease, release_lease_forced,
 };
+#[allow(unused_imports)]
+pub(crate) use acquire::{acquire_lease_scoped, release_active_leases_for_scope};
 #[allow(unused_imports)]
 pub use git::{
     checkout_git_dirs, head_rev, is_clean, is_inside_work_tree, parse_worktree_list,
@@ -100,7 +104,7 @@ pub(crate) use session::{
 /// Best-effort worktree acquisition after `issue create` (issue 18).
 /// Exposed crate-internally so the create arm can run it.
 #[allow(unused_imports)]
-pub(crate) use create_hook::auto_acquire_after_create;
+pub(crate) use create_hook::{auto_acquire_after_create, auto_acquire_after_create_scoped};
 
 /// Status of a single lease row. `active` rows are the ones
 /// `acquire_lease` returns; `retained` / `released` are terminal

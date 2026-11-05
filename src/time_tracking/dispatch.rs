@@ -66,6 +66,8 @@ pub(crate) fn execute_with_caller(
     close_status_id: Option<&str>,
     command: TimerCommand,
 ) -> Result<TimerOutput, PhasegentError> {
+    let role = timer_orchestrator_caller(caller, "timer")?;
+    reject_forgejo_timer(role, provider_kind)?;
     // Authorization uses the invocation context; start/finish helpers take
     // the same context so Operator identity is preserved (never collapsed
     // to an Admin agent, which would be denied as non-orchestrator).
@@ -181,6 +183,7 @@ pub(crate) fn execute_recovery_with_caller(
             Ok(TimerListOutput::Single { run: Box::new(run) })
         }
         TimerCommand::Recover { run_id } => {
+            reject_forgejo_timer(_role, provider_kind)?;
             let storage = Storage::open().map_err(timer_storage_error("timer recover"))?;
             super::recover::handle_recover_with_caller(
                 caller,
@@ -199,6 +202,16 @@ pub(crate) fn execute_recovery_with_caller(
             "timer list/get/recover do not accept start or finish",
         )),
     }
+}
+
+pub(crate) fn reject_forgejo_timer(
+    role: Role,
+    provider_kind: Option<ProviderKind>,
+) -> Result<(), PhasegentError> {
+    if crate::providers::config::resolve_kind(role, provider_kind)? == ProviderKind::Forgejo {
+        return Err(PhasegentError::not_supported("forgejo", "time tracking"));
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]

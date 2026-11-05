@@ -40,6 +40,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS worktree_leases_active_repo_path_idx
 
 CREATE INDEX IF NOT EXISTS worktree_leases_repo_status_idx
     ON worktree_leases (repo_identity, status);
+
+CREATE TABLE IF NOT EXISTS worktree_lease_scopes (
+    lease_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL CHECK (length(provider) > 0),
+    project TEXT NOT NULL CHECK (length(project) > 0),
+    external_id INTEGER NOT NULL CHECK (external_id > 0),
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS worktree_lease_scopes_issue_idx
+    ON worktree_lease_scopes (provider, project, external_id);
 ";
 
 /// Create the table plus both additive migrations, in open order.

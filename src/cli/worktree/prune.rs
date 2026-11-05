@@ -55,8 +55,8 @@ use crate::lifecycle::cleanup::wait::{MoveBudget, MovePolicy};
 use crate::output::context::OutputMode;
 use crate::policy::Role;
 use crate::worktree::leases::{
-    ensure_schema, list_all_for_repo, recover_stale_active_leases, repo_identities,
-    stale_active_leases, stale_window,
+    StaleRecoveryScope, ensure_schema, list_all_for_repo, recover_stale_active_leases_for_scope,
+    repo_identities, stale_active_leases, stale_window,
 };
 use crate::worktree::opencode::ProcessOpenCodeApi;
 use crate::worktree::{LeaseRow, ProcessWorktreeRunner, now_unix_secs};
@@ -68,12 +68,20 @@ mod host_cache;
 mod leases;
 mod worktrees;
 
-pub(crate) use crate::cli::issue_closure::{IssueStateSource, configured_source};
+#[allow(unused_imports)]
+pub(crate) use crate::cli::issue_closure::{
+    ExplicitSelection, IssueStateSource, configured_source, configured_source_context,
+    configured_source_scoped,
+};
+use crate::providers::ProviderKind;
 use host_cache::ScanHostCache;
 pub(crate) use leases::{ReleaseStaleAction, ReleaseStaleSummary};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use worktrees::scan_worktree_candidates;
 pub(crate) use worktrees::{
     DirectoryCandidate, PruneAction, PruneDisposition, PruneMode, PruneScope, PruneSummary,
-    pinned_active_paths, prune_pass, prune_pass_with_policy, scan_worktree_candidates,
+    pinned_active_paths, prune_pass, prune_pass_with_policy,
 };
 
 use leases::{stale_recovery_summary, stale_scan_summary};
@@ -135,6 +143,7 @@ enum Scope {
     Skipped { identity: String, reason: String },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_prune(
     repo: Option<&str>,
     stale_days: u32,
@@ -143,8 +152,30 @@ pub(super) fn execute_prune(
     dry_run: bool,
     format: &str,
     role: Role,
+    context: &crate::cli::provider_context::ProviderContext,
 ) -> i32 {
-    let source = configured_source(role);
+    // The complete context is validated before storage, recovery, mutation or
+    // HTTP: an implicit Forgejo default and incompatible explicit flags fail
+    // closed, while explicit Local/Redmine remain valid.
+    if let Err(error) = context.validate(role) {
+        return crate::cli::provider_error(error);
+    }
+    // The complete raw invocation travels into the closure source, so an
+    // omitted selection keeps endpoint overrides without being promoted to an
+    // explicit provider and every explicit flag reaches validation.
+    let source = configured_source_context(role, context.clone());
+    let owned_forgejo_project = match context.provider {
+        Some(ProviderKind::Forgejo) => context.owned_forgejo_repository(role).ok().flatten(),
+        _ => None,
+    };
+    let recovery_scope = match (&owned_forgejo_project, context.provider) {
+        (Some(project), _) => StaleRecoveryScope::Exact {
+            provider: "forgejo",
+            project: project.as_str(),
+        },
+        (None, Some(ProviderKind::Forgejo)) => StaleRecoveryScope::Nothing,
+        _ => StaleRecoveryScope::LegacyOnly,
+    };
     let api = ProcessOpenCodeApi::new();
     execute_prune_with_source(
         repo,
@@ -156,6 +187,8 @@ pub(super) fn execute_prune(
         &source,
         &api,
         &stderr_note,
+        recovery_scope,
+        context.provider == Some(ProviderKind::Forgejo),
     )
 }
 
@@ -176,6 +209,8 @@ pub(crate) fn execute_prune_with_source(
     source: &dyn IssueStateSource,
     api: &dyn crate::worktree::opencode::OpenCodeApi,
     progress: &dyn Fn(&str),
+    recovery_scope: StaleRecoveryScope<'_>,
+    explicit_forgejo: bool,
 ) -> i32 {
     // Wall duration of the command's own work; reported in text only, never as a
     // machine field.
@@ -269,6 +304,29 @@ pub(crate) fn execute_prune_with_source(
             }
             Scope::Resolved { identity, path } => (identity, path),
         };
+        // Validate the complete sidecar scope map before any mutation,
+        // including the `--release-stale` recovery below and every provider
+        // read or removal in the scan. A corrupt or unreadable map skips this
+        // repository with a bounded reason and leaves leases, heartbeats,
+        // worktrees, provider calls, cache, and session moves untouched; the
+        // preview follows the same validation.
+        let scope_map = match crate::worktree::lease_scope::scope_map_for_repo(&storage, &identity)
+        {
+            Ok(scopes) => scopes,
+            Err(error) => {
+                outcomes.push(PruneRepoOutcome {
+                    repo_identity: identity,
+                    repo_path: Some(path.display().to_string()),
+                    skipped_reason: Some(format!(
+                        "could not validate lease scopes: {}",
+                        error.message
+                    )),
+                    leases: None,
+                    worktrees: None,
+                });
+                continue;
+            }
+        };
         // The invocation-start snapshot: every row uncapped, and the set of
         // directories that hold an active lease right now. A same-call
         // recovery must not make any of those removable.
@@ -277,17 +335,23 @@ pub(crate) fn execute_prune_with_source(
             Err(error) => return storage_error(&error),
         };
         let pinned_active = pinned_active_paths(&start_rows);
-        let candidates = match stale_active_leases(&storage, &identity, window.before) {
+        let mut candidates = match stale_active_leases(&storage, &identity, window.before) {
             Ok(rows) => rows,
             Err(error) => return storage_error(&error),
         };
+        // Only rows this invocation's provider selection may own are shown
+        // or released: legacy/default contexts never flip a scoped Forgejo
+        // lease, and explicit Forgejo flips only its matching repository
+        // scope.
+        candidates.retain(|row| recovery_scope.allows(scope_map.get(&row.lease_id)));
         let lease_summary = match requested_reason.as_deref().filter(|_| apply_recovery) {
-            Some(reason) => match recover_stale_active_leases(
+            Some(reason) => match recover_stale_active_leases_for_scope(
                 &mut storage,
                 &identity,
                 window.before,
                 reason,
                 now,
+                recovery_scope,
             ) {
                 Ok(flipped) => stale_recovery_summary(
                     &identity,
@@ -347,6 +411,7 @@ pub(crate) fn execute_prune_with_source(
             } else {
                 MovePolicy::Bounded(&move_budget)
             };
+            let provider_scope = source.provider_scope();
             prune_pass_with_policy(
                 &storage,
                 &runner,
@@ -358,6 +423,10 @@ pub(crate) fn execute_prune_with_source(
                 stale_days,
                 mode,
                 confirmation,
+                provider_scope
+                    .as_ref()
+                    .map(|(provider, project)| (provider.as_str(), project.as_str())),
+                explicit_forgejo,
                 progress,
             )
         };

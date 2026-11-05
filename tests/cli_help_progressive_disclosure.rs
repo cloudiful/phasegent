@@ -348,7 +348,7 @@ fn status_help_advertises_transition_with_the_real_provider_set() {
     );
     let stdout = stdout_text(&output);
     assert!(
-        stdout.contains("Redmine and local"),
+        stdout.contains("Redmine, local, and Forgejo"),
         "--help status advance must name the real provider set; got:\n{stdout}",
     );
     assert!(
@@ -360,7 +360,7 @@ fn status_help_advertises_transition_with_the_real_provider_set() {
     assert!(output.status.success(), "--help status set exited non-zero");
     let stdout = stdout_text(&output);
     assert!(
-        stdout.contains("Redmine and local"),
+        stdout.contains("Redmine, local, and Forgejo"),
         "--help status set must name the real provider set; got:\n{stdout}",
     );
 
@@ -374,7 +374,8 @@ fn status_help_advertises_transition_with_the_real_provider_set() {
     );
     let stdout = stdout_text(&output);
     assert!(
-        stdout.contains("status transition <NUMBER>") && stdout.contains("Redmine and local"),
+        stdout.contains("status transition <NUMBER>")
+            && stdout.contains("Redmine, local, and Forgejo"),
         "--help status transition must document the command and its provider set; got:\n{stdout}",
     );
 

@@ -20,7 +20,8 @@ pub(crate) mod cleanup;
 pub use cleanup::AutoCleanupOutcome;
 #[allow(unused_imports)]
 pub(crate) use cleanup::{
-    CleanupMode, cleanup_closed_issue_worktrees, cleanup_closed_issue_worktrees_with,
+    CleanupMode, cleanup_closed_issue_worktrees, cleanup_closed_issue_worktrees_scoped,
+    cleanup_closed_issue_worktrees_with,
 };
 #[path = "lifecycle/issue_switch.rs"]
 mod issue_switch;
@@ -50,7 +51,7 @@ pub fn origin_identity(runner: &dyn GitRunner) -> Option<String> {
         .map(|parsed| parsed.repository)
 }
 
-fn bounded(text: &str) -> String {
+pub(crate) fn bounded(text: &str) -> String {
     text.chars().take(MAX_WARNING_CHARS).collect()
 }
 

@@ -20,8 +20,10 @@ mod notify;
 pub(crate) mod plugin;
 mod project;
 mod project_resolution;
+pub(crate) mod provider_context;
 mod record;
 mod relation;
+mod scope_guard;
 mod status;
 mod version;
 mod workflow;
@@ -115,6 +117,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
     } else {
         None
     };
+    let provider_invocation = provider_context::ProviderContext::from_invocation(&invocation);
     match invocation.command {
         Command::Help(topic) => {
             help::print_help(invocation.role, invocation.provider, topic);
@@ -360,7 +363,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         Command::Plugin(command) => plugin::execute_plugin(command),
         Command::Notify(command) => notify::execute_notify_with_caller(invocation.caller, command),
         Command::Worktree(command) => {
-            worktree::execute_worktree_with_caller(invocation.caller, command)
+            worktree::execute_worktree_scoped(invocation.caller, &provider_invocation, command)
         }
     }
 }
@@ -446,6 +449,21 @@ pub(crate) fn provider_for(
         ProviderKind::Redmine => {
             let config = RedmineConfig::resolve(role, api_base, project_id, close_status_id)?;
             ProviderDispatcher::redmine(role, config)
+        }
+        ProviderKind::Forgejo => {
+            if provider_kind != Some(ProviderKind::Forgejo) {
+                return Err(PhasegentError::config(
+                    "Forgejo requires explicit --provider forgejo",
+                ));
+            }
+            if project_id.is_some() || close_status_id.is_some() {
+                return Err(PhasegentError::config(
+                    "Forgejo does not support --project-id or --close-status-id",
+                ));
+            }
+            let config =
+                crate::providers::forgejo::ForgejoConfig::resolve(role, api_base, repository)?;
+            ProviderDispatcher::forgejo(role, config)
         }
         // Local needs no credentials or remote config: open the
         // independent SQLite store directly. Auth stays passwordless.
@@ -571,4 +589,35 @@ pub(crate) fn structured_error(error: serde_json::Value, code: i32) -> i32 {
         ),
     }
     code
+}
+
+#[cfg(test)]
+mod provider_selection_tests {
+    use super::*;
+    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
+
+    #[test]
+    fn provider_for_rejects_an_environment_forgejo_default_without_the_flag() {
+        let _lock = lock_workflow_tests();
+        let _env = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
+        let error = match provider_for(
+            Role::Orchestrator,
+            None,
+            Some("http://127.0.0.1:1"),
+            Some("owner/repo"),
+            None,
+            None,
+        ) {
+            Ok(_) => panic!("an environment Forgejo default must not build a provider"),
+            Err(error) => error,
+        };
+        assert!(
+            error.json()["message"]
+                .as_str()
+                .unwrap()
+                .contains("requires explicit --provider forgejo"),
+            "got: {}",
+            error.json()
+        );
+    }
 }

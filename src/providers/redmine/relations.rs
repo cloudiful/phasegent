@@ -35,6 +35,9 @@ pub(crate) fn execute(
         ProviderDispatcher::Local(_) => {
             Err(PhasegentError::not_supported("local", "issue relations"))
         }
+        ProviderDispatcher::Forgejo(_) => {
+            Err(PhasegentError::not_supported("forgejo", "issue relations"))
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 use super::cli_support::*;
 use super::support::*;
 use super::*;
+use crate::worktree::leases::StaleRecoveryScope;
 
 use crate::lifecycle::cleanup::TargetResolver;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
@@ -95,6 +96,8 @@ fn cli_prune_streams_progress_before_a_blocked_host_check() {
                     .expect("progress lock")
                     .push(message.to_owned());
             },
+            StaleRecoveryScope::All,
+            false,
         )
     });
 

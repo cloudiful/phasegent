@@ -20,6 +20,7 @@ use crate::worktree::{LeaseRow, WorktreeRunner};
 pub(crate) struct CleanupContext {
     pub(crate) identity: String,
     pub(crate) rows: Vec<LeaseRow>,
+    pub(crate) scopes: std::collections::HashMap<String, crate::worktree::LeaseScope>,
 }
 
 impl CleanupContext {
@@ -27,6 +28,48 @@ impl CleanupContext {
     /// with no row has no candidate at all, and the pass is a no-op.
     pub(super) fn has_issue(&self, issue: u64) -> bool {
         self.rows.iter().any(|row| row.issue == issue)
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_scoped_directory(&self, directory: &Path) -> bool {
+        self.rows.iter().any(|row| {
+            self.scopes.contains_key(&row.lease_id)
+                && super::same_directory(Path::new(&row.worktree_path), directory)
+        })
+    }
+
+    /// Whether the directory may be treated by a provider-scoped cleanup
+    /// pass. An unscoped legacy directory is always allowed (the legacy
+    /// path is unchanged). A directory with any scoped lease is allowed
+    /// only when the pass names its allowed provider/project and every lease
+    /// on the directory — scoped or not — carries that same provider and
+    /// project; mixed or foreign directories keep. Individual release and
+    /// candidate selection still use the exact per-issue key.
+    pub(super) fn directory_scope_allowed(
+        &self,
+        directory: &Path,
+        allowed_scope: Option<&crate::worktree::LeaseScope>,
+    ) -> bool {
+        let rows: Vec<&LeaseRow> = self
+            .rows
+            .iter()
+            .filter(|row| super::same_directory(Path::new(&row.worktree_path), directory))
+            .collect();
+        if !rows
+            .iter()
+            .any(|row| self.scopes.contains_key(&row.lease_id))
+        {
+            return true;
+        }
+        let Some(allowed_scope) = allowed_scope else {
+            return false;
+        };
+        rows.iter().all(|row| {
+            self.scopes.get(&row.lease_id).is_some_and(|scope| {
+                scope.provider() == allowed_scope.provider()
+                    && scope.project() == allowed_scope.project()
+            })
+        })
     }
 
     /// Load the current rows for an already-known repository identity.
@@ -38,6 +81,8 @@ impl CleanupContext {
             Ok(rows) => Ok(Self {
                 identity: identity.to_owned(),
                 rows,
+                scopes: crate::worktree::lease_scope::scope_map_for_repo(storage, identity)
+                    .map_err(|error| error.message)?,
             }),
             Err(error) => Err(error),
         }
@@ -62,6 +107,7 @@ pub(super) fn resolve(
         return Ok(CleanupContext {
             identity: String::new(),
             rows: Vec::new(),
+            scopes: std::collections::HashMap::new(),
         });
     }
     let identity = match crate::worktree::repo_identity(runner, repo_path) {
@@ -91,8 +137,8 @@ pub(super) fn resolve(
             &error,
         ));
     }
-    match load_repository(&storage, &identity) {
-        Ok(rows) => Ok(CleanupContext { identity, rows }),
+    match CleanupContext::load(&storage, &identity) {
+        Ok(context) => Ok(context),
         Err(error) => Err(warning(
             issue,
             "could not read worktree leases for cleanup",

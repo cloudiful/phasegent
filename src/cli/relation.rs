@@ -66,6 +66,12 @@ pub(crate) fn execute_relation_with_caller(
                 capability.operation(),
             ));
         }
+        Ok(ProviderKind::Forgejo) => {
+            return super::provider_error(PhasegentError::not_supported(
+                "forgejo",
+                capability.operation(),
+            ));
+        }
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(

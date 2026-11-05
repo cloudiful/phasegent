@@ -33,6 +33,19 @@ pub(crate) fn auto_acquire_after_create(
     issue: u64,
     explicit_session: Option<&str>,
 ) -> Option<String> {
+    auto_acquire_after_create_scoped(issue, explicit_session, None)
+}
+
+/// The scoped form of [`auto_acquire_after_create`]. A Forgejo create names
+/// its exact `(provider, project, external_id)` scope, so the hook writes a
+/// sidecar-scoped lease and never falls back to an unscoped one when the
+/// scope, identity, or store cannot be proven (a best-effort silence). The
+/// unscoped path is unchanged for Redmine and Local.
+pub(crate) fn auto_acquire_after_create_scoped(
+    issue: u64,
+    explicit_session: Option<&str>,
+    scope: Option<&crate::worktree::LeaseScope>,
+) -> Option<String> {
     if issue == 0 {
         return None;
     }
@@ -51,7 +64,32 @@ pub(crate) fn auto_acquire_after_create(
         // guidance when it is occupied. It never creates a worktree.
         reuse: true,
     };
-    match acquire_lease_with(&runner, &repo_path, issue, &session.id, options) {
+    let outcome = match scope {
+        Some(scope) => {
+            let storage = match crate::infra::storage::Storage::open() {
+                Ok(storage) => storage,
+                Err(_) => return None,
+            };
+            if crate::worktree::leases::ensure_schema(&storage).is_err() {
+                return None;
+            }
+            let identity = match crate::worktree::repo_identity(&runner, &repo_path) {
+                Ok(identity) => identity,
+                Err(_) => return None,
+            };
+            crate::worktree::acquire_lease_scoped(
+                &runner,
+                &storage,
+                &identity,
+                &repo_path,
+                &session.id,
+                options,
+                scope,
+            )
+        }
+        None => acquire_lease_with(&runner, &repo_path, issue, &session.id, options),
+    };
+    match outcome {
         Ok(outcome) => {
             let mut warnings = outcome.warnings.join("; ");
             if outcome.created {

@@ -34,6 +34,12 @@ pub(crate) fn resolve_planning(
         ProviderDispatcher::Redmine(_) => {}
         // Local is handled by the early return above; kept for exhaustiveness.
         ProviderDispatcher::Local(_) => {}
+        ProviderDispatcher::Forgejo(_) => {
+            return Err(PhasegentError::not_supported(
+                "forgejo",
+                "issue planning fields",
+            ));
+        }
     }
     let parent_issue_id = match &options.parent_issue {
         None => None,
@@ -117,6 +123,16 @@ pub(crate) fn create_issue(
             };
             Ok((summary, None))
         }
+        ProviderDispatcher::Forgejo(_) => {
+            reject_explicit_assignee(provider, assignee)?;
+            if needs_provider_specific {
+                return Err(PhasegentError::not_supported(
+                    "forgejo",
+                    "issue tracker or planning fields",
+                ));
+            }
+            Ok((provider.create_issue(title, body)?, None))
+        }
         // Local ignores tracker/planning/assignee and uses the plain path.
         ProviderDispatcher::Local(_) => {
             reject_explicit_assignee(provider, assignee)?;
@@ -176,6 +192,10 @@ pub(crate) fn update_body(
         }
         // Local ignores tracker/planning and uses the plain path.
         ProviderDispatcher::Local(_) => provider.update_body(number, body),
+        ProviderDispatcher::Forgejo(_) => Err(PhasegentError::not_supported(
+            "forgejo",
+            "issue tracker or planning fields",
+        )),
     }
 }
 

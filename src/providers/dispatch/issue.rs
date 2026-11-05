@@ -90,6 +90,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.capabilities(),
             Self::Local(provider) => provider.capabilities(),
+            Self::Forgejo(provider) => provider.capabilities(),
         }
     }
 
@@ -97,6 +98,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.supports(capability),
             Self::Local(provider) => provider.supports(capability),
+            Self::Forgejo(provider) => provider.supports(capability),
         }
     }
 
@@ -104,6 +106,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.get_issue(number),
             Self::Local(provider) => provider.get_issue(number),
+            Self::Forgejo(provider) => provider.get_issue(number),
         }
     }
 
@@ -114,6 +117,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.search_issues(options),
             Self::Local(provider) => provider.search_issues(options),
+            Self::Forgejo(provider) => provider.search_issues(options),
         }
     }
 
@@ -124,6 +128,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.search_issue_page(options),
             Self::Local(provider) => provider.search_issue_page(options),
+            Self::Forgejo(provider) => provider.search_issue_page(options),
         }
     }
 
@@ -131,6 +136,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.create_issue(title, body),
             Self::Local(provider) => provider.create_issue(title, body),
+            Self::Forgejo(provider) => provider.create_issue(title, body),
         }
     }
 
@@ -138,6 +144,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.update_body(number, body),
             Self::Local(provider) => provider.update_body(number, body),
+            Self::Forgejo(provider) => provider.update_body(number, body),
         }
     }
 
@@ -145,6 +152,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.close_issue(number),
             Self::Local(provider) => provider.close_issue(number),
+            Self::Forgejo(provider) => provider.close_issue(number),
         }
     }
 
@@ -157,6 +165,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.create_comment(issue, body, marker),
             Self::Local(provider) => provider.create_comment(issue, body, marker),
+            Self::Forgejo(provider) => provider.create_comment(issue, body, marker),
         }
     }
 
@@ -164,6 +173,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.get_comment(issue, comment),
             Self::Local(provider) => provider.get_comment(issue, comment),
+            Self::Forgejo(provider) => provider.get_comment(issue, comment),
         }
     }
 
@@ -171,6 +181,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.find_marker(issue, marker),
             Self::Local(provider) => provider.find_marker(issue, marker),
+            Self::Forgejo(provider) => provider.find_marker(issue, marker),
         }
     }
 
@@ -182,6 +193,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.list_comments_page(issue, page),
             Self::Local(provider) => provider.list_comments_page(issue, page),
+            Self::Forgejo(provider) => provider.list_comments_page(issue, page),
         }
     }
 
@@ -189,6 +201,7 @@ impl IssueProvider for ProviderDispatcher {
         match self {
             Self::Redmine(provider) => provider.list_comments(issue),
             Self::Local(provider) => provider.list_comments(issue),
+            Self::Forgejo(provider) => provider.list_comments(issue),
         }
     }
 }

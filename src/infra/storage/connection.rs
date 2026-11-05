@@ -30,6 +30,61 @@ impl Storage {
         Self::open_at(&path)
     }
 
+    /// The path `open` would use, without touching the filesystem.
+    pub(crate) fn resolve_path() -> Result<PathBuf, String> {
+        if let Some(override_path) = std::env::var_os("PHASEGENT_DB_PATH") {
+            return Ok(PathBuf::from(override_path));
+        }
+        sqlite_file::project_dirs_config_path(DB_FILENAME)
+    }
+
+    /// Open an existing database strictly read-only for admission-time
+    /// resolution. Returns `None` when the file does not exist. Never creates
+    /// the database or its directory, chmods, or runs schema or migrations.
+    /// SQLite may still create and manage its own native `-wal`/`-shm`
+    /// auxiliary files while this read-only connection is open.
+    pub(crate) fn open_existing_read_only() -> Result<Option<Self>, String> {
+        let path = Self::resolve_path()?;
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!("could not inspect phasegent database: {error}"));
+            }
+            Ok(_) => {}
+        }
+        let connection =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| format!("could not open phasegent database read-only: {error}"))?;
+        Ok(Some(Self { connection, path }))
+    }
+
+    pub(crate) fn table_exists(&self, table: &str) -> Result<bool, String> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|found| found == 1)
+            .map_err(|error| format!("could not inspect phasegent schema: {error}"))
+    }
+
+    pub(crate) fn table_has_column(&self, table: &str, column: &str) -> Result<bool, String> {
+        if !self.table_exists(table)? {
+            return Ok(false);
+        }
+        self.connection
+            .query_row(
+                &format!(
+                    "SELECT EXISTS (SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1)"
+                ),
+                [column],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|found| found == 1)
+            .map_err(|error| format!("could not inspect phasegent schema: {error}"))
+    }
+
     /// Open the database at an explicit filesystem path. Used by tests
     /// that want full control over the location. Creates the parent
     /// directory with mode 0700 and the database file with mode 0600

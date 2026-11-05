@@ -45,12 +45,14 @@ pub(crate) use crate::cli::issue_closure::test_support::ScriptedIssueStateSource
 pub(crate) use acquire::AcquireJson;
 #[allow(unused_imports)]
 pub(crate) use probe::{ProbeJson, ProbeLeaseJson, build_probe};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use prune::scan_worktree_candidates;
 #[allow(unused_imports)]
 pub(crate) use prune::{
     DirectoryCandidate, PruneAction, PruneAggregate, PruneDisposition, PruneMode, PruneRepoOutcome,
     PruneScope, PruneSummary, PruneTotals, ReleaseStaleAction, ReleaseStaleSummary,
     execute_prune_with_source, pinned_active_paths, prune_pass, render_text,
-    scan_worktree_candidates,
 };
 
 #[allow(dead_code)]
@@ -60,6 +62,31 @@ pub(crate) fn execute_worktree(role_value: Option<Role>, command: WorktreeComman
 }
 
 pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: WorktreeCommand) -> i32 {
+    execute_worktree_scoped(
+        caller,
+        &crate::cli::provider_context::ProviderContext::default(),
+        command,
+    )
+}
+
+fn validate_context_for_worktree(
+    context: &crate::cli::provider_context::ProviderContext,
+    credential: Role,
+    command: &WorktreeCommand,
+) -> Result<(), crate::providers::api::PhasegentError> {
+    match command {
+        WorktreeCommand::Acquire { .. }
+        | WorktreeCommand::Prune { .. }
+        | WorktreeCommand::List { .. } => context.validate(credential),
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn execute_worktree_scoped(
+    caller: CallerContext,
+    context: &crate::cli::provider_context::ProviderContext,
+    command: WorktreeCommand,
+) -> i32 {
     // Managed sessions without a role fail closed before any storage or
     // reconciliation access.
     if caller.is_managed_without_role() {
@@ -85,13 +112,19 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
     let credential = caller
         .credential_role()
         .expect("authorized caller has a credential");
+    // Validate the complete raw context before taxi reconciliation or any
+    // acquisition/recovery mutation, even when the taxi has no candidates or
+    // the command is a supported --no-sync form.
+    if let Err(error) = validate_context_for_worktree(context, credential, &command) {
+        return crate::cli::provider_error(error);
+    }
     let runner = ProcessWorktreeRunner::new();
     let mut sync_setup = None;
     if caller.is_orchestrator_authorized()
         && let Some((operation, repo)) = command.sync_taxi()
     {
         let (warnings, setup) =
-            crate::cli::issue::sync::taxi_sync_with_runner(credential, repo, &runner);
+            crate::cli::issue::sync::taxi_sync_scoped(credential, context, repo, &runner);
         sync_setup = setup;
         for warning in warnings {
             super::report_local_warnings(operation, Some(warning));
@@ -109,13 +142,14 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
             if !caller.is_orchestrator_authorized() {
                 return permission_error(credential, "worktree acquire");
             }
-            acquire::execute_acquire_seeded(
+            acquire::execute_acquire_scoped(
                 issue,
                 session.as_deref(),
                 &format,
                 isolate,
                 base.as_deref(),
                 sync_setup.as_ref(),
+                context,
                 &runner,
             )
         }
@@ -179,6 +213,7 @@ pub(crate) fn execute_worktree_with_caller(caller: CallerContext, command: Workt
                 dry_run,
                 &format,
                 credential,
+                context,
             )
         }
         WorktreeCommand::Heartbeat { lease, session } => {

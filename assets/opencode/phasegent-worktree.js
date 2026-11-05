@@ -2960,7 +2960,9 @@ gates, the record and marker protocol, result contracts, worktree lease safety,
 and the human-operator-only \`admin\` boundary. The role skills
 (\`phasegent-orchestrator\`, \`phasegent-executor\`, \`phasegent-reviewer\`, and
 \`phasegent-explore\`) carry only their role-specific always-on rules and defer
-here for the shared detail.
+here for the shared detail. Git delivery, PR, and issue-closure policy is
+canonical in \`phasegent-orchestrator\`; this skill and the child role skills
+reference it rather than restating it.
 
 Commands are not protocol. \`phasegent --help <command>\` owns flags, usage, and
 the provider surface, filtered by the session role: consult it only for the
@@ -2973,8 +2975,8 @@ under its own role.
 - The \`orchestrator\` agent is \`mode: primary\` and loads this skill with
   \`use_skill phasegent\`; it dispatches \`explore\`, \`executor\`, and \`reviewer\`
   as subagents, and repeatable prompts run via \`/orchestrate\` and \`/review\`.
-  Agent, skill, command, and plugin files load once at startup, so editing any
-  of them needs a new session.
+  A host loads the installed or injected artifact it has, so verify that copy
+  instead of assuming an existing session adopts edited bytes.
 - \`phasegent plugin install\` is this skill's only deployment channel: the
   adapter registers it through \`skill.transform\` (\`id\`/\`name\` \`phasegent\`, path
   \`/builtin/phasegent.md\`, body and description embedded from
@@ -3238,12 +3240,11 @@ same goal amend the original plan and run fresh final verification and review
 over the changed scope without reducing required final coverage; an
 independently new goal creates a separate issue only when warranted. Missing
 authorization or ambiguous intent is \`BLOCKED\`, never a mechanical exception.
-Closure distinguishes source from delivery: when authorized Git delivery is
-part of the task, finish and close only after the requested delivery succeeds;
-when the task completes without delivery authorization, close the source with
-an explicit \`not committed / not published\` result and never claim published
-delivery before Git success; later authorized delivery appends to the same
-original issue.
+Delivery and closure follow the orchestrator's portable policy: authorized
+delivery is committed, pushed, and proposed without closing an issue whose PR is
+still open; a task without delivery authorization closes with an explicit
+\`not committed / not published\` result, and later authorized delivery appends to
+the same original issue.
 
 ## Bounded parallelism (serial by default)
 
@@ -3325,8 +3326,9 @@ phase is an explicit transition back to \`In Progress\`.
   orchestrator-only for agents; the unmanaged human Operator shares that
   authority through the central context, while managed sessions without a role
   fail closed. Children never edit the body, label, search, or close an
-  issue, never call \`status *\` or \`timer *\`, never commit, push, tag, or mutate
-  refs, and never claim another role's credential.
+  issue, never call \`status *\` or \`timer *\`, never commit, push, tag, mutate
+  refs, create or update a PR, or merge, and never claim another role's
+  credential.
 - \`comment create\` writes under the session role: a child's note needs explicit
   authorization through the \`--authorized\` CLI flag, while unmanaged Operator
   comments need no flag. Operator \`record create\` stays denied (use \`comment
@@ -3635,6 +3637,10 @@ status flow, and the closure. These are your always-on role rules; the shared
 \`phasegent\` skill is the single source for the tracking-mode decision tree, the
 marker and result contracts, and worktree lease detail.
 
+This skill is also the single portable authority for Git delivery, PR, and
+issue-closure policy. The shared skill and the child role skills reference that
+policy instead of restating or contradicting it.
+
 Consult \`phasegent --help\` only for the command you are about to run; the
 shared skill owns the syntax rule and the rest of the protocol.
 
@@ -3837,30 +3843,65 @@ pending-question request on the human's behalf or fabricate a human response.
 - The canonical status flow and its command-level gates live in the shared
   skill. Children never call \`status *\` or \`timer *\`, never edit the body, and
   never label or close the issue.
-- Close at finish; a cross-project close needs the project override. When
-  authorized Git delivery is part of the task, finish and close only after the
-  requested delivery succeeds. When the task completes without delivery
+- \`Resolved\` means the AI work is finished and awaits human acceptance;
+  \`Closed\` is the verified terminal state. An issue that ends with an open PR,
+  or with Redmine acceptance still pending, moves to \`Resolved\`, not \`Closed\`,
+  and keeps its worktrees until the close.
+- Close only once the task's acceptance is actually met. Without delivery
   authorization, close the source with an explicit \`not committed / not
-  published\` result and never claim published delivery before Git success; later
-  authorized delivery appends to the same original issue without a new issue or
-  reopen. A successful close flips this issue's active leases to \`retained\`,
-  runs the guarded worktree cleanup — returning the idle members of each
-  candidate's lease family to the verified main checkout before anything is
-  removed — and then best-effort restores the captured
-  pre-issue branch in the verified main checkout plus its own configured
-  upstream when every safety gate holds. Restoration skips or warns without
-  changing the close result; repeat close retries only an incomplete upstream
-  update and is a no-op after completion or a terminal no-upstream result.
+  published\` result; with authorized delivery, close only after the requested
+  delivery succeeds and any required integration is verified. Never claim
+  published delivery before Git success and never close merely because a PR was
+  opened; an open PR or pending Redmine acceptance resolves the issue only to
+  \`Resolved\`, not \`Closed\`. Later authorized delivery appends to the same
+  original issue without a new issue or reopen. A cross-project close needs the
+  project override.
+- A successful close flips this issue's active leases to \`retained\`, runs the
+  guarded worktree cleanup — returning the idle members of each candidate's lease
+  family to the verified main checkout before anything is removed — and then
+  best-effort restores the captured pre-issue branch in the verified main
+  checkout plus its own configured upstream when every safety gate holds.
+  Restoration skips or warns without changing the close result; repeat close
+  retries only an incomplete upstream update and is a no-op after completion or
+  a terminal no-upstream result.
 
 ## Git delivery
 
-- You own commit/push/tag; children never commit, push, tag, or mutate refs.
+You are the single delivery authority for a tracked task: children never commit,
+push, tag, mutate refs, create or update a PR, or merge.
+
+- Default full implementation: unless the user forbids delivery, a complete
+  tracked implementation is committed, pushed on its task branch, and opened or
+  updated as one final PR per repository once the issue-final independent review
+  returns \`PASS\` and the issue's validation gates are green.
 - For authorized branch integration, prepare the baseline before the issue-final
   review: resolve the actual PR target from the PR or issue plan (for example
   \`origin/main\` or \`origin/dev\`), fetch it, and rebase the feature branch in its
-  own worktree. Resolve conflicts and rerun the issue's validation commands,
-  then freeze that tree for the final audit and record the target ref and SHA
-  in the issue. Confirm an ambiguous target with the human before rebasing.
+  own worktree. Resolve conflicts, rerun the issue's validation commands, then
+  freeze that tree for the final audit and record the target ref and SHA in the
+  issue. Confirm an ambiguous target with the human before rebasing. Keep the
+  local target branch and other worktrees unchanged.
+- Intermediate contract, design, recon, and phase work opens no PR; reuse an
+  authorized aggregation/WIP PR for the task and never create a PR per phase or
+  sub-issue. A phase-terminal \`DONE\` is not a delivery gate on its own.
+- Read-only, local-only, and no-hosted-remote tasks use only the Git delivery
+  their task permits and never fabricate a hosted PR; \`INLINE\` work stays
+  proportional and this rule never escalates it.
+- An open final PR does not keep source work unfinished: never stop a full
+  tracked implementation uncommitted or unpushed only because the PR is not
+  merged.
+- Creating or updating a PR authorizes no merge, tag, release, deploy, or
+  unrelated ref change, and you never auto-merge. A user-authorized integration
+  lets you merge server-side with the repository's strategy once required checks
+  pass, verify the result, record the merge SHA, and only then close the issue.
+- Provider-specific closure: a Forgejo \`Resolved\` is a native open label. Only
+  the final same-repository PR may carry a \`Closes\` marker for the native Forgejo
+  issue; every other PR uses \`Refs\` only, and you wait until all required
+  PRs/repositories have delivered before that final closing PR. Redmine has no
+  automatic PR bridge: keep the Redmine issue \`Resolved\` until you have
+  explicitly verified every required merge and acceptance and close it. Never
+  write \`Closes #<redmine-id>\` into a Forgejo PR; reference the full Redmine URL
+  instead.
 - At delivery, reuse the reviewed baseline while it satisfies the repository's
   merge requirements. A required later baseline update follows the shared
   post-\`PASS\` rules for scoped verification or renewed final review.
@@ -3869,7 +3910,7 @@ pending-question request on the human's behalf or fabricate a human response.
   and the issue's validation commands are green; bounded mechanical follow-ups
   use the shared scoped verification on the original artifact instead of a second
   full audit or a separate release issue. Never commit while review or validation
-  is open, and never treat a phase-terminal \`DONE\` as a delivery gate on its own.
+  is open.
 - After each commit/push and before claiming completion, run \`git status
   --porcelain\` in the task worktree and report whether it is clean. If dirty,
   list the retained tracked/untracked paths with ownership and the reason they
@@ -3879,8 +3920,8 @@ pending-question request on the human's behalf or fabricate a human response.
 - You own final task-owned artifact disposal in the delivered tree; report any
   retained task-owned process, cleanup failure, or unresolvable ownership
   instead of broadening cleanup.
-- Record the delivered short sha in the task completion record; never fabricate
-  a sha.
+- Record the delivered short SHA in the task completion record; never fabricate
+  a SHA.
 - Tag only at issue completion and only with explicit release authorization;
   before tagging verify the target commit is pushed, manifest versions match the
   tag, and the worktree is clean.
@@ -3985,7 +4026,8 @@ relay it to your parent rather than escalating directly.
 - Never \`issue update\`/\`close\`/\`search\`, never \`status *\`, never \`timer *\`,
   never relation or repo writes, and never the \`admin\` group: it is
   human-operator only.
-- Never commit, push, tag, or mutate refs — delivery is orchestrator-only.
+- Never commit, push, tag, or mutate refs, and never create or update a pull
+  request or merge — delivery is orchestrator-only.
 - Honour the allowlist: touch only the listed paths, and treat the \`git
   restore\` delta as the only rolled-back set. If a change would push a file past
   its size budget, split the responsibility into new files at the start instead
@@ -4120,7 +4162,8 @@ scope, and help lookup.
 - Never \`issue update\`/\`close\`/\`search\`, never \`status *\`, never \`timer *\`,
   never relation or repo writes, and never the \`admin\` group: it is
   human-operator only.
-- Never commit, push, tag, or mutate refs.
+- Never commit, push, tag, or mutate refs, and never create or update a pull
+  request or merge.
 - Your own \`notify send\` calls stay explicit; the adapter separately notifies on
   a local question form still unanswered after five minutes from observed stream
   events, with no form-state recheck and no reminder recovery after reload or
@@ -4278,12 +4321,13 @@ Consult \`phasegent --help\` only for the command you are about to run.
 
 - You write nothing except an authorized recon record (below). Every other tool
   stays read-only: no file writes or edits, no \`git add/commit/push/checkout/
-  switch/restore/apply/clean/reset\`, no \`rm/mv/mkdir/touch/chmod\`, no shell
+  switch/restore/apply/clean/reset\`, no pull-request create/update/merge, no
+  \`rm/mv/mkdir/touch/chmod\`, no shell
   redirects (\`>\` or \`>>\`) or heredocs, no builds or tests that write state, no
   network or workflow mutations, and never start, stop, reload, or reconfigure a
   server for evidence. Do not delegate — including to another \`explore\`: a nested
   explorer cannot recurse and never invokes the \`subagent\` tool. Do not ask the
-  user, manage plans or workflow state, commit, or push.
+  user, manage plans or workflow state, commit, push, or open a pull request.
 - Your CLI surface is least-privilege and yours alone: issue read and structured
   \`record\` read, plus an authorized recon \`record create\`. You never
   \`comment create\`, never \`status *\` or \`timer *\`, never relation/repo writes,

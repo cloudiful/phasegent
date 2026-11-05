@@ -18,6 +18,7 @@ pub enum ProviderKind {
     /// Local provider. Recognised by the resolver, `--provider` flag
     /// parsing, and the config snapshot via `as_str`/`from_str`.
     Local,
+    Forgejo,
 }
 
 impl ProviderKind {
@@ -25,6 +26,7 @@ impl ProviderKind {
         match self {
             Self::Redmine => "redmine",
             Self::Local => "local",
+            Self::Forgejo => "forgejo",
         }
     }
 
@@ -34,8 +36,8 @@ impl ProviderKind {
     /// from the storage layer so the rejection and the persisted legacy
     /// rows can never drift apart.
     fn is_retired(value: &str) -> bool {
-        use crate::infra::storage::{PROVIDER_FORGEJO, PROVIDER_GITLAB};
-        value == PROVIDER_FORGEJO || value == PROVIDER_GITLAB
+        use crate::infra::storage::PROVIDER_GITLAB;
+        value == PROVIDER_GITLAB
     }
 }
 
@@ -52,12 +54,13 @@ impl FromStr for ProviderKind {
         match value {
             "redmine" => Ok(Self::Redmine),
             "local" => Ok(Self::Local),
+            "forgejo" => Ok(Self::Forgejo),
             retired if Self::is_retired(retired) => Err(format!(
                 "tracking provider '{retired}' is no longer supported; \
-                 phasegent tracks only 'redmine' and 'local'"
+                 phasegent tracks only 'redmine', 'local', and 'forgejo'"
             )),
             _ => Err(format!(
-                "invalid provider '{value}'; expected redmine or local"
+                "invalid provider '{value}'; expected redmine, local, or forgejo"
             )),
         }
     }
@@ -111,17 +114,36 @@ pub fn resolve_kind(
             .parse()
             .map_err(|error: String| PhasegentError::config(error));
     }
-    // Persisted global default lives in `global_setting`. Read it
-    // directly so the resolver never writes.
-    if let Ok(storage) = Storage::open()
-        && let Ok(Some(value)) = storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+    // Admission-time resolution uses an existing-file read-only store: no
+    // creation, schema, migrations, or credential access. Missing DB/table or
+    // an older missing column means the persisted step is absent.
+    let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
+    if let Some(storage) = storage.as_ref()
+        && storage
+            .table_exists("global_setting")
+            .map_err(PhasegentError::config)?
     {
-        return value
-            .parse()
-            .map_err(|error: String| PhasegentError::config(error));
+        if !storage
+            .table_has_column("global_setting", "name")
+            .map_err(PhasegentError::config)?
+            || !storage
+                .table_has_column("global_setting", "value")
+                .map_err(PhasegentError::config)?
+        {
+            // A genuinely older store without the required columns means the
+            // persisted step is absent.
+        } else if let Some(value) = storage
+            .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+            .map_err(PhasegentError::config)?
+            && !value.trim().is_empty()
+        {
+            return value
+                .parse()
+                .map_err(|error: String| PhasegentError::config(error));
+        }
     }
-    let storage = Storage::open().map_err(PhasegentError::config)?;
-    let stored = auth::load_config(role, &storage).map_err(PhasegentError::config)?;
+    let stored =
+        auth::load_config_if_present(role, storage.as_ref()).map_err(PhasegentError::config)?;
     stored
         .and_then(|config| config.provider)
         .map_or(Ok(ProviderKind::Redmine), |provider| {
@@ -292,17 +314,23 @@ mod tests {
 
     #[test]
     fn a_retired_provider_name_is_rejected_with_an_actionable_error() {
-        for retired in ["forgejo", "gitlab"] {
-            let error = retired.parse::<ProviderKind>().unwrap_err();
-            assert!(error.contains(retired), "{error}");
-            assert!(error.contains("redmine"), "{error}");
-            assert!(error.contains("local"), "{error}");
-        }
+        let error = "gitlab".parse::<ProviderKind>().unwrap_err();
+        assert!(error.contains("gitlab"), "{error}");
+        assert!(error.contains("redmine"), "{error}");
+        assert!(error.contains("local"), "{error}");
+        assert!(error.contains("forgejo"), "{error}");
+        assert_eq!(
+            "forgejo".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Forgejo
+        );
     }
 
     #[test]
     fn an_unknown_provider_name_names_the_supported_set() {
         let error = "wrong".parse::<ProviderKind>().unwrap_err();
-        assert_eq!(error, "invalid provider 'wrong'; expected redmine or local");
+        assert_eq!(
+            error,
+            "invalid provider 'wrong'; expected redmine, local, or forgejo"
+        );
     }
 }

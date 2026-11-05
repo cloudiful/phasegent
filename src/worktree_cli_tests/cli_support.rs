@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::worktree::leases::StaleRecoveryScope;
 
 use crate::worktree::opencode::OpenCodeApi;
 
@@ -91,6 +92,8 @@ pub(crate) fn run_scoped_prune(
         source,
         api,
         &|_| {},
+        StaleRecoveryScope::All,
+        false,
     )
 }
 
@@ -113,6 +116,8 @@ pub(crate) fn run_global_prune(
         source,
         api,
         &|_| {},
+        StaleRecoveryScope::All,
+        false,
     )
 }
 

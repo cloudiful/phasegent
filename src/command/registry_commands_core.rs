@@ -185,9 +185,9 @@ pub(super) const CORE: &[CommandSpec] = &[
     ),
     group(
         "project",
-        "Redmine project operations",
+        "Redmine or Forgejo project operations",
         RoleAccess::Open,
-        ProviderScope::Redmine,
+        ProviderScope::RedmineOrForgejo,
         &[
             leaf("list", "List projects", ACCESS_PROJECT_READ),
             leaf("create", "Create a project", ACCESS_PROJECT_CREATE),
@@ -195,9 +195,9 @@ pub(super) const CORE: &[CommandSpec] = &[
     ),
     group(
         "status",
-        "Redmine issue status operations",
+        "Redmine, local, or Forgejo issue status operations",
         RoleAccess::Open,
-        ProviderScope::Redmine,
+        ProviderScope::RedmineOrForgejo,
         &[
             leaf("list", "List issue statuses", ACCESS_STATUS_READ),
             leaf("next", "Show the policy next status", ACCESS_STATUS_READ),
@@ -223,9 +223,9 @@ pub(super) const CORE: &[CommandSpec] = &[
     ),
     group(
         "version",
-        "Redmine project version operations",
+        "Redmine or Forgejo project version operations",
         RoleAccess::Open,
-        ProviderScope::Redmine,
+        ProviderScope::RedmineOrForgejo,
         &[leaf("list", "List project versions", ACCESS_VERSION_READ)],
     ),
     group(

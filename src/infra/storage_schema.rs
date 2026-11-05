@@ -27,8 +27,9 @@ pub(crate) const PROVIDER_LOCAL: &str = "local";
 ///
 /// The schema is intentionally split across five small tables:
 ///
-/// * `role_config` stores the per-role provider preference plus the
-///   Forgejo `api_base` and `repository` fields.
+/// * `role_config` stores the per-role provider preference; its legacy
+///   `api_base` and `repository` fields are inert.
+/// * `role_forgejo_config` stores provider-owned Forgejo settings and provenance.
 /// * `role_redmine_config` stores the Redmine-only fields so loading a
 ///   Redmine config never has to guess whether a missing `project_id`
 ///   belongs to the legacy Forgejo row or to Redmine. The `project_id`
@@ -62,6 +63,14 @@ CREATE TABLE IF NOT EXISTS role_config (
     provider TEXT,
     api_base TEXT,
     repository TEXT
+);
+
+CREATE TABLE IF NOT EXISTS role_forgejo_config (
+    role TEXT PRIMARY KEY,
+    api_base TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    source TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS role_redmine_config (

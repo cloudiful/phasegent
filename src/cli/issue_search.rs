@@ -222,7 +222,7 @@ pub(crate) fn execute_search_transparent(
     }
     let provider = match crate::cli::provider_for(
         role,
-        Some(resolved_kind),
+        explicit_kind,
         api_base,
         repository,
         effective_project.as_deref(),

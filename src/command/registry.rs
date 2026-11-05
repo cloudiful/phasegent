@@ -81,6 +81,8 @@ pub(crate) enum ProviderScope {
     Any,
     /// Listed only when the resolved provider is Redmine.
     Redmine,
+    /// Listed for Redmine and Forgejo, the providers that expose the route.
+    RedmineOrForgejo,
 }
 
 impl ProviderScope {
@@ -88,6 +90,10 @@ impl ProviderScope {
         match self {
             Self::Any => true,
             Self::Redmine => matches!(provider, Some(ProviderKind::Redmine)),
+            Self::RedmineOrForgejo => matches!(
+                provider,
+                Some(ProviderKind::Redmine | ProviderKind::Forgejo)
+            ),
         }
     }
 }
