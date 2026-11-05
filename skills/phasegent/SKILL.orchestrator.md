@@ -10,6 +10,10 @@ status flow, and the closure. These are your always-on role rules; the shared
 `phasegent` skill is the single source for the tracking-mode decision tree, the
 marker and result contracts, and worktree lease detail.
 
+This skill is also the single portable authority for Git delivery, PR, and
+issue-closure policy. The shared skill and the child role skills reference that
+policy instead of restating or contradicting it.
+
 Consult `phasegent --help` only for the command you are about to run; the
 shared skill owns the syntax rule and the rest of the protocol.
 
@@ -212,30 +216,65 @@ pending-question request on the human's behalf or fabricate a human response.
 - The canonical status flow and its command-level gates live in the shared
   skill. Children never call `status *` or `timer *`, never edit the body, and
   never label or close the issue.
-- Close at finish; a cross-project close needs the project override. When
-  authorized Git delivery is part of the task, finish and close only after the
-  requested delivery succeeds. When the task completes without delivery
+- `Resolved` means the AI work is finished and awaits human acceptance;
+  `Closed` is the verified terminal state. An issue that ends with an open PR,
+  or with Redmine acceptance still pending, moves to `Resolved`, not `Closed`,
+  and keeps its worktrees until the close.
+- Close only once the task's acceptance is actually met. Without delivery
   authorization, close the source with an explicit `not committed / not
-  published` result and never claim published delivery before Git success; later
-  authorized delivery appends to the same original issue without a new issue or
-  reopen. A successful close flips this issue's active leases to `retained`,
-  runs the guarded worktree cleanup — returning the idle members of each
-  candidate's lease family to the verified main checkout before anything is
-  removed — and then best-effort restores the captured
-  pre-issue branch in the verified main checkout plus its own configured
-  upstream when every safety gate holds. Restoration skips or warns without
-  changing the close result; repeat close retries only an incomplete upstream
-  update and is a no-op after completion or a terminal no-upstream result.
+  published` result; with authorized delivery, close only after the requested
+  delivery succeeds and any required integration is verified. Never claim
+  published delivery before Git success and never close merely because a PR was
+  opened; an open PR or pending Redmine acceptance resolves the issue only to
+  `Resolved`, not `Closed`. Later authorized delivery appends to the same
+  original issue without a new issue or reopen. A cross-project close needs the
+  project override.
+- A successful close flips this issue's active leases to `retained`, runs the
+  guarded worktree cleanup — returning the idle members of each candidate's lease
+  family to the verified main checkout before anything is removed — and then
+  best-effort restores the captured pre-issue branch in the verified main
+  checkout plus its own configured upstream when every safety gate holds.
+  Restoration skips or warns without changing the close result; repeat close
+  retries only an incomplete upstream update and is a no-op after completion or
+  a terminal no-upstream result.
 
 ## Git delivery
 
-- You own commit/push/tag; children never commit, push, tag, or mutate refs.
+You are the single delivery authority for a tracked task: children never commit,
+push, tag, mutate refs, create or update a PR, or merge.
+
+- Default full implementation: unless the user forbids delivery, a complete
+  tracked implementation is committed, pushed on its task branch, and opened or
+  updated as one final PR per repository once the issue-final independent review
+  returns `PASS` and the issue's validation gates are green.
 - For authorized branch integration, prepare the baseline before the issue-final
   review: resolve the actual PR target from the PR or issue plan (for example
   `origin/main` or `origin/dev`), fetch it, and rebase the feature branch in its
-  own worktree. Resolve conflicts and rerun the issue's validation commands,
-  then freeze that tree for the final audit and record the target ref and SHA
-  in the issue. Confirm an ambiguous target with the human before rebasing.
+  own worktree. Resolve conflicts, rerun the issue's validation commands, then
+  freeze that tree for the final audit and record the target ref and SHA in the
+  issue. Confirm an ambiguous target with the human before rebasing. Keep the
+  local target branch and other worktrees unchanged.
+- Intermediate contract, design, recon, and phase work opens no PR; reuse an
+  authorized aggregation/WIP PR for the task and never create a PR per phase or
+  sub-issue. A phase-terminal `DONE` is not a delivery gate on its own.
+- Read-only, local-only, and no-hosted-remote tasks use only the Git delivery
+  their task permits and never fabricate a hosted PR; `INLINE` work stays
+  proportional and this rule never escalates it.
+- An open final PR does not keep source work unfinished: never stop a full
+  tracked implementation uncommitted or unpushed only because the PR is not
+  merged.
+- Creating or updating a PR authorizes no merge, tag, release, deploy, or
+  unrelated ref change, and you never auto-merge. A user-authorized integration
+  lets you merge server-side with the repository's strategy once required checks
+  pass, verify the result, record the merge SHA, and only then close the issue.
+- Provider-specific closure: a Forgejo `Resolved` is a native open label. Only
+  the final same-repository PR may carry a `Closes` marker for the native Forgejo
+  issue; every other PR uses `Refs` only, and you wait until all required
+  PRs/repositories have delivered before that final closing PR. Redmine has no
+  automatic PR bridge: keep the Redmine issue `Resolved` until you have
+  explicitly verified every required merge and acceptance and close it. Never
+  write `Closes #<redmine-id>` into a Forgejo PR; reference the full Redmine URL
+  instead.
 - At delivery, reuse the reviewed baseline while it satisfies the repository's
   merge requirements. A required later baseline update follows the shared
   post-`PASS` rules for scoped verification or renewed final review.
@@ -244,7 +283,7 @@ pending-question request on the human's behalf or fabricate a human response.
   and the issue's validation commands are green; bounded mechanical follow-ups
   use the shared scoped verification on the original artifact instead of a second
   full audit or a separate release issue. Never commit while review or validation
-  is open, and never treat a phase-terminal `DONE` as a delivery gate on its own.
+  is open.
 - After each commit/push and before claiming completion, run `git status
   --porcelain` in the task worktree and report whether it is clean. If dirty,
   list the retained tracked/untracked paths with ownership and the reason they
@@ -254,8 +293,8 @@ pending-question request on the human's behalf or fabricate a human response.
 - You own final task-owned artifact disposal in the delivered tree; report any
   retained task-owned process, cleanup failure, or unresolvable ownership
   instead of broadening cleanup.
-- Record the delivered short sha in the task completion record; never fabricate
-  a sha.
+- Record the delivered short SHA in the task completion record; never fabricate
+  a SHA.
 - Tag only at issue completion and only with explicit release authorization;
   before tagging verify the target commit is pushed, manifest versions match the
   tag, and the worktree is clean.

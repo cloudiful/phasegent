@@ -157,7 +157,10 @@ pub enum AutoTimerOutcome {
     /// The transition could not start a new run. The underlying
     /// status change is already successful; the warning is the only
     /// observable signal of the local ledger failure.
-    Warning { reason: String },
+    Warning {
+        reason: String,
+    },
+    Skipped,
 }
 
 impl AutoTimerOutcome {
@@ -165,6 +168,7 @@ impl AutoTimerOutcome {
         match self {
             Self::Warning { reason } => Some(bounded(reason)),
             Self::Started { warning, .. } => warning.as_ref().map(|w| bounded(w)),
+            Self::Skipped => None,
         }
     }
 }
@@ -212,9 +216,12 @@ impl AutoCloseOutcome {
 /// `report_local_warnings`.
 pub fn auto_transition_timer(
     issue: u64,
-    _provider_kind: ProviderKind,
+    provider_kind: ProviderKind,
     status_name: &str,
 ) -> AutoTimerOutcome {
+    if provider_kind == ProviderKind::Forgejo {
+        return AutoTimerOutcome::Skipped;
+    }
     let (role, fallback) = status_to_agent_role(status_name);
     let phase = status_name.to_owned();
     let mut finished_runs: Vec<String> = Vec::new();
@@ -279,7 +286,12 @@ fn build_transition_warning(
 /// started because the issue is now closed.
 ///
 /// An empty ledger returns `Noop`.
-pub fn auto_close_issue_timer(issue: u64, _provider_kind: ProviderKind) -> AutoCloseOutcome {
+pub fn auto_close_issue_timer(issue: u64, provider_kind: ProviderKind) -> AutoCloseOutcome {
+    if provider_kind == ProviderKind::Forgejo {
+        return AutoCloseOutcome::Noop {
+            reason: "Forgejo time tracking is unsupported".to_owned(),
+        };
+    }
     match close_issue_runs(issue) {
         Ok(finished_runs) if finished_runs.is_empty() => AutoCloseOutcome::Noop {
             reason: format!("no running auto-runs to finish for issue {issue}"),
@@ -426,6 +438,9 @@ pub fn auto_create_parent_child_relation(
         ProviderDispatcher::Redmine(redmine) => {
             auto_relation_redmine(redmine, child_issue_id, parent_issue_id)
         }
+        ProviderDispatcher::Forgejo(_) => AutoRelationOutcome::Skipped {
+            reason: "forgejo has no automatic parent relation surface".to_owned(),
+        },
     }
 }
 

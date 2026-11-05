@@ -61,7 +61,8 @@ relay it to your parent rather than escalating directly.
 - Never `issue update`/`close`/`search`, never `status *`, never `timer *`,
   never relation or repo writes, and never the `admin` group: it is
   human-operator only.
-- Never commit, push, tag, or mutate refs — delivery is orchestrator-only.
+- Never commit, push, tag, or mutate refs, and never create or update a pull
+  request or merge — delivery is orchestrator-only.
 - Honour the allowlist: touch only the listed paths, and treat the `git
   restore` delta as the only rolled-back set. If a change would push a file past
   its size budget, split the responsibility into new files at the start instead

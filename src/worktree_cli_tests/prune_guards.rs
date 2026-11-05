@@ -496,6 +496,132 @@ fn lease(
 }
 
 #[test]
+fn prune_scope_mixed_directory_never_queries_issue_provider() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("scope-prune") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("scope-prune");
+    ensure_schema(&storage).unwrap();
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let path = repo.dir.path().to_string_lossy();
+    lease_for_issue(
+        &storage,
+        "legacy",
+        &identity,
+        "s1",
+        LEASE_STATUS_RETAINED,
+        &path,
+        7,
+    );
+    lease_for_issue(
+        &storage,
+        "scoped",
+        &identity,
+        "s2",
+        LEASE_STATUS_RETAINED,
+        &path,
+        8,
+    );
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run_pass(&storage, &repo, &identity, &api, &source, PruneMode::Remove);
+    assert_eq!(summary.removed, 0);
+    assert!(source.asked().is_empty());
+    assert_eq!(
+        summary.actions[0].message.as_deref(),
+        Some("scoped provider lease requires provider-aware cleanup")
+    );
+}
+
+#[test]
+fn prune_scoped_group_matching_provider_context_is_removable() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("scope-prune-match") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("scope-prune-match");
+    ensure_schema(&storage).unwrap();
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let wt = add_real_worktree(&repo, "phasegent/916-scope-match");
+    lease_for_issue(
+        &storage,
+        "scoped",
+        &identity,
+        "s1",
+        LEASE_STATUS_RETAINED,
+        &wt.to_string_lossy(),
+        8,
+    );
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed().with_provider_scope("forgejo", "owner/repo");
+    let exit = run_scoped_prune(&repo, 999, false, None, false, "json", &source, &api);
+    assert_eq!(exit, 0);
+    assert!(
+        !wt.exists(),
+        "a matching Forgejo-only closed group is removable"
+    );
+    assert!(
+        source.asked().iter().all(|(_, issue)| *issue == 8) && !source.asked().is_empty(),
+        "the provider-aware path asks only the scoped issue"
+    );
+}
+
+#[test]
+fn prune_scoped_group_with_foreign_provider_context_is_kept() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("scope-prune-foreign") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("scope-prune-foreign");
+    ensure_schema(&storage).unwrap();
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let wt = add_real_worktree(&repo, "phasegent/916-scope-foreign");
+    lease_for_issue(
+        &storage,
+        "scoped",
+        &identity,
+        "s1",
+        LEASE_STATUS_RETAINED,
+        &wt.to_string_lossy(),
+        8,
+    );
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/other',8,1)",
+            [],
+        )
+        .unwrap();
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed().with_provider_scope("forgejo", "owner/repo");
+    let exit = run_scoped_prune(&repo, 999, false, None, false, "json", &source, &api);
+    assert_eq!(exit, 0);
+    assert!(
+        wt.exists(),
+        "a scoped group of another repository scope is kept"
+    );
+    assert!(source.asked().is_empty());
+}
+
+#[test]
 fn prune_keeps_the_main_checkout() {
     let _lock = lock_workflow_tests();
     let Some(repo) = TempRepo::init("prune-guard-main") else {
@@ -1573,6 +1699,153 @@ fn prune_keeps_a_directory_whose_issue_is_not_closed() {
 /// Issue 929 P1: the removal recheck refreshes the source, so an issue that the
 /// provider reported closed during the scan but has since reopened vetoes the
 /// removal (and the scan answer alone is never enough).
+#[cfg(unix)]
+#[test]
+fn prune_keeps_when_absent_path_becomes_dangling_symlink_during_scan() {
+    use std::cell::Cell;
+    struct Reappear {
+        path: std::path::PathBuf,
+        inserted: Cell<bool>,
+    }
+    impl IssueStateSource for Reappear {
+        fn closure(&self, _: &std::path::Path, _: u64) -> IssueClosure {
+            if !self.inserted.replace(true) {
+                std::os::unix::fs::symlink("missing-target", &self.path).unwrap();
+            }
+            IssueClosure::Keep("fixture stays open".to_owned())
+        }
+    }
+    let _lock = lock_workflow_tests();
+    let repo = TempRepo::init("prune-absent-symlink-review").unwrap();
+    let (_temp, storage, _env) = open_temp_db("prune-absent-symlink-review");
+    ensure_schema(&storage).unwrap();
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let missing = repo.dir.path().join("a-missing");
+    lease_for_issue(
+        &storage,
+        "missing",
+        &identity,
+        "session-missing",
+        LEASE_STATUS_RETAINED,
+        missing.to_str().unwrap(),
+        7,
+    );
+    let existing = add_real_worktree(&repo, "phasegent/8-existing");
+    lease_for_issue(
+        &storage,
+        "existing",
+        &identity,
+        "session-existing",
+        LEASE_STATUS_RETAINED,
+        existing.to_str().unwrap(),
+        8,
+    );
+    let source = Reappear {
+        path: missing.clone(),
+        inserted: Cell::new(false),
+    };
+    let summary = run_pass(
+        &storage,
+        &repo,
+        &identity,
+        &FakeOpenCodeApi::empty(),
+        &source,
+        PruneMode::Remove,
+    );
+    assert!(source.inserted.get(), "fixture must interleave during scan");
+    assert!(
+        std::fs::symlink_metadata(&missing)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let row = list_all_for_repo(&storage, &identity)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.lease_id == "missing")
+        .unwrap();
+    assert_eq!(
+        row.status, LEASE_STATUS_RETAINED,
+        "a reappearing dangling symlink must not count as absent: {summary:?}"
+    );
+}
+
+#[test]
+fn prune_absent_path_does_not_release_lease_reactivated_during_scan() {
+    use std::cell::Cell;
+    struct Reactivate<'a> {
+        storage: &'a Storage,
+        changed: Cell<bool>,
+    }
+    impl IssueStateSource for Reactivate<'_> {
+        fn closure(&self, _: &std::path::Path, _: u64) -> IssueClosure {
+            if !self.changed.replace(true) {
+                self.storage
+                    .connection
+                    .execute(
+                        "UPDATE worktree_leases SET status = 'active', heartbeat_at = 123 WHERE lease_id = 'missing'",
+                        [],
+                    )
+                    .unwrap();
+            }
+            IssueClosure::Keep("fixture stays open".to_owned())
+        }
+    }
+    let _lock = lock_workflow_tests();
+    let repo = TempRepo::init("prune-absent-reactivation-review").unwrap();
+    let (_temp, storage, _env) = open_temp_db("prune-absent-reactivation-review");
+    ensure_schema(&storage).unwrap();
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let missing = repo.dir.path().join("a-missing");
+    lease_for_issue(
+        &storage,
+        "missing",
+        &identity,
+        "session-missing",
+        LEASE_STATUS_RETAINED,
+        missing.to_str().unwrap(),
+        7,
+    );
+    let existing = add_real_worktree(&repo, "phasegent/8-existing");
+    lease_for_issue(
+        &storage,
+        "existing",
+        &identity,
+        "session-existing",
+        LEASE_STATUS_RETAINED,
+        existing.to_str().unwrap(),
+        8,
+    );
+    let source = Reactivate {
+        storage: &storage,
+        changed: Cell::new(false),
+    };
+    let summary = run_pass(
+        &storage,
+        &repo,
+        &identity,
+        &FakeOpenCodeApi::empty(),
+        &source,
+        PruneMode::Remove,
+    );
+    assert!(
+        source.changed.get(),
+        "the fixture must interleave during the scan"
+    );
+    let row = list_all_for_repo(&storage, &identity)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.lease_id == "missing")
+        .unwrap();
+    assert_eq!(
+        row.status, LEASE_STATUS_ACTIVE,
+        "an active lease must not be released from stale absent evidence: {summary:?}"
+    );
+    assert_eq!(row.heartbeat_at, 123);
+}
+
 #[test]
 fn prune_rechecks_new_target_issues_and_new_active_leases() {
     use std::cell::{Cell, RefCell};
@@ -2063,6 +2336,8 @@ fn prune_rejects_a_missing_explicit_repo() {
         &source,
         &crate::worktree::opencode::ProcessOpenCodeApi::new(),
         &|_| {},
+        crate::worktree::leases::StaleRecoveryScope::All,
+        false,
     );
     assert_eq!(exit, 2, "a missing --repo path must fail as an argument");
 }

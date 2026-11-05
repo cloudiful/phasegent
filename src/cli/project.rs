@@ -56,7 +56,7 @@ pub(crate) fn execute_project_with_caller(
         .credential_role()
         .expect("authorized caller has a credential");
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
+        Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(

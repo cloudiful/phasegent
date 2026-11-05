@@ -14,7 +14,9 @@ gates, the record and marker protocol, result contracts, worktree lease safety,
 and the human-operator-only `admin` boundary. The role skills
 (`phasegent-orchestrator`, `phasegent-executor`, `phasegent-reviewer`, and
 `phasegent-explore`) carry only their role-specific always-on rules and defer
-here for the shared detail.
+here for the shared detail. Git delivery, PR, and issue-closure policy is
+canonical in `phasegent-orchestrator`; this skill and the child role skills
+reference it rather than restating it.
 
 Commands are not protocol. `phasegent --help <command>` owns flags, usage, and
 the provider surface, filtered by the session role: consult it only for the
@@ -27,8 +29,8 @@ under its own role.
 - The `orchestrator` agent is `mode: primary` and loads this skill with
   `use_skill phasegent`; it dispatches `explore`, `executor`, and `reviewer`
   as subagents, and repeatable prompts run via `/orchestrate` and `/review`.
-  Agent, skill, command, and plugin files load once at startup, so editing any
-  of them needs a new session.
+  A host loads the installed or injected artifact it has, so verify that copy
+  instead of assuming an existing session adopts edited bytes.
 - `phasegent plugin install` is this skill's only deployment channel: the
   adapter registers it through `skill.transform` (`id`/`name` `phasegent`, path
   `/builtin/phasegent.md`, body and description embedded from
@@ -292,12 +294,11 @@ same goal amend the original plan and run fresh final verification and review
 over the changed scope without reducing required final coverage; an
 independently new goal creates a separate issue only when warranted. Missing
 authorization or ambiguous intent is `BLOCKED`, never a mechanical exception.
-Closure distinguishes source from delivery: when authorized Git delivery is
-part of the task, finish and close only after the requested delivery succeeds;
-when the task completes without delivery authorization, close the source with
-an explicit `not committed / not published` result and never claim published
-delivery before Git success; later authorized delivery appends to the same
-original issue.
+Delivery and closure follow the orchestrator's portable policy: authorized
+delivery is committed, pushed, and proposed without closing an issue whose PR is
+still open; a task without delivery authorization closes with an explicit
+`not committed / not published` result, and later authorized delivery appends to
+the same original issue.
 
 ## Bounded parallelism (serial by default)
 
@@ -379,8 +380,9 @@ phase is an explicit transition back to `In Progress`.
   orchestrator-only for agents; the unmanaged human Operator shares that
   authority through the central context, while managed sessions without a role
   fail closed. Children never edit the body, label, search, or close an
-  issue, never call `status *` or `timer *`, never commit, push, tag, or mutate
-  refs, and never claim another role's credential.
+  issue, never call `status *` or `timer *`, never commit, push, tag, mutate
+  refs, create or update a PR, or merge, and never claim another role's
+  credential.
 - `comment create` writes under the session role: a child's note needs explicit
   authorization through the `--authorized` CLI flag, while unmanaged Operator
   comments need no flag. Operator `record create` stays denied (use `comment

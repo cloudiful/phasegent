@@ -51,7 +51,7 @@ fn root_overview() -> impl Iterator<Item = &'static str> {
 /// The global options block. The presentation options and the pointer to the
 /// output contract live here with the provider options, so one page answers
 /// "what can I pass at the root".
-const ROOT_OPTIONS: &str = "Options:\n  --provider <NAME>      redmine or local (default: redmine)\n  --api-base <URL>       Override the Redmine API base\n  --repository <O/R>     Override the Git host repository for bootstrap/discovery\n  --project-id <ID>      Override the Redmine project id\n  --close-status-id <ID> Override the Redmine closed status\n  --output <MODE>        Output mode: auto (default), text, or json\n  --no-progress          Disable the progress spinner\n  -h, --help             Print help\n  -V, --version          Print version";
+const ROOT_OPTIONS: &str = "Options:\n  --provider <NAME>      redmine, local, or forgejo (default: redmine)\n  --api-base <URL>       Override the provider API base\n  --repository <O/R>     Override the Git host repository for bootstrap/discovery or Forgejo\n  --project-id <ID>      Override the Redmine project id\n  --close-status-id <ID> Override the Redmine closed status\n  --output <MODE>        Output mode: auto (default), text, or json\n  --no-progress          Disable the progress spinner\n  -h, --help             Print help\n  -V, --version          Print version";
 
 /// The root footer: the next help levels, the resolver and role pages, and the
 /// output contract.

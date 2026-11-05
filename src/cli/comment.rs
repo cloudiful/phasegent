@@ -99,6 +99,22 @@ pub(crate) fn execute_comment_with_caller(
             capability.operation(),
         ));
     }
+    // Durable pre-HTTP scope guard (issue 1201 P3): a numbered Forgejo
+    // binding is never addressed through an omitted or conflicting
+    // provider. The read-only local check runs before any provider
+    // request, and legacy non-repository checkouts are unaffected.
+    {
+        let number = match &command {
+            CommentCommand::Create { issue, .. }
+            | CommentCommand::Get { issue, .. }
+            | CommentCommand::List { issue, .. }
+            | CommentCommand::FindMarker { issue, .. } => *issue,
+        };
+        if let Err(error) = super::scope_guard::verify_issue_scope(&provider, provider_kind, number)
+        {
+            return super::provider_error(error);
+        }
+    }
     // Single-number scope guard (issue 394 P3 pre-write): comment outputs
     // carry no project ref, so every arm does a read-only GET-check via the
     // shared helper before any PUT/GET. Reuses the enforce path; no new

@@ -169,7 +169,14 @@ fn every_capability_is_referenced_by_the_registry() {
 
 #[test]
 fn provider_scopes_match_the_root_help_conditions() {
-    for name in ["project", "status", "version", "relation", "timer"] {
+    for name in ["project", "status", "version"] {
+        assert_eq!(
+            find(&[name]).unwrap().provider_scope,
+            ProviderScope::RedmineOrForgejo,
+            "{name} must be visible for Redmine and Forgejo"
+        );
+    }
+    for name in ["relation", "timer"] {
         assert_eq!(
             find(&[name]).unwrap().provider_scope,
             ProviderScope::Redmine,
@@ -179,6 +186,10 @@ fn provider_scopes_match_the_root_help_conditions() {
     assert!(ProviderScope::Redmine.visible(Some(ProviderKind::Redmine)));
     assert!(!ProviderScope::Redmine.visible(None));
     assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Local)));
+    assert!(ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Redmine)));
+    assert!(ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Forgejo)));
+    assert!(!ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Local)));
+    assert!(!ProviderScope::RedmineOrForgejo.visible(None));
     assert!(ProviderScope::Any.visible(Some(ProviderKind::Redmine)));
     assert!(ProviderScope::Any.visible(Some(ProviderKind::Local)));
     assert!(ProviderScope::Any.visible(None));

@@ -66,9 +66,10 @@ pub(crate) fn execute_finish_with_caller(
 ) -> Result<TimerOutput, PhasegentError> {
     let credential = timer_orchestrator_caller(caller, "timer finish")?
         .expect("authorized timer caller has a credential");
+    super::dispatch::reject_forgejo_timer(credential, provider_kind)?;
 
-    // This local transition deliberately precedes every provider/key lookup
-    // and every network request. A failed projection is recoverable by
+    // This local transition precedes credential lookup and network requests.
+    // A failed projection is recoverable by
     // retrying the same run id.
     let storage = Storage::open().map_err(timer_storage_error("timer finish"))?;
     let finished_at = now_epoch_seconds();
@@ -202,6 +203,7 @@ pub(crate) fn project_run_with_credential(
         // sync_status `finish_timer_run` set ('failed' for a FAILED
         // result, 'pending' otherwise) and nothing is POSTed anywhere.
         ProviderKind::Local => Ok(()),
+        ProviderKind::Forgejo => Err(PhasegentError::not_supported("forgejo", "time tracking")),
     }
 }
 

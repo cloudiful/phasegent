@@ -93,6 +93,10 @@ pub(crate) fn execute_record_with_caller(
             3,
         );
     }
+    // Durable pre-HTTP scope guard (issue 1201 P3): a numbered Forgejo
+    // binding is never addressed through an omitted or conflicting
+    // provider. Each arm resolves the provider after its own preflight and
+    // runs this read-only local check before the provider request.
     match command {
         RecordCommand::Create {
             issue,
@@ -176,6 +180,11 @@ pub(crate) fn execute_record_with_caller(
                 Ok(provider) => provider,
                 Err(error) => return super::provider_error(error),
             };
+            if let Err(error) =
+                super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            {
+                return super::provider_error(error);
+            }
             if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
                 role,
                 api_base,
@@ -209,6 +218,11 @@ pub(crate) fn execute_record_with_caller(
                 Ok(provider) => provider,
                 Err(error) => return super::provider_error(error),
             };
+            if let Err(error) =
+                super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            {
+                return super::provider_error(error);
+            }
             super::print_result(record::get(&provider, issue, record))
         }
         RecordCommand::List {
@@ -229,6 +243,11 @@ pub(crate) fn execute_record_with_caller(
                 Ok(provider) => provider,
                 Err(error) => return super::provider_error(error),
             };
+            if let Err(error) =
+                super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            {
+                return super::provider_error(error);
+            }
             if let Some(page) = page {
                 return super::print_result(
                     record::list_page(&provider, issue, RecordFilter { kind, phase, recon }, page)

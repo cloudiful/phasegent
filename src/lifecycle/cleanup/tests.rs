@@ -62,6 +62,72 @@ pub(super) fn fixed(target: MoveTarget) -> TargetResolver<'static> {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn scope_directory_evidence_includes_mixed_lease_rows() {
+    let legacy = row("/tmp/pg-p1-candidate", "legacy");
+    let scoped = row("/tmp/pg-p1-candidate", "scoped");
+    let mut scopes = std::collections::HashMap::new();
+    scopes.insert(
+        scoped.lease_id.clone(),
+        crate::worktree::LeaseScope::new("forgejo", "owner/repo", 7).unwrap(),
+    );
+    let context = super::CleanupContext {
+        identity: "/repo/.git".to_owned(),
+        rows: vec![legacy, scoped],
+        scopes,
+    };
+    assert!(context.has_scoped_directory(Path::new("/tmp/pg-p1-candidate")));
+    assert!(!context.has_scoped_directory(Path::new("/tmp/pg-p1-other")));
+}
+
+#[test]
+fn scope_cleanup_keeps_before_bare_provider_or_host_checks() {
+    struct NoClosure;
+    impl super::closure::DirectoryIssueClosure for NoClosure {
+        fn confirm_others_closed(&self, _: u64, _: &[u64]) -> Result<(), String> {
+            panic!("scoped cleanup queried bare issue")
+        }
+    }
+    let directory = crate::test_scratch::root();
+    let path = directory.to_string_lossy();
+    let legacy = row(&path, "legacy");
+    let scoped = row(&path, "scoped");
+    let mut scopes = std::collections::HashMap::new();
+    scopes.insert(
+        scoped.lease_id.clone(),
+        crate::worktree::LeaseScope::new("forgejo", "owner/repo", 7).unwrap(),
+    );
+    let context = super::CleanupContext {
+        identity: "/repo/.git".into(),
+        rows: vec![legacy, scoped],
+        scopes,
+    };
+    let api = FakeOpenCodeApi::empty();
+    let guard = super::candidate::DirectOccupancy(&api);
+    let runner = crate::worktree::ProcessWorktreeRunner::new();
+    let result = super::cleanup_closed_issue_worktrees_in_context(
+        &runner,
+        &guard,
+        CleanupMode::Close,
+        context,
+        Path::new("/repo"),
+        7,
+        None,
+        &NoClosure,
+        None,
+    );
+    match result {
+        super::AutoCleanupOutcome::Cleaned { removed, kept } => {
+            assert_eq!(removed, 0);
+            assert!(
+                kept.iter()
+                    .all(|reason| reason.contains("scoped provider lease"))
+            );
+        }
+        _ => panic!("unexpected cleanup outcome"),
+    }
+}
+
+#[test]
 fn associated_sessions_keeps_only_opencode_ids_pointing_at_the_directory() {
     let rows = vec![
         row("/tmp/pg-p1-candidate", "ses_a"),

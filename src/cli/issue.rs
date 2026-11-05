@@ -149,6 +149,7 @@ pub(crate) fn execute_issue_with_caller(
             options,
         );
     }
+    let explicit_provider = provider_kind;
     let provider_kind = match resolve_kind(role, provider_kind) {
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
@@ -194,7 +195,7 @@ pub(crate) fn execute_issue_with_caller(
     };
     let provider = match super::provider_for(
         role,
-        Some(provider_kind),
+        explicit_provider,
         api_base,
         repository,
         project_id.as_deref(),
@@ -203,6 +204,31 @@ pub(crate) fn execute_issue_with_caller(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
+    // Durable pre-HTTP scope guard (issue 1201 P3): a numbered Forgejo
+    // binding is never mutated or read through an omitted or conflicting
+    // provider. The read-only local check runs before any provider request,
+    // and legacy non-repository checkouts are unaffected.
+    match &command {
+        IssueCommand::Update { number, .. }
+        | IssueCommand::Close { number, .. }
+        | IssueCommand::Get { number } => {
+            if let Err(error) =
+                super::scope_guard::verify_issue_scope(&provider, explicit_provider, *number)
+            {
+                return super::provider_error(error);
+            }
+        }
+        IssueCommand::GetBatch { numbers } => {
+            for number in numbers {
+                if let Err(error) =
+                    super::scope_guard::verify_issue_scope(&provider, explicit_provider, *number)
+                {
+                    return super::provider_error(error);
+                }
+            }
+        }
+        _ => {}
+    }
     if !provider.supports(capability) {
         return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
@@ -398,12 +424,38 @@ pub(crate) fn execute_issue_with_caller(
                     // fails the create, never deletes a branch or worktree,
                     // and reports a created worktree as a bounded stderr
                     // warning so the stdout issue JSON stays byte-identical.
+                    //
+                    // Issue 1201 P3: a Forgejo create acquires under the exact
+                    // `(forgejo, owner/repo, number)` sidecar scope and never
+                    // falls back to an unscoped lease; Redmine and Local keep
+                    // the unscoped hook unchanged.
+                    let create_scope = if provider_kind == ProviderKind::Forgejo {
+                        crate::providers::index_store::provider_scope(&provider)
+                            .ok()
+                            .and_then(|scope| {
+                                crate::worktree::LeaseScope::new(
+                                    &scope.source,
+                                    &scope.project,
+                                    summary.number,
+                                )
+                                .ok()
+                            })
+                    } else {
+                        None
+                    };
                     super::report_local_warnings(
                         "issue create",
-                        crate::worktree::auto_acquire_after_create(
-                            summary.number,
-                            session.as_deref(),
-                        ),
+                        match &create_scope {
+                            Some(scope) => crate::worktree::auto_acquire_after_create_scoped(
+                                summary.number,
+                                session.as_deref(),
+                                Some(scope),
+                            ),
+                            None => crate::worktree::auto_acquire_after_create(
+                                summary.number,
+                                session.as_deref(),
+                            ),
+                        },
                     );
                     // Phase 3 relation auto: fire the helper
                     // after a successful create when the parent
@@ -604,16 +656,67 @@ pub(crate) fn execute_issue_with_caller(
                             )
                         }),
                     };
-                    super::report_local_warnings(
-                        "issue close",
-                        crate::lifecycle::release_closed_issue_leases(
-                            &crate::worktree::ProcessWorktreeRunner::new(),
-                            &repo_path,
-                            number,
-                            release_session,
-                        )
-                        .warning(),
-                    );
+                    // A Forgejo close releases only its exact
+                    // `(forgejo, owner/repo, number)` scope; a same-number
+                    // legacy Redmine/Local row is never flipped. Redmine and
+                    // Local closes keep their legacy unscoped path, whose
+                    // selector already excludes scoped rows.
+                    if provider_kind == ProviderKind::Forgejo {
+                        let exact_scope = crate::providers::index_store::provider_scope(&provider)
+                            .ok()
+                            .and_then(|scope| {
+                                crate::worktree::LeaseScope::new(
+                                    &scope.source,
+                                    &scope.project,
+                                    number,
+                                )
+                                .ok()
+                            });
+                        match (
+                            exact_scope,
+                            crate::worktree::repo_identity(
+                                &crate::worktree::ProcessWorktreeRunner::new(),
+                                &repo_path,
+                            ),
+                        ) {
+                            (Some(scope), Ok(identity)) => {
+                                match crate::worktree::release_active_leases_for_scope(
+                                    &identity,
+                                    &scope,
+                                    "issue closed",
+                                ) {
+                                    Ok(_) => {}
+                                    Err(error) => super::report_local_warnings(
+                                        "issue close",
+                                        Some(format!(
+                                            "issue {number} closed; scoped worktree lease \
+                                             release failed: {}",
+                                            crate::lifecycle::bounded(&error.message)
+                                        )),
+                                    ),
+                                }
+                            }
+                            _ => super::report_local_warnings(
+                                "issue close",
+                                Some(format!(
+                                    "issue {number} closed; scoped worktree lease release \
+                                     skipped because the exact provider scope or repository \
+                                     identity could not be resolved"
+                                )),
+                            ),
+                        }
+                    } else {
+                        super::report_local_warnings(
+                            "issue close",
+                            crate::lifecycle::release_closed_issue_leases(
+                                &crate::worktree::ProcessWorktreeRunner::new(),
+                                &repo_path,
+                                number,
+                                release_session,
+                            )
+                            .warning(),
+                        );
+                    }
                     // Issue 552 Phase 1: after the close and the lease
                     // release, delete the closed issue's clean worktree
                     // directories in this repository. The flip above
@@ -626,8 +729,9 @@ pub(crate) fn execute_issue_with_caller(
                     // named on stderr, branches are never deleted, and the
                     // stdout close document stays byte-identical.
                     //
-                    // Issue 747 P1: this is the only caller that may move
-                    // a session. A candidate whose persisted `ses_` lease
+                    // Issue 747 P1: this close pass may move a `ses_`
+                    // session (the prune pass may too, through its own
+                    // chain). A candidate whose persisted `ses_` lease
                     // session is still hosted there first asks the host to
                     // relocate the idle members of its lease family into the
                     // repository's verified main checkout, then confirms
@@ -637,18 +741,78 @@ pub(crate) fn execute_issue_with_caller(
                     // The other issues the directory is associated with are
                     // confirmed closed through the scope-aware resolver
                     // before anything may move.
-                    let closure =
-                        crate::cli::issue_closure::CurrentIssueClosure::new(&repo_path, role);
-                    for warning in crate::lifecycle::cleanup_closed_issue_worktrees(
-                        &crate::worktree::ProcessWorktreeRunner::new(),
-                        &repo_path,
-                        number,
-                        release_session,
-                        &closure,
-                    )
-                    .warnings()
-                    {
-                        super::report_local_warnings("issue close", Some(warning));
+                    // A Forgejo close threads its explicit resolved scope:
+                    // the closure check reads through the same provider and
+                    // a matching-scope-only directory may proceed through the
+                    // unchanged host, local, and cache guards. Legacy closes
+                    // keep the unscoped closure and keep every scoped group.
+                    if provider_kind == ProviderKind::Forgejo {
+                        let exact_scope = crate::providers::index_store::provider_scope(&provider)
+                            .ok()
+                            .and_then(|scope| {
+                                crate::worktree::LeaseScope::new(
+                                    &scope.source,
+                                    &scope.project,
+                                    number,
+                                )
+                                .ok()
+                            });
+                        let closure = exact_scope.as_ref().map(|_| {
+                            crate::cli::issue_closure::CurrentIssueClosure::new_scoped(
+                                &repo_path,
+                                role,
+                                crate::cli::issue_closure::ExplicitSelection {
+                                    provider_kind,
+                                    api_base: api_base.map(str::to_owned),
+                                    repository: repository.map(str::to_owned),
+                                    project_id: project_id.clone(),
+                                    close_status_id: close_status_id.clone(),
+                                },
+                            )
+                        });
+                        let warnings = match (exact_scope.as_ref(), closure.as_ref()) {
+                            (Some(scope), Some(closure)) => {
+                                crate::lifecycle::cleanup_closed_issue_worktrees_scoped(
+                                    &crate::worktree::ProcessWorktreeRunner::new(),
+                                    &repo_path,
+                                    number,
+                                    release_session,
+                                    closure,
+                                    scope,
+                                )
+                                .warnings()
+                            }
+                            _ => vec![format!(
+                                "issue {number} closed; scoped worktree cleanup skipped \
+                                 because the exact provider scope could not be resolved"
+                            )],
+                        };
+                        for warning in warnings {
+                            super::report_local_warnings("issue close", Some(warning));
+                        }
+                    } else {
+                        let closure = crate::cli::issue_closure::CurrentIssueClosure::new_context(
+                            &repo_path,
+                            role,
+                            crate::cli::provider_context::ProviderContext::from_parts(
+                                explicit_provider,
+                                api_base,
+                                repository,
+                                project_id.as_deref(),
+                                close_status_id.as_deref(),
+                            ),
+                        );
+                        for warning in crate::lifecycle::cleanup_closed_issue_worktrees(
+                            &crate::worktree::ProcessWorktreeRunner::new(),
+                            &repo_path,
+                            number,
+                            release_session,
+                            &closure,
+                        )
+                        .warnings()
+                        {
+                            super::report_local_warnings("issue close", Some(warning));
+                        }
                     }
                     // Restoration is best-effort after close and cleanup; its
                     // warnings never change the successful close result.

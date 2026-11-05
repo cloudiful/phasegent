@@ -130,7 +130,7 @@ pub(crate) fn execute_status_with_caller(
         );
     }
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
+        Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(
@@ -144,6 +144,18 @@ pub(crate) fn execute_status_with_caller(
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),
     };
+    match &command {
+        StatusCommand::Next { number }
+        | StatusCommand::Set { number, .. }
+        | StatusCommand::Advance { number, .. } => {
+            if let Err(error) =
+                super::scope_guard::verify_status_scope(&provider, provider_kind, *number)
+            {
+                return super::provider_error(error);
+            }
+        }
+        StatusCommand::List => {}
+    }
     if !provider.supports(capability) {
         return super::provider_error(PhasegentError::not_supported(
             provider.kind().as_str(),
@@ -172,6 +184,9 @@ pub(crate) fn execute_status_with_caller(
                 super::print_result(redmine.status_next(number))
             }
             ProviderDispatcher::Local(local) => super::print_result(local.status_next(number)),
+            ProviderDispatcher::Forgejo(forgejo) => {
+                super::print_result(forgejo.status_next(number))
+            }
         },
         StatusCommand::Advance { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
@@ -272,6 +287,22 @@ pub(crate) fn execute_status_with_caller(
                 }
                 print_advance_result(result)
             }
+            ProviderDispatcher::Forgejo(forgejo) => {
+                let effective = if status.is_empty() {
+                    match forgejo.status_next(number) {
+                        Ok(report) => match auto_target_from_report(&report) {
+                            Ok(target) => target,
+                            Err(()) => {
+                                return super::structured_error(auto_no_route_error(&report), 1);
+                            }
+                        },
+                        Err(error) => return super::provider_error(error),
+                    }
+                } else {
+                    status.clone()
+                };
+                print_advance_result(forgejo.transition_status(number, &effective))
+            }
         },
         StatusCommand::Set { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
@@ -343,6 +374,28 @@ pub(crate) fn execute_status_with_caller(
                     );
                 }
                 super::print_result(result)
+            }
+            ProviderDispatcher::Forgejo(forgejo) => {
+                let statuses = match forgejo.list_issue_statuses() {
+                    Ok(statuses) => statuses,
+                    Err(error) => return super::provider_error(error),
+                };
+                let target = if status == "0" {
+                    match statuses.iter().find(|candidate| candidate.id == 0) {
+                        Some(target) => target,
+                        None => {
+                            return super::provider_error(PhasegentError::config(
+                                "Forgejo Closed status is unavailable",
+                            ));
+                        }
+                    }
+                } else {
+                    match RedmineProvider::select_status_by_value(&statuses, &status) {
+                        Ok(target) => target,
+                        Err(error) => return super::provider_error(error),
+                    }
+                };
+                super::print_result(forgejo.transition_status(number, &target.name))
             }
         },
     }

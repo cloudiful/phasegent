@@ -216,7 +216,7 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             strings(["--provider", "forgejo", "relation", "list", "10",]),
             Some("orchestrator")
         ),
-        2
+        1
     );
 
     // relation create/delete are orchestrator-only; non-orchestrator roles
@@ -249,8 +249,8 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             "expected permission error for {role} relation delete"
         );
     }
-    // A retired provider name rejects relation create/delete at argument
-    // parsing before any network access.
+    // Forgejo has no native relations surface: the capability is rejected
+    // before any provider build or network access.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -266,14 +266,14 @@ fn relation_commands_enforce_role_and_provider_boundaries() {
             ]),
             Some("orchestrator")
         ),
-        2
+        1
     );
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "relation", "delete", "5",]),
             Some("orchestrator")
         ),
-        2
+        1
     );
 }
 

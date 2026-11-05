@@ -118,6 +118,167 @@ pub(super) fn execute_acquire_seeded(
     )
 }
 
+/// The explicit-provider acquire: a `--provider forgejo` invocation leases
+/// under the exact `(forgejo, owner/repo, issue)` sidecar key, so the
+/// acquisition is isolated from a same-number legacy lease. Any other
+/// provider selection keeps the legacy numeric path exactly as before.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_acquire_scoped(
+    issue: u64,
+    session: Option<&str>,
+    format: &str,
+    isolate: bool,
+    base: Option<&str>,
+    setup: Option<&crate::cli::issue::sync::SyncSetup>,
+    context: &crate::cli::provider_context::ProviderContext,
+    runner: &dyn crate::worktree::WorktreeRunner,
+) -> i32 {
+    let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if context.provider == Some(crate::providers::ProviderKind::Forgejo) {
+        let repository = match context.owned_forgejo_repository(crate::policy::Role::Orchestrator) {
+            Ok(Some(repository)) => repository,
+            Ok(None) => {
+                return structured_error(
+                    serde_json::json!({"kind": "argument", "message": "Forgejo scope could not be resolved"}),
+                    1,
+                );
+            }
+            Err(error) => return structured_error(error.json(), 1),
+        };
+        execute_acquire_at_scoped(
+            issue,
+            session,
+            format,
+            isolate,
+            base,
+            setup,
+            runner,
+            &repo_path,
+            Some(&repository),
+        )
+    } else {
+        execute_acquire_at(
+            issue, session, format, isolate, base, setup, runner, &repo_path,
+        )
+    }
+}
+
+/// The Forgejo-scoped acquire: the lease carries the exact
+/// `(forgejo, owner/repo, issue)` sidecar key. The owner/repo is the
+/// validated explicit provider config (explicit args first, then the
+/// provider-owned stored row) — never the legacy generic StoredConfig
+/// fields — and the acquisition fails closed when the scope cannot be
+/// proven, so a same-number legacy lease is never guessed over.
+#[allow(clippy::too_many_arguments)]
+fn execute_acquire_at_scoped(
+    issue: u64,
+    session: Option<&str>,
+    format: &str,
+    isolate: bool,
+    base: Option<&str>,
+    setup: Option<&crate::cli::issue::sync::SyncSetup>,
+    runner: &dyn crate::worktree::WorktreeRunner,
+    repo_path: &std::path::Path,
+    repository: Option<&str>,
+) -> i32 {
+    let _ = format; // only "json" is accepted at the parser layer
+    let session = match resolve_session(session) {
+        Ok(context) => context,
+        Err(error) => {
+            return structured_error(
+                serde_json::json!({
+                    "kind": error.kind,
+                    "operation": "worktree acquire",
+                    "message": error.message,
+                }),
+                2,
+            );
+        }
+    };
+    let repository = match repository {
+        Some(repository) => repository.to_owned(),
+        None => {
+            return structured_error(
+                serde_json::json!({"kind": "argument", "message": "Forgejo scope could not be resolved"}),
+                1,
+            );
+        }
+    };
+    let scope = match crate::worktree::LeaseScope::new("forgejo", &repository, issue) {
+        Ok(scope) => scope,
+        Err(error) => {
+            return structured_error(
+                serde_json::json!({"kind": error.kind, "message": error.message}),
+                1,
+            );
+        }
+    };
+    crate::output::progress::stage("worktree acquire: preparing the scoped worktree");
+    let options = crate::worktree::AcquireOptions {
+        cache_base: None,
+        isolate,
+        base,
+        reuse: false,
+    };
+    let outcome = if let Some(setup) = setup
+        && let Some(repo_scope) = setup.scopes.first()
+    {
+        crate::worktree::acquire_lease_scoped(
+            runner,
+            &setup.storage,
+            &repo_scope.repo_identity,
+            repo_path,
+            &session.id,
+            options,
+            &scope,
+        )
+    } else {
+        let storage = match crate::infra::storage::Storage::open() {
+            Ok(storage) => storage,
+            Err(error) => {
+                return structured_error(
+                    serde_json::json!({"kind": "storage", "message": error}),
+                    1,
+                );
+            }
+        };
+        if let Err(error) = crate::worktree::leases::ensure_schema(&storage) {
+            return structured_error(serde_json::json!({"kind": "storage", "message": error}), 1);
+        }
+        let identity = match crate::worktree::repo_identity(runner, repo_path) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return structured_error(
+                    serde_json::json!({"kind": error.kind, "message": error.message}),
+                    1,
+                );
+            }
+        };
+        crate::worktree::acquire_lease_scoped(
+            runner,
+            &storage,
+            &identity,
+            repo_path,
+            &session.id,
+            options,
+            &scope,
+        )
+    };
+    match outcome {
+        Ok(outcome) => {
+            let payload = AcquireJson::from(outcome);
+            print_json(&payload)
+        }
+        Err(error) => structured_error(
+            serde_json::json!({
+                "kind": error.kind,
+                "message": error.message,
+            }),
+            1,
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_acquire_at(
     issue: u64,

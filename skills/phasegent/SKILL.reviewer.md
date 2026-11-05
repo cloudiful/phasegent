@@ -56,7 +56,8 @@ scope, and help lookup.
 - Never `issue update`/`close`/`search`, never `status *`, never `timer *`,
   never relation or repo writes, and never the `admin` group: it is
   human-operator only.
-- Never commit, push, tag, or mutate refs.
+- Never commit, push, tag, or mutate refs, and never create or update a pull
+  request or merge.
 - Your own `notify send` calls stay explicit; the adapter separately notifies on
   a local question form still unanswered after five minutes from observed stream
   events, with no form-state recheck and no reminder recovery after reload or

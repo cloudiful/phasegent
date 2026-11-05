@@ -50,7 +50,7 @@ pub(crate) fn execute_version_with_caller(
         .credential_role()
         .expect("authorized caller has a credential");
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Redmine) | Ok(ProviderKind::Local) => {}
+        Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
         Err(error) => return super::provider_error(error),
     }
     // Repository-aware resolution for project-scoped reads.
@@ -63,9 +63,10 @@ pub(crate) fn execute_version_with_caller(
     };
     let resolved_project_id: Option<String> = if resolved_kind == ProviderKind::Local {
         None
-    } else if project_id
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
+    } else if resolved_kind == ProviderKind::Forgejo
+        || project_id
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
     {
         project_id.map(str::to_owned)
     } else {

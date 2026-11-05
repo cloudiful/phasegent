@@ -224,7 +224,7 @@ fn taxi_list_and_acquire_reuse_identity_store_and_read_each_issue_once() {
     let providers = Cell::new(0);
     let (warnings, setup) = super::taxi_sync_in(&runner, storage, root.path(), || {
         providers.set(providers.get() + 1);
-        Ok(|issue| {
+        Ok((None, |issue| {
             reads.borrow_mut().push(issue);
             Ok(crate::providers::IssueSummary {
                 id: issue,
@@ -235,7 +235,7 @@ fn taxi_list_and_acquire_reuse_identity_store_and_read_each_issue_once() {
                 html_url: None,
                 project: None,
             })
-        })
+        }))
     });
     let setup = setup.unwrap();
     assert_eq!(providers.get(), 1);
@@ -290,6 +290,540 @@ fn taxi_list_and_acquire_reuse_identity_store_and_read_each_issue_once() {
             .unwrap()
             .len(),
         4
+    );
+}
+
+#[test]
+fn scope_sync_skips_mixed_candidates_before_provider_reads() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease, list_all_for_repo};
+    use crate::worktree::{GitOutput, WorktreeError, WorktreeRunner};
+    struct Runner;
+    impl WorktreeRunner for Runner {
+        fn run(&self, args: &[&str], _: &Path) -> Result<GitOutput, WorktreeError> {
+            assert_eq!(args, ["rev-parse", "--git-common-dir"]);
+            Ok(GitOutput {
+                status: 0,
+                stdout: "/fixture/.git".into(),
+            })
+        }
+    }
+    let root = Scratch::new("scope-skip");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    for (id, issue) in [("legacy", 7), ("scoped", 8)] {
+        insert_lease(
+            &storage,
+            NewLease {
+                lease_id: id,
+                identity: "/fixture/.git",
+                issue,
+                session: id,
+                checkout_path: "/fixture",
+                worktree_path: root.path().to_str().unwrap(),
+                branch: "branch",
+                status: "retained",
+                created_at: 1,
+                heartbeat_at: 1,
+            },
+        )
+        .unwrap();
+    }
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let mut setup = super::engine::resolve_setup(&Runner, storage, false, root.path()).unwrap();
+    assert_eq!(setup.scopes[0].candidates.len(), 2);
+    assert_eq!(setup.skipped.len(), 0);
+    let calls = Cell::new(0);
+    let report = super::engine::run_sync_resolved(
+        &|_| {
+            calls.set(calls.get() + 1);
+            panic!("must not query provider")
+        },
+        None,
+        &Runner,
+        &mut setup,
+        super::SyncMode::Clean,
+        false,
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 0);
+    assert_eq!(report.checked, 0);
+    assert!(
+        report
+            .skipped_repos
+            .iter()
+            .all(|s| s.reason.contains("scoped provider lease"))
+    );
+    assert!(
+        list_all_for_repo(&setup.storage, "/fixture/.git")
+            .unwrap()
+            .iter()
+            .all(|row| row.status == "retained")
+    );
+}
+
+#[test]
+fn scope_sync_processes_a_matching_provider_group_and_releases_its_exact_scope() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease, list_all_for_repo};
+    use crate::worktree::{GitOutput, WorktreeError, WorktreeRunner};
+    struct Runner;
+    impl WorktreeRunner for Runner {
+        fn run(&self, _: &[&str], _: &Path) -> Result<GitOutput, WorktreeError> {
+            Ok(GitOutput {
+                status: 0,
+                stdout: "/fixture/.git".into(),
+            })
+        }
+    }
+    let root = Scratch::new("scope-process-match");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let scoped_dir = root.path().join("scoped-dir");
+    std::fs::create_dir_all(&scoped_dir).unwrap();
+    insert_lease(
+        &storage,
+        NewLease {
+            lease_id: "scoped",
+            identity: "/fixture/.git",
+            issue: 8,
+            session: "s1",
+            checkout_path: "/fixture",
+            worktree_path: scoped_dir.to_str().unwrap(),
+            branch: "branch",
+            status: "active",
+            created_at: 1,
+            heartbeat_at: 1,
+        },
+    )
+    .unwrap();
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let mut setup = super::engine::resolve_setup(&Runner, storage, false, root.path()).unwrap();
+    let asked = Cell::new(Vec::new());
+    let report = super::engine::run_sync_resolved(
+        &|issue| {
+            asked.set({
+                let mut asked = asked.take();
+                asked.push(issue);
+                asked
+            });
+            Ok(crate::providers::IssueSummary {
+                id: issue,
+                number: issue,
+                title: String::new(),
+                body: String::new(),
+                state: "closed".to_owned(),
+                html_url: None,
+                project: None,
+            })
+        },
+        Some(("forgejo", "owner/repo")),
+        &Runner,
+        &mut setup,
+        super::SyncMode::Clean,
+        false,
+    )
+    .unwrap();
+    assert_eq!(asked.take(), vec![8], "the scoped issue is read once");
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.released_leases, 1);
+    assert!(
+        list_all_for_repo(&setup.storage, "/fixture/.git")
+            .unwrap()
+            .iter()
+            .all(|row| row.status == "retained")
+    );
+}
+
+#[test]
+fn scope_sync_keeps_a_group_when_the_provider_scope_differs() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease};
+    use crate::worktree::{GitOutput, WorktreeError, WorktreeRunner};
+    struct Runner;
+    impl WorktreeRunner for Runner {
+        fn run(&self, _: &[&str], _: &Path) -> Result<GitOutput, WorktreeError> {
+            Ok(GitOutput {
+                status: 0,
+                stdout: "/fixture/.git".into(),
+            })
+        }
+    }
+    let root = Scratch::new("scope-process-foreign");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let scoped_dir = root.path().join("scoped-dir");
+    std::fs::create_dir_all(&scoped_dir).unwrap();
+    insert_lease(
+        &storage,
+        NewLease {
+            lease_id: "scoped",
+            identity: "/fixture/.git",
+            issue: 8,
+            session: "s1",
+            checkout_path: "/fixture",
+            worktree_path: scoped_dir.to_str().unwrap(),
+            branch: "branch",
+            status: "retained",
+            created_at: 1,
+            heartbeat_at: 1,
+        },
+    )
+    .unwrap();
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/other',8,1)",
+            [],
+        )
+        .unwrap();
+    let mut setup = super::engine::resolve_setup(&Runner, storage, false, root.path()).unwrap();
+    let calls = Cell::new(0);
+    let report = super::engine::run_sync_resolved(
+        &|_| {
+            calls.set(calls.get() + 1);
+            panic!("must not query the provider for a foreign scope")
+        },
+        Some(("forgejo", "owner/repo")),
+        &Runner,
+        &mut setup,
+        super::SyncMode::Clean,
+        false,
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 0);
+    assert_eq!(report.checked, 0);
+    assert!(
+        report
+            .skipped_repos
+            .iter()
+            .all(|s| s.reason.contains("scoped provider lease"))
+    );
+}
+
+#[test]
+fn scope_sync_rechecks_new_scoped_rows_before_provider_read() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease};
+    use crate::worktree::{GitOutput, WorktreeError, WorktreeRunner};
+    struct Runner;
+    impl WorktreeRunner for Runner {
+        fn run(&self, _: &[&str], _: &Path) -> Result<GitOutput, WorktreeError> {
+            Ok(GitOutput {
+                status: 0,
+                stdout: "/fixture/.git".into(),
+            })
+        }
+    }
+    let root = Scratch::new("scope-recheck");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let lease = |id, issue| NewLease {
+        lease_id: id,
+        identity: "/fixture/.git",
+        issue,
+        session: id,
+        checkout_path: "/fixture",
+        worktree_path: root.path().to_str().unwrap(),
+        branch: "branch",
+        status: "retained",
+        created_at: 1,
+        heartbeat_at: 1,
+    };
+    insert_lease(&storage, lease("legacy", 7)).unwrap();
+    let mut setup = super::engine::resolve_setup(&Runner, storage, false, root.path()).unwrap();
+    assert_eq!(setup.scopes[0].candidates.len(), 1);
+    insert_lease(&setup.storage, lease("later", 8)).unwrap();
+    setup
+        .storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('later','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let calls = Cell::new(0);
+    let report = super::engine::run_sync_resolved(
+        &|_| {
+            calls.set(calls.get() + 1);
+            panic!("must not query provider")
+        },
+        None,
+        &Runner,
+        &mut setup,
+        super::SyncMode::Report,
+        false,
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 0);
+    assert_eq!(report.checked, 0);
+    assert_eq!(report.skipped_repos.len(), 1);
+    setup
+        .storage
+        .connection
+        .execute("DROP TABLE worktree_lease_scopes", [])
+        .unwrap();
+    let failed = super::engine::run_sync_resolved(
+        &|_| {
+            calls.set(calls.get() + 1);
+            panic!("must not query provider")
+        },
+        None,
+        &Runner,
+        &mut setup,
+        super::SyncMode::Report,
+        false,
+    );
+    assert!(failed.is_err());
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn scope_sync_proves_directories_of_new_exact_scope_leases() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease, list_all_for_repo};
+
+    let root = Scratch::new("scope-new-directory-review");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    let insert = |id: &str, issue, path: &Path, status: &str| {
+        insert_lease(
+            &storage,
+            NewLease {
+                lease_id: id,
+                identity: "/fixture/.git",
+                issue,
+                session: id,
+                checkout_path: "/fixture",
+                worktree_path: path.to_str().unwrap(),
+                branch: "branch",
+                status,
+                created_at: 1,
+                heartbeat_at: 1,
+            },
+        )
+        .unwrap();
+    };
+    insert("first", 8, &first, "active");
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('first','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let candidate = list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    insert("legacy", 7, &second, "retained");
+    insert("later", 8, &second, "active");
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('later','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let all = list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let scopes =
+        crate::worktree::lease_scope::scope_map_for_repo(&storage, "/fixture/.git").unwrap();
+    assert!(
+        matches!(
+            super::engine::scoped_processing(
+                8,
+                &candidate,
+                &all,
+                &scopes,
+                Some(("forgejo", "owner/repo"))
+            ),
+            super::engine::ScopedProcessing::Keep(_)
+        ),
+        "the newly added exact-scope lease shares a directory with legacy history and must keep"
+    );
+}
+
+#[test]
+fn legacy_sync_is_not_blocked_by_scoped_lease_on_another_path() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease, list_all_for_repo};
+
+    let root = Scratch::new("legacy-isolation-review");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    for (id, issue) in [("legacy", 7), ("forgejo", 8)] {
+        let path = root.path().join(id);
+        std::fs::create_dir_all(&path).unwrap();
+        insert_lease(
+            &storage,
+            NewLease {
+                lease_id: id,
+                identity: "/fixture/.git",
+                issue,
+                session: id,
+                checkout_path: "/fixture",
+                worktree_path: path.to_str().unwrap(),
+                branch: "branch",
+                status: "retained",
+                created_at: 1,
+                heartbeat_at: 1,
+            },
+        )
+        .unwrap();
+    }
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('forgejo','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let rows = list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let candidate: Vec<_> = rows.iter().filter(|row| row.issue == 7).cloned().collect();
+    let scopes =
+        crate::worktree::lease_scope::scope_map_for_repo(&storage, "/fixture/.git").unwrap();
+    assert!(
+        matches!(
+            super::engine::scoped_processing(7, &candidate, &rows, &scopes, None),
+            super::engine::ScopedProcessing::Unscoped
+        ),
+        "an unrelated scoped directory must not suppress the legacy sync path"
+    );
+}
+
+#[test]
+fn verified_retention_keeps_when_legacy_history_arrives_after_proof() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{
+        NewLease, ensure_schema, insert_lease, list_all_for_repo,
+        retain_active_leases_for_scope_ids,
+    };
+
+    let root = Scratch::new("retain-late-legacy-review");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let path = root.path().join("shared");
+    std::fs::create_dir_all(&path).unwrap();
+    let insert = |id: &str, issue, status: &str| {
+        insert_lease(
+            &storage,
+            NewLease {
+                lease_id: id,
+                identity: "/fixture/.git",
+                issue,
+                session: id,
+                checkout_path: "/fixture",
+                worktree_path: path.to_str().unwrap(),
+                branch: "branch",
+                status,
+                created_at: 1,
+                heartbeat_at: 1,
+            },
+        )
+        .unwrap();
+    };
+    insert("scoped", 8, "active");
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            [],
+        )
+        .unwrap();
+    let verified_ids = vec!["scoped".to_owned()];
+    let scope = crate::worktree::LeaseScope::new("forgejo", "owner/repo", 8).unwrap();
+    let approved_rows = list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let approved_scopes =
+        crate::worktree::lease_scope::scope_map_for_repo(&storage, "/fixture/.git").unwrap();
+    let approved =
+        crate::worktree::leases::scoped_retention_proof(8, &approved_rows, &approved_scopes);
+    insert("legacy", 7, "retained");
+    let result = retain_active_leases_for_scope_ids(
+        &storage,
+        "/fixture/.git",
+        &scope,
+        &verified_ids,
+        &approved,
+        "fixture",
+        2,
+    );
+    assert!(
+        result.is_err() || matches!(result, Ok(0)),
+        "new mixed history after verification must prevent retention: {result:?}"
+    );
+    let rows = list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.lease_id == "scoped")
+            .unwrap()
+            .status,
+        "active"
+    );
+}
+
+#[test]
+fn scoped_sync_keeps_same_number_legacy_history_on_another_path() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease, list_all_for_repo};
+
+    let root = Scratch::new("same-number-scope-review");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    for id in ["legacy", "forgejo"] {
+        let path = root.path().join(id);
+        std::fs::create_dir_all(&path).unwrap();
+        insert_lease(
+            &storage,
+            NewLease {
+                lease_id: id,
+                identity: "/fixture/.git",
+                issue: 7,
+                session: id,
+                checkout_path: "/fixture",
+                worktree_path: path.to_str().unwrap(),
+                branch: "branch",
+                status: "retained",
+                created_at: 1,
+                heartbeat_at: 1,
+            },
+        )
+        .unwrap();
+    }
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes VALUES ('forgejo','forgejo','owner/repo',7,1)",
+            [],
+        )
+        .unwrap();
+    let rows = list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let scopes =
+        crate::worktree::lease_scope::scope_map_for_repo(&storage, "/fixture/.git").unwrap();
+    assert!(
+        matches!(
+            super::engine::scoped_processing(
+                7,
+                &rows,
+                &rows,
+                &scopes,
+                Some(("forgejo", "owner/repo"))
+            ),
+            super::engine::ScopedProcessing::Keep(_)
+        ),
+        "same-number unscoped legacy history must prevent provider dispatch even on another path"
     );
 }
 
@@ -367,7 +901,7 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
     let reads = Cell::new(0);
     let (warnings, setup) = super::taxi_sync_in(&Runner, storage, root.path(), || {
         std::fs::remove_dir(&candidate).unwrap();
-        Ok(|issue| {
+        Ok((None, |issue| {
             reads.set(reads.get() + 1);
             Ok(crate::providers::IssueSummary {
                 id: issue,
@@ -378,7 +912,7 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
                 html_url: None,
                 project: None,
             })
-        })
+        }))
     });
     assert!(warnings.is_empty());
     assert!(setup.is_some());
@@ -391,7 +925,7 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
     let resolutions = Cell::new(0);
     let (warnings, _) = super::taxi_sync_in(&Runner, setup.storage, root.path(), || {
         resolutions.set(resolutions.get() + 1);
-        Ok(|_| unreachable!())
+        Ok((None, |_| unreachable!()))
     });
     assert_eq!(
         resolutions.get(),

@@ -155,14 +155,16 @@ fn project_creation_is_admin_only_and_status_catalogue_is_available() {
         assert!(role.allows(Capability::IssueStatusRead));
     }
 
-    // A retired provider name is rejected at argument parsing (exit 2)
-    // before any provider build or network access.
+    // An unknown provider name is rejected at argument parsing (exit 2)
+    // before any provider build or network access; the supported Forgejo
+    // provider fails on its missing owned configuration (exit 1) without
+    // any network access.
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "project", "list"]),
             Some("orchestrator")
         ),
-        2
+        1
     );
     assert_eq!(
         crate::cli::run_with_role(
@@ -230,8 +232,9 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
         );
     }
 
-    // status set is Redmine-only: local has its own status surface, and a
-    // retired provider name is rejected before any provider build.
+    // status set is Redmine-only: local has its own status surface, and
+    // Forgejo fails on its missing owned configuration before any network
+    // access.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
@@ -245,7 +248,7 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
             ]),
             Some("orchestrator")
         ),
-        2
+        1
     );
 
     // A retired provider name on a tracker create is rejected at argument

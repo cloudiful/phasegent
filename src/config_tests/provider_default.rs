@@ -33,6 +33,7 @@ fn config_provider_set_parses_valid_values() {
     for (raw, expected) in [
         ("redmine", crate::providers::ProviderKind::Redmine),
         ("local", crate::providers::ProviderKind::Local),
+        ("forgejo", crate::providers::ProviderKind::Forgejo),
     ] {
         let args = ["admin", "config", "provider", "set", raw]
             .into_iter()
@@ -49,17 +50,15 @@ fn config_provider_set_parses_valid_values() {
 
 #[test]
 fn config_provider_set_rejects_a_retired_provider_name() {
-    for raw in ["forgejo", "gitlab"] {
-        let args = ["admin", "config", "provider", "set", raw]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let error = command::parse(&args).expect_err("retired provider must be rejected");
-        assert!(
-            error.contains("no longer supported"),
-            "error must name the retirement for {raw}: {error}"
-        );
-    }
+    let args = ["admin", "config", "provider", "set", "gitlab"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let error = command::parse(&args).expect_err("retired provider must be rejected");
+    assert!(
+        error.contains("no longer supported"),
+        "error must name the retirement: {error}"
+    );
 }
 
 #[test]

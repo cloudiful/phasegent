@@ -195,13 +195,14 @@ fn version_list_enforces_role_and_provider_boundaries() {
             other => panic!("expected default version page, got {other:?}"),
         }
     }
-    // ...while a retired provider name is rejected at argument parsing
-    // before any provider is built.
+    // ...while an unknown provider name is rejected at argument parsing,
+    // and the supported Forgejo provider fails on its missing owned
+    // configuration, before any provider request.
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "version", "list",]),
             Some("orchestrator")
         ),
-        2
+        1
     );
 }

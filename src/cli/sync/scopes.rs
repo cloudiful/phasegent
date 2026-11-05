@@ -35,13 +35,14 @@ pub(super) fn resolve_scopes(
     if !all {
         let identity = crate::worktree::repo_identity(runner, cwd)?;
         let rows = list_all_for_repo(storage, &identity)?;
+        let (candidates, skipped) = scoped_candidates(storage, &identity, rows)?;
         return Ok((
             vec![RepoScope {
                 repo_identity: identity,
                 repo_path: cwd.to_path_buf(),
-                candidates: super::engine::candidate_issues(rows),
+                candidates,
             }],
-            Vec::new(),
+            skipped,
         ));
     }
     let mut scopes = Vec::new();
@@ -86,13 +87,32 @@ pub(super) fn resolve_scopes(
             }
         }
         let rows = list_all_for_repo(storage, &identity)?;
+        let (candidates, mut scope_skipped) = scoped_candidates(storage, &identity, rows)?;
+        skipped.append(&mut scope_skipped);
         scopes.push(RepoScope {
             repo_identity: identity,
             repo_path,
-            candidates: super::engine::candidate_issues(rows),
+            candidates,
         });
     }
     Ok((scopes, skipped))
+}
+
+/// Candidates of one repository plus the bounded skip reasons for the
+/// scoped groups the pass conservatively keeps.
+type ScopedCandidates = (Vec<(u64, Vec<LeaseRow>)>, Vec<SyncSkippedRepo>);
+
+fn scoped_candidates(
+    storage: &Storage,
+    identity: &str,
+    rows: Vec<LeaseRow>,
+) -> Result<ScopedCandidates, WorktreeError> {
+    let _ = storage;
+    let _ = identity;
+    // Scoped groups stay in the candidate list and are classified against
+    // the pass's provider context in the engine, where a matching Forgejo
+    // group can be reconciled; the legacy path never dispatches them.
+    Ok((super::engine::candidate_issues(rows), Vec::new()))
 }
 
 /// Open the lease store and make sure the schema exists, so a pass on a
@@ -101,16 +121,6 @@ pub(super) fn open_lease_storage() -> Result<Storage, String> {
     let storage = Storage::open()?;
     ensure_schema(&storage)?;
     Ok(storage)
-}
-
-/// The reconciliation pass runs for `worktree acquire|list|prune`, which
-/// take no provider flag, so it resolves the configured default provider
-/// exactly like any other provider-backed command without `--provider`.
-pub(super) fn default_provider(
-    role: crate::policy::Role,
-) -> Result<crate::providers::ProviderDispatcher, crate::providers::api::PhasegentError> {
-    let kind = crate::providers::config::resolve_kind(role, None)?;
-    crate::cli::provider_for(role, Some(kind), None, None, None, None)
 }
 
 /// Small adapter so a [`WorktreeError`] can travel through the pass's

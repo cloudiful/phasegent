@@ -68,6 +68,14 @@ pub(crate) trait IssueStateSource {
     /// `repo_path`. Read-only; never mutates provider or local state.
     fn closure(&self, repo_path: &Path, issue: u64) -> IssueClosure;
 
+    /// The invocation's allowed provider/repository context, when the
+    /// source can prove one. A scoped directory group is only classified
+    /// normally when every scoped lease matches this context exactly; the
+    /// default `None` keeps every scoped group.
+    fn provider_scope(&self) -> Option<(String, String)> {
+        None
+    }
+
     /// Drop any invocation-scoped memo so the next [`Self::closure`] reads the
     /// provider and scope afresh. Sources without targeted invalidation use
     /// this before a removal recheck. The default is a no-op: a source
@@ -117,6 +125,11 @@ pub(crate) trait IssueStateReader {
     /// The issue's state, or `Ok(None)` when the provider has no such issue.
     /// An unavailable provider is an `Err`.
     fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String>;
+    /// The provider's repository/project scope when it can prove one
+    /// (Forgejo reports `owner/repo`); the default has no proof.
+    fn scope(&self) -> Option<(String, String)> {
+        None
+    }
 }
 
 /// Composes the scope check with the provider read and caches one answer per
@@ -250,6 +263,13 @@ impl IssueStateSource for ComposedIssueStateSource {
         self.links.invalidate(repo_path, issues);
     }
 
+    fn provider_scope(&self) -> Option<(String, String)> {
+        let provider = self.provider.provider().ok()?;
+        self.provider
+            .scope()
+            .map(|(_, project)| (provider, project))
+    }
+
     fn refresh(&self) {
         // Both halves are invalidated together: a reopened issue must re-read the
         // provider *and* the durable scope before a removal is authorized, so a
@@ -354,22 +374,63 @@ impl LinkScopeReader for GitLinkScopeReader {
 /// pass with no closure-checked candidate never resolves a credential.
 pub(crate) struct ConfiguredIssueStateReader {
     role: Role,
+    /// The explicit selection the invocation was resolved under (a close's
+    /// `--provider`, `--api-base`, `--repository`, `--project-id`,
+    /// `--close-status-id`). `None` reads the configured default, as the
+    /// prune pass and the legacy close do.
+    context: crate::cli::provider_context::ProviderContext,
     provider: OnceCell<Result<ProviderDispatcher, String>>,
 }
 
+/// The explicit provider selection an invocation parsed, reused to resolve
+/// the same dispatcher for a closure check instead of re-deriving a default.
+#[derive(Clone, Debug)]
+pub(crate) struct ExplicitSelection {
+    pub provider_kind: crate::providers::ProviderKind,
+    pub api_base: Option<String>,
+    pub repository: Option<String>,
+    pub project_id: Option<String>,
+    pub close_status_id: Option<String>,
+}
+
 impl ConfiguredIssueStateReader {
+    #[allow(dead_code)]
     pub(crate) fn new(role: Role) -> Self {
         Self {
             role,
+            context: crate::cli::provider_context::ProviderContext::default(),
+            provider: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn with_selection(role: Role, selection: ExplicitSelection) -> Self {
+        Self::with_context(
+            role,
+            crate::cli::provider_context::ProviderContext::from_parts(
+                Some(selection.provider_kind),
+                selection.api_base.as_deref(),
+                selection.repository.as_deref(),
+                selection.project_id.as_deref(),
+                selection.close_status_id.as_deref(),
+            ),
+        )
+    }
+
+    pub(crate) fn with_context(
+        role: Role,
+        context: crate::cli::provider_context::ProviderContext,
+    ) -> Self {
+        Self {
+            role,
+            context,
             provider: OnceCell::new(),
         }
     }
 
     fn dispatcher(&self) -> Result<&ProviderDispatcher, String> {
         match self.provider.get_or_init(|| {
-            let kind = crate::providers::config::resolve_kind(self.role, None)
-                .map_err(|error| bounded_error(&error.json()))?;
-            crate::cli::provider_for(self.role, Some(kind), None, None, None, None)
+            self.context
+                .resolve(self.role)
                 .map_err(|error| bounded_error(&error.json()))
         }) {
             Ok(dispatcher) => Ok(dispatcher),
@@ -382,6 +443,12 @@ impl IssueStateReader for ConfiguredIssueStateReader {
     fn provider(&self) -> Result<String, String> {
         self.dispatcher()
             .map(|dispatcher| dispatcher.kind().as_str().to_owned())
+    }
+
+    fn scope(&self) -> Option<(String, String)> {
+        let dispatcher = self.dispatcher().ok()?;
+        let scope = crate::providers::index_store::provider_scope(dispatcher).ok()?;
+        Some((scope.source, scope.project))
     }
 
     fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
@@ -403,10 +470,37 @@ impl IssueStateReader for ConfiguredIssueStateReader {
 }
 
 /// Build the production source used by the CLI executor.
+#[allow(dead_code)]
 pub(crate) fn configured_source(role: Role) -> ComposedIssueStateSource {
     ComposedIssueStateSource::new(
         Box::new(GitLinkScopeReader::new()),
         Box::new(ConfiguredIssueStateReader::new(role)),
+    )
+}
+
+/// The explicit-provider form used by the production prune/sync routes: the
+/// invocation's raw provider selection and endpoint/repository are carried
+/// into the closure source instead of being re-derived from defaults.
+#[allow(dead_code)]
+pub(crate) fn configured_source_scoped(
+    role: Role,
+    selection: ExplicitSelection,
+) -> ComposedIssueStateSource {
+    ComposedIssueStateSource::new(
+        Box::new(GitLinkScopeReader::new()),
+        Box::new(ConfiguredIssueStateReader::with_selection(role, selection)),
+    )
+}
+
+/// The full-context form: raw provider, endpoint, repository, project and
+/// close-status overrides travel together into the closure reader.
+pub(crate) fn configured_source_context(
+    role: Role,
+    context: crate::cli::provider_context::ProviderContext,
+) -> ComposedIssueStateSource {
+    ComposedIssueStateSource::new(
+        Box::new(GitLinkScopeReader::new()),
+        Box::new(ConfiguredIssueStateReader::with_context(role, context)),
     )
 }
 
@@ -423,10 +517,40 @@ pub(crate) struct CurrentIssueClosure {
 }
 
 impl CurrentIssueClosure {
+    #[allow(dead_code)]
     pub(crate) fn new(repo_path: &Path, role: Role) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
             source: configured_source(role),
+        }
+    }
+
+    /// The full-context form used by an explicit legacy close: the already
+    /// resolved invocation selection and endpoint/project overrides are
+    /// reused for every other associated issue instead of a re-derived
+    /// default.
+    pub(crate) fn new_context(
+        repo_path: &Path,
+        role: Role,
+        context: crate::cli::provider_context::ProviderContext,
+    ) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            source: configured_source_context(role, context),
+        }
+    }
+
+    /// The explicit-provider form used by a Forgejo close: every other
+    /// issue the directory is associated with is confirmed through the
+    /// same resolved `(provider, repository)` the close was invoked with,
+    /// never a re-derived default. A link scope that disagrees keeps.
+    pub(crate) fn new_scoped(repo_path: &Path, role: Role, selection: ExplicitSelection) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            source: ComposedIssueStateSource::new(
+                Box::new(GitLinkScopeReader::new()),
+                Box::new(ConfiguredIssueStateReader::with_selection(role, selection)),
+            ),
         }
     }
 
@@ -533,6 +657,7 @@ pub(crate) mod test_support {
         responses: RefCell<HashMap<(String, u64), IssueClosure>>,
         default: IssueClosure,
         asked: RefCell<Vec<(String, u64)>>,
+        scope: Option<(String, String)>,
     }
 
     impl ScriptedIssueStateSource {
@@ -542,6 +667,7 @@ pub(crate) mod test_support {
                 responses: RefCell::new(HashMap::new()),
                 default: IssueClosure::Closed,
                 asked: RefCell::new(Vec::new()),
+                scope: None,
             }
         }
 
@@ -551,6 +677,16 @@ pub(crate) mod test_support {
                 responses: RefCell::new(HashMap::new()),
                 default: IssueClosure::Keep(reason.to_owned()),
                 asked: RefCell::new(Vec::new()),
+                scope: None,
+            }
+        }
+
+        /// Prove the invocation's provider context, as a configured Forgejo
+        /// dispatcher would.
+        pub(crate) fn with_provider_scope(self, provider: &str, project: &str) -> Self {
+            Self {
+                scope: Some((provider.to_owned(), project.to_owned())),
+                ..self
             }
         }
 
@@ -577,6 +713,10 @@ pub(crate) mod test_support {
                 return verdict.clone();
             }
             self.default.clone()
+        }
+
+        fn provider_scope(&self) -> Option<(String, String)> {
+            self.scope.clone()
         }
     }
 }

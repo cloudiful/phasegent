@@ -16,6 +16,7 @@ pub enum ProviderDispatcher {
     Redmine(RedmineProvider),
     /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),
+    Forgejo(crate::providers::forgejo::ForgejoProvider),
 }
 
 impl ProviderDispatcher {
@@ -24,6 +25,15 @@ impl ProviderDispatcher {
         config: crate::providers::config::RedmineConfig,
     ) -> Result<Self, PhasegentError> {
         Ok(Self::Redmine(RedmineProvider::for_role(role, config)?))
+    }
+
+    pub fn forgejo(
+        role: crate::policy::Role,
+        config: crate::providers::forgejo::ForgejoConfig,
+    ) -> Result<Self, PhasegentError> {
+        Ok(Self::Forgejo(
+            crate::providers::forgejo::ForgejoProvider::for_role(config, role)?,
+        ))
     }
 
     /// Local backend. SQLite opens synchronously with no credentials;
@@ -36,6 +46,7 @@ impl ProviderDispatcher {
         match self {
             Self::Redmine(_) => ProviderKind::Redmine,
             Self::Local(_) => ProviderKind::Local,
+            Self::Forgejo(_) => ProviderKind::Forgejo,
         }
     }
 }

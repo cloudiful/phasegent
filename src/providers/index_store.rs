@@ -116,6 +116,10 @@ pub fn provider_scope(
                 project: project.trim().to_owned(),
             })
         }
+        crate::providers::ProviderDispatcher::Forgejo(provider) => {
+            IssueIndexScope::new("forgejo", provider.repository_scope())
+                .map_err(PhasegentError::config)
+        }
         // Local backend warms under a stable local scope.
         crate::providers::ProviderDispatcher::Local(_) => Ok(IssueIndexScope {
             source: "local".to_owned(),
@@ -135,7 +139,6 @@ pub fn explicit_scope(
     repository: Option<&str>,
     project_id: Option<&str>,
 ) -> Option<IssueIndexScope> {
-    let _ = repository;
     let kind = provider_kind?;
     match kind {
         crate::providers::ProviderKind::Redmine => {
@@ -148,6 +151,10 @@ pub fn explicit_scope(
         // Local yields no narrow scope from an explicit kind; callers
         // fall back to the global scope.
         crate::providers::ProviderKind::Local => None,
+        crate::providers::ProviderKind::Forgejo => {
+            let repository = crate::providers::forgejo::validate_repository(repository?).ok()?;
+            IssueIndexScope::new("forgejo", &repository).ok()
+        }
     }
 }
 

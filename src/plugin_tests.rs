@@ -1240,6 +1240,88 @@ fn embedded_role_skills_match_the_repository_copies() {
     }
 }
 
+fn flat_policy(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Issue 1201 P4: the orchestrator skill is the single portable authority for
+/// Git delivery, PR, and closure policy. These are semantic policy contracts,
+/// not paragraph snapshots.
+#[test]
+fn orchestrator_skill_owns_portable_delivery_and_closure_policy() {
+    let _lock = lock_workflow_tests();
+    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.orchestrator.md"));
+    for needle in [
+        "one final PR per repository",
+        "opens no PR",
+        "never fabricate a hosted PR",
+        "never auto-merge",
+        "never close merely because a PR was opened",
+        "`Closes` marker",
+        "automatic PR bridge",
+        "full Redmine URL",
+    ] {
+        assert!(
+            skill.contains(needle),
+            "the orchestrator policy must state {needle:?}"
+        );
+    }
+}
+
+/// Issue 1201 P4: the shared skill defers delivery/closure policy to the
+/// orchestrator and keeps no stale startup claim or close-at-PR rule.
+#[test]
+fn shared_skill_defers_delivery_policy_and_drops_stale_claims() {
+    let _lock = lock_workflow_tests();
+    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
+    assert!(
+        skill.contains("canonical in `phasegent-orchestrator`"),
+        "the shared skill must point at the portable orchestrator policy"
+    );
+    assert!(
+        skill.contains("verify that copy"),
+        "the shared skill must verify the installed/injected artifact"
+    );
+    assert!(
+        !skill.contains("needs a new session"),
+        "the stale absolute restart claim must stay removed"
+    );
+    assert!(
+        !skill.contains("finish and close only after the requested delivery succeeds"),
+        "the unconditional close-at-delivery rule must stay removed"
+    );
+}
+
+/// Issue 1201 P4: child roles own no Git or PR mutation authority.
+#[test]
+fn child_skills_forbid_git_and_pull_request_mutations() {
+    let _lock = lock_workflow_tests();
+    for (name, skill) in [
+        (
+            "executor",
+            flat_policy(include_str!("../skills/phasegent/SKILL.executor.md")),
+        ),
+        (
+            "reviewer",
+            flat_policy(include_str!("../skills/phasegent/SKILL.reviewer.md")),
+        ),
+    ] {
+        assert!(
+            skill.contains("Never commit, push, tag, or mutate refs"),
+            "the {name} skill must forbid Git mutation"
+        );
+        assert!(
+            skill.contains("pull request"),
+            "the {name} skill must explicitly forbid PR mutation"
+        );
+    }
+    let explore = flat_policy(include_str!("../skills/phasegent/SKILL.explore.md"));
+    assert!(
+        explore.contains("pull-request create/update/merge"),
+        "the explore skill must explicitly forbid PR mutation"
+    );
+}
+
 #[test]
 fn envelope_serialises_with_stable_field_order() {
     let _lock = lock_workflow_tests();

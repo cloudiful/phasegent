@@ -11,9 +11,10 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use crate::infra::storage::Storage;
+use crate::lifecycle::AutoCleanupOutcome;
+use crate::lifecycle::CleanupMode;
 use crate::lifecycle::cleanup::closure::DenyOtherIssues;
 use crate::lifecycle::cleanup::{CleanupContext, cleanup_closed_issue_worktrees_in_context};
-use crate::lifecycle::{AutoCleanupOutcome, CleanupMode};
 use crate::providers::IssueSummary;
 use crate::providers::api::PhasegentError;
 use crate::worktree::leases::release_active_leases_for_issue_with;
@@ -63,8 +64,16 @@ pub(crate) fn resolve_setup(
 /// that follows it share one connection. The cleanup rows are read after
 /// the release, never from the scan snapshot, and the host memo lives for
 /// the whole pass so repeated scans across directories are served locally.
+///
+/// Issue 1201 P3: a scoped group is reconciled through the provider only
+/// when the pass's own provider scope matches the lease scope exactly
+/// (provider and repository for Forgejo); mixed, foreign, or unproven
+/// groups are still skipped with a bounded reason. The release for a
+/// processed scoped group flips the exact sidecar key, so a same-number
+/// legacy row is never touched.
 pub(crate) fn run_sync_resolved(
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    provider_scope: Option<(&str, &str)>,
     runner: &dyn WorktreeRunner,
     setup: &mut SyncSetup,
     mode: SyncMode,
@@ -77,6 +86,7 @@ pub(crate) fn run_sync_resolved(
     } = setup;
     run_sync_scopes(
         get_issue,
+        provider_scope,
         runner,
         storage,
         scopes,
@@ -89,6 +99,7 @@ pub(crate) fn run_sync_resolved(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_sync_scopes(
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    provider_scope: Option<(&str, &str)>,
     runner: &dyn WorktreeRunner,
     storage: &Storage,
     scopes: &[RepoScope],
@@ -104,6 +115,204 @@ pub(super) fn run_sync_scopes(
     for scope in scopes.iter() {
         for (issue, rows) in &scope.candidates {
             let issue = *issue;
+            let fresh = crate::worktree::leases::list_all_for_repo(storage, &scope.repo_identity)
+                .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+            let scope_map =
+                crate::worktree::lease_scope::scope_map_for_repo(storage, &scope.repo_identity)
+                    .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+            match scoped_processing(issue, rows, &fresh, &scope_map, provider_scope) {
+                ScopedProcessing::Unscoped => {}
+                ScopedProcessing::Keep(reason) => {
+                    report.skipped_repos.push(super::SyncSkippedRepo {
+                        repo_identity: scope.repo_identity.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+                ScopedProcessing::Provider => {
+                    // Read and prove the remote state before any lease or
+                    // directory mutation. An open, missing, or failed read
+                    // leaves the active lease exactly as it was.
+                    let summary = match get_issue(issue) {
+                        Ok(summary) => summary,
+                        Err(PhasegentError::NotFound { .. }) => {
+                            report.not_found += 1;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    if !summary.state.eq_ignore_ascii_case("closed") {
+                        report.not_closed += 1;
+                        report.issues.push(SyncIssueReport {
+                            repo_identity: scope.repo_identity.clone(),
+                            issue,
+                            remote_state: summary.state.clone(),
+                            active_leases: rows
+                                .iter()
+                                .filter(|row| row.status == LEASE_STATUS_ACTIVE)
+                                .count() as u64,
+                            released_leases: 0,
+                            cleaned: 0,
+                            directories: Vec::new(),
+                            warnings: vec![format!(
+                                "issue {issue}: scoped lease kept because the provider reports the issue open"
+                            )],
+                        });
+                        continue;
+                    }
+                    // Fresh scope/lease evidence after the provider proof:
+                    // mixed, foreign, or unproven evidence keeps before the
+                    // exact key is retained.
+                    let fresh =
+                        crate::worktree::leases::list_all_for_repo(storage, &scope.repo_identity)
+                            .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+                    let fresh_scopes = crate::worktree::lease_scope::scope_map_for_repo(
+                        storage,
+                        &scope.repo_identity,
+                    )
+                    .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+                    match scoped_processing(issue, rows, &fresh, &fresh_scopes, provider_scope) {
+                        ScopedProcessing::Provider => {}
+                        ScopedProcessing::Keep(reason) => {
+                            report.skipped_repos.push(super::SyncSkippedRepo {
+                                repo_identity: scope.repo_identity.clone(),
+                                reason,
+                            });
+                            continue;
+                        }
+                        ScopedProcessing::Unscoped => {
+                            report.skipped_repos.push(super::SyncSkippedRepo {
+                                repo_identity: scope.repo_identity.clone(),
+                                reason: format!(
+                                    "issue {issue}: scoped provider lease requires provider-aware cleanup"
+                                ),
+                            });
+                            continue;
+                        }
+                    }
+                    let lease_scope = lease_scope_for(issue, rows, &fresh_scopes, provider_scope)
+                        .map_err(|error| {
+                        PhasegentError::request("issue sync", error.message)
+                    })?;
+                    // A terminal lease leaves nothing to retain, but the
+                    // exact-scope closure proof still runs so a shared
+                    // directory can be cleaned once every associated issue is
+                    // confirmed closed.
+                    let verified =
+                        verified_scope_lease_ids(issue, &fresh, &fresh_scopes, provider_scope);
+                    let released = if mode == SyncMode::Clean {
+                        let closure =
+                            SyncScopedClosure::new(&scope.repo_path, get_issue, provider_scope);
+                        let associated = directory_associated_issues(issue, &fresh, &fresh_scopes);
+                        if let Err(reason) = crate::lifecycle::cleanup::closure::DirectoryIssueClosure::confirm_others_closed(
+                            &closure,
+                            issue,
+                            &associated,
+                        ) {
+                            report.skipped_repos.push(super::SyncSkippedRepo {
+                                repo_identity: scope.repo_identity.clone(),
+                                reason: format!(
+                                    "issue {issue}: scoped lease kept because {reason}"
+                                ),
+                            });
+                            continue;
+                        }
+                        // Rebuild the complete scope/local proof after the
+                        // remote closure checks and immediately before the
+                        // mutation; a changed row set or association keeps
+                        // without an unbounded retry loop.
+                        let final_rows = crate::worktree::leases::list_all_for_repo(
+                            storage,
+                            &scope.repo_identity,
+                        )
+                        .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+                        let final_scopes = crate::worktree::lease_scope::scope_map_for_repo(
+                            storage,
+                            &scope.repo_identity,
+                        )
+                        .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+                        if !matches!(
+                            scoped_processing(
+                                issue,
+                                rows,
+                                &final_rows,
+                                &final_scopes,
+                                provider_scope
+                            ),
+                            ScopedProcessing::Provider
+                        ) {
+                            report.skipped_repos.push(super::SyncSkippedRepo {
+                                repo_identity: scope.repo_identity.clone(),
+                                reason: format!(
+                                    "issue {issue}: scoped provider proof changed before retention"
+                                ),
+                            });
+                            continue;
+                        }
+                        let final_associated =
+                            directory_associated_issues(issue, &final_rows, &final_scopes);
+                        let final_ids = verified_scope_lease_ids(
+                            issue,
+                            &final_rows,
+                            &final_scopes,
+                            provider_scope,
+                        );
+                        if final_associated != associated || final_ids != verified {
+                            report.skipped_repos.push(super::SyncSkippedRepo {
+                                repo_identity: scope.repo_identity.clone(),
+                                reason: format!(
+                                    "issue {issue}: scoped lease association changed before retention"
+                                ),
+                            });
+                            continue;
+                        }
+                        let approved = crate::worktree::leases::scoped_retention_proof(
+                            issue,
+                            &final_rows,
+                            &final_scopes,
+                        );
+                        run_retention_interleave_hook(storage);
+                        crate::worktree::leases::retain_active_leases_for_scope_ids(
+                            storage,
+                            &scope.repo_identity,
+                            &lease_scope,
+                            &final_ids,
+                            &approved,
+                            super::SYNC_RELEASE_REASON,
+                            crate::worktree::now_unix_secs(),
+                        )
+                        .map_err(|error| PhasegentError::request("issue sync", error.message))?
+                    } else {
+                        0
+                    };
+                    let entry = sync_issue_scoped(
+                        runner,
+                        storage,
+                        &guard,
+                        scope,
+                        issue,
+                        rows,
+                        &summary.state,
+                        mode,
+                        released,
+                        &lease_scope,
+                        get_issue,
+                        provider_scope,
+                    )?;
+                    report.checked += 1;
+                    report.released_leases += entry.released_leases;
+                    report.cleaned += entry.cleaned;
+                    report.kept += entry
+                        .directories
+                        .iter()
+                        .filter(|directory| {
+                            directory.action == "kept" || directory.action == "would_keep"
+                        })
+                        .count() as u64;
+                    report.issues.push(entry);
+                    continue;
+                }
+            }
             report.checked += 1;
             let summary = match get_issue(issue) {
                 Ok(summary) => summary,
@@ -141,6 +350,395 @@ pub(super) fn run_sync_scopes(
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+type RetentionInterleaveHook = Box<dyn FnOnce(&Storage)>;
+
+#[cfg(test)]
+thread_local! {
+    static RETENTION_INTERLEAVE_HOOK: std::cell::RefCell<Option<RetentionInterleaveHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Register a one-shot test hook that runs after the final ownership proof is
+/// approved and before the retention transaction opens, so a fixture can
+/// exercise the real orchestration and transaction with a post-proof arrival.
+#[cfg(test)]
+pub(crate) fn set_retention_interleave_hook(hook: RetentionInterleaveHook) {
+    RETENTION_INTERLEAVE_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
+#[cfg(test)]
+fn run_retention_interleave_hook(storage: &Storage) {
+    RETENTION_INTERLEAVE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook(storage);
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_retention_interleave_hook(_storage: &Storage) {}
+
+/// What the pass does with one candidate issue.
+pub(super) enum ScopedProcessing {
+    /// The candidate has no scoped evidence: the legacy path handles it.
+    Unscoped,
+    /// The scoped evidence cannot prove a safe provider: keep with reason.
+    Keep(String),
+    /// The pass's provider scope matches the lease scope exactly: the
+    /// provider-aware path handles it.
+    Provider,
+}
+
+/// Classify one candidate against the fresh scoped evidence. The affected
+/// directory set is derived from every scoped row of the exact issue in
+/// `all`, never from stale candidate paths, so a new same-issue lease in a
+/// second directory pulls that directory's full row set into the proof. Every
+/// lease row on every affected canonical directory must be scoped to the
+/// selected provider/project; legacy, foreign, mixed, or unreadable evidence
+/// keeps before any provider read or lease mutation.
+pub(super) fn scoped_processing(
+    issue: u64,
+    candidate: &[LeaseRow],
+    all: &[LeaseRow],
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
+    provider_scope: Option<(&str, &str)>,
+) -> ScopedProcessing {
+    let issue_scoped_rows: Vec<&LeaseRow> = all
+        .iter()
+        .filter(|row| row.issue == issue && scopes.contains_key(&row.lease_id))
+        .collect();
+    let paths = crate::worktree::CanonicalPaths::default();
+    if issue_scoped_rows.is_empty() {
+        // An explicit Forgejo context must never infer ownership of purely
+        // unscoped legacy rows from the same number: keep before any provider
+        // read or lease change. Compatible legacy providers still reconcile.
+        if provider_scope.is_some_and(|(provider, _)| provider == "forgejo") {
+            return ScopedProcessing::Keep(format!(
+                "issue {issue}: explicit Forgejo does not own unscoped legacy history"
+            ));
+        }
+        // A candidate with no scoped evidence follows the legacy path unless
+        // its own canonical directories carry scoped history. An unrelated
+        // scoped lease elsewhere in the repository must not suppress legacy
+        // reconciliation.
+        let own_rows: Vec<&LeaseRow> = if candidate.is_empty() {
+            all.iter().filter(|row| row.issue == issue).collect()
+        } else {
+            candidate.iter().collect()
+        };
+        let own_directories: Vec<std::path::PathBuf> = own_rows
+            .iter()
+            .map(|row| paths.resolve(Path::new(&row.worktree_path)))
+            .collect();
+        let shares_scoped = all.iter().any(|row| {
+            scopes.contains_key(&row.lease_id)
+                && own_directories
+                    .iter()
+                    .any(|path| paths.resolve(Path::new(&row.worktree_path)) == *path)
+        });
+        if shares_scoped {
+            return ScopedProcessing::Keep(format!(
+                "issue {issue}: scoped provider lease shares a directory with legacy ownership"
+            ));
+        }
+        return ScopedProcessing::Unscoped;
+    }
+    // Scoped ownership of this number is ambiguous regardless of path: any
+    // unscoped same-number row must keep before provider dispatch or
+    // retention. A purely legacy number with no scoped evidence is handled by
+    // the legacy path above.
+    if all
+        .iter()
+        .any(|row| row.issue == issue && !scopes.contains_key(&row.lease_id))
+    {
+        return ScopedProcessing::Keep(format!(
+            "issue {issue}: unscoped same-number history makes the ownership ambiguous"
+        ));
+    }
+    let affected: Vec<std::path::PathBuf> = issue_scoped_rows
+        .iter()
+        .map(|row| paths.resolve(Path::new(&row.worktree_path)))
+        .collect();
+    let directory_rows: Vec<&LeaseRow> = all
+        .iter()
+        .filter(|row| {
+            affected
+                .iter()
+                .any(|path| paths.resolve(Path::new(&row.worktree_path)) == *path)
+        })
+        .collect();
+    if directory_rows
+        .iter()
+        .any(|row| !scopes.contains_key(&row.lease_id))
+    {
+        return ScopedProcessing::Keep(format!(
+            "issue {issue}: scoped provider lease shares a directory with unproven legacy ownership"
+        ));
+    }
+    let Some((provider, project)) = provider_scope else {
+        return ScopedProcessing::Keep(format!(
+            "issue {issue}: scoped provider lease requires provider-aware cleanup"
+        ));
+    };
+    let exact = directory_rows.iter().all(|row| {
+        scopes
+            .get(&row.lease_id)
+            .is_some_and(|scope| scope.provider() == provider && scope.project() == project)
+    });
+    if exact {
+        ScopedProcessing::Provider
+    } else {
+        ScopedProcessing::Keep(format!(
+            "issue {issue}: scoped provider lease requires provider-aware cleanup"
+        ))
+    }
+}
+
+/// The exact-scope active lease ids of one issue in the fresh complete row set.
+fn verified_scope_lease_ids(
+    issue: u64,
+    all: &[LeaseRow],
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
+    provider_scope: Option<(&str, &str)>,
+) -> Vec<String> {
+    let Some((provider, project)) = provider_scope else {
+        return Vec::new();
+    };
+    all.iter()
+        .filter(|row| {
+            row.issue == issue
+                && row.status == LEASE_STATUS_ACTIVE
+                && scopes.get(&row.lease_id).is_some_and(|scope| {
+                    scope.provider() == provider
+                        && scope.project() == project
+                        && scope.external_id() == issue
+                })
+        })
+        .map(|row| row.lease_id.clone())
+        .collect()
+}
+
+/// Every issue associated with the candidate's canonical directories, so the
+/// pre-retention closure proof covers the whole affected physical path.
+fn directory_associated_issues(
+    issue: u64,
+    all: &[LeaseRow],
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
+) -> Vec<u64> {
+    let paths = crate::worktree::CanonicalPaths::default();
+    let affected: Vec<_> = all
+        .iter()
+        .filter(|row| row.issue == issue && scopes.contains_key(&row.lease_id))
+        .map(|row| paths.resolve(Path::new(&row.worktree_path)))
+        .collect();
+    let mut issues: Vec<u64> = all
+        .iter()
+        .filter(|row| {
+            affected
+                .iter()
+                .any(|path| paths.resolve(Path::new(&row.worktree_path)) == *path)
+        })
+        .map(|row| row.issue)
+        .chain(std::iter::once(issue))
+        .collect();
+    issues.sort_unstable();
+    issues.dedup();
+    issues
+}
+
+/// The exact lease scope of a provider-processable candidate. The caller
+/// has already proven every involved row matches the provider scope, so
+/// the first scope is the exact key; a missing proof is a storage error.
+fn lease_scope_for(
+    issue: u64,
+    rows: &[LeaseRow],
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
+    provider_scope: Option<(&str, &str)>,
+) -> Result<crate::worktree::LeaseScope, WorktreeError> {
+    let _ = (issue, provider_scope);
+    rows.iter()
+        .find_map(|row| scopes.get(&row.lease_id))
+        .cloned()
+        .ok_or_else(|| {
+            WorktreeError::new(
+                "storage",
+                "scoped lease scope evidence disappeared during the sync pass",
+            )
+        })
+}
+
+/// One scoped candidate's guarded cleanup. The provider-aware
+/// [`crate::cli::issue_closure::ComposedIssueStateSource`] closure proves every
+/// other issue of the directory through the invocation's own provider scope;
+/// an open, unknown, or mismatched issue keeps. Report mode passes
+/// [`CleanupMode::Report`] and never retains, removes, or moves anything.
+#[allow(clippy::too_many_arguments)]
+fn sync_issue_scoped(
+    runner: &dyn WorktreeRunner,
+    storage: &Storage,
+    guard: &SyncOccupancyGuard<'_>,
+    scope: &RepoScope,
+    issue: u64,
+    rows: &[LeaseRow],
+    remote_state: &str,
+    mode: SyncMode,
+    released: u64,
+    lease_scope: &crate::worktree::LeaseScope,
+    get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    provider_scope: Option<(&str, &str)>,
+) -> Result<SyncIssueReport, PhasegentError> {
+    let mut entry = SyncIssueReport {
+        repo_identity: scope.repo_identity.clone(),
+        issue,
+        remote_state: remote_state.to_owned(),
+        active_leases: rows
+            .iter()
+            .filter(|row| row.status == LEASE_STATUS_ACTIVE)
+            .count() as u64,
+        released_leases: released,
+        cleaned: 0,
+        directories: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let context = CleanupContext::load(storage, &scope.repo_identity)
+        .map_err(|error| PhasegentError::request("issue sync", error))?;
+    let closure = SyncScopedClosure::new(&scope.repo_path, get_issue, provider_scope);
+    let cleanup_mode = match mode {
+        SyncMode::Report => CleanupMode::Report,
+        SyncMode::Clean => CleanupMode::Sync,
+    };
+    let outcome = cleanup_closed_issue_worktrees_in_context(
+        runner,
+        guard,
+        cleanup_mode,
+        context,
+        &scope.repo_path,
+        issue,
+        None,
+        &closure,
+        Some(lease_scope),
+    );
+    if let AutoCleanupOutcome::Cleaned { removed, kept } = &outcome {
+        entry.cleaned = *removed;
+        entry.warnings.extend(kept.iter().cloned());
+    }
+    if let AutoCleanupOutcome::Warning { reason } = &outcome {
+        entry.warnings.push(reason.clone());
+    }
+    match mode {
+        SyncMode::Report => {
+            for row in rows {
+                let (action, reason) = report_verdict(runner, &scope.repo_path, issue, row);
+                entry.directories.push(SyncDirectoryReport {
+                    path: row.worktree_path.clone(),
+                    action,
+                    reason,
+                });
+            }
+        }
+        SyncMode::Clean => {}
+    }
+    entry
+        .directories
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(entry)
+}
+
+/// The invocation-scoped closure resolver: each associated issue is read
+/// through the same provider closure the pass already holds, and the durable
+/// link scope must agree with the invocation's provider/project before a
+/// closed answer authorizes cleanup.
+struct SyncScopedClosure<'a> {
+    repo_path: std::path::PathBuf,
+    links: crate::cli::issue_closure::GitLinkScopeReader,
+    get_issue: &'a dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    provider_scope: Option<(&'a str, &'a str)>,
+}
+
+impl<'a> SyncScopedClosure<'a> {
+    fn new(
+        repo_path: &Path,
+        get_issue: &'a dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+        provider_scope: Option<(&'a str, &'a str)>,
+    ) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            links: crate::cli::issue_closure::GitLinkScopeReader::new(),
+            get_issue,
+            provider_scope,
+        }
+    }
+}
+
+impl crate::lifecycle::cleanup::closure::DirectoryIssueClosure for SyncScopedClosure<'_> {
+    fn confirm_others_closed(&self, current_issue: u64, issues: &[u64]) -> Result<(), String> {
+        let Some((provider, project)) = self.provider_scope else {
+            return Err("the sync invocation has no provider scope".to_owned());
+        };
+        for issue in issues {
+            if *issue == current_issue {
+                continue;
+            }
+            let scopes = crate::cli::issue_closure::LinkScopeReader::scopes(
+                &self.links,
+                &self.repo_path,
+                *issue,
+            )
+            .map_err(|reason| {
+                format!("issue {issue}: branch-link scope could not be read: {reason}")
+            })?;
+            let distinct: std::collections::BTreeSet<(String, String)> = scopes
+                .iter()
+                .map(|scope| (scope.provider.clone(), scope.project.clone()))
+                .collect();
+            if distinct.len() > 1 {
+                return Err(format!(
+                    "issue {issue}: conflicting link scopes; refusing to guess a provider"
+                ));
+            }
+            if let Some((scope_provider, scope_project)) = distinct.into_iter().next()
+                && (scope_provider != provider || scope_project != project)
+            {
+                return Err(format!(
+                    "issue {issue}: link scope '{scope_provider}/{scope_project}' does not match the sync provider '{provider}/{project}'"
+                ));
+            }
+            if scopes
+                .iter()
+                .any(|scope| scope.external_id != issue.to_string())
+            {
+                return Err(format!(
+                    "issue {issue}: branch-link external id does not match the lease number"
+                ));
+            }
+            match (self.get_issue)(*issue) {
+                Ok(summary) if summary.state.eq_ignore_ascii_case("closed") => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "the directory is also associated with issue {issue}, which is not confirmed closed"
+                    ));
+                }
+                Err(PhasegentError::NotFound { .. }) => {
+                    return Err(format!(
+                        "the directory is also associated with issue {issue}, which no longer exists"
+                    ));
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "the directory is also associated with issue {issue}, whose state could not be read"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh(&self) {
+        crate::cli::issue_closure::LinkScopeReader::refresh(&self.links);
+    }
 }
 
 /// Group the rows of one repository into candidate issues: only rows whose
@@ -239,6 +837,7 @@ fn clean_issue(
             issue,
             None,
             &DenyOtherIssues,
+            None,
         ),
         Err(message) => AutoCleanupOutcome::Warning {
             reason: format!(

@@ -17,6 +17,7 @@
 mod config;
 mod connection;
 mod credentials;
+mod forgejo_config;
 mod global_settings;
 
 #[cfg(test)]

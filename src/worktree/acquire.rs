@@ -13,16 +13,18 @@ use crate::worktree::git::{
     current_branch_for, is_clean, ref_resolves_to_commit, worktree_add_from, worktree_remove,
 };
 use crate::worktree::leases::{
-    NewLease, ensure_schema, find_active_lease, find_active_lease_for_path, heartbeat_active_lease,
-    insert_lease, load_lease, record_release_reason, refresh_heartbeat,
-    retain_active_leases_for_issue, update_status,
+    NewLease, ensure_no_unscoped_collision, ensure_schema, find_active_lease,
+    find_active_lease_for_path, find_active_lease_for_scope, heartbeat_active_lease, insert_lease,
+    insert_lease_scoped, load_lease, record_release_reason, refresh_heartbeat,
+    retain_active_leases_for_issue, retain_active_leases_for_scope, update_status,
 };
 use crate::worktree::naming::{
     cache_root, cache_root_in, compute_fingerprint, generate_branch, new_lease_id, slug_from_branch,
 };
 use crate::worktree::{
     AcquireOutcome, LEASE_STATUS_ACTIVE, LEASE_STATUS_RELEASED, LEASE_STATUS_RETAINED, LeaseRow,
-    MAX_SESSION_CHARS, ReleaseOutcome, WorktreeError, WorktreeRunner, now_unix_secs, repo_identity,
+    LeaseScope, MAX_SESSION_CHARS, ReleaseOutcome, WorktreeError, WorktreeRunner, now_unix_secs,
+    repo_identity,
 };
 
 /// Options that shape one [`acquire_lease_with`] call beyond the
@@ -193,7 +195,16 @@ pub fn acquire_lease_with(
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
     acquire_lease_inner(
-        runner, &storage, &identity, repo_path, issue, session, options,
+        runner,
+        &storage,
+        AcquireLeaseRequest {
+            identity: &identity,
+            repo_path,
+            issue,
+            session,
+            options,
+            scope: None,
+        },
     )
 }
 
@@ -214,7 +225,42 @@ pub(crate) fn acquire_lease_seeded(
 ) -> Result<AcquireOutcome, WorktreeError> {
     validate_acquire(issue, session, options)?;
     acquire_lease_inner(
-        runner, storage, identity, repo_path, issue, session, options,
+        runner,
+        storage,
+        AcquireLeaseRequest {
+            identity,
+            repo_path,
+            issue,
+            session,
+            options,
+            scope: None,
+        },
+    )
+}
+
+pub(crate) fn acquire_lease_scoped(
+    runner: &dyn WorktreeRunner,
+    storage: &Storage,
+    identity: &str,
+    repo_path: &Path,
+    session: &str,
+    options: AcquireOptions<'_>,
+    scope: &super::LeaseScope,
+) -> Result<AcquireOutcome, WorktreeError> {
+    let issue = scope.external_id();
+    validate_acquire(issue, session, options)?;
+    ensure_no_unscoped_collision(&storage.connection, identity, issue)?;
+    acquire_lease_inner(
+        runner,
+        storage,
+        AcquireLeaseRequest {
+            identity,
+            repo_path,
+            issue,
+            session,
+            options,
+            scope: Some(scope),
+        },
     )
 }
 
@@ -248,15 +294,30 @@ fn validate_acquire(
     Ok(())
 }
 
+/// Bundles the arguments of [`acquire_lease_inner`] beyond the caller-owned
+/// runner and store so the entry points stay under the argument-count lint.
+struct AcquireLeaseRequest<'a> {
+    identity: &'a str,
+    repo_path: &'a Path,
+    issue: u64,
+    session: &'a str,
+    options: AcquireOptions<'a>,
+    scope: Option<&'a super::LeaseScope>,
+}
+
 fn acquire_lease_inner(
     runner: &dyn WorktreeRunner,
     storage: &Storage,
-    identity: &str,
-    repo_path: &Path,
-    issue: u64,
-    session: &str,
-    options: AcquireOptions<'_>,
+    request: AcquireLeaseRequest<'_>,
 ) -> Result<AcquireOutcome, WorktreeError> {
+    let AcquireLeaseRequest {
+        identity,
+        repo_path,
+        issue,
+        session,
+        options,
+        scope,
+    } = request;
     let AcquireOptions {
         cache_base,
         isolate,
@@ -279,7 +340,11 @@ fn acquire_lease_inner(
     // probe is deliberately skipped here so a re-entering session is
     // never misjudged against its own tree. The post-acquire lifecycle
     // still runs so a re-entering session converges on installed hooks.
-    if let Some(existing) = find_active_lease(storage, identity, issue, session)? {
+    let existing = match scope {
+        Some(scope) => find_active_lease_for_scope(storage, identity, session, scope)?,
+        None => find_active_lease(storage, identity, issue, session)?,
+    };
+    if let Some(existing) = existing {
         refresh_heartbeat(storage, &existing.lease_id)?;
         return with_warnings(
             Ok(AcquireOutcome {
@@ -319,6 +384,7 @@ fn acquire_lease_inner(
                 session,
                 cache_base,
                 Some(base_ref),
+                scope,
             ),
             issue,
             warnings,
@@ -344,7 +410,7 @@ fn acquire_lease_inner(
             ));
             return with_warnings(
                 acquire_new_worktree(
-                    runner, storage, identity, repo_path, issue, session, cache_base, base,
+                    runner, storage, identity, repo_path, issue, session, cache_base, base, scope,
                 ),
                 issue,
                 warnings,
@@ -397,7 +463,7 @@ fn acquire_lease_inner(
         ));
         return with_warnings(
             acquire_new_worktree(
-                runner, storage, identity, repo_path, issue, session, cache_base, base,
+                runner, storage, identity, repo_path, issue, session, cache_base, base, scope,
             ),
             issue,
             warnings,
@@ -418,7 +484,7 @@ fn acquire_lease_inner(
         ));
         return with_warnings(
             acquire_new_worktree(
-                runner, storage, identity, repo_path, issue, session, cache_base, base,
+                runner, storage, identity, repo_path, issue, session, cache_base, base, scope,
             ),
             issue,
             warnings,
@@ -429,7 +495,7 @@ fn acquire_lease_inner(
     // warnings were queued above; nothing here stashes, resets, or
     // mutates branches.
     with_warnings(
-        acquire_reuse_current(runner, storage, identity, repo_path, issue, session),
+        acquire_reuse_current(runner, storage, identity, repo_path, issue, session, scope),
         issue,
         warnings,
     )
@@ -551,6 +617,17 @@ fn finalize_checkout(checkout: &str) -> Vec<String> {
     warnings
 }
 
+fn insert_selected_lease(
+    storage: &Storage,
+    lease: NewLease<'_>,
+    scope: Option<&super::LeaseScope>,
+) -> Result<(), WorktreeError> {
+    match scope {
+        Some(scope) => insert_lease_scoped(storage, lease, scope),
+        None => insert_lease(storage, lease),
+    }
+}
+
 fn acquire_reuse_current(
     runner: &dyn WorktreeRunner,
     storage: &Storage,
@@ -558,6 +635,7 @@ fn acquire_reuse_current(
     repo_path: &Path,
     issue: u64,
     session: &str,
+    scope: Option<&super::LeaseScope>,
 ) -> Result<AcquireOutcome, WorktreeError> {
     // The branch returned by `current_branch_for` already exists in
     // the repository. P3 fix: skip `validate_ref_format` for the
@@ -570,7 +648,7 @@ fn acquire_reuse_current(
     let lease_id = new_lease_id();
     let now = now_unix_secs();
     let checkout = repo_path.to_string_lossy().to_string();
-    insert_lease(
+    insert_selected_lease(
         storage,
         NewLease {
             lease_id: &lease_id,
@@ -584,6 +662,7 @@ fn acquire_reuse_current(
             created_at: now,
             heartbeat_at: now,
         },
+        scope,
     )?;
     Ok(AcquireOutcome {
         lease_id,
@@ -632,6 +711,7 @@ fn acquire_new_worktree(
     session: &str,
     cache_base: Option<&Path>,
     base: Option<&str>,
+    scope: Option<&super::LeaseScope>,
 ) -> Result<AcquireOutcome, WorktreeError> {
     // Validate an explicit base before any directory or lease work: a bad
     // ref must fail locally and leave no half state behind.
@@ -669,7 +749,7 @@ fn acquire_new_worktree(
     // stderr warning through `report_local_warnings`; the original
     // storage error is preserved so the caller still observes a
     // durable failure.
-    if let Err(error) = insert_lease(
+    if let Err(error) = insert_selected_lease(
         storage,
         NewLease {
             lease_id: &lease_id,
@@ -683,6 +763,7 @@ fn acquire_new_worktree(
             created_at: now,
             heartbeat_at: now,
         },
+        scope,
     ) {
         if let Err(remove_error) = worktree_remove(runner, repo_path, &worktree_path) {
             crate::cli::report_local_warnings(
@@ -802,6 +883,15 @@ pub fn heartbeat_lease(lease_id: &str, session: &str, now: i64) -> Result<LeaseR
     }
 }
 
+pub(crate) fn release_active_leases_for_scope_with(
+    storage: &Storage,
+    identity: &str,
+    scope: &super::LeaseScope,
+    reason: &str,
+) -> Result<u64, WorktreeError> {
+    retain_active_leases_for_scope(storage, identity, scope, reason, now_unix_secs())
+}
+
 /// Release every `active` lease for `(repo_identity, issue)` to
 /// `retained`, across every session, recording `reason`, and return the
 /// flipped row count.
@@ -826,6 +916,22 @@ pub fn release_active_leases_for_issue(
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
     ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
     release_active_leases_for_issue_with(&storage, repo_identity, issue, reason)
+}
+
+/// Release through a lease store the caller already owns, for the exact
+/// provider scope a Forgejo issue was resolved under (issue 1201 P3).
+/// The flip matches the sidecar `(provider, project, external_id)` key
+/// exactly, so a same-number legacy row in another scope is never
+/// touched. The caller invokes it only after the remote provider
+/// confirmed the close.
+pub(crate) fn release_active_leases_for_scope(
+    repo_identity: &str,
+    scope: &LeaseScope,
+    reason: &str,
+) -> Result<u64, WorktreeError> {
+    let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
+    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
+    release_active_leases_for_scope_with(&storage, repo_identity, scope, reason)
 }
 
 /// Release through a lease store the caller already owns. The
