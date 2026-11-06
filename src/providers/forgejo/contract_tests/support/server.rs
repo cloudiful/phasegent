@@ -20,12 +20,29 @@ pub fn respond(status: &str, body: &str) -> (String, JoinHandle<String>) {
 }
 
 pub fn sequence(responses: Vec<String>) -> (String, JoinHandle<Vec<String>>) {
+    sequence_inner(
+        responses
+            .into_iter()
+            .map(|body| (body, Vec::new()))
+            .collect(),
+    )
+}
+
+pub fn sequence_with_headers(
+    responses: Vec<(String, Vec<(String, String)>)>,
+) -> (String, JoinHandle<Vec<String>>) {
+    sequence_inner(responses)
+}
+
+fn sequence_inner(
+    responses: Vec<(String, Vec<(String, String)>)>,
+) -> (String, JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let base = address.clone();
     let task = thread::spawn(move || {
         let mut requests = Vec::new();
-        for body in responses {
+        for (body, headers) in responses {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -55,8 +72,12 @@ pub fn sequence(responses: Vec<String>) -> (String, JoinHandle<Vec<String>>) {
             }
             requests.push(String::from_utf8(data).unwrap());
             let body = body.replace("{BASE}", &base);
+            let extra: String = headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {}\r\n", value.replace("{BASE}", &base)))
+                .collect();
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).unwrap();

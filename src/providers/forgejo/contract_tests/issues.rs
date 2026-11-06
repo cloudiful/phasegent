@@ -225,3 +225,270 @@ fn create_and_close_use_exact_native_wire_contracts() {
         "the native contract never writes labels: {req:?}"
     );
 }
+
+#[test]
+fn metadata_total_stops_after_the_exact_page() {
+    let (base, server) = server::sequence_with_headers(vec![
+        (REPO.into(), vec![]),
+        (
+            format!("[{ISSUE}]"),
+            vec![("X-Total-Count".into(), "1".into())],
+        ),
+    ]);
+    let provider =
+        ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
+    let page = provider
+        .search_issues(&IssueSearchOptions {
+            query: None,
+            state: "all".into(),
+            page: 1,
+            limit: 50,
+            include_body: false,
+            all: true,
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.total_count, Some(1));
+    assert_eq!(
+        server.join().unwrap().len(),
+        2,
+        "the reported total must finish after the exact page without another GET"
+    );
+}
+
+#[test]
+fn metadata_total_and_link_complete_exactly() {
+    let second = ISSUE
+        .replace("\"number\":7", "\"number\":8")
+        .replace("\"id\":501", "\"id\":502");
+    let (base, server) = server::sequence_with_headers(vec![
+        (REPO.into(), vec![]),
+        (
+            format!("[{ISSUE}]"),
+            vec![
+                ("X-Total-Count".into(), "2".into()),
+                ("Link".into(), "<{BASE}?page=2>; rel=\"next\"".into()),
+            ],
+        ),
+        (
+            format!("[{second}]"),
+            vec![
+                ("X-Total-Count".into(), "2".into()),
+                ("Link".into(), "<{BASE}?page=1>; rel=\"prev\"".into()),
+            ],
+        ),
+    ]);
+    let provider =
+        ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
+    let page = provider
+        .search_issues(&IssueSearchOptions {
+            query: None,
+            state: "all".into(),
+            page: 1,
+            limit: 50,
+            include_body: false,
+            all: true,
+        })
+        .unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.total_count, Some(2));
+    assert_eq!(server.join().unwrap().len(), 3);
+
+}
+
+#[test]
+fn repeated_page_fails_before_appending_without_progress() {
+    let (base, server) = server::sequence(vec![
+        REPO.into(),
+        format!("[{ISSUE}]"),
+        format!("[{ISSUE}]"),
+    ]);
+    let provider =
+        ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
+    let error = provider
+        .search_issues(&IssueSearchOptions {
+            query: None,
+            state: "all".into(),
+            page: 1,
+            limit: 50,
+            include_body: false,
+            all: true,
+        })
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::providers::api::PhasegentError::Pagination { .. }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        server.join().unwrap().len(),
+        3,
+        "the repeat must fail on the second page, not after a partial success"
+    );
+    let second = ISSUE
+        .replace("\"number\":7", "\"number\":8")
+        .replace("\"id\":501", "\"id\":502");
+    let (base, server) = server::sequence_with_headers(vec![
+        (REPO.into(), vec![]),
+        (format!("[{ISSUE}]"), vec![]),
+        (format!("[{second}]"), vec![]),
+        (
+            format!("[{ISSUE}]"),
+            vec![("Link".into(), "<{BASE}?page=2>; rel=prev".into())],
+        ),
+    ]);
+    let provider =
+        ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
+    let result = provider.search_issues(&IssueSearchOptions {
+        query: None,
+        state: "all".into(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: true,
+    });
+    assert!(
+        matches!(
+            result,
+            Err(crate::providers::api::PhasegentError::Pagination { .. })
+        ),
+        "a repeated earlier page must not produce duplicate results: {result:?}"
+    );
+    assert_eq!(server.join().unwrap().len(), 4);
+}
+
+#[test]
+fn invalid_or_contradictory_metadata_refuses() {
+    let cases = [
+        (
+            "invalid total",
+            format!("[{ISSUE}]"),
+            vec![("X-Total-Count".to_owned(), "many".to_owned())],
+        ),
+        (
+            "total above page",
+            format!("[{ISSUE}]"),
+            vec![("X-Total-Count".to_owned(), "0".to_owned())],
+        ),
+        (
+            "link disagrees",
+            format!("[{ISSUE}]"),
+            vec![
+                ("X-Total-Count".to_owned(), "1".to_owned()),
+                ("Link".to_owned(), "<{BASE}?page=2>; rel=next".to_owned()),
+            ],
+        ),
+        (
+            "malformed link",
+            format!("[{ISSUE}]"),
+            vec![("Link".to_owned(), "<{BASE}?page=2>".to_owned())],
+        ),
+        (
+            "unterminated relation quote",
+            format!("[{ISSUE}]"),
+            vec![("Link".to_owned(), "<{BASE}?page=1>; rel=\"prev".to_owned())],
+        ),
+        (
+            "duplicate relation",
+            format!("[{ISSUE}]"),
+            vec![(
+                "Link".to_owned(),
+                "<{BASE}?page=2>; rel=next; rel=prev".to_owned(),
+            )],
+        ),
+        (
+            "empty target",
+            format!("[{ISSUE}]"),
+            vec![("Link".to_owned(), "<>; rel=next".to_owned())],
+        ),
+        (
+            "trailing quoted garbage",
+            format!("[{ISSUE}]"),
+            vec![(
+                "Link".to_owned(),
+                "<{BASE}?page=2>; rel=\"next\"junk".to_owned(),
+            )],
+        ),
+        (
+            "unknown relation",
+            format!("[{ISSUE}]"),
+            vec![("Link".to_owned(), "<{BASE}?page=2>; rel=sidebar".to_owned())],
+        ),
+        (
+            "empty before total",
+            "[]".to_owned(),
+            vec![("X-Total-Count".to_owned(), "1".to_owned())],
+        ),
+    ];
+    for (label, body, headers) in cases {
+        let (base, server) =
+            server::sequence_with_headers(vec![(REPO.into(), vec![]), (body, headers)]);
+        let provider =
+            ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture")
+                .unwrap();
+        let error = provider
+            .search_issues(&IssueSearchOptions {
+                query: None,
+                state: "all".into(),
+                page: 1,
+                limit: 50,
+                include_body: false,
+                all: true,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                crate::providers::api::PhasegentError::Pagination { .. }
+            ),
+            "{label}: {error:?}"
+        );
+        assert_eq!(server.join().unwrap().len(), 2, "{label}");
+    }
+    let (base, server) = server::sequence_with_headers(vec![
+        (REPO.into(), vec![]),
+        (
+            format!("[{ISSUE}]"),
+            vec![("X-Total-Count".into(), "2".into())],
+        ),
+        ("[]".into(), vec![]),
+    ]);
+    let provider =
+        ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
+    let result = provider.search_issues(&IssueSearchOptions {
+        query: None,
+        state: "all".into(),
+        page: 1,
+        limit: 50,
+        include_body: false,
+        all: true,
+    });
+    assert!(
+        matches!(
+            result,
+            Err(crate::providers::api::PhasegentError::Pagination { .. })
+        ),
+        "lost total must not return a partial list: {result:?}"
+    );
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[test]
+fn caller_pagination_keys_refuse_before_http() {
+    let (base, server) = server::sequence(Vec::new());
+    let provider =
+        ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
+    let error = provider
+        .collect::<serde_json::Value>(&["issues"], &[("page", "2".into())], "issue search")
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::providers::api::PhasegentError::Pagination { .. }
+        ),
+        "{error:?}"
+    );
+    assert!(server.join().unwrap().is_empty());
+}

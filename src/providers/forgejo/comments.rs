@@ -16,10 +16,22 @@ impl ForgejoProvider {
             .http
             .request(Method::GET, &["issues", &index])?
             .build()
-            .map_err(|_| PhasegentError::config("invalid Forgejo issue URL"))?;
+            .map_err(|_| PhasegentError::config("invalid Forgejo issue URL"))?
+            .url()
+            .clone();
+        let html = url::Url::parse(&format!(
+            "{}/{}/issues/{issue}",
+            self.config.api_base().trim_end_matches('/'),
+            self.config.repository()
+        ))
+        .map_err(|_| PhasegentError::config("invalid Forgejo HTML issue URL"))?;
         let actual = url::Url::parse(&comment.issue_url)
             .map_err(|_| PhasegentError::config("invalid Forgejo comment issue association"))?;
-        if &actual != expected.url() || comment.id == 0 {
+        let clean = actual.query().is_none()
+            && actual.fragment().is_none()
+            && actual.username().is_empty()
+            && actual.password().is_none();
+        if comment.id == 0 || !clean || (actual != expected && actual != html) {
             return Err(PhasegentError::config(
                 "Forgejo comment issue association mismatch",
             ));
