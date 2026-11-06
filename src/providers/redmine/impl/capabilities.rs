@@ -2,11 +2,18 @@ use crate::policy::Capability;
 use crate::providers::config::RedmineProvider;
 
 impl RedmineProvider {
-    pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+    /// The provider's fixed capability facts, available without building a
+    /// credentialed provider so selection and lifecycle decisions stay local.
+    pub(crate) const CAPABILITIES: crate::providers::ProviderCapabilities =
         crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
             comments: true,
-        }
+            project_discovery: true,
+            legacy_numeric_leases: true,
+        };
+
+    pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+        Self::CAPABILITIES
     }
 
     pub(crate) fn supports(&self, capability: Capability) -> bool {

@@ -67,16 +67,20 @@ pub(crate) fn run_local_with_markers(
         .parent()
         .map(|dir| dir.join("phasegent-missing.toml"))
         .unwrap_or_else(|| std::env::temp_dir().join("phasegent-missing.toml"));
+    // The fixture owns the main config store too, so the scope guard can
+    // never read the machine's branch links. It sits beside the distinct
+    // local store and starts absent in the fixture-owned scratch directory.
+    let main_db = db.with_file_name("phasegent-main.sqlite3");
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
         .env("PHASEGENT_LOCAL_DB_PATH", db.as_os_str())
+        .env("PHASEGENT_DB_PATH", main_db.as_os_str())
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
-        .env_remove("PHASEGENT_DB_PATH")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")

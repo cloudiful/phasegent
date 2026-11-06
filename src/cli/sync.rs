@@ -227,6 +227,7 @@ pub(crate) fn run_sync(
         provider_scope
             .as_ref()
             .map(|(a, b)| (a.as_str(), b.as_str())),
+        provider.capabilities().legacy_numeric_leases,
         runner,
         storage,
         &scopes,
@@ -314,9 +315,12 @@ pub(crate) fn execute_sync_with_caller(
     match run_sync_resolved(
         &|issue| provider.get_issue(issue),
         Some(&task_provider),
-        provider_scope
-            .as_ref()
-            .map(|(a, b)| (a.as_str(), b.as_str())),
+        engine::SyncProviderScope {
+            scope: provider_scope
+                .as_ref()
+                .map(|(a, b)| (a.as_str(), b.as_str())),
+            legacy_numeric_leases: provider.capabilities().legacy_numeric_leases,
+        },
         &runner,
         &mut setup,
         mode,
@@ -372,7 +376,10 @@ pub(crate) fn taxi_sync_scoped(
         let scope = crate::providers::index_store::provider_scope(&provider)
             .ok()
             .map(|scope| (scope.source, scope.project));
-        Ok((scope, move |issue| provider.get_issue(issue)))
+        let legacy_numeric_leases = provider.capabilities().legacy_numeric_leases;
+        Ok((scope, legacy_numeric_leases, move |issue| {
+            provider.get_issue(issue)
+        }))
     })
 }
 
@@ -386,7 +393,8 @@ pub(crate) fn taxi_sync_in<G, R>(
 ) -> (Vec<String>, Option<SyncSetup>)
 where
     G: Fn(u64) -> Result<crate::providers::IssueSummary, crate::providers::api::PhasegentError>,
-    R: FnOnce() -> Result<(Option<(String, String)>, G), crate::providers::api::PhasegentError>,
+    R: FnOnce()
+        -> Result<(Option<(String, String)>, bool, G), crate::providers::api::PhasegentError>,
 {
     let mut setup = match resolve_setup(runner, storage, false, cwd) {
         Ok(setup) => setup,
@@ -401,7 +409,7 @@ where
     if setup.scopes.iter().all(|scope| scope.candidates.is_empty()) {
         return (Vec::new(), Some(setup));
     }
-    let (provider_scope, get_issue) = match resolve_provider() {
+    let (provider_scope, legacy_numeric_leases, get_issue) = match resolve_provider() {
         Ok(result) => result,
         Err(error) => {
             return (
@@ -417,9 +425,12 @@ where
     let warnings = match run_sync_resolved(
         &get_issue,
         Some(&task_provider),
-        provider_scope
-            .as_ref()
-            .map(|(a, b)| (a.as_str(), b.as_str())),
+        engine::SyncProviderScope {
+            scope: provider_scope
+                .as_ref()
+                .map(|(a, b)| (a.as_str(), b.as_str())),
+            legacy_numeric_leases,
+        },
         runner,
         &mut setup,
         SyncMode::Clean,

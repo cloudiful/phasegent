@@ -230,7 +230,7 @@ fn taxi_list_and_acquire_reuse_identity_store_and_read_each_issue_once() {
         root.path(),
         || {
             providers.set(providers.get() + 1);
-            Ok((None, |issue| {
+            Ok((None, true, |issue| {
                 reads.borrow_mut().push(issue);
                 Ok(crate::providers::IssueSummary {
                     id: issue,
@@ -353,7 +353,10 @@ fn scope_sync_skips_mixed_candidates_before_provider_reads() {
             panic!("must not query provider")
         },
         None,
-        None,
+        super::engine::SyncProviderScope {
+            scope: None,
+            legacy_numeric_leases: true,
+        },
         &Runner,
         &mut setup,
         super::SyncMode::Clean,
@@ -438,7 +441,10 @@ fn scope_sync_processes_a_matching_provider_group_and_releases_its_exact_scope()
             })
         },
         None,
-        Some(("forgejo", "owner/repo")),
+        super::engine::SyncProviderScope {
+            scope: Some(("forgejo", "owner/repo")),
+            legacy_numeric_leases: false,
+        },
         &Runner,
         &mut setup,
         super::SyncMode::Clean,
@@ -506,7 +512,10 @@ fn scope_sync_keeps_a_group_when_the_provider_scope_differs() {
             panic!("must not query the provider for a foreign scope")
         },
         None,
-        Some(("forgejo", "owner/repo")),
+        super::engine::SyncProviderScope {
+            scope: Some(("forgejo", "owner/repo")),
+            legacy_numeric_leases: false,
+        },
         &Runner,
         &mut setup,
         super::SyncMode::Clean,
@@ -571,7 +580,10 @@ fn scope_sync_rechecks_new_scoped_rows_before_provider_read() {
             panic!("must not query provider")
         },
         None,
-        None,
+        super::engine::SyncProviderScope {
+            scope: None,
+            legacy_numeric_leases: true,
+        },
         &Runner,
         &mut setup,
         super::SyncMode::Report,
@@ -592,7 +604,10 @@ fn scope_sync_rechecks_new_scoped_rows_before_provider_read() {
             panic!("must not query provider")
         },
         None,
-        None,
+        super::engine::SyncProviderScope {
+            scope: None,
+            legacy_numeric_leases: true,
+        },
         &Runner,
         &mut setup,
         super::SyncMode::Report,
@@ -660,7 +675,8 @@ fn scope_sync_proves_directories_of_new_exact_scope_leases() {
                 &candidate,
                 &all,
                 &scopes,
-                Some(("forgejo", "owner/repo"))
+                Some(("forgejo", "owner/repo")),
+                false,
             ),
             super::engine::ScopedProcessing::Keep(_)
         ),
@@ -714,7 +730,8 @@ fn legacy_sync_is_not_blocked_by_scoped_lease_on_another_path() {
                 &candidate,
                 &rows,
                 &scopes,
-                None
+                None,
+                true,
             ),
             super::engine::ScopedProcessing::Unscoped
         ),
@@ -838,7 +855,8 @@ fn scoped_sync_keeps_same_number_legacy_history_on_another_path() {
                 &rows,
                 &rows,
                 &scopes,
-                Some(("forgejo", "owner/repo"))
+                Some(("forgejo", "owner/repo")),
+                false,
             ),
             super::engine::ScopedProcessing::Keep(_)
         ),
@@ -926,7 +944,7 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
         root.path(),
         || {
             std::fs::remove_dir(&candidate).unwrap();
-            Ok((None, |issue| {
+            Ok((None, true, |issue| {
                 reads.set(reads.get() + 1);
                 Ok(crate::providers::IssueSummary {
                     id: issue,
@@ -957,7 +975,7 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
         root.path(),
         || {
             resolutions.set(resolutions.get() + 1);
-            Ok((None, |_| unreachable!()))
+            Ok((None, true, |_| unreachable!()))
         },
     );
     assert_eq!(
@@ -1121,7 +1139,7 @@ fn a_same_number_task_is_not_legacy_ambiguity_for_its_own_group() {
     for group in &groups {
         assert!(
             matches!(
-                super::engine::scoped_processing(group, &rows, &rows, &scopes, None),
+                super::engine::scoped_processing(group, &rows, &rows, &scopes, None, true),
                 super::engine::ScopedProcessing::Provider
             ),
             "a same-number task on another path is not legacy ambiguity"
@@ -1186,7 +1204,7 @@ fn a_task_group_sharing_a_directory_with_a_legacy_row_keeps() {
     assert_eq!(groups.len(), 1);
     assert!(
         matches!(
-            super::engine::scoped_processing(&groups[0], &rows, &rows, &scopes, None),
+            super::engine::scoped_processing(&groups[0], &rows, &rows, &scopes, None, true),
             super::engine::ScopedProcessing::Keep(_)
         ),
         "a task lease sharing a directory with legacy ownership keeps"

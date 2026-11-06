@@ -14,10 +14,7 @@ impl IssueProvider for RedmineProvider {
     type Error = PhasegentError;
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            issue_lifecycle: true,
-            comments: true,
-        }
+        RedmineProvider::capabilities(self)
     }
 
     fn supports(&self, capability: Capability) -> bool {

@@ -446,11 +446,6 @@ pub(crate) fn provider_for(
             ProviderDispatcher::redmine(role, config)
         }
         ProviderKind::Forgejo => {
-            if provider_kind != Some(ProviderKind::Forgejo) {
-                return Err(PhasegentError::config(
-                    "Forgejo requires explicit --provider forgejo",
-                ));
-            }
             if project_id.is_some() || close_status_id.is_some() {
                 return Err(PhasegentError::config(
                     "Forgejo does not support --project-id or --close-status-id",
@@ -592,8 +587,18 @@ mod provider_selection_tests {
     use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     #[test]
-    fn provider_for_rejects_an_environment_forgejo_default_without_the_flag() {
+    fn an_environment_forgejo_default_is_admitted_through_the_common_path() {
         let _lock = lock_workflow_tests();
+        let directory = crate::test_scratch::root().join(format!(
+            "phasegent-provider-selection-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let database = directory.join(crate::infra::storage::DB_FILENAME);
+        let _database = EnvGuard::set("PHASEGENT_DB_PATH", database.to_string_lossy().as_ref());
         let _env = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
         let error = match provider_for(
             Role::Orchestrator,
@@ -603,16 +608,20 @@ mod provider_selection_tests {
             None,
             None,
         ) {
-            Ok(_) => panic!("an environment Forgejo default must not build a provider"),
+            Ok(_) => panic!("an empty store has no role credential to build the provider"),
             Err(error) => error,
         };
+        let message = error.json()["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         assert!(
-            error.json()["message"]
-                .as_str()
-                .unwrap()
-                .contains("requires explicit --provider forgejo"),
-            "got: {}",
-            error.json()
+            !message.contains("requires explicit --provider forgejo"),
+            "a configured Forgejo default is admitted: {message}"
+        );
+        assert!(
+            message.contains("credential") || message.contains("not configured"),
+            "the empty store fails on provenance, not admission: {message}"
         );
     }
 }

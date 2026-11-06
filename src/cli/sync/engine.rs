@@ -65,6 +65,14 @@ pub(crate) fn resolve_setup(
 /// the release, never from the scan snapshot, and the host memo lives for
 /// the whole pass so repeated scans across directories are served locally.
 ///
+/// The provider facts one sync pass carries: its resolved `(provider,
+/// project)` scope and whether the selection keeps legacy numeric leases.
+#[derive(Clone, Copy)]
+pub(crate) struct SyncProviderScope<'a> {
+    pub scope: Option<(&'a str, &'a str)>,
+    pub legacy_numeric_leases: bool,
+}
+
 /// Issue 1201 P3: a scoped group is reconciled through the provider only
 /// when the pass's own provider scope matches the lease scope exactly
 /// (provider and repository for Forgejo); mixed, foreign, or unproven
@@ -74,7 +82,7 @@ pub(crate) fn resolve_setup(
 pub(crate) fn run_sync_resolved(
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
     task_provider: Option<&dyn TaskProviderResolver>,
-    provider_scope: Option<(&str, &str)>,
+    provider: SyncProviderScope<'_>,
     runner: &dyn WorktreeRunner,
     setup: &mut SyncSetup,
     mode: SyncMode,
@@ -88,7 +96,8 @@ pub(crate) fn run_sync_resolved(
     run_sync_scopes(
         get_issue,
         task_provider,
-        provider_scope,
+        provider.scope,
+        provider.legacy_numeric_leases,
         runner,
         storage,
         scopes,
@@ -118,6 +127,7 @@ pub(super) fn run_sync_scopes(
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
     task_provider: Option<&dyn TaskProviderResolver>,
     provider_scope: Option<(&str, &str)>,
+    legacy_numeric_leases: bool,
     runner: &dyn WorktreeRunner,
     storage: &Storage,
     scopes: &[RepoScope],
@@ -145,7 +155,14 @@ pub(super) fn run_sync_scopes(
             // task and the legacy history are never merged, and two
             // same-number tasks on two instances never share a group.
             for group in lease_groups(issue, &fresh, &scope_map) {
-                match scoped_processing(&group, rows, &fresh, &scope_map, provider_scope) {
+                match scoped_processing(
+                    &group,
+                    rows,
+                    &fresh,
+                    &scope_map,
+                    provider_scope,
+                    legacy_numeric_leases,
+                ) {
                     ScopedProcessing::Unscoped => {}
                     ScopedProcessing::Keep(reason) => {
                         report.skipped_repos.push(super::SyncSkippedRepo {
@@ -220,8 +237,14 @@ pub(super) fn run_sync_scopes(
                             .map_err(|error| {
                                 PhasegentError::request("issue sync", error.message)
                             })?;
-                        match scoped_processing(&group, rows, &fresh, &fresh_scopes, provider_scope)
-                        {
+                        match scoped_processing(
+                            &group,
+                            rows,
+                            &fresh,
+                            &fresh_scopes,
+                            provider_scope,
+                            legacy_numeric_leases,
+                        ) {
                             ScopedProcessing::Provider => {}
                             ScopedProcessing::Keep(reason) => {
                                 report.skipped_repos.push(super::SyncSkippedRepo {
@@ -298,7 +321,8 @@ pub(super) fn run_sync_scopes(
                                     rows,
                                     &final_rows,
                                     &final_scopes,
-                                    provider_scope
+                                    provider_scope,
+                                    legacy_numeric_leases,
                                 ),
                                 ScopedProcessing::Provider
                             ) {
@@ -565,17 +589,18 @@ pub(super) fn scoped_processing(
     all: &[LeaseRow],
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
     provider_scope: Option<(&str, &str)>,
+    legacy_numeric_leases: bool,
 ) -> ScopedProcessing {
     let issue = group.issue;
     let Some(selected) = group.scope.as_ref() else {
         // The legacy group exists only when the number has no scoped row at
-        // all. An explicit Forgejo context must never infer ownership of
-        // purely unscoped legacy rows from the same number: keep before any
-        // provider read or lease change. Compatible legacy providers still
-        // reconcile.
-        if provider_scope.is_some_and(|(provider, _)| provider == "forgejo") {
+        // all. A provider without legacy numeric leases must never infer
+        // ownership of purely unscoped legacy rows from the same number: keep
+        // before any provider read or lease change. Legacy-capable providers
+        // still reconcile.
+        if !legacy_numeric_leases {
             return ScopedProcessing::Keep(format!(
-                "issue {issue}: explicit Forgejo does not own unscoped legacy history"
+                "issue {issue}: the selected provider does not own unscoped legacy history"
             ));
         }
         // A candidate with no scoped evidence follows the legacy path unless

@@ -152,6 +152,17 @@ pub(crate) fn execute_status_with_caller(
         None => None,
     };
     let is_routed = routed.is_some();
+    if !is_routed
+        && let Some(number) = match &command {
+            StatusCommand::Next { number }
+            | StatusCommand::Set { number, .. }
+            | StatusCommand::Advance { number, .. } => Some(*number),
+            StatusCommand::List => None,
+        }
+        && let Err(error) = super::scope_guard::preflight_issue_scope(role, &route_context, number)
+    {
+        return super::provider_error(error);
+    }
     let provider = match routed {
         Some(route) => route.provider,
         None => {
@@ -177,8 +188,7 @@ pub(crate) fn execute_status_with_caller(
         | StatusCommand::Set { number, .. }
         | StatusCommand::Advance { number, .. } => {
             if !is_routed
-                && let Err(error) =
-                    super::scope_guard::verify_status_scope(&provider, provider_kind, *number)
+                && let Err(error) = super::scope_guard::verify_status_scope(&provider, *number)
             {
                 return super::provider_error(error);
             }

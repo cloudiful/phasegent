@@ -191,6 +191,20 @@ pub(crate) fn execute_issue_with_caller(
             key.provider().to_owned(),
         )
     });
+    // Read-only preflight before any provider constructor: a conflicting
+    // binding refuses without touching the writable store, schema,
+    // migrations, credentials or the network.
+    if !is_routed
+        && let Some(number) = match &command {
+            IssueCommand::Update { number, .. }
+            | IssueCommand::Close { number, .. }
+            | IssueCommand::Get { number } => Some(*number),
+            _ => None,
+        }
+        && let Err(error) = super::scope_guard::preflight_issue_scope(role, &route_context, number)
+    {
+        return super::provider_error(error);
+    }
     let (provider, provider_kind, project_id, close_status_id) = if let Some(route) = routed {
         let key = route.binding.key();
         (
@@ -221,7 +235,10 @@ pub(crate) fn execute_issue_with_caller(
                 capability.operation(),
             ));
         }
-        let automatic_workflow = provider_kind == ProviderKind::Redmine
+        // Project discovery is a provider capability (Redmine), not a
+        // provider-kind admission rule.
+        let automatic_workflow = super::provider_context::capabilities_for(provider_kind)
+            .project_discovery
             && project_id.is_none()
             && matches!(&command, IssueCommand::Create { .. });
         let (project_id, close_status_id) = if automatic_workflow {
@@ -267,8 +284,7 @@ pub(crate) fn execute_issue_with_caller(
         | IssueCommand::Close { number, .. }
         | IssueCommand::Get { number } => {
             if !is_routed
-                && let Err(error) =
-                    super::scope_guard::verify_issue_scope(&provider, explicit_provider, *number)
+                && let Err(error) = super::scope_guard::verify_issue_scope(&provider, *number)
             {
                 return super::provider_error(error);
             }
@@ -707,11 +723,11 @@ pub(crate) fn execute_issue_with_caller(
                     // A routed close owns exactly its durable task's scope —
                     // provider, project, number, task id and stored instance —
                     // so a same-number task on another instance keeps its own
-                    // lease and directory. An explicit Forgejo close with no
-                    // durable route keeps the legacy `(forgejo, owner/repo,
-                    // number)` scope, and a legacy unbound Redmine/Local close
-                    // keeps its unscoped release, whose selector already
-                    // excludes every scoped row.
+                    // lease and directory. Without a durable route the exact
+                    // resolved provider scope owns its scoped rows, and a
+                    // legacy-capable provider (Redmine, Local) additionally
+                    // keeps its unscoped numeric compatibility pass, whose
+                    // selector already excludes every scoped row.
                     let exact_close_scope =
                         |provider: &crate::providers::ProviderDispatcher| -> Option<crate::worktree::LeaseScope> {
                             match &routed_task {
@@ -725,67 +741,74 @@ pub(crate) fn execute_issue_with_caller(
                                     )
                                     .ok()
                                 }
-                                None if provider_kind == ProviderKind::Forgejo => {
-                                    crate::providers::index_store::provider_scope(provider)
+                                None => crate::providers::index_store::provider_scope(provider)
+                                    .ok()
+                                    .and_then(|scope| {
+                                        crate::worktree::LeaseScope::new(
+                                            &scope.source,
+                                            &scope.project,
+                                            number,
+                                        )
                                         .ok()
-                                        .and_then(|scope| {
-                                            crate::worktree::LeaseScope::new(
-                                                &scope.source,
-                                                &scope.project,
-                                                number,
-                                            )
-                                            .ok()
-                                        })
-                                }
-                                None => None,
+                                    }),
                             }
                         };
-                    if provider_kind == ProviderKind::Forgejo || routed_task.is_some() {
-                        let exact_scope = exact_close_scope(&provider);
-                        match (
-                            exact_scope,
-                            crate::worktree::repo_identity(
-                                &crate::worktree::ProcessWorktreeRunner::new(),
-                                &repo_path,
-                            ),
-                        ) {
-                            (Some(scope), Ok(identity)) => {
-                                // The durable repository key is proven from the
-                                // repository's own checkout, outside every write
-                                // boundary, so the release can prove a task
-                                // lease's membership in this physical repository
-                                // before it flips a row.
-                                let repo_key =
-                                    crate::worktree::lease_scope::verified_repo_key_for_identity(
-                                        &identity,
-                                    );
-                                match crate::worktree::release_active_leases_for_scope(
+                    let legacy_numeric_leases =
+                        crate::providers::IssueProvider::capabilities(&provider)
+                            .legacy_numeric_leases;
+                    let scoped_release = exact_close_scope(&provider);
+                    match (
+                        scoped_release.as_ref(),
+                        crate::worktree::repo_identity(
+                            &crate::worktree::ProcessWorktreeRunner::new(),
+                            &repo_path,
+                        ),
+                    ) {
+                        (Some(scope), Ok(identity)) => {
+                            // The durable repository key is proven from the
+                            // repository's own checkout, outside every write
+                            // boundary, so the release can prove a task
+                            // lease's membership in this physical repository
+                            // before it flips a row.
+                            let repo_key =
+                                crate::worktree::lease_scope::verified_repo_key_for_identity(
                                     &identity,
-                                    repo_key.as_deref(),
-                                    &scope,
-                                    "issue closed",
-                                ) {
-                                    Ok(_) => {}
-                                    Err(error) => super::report_local_warnings(
-                                        "issue close",
-                                        Some(format!(
-                                            "issue {number} closed; scoped worktree lease \
-                                             release failed: {}",
-                                            crate::lifecycle::bounded(&error.message)
-                                        )),
-                                    ),
-                                }
+                                );
+                            match crate::worktree::release_active_leases_for_scope(
+                                &identity,
+                                repo_key.as_deref(),
+                                scope,
+                                "issue closed",
+                            ) {
+                                Ok(_) => {}
+                                Err(error) => super::report_local_warnings(
+                                    "issue close",
+                                    Some(format!(
+                                        "issue {number} closed; scoped worktree lease release failed: {}",
+                                        crate::lifecycle::bounded(&error.message)
+                                    )),
+                                ),
                             }
-                            _ => super::report_local_warnings(
-                                "issue close",
-                                Some(format!(
-                                    "issue {number} closed; scoped worktree lease release \
-                                     skipped because the exact provider scope or repository \
-                                     identity could not be resolved"
-                                )),
-                            ),
                         }
-                    } else {
+                        (Some(_), Err(_)) => super::report_local_warnings(
+                            "issue close",
+                            Some(format!(
+                                "issue {number} closed; scoped worktree lease release skipped because the repository identity could not be resolved"
+                            )),
+                        ),
+                        (None, _) if !legacy_numeric_leases => super::report_local_warnings(
+                            "issue close",
+                            Some(format!(
+                                "issue {number} closed; scoped worktree lease release skipped because the exact provider scope could not be resolved"
+                            )),
+                        ),
+                        (None, _) => {}
+                    }
+                    // The unscoped numeric pass is the compatibility path for a
+                    // legacy (non-routed) close only: a routed task close
+                    // releases exactly its own task scope and never a
+                    // same-number legacy row.
+                    if legacy_numeric_leases && routed_task.is_none() {
                         super::report_local_warnings(
                             "issue close",
                             crate::lifecycle::release_closed_issue_leases(
@@ -825,14 +848,15 @@ pub(crate) fn execute_issue_with_caller(
                     // task-aware closure: the closed issue's directories are
                     // filtered by that exact task, and every other associated
                     // number is resolved by durable membership only and read
-                    // through its own pinned task. An explicit Forgejo close
-                    // with no durable route keeps the single-scope closure.
-                    // Legacy closes keep the unscoped closure and keep every
-                    // scoped group.
-                    if provider_kind == ProviderKind::Forgejo || routed_task.is_some() {
-                        let exact_scope = exact_close_scope(&provider);
-                        let closure = match (&routed_task, exact_scope.as_ref()) {
-                            (Some(_), Some(_)) => Some(
+                    // through its own pinned task. A non-routed close with a
+                    // provable resolved scope keeps the single-scope closure.
+                    // A legacy-capable provider additionally runs its guarded
+                    // unscoped compatibility pass, because its history may
+                    // carry NULL scope that the scoped pass cannot prove; a
+                    // routed close never runs that pass and stays exact-only.
+                    if let Some(scope) = scoped_release.as_ref() {
+                        let closure = match &routed_task {
+                            Some(_) => {
                                 crate::cli::issue_closure::CurrentIssueClosure::new_task_aware(
                                     &repo_path,
                                     role,
@@ -843,44 +867,37 @@ pub(crate) fn execute_issue_with_caller(
                                         project_id.as_deref(),
                                         close_status_id.as_deref(),
                                     ),
-                                ),
-                            ),
-                            (None, Some(_)) => {
-                                Some(crate::cli::issue_closure::CurrentIssueClosure::new_scoped(
-                                    &repo_path,
-                                    role,
-                                    crate::cli::issue_closure::ExplicitSelection {
-                                        provider_kind,
-                                        api_base: api_base.map(str::to_owned),
-                                        repository: repository.map(str::to_owned),
-                                        project_id: project_id.clone(),
-                                        close_status_id: close_status_id.clone(),
-                                    },
-                                ))
-                            }
-                            _ => None,
-                        };
-                        let warnings = match (exact_scope.as_ref(), closure.as_ref()) {
-                            (Some(scope), Some(closure)) => {
-                                crate::lifecycle::cleanup_closed_issue_worktrees_scoped(
-                                    &crate::worktree::ProcessWorktreeRunner::new(),
-                                    &repo_path,
-                                    number,
-                                    release_session,
-                                    closure,
-                                    scope,
                                 )
-                                .warnings()
                             }
-                            _ => vec![format!(
-                                "issue {number} closed; scoped worktree cleanup skipped \
-                                 because the exact provider scope could not be resolved"
-                            )],
+                            None => crate::cli::issue_closure::CurrentIssueClosure::new_scoped(
+                                &repo_path,
+                                role,
+                                crate::cli::issue_closure::ExplicitSelection {
+                                    provider_kind,
+                                    api_base: api_base.map(str::to_owned),
+                                    repository: repository.map(str::to_owned),
+                                    project_id: project_id.clone(),
+                                    close_status_id: close_status_id.clone(),
+                                },
+                            ),
                         };
-                        for warning in warnings {
+                        for warning in crate::lifecycle::cleanup_closed_issue_worktrees_scoped(
+                            &crate::worktree::ProcessWorktreeRunner::new(),
+                            &repo_path,
+                            number,
+                            release_session,
+                            &closure,
+                            scope,
+                        )
+                        .warnings()
+                        {
                             super::report_local_warnings("issue close", Some(warning));
                         }
-                    } else {
+                    }
+                    // The guarded legacy pass only covers history without a
+                    // durable task; it never runs for a routed close, whose
+                    // exact scope is the whole ownership claim.
+                    if legacy_numeric_leases && routed_task.is_none() {
                         let closure = crate::cli::issue_closure::CurrentIssueClosure::new_context(
                             &repo_path,
                             role,
@@ -903,6 +920,14 @@ pub(crate) fn execute_issue_with_caller(
                         {
                             super::report_local_warnings("issue close", Some(warning));
                         }
+                    }
+                    if scoped_release.is_none() && !legacy_numeric_leases {
+                        super::report_local_warnings(
+                            "issue close",
+                            Some(format!(
+                                "issue {number} closed; scoped worktree cleanup skipped because the exact provider scope could not be resolved"
+                            )),
+                        );
                     }
                     // Restoration is best-effort after close and cleanup; its
                     // warnings never change the successful close result.
@@ -1036,6 +1061,19 @@ fn execute_issue_batch(
             },
         )
         .collect();
+    // Every unbound item is admitted read-only before the legacy provider is
+    // constructed; a refusal becomes that item's isolated error and never
+    // forces a writable store access for the batch.
+    let mut items = items;
+    for item in items.iter_mut() {
+        if item.error.is_none()
+            && item.route.is_none()
+            && let Err(error) =
+                super::scope_guard::preflight_issue_scope(role, context, item.number)
+        {
+            item.error = Some(error);
+        }
+    }
     let has_bound = items.iter().any(|item| item.route.is_some());
     let needs_legacy = items
         .iter()
@@ -1085,8 +1123,7 @@ fn execute_issue_batch(
             },
         };
         if item.route.is_none()
-            && let Err(error) =
-                super::scope_guard::verify_issue_scope(item_provider, context.provider, item.number)
+            && let Err(error) = super::scope_guard::verify_issue_scope(item_provider, item.number)
         {
             errors.push(serde_json::json!({"number": item.number, "error": error.json()}));
             continue;

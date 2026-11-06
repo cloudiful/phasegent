@@ -125,13 +125,17 @@ provider is not the default. Use `--project-id ID` to override project
 discovery when required; `--repository OWNER/REPOSITORY` names the Git host
 repository for `workflow bootstrap` and project discovery.
 
-Forgejo is never selected by a stored default. Use
+Forgejo is configured like any other provider: use
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT` to create
 an issue, to adopt an existing number with `issue bind`, or for any number that
 carries no durable task, and store the role token with `admin auth setup
---provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`.
-`INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the client
-appends that prefix itself. A number that already carries a durable Forgejo task
+--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`. A Forgejo
+default configured through the environment, TOML, the persisted machine-wide
+default or stored role configuration is selected by the shared precedence chain
+(which ends with the Redmine fallback), so it needs no explicit `--provider`; it
+uses only the attested `owner/repo` and never infers a repository from the Git
+origin. `INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the
+client appends that prefix itself. A number that already carries a durable Forgejo task
 routes to its stored instance and repository without repeating the flags. The
 operator provisions the token only. Forgejo uses repository-local issue numbers
 and keeps the native global id in results; it supports issues, comments,

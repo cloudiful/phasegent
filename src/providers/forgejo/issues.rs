@@ -99,13 +99,21 @@ impl ForgejoProvider {
     }
 }
 
+impl ForgejoProvider {
+    /// The provider's fixed capability facts, available without building a
+    /// credentialed provider so selection and lifecycle decisions stay local.
+    pub(crate) const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
+        issue_lifecycle: true,
+        comments: true,
+        project_discovery: false,
+        legacy_numeric_leases: false,
+    };
+}
+
 impl IssueProvider for ForgejoProvider {
     type Error = PhasegentError;
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            issue_lifecycle: true,
-            comments: true,
-        }
+        Self::CAPABILITIES
     }
     fn supports(&self, capability: Capability) -> bool {
         super::capabilities::supports(capability)

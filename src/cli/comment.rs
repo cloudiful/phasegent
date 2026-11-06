@@ -109,6 +109,11 @@ pub(crate) fn execute_comment_with_caller(
         .as_ref()
         .map(|route| route.binding.key().project().to_owned());
     let expected_project = routed_project.as_deref().or(project_id);
+    if !is_routed
+        && let Err(error) = super::scope_guard::preflight_issue_scope(role, &route_context, number)
+    {
+        return super::provider_error(error);
+    }
     let provider = match routed {
         Some(route) => route.provider,
         None => match super::provider_for(
@@ -133,9 +138,7 @@ pub(crate) fn execute_comment_with_caller(
     // binding is never addressed through an omitted or conflicting
     // provider. The read-only local check runs before any provider
     // request, and legacy non-repository checkouts are unaffected.
-    if !is_routed
-        && let Err(error) = super::scope_guard::verify_issue_scope(&provider, provider_kind, number)
-    {
+    if !is_routed && let Err(error) = super::scope_guard::verify_issue_scope(&provider, number) {
         return super::provider_error(error);
     }
     // Single-number scope guard (issue 394 P3 pre-write): comment outputs
