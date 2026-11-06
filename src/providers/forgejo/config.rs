@@ -1,15 +1,26 @@
+use crate::infra::storage::Storage;
+use crate::policy::Role;
 use crate::providers::api::PhasegentError;
+use crate::remote::OriginRepositoryEvidence;
 use url::Url;
 
 /// Validated Forgejo connection settings.
 ///
-/// `api_base` is the instance address without a `/api/v1` suffix; the HTTP
-/// client appends that prefix itself. `repository` is the managed
+/// `api_base` is the trusted instance address without a `/api/v1` suffix; the
+/// HTTP client appends that prefix itself. `repository` is the per-operation
 /// `owner/repo` scope and never a URL.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForgejoConfig {
     pub(super) api_base: String,
     pub(super) repository: String,
+}
+
+/// Where an implicit repository selection may come from: only outside Git is
+/// the stored repository a default; inside Git the current origin must attest
+/// the trusted instance or the selection refuses.
+enum RepositoryEvidence {
+    OutsideGit,
+    Origin(Result<OriginRepositoryEvidence, String>),
 }
 
 impl ForgejoConfig {
@@ -25,42 +36,77 @@ impl ForgejoConfig {
         })
     }
 
+    /// Resolve the trusted instance and the per-operation repository without
+    /// creating or migrating storage. The role row supplies the trusted
+    /// instance and the outside-Git repository default; the current origin is
+    /// evidence only and never selects the instance or the endpoint.
     pub fn resolve(
-        role: crate::policy::Role,
+        role: Role,
         api_base: Option<&str>,
         repository: Option<&str>,
     ) -> Result<Self, PhasegentError> {
-        if let (Some(base), Some(repo)) = (api_base, repository) {
-            return Self::new(base, repo);
+        let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
+        match storage.as_ref() {
+            Some(storage) => Self::resolve_with_storage(storage, role, api_base, repository),
+            None => Self::select(api_base, repository, None, repository_evidence(repository)?),
         }
-        let storage = crate::infra::storage::Storage::open().map_err(PhasegentError::config)?;
-        Self::resolve_with_storage(&storage, role, api_base, repository)
     }
 
+    /// The test-facing storage variant of [`Self::resolve`]: the same
+    /// instance/repository selection over a supplied store. Reads only.
     pub(super) fn resolve_with_storage(
-        storage: &crate::infra::storage::Storage,
-        role: crate::policy::Role,
+        storage: &Storage,
+        role: Role,
         api_base: Option<&str>,
         repository: Option<&str>,
     ) -> Result<Self, PhasegentError> {
-        let stored = storage
-            .load_forgejo_config(role)
-            .map_err(PhasegentError::config)?;
-        let base = api_base
-            .or_else(|| stored.as_ref().map(|config| config.api_base.as_str()))
-            .ok_or_else(|| {
-                PhasegentError::config(
-                    "Forgejo API base is not configured; provide --api-base or operator setup",
-                )
-            })?;
-        let repo = repository
-            .or_else(|| stored.as_ref().map(|config| config.repository.as_str()))
-            .ok_or_else(|| {
-                PhasegentError::config(
-                    "Forgejo repository is not configured; provide --repository or operator setup",
-                )
-            })?;
-        Self::new(base, repo)
+        let stored = stored_config(storage, role)?;
+        Self::select(
+            api_base,
+            repository,
+            stored,
+            repository_evidence(repository)?,
+        )
+    }
+
+    fn select(
+        api_base: Option<&str>,
+        repository: Option<&str>,
+        stored: Option<(String, String)>,
+        evidence: RepositoryEvidence,
+    ) -> Result<Self, PhasegentError> {
+        let Some((stored_api_base, stored_repository)) = stored else {
+            return Err(PhasegentError::config(
+                "Forgejo role configuration is not present; an operator must store the trusted \
+                 instance and credential with `admin auth setup`",
+            ));
+        };
+        let trusted = validate_api_base(&stored_api_base)?;
+        if let Some(selected) = api_base {
+            let selected = validate_api_base(selected)?;
+            if selected != trusted {
+                return Err(PhasegentError::config(
+                    "selected Forgejo endpoint does not match the configured role instance; \
+                     refusing to send the role credential",
+                ));
+            }
+        }
+        let repository = match repository {
+            Some(repository) => validate_repository(repository)?,
+            None => match evidence {
+                RepositoryEvidence::OutsideGit => validate_repository(&stored_repository)?,
+                RepositoryEvidence::Origin(Ok(origin)) => {
+                    attest_origin_repository(&trusted, &origin)?
+                }
+                RepositoryEvidence::Origin(Err(reason)) => {
+                    return Err(PhasegentError::config(format!(
+                        "cannot select a Forgejo repository from the current checkout: {reason}; \
+                         provide --repository to name the repository on the trusted instance"
+                    )));
+                }
+            },
+        };
+        Self::new(trusted, repository)
     }
 
     pub(crate) fn api_base(&self) -> &str {
@@ -83,6 +129,78 @@ impl ForgejoConfig {
             .map(|(_, repo)| repo)
             .expect("validated Forgejo repository always contains a separator")
     }
+}
+
+/// The role's stored trusted instance and repository, if the existing store
+/// already has the required table and columns. Missing or older schemas are
+/// absence, never an excuse to migrate during selection.
+fn stored_config(
+    storage: &Storage,
+    role: Role,
+) -> Result<Option<(String, String)>, PhasegentError> {
+    if !storage
+        .table_exists("role_forgejo_config")
+        .map_err(PhasegentError::config)?
+        || !storage
+            .table_has_column("role_forgejo_config", "api_base")
+            .map_err(PhasegentError::config)?
+        || !storage
+            .table_has_column("role_forgejo_config", "repository")
+            .map_err(PhasegentError::config)?
+    {
+        return Ok(None);
+    }
+    Ok(storage
+        .load_forgejo_config(role)
+        .map_err(PhasegentError::config)?
+        .map(|config| (config.api_base, config.repository)))
+}
+
+/// Origin evidence is needed only for an implicit repository selection. An
+/// explicit repository skips Git entirely; inside Git an implicit selection
+/// must prove a unique origin, and outside Git the stored default is used.
+fn repository_evidence(repository: Option<&str>) -> Result<RepositoryEvidence, PhasegentError> {
+    if repository.is_some() {
+        return Ok(RepositoryEvidence::OutsideGit);
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let inside_work_tree =
+        crate::worktree::is_inside_work_tree(&crate::worktree::ProcessWorktreeRunner::new(), &cwd)
+            .map_err(|error| PhasegentError::config(error.message))?;
+    if !inside_work_tree {
+        return Ok(RepositoryEvidence::OutsideGit);
+    }
+    Ok(RepositoryEvidence::Origin(
+        crate::remote::forgejo_origin_evidence(),
+    ))
+}
+
+/// The origin repository is usable only when its normalized host and
+/// deployment prefix equal the trusted instance's. Scheme and port never
+/// participate, and the endpoint is always the trusted instance.
+fn attest_origin_repository(
+    trusted_api_base: &str,
+    origin: &OriginRepositoryEvidence,
+) -> Result<String, PhasegentError> {
+    let trusted = Url::parse(trusted_api_base)
+        .map_err(|error| PhasegentError::config(format!("invalid Forgejo instance: {error}")))?;
+    let trusted_host = trusted.host_str().unwrap_or_default();
+    let trusted_prefix = trusted.path().trim_end_matches('/');
+    if !trusted_host.eq_ignore_ascii_case(&origin.host) {
+        return Err(PhasegentError::config(format!(
+            "origin host '{}' does not attest the configured Forgejo instance '{}'; \
+             provide --repository to select the repository on the trusted instance",
+            origin.host, trusted_host
+        )));
+    }
+    if trusted_prefix != origin.prefix {
+        return Err(PhasegentError::config(format!(
+            "origin deployment prefix '{}' does not attest the configured Forgejo instance \
+             prefix '{}'; provide --repository to select the repository on the trusted instance",
+            origin.prefix, trusted_prefix
+        )));
+    }
+    validate_repository(&origin.repository)
 }
 
 /// Validate an instance base URL: http(s), a host, no userinfo, no query, no

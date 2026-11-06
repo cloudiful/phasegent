@@ -133,11 +133,14 @@ carries no durable task, and store the role token with `admin auth setup
 default configured through the environment, TOML, the persisted machine-wide
 default or stored role configuration is selected by the shared precedence chain
 (which ends with the Redmine fallback), so it needs no explicit `--provider`; it
-uses only the attested `owner/repo` and never infers a repository from the Git
-origin. `INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the
-client appends that prefix itself. A number that already carries a durable Forgejo task
-routes to its stored instance and repository without repeating the flags. The
-operator provisions the token only. Forgejo uses repository-local issue numbers
+names the repository by explicit `--repository`, else the current checkout's
+origin when that attests the trusted instance, else the stored default outside
+Git. `INSTANCE_ROOT` is the trusted instance address without a `/api/v1` suffix;
+the client appends that prefix itself, and an explicit `--api-base` must
+normalize exactly to it. A number that already carries a durable Forgejo task
+routes to its stored instance and repository without repeating the flags, and a
+different explicit repository never repins it. The operator provisions the
+token only. Forgejo uses repository-local issue numbers
 and keeps the native global id in results; it supports issues, comments,
 records, repository reads, milestones as versions, the native `Open` and
 `Closed` issue states, and scoped branch links, worktree leases, cleanup, and

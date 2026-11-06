@@ -530,9 +530,9 @@ fn pinned_provider(
                 })?;
             let stored_instance =
                 normalize_instance(ProviderKind::Forgejo, &stored.api_base, &stored.repository)?;
-            if stored_instance != key.instance() || stored.repository != key.project() {
+            if stored_instance != key.instance() {
                 return Err(config_error(format!(
-                    "configured Forgejo endpoint/repository does not match the stored task instance; \
+                    "configured Forgejo endpoint does not match the stored task instance; \
                      refusing to send the role credential (task {}:{})",
                     key.instance(),
                     key.project()
@@ -698,10 +698,10 @@ pub(crate) fn preflight_explicit_issue(
             )?;
             let stored_instance =
                 normalize_instance(ProviderKind::Forgejo, &stored.api_base, &stored.repository)?;
-            if selected_instance != stored_instance || stored.repository != config.repository() {
+            if selected_instance != stored_instance {
                 return Err(config_error(
-                    "explicit Forgejo endpoint/repository does not match the configured role \
-                     credential; refusing to send it",
+                    "explicit Forgejo endpoint does not match the configured role instance; \
+                     refusing to send it",
                 ));
             }
             let token = storage

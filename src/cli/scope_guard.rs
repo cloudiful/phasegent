@@ -129,42 +129,17 @@ pub(crate) fn resolved_scope_read_only(
     context: &ProviderContext,
 ) -> Result<Option<(&'static str, String)>, PhasegentError> {
     let kind = crate::providers::config::resolve_kind(role, context.provider)?;
-    let Some(storage) = Storage::open_existing_read_only().map_err(PhasegentError::config)? else {
-        return Ok(None);
-    };
     match kind {
         ProviderKind::Forgejo => {
-            let stored = if storage
-                .table_exists("role_forgejo_config")
-                .map_err(PhasegentError::config)?
-                && storage
-                    .table_has_column("role_forgejo_config", "api_base")
-                    .map_err(PhasegentError::config)?
-                && storage
-                    .table_has_column("role_forgejo_config", "repository")
-                    .map_err(PhasegentError::config)?
-            {
-                storage
-                    .load_forgejo_config(role)
-                    .map_err(PhasegentError::config)?
-            } else {
-                None
-            };
-            let api_base = context
-                .api_base
-                .as_deref()
-                .or_else(|| stored.as_ref().map(|config| config.api_base.as_str()));
-            let repository = context
-                .repository
-                .as_deref()
-                .or_else(|| stored.as_ref().map(|config| config.repository.as_str()));
-            match (api_base, repository) {
-                (Some(api_base), Some(repository)) => {
-                    let config = ForgejoConfig::new(api_base, repository)?;
-                    Ok(Some(("forgejo", config.repository().to_owned())))
-                }
-                _ => Ok(None),
-            }
+            // The same selection helper the provider uses, so the preflight
+            // and the eventual construction can never disagree about the
+            // trusted instance or the per-operation repository.
+            let config = ForgejoConfig::resolve(
+                role,
+                context.api_base.as_deref(),
+                context.repository.as_deref(),
+            )?;
+            Ok(Some(("forgejo", config.repository().to_owned())))
         }
         ProviderKind::Redmine => Ok(context
             .project_id

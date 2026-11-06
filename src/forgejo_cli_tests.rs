@@ -21,6 +21,18 @@ use crate::worktree::{LeaseScope, ProcessWorktreeRunner, repo_identity};
 
 const REPO_JSON: &str = r#"{"id":17,"name":"repo","full_name":"owner/repo"}"#;
 
+/// A repository response whose `full_name` matches the per-operation scope, so
+/// a multi-repository test never trips the response/scope consistency check.
+fn repo_json(full_name: &str) -> String {
+    let name = full_name.rsplit('/').next().unwrap_or(full_name);
+    format!(r#"{{"id":17,"name":"{name}","full_name":"{full_name}"}}"#)
+}
+
+/// The placeholder trusted instance seeded by [`Fixture::attested_storage`].
+/// Each fixture mock replaces it with its own loopback base, so the test still
+/// exercises the real stored-instance trust check and never a bypass.
+const FIXTURE_UNATTESTED_INSTANCE: &str = "https://fixture.invalid";
+
 fn issue_json(number: u64, state: &str, labels: &str) -> String {
     format!(
         r#"{{"id":{},"number":{number},"title":"fixture","body":"fixture","state":"{state}","html_url":"https://example.test/owner/repo/issues/{number}","labels":{labels}}}"#,
@@ -43,11 +55,13 @@ impl Mock {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let serve_base = base.clone();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done = stop.clone();
         let task = thread::spawn(move || {
             let mut requests = Vec::new();
             for (status, body) in responses {
+                let body = body.replace("__BASE__", &serve_base);
                 let mut served = false;
                 while !served {
                     if done.load(std::sync::atomic::Ordering::SeqCst) {
@@ -364,6 +378,42 @@ fn init_repo(dir: &Path) {
         .expect("git commit");
 }
 
+/// Add exactly one origin remote with an arbitrary supported transport so the
+/// origin-attestation rules can be exercised without a second HTTP server.
+fn set_origin_url(dir: &Path, url: &str) {
+    use crate::git_runner::GitRunner;
+    crate::git_runner::ProcessGitRunner::in_directory(dir)
+        .run(&["remote", "add", "origin", url])
+        .unwrap();
+}
+
+/// A second physical checkout sharing the fixture store, initialized like the
+/// fixture repository but with no origin unless one is supplied.
+fn checkout(label: &str, origin: Option<&str>) -> TempDir {
+    let directory = TempDir::new(label);
+    init_repo(directory.path());
+    if let Some(origin) = origin {
+        set_origin_url(directory.path(), origin);
+    }
+    directory
+}
+
+/// Resolve a checkout's repository key the same way production routing does.
+fn repo_key_at(dir: &Path) -> String {
+    use crate::git_runner::ProcessGitRunner;
+    let runner = ProcessGitRunner::in_directory(dir);
+    crate::branch_links::resolve_repo_key(None, &crate::branch_links::checkout_root(&runner))
+        .unwrap()
+        .key
+}
+
+/// The origin-derived key production uses for a checkout that has an origin.
+fn checkout_repo_key(dir: &Path) -> String {
+    use crate::git_runner::ProcessGitRunner;
+    let runner = ProcessGitRunner::in_directory(dir);
+    crate::branch_links::resolve_checkout_repo_key(&runner).unwrap()
+}
+
 /// One isolated fixture. Fields drop in declaration order, so the environment
 /// guards restore the process state before the temporary directories are
 /// removed: a test that reads the process-wide store without holding the
@@ -422,8 +472,86 @@ impl Fixture {
         storage
     }
 
+    /// A store whose orchestrator role trusts the fixture mock instance. The
+    /// placeholder is replaced by the first mock started for this fixture; the
+    /// real CLI still resolves the exact stored instance and repository.
+    fn attested_storage(&self) -> Storage {
+        let storage = self.storage();
+        storage
+            .save_forgejo_auth(
+                Role::Orchestrator,
+                FIXTURE_UNATTESTED_INSTANCE,
+                "owner/repo",
+                "fixture-token",
+            )
+            .unwrap();
+        storage
+    }
+
+    /// Replace this fixture's own placeholder trusted instance with the mock
+    /// endpoint. Only this fixture's exact store is opened; a token-only or
+    /// explicitly configured store is never rewritten.
+    fn attest_endpoint(&self, base: &str) {
+        let storage = Storage::open_at(&self.db.path().join("leases.sqlite3")).unwrap();
+        let Some(config) = storage.load_forgejo_config(Role::Orchestrator).unwrap() else {
+            return;
+        };
+        if config.api_base != FIXTURE_UNATTESTED_INSTANCE {
+            return;
+        }
+        storage
+            .save_forgejo_auth(
+                Role::Orchestrator,
+                base,
+                &config.repository,
+                "fixture-token",
+            )
+            .unwrap();
+    }
+
+    fn mock(&self, responses: Vec<String>) -> Mock {
+        let mock = Mock::start(responses);
+        self.attest_endpoint(&mock.base);
+        mock
+    }
+
+    fn mock_status(&self, responses: Vec<(u16, String)>) -> Mock {
+        let mock = Mock::start_status(responses);
+        self.attest_endpoint(&mock.base);
+        mock
+    }
+
+    fn zero_mock(&self) -> ZeroMock {
+        let mock = ZeroMock::start();
+        self.attest_endpoint(&mock.base);
+        mock
+    }
+
+    fn mid_pass_lease_mock(
+        &self,
+        identity: String,
+        worktree: PathBuf,
+        branch: String,
+    ) -> MidPassLeaseMock {
+        let mock = MidPassLeaseMock::start(
+            self.db.path().join("leases.sqlite3"),
+            identity,
+            worktree,
+            branch,
+        );
+        self.attest_endpoint(&mock.base);
+        mock
+    }
+
     fn identity(&self) -> String {
         repo_identity(&ProcessWorktreeRunner::new(), self.repo.path()).unwrap()
+    }
+
+    /// Give the fixture checkout an origin that attests the mock instance and
+    /// names the repository, so implicit per-operation selection can be tested.
+    fn set_origin(&self, base: &str, repository: &str) {
+        let host = base.strip_prefix("http://").unwrap_or(base);
+        set_origin_url(self.repo.path(), &format!("http://{host}/{repository}"));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -472,7 +600,7 @@ impl Fixture {
     fn link(&self, number: u64, project: &str) {
         use crate::branch_links::{IssueKey, LinkParams, link};
         use crate::git_runner::ProcessGitRunner;
-        let storage = Storage::open().unwrap();
+        let storage = Storage::open_at(&self.db.path().join("leases.sqlite3")).unwrap();
         crate::branch_links::ensure_schema(&storage.connection).unwrap();
         let runner = ProcessGitRunner::in_directory(self.repo.path());
         let branch = crate::git_runner::current_branch(&runner).unwrap();
@@ -527,8 +655,8 @@ impl Drop for UnsetEnv {
 #[test]
 fn acquire_rejects_incompatible_forgejo_project_before_lease_write() {
     let fixture = Fixture::new("acquire-incompatible-review");
-    let storage = fixture.storage();
-    let mock = ZeroMock::start();
+    let storage = fixture.attested_storage();
+    let mock = fixture.zero_mock();
     let args: Vec<String> = [
         "--provider",
         "forgejo",
@@ -562,7 +690,7 @@ fn acquire_rejects_incompatible_forgejo_project_before_lease_write() {
 #[test]
 fn acquire_under_an_implicit_forgejo_default_books_the_scoped_lease() {
     let fixture = Fixture::new("acquire-implicit-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = ZeroMock::start();
     storage
         .save_forgejo_auth(
@@ -572,6 +700,7 @@ fn acquire_under_an_implicit_forgejo_default_books_the_scoped_lease() {
             "fixture-token",
         )
         .unwrap();
+    fixture.set_origin(&mock.base, "owner/repo");
     let _default = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
     let args: Vec<String> = [
         "worktree",
@@ -678,7 +807,7 @@ fn stored_forgejo_default_without_owned_config_keeps_legacy_history() {
 #[test]
 fn forgejo_close_override_is_rejected_before_existing_taxi_candidate() {
     let fixture = Fixture::new("close-override-taxi-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = ZeroMock::start();
     storage
         .save_forgejo_auth(
@@ -726,7 +855,7 @@ fn forgejo_close_override_is_rejected_before_existing_taxi_candidate() {
 #[test]
 fn forgejo_prune_keeps_absent_unscoped_history() {
     let fixture = Fixture::new("absent-unscoped-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let directory = fixture.repo.path().join("missing-worktree");
     fixture.lease(
         &storage,
@@ -737,7 +866,7 @@ fn forgejo_prune_keeps_absent_unscoped_history() {
         "retained",
         None,
     );
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -808,7 +937,7 @@ fn explicit_legacy_acquire_overrides_stored_forgejo_default_without_auth() {
 fn implicit_forgejo_defaults_reject_acquire_before_existing_taxi_candidate() {
     for default in ["env", "stored"] {
         let fixture = Fixture::new(&format!("implicit-taxi-{default}-review"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
         let _default = if default == "env" {
             Some(EnvGuard::set("PHASEGENT_PROVIDER", "forgejo"))
@@ -829,7 +958,7 @@ fn implicit_forgejo_defaults_reject_acquire_before_existing_taxi_candidate() {
             None,
         );
         let before = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-        let mock = ZeroMock::start();
+        let mock = fixture.zero_mock();
         let args: Vec<String> = [
             "worktree",
             "acquire",
@@ -857,7 +986,7 @@ fn implicit_forgejo_defaults_reject_acquire_before_existing_taxi_candidate() {
 #[test]
 fn legacy_closes_recheck_other_issue_before_removing_shared_directory() {
     let fixture = Fixture::new("legacy-close-sequential-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let local_path = fixture.db.path().join("explicit-local.sqlite3");
     let local = crate::infra::local_store::open_local_at(&local_path).unwrap();
     for id in [7, 9] {
@@ -1043,7 +1172,7 @@ fn forgejo_prune_without_credential_keeps_absent_legacy_history() {
 #[test]
 fn forgejo_prune_keeps_same_number_legacy_on_another_path() {
     let fixture = Fixture::new("prune-same-number-other-path-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let scoped = scoped_lease(&fixture, &storage, 7, "retained");
     let legacy = fixture.worktree("phasegent/7-legacy-other");
     fixture.lease(
@@ -1056,7 +1185,7 @@ fn forgejo_prune_keeps_same_number_legacy_on_another_path() {
         None,
     );
     let (_stub, _path) = opencode_stub();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -1088,7 +1217,7 @@ fn forgejo_prune_keeps_same_number_legacy_on_another_path() {
 #[test]
 fn sync_keeps_when_same_number_legacy_arrives_on_another_path_after_proof() {
     let fixture = Fixture::new("sync-other-path-post-proof-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let scoped = scoped_lease(&fixture, &storage, 7, "active");
     let legacy = fixture.worktree("phasegent/7-legacy-late");
@@ -1112,7 +1241,7 @@ fn sync_keeps_when_same_number_legacy_arrives_on_another_path_after_proof() {
         )
         .unwrap();
     }));
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
     let args: Vec<String> = [
         "--provider",
         "forgejo",
@@ -1238,7 +1367,7 @@ fn prune_absent_scoped_lease_keeps_when_same_number_arrives_during_scan() {
         }
     }
     let fixture = Fixture::new("prune-absent-scope-race-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let missing = fixture.repo.path().join("a-missing");
     let seven = LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
     fixture.lease(
@@ -1358,7 +1487,7 @@ fn unreadable_existing_store_fails_closed_during_admission() {
 #[test]
 fn absent_release_keeps_when_different_issue_legacy_joins_same_path() {
     let fixture = Fixture::new("absent-mixed-arrival-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let path = fixture.repo.path().join("missing-worktree");
     let scope = LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
     fixture.lease(
@@ -1414,8 +1543,8 @@ fn absent_release_keeps_when_different_issue_legacy_joins_same_path() {
 #[test]
 fn forgejo_create_records_only_a_scoped_lease() {
     let fixture = Fixture::new("create");
-    let storage = fixture.storage();
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let storage = fixture.attested_storage();
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -1483,7 +1612,7 @@ fn forgejo_close_keeps_active_lease_with_mismatched_sidecar_number() {
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
     );
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let scope = LeaseScope::new("forgejo", "owner/repo", 8).unwrap();
     let directory = fixture.worktree("phasegent/8-corrupt");
     fixture.lease(
@@ -1502,7 +1631,7 @@ fn forgejo_close_keeps_active_lease_with_mismatched_sidecar_number() {
             [],
         )
         .unwrap();
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "open", "[]"),
         "[]".to_owned(),
@@ -1608,7 +1737,7 @@ fn forgejo_close_aborts_all_scope_release_on_corrupt_map_and_closes_normally() {
         "PHASEGENT_CONFIG_PATH",
         corrupt.db.path().join("missing.toml").to_str().unwrap(),
     );
-    let storage = corrupt.storage();
+    let storage = corrupt.attested_storage();
     let valid_dir = corrupt.worktree("phasegent/7-valid");
     let invalid_dir = corrupt.worktree("phasegent/8-invalid");
     corrupt.lease(
@@ -1644,7 +1773,7 @@ fn forgejo_close_aborts_all_scope_release_on_corrupt_map_and_closes_normally() {
             .collect::<Vec<_>>()
     };
     let full_before = lease_snapshot(&storage);
-    let mock = Mock::start(responses());
+    let mock = corrupt.mock(responses());
     let exit = run_as(corrupt.repo.path(), "orchestrator", &close_args(&mock.base));
     let _requests = mock.finish();
     assert_eq!(exit, 0, "the corrupt-map close still completes remotely");
@@ -1667,7 +1796,7 @@ fn forgejo_close_aborts_all_scope_release_on_corrupt_map_and_closes_normally() {
         "PHASEGENT_CONFIG_PATH",
         normal.db.path().join("missing.toml").to_str().unwrap(),
     );
-    let storage = normal.storage();
+    let storage = normal.attested_storage();
     let directory = normal.worktree("phasegent/7-normal");
     normal.lease(
         &storage,
@@ -1679,7 +1808,7 @@ fn forgejo_close_aborts_all_scope_release_on_corrupt_map_and_closes_normally() {
         Some(&LeaseScope::new("forgejo", "owner/repo", 7).unwrap()),
     );
     let before = snapshot(&storage, &normal.identity());
-    let mock = Mock::start(responses());
+    let mock = normal.mock(responses());
     let exit = run_as(normal.repo.path(), "orchestrator", &close_args(&mock.base));
     let _requests = mock.finish();
     assert_eq!(exit, 0, "a valid exact-scope close succeeds");
@@ -1707,7 +1836,7 @@ fn forgejo_close_aborts_all_scope_release_on_corrupt_map_and_closes_normally() {
 #[test]
 fn forgejo_close_releases_only_its_exact_scope() {
     let fixture = Fixture::new("close");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let scoped_seven = LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
     let scoped_eight = LeaseScope::new("forgejo", "owner/repo", 8).unwrap();
     let legacy_dir = fixture.worktree("phasegent/7-legacy");
@@ -1744,7 +1873,7 @@ fn forgejo_close_releases_only_its_exact_scope() {
         None,
     );
 
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "open", "[]"),
         "[]".to_owned(),
@@ -2068,9 +2197,9 @@ fn assert_rejected(repo: &Path, role: &str, args: &[String], mock: ZeroMock) {
 #[test]
 fn forgejo_env_default_without_the_flag_reads_the_issue() {
     let fixture = Fixture::new("env-default");
-    fixture.storage();
+    fixture.attested_storage();
     let _env = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--api-base",
@@ -2097,12 +2226,12 @@ fn forgejo_env_default_without_the_flag_reads_the_issue() {
 #[test]
 fn forgejo_stored_default_without_the_flag_reads_the_issue() {
     let fixture = Fixture::new("stored-default");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
         .unwrap();
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--api-base",
@@ -2163,9 +2292,9 @@ fn get_batch_rejects_a_forgejo_bound_number_before_http() {
 #[test]
 fn matching_explicit_provider_updates_a_forgejo_bound_number() {
     let fixture = Fixture::new("matching");
-    fixture.storage();
+    fixture.attested_storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "open", "[]"),
         issue_json(7, "open", "[]"),
@@ -2202,9 +2331,9 @@ fn matching_explicit_provider_updates_a_forgejo_bound_number() {
 #[test]
 fn conflicting_repository_is_rejected_before_http() {
     let fixture = Fixture::new("conflict");
-    fixture.storage();
+    fixture.attested_storage();
     fixture.link(7, "owner/repo");
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2226,7 +2355,7 @@ fn conflicting_repository_is_rejected_before_http() {
 #[test]
 fn record_create_rejects_an_omitted_provider_on_a_forgejo_bound_number() {
     let fixture = Fixture::new("record-omitted");
-    fixture.storage();
+    fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let _env = EnvGuard::set("PHASEGENT_PROVIDER", "local");
     let args: Vec<String> = [
@@ -2248,7 +2377,7 @@ fn record_create_rejects_an_omitted_provider_on_a_forgejo_bound_number() {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    assert_rejected(fixture.repo.path(), "executor", &args, ZeroMock::start());
+    assert_rejected(fixture.repo.path(), "executor", &args, fixture.zero_mock());
 }
 
 /// The responses one native status transition produces: the repository,
@@ -2267,8 +2396,8 @@ fn status_transition_responses(current_state: &str, target_state: &str) -> Vec<S
 #[test]
 fn forgejo_status_list_matrix() {
     let fixture = Fixture::new("status-list");
-    fixture.storage();
-    let mock = ZeroMock::start();
+    fixture.attested_storage();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -2301,8 +2430,8 @@ fn forgejo_status_list_matrix() {
 #[test]
 fn forgejo_status_set_refuses_an_unsupported_target_before_http() {
     let fixture = Fixture::new("status-set-invalid");
-    fixture.storage();
-    let mock = ZeroMock::start();
+    fixture.attested_storage();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -2339,9 +2468,9 @@ fn forgejo_status_set_refuses_an_unsupported_target_before_http() {
 #[test]
 fn forgejo_status_next_matrix() {
     let fixture = Fixture::new("status-next");
-    fixture.storage();
+    fixture.attested_storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2374,9 +2503,9 @@ fn forgejo_status_next_matrix() {
 #[test]
 fn forgejo_status_set_matrix() {
     let fixture = Fixture::new("status-set");
-    fixture.storage();
+    fixture.attested_storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(status_transition_responses("open", "closed"));
+    let mock = fixture.mock(status_transition_responses("open", "closed"));
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2420,9 +2549,9 @@ fn forgejo_status_set_matrix() {
 #[test]
 fn forgejo_status_advance_matrix() {
     let fixture = Fixture::new("status-advance");
-    fixture.storage();
+    fixture.attested_storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(status_transition_responses("closed", "open"));
+    let mock = fixture.mock(status_transition_responses("closed", "open"));
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2464,7 +2593,7 @@ fn forgejo_status_advance_matrix() {
 #[test]
 fn same_repository_multi_issue_history_cleans_up_once_all_are_closed() {
     let fixture = Fixture::new("shared-directory");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     fixture.link(8, "owner/repo");
     let seven = LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
@@ -2489,7 +2618,7 @@ fn same_repository_multi_issue_history_cleans_up_once_all_are_closed() {
         Some(&eight),
     );
 
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(8, "open", "[]"),
         "[]".to_owned(),
@@ -2659,7 +2788,7 @@ fn scoped_lease(fixture: &Fixture, storage: &Storage, issue: u64, status: &str) 
 #[test]
 fn scoped_sync_mixed_directory_keeps_active_lease() {
     let fixture = Fixture::new("sync-mixed-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(8, "owner/repo");
     let directory = fixture.worktree("phasegent/8-mixed");
     fixture.lease(
@@ -2681,7 +2810,7 @@ fn scoped_sync_mixed_directory_keeps_active_lease() {
         "active",
         Some(&scope),
     );
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2718,10 +2847,10 @@ fn scoped_sync_mixed_directory_keeps_active_lease() {
 #[test]
 fn scoped_sync_no_clean_reports_without_releasing_or_removing() {
     let fixture = Fixture::new("sync-report");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2762,10 +2891,10 @@ fn scoped_sync_no_clean_reports_without_releasing_or_removing() {
 #[test]
 fn scoped_sync_open_issue_leaves_the_lease_active() {
     let fixture = Fixture::new("sync-open");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2797,7 +2926,7 @@ fn scoped_sync_open_issue_leaves_the_lease_active() {
 #[test]
 fn explicit_forgejo_sync_does_not_reconcile_unscoped_legacy_issue() {
     let fixture = Fixture::new("sync-legacy-isolation-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let directory = fixture.worktree("phasegent/7-legacy-review");
     fixture.lease(
         &storage,
@@ -2808,7 +2937,7 @@ fn explicit_forgejo_sync_does_not_reconcile_unscoped_legacy_issue() {
         "active",
         None,
     );
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let args: Vec<String> = [
         "--provider",
         "forgejo",
@@ -2836,10 +2965,10 @@ fn explicit_forgejo_sync_does_not_reconcile_unscoped_legacy_issue() {
 #[test]
 fn scoped_sync_provider_error_leaves_the_lease_active() {
     let fixture = Fixture::new("sync-error");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2872,10 +3001,10 @@ fn scoped_sync_provider_error_leaves_the_lease_active() {
 #[test]
 fn scoped_sync_closed_matching_issue_cleans_up() {
     let fixture = Fixture::new("sync-clean");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2933,7 +3062,7 @@ fn opencode_stub() -> (PathBuf, EnvGuard) {
 #[test]
 fn implicit_forgejo_prune_does_not_recover_legacy_lease() {
     let fixture = Fixture::new("prune-implicit-recovery-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let directory = fixture.worktree("phasegent/7-legacy-stale");
     fixture.lease(
         &storage,
@@ -2994,7 +3123,7 @@ fn implicit_forgejo_prune_does_not_recover_legacy_lease() {
 #[test]
 fn explicit_forgejo_prune_does_not_remove_unscoped_legacy_issue() {
     let fixture = Fixture::new("prune-legacy-isolation-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let directory = fixture.worktree("phasegent/7-legacy-prune");
     fixture.lease(
         &storage,
@@ -3006,7 +3135,7 @@ fn explicit_forgejo_prune_does_not_remove_unscoped_legacy_issue() {
         None,
     );
     let (_stub, _path) = opencode_stub();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -3040,11 +3169,11 @@ fn explicit_forgejo_prune_does_not_remove_unscoped_legacy_issue() {
 #[test]
 fn production_prune_with_explicit_forgejo_context_cleans_the_scoped_worktree() {
     let fixture = Fixture::new("prune-explicit");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "closed", "[]"),
         issue_json(7, "closed", "[]"),
@@ -3090,11 +3219,11 @@ fn production_prune_foreign_and_default_contexts_keep_the_scoped_worktree() {
         ("default", vec![]),
     ] {
         let fixture = Fixture::new(&format!("prune-{label}"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         fixture.link(7, "owner/repo");
         let directory = scoped_lease(&fixture, &storage, 7, "retained");
         let (_stub, _path) = opencode_stub();
-        let mock = ZeroMock::start();
+        let mock = fixture.zero_mock();
         let base = mock.base.clone();
         let repo = fixture.repo.path().to_string_lossy().to_string();
         let mut args: Vec<String> = extra.iter().map(|value| (*value).to_owned()).collect();
@@ -3124,7 +3253,7 @@ fn production_prune_foreign_and_default_contexts_keep_the_scoped_worktree() {
 #[test]
 fn production_prune_explicit_local_never_uses_forgejo_default() {
     let fixture = Fixture::new("prune-local-fg-default-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
@@ -3169,11 +3298,11 @@ fn production_prune_explicit_local_never_uses_forgejo_default() {
 #[test]
 fn production_prune_rejects_incompatible_forgejo_project_override() {
     let fixture = Fixture::new("prune-fg-project-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
@@ -3212,7 +3341,7 @@ fn production_prune_rejects_incompatible_forgejo_project_override() {
 #[test]
 fn production_prune_stale_recovery_uses_owned_forgejo_repository() {
     let fixture = Fixture::new("prune-owned-repo-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
     storage
@@ -3232,6 +3361,7 @@ fn production_prune_stale_recovery_uses_owned_forgejo_repository() {
             "fixture-token",
         )
         .unwrap();
+    fixture.set_origin(&mock.base, "owner/repo");
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -3272,7 +3402,7 @@ fn production_prune_stale_recovery_uses_owned_forgejo_repository() {
 #[test]
 fn production_sync_uses_the_implicit_forgejo_default() {
     let fixture = Fixture::new("sync-fg-default-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
@@ -3284,6 +3414,7 @@ fn production_sync_uses_the_implicit_forgejo_default() {
             "fixture-token",
         )
         .unwrap();
+    fixture.set_origin(&mock.base, "owner/repo");
     let _default = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
     let args: Vec<String> = ["issue", "sync"].into_iter().map(str::to_owned).collect();
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
@@ -3311,10 +3442,10 @@ fn production_sync_uses_the_implicit_forgejo_default() {
 #[test]
 fn scoped_sync_not_found_leaves_the_lease_active() {
     let fixture = Fixture::new("sync-notfound");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
-    let mock = Mock::start_status(vec![
+    let mock = fixture.mock_status(vec![
         (200, REPO_JSON.to_owned()),
         (404, r#"{"message":"not found"}"#.to_owned()),
     ]);
@@ -3352,7 +3483,7 @@ fn scoped_sync_not_found_leaves_the_lease_active() {
 #[test]
 fn scoped_sync_multiissue_all_closed_cleans_shared_directory() {
     let fixture = Fixture::new("sync-shared-closed");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     fixture.link(8, "owner/repo");
     let directory = fixture.worktree("phasegent/8-shared-sync");
@@ -3376,7 +3507,7 @@ fn scoped_sync_multiissue_all_closed_cleans_shared_directory() {
         "active",
         Some(&eight),
     );
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "closed", "[]"),
         issue_json(8, "closed", "[]"),
@@ -3418,7 +3549,7 @@ fn scoped_sync_multiissue_all_closed_cleans_shared_directory() {
 #[test]
 fn scoped_sync_multiissue_open_keeps_shared_directory() {
     let fixture = Fixture::new("sync-shared-open");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     fixture.link(8, "owner/repo");
     let directory = fixture.worktree("phasegent/8-shared-open");
@@ -3442,7 +3573,7 @@ fn scoped_sync_multiissue_open_keeps_shared_directory() {
         "active",
         Some(&eight),
     );
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "closed", "[]"),
         issue_json(8, "open", "[]"),
@@ -3483,7 +3614,7 @@ fn scoped_sync_multiissue_open_keeps_shared_directory() {
 fn production_prune_corrupt_scope_map_skips_before_recovery() {
     for (label, dry_run) in [("preview", true), ("release-stale", false)] {
         let fixture = Fixture::new(&format!("prune-corrupt-{label}"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         fixture.link(7, "owner/repo");
         let directory = scoped_lease(&fixture, &storage, 7, "active");
         storage
@@ -3501,7 +3632,7 @@ fn production_prune_corrupt_scope_map_skips_before_recovery() {
             )
             .unwrap();
         let (_stub, _path) = opencode_stub();
-        let mock = ZeroMock::start();
+        let mock = fixture.zero_mock();
         let base = mock.base.clone();
         let repo = fixture.repo.path().to_string_lossy().to_string();
         let mut args: Vec<String> = [
@@ -3648,12 +3779,11 @@ impl MidPassLeaseMock {
 #[test]
 fn production_prune_mid_pass_mixed_legacy_arrival_keeps() {
     let fixture = Fixture::new("prune-midpass-mixed");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = MidPassLeaseMock::start(
-        fixture.db.path().join("leases.sqlite3"),
+    let mock = fixture.mid_pass_lease_mock(
         fixture.identity(),
         directory.clone(),
         "phasegent/7-sync".to_owned(),
@@ -3711,7 +3841,7 @@ fn production_prune_mid_pass_mixed_legacy_arrival_keeps() {
 #[test]
 fn scoped_sync_other_issue_not_found_keeps_current_active() {
     let fixture = Fixture::new("sync-other-notfound");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     fixture.link(8, "owner/repo");
     let directory = fixture.worktree("phasegent/7-other-notfound");
@@ -3735,7 +3865,7 @@ fn scoped_sync_other_issue_not_found_keeps_current_active() {
         "retained",
         Some(&eight),
     );
-    let mock = Mock::start_status(vec![
+    let mock = fixture.mock_status(vec![
         (200, REPO_JSON.to_owned()),
         (200, issue_json(7, "closed", "[]")),
         (404, r#"{"message":"not found"}"#.to_owned()),
@@ -3775,7 +3905,7 @@ fn scoped_sync_other_issue_not_found_keeps_current_active() {
 #[test]
 fn scoped_sync_other_issue_error_keeps_current_active() {
     let fixture = Fixture::new("sync-other-error");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     fixture.link(8, "owner/repo");
     let directory = fixture.worktree("phasegent/7-other-error");
@@ -3799,7 +3929,7 @@ fn scoped_sync_other_issue_error_keeps_current_active() {
         "retained",
         Some(&eight),
     );
-    let mock = Mock::start_status(vec![
+    let mock = fixture.mock_status(vec![
         (200, REPO_JSON.to_owned()),
         (200, issue_json(7, "closed", "[]")),
         (500, r#"{"message":"server error"}"#.to_owned()),
@@ -3947,7 +4077,7 @@ impl MidPassScopedMock {
 #[test]
 fn scoped_sync_late_same_issue_lease_in_second_mixed_directory_stays_active() {
     let fixture = Fixture::new("sync-late-second-mixed");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let first = scoped_lease(&fixture, &storage, 7, "active");
     let second = fixture.worktree("phasegent/7-late-mixed");
@@ -3968,6 +4098,9 @@ fn scoped_sync_late_same_issue_lease_in_second_mixed_directory_stays_active() {
         "phasegent/7-late-mixed".to_owned(),
     );
     let base = mock.base.clone();
+    storage
+        .save_forgejo_auth(Role::Orchestrator, &base, "owner/repo", "fixture-token")
+        .unwrap();
     let args: Vec<String> = [
         "--provider",
         "forgejo",
@@ -4012,7 +4145,7 @@ fn scoped_sync_late_same_issue_lease_in_second_mixed_directory_stays_active() {
 #[test]
 fn scoped_sync_other_open_keeps_current_active_issue() {
     let fixture = Fixture::new("sync-other-open-current-closed");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     fixture.link(8, "owner/repo");
     let directory = fixture.worktree("phasegent/8-other-open");
@@ -4036,7 +4169,7 @@ fn scoped_sync_other_open_keeps_current_active_issue() {
         "active",
         Some(&eight),
     );
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(7, "open", "[]"),
         issue_json(8, "closed", "[]"),
@@ -4083,7 +4216,7 @@ fn scoped_sync_other_open_keeps_current_active_issue() {
 #[test]
 fn legacy_local_sync_with_unrelated_scoped_lease_on_another_path() {
     let fixture = Fixture::new("legacy-unrelated-scoped");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let local_path = fixture.db.path().join("local.sqlite3");
     let local = crate::infra::local_store::open_local_at(&local_path).unwrap();
     local
@@ -4152,7 +4285,7 @@ fn legacy_local_sync_with_unrelated_scoped_lease_on_another_path() {
 #[test]
 fn scoped_sync_post_proof_interleaving_keeps_verified_lease_active() {
     let fixture = Fixture::new("sync-post-proof-interleave");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
     let identity = fixture.identity();
@@ -4176,7 +4309,7 @@ fn scoped_sync_post_proof_interleaving_keeps_verified_lease_active() {
         )
         .unwrap();
     }));
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -4220,7 +4353,7 @@ fn scoped_sync_post_proof_interleaving_keeps_verified_lease_active() {
 #[test]
 fn production_prune_explicit_redmine_never_uses_forgejo_default() {
     let fixture = Fixture::new("prune-redmine-fg-default");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
@@ -4264,7 +4397,7 @@ fn production_prune_explicit_redmine_never_uses_forgejo_default() {
 #[test]
 fn production_prune_with_an_omitted_forgejo_default_keeps_history() {
     let fixture = Fixture::new("prune-omitted-fg-default");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
@@ -4306,7 +4439,7 @@ fn production_prune_with_an_omitted_forgejo_default_keeps_history() {
 #[test]
 fn production_prune_scoped_recovery_foreign_context_leaves_leases() {
     let fixture = Fixture::new("prune-recovery-foreign");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
     storage
@@ -4317,7 +4450,7 @@ fn production_prune_scoped_recovery_foreign_context_leaves_leases() {
         )
         .unwrap();
     let (_stub, _path) = opencode_stub();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -4354,7 +4487,7 @@ fn production_prune_scoped_recovery_foreign_context_leaves_leases() {
 #[test]
 fn scoped_sync_same_number_legacy_on_another_path_makes_zero_requests() {
     let fixture = Fixture::new("sync-same-number-legacy-cli");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
     let legacy = fixture.worktree("phasegent/7-legacy-other");
@@ -4367,7 +4500,7 @@ fn scoped_sync_same_number_legacy_on_another_path_makes_zero_requests() {
         "retained",
         None,
     );
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -4404,7 +4537,7 @@ fn scoped_sync_same_number_legacy_on_another_path_makes_zero_requests() {
 #[test]
 fn forgejo_create_binding_rejects_a_later_omitted_provider() {
     let fixture = Fixture::new("create-binding-omitted");
-    fixture.storage();
+    fixture.attested_storage();
     use crate::git_runner::GitRunner;
     crate::git_runner::ProcessGitRunner::in_directory(fixture.repo.path())
         .run(&[
@@ -4414,7 +4547,7 @@ fn forgejo_create_binding_rejects_a_later_omitted_provider() {
             "https://example.test/owner/repo.git",
         ])
         .unwrap();
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -4456,7 +4589,7 @@ fn forgejo_create_binding_rejects_a_later_omitted_provider() {
     assert_eq!(switched.status, 0);
 
     let _default = EnvGuard::set("PHASEGENT_PROVIDER", "local");
-    let get_mock = ZeroMock::start();
+    let get_mock = fixture.zero_mock();
     let get_args: Vec<String> = ["issue", "get", "7"]
         .into_iter()
         .map(str::to_owned)
@@ -4476,10 +4609,10 @@ fn forgejo_create_binding_rejects_a_later_omitted_provider() {
 #[test]
 fn scoped_sync_rejects_incompatible_forgejo_project_override_before_http() {
     let fixture = Fixture::new("sync-fg-project-override");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "active");
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -4517,11 +4650,11 @@ fn scoped_sync_rejects_incompatible_forgejo_project_override_before_http() {
 #[test]
 fn acquire_rejects_incompatible_flags_before_preexisting_taxi_candidates() {
     let fixture = Fixture::new("acquire-incompatible-preexisting");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(8, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 8, "retained");
     let before = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let args: Vec<String> = [
         "--provider",
         "forgejo",
@@ -4564,7 +4697,7 @@ fn acquire_rejects_incompatible_flags_before_preexisting_taxi_candidates() {
 #[test]
 fn legacy_close_closure_uses_only_the_explicit_provider_endpoint() {
     let fixture = Fixture::new("legacy-close-two-providers");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let local_path = fixture.db.path().join("explicit-local.sqlite3");
     let local = crate::infra::local_store::open_local_at(&local_path).unwrap();
     local
@@ -4644,7 +4777,7 @@ fn production_legacy_close_uses_only_the_explicit_provider_answers() {
         [("open", "New", false), ("closed", "Closed", true)]
     {
         let fixture = Fixture::new(&format!("legacy-close-{label}"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let local_path = fixture.db.path().join("explicit-local.sqlite3");
         let local = crate::infra::local_store::open_local_at(&local_path).unwrap();
         local
@@ -5170,7 +5303,7 @@ fn old_stored_default_is_admitted_across_every_entry_route() {
 #[test]
 fn initialized_stored_forgejo_default_is_admitted_without_lease_mutation() {
     let fixture = Fixture::new("initialized-store-route-matrix");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     let mock = ZeroMock::start();
     storage
@@ -5322,7 +5455,7 @@ fn inaccessible_stored_default_is_rejected_across_every_entry_route() {
 #[test]
 fn prune_preview_keeps_legacy_same_number_and_mixed_scope_without_writes() {
     let fixture = Fixture::new("prune-preview-scope-matrix");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let legacy_only = fixture.worktree("phasegent/9-legacy-only");
     fixture.lease(
         &storage,
@@ -5365,7 +5498,7 @@ fn prune_preview_keeps_legacy_same_number_and_mixed_scope_without_writes() {
         Some(&eight),
     );
     let (_stub, _path) = opencode_stub();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -5408,11 +5541,11 @@ fn prune_preview_keeps_legacy_same_number_and_mixed_scope_without_writes() {
 #[test]
 fn prune_preview_scans_matching_scoped_candidate_without_writes() {
     let fixture = Fixture::new("prune-preview-positive-match");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     fixture.link(10, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 10, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![
+    let mock = fixture.mock(vec![
         REPO_JSON.to_owned(),
         issue_json(10, "closed", "[]"),
         issue_json(10, "closed", "[]"),
@@ -5461,7 +5594,7 @@ fn prune_preview_scans_matching_scoped_candidate_without_writes() {
 #[test]
 fn prune_preview_foreign_scoped_absent_path_keeps_without_requests_or_writes() {
     let fixture = Fixture::new("prune-preview-foreign-absent");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let missing = fixture.repo.path().join("missing-foreign-scoped");
     let scope = LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
     fixture.lease(
@@ -5474,7 +5607,7 @@ fn prune_preview_foreign_scoped_absent_path_keeps_without_requests_or_writes() {
         Some(&scope),
     );
     let (_stub, _path) = opencode_stub();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -5518,7 +5651,7 @@ fn prune_preview_foreign_scoped_absent_path_keeps_without_requests_or_writes() {
 fn absent_release_rejects_foreign_scope_change_and_active_owner_after_proof() {
     for (label, mutate) in [("foreign-sidecar", 0u8), ("active-owner", 1u8)] {
         let fixture = Fixture::new(&format!("absent-proof-change-{label}"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let path = fixture.repo.path().join(format!("missing-{label}"));
         let scope = LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
         fixture.lease(
@@ -5611,11 +5744,7 @@ fn absent_release_rejects_foreign_scope_change_and_active_owner_after_proof() {
 }
 
 fn route_repo_key(fixture: &Fixture) -> String {
-    use crate::git_runner::ProcessGitRunner;
-    let runner = ProcessGitRunner::in_directory(fixture.repo.path());
-    crate::branch_links::resolve_repo_key(None, &crate::branch_links::checkout_root(&runner))
-        .unwrap()
-        .key
+    repo_key_at(fixture.repo.path())
 }
 
 fn bind_task(
@@ -5710,8 +5839,8 @@ fn mark_projection_claim(fixture: &Fixture, run_id: &str, claimed_at: i64) {
 #[test]
 fn timer_start_refuses_a_bound_forgejo_task_before_the_ledger_write() {
     let fixture = Fixture::new("timer-bound-forgejo-start");
-    let storage = fixture.storage();
-    let mock = ZeroMock::start();
+    let storage = fixture.attested_storage();
+    let mock = fixture.zero_mock();
     bind_task(&storage, &fixture, &mock.base, 7);
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
@@ -5747,8 +5876,8 @@ fn timer_start_refuses_a_bound_forgejo_task_before_the_ledger_write() {
 #[test]
 fn timer_finish_refuses_a_bound_forgejo_task_before_the_transition() {
     let fixture = Fixture::new("timer-bound-forgejo-finish");
-    let storage = fixture.storage();
-    let mock = ZeroMock::start();
+    let storage = fixture.attested_storage();
+    let mock = fixture.zero_mock();
     bind_task(&storage, &fixture, &mock.base, 7);
     let run_id = "run-bound-forgejo";
     storage
@@ -5784,8 +5913,8 @@ fn timer_finish_refuses_a_bound_forgejo_task_before_the_transition() {
 #[test]
 fn timer_recover_refuses_a_bound_forgejo_task_before_the_transition() {
     let fixture = Fixture::new("timer-bound-forgejo-recover");
-    let storage = fixture.storage();
-    let mock = ZeroMock::start();
+    let storage = fixture.attested_storage();
+    let mock = fixture.zero_mock();
     bind_task(&storage, &fixture, &mock.base, 7);
     let run_id = "run-bound-forgejo-recover";
     storage
@@ -5831,8 +5960,8 @@ fn timer_recover_refuses_a_bound_forgejo_task_before_the_transition() {
 #[test]
 fn timer_recover_refuses_a_stale_projection_for_a_bound_forgejo_task() {
     let fixture = Fixture::new("timer-bound-forgejo-recover-stale");
-    let storage = fixture.storage();
-    let mock = ZeroMock::start();
+    let storage = fixture.attested_storage();
+    let mock = fixture.zero_mock();
     bind_task(&storage, &fixture, &mock.base, 7);
     let run_id = "run-bound-forgejo-recover-stale";
     let now = crate::worktree::now_unix_secs().max(1);
@@ -5875,7 +6004,7 @@ fn timer_recover_refuses_a_stale_projection_for_a_bound_forgejo_task() {
 #[test]
 fn timer_recover_bound_redmine_projects_to_the_pinned_endpoint_under_a_changed_default() {
     let fixture = Fixture::new("timer-bound-redmine-recover");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-redmine-key")
         .unwrap();
@@ -5958,13 +6087,13 @@ fn timer_recover_bound_redmine_projects_to_the_pinned_endpoint_under_a_changed_d
 #[test]
 fn timer_recover_bound_local_stays_local_without_a_remote_projection() {
     let fixture = Fixture::new("timer-bound-local-recover");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-redmine-key")
         .unwrap();
     // Any remote projection would reach this listener; the bound Local task
     // must never do that.
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6017,7 +6146,7 @@ fn timer_recover_bound_local_stays_local_without_a_remote_projection() {
 #[test]
 fn timer_recover_refuses_an_ambiguous_current_repository_task() {
     let fixture = Fixture::new("timer-recover-ambiguous");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let repo = route_repo_key(&fixture);
     bind_task_in_repo(
         &storage,
@@ -6061,7 +6190,7 @@ fn timer_recover_refuses_an_ambiguous_current_repository_task() {
 #[test]
 fn timer_recover_refuses_conflicting_redmine_instances_before_the_transition() {
     let fixture = Fixture::new("timer-recover-redmine-conflict");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     bind_task_in_repo(
         &storage,
         &route_repo_key(&fixture),
@@ -6113,7 +6242,7 @@ fn timer_recover_refuses_conflicting_redmine_instances_before_the_transition() {
 #[test]
 fn timer_recover_refuses_a_changed_endpoint_before_the_transition() {
     let fixture = Fixture::new("timer-recover-changed-endpoint");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-redmine-key")
         .unwrap();
@@ -6158,7 +6287,7 @@ fn timer_recover_refuses_a_changed_endpoint_before_the_transition() {
 #[test]
 fn timer_recover_legacy_run_still_fails_locally_without_provider_config() {
     let fixture = Fixture::new("timer-recover-legacy-missing-config");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let run_id = "run-recover-legacy";
     storage
         .start_timer_run_with_owner(
@@ -6200,7 +6329,7 @@ fn timer_recover_legacy_run_still_fails_locally_without_provider_config() {
 #[test]
 fn timer_recover_does_not_clear_a_live_projection_claim() {
     let fixture = Fixture::new("timer-recover-live-claim");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let run_id = "run-recover-live-claim";
     let now = crate::worktree::now_unix_secs().max(1);
     storage
@@ -6246,7 +6375,7 @@ fn bound_task_acquire_without_provider_uses_the_exact_task_scope() {
         ("forgejo", "forgejo", "https://forgejo.test", "owner/repo"),
     ] {
         let fixture = Fixture::new(&format!("acquire-bound-{label}"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6267,7 +6396,7 @@ fn bound_task_acquire_without_provider_uses_the_exact_task_scope() {
             project,
             7,
         );
-        let mock = ZeroMock::start();
+        let mock = fixture.zero_mock();
         let args: Vec<String> = [
             "worktree",
             "acquire",
@@ -6316,7 +6445,7 @@ fn bound_task_acquire_without_provider_uses_the_exact_task_scope() {
 #[test]
 fn bound_task_acquire_refuses_ambiguity_before_taxi_and_writes() {
     let fixture = Fixture::new("acquire-bound-ambiguous");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6342,7 +6471,7 @@ fn bound_task_acquire_refuses_ambiguity_before_taxi_and_writes() {
         "retained",
         None,
     );
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     // A default provider and endpoint the taxi would have to contact for its
     // retained candidate if it ran before admission.
     let _default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "redmine");
@@ -6394,7 +6523,7 @@ fn acquire_rejects_blank_provider_selections_before_writes() {
     // A bound task with a blank project selection.
     {
         let fixture = Fixture::new("acquire-blank-project-bound");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6437,7 +6566,7 @@ fn acquire_rejects_blank_provider_selections_before_writes() {
     // A legacy number with a blank project selection keeps its own refusal.
     {
         let fixture = Fixture::new("acquire-blank-project-legacy");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6476,7 +6605,7 @@ fn acquire_rejects_blank_provider_selections_before_writes() {
         ("repository", vec!["--repository", "   "]),
     ] {
         let fixture = Fixture::new(&format!("acquire-blank-{label}-legacy"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6510,7 +6639,7 @@ fn acquire_rejects_blank_provider_selections_before_writes() {
     // A valid project selection keeps the legacy acquisition.
     {
         let fixture = Fixture::new("acquire-valid-project-legacy");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6561,7 +6690,7 @@ fn acquire_rejects_malformed_close_status_before_taxi_and_writes() {
         ("legacy-zero", false, "0"),
     ] {
         let fixture = Fixture::new(&format!("acquire-malformed-close-{label}"));
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6587,7 +6716,7 @@ fn acquire_rejects_malformed_close_status_before_taxi_and_writes() {
             "retained",
             None,
         );
-        let mock = ZeroMock::start();
+        let mock = fixture.zero_mock();
         // The taxi candidate would be read through this default provider if
         // the malformed flag were not rejected first.
         let _default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "redmine");
@@ -6622,7 +6751,7 @@ fn acquire_rejects_malformed_close_status_before_taxi_and_writes() {
     // A valid close-status id does not disturb the bound-task acquisition.
     {
         let fixture = Fixture::new("acquire-valid-close");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6673,7 +6802,7 @@ fn acquire_rejects_malformed_close_status_before_taxi_and_writes() {
     // The Forgejo prohibition on the flag itself is unchanged.
     {
         let fixture = Fixture::new("acquire-valid-close-forgejo");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let _config = EnvGuard::set(
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6718,7 +6847,7 @@ fn acquire_rejects_malformed_close_status_before_taxi_and_writes() {
 #[test]
 fn bound_task_acquire_refuses_contradicting_selection_before_any_write() {
     let fixture = Fixture::new("acquire-bound-contradictions");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6733,7 +6862,7 @@ fn bound_task_acquire_refuses_contradicting_selection_before_any_write() {
         "23",
         7,
     );
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let cases: [&[&str]; 4] = [
         &["--provider", "local"],
         &["--provider", "forgejo", "--repository", "owner/repo"],
@@ -6786,7 +6915,7 @@ fn bound_task_acquire_refuses_contradicting_selection_before_any_write() {
 fn bound_task_acquire_refuses_an_orphan_branch_reference() {
     use crate::git_runner::ProcessGitRunner;
     let fixture = Fixture::new("acquire-bound-orphan");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6812,7 +6941,7 @@ fn bound_task_acquire_refuses_an_orphan_branch_reference() {
         )],
     )
     .unwrap();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let args: Vec<String> = [
         "worktree",
         "acquire",
@@ -6843,7 +6972,7 @@ fn bound_task_acquire_refuses_an_orphan_branch_reference() {
 #[test]
 fn bound_task_acquire_selects_one_instance_and_never_reuses_the_other() {
     let fixture = Fixture::new("acquire-bound-two-instances");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -6943,26 +7072,26 @@ fn bound_task_acquire_selects_one_instance_and_never_reuses_the_other() {
 #[test]
 fn foreign_task_membership_does_not_own_a_local_acquire() {
     let fixture = Fixture::new("acquire-foreign-task");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
     );
     let _clean = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
+    let mock = fixture.zero_mock();
     bind_task_in_repo(
         &storage,
         "foreign:repo",
         "forgejo",
-        "https://forgejo.test",
+        &mock.base,
         "owner/repo",
         7,
     );
-    let mock = ZeroMock::start();
     let args: Vec<String> = [
         "--provider",
         "forgejo",
         "--api-base",
-        "https://forgejo.test",
+        &mock.base,
         "--repository",
         "owner/repo",
         "worktree",
@@ -7004,7 +7133,7 @@ fn foreign_task_membership_does_not_own_a_local_acquire() {
 #[test]
 fn foreign_repo_forgejo_task_does_not_block_a_legacy_timer() {
     let fixture = Fixture::new("timer-foreign-forgejo");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     // The task belongs to another physical repository, so it must never
     // decide this number's timer route.
     bind_task_in_repo(
@@ -7048,7 +7177,7 @@ fn foreign_repo_forgejo_task_does_not_block_a_legacy_timer() {
 #[test]
 fn timer_refuses_an_ambiguous_current_repository_task() {
     let fixture = Fixture::new("timer-current-ambiguous");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let repo = route_repo_key(&fixture);
     bind_task_in_repo(
         &storage,
@@ -7085,7 +7214,7 @@ fn timer_refuses_an_ambiguous_current_repository_task() {
 #[test]
 fn timer_refuses_conflicting_redmine_instances_before_the_ledger_write() {
     let fixture = Fixture::new("timer-redmine-conflict");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     bind_task_in_repo(
         &storage,
         &route_repo_key(&fixture),
@@ -7134,7 +7263,7 @@ fn timer_refuses_conflicting_redmine_instances_before_the_ledger_write() {
 #[test]
 fn bound_redmine_timer_projects_to_the_pinned_endpoint_under_a_changed_default() {
     let fixture = Fixture::new("timer-bound-redmine");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-redmine-key")
         .unwrap();
@@ -7229,13 +7358,13 @@ fn bound_redmine_timer_projects_to_the_pinned_endpoint_under_a_changed_default()
 #[test]
 fn bound_local_timer_stays_local_without_a_remote_projection() {
     let fixture = Fixture::new("timer-bound-local");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-redmine-key")
         .unwrap();
     // Any remote projection would reach this listener; the bound Local task
     // must never do that.
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -7294,7 +7423,7 @@ fn bound_local_timer_stays_local_without_a_remote_projection() {
 #[test]
 fn bound_redmine_timer_refuses_a_changed_endpoint_before_the_ledger_write() {
     let fixture = Fixture::new("timer-redmine-changed-endpoint");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-redmine-key")
         .unwrap();
@@ -7336,7 +7465,7 @@ fn bound_redmine_timer_refuses_a_changed_endpoint_before_the_ledger_write() {
 #[test]
 fn bound_only_batch_succeeds_with_an_implicit_forgejo_default() {
     let fixture = Fixture::new("batch-bound-only");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = PathMock::start(vec![
         path_rule("GET", "/api/v1/repos/owner/repo", REPO_JSON),
         path_rule(
@@ -7388,7 +7517,7 @@ fn bound_only_batch_succeeds_with_an_implicit_forgejo_default() {
 #[test]
 fn batch_isolates_an_ambiguous_item_and_serves_the_bound_item() {
     let fixture = Fixture::new("batch-ambiguous-isolated");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = PathMock::start(vec![
         path_rule("GET", "/api/v1/repos/owner/repo", REPO_JSON),
         path_rule(
@@ -7438,7 +7567,7 @@ fn batch_isolates_an_ambiguous_item_and_serves_the_bound_item() {
 #[test]
 fn batch_routes_a_bound_and_a_legacy_item_independently() {
     let fixture = Fixture::new("batch-bound-and-legacy");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = PathMock::start(vec![
         path_rule("GET", "/api/v1/repos/owner/repo", REPO_JSON),
         path_rule(
@@ -7498,7 +7627,7 @@ fn batch_routes_a_bound_and_a_legacy_item_independently() {
 #[test]
 fn auto_timer_hooks_skip_a_bound_forgejo_task_before_any_ledger_write() {
     let fixture = Fixture::new("auto-timer-forgejo");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     bind_task(&storage, &fixture, "https://forgejo.test", 7);
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
@@ -7544,7 +7673,7 @@ fn auto_timer_hooks_skip_a_bound_forgejo_task_before_any_ledger_write() {
 #[test]
 fn bound_forgejo_task_routes_get_after_default_switch() {
     let fixture = Fixture::new("route-default-switch");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(9, "open", "[]")]);
     storage
         .save_forgejo_auth(
@@ -7579,7 +7708,7 @@ fn bound_forgejo_task_routes_get_after_default_switch() {
 #[test]
 fn task_only_sync_reaches_the_task_instance_with_a_changed_default() {
     let fixture = Fixture::new("sync-task-default");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(9, "closed", "[]")]);
     storage
         .save_forgejo_auth(
@@ -7628,7 +7757,7 @@ fn task_only_sync_reaches_the_task_instance_with_a_changed_default() {
 #[test]
 fn a_same_number_task_on_an_unconfigured_instance_keeps_with_zero_requests() {
     let fixture = Fixture::new("sync-task-second-instance");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(9, "closed", "[]")]);
     storage
         .save_forgejo_auth(
@@ -7718,7 +7847,7 @@ fn a_task_only_prune_preview_matches_the_task_scope_without_writing() {
     use crate::worktree::{ProcessWorktreeRunner, list_all_for_repo, repo_identity};
 
     let fixture = Fixture::new("prune-task-scope");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(Vec::new());
     storage
         .save_forgejo_auth(
@@ -7803,7 +7932,7 @@ fn a_task_only_prune_removes_the_task_directory_and_releases_its_lease() {
     use crate::worktree::{ProcessWorktreeRunner, list_all_for_repo, repo_identity};
 
     let fixture = Fixture::new("prune-task-remove");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(Vec::new());
     storage
         .save_forgejo_auth(
@@ -7878,7 +8007,7 @@ fn an_absent_task_lease_releases_only_the_exact_task_group() {
     use crate::worktree::{ProcessWorktreeRunner, list_all_for_repo, repo_identity};
 
     let fixture = Fixture::new("prune-task-absent");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(Vec::new());
     storage
         .save_forgejo_auth(
@@ -8007,7 +8136,7 @@ fn an_absent_task_lease_releases_only_the_exact_task_group() {
 #[test]
 fn one_global_sync_dispatches_each_configured_task_group_to_its_own_provider() {
     let fixture = Fixture::new("sync-two-providers");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(9, "closed", "[]")]);
     storage
         .save_forgejo_auth(
@@ -8110,7 +8239,7 @@ fn a_task_only_prune_reads_its_own_issue_through_the_pinned_instance() {
     use crate::worktree::{ProcessWorktreeRunner, list_all_for_repo, repo_identity};
 
     let fixture = Fixture::new("prune-task-closure");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     // Each pinned dispatch validates the repository and then reads the issue.
     let mock = Mock::start(vec![
         REPO_JSON.to_owned(),
@@ -8201,7 +8330,7 @@ fn an_associated_number_is_read_through_its_own_task_by_membership_only() {
     use crate::cli::issue_closure::{IssueStateSource, TaskScopeRef, configured_source_task_aware};
 
     let fixture = Fixture::new("closure-associated-task");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(11, "closed", "[]")]);
     storage
         .save_forgejo_auth(
@@ -8330,8 +8459,8 @@ fn assert_created_task_lease(
 fn create_acquires_the_exact_task_lease_for_each_provider() {
     {
         let fixture = Fixture::new("create-task-forgejo");
-        let storage = fixture.storage();
-        let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+        let storage = fixture.attested_storage();
+        let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
         let base = mock.base.clone();
         let args: Vec<String> = [
             "--output",
@@ -8364,7 +8493,7 @@ fn create_acquires_the_exact_task_lease_for_each_provider() {
     }
     {
         let fixture = Fixture::new("create-task-redmine");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let mock = PathMock::start(vec![path_rule(
             "POST",
             "/issues.json",
@@ -8403,7 +8532,7 @@ fn create_acquires_the_exact_task_lease_for_each_provider() {
     }
     {
         let fixture = Fixture::new("create-task-local");
-        let storage = fixture.storage();
+        let storage = fixture.attested_storage();
         let args: Vec<String> = [
             "--output",
             "json",
@@ -8432,7 +8561,7 @@ fn create_acquires_the_exact_task_lease_for_each_provider() {
 #[test]
 fn routed_local_close_releases_only_its_task_lease() {
     let fixture = Fixture::new("close-local-task");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let number = 34;
     seed_local_issue_with_status(&fixture, number, "Resolved");
     let task_id = bind_local_task(&fixture, number);
@@ -8504,7 +8633,7 @@ fn routed_local_close_releases_only_its_task_lease() {
 #[test]
 fn routed_redmine_close_releases_only_its_task_lease() {
     let fixture = Fixture::new("close-redmine-task");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let journals = RedmineJournals::new();
     let mock = PathMock::start(redmine_issue_rules(
         61,
@@ -8584,7 +8713,7 @@ fn routed_redmine_close_releases_only_its_task_lease() {
 #[test]
 fn routed_close_keeps_same_number_other_instance_task() {
     let fixture = Fixture::new("close-same-number-instances");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let journals = RedmineJournals::new();
     let mock = PathMock::start(redmine_issue_rules(
         61,
@@ -8701,7 +8830,7 @@ fn routed_close_closure_reads_other_associated_task_not_default() {
     use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
 
     let fixture = Fixture::new("close-task-closure");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let journals = RedmineJournals::new();
     // Only the other associated number is ever read; the current one is
     // closed by definition and never re-read.
@@ -8760,7 +8889,7 @@ fn routed_close_closure_reads_other_associated_task_not_default() {
 fn branch_task_reference_precedes_repo_membership() {
     use crate::git_runner::ProcessGitRunner;
     let fixture = Fixture::new("route-branch-precedence");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(9, "open", "[]")]);
     storage
         .save_forgejo_auth(
@@ -8810,10 +8939,10 @@ fn branch_task_reference_precedes_repo_membership() {
 #[test]
 fn ambiguous_repo_memberships_fail_before_http() {
     let fixture = Fixture::new("route-ambiguous");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     bind_task(&storage, &fixture, "http://127.0.0.1:1", 9);
     bind_task(&storage, &fixture, "http://127.0.0.1:2", 9);
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -8835,7 +8964,7 @@ fn ambiguous_repo_memberships_fail_before_http() {
 #[test]
 fn stored_instance_drift_fails_before_http() {
     let fixture = Fixture::new("route-drift");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let binding_instance = "http://127.0.0.1:9";
     bind_task(&storage, &fixture, binding_instance, 9);
     storage
@@ -8868,8 +8997,8 @@ fn stored_instance_drift_fails_before_http() {
 #[test]
 fn forgejo_create_persists_the_task_identity_and_membership() {
     let fixture = Fixture::new("route-create-persist");
-    let storage = fixture.storage();
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    let storage = fixture.attested_storage();
+    let mock = fixture.mock(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -8912,7 +9041,7 @@ fn forgejo_create_persists_the_task_identity_and_membership() {
 #[test]
 fn explicit_forgejo_bind_adopts_and_persists_the_task() {
     let fixture = Fixture::new("route-adopt");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(11, "open", "[]")]);
     storage
         .save_forgejo_auth(
@@ -8989,7 +9118,7 @@ fn bind_local_task(fixture: &Fixture, number: u64) -> i64 {
 fn bound_local_task_routes_each_single_number_command_before_the_default() {
     let fixture = Fixture::new("route-local-matrix");
     let counter = RouteCounter::start();
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_forgejo_auth(
             Role::Orchestrator,
@@ -9057,7 +9186,7 @@ fn bound_local_task_routes_each_single_number_command_before_the_default() {
 #[test]
 fn create_persistence_failure_warns_without_retrying_the_post() {
     let fixture = Fixture::new("route-create-persist-fail");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     storage
         .save_forgejo_auth(
@@ -9117,7 +9246,7 @@ fn create_persistence_failure_warns_without_retrying_the_post() {
 #[test]
 fn failed_adoption_verification_leaves_no_local_identity() {
     let fixture = Fixture::new("route-adopt-fail");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start_status(vec![(404, "{}".to_owned())]);
     storage
         .save_forgejo_auth(
@@ -9166,7 +9295,7 @@ fn failed_adoption_verification_leaves_no_local_identity() {
 fn orphan_branch_task_reference_fails_before_http() {
     use crate::git_runner::ProcessGitRunner;
     let fixture = Fixture::new("route-orphan");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     crate::branch_links::ensure_schema(&storage.connection).unwrap();
     let runner = ProcessGitRunner::in_directory(fixture.repo.path());
     let branch = crate::git_runner::current_branch(&runner).unwrap();
@@ -9187,7 +9316,7 @@ fn orphan_branch_task_reference_fails_before_http() {
         )],
     )
     .unwrap();
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -9206,7 +9335,7 @@ fn orphan_branch_task_reference_fails_before_http() {
 #[test]
 fn missing_role_credential_fails_before_http_for_a_bound_task() {
     let fixture = Fixture::new("route-missing-credential");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = ZeroMock::start();
     storage
         .save_forgejo_auth(
@@ -9261,7 +9390,7 @@ fn seed_local_comment(fixture: &Fixture, issue: u64, id: u64, marker: &str) {
 fn bound_local_task_routes_comment_and_record_commands_before_the_default() {
     let fixture = Fixture::new("route-local-comment-record");
     let counter = RouteCounter::start();
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     storage
         .save_forgejo_auth(
             Role::Orchestrator,
@@ -9365,7 +9494,7 @@ fn bound_local_task_routes_comment_and_record_commands_before_the_default() {
 fn branch_task_number_mismatch_rejects_the_requested_number() {
     use crate::git_runner::ProcessGitRunner;
     let fixture = Fixture::new("route-branch-mismatch");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     crate::branch_links::ensure_schema(&storage.connection).unwrap();
     let key =
         crate::task_identity::TaskKey::new("forgejo", "http://127.0.0.1:1", "owner/repo", "8")
@@ -9394,7 +9523,7 @@ fn branch_task_number_mismatch_rejects_the_requested_number() {
         crate::branch_links::reads::branch_task_refs(&storage.connection, &repo_key, &branch)
             .unwrap();
     assert_eq!(refs, vec![(7, binding.task_id())]);
-    let mock = ZeroMock::start();
+    let mock = fixture.zero_mock();
     let _config = EnvGuard::set(
         "PHASEGENT_CONFIG_PATH",
         fixture.db.path().join("missing.toml").to_str().unwrap(),
@@ -9419,7 +9548,7 @@ fn branch_task_number_mismatch_rejects_the_requested_number() {
 #[test]
 fn explicit_api_base_selects_among_same_number_tasks_without_rewriting() {
     let fixture = Fixture::new("route-explicit-select");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let primary = ZeroMock::start();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(15, "open", "[]")]);
     storage
@@ -9474,7 +9603,7 @@ fn explicit_api_base_selects_among_same_number_tasks_without_rewriting() {
 #[test]
 fn contradictory_api_base_rejects_before_http() {
     let fixture = Fixture::new("route-explicit-contradiction");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let bound = ZeroMock::start();
     let other = ZeroMock::start();
     storage
@@ -9515,7 +9644,7 @@ fn contradictory_api_base_rejects_before_http() {
 #[test]
 fn bound_local_read_preserves_the_config_store_snapshot() {
     let fixture = Fixture::new("route-readonly-snapshot");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     seed_local_issue_with_status(&fixture, 1003, "New");
     bind_local_task(&fixture, 1003);
     let before = complete_fixture_snapshot(&storage.connection);
@@ -9536,7 +9665,7 @@ fn bound_local_read_preserves_the_config_store_snapshot() {
 fn same_branch_different_instance_adoption_conflicts_atomically() {
     use crate::git_runner::ProcessGitRunner;
     let fixture = Fixture::new("route-adopt-pk-conflict");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     crate::branch_links::ensure_schema(&storage.connection).unwrap();
     let checkout = std::process::Command::new("git")
         .args(["checkout", "-q", "-B", "feat/17"])
@@ -9628,7 +9757,7 @@ fn checkout_numbered_branch(fixture: &Fixture, name: &str) {
 #[test]
 fn explicit_multi_bind_is_all_or_nothing_before_local_writes() {
     let fixture = Fixture::new("route-multi-bind-atomic");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start_status(vec![
         (200, REPO_JSON.to_owned()),
         (200, issue_json(21, "open", "[]")),
@@ -9686,7 +9815,7 @@ fn explicit_multi_bind_is_all_or_nothing_before_local_writes() {
 #[test]
 fn explicit_multi_bind_positive_is_atomic_and_idempotent() {
     let fixture = Fixture::new("route-multi-bind-positive");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![
         REPO_JSON.to_owned(),
         issue_json(23, "open", "[]"),
@@ -9769,7 +9898,7 @@ fn spawn_fixed_json_responder(body: &'static str) -> (String, JoinHandle<()>) {
 #[test]
 fn redmine_adoption_rejects_a_wrong_project() {
     let fixture = Fixture::new("route-adopt-wrong-project");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let body = r#"{"issue":{"id":25,"subject":"fixture","description":"","project":{"id":2,"name":"other","identifier":"other"},"status":{"name":"New","is_closed":false},"journals":[]}}"#;
     let (base, responder) = spawn_fixed_json_responder(body);
     storage
@@ -9815,7 +9944,7 @@ fn redmine_adoption_rejects_a_wrong_project() {
 #[test]
 fn explicit_api_base_cannot_attest_credential_provenance_for_bind() {
     let fixture = Fixture::new("route-bind-provenance");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let stored = ZeroMock::start();
     let explicit = ZeroMock::start();
     storage
@@ -9888,7 +10017,7 @@ fn spawn_capturing_responder(body: &'static str) -> (String, JoinHandle<String>)
 #[test]
 fn bound_redmine_task_routes_get_against_the_stored_instance() {
     let fixture = Fixture::new("route-redmine-get");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let body = r#"{"issue":{"id":27,"subject":"fixture","description":"","project":{"id":1,"name":"p1","identifier":"p1"},"status":{"name":"New","is_closed":false},"journals":[]}}"#;
     let (base, responder) = spawn_capturing_responder(body);
     storage
@@ -9943,7 +10072,7 @@ fn bound_redmine_task_routes_get_against_the_stored_instance() {
 #[test]
 fn create_without_a_repository_persists_the_key_without_membership() {
     let fixture = Fixture::new("route-create-nonrepo");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(28, "open", "[]")]);
     let base = mock.base.clone();
     storage
@@ -10043,7 +10172,7 @@ fn spawn_sequence_responder<B: Into<String> + Send + 'static>(
 #[test]
 fn bound_forgejo_task_routes_update_and_comment_methods() {
     let fixture = Fixture::new("route-forgejo-methods");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
 
     let (base, responder) = spawn_sequence_responder(vec![
         REPO_JSON.to_owned(),
@@ -10455,7 +10584,7 @@ fn args_of(parts: &[&str]) -> Vec<String> {
 #[test]
 fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
     let fixture = Fixture::new("j3-forgejo-matrix");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     // The conflicting default is Redmine. Any request that reaches it
     // proves the durable route was bypassed.
     let counter = RouteCounter::start();
@@ -10821,7 +10950,7 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
 #[test]
 fn bound_redmine_task_routes_each_single_number_command_before_the_default() {
     let fixture = Fixture::new("j3-redmine-matrix");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     // The conflicting default is Forgejo.
     let counter = RouteCounter::start();
     let mut rules = vec![
@@ -11037,7 +11166,7 @@ fn bound_redmine_task_routes_each_single_number_command_before_the_default() {
 #[test]
 fn explicit_forgejo_bind_rejects_a_pull_request_document() {
     let fixture = Fixture::new("j3-forgejo-pr");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let mock = PathMock::start(vec![
         path_rule("GET", "/api/v1/repos/owner/repo", REPO_JSON),
         path_rule(
@@ -11086,7 +11215,8 @@ fn explicit_forgejo_bind_rejects_a_pull_request_document() {
 #[test]
 fn default_forgejo_create_persists_the_task_and_scoped_lease() {
     let fixture = Fixture::new("default-create");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
+    crate::branch_links::ensure_schema(&storage.connection).unwrap();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
@@ -11103,6 +11233,8 @@ fn default_forgejo_create_persists_the_task_and_scoped_lease() {
     let args: Vec<String> = [
         "--output",
         "json",
+        "--repository",
+        "owner/repo",
         "issue",
         "create",
         "--title",
@@ -11151,7 +11283,7 @@ fn default_forgejo_create_persists_the_task_and_scoped_lease() {
 #[test]
 fn unbound_number_with_another_scope_link_refuses_before_http_under_a_forgejo_default() {
     let fixture = Fixture::new("default-other-scope");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
@@ -11184,7 +11316,7 @@ fn unbound_number_with_another_scope_link_refuses_before_http_under_a_forgejo_de
 #[test]
 fn conflicting_scope_refusal_preserves_legacy_configuration_rows() {
     let fixture = Fixture::new("conflicting-scope-read-only-review");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
@@ -11225,7 +11357,7 @@ fn conflicting_scope_refusal_preserves_legacy_configuration_rows() {
 #[test]
 fn explicit_redmine_and_local_override_a_forgejo_default() {
     let fixture = Fixture::new("override-default");
-    let storage = fixture.storage();
+    let storage = fixture.attested_storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
@@ -11260,4 +11392,646 @@ fn explicit_redmine_and_local_override_a_forgejo_default() {
         requests.is_empty(),
         "no override reaches the Forgejo default: {requests:?}"
     );
+}
+
+/// Issue 1201 P13 B1: one trusted instance serves several physical checkouts,
+/// and the origin-attested repository — never the stored fallback — selects
+/// the target project for new work while a bound task stays on its own.
+#[test]
+fn two_checkouts_on_one_trusted_instance_keep_same_number_repositories_distinct() {
+    let fixture = Fixture::new("multi-repo-checkouts");
+    let storage = fixture.attested_storage();
+    crate::branch_links::ensure_schema(&storage.connection).unwrap();
+    let executor_stored = crate::record::RecordSpec {
+        kind: crate::record::RecordKind::Executor,
+        actor: Role::Executor,
+        key: "a5-executor".to_owned(),
+        phase: Some("P1".to_owned()),
+        attempt: Some(1),
+        review: None,
+        recon: None,
+    }
+    .encode_body("executor-a5-marker")
+    .unwrap();
+    let reviewer_stored = crate::record::RecordSpec {
+        kind: crate::record::RecordKind::Reviewer,
+        actor: Role::Reviewer,
+        key: "a5-reviewer".to_owned(),
+        phase: Some("P1".to_owned()),
+        attempt: Some(1),
+        review: Some("final".to_owned()),
+        recon: None,
+    }
+    .encode_body("reviewer-a5-marker")
+    .unwrap();
+    let explore_stored = crate::record::RecordSpec {
+        kind: crate::record::RecordKind::Recon,
+        actor: Role::Explore,
+        key: "a5-explore".to_owned(),
+        phase: None,
+        attempt: None,
+        review: None,
+        recon: Some("scan".to_owned()),
+    }
+    .encode_body("explore-a5-marker")
+    .unwrap();
+    let mock = fixture.mock(vec![
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/beta"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/beta"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/alpha"),
+        format!("[{}]", issue_json(7, "open", "[]")),
+        "[]".to_owned(),
+        repo_json("group/alpha"),
+        issue_json(8, "open", "[]"),
+        repo_json("group/alpha"),
+        issue_json(9, "open", "[]"),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        "[]".to_owned(),
+        issue_json(7, "open", "[]"),
+        forgejo_comment_json(
+            1,
+            &executor_stored,
+            "__BASE__/api/v1/repos/group/alpha/issues/7",
+        ),
+        issue_json(7, "open", "[]"),
+        format!(
+            "[{}]",
+            forgejo_comment_json(
+                1,
+                &executor_stored,
+                "__BASE__/api/v1/repos/group/alpha/issues/7"
+            )
+        ),
+        "[]".to_owned(),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        "[]".to_owned(),
+        issue_json(7, "open", "[]"),
+        forgejo_comment_json(
+            2,
+            &reviewer_stored,
+            "__BASE__/api/v1/repos/group/alpha/issues/7",
+        ),
+        issue_json(7, "open", "[]"),
+        format!(
+            "[{}]",
+            forgejo_comment_json(
+                2,
+                &reviewer_stored,
+                "__BASE__/api/v1/repos/group/alpha/issues/7"
+            )
+        ),
+        "[]".to_owned(),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        repo_json("group/alpha"),
+        issue_json(7, "open", "[]"),
+        "[]".to_owned(),
+        issue_json(7, "open", "[]"),
+        forgejo_comment_json(
+            3,
+            &explore_stored,
+            "__BASE__/api/v1/repos/group/alpha/issues/7",
+        ),
+        issue_json(7, "open", "[]"),
+        format!(
+            "[{}]",
+            forgejo_comment_json(
+                3,
+                &explore_stored,
+                "__BASE__/api/v1/repos/group/alpha/issues/7"
+            )
+        ),
+        "[]".to_owned(),
+    ]);
+    let trusted_instance = mock.base.trim_end_matches('/').to_owned();
+    fixture.set_origin(&mock.base, "group/alpha");
+    let beta = checkout(
+        "multi-repo-beta",
+        Some(&format!("{}/group/beta", mock.base)),
+    );
+    let create: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "issue",
+        "create",
+        "--title",
+        "fixture",
+        "--body",
+        "fixture",
+        "--session",
+        "session-create",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        run_as(fixture.repo.path(), "orchestrator", &create),
+        0,
+        "the alpha checkout creates on its attested origin"
+    );
+    let override_read: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "--repository",
+        "group/alpha",
+        "issue",
+        "get",
+        "7",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        run_as(beta.path(), "orchestrator", &override_read),
+        0,
+        "an explicit repository selects alpha from the unrelated beta checkout"
+    );
+    assert_eq!(
+        run_as(beta.path(), "orchestrator", &create),
+        0,
+        "the beta checkout creates on its attested origin"
+    );
+    let read: Vec<String> = ["--provider", "forgejo", "issue", "get", "7"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        run_as(beta.path(), "orchestrator", &read),
+        0,
+        "the beta checkout reads its own repository"
+    );
+    let search: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "--repository",
+        "group/alpha",
+        "issue",
+        "search",
+        "--query",
+        "fixture",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        run_as(beta.path(), "orchestrator", &search),
+        0,
+        "an explicit search overrides beta's origin"
+    );
+    use crate::git_runner::GitRunner;
+    crate::git_runner::ProcessGitRunner::in_directory(beta.path())
+        .run(&["checkout", "-q", "-B", "feat/adopt-8"])
+        .unwrap();
+    let bind: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "--repository",
+        "group/alpha",
+        "issue",
+        "bind",
+        "8",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        run_as(beta.path(), "orchestrator", &bind),
+        0,
+        "an explicit bind adopts alpha from the unrelated beta checkout"
+    );
+    let explicit_create: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "--repository",
+        "group/alpha",
+        "issue",
+        "create",
+        "--title",
+        "fixture",
+        "--body",
+        "fixture",
+        "--session",
+        "session-cross-create",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        run_as(beta.path(), "orchestrator", &explicit_create),
+        0,
+        "an explicit create overrides beta's origin"
+    );
+    let roles = [
+        (Role::Executor, "executor", "executor-a5-marker"),
+        (Role::Reviewer, "reviewer", "reviewer-a5-marker"),
+        (Role::Explore, "explore", "explore-a5-marker"),
+    ];
+    for &(role, name, marker) in &roles {
+        storage
+            .save_forgejo_auth(role, &mock.base, "owner/repo", &format!("{name}-token"))
+            .unwrap();
+        let read: Vec<String> = ["issue", "get", "7"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            run_as(fixture.repo.path(), name, &read),
+            0,
+            "{name} must read the bound alpha task"
+        );
+        let record: Vec<String> = match role {
+            Role::Executor => vec![
+                "record",
+                "create",
+                "7",
+                "--kind",
+                "executor",
+                "--key",
+                "a5-executor",
+                "--phase",
+                "P1",
+                "--attempt",
+                "1",
+                "--body",
+                marker,
+                "--authorized",
+            ],
+            Role::Reviewer => vec![
+                "record",
+                "create",
+                "7",
+                "--kind",
+                "reviewer",
+                "--key",
+                "a5-reviewer",
+                "--phase",
+                "P1",
+                "--attempt",
+                "1",
+                "--review",
+                "final",
+                "--body",
+                marker,
+                "--authorized",
+            ],
+            Role::Explore => vec![
+                "record",
+                "create",
+                "7",
+                "--kind",
+                "recon",
+                "--key",
+                "a5-explore",
+                "--recon",
+                "scan",
+                "--body",
+                marker,
+                "--authorized",
+            ],
+            _ => unreachable!("the table only names record-authoring roles"),
+        }
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            run_as(fixture.repo.path(), name, &record),
+            0,
+            "{name} must publish its own record on the bound alpha task"
+        );
+    }
+    let repin: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "--repository",
+        "group/beta",
+        "issue",
+        "get",
+        "7",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (repin_exit, _stdout, stderr) = run_captured(fixture.repo.path(), &repin);
+    assert_ne!(
+        repin_exit, 0,
+        "an explicit repository never repins the bound alpha task"
+    );
+    assert!(
+        stderr.contains("durable task"),
+        "the refusal names the bound task: {stderr}"
+    );
+    let requests = mock.finish();
+    assert_eq!(
+        requests.len(),
+        45,
+        "the bound-task refusal must not reach the provider: {requests:?}"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.starts_with("POST /api/v1/repos/group/alpha/issues "))
+            .count(),
+        2,
+        "the origin create and the explicit cross-repository create both target alpha: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("POST /api/v1/repos/group/beta/issues ")),
+        "the beta create must target its origin repository: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET /api/v1/repos/group/beta/issues/7 ")),
+        "the beta read must target its origin repository: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET /api/v1/repos/group/alpha/issues/7 ")),
+        "the explicit repository must override beta's origin: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET /api/v1/repos/group/alpha/issues?")),
+        "the explicit search must target the selected repository: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET /api/v1/repos/group/alpha/issues/8 ")),
+        "the explicit bind must verify the selected repository: {requests:?}"
+    );
+    for (_, name, marker) in roles {
+        let token = format!("authorization: token {name}-token");
+        let read = requests
+            .iter()
+            .find(|request| {
+                request.starts_with("GET /api/v1/repos/group/alpha/issues/7 ")
+                    && request.contains(&token)
+            })
+            .unwrap_or_else(|| panic!("{name} must read alpha with its own token: {requests:?}"));
+        assert!(read.contains(&token));
+        let record = requests
+            .iter()
+            .find(|request| {
+                request.starts_with("POST /api/v1/repos/group/alpha/issues/7/comments ")
+                    && request.contains(&token)
+            })
+            .unwrap_or_else(|| {
+                panic!("{name} must publish on alpha with its own token: {requests:?}")
+            });
+        assert!(
+            record.contains(marker),
+            "{name} record must carry its marker on alpha: {record}"
+        );
+        assert!(
+            requests
+                .iter()
+                .filter(|request| request.contains(&token))
+                .all(|request| request.contains("/repos/group/alpha")),
+            "{name} must never use its token on the stored fallback repository: {requests:?}"
+        );
+    }
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.contains("/repos/owner/repo/")),
+        "the stored fallback repository is never called when an origin attests another: \
+         {requests:?}"
+    );
+
+    let alpha = crate::task_identity::bindings_for_repo_number(
+        &storage,
+        &checkout_repo_key(fixture.repo.path()),
+        7,
+    )
+    .unwrap();
+    let beta_bindings = crate::task_identity::bindings_for_repo_number(
+        &storage,
+        &checkout_repo_key(beta.path()),
+        7,
+    )
+    .unwrap();
+    assert_eq!(alpha.len(), 1, "{alpha:?}");
+    assert_eq!(alpha[0].key().project(), "group/alpha");
+    assert_eq!(beta_bindings.len(), 1, "{beta_bindings:?}");
+    assert_eq!(beta_bindings[0].key().project(), "group/beta");
+    assert_ne!(
+        alpha[0].task_id(),
+        beta_bindings[0].task_id(),
+        "the same number in two repositories is two distinct durable tasks"
+    );
+    let adopted = crate::task_identity::bindings_for_repo_number(
+        &storage,
+        &checkout_repo_key(beta.path()),
+        8,
+    )
+    .unwrap();
+    assert_eq!(adopted.len(), 1, "{adopted:?}");
+    assert_eq!(
+        adopted[0].key().project(),
+        "group/alpha",
+        "the explicit bind adopts another repository on the same instance"
+    );
+    let created = crate::task_identity::bindings_for_repo_number(
+        &storage,
+        &checkout_repo_key(beta.path()),
+        9,
+    )
+    .unwrap();
+    assert_eq!(created.len(), 1, "{created:?}");
+    assert_eq!(
+        created[0].key().project(),
+        "group/alpha",
+        "the explicit create writes the selected repository's immutable task scope"
+    );
+    assert_eq!(
+        created[0].key().instance(),
+        trusted_instance.as_str(),
+        "the explicit create keeps the trusted instance"
+    );
+
+    let alpha_key = checkout_repo_key(fixture.repo.path());
+    let scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        &storage,
+        &fixture.identity(),
+        Some(&alpha_key),
+    )
+    .unwrap();
+    let lease = list_all_for_repo(&storage, &fixture.identity())
+        .unwrap()
+        .into_iter()
+        .find(|row| row.issue == 7)
+        .expect("the alpha create books its lease");
+    let scope = scopes
+        .get(&lease.lease_id)
+        .expect("the create records a scope");
+    assert_eq!(scope.provider(), "forgejo");
+    assert_eq!(scope.project(), "group/alpha");
+    assert!(
+        scope.task_id().is_some(),
+        "the origin-selected create owns its durable task scope"
+    );
+}
+
+/// Issue 1201 P13 B4: origin evidence participates only through a normalized
+/// host and deployment prefix; transport, port and the endpoint itself never
+/// come from Git, and unsafe origins refuse instead of falling back.
+#[test]
+fn origin_attests_only_the_trusted_host_and_prefix() {
+    let fixture = Fixture::new("origin-attestation");
+    let storage = fixture.attested_storage();
+    storage
+        .save_forgejo_auth(
+            Role::Orchestrator,
+            "https://forgejo.cloud1ful.com/team",
+            "owner/repo",
+            "fixture-token",
+        )
+        .unwrap();
+    let resolve = |dir: &Path, repository: Option<&str>| {
+        in_dir(dir, || {
+            crate::providers::forgejo::ForgejoConfig::resolve(Role::Orchestrator, None, repository)
+        })
+    };
+    let cases = [
+        (
+            "ssh-port",
+            Some("ssh://git@forgejo.cloud1ful.com:2224/team/group/alpha.git"),
+            Some("group/alpha"),
+        ),
+        (
+            "scp",
+            Some("git@forgejo.cloud1ful.com:team/group/alpha.git"),
+            Some("group/alpha"),
+        ),
+        (
+            "https",
+            Some("https://forgejo.cloud1ful.com/team/group/alpha"),
+            Some("group/alpha"),
+        ),
+        (
+            "foreign-host",
+            Some("https://other.test/team/group/alpha"),
+            None,
+        ),
+        (
+            "other-prefix",
+            Some("https://forgejo.cloud1ful.com/other/group/alpha"),
+            None,
+        ),
+        (
+            "traversal",
+            Some("https://forgejo.cloud1ful.com/team/../evil/group/alpha"),
+            None,
+        ),
+        ("malformed", Some("not a url"), None),
+        ("missing", None, None),
+    ];
+    for (label, origin, expected) in cases {
+        let directory = checkout(label, origin);
+        let result = resolve(directory.path(), None);
+        match expected {
+            Some(repository) => {
+                let config = result.unwrap_or_else(|error| panic!("{label}: {error:?}"));
+                assert_eq!(config.api_base(), "https://forgejo.cloud1ful.com/team");
+                assert_eq!(config.repository(), repository);
+            }
+            None => assert!(result.is_err(), "{label} must refuse: {result:?}"),
+        }
+    }
+    let ambiguous = checkout(
+        "origin-ambiguous-review",
+        Some("https://forgejo.cloud1ful.com/team/group/alpha"),
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "--add",
+                "origin",
+                "https://forgejo.cloud1ful.com/team/group/beta"
+            ])
+            .current_dir(ambiguous.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let result = resolve(ambiguous.path(), None);
+    assert!(result.is_err(), "multiple origins must refuse: {result:?}");
+    let foreign = checkout(
+        "origin-explicit",
+        Some("https://other.test/team/group/alpha"),
+    );
+    let config = resolve(foreign.path(), Some("group/alpha"))
+        .expect("an explicit repository bypasses origin selection, not instance trust");
+    assert_eq!(config.api_base(), "https://forgejo.cloud1ful.com/team");
+    assert_eq!(config.repository(), "group/alpha");
+
+    let outside = TempDir::new("origin-outside-git");
+    let config = resolve(outside.path(), None).expect("outside Git keeps the stored default");
+    assert_eq!(config.api_base(), "https://forgejo.cloud1ful.com/team");
+    assert_eq!(config.repository(), "owner/repo");
+}
+
+/// Issue 1201 P13 B3: a credential without a trusted instance, and an explicit
+/// endpoint that does not normalize to the trusted one, both refuse before any
+/// request can carry the role token.
+#[test]
+fn insecure_instance_selection_refuses_before_any_request() {
+    {
+        let fixture = Fixture::new("instance-no-trust");
+        fixture.storage();
+        let missing = fixture.zero_mock();
+        let args: Vec<String> = [
+            "--provider",
+            "forgejo",
+            "--api-base",
+            &missing.base,
+            "--repository",
+            "owner/repo",
+            "issue",
+            "get",
+            "7",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_rejected(fixture.repo.path(), "orchestrator", &args, missing);
+    }
+
+    let fixture = Fixture::new("instance-override");
+    fixture.attested_storage();
+    let mock = fixture.zero_mock();
+    let args: Vec<String> = [
+        "--provider",
+        "forgejo",
+        "--api-base",
+        "https://other.test",
+        "--repository",
+        "owner/repo",
+        "issue",
+        "get",
+        "7",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_rejected(fixture.repo.path(), "orchestrator", &args, mock);
 }

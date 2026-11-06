@@ -1,21 +1,46 @@
 # Forgejo provider
 
-The Forgejo provider targets one configured `owner/repo` on an HTTP(S) Forgejo
-instance. Use `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`
-to create an issue, to adopt an existing number with `issue bind`, or for any
-number that carries no durable task, or store the same values per role with
-`phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT`.
-A Forgejo default configured through the environment, TOML, the persisted
-machine-wide default or stored role configuration is selected through the same
-precedence chain as any other provider, so it needs no explicit `--provider`.
-Selection order is unchanged: explicit `--provider` > `PHASEGENT_PROVIDER` >
+A role's stored Forgejo `api_base` plus its own token is the trust for one
+normalized instance. The per-operation repository is independent: use
+`--repository owner/repo` to name it, or let the current checkout's `origin`
+attest it. Store the instance root and the outside-Git repository default with
+`phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT`; the
+stored repository is a default only outside Git, never a credential
+restriction. A Forgejo default configured through the environment, TOML, the
+persisted machine-wide default or stored role configuration is selected through
+the same precedence chain as any other provider, so it needs no explicit
+`--provider`: explicit `--provider` > `PHASEGENT_PROVIDER` >
 `PHASEGENT_DEFAULT_PROVIDER` (environment > TOML > persisted) > the role-scoped
-provider > the Redmine fallback. A configured Forgejo default uses only the
-attested `owner/repo`; it never infers a repository from the Git origin.
-`INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the client
-appends that prefix itself. A number that already carries a durable Forgejo task
-routes to its stored instance and repository without repeating the flags.
-Forgejo rejects `--project-id` and `--close-status-id`.
+provider > the Redmine fallback. `INSTANCE_ROOT` is the instance address
+without a `/api/v1` suffix; the client appends that prefix itself. A number that
+already carries a durable Forgejo task routes to its stored instance and
+repository without repeating the flags. Forgejo rejects `--project-id` and
+`--close-status-id`.
+
+### Trusted instance and repository selection
+
+- The credential endpoint is always the role's stored instance. An explicit
+  `--api-base` is accepted only when it normalizes exactly to that instance;
+  any other value refuses before the token is loaded or a request is sent. A
+  credential with no stored instance fails closed; an explicit endpoint and
+  repository cannot turn a bare token into trust.
+- Repository selection precedence is: explicit `--repository`, then the current
+  physical checkout's `origin` when it attests the trusted instance, then the
+  stored repository default only outside Git.
+- Origin is evidence, not an endpoint source. Only its normalized host and
+  deployment prefix must equal the trusted instance; scheme and transport port
+  may differ (for example `ssh://…:2224` or `git@host:owner/repo.git` against an
+  HTTPS instance). Requests still go to the stored instance. An
+  origin-derived API base is never used.
+- Inside Git, a missing, unparseable, ambiguous or owner-less origin, or one
+  whose host or deployment prefix does not match the trusted instance, refuses
+  with guidance to pass `--repository`. Outside Git the stored repository is
+  the default.
+- Same-instance cross-repository selection is allowed: the Forgejo server
+  enforces the token's actual repository permissions. A bound task keeps its
+  immutable provider, instance, project and number; an explicit selection can
+  disambiguate it but never repins it to another repository.
+
 
 Each role reads its own Forgejo token from the secure `auth setup` prompt or
 stdin; tokens never come from a command-line value, URL, log, or error. The
@@ -94,9 +119,10 @@ task id. Forgejo's instance is its canonical API base and its project is
   instance, so a changed default never repins the task and a mismatched endpoint
   refuses before any request.
 - A stored or environment Forgejo default is admitted for a number without a
-  durable task exactly like an explicit selection, using only the configured
-  `owner/repo`. Pre-existing `NULL` task references are never guessed or
-  backfilled, and no host or tool selects a provider.
+  durable task exactly like an explicit selection, using the same repository
+  selection: explicit `--repository`, else the checkout's attested origin, else
+  the stored default outside Git. Pre-existing `NULL` task references are never
+  guessed or backfilled, and no host or tool selects a provider.
 
 ## Task lifecycle and limitations
 

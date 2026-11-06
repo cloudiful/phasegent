@@ -23,6 +23,71 @@ pub fn resolve_origin() -> Result<RemoteRepository, String> {
     parse_remote(&remote)
 }
 
+/// The origin's host, deployment prefix and repository as evidence for the
+/// trusted Forgejo instance. The derived API base is never used for trust or
+/// as the request endpoint; only these normalized parts are compared.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OriginRepositoryEvidence {
+    pub host: String,
+    pub prefix: String,
+    pub repository: String,
+}
+
+/// Read the current checkout's `origin` as Forgejo attestation evidence.
+/// Every configured origin URL is enumerated: zero or several URLs are an
+/// error, so an unbound selection inside Git fails closed instead of guessing
+/// the first one.
+pub(crate) fn forgejo_origin_evidence() -> Result<OriginRepositoryEvidence, String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "--all", "origin"])
+        .output()
+        .map_err(|error| format!("could not inspect git remote: {error}"))?;
+    if !output.status.success() {
+        return Err("origin git remote is not configured".to_owned());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let urls: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    match urls.as_slice() {
+        [] => Err("origin git remote has no URL".to_owned()),
+        [remote] => parse_origin_evidence(remote),
+        _ => Err(format!(
+            "origin git remote has {} URLs; provide --repository to name a repository on the \
+             trusted instance",
+            urls.len()
+        )),
+    }
+}
+
+fn parse_origin_evidence(remote: &str) -> Result<OriginRepositoryEvidence, String> {
+    let (host, path) = if let Some(value) = remote.strip_prefix("git@") {
+        let (host, path) = value
+            .split_once(':')
+            .ok_or_else(|| "invalid scp-style git remote".to_owned())?;
+        (host.to_ascii_lowercase(), path.to_owned())
+    } else {
+        let url = Url::parse(remote).map_err(|error| format!("invalid git remote: {error}"))?;
+        if !matches!(
+            url.scheme(),
+            "http" | "https" | "ssh" | "git+ssh" | "ssh+git"
+        ) {
+            return Err(format!("unsupported git remote scheme '{}'", url.scheme()));
+        }
+        let host = host_authority(&url)?;
+        (host.to_ascii_lowercase(), url.path().to_owned())
+    };
+    let repository = repository_from_path(&path)?;
+    let prefix = deployment_prefix(&path)?;
+    Ok(OriginRepositoryEvidence {
+        host,
+        prefix,
+        repository,
+    })
+}
+
 pub fn parse_remote(remote: &str) -> Result<RemoteRepository, String> {
     let (host, path): (String, String) = if let Some(value) = remote.strip_prefix("git@") {
         value
