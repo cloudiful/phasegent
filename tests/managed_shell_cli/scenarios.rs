@@ -299,11 +299,16 @@ fn heredoc_opaque_body_exact_and_trailing_recon_authored_explore() {
         .parent()
         .map(|dir| dir.join("phasegent-missing.toml"))
         .unwrap_or_else(|| std::env::temp_dir().join("phasegent-missing.toml"));
+    // The independent heredoc child owns the same adjacent, initially-absent
+    // main store as the fixture, so the scope guard never reads machine
+    // branch links while the local store stays distinct.
+    let main_db = db.with_file_name("phasegent-main.sqlite3");
     let mut shell = Command::new("sh");
     shell
         .arg("-c")
         .arg(&bridged.command)
         .env("PHASEGENT_LOCAL_DB_PATH", &db)
+        .env("PHASEGENT_DB_PATH", &main_db)
         .env("PHASEGENT_CONFIG_PATH", &missing_toml)
         .env("RUST_BACKTRACE", "0")
         .env_remove("PHASEGENT_ROLE")
@@ -311,7 +316,6 @@ fn heredoc_opaque_body_exact_and_trailing_recon_authored_explore() {
         .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
-        .env_remove("PHASEGENT_DB_PATH")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")

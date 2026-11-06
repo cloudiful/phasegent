@@ -1,11 +1,17 @@
 # Forgejo provider
 
-The Forgejo provider targets one explicitly configured `owner/repo` on an HTTP(S)
-Forgejo instance. A stored default never selects it. Use
-`--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT` to create
-an issue, to adopt an existing number with `issue bind`, or for any number that
-carries no durable task, or store the same values per role with
+The Forgejo provider targets one configured `owner/repo` on an HTTP(S) Forgejo
+instance. Use `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`
+to create an issue, to adopt an existing number with `issue bind`, or for any
+number that carries no durable task, or store the same values per role with
 `phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT`.
+A Forgejo default configured through the environment, TOML, the persisted
+machine-wide default or stored role configuration is selected through the same
+precedence chain as any other provider, so it needs no explicit `--provider`.
+Selection order is unchanged: explicit `--provider` > `PHASEGENT_PROVIDER` >
+`PHASEGENT_DEFAULT_PROVIDER` (environment > TOML > persisted) > the role-scoped
+provider > the Redmine fallback. A configured Forgejo default uses only the
+attested `owner/repo`; it never infers a repository from the Git origin.
 `INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the client
 appends that prefix itself. A number that already carries a durable Forgejo task
 routes to its stored instance and repository without repeating the flags.
@@ -73,9 +79,9 @@ task id. Forgejo's instance is its canonical API base and its project is
   records that exact task identity, a same-number task on another instance is a
   different scope that is never reused, and an explicit provider, endpoint or
   project selection that contradicts the task refuses before any lease write or
-  taxi pass. Without a bound task, an explicit `--provider forgejo` keeps the
-  explicit `owner/repo` scope, an implicit Forgejo default still fails closed,
-  and every other selection keeps the legacy numeric lease. `timer start`,
+  taxi pass. Without a bound task, a resolved Forgejo selection — explicit or
+  configured — records the attested `owner/repo` scope, and every other
+  selection keeps its legacy numeric lease. `timer start`,
   `timer finish` and `timer recover` apply the timer route described below
   (`timer list`/`get` are local ledger reads). `issue create`, search, project
   and version reads keep the configured path.
@@ -87,8 +93,9 @@ task id. Forgejo's instance is its canonical API base and its project is
   token is used only while the configured credential endpoint still attests that
   instance, so a changed default never repins the task and a mismatched endpoint
   refuses before any request.
-- A stored or environment Forgejo default is still refused for a number without
-  a durable task. Pre-existing `NULL` task references are never guessed or
+- A stored or environment Forgejo default is admitted for a number without a
+  durable task exactly like an explicit selection, using only the configured
+  `owner/repo`. Pre-existing `NULL` task references are never guessed or
   backfilled, and no host or tool selects a provider.
 
 ## Task lifecycle and limitations

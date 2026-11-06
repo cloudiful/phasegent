@@ -285,7 +285,7 @@ fn scan_with_paths(
         paths,
         &std::collections::HashMap::new(),
         None,
-        false,
+        true,
     )
 }
 
@@ -299,7 +299,7 @@ fn scan_scoped_with_paths(
     paths: &CanonicalPaths,
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
 ) -> Vec<DirectoryCandidate> {
     group_rows(scope.rows, paths)
         .into_iter()
@@ -315,7 +315,7 @@ fn scan_scoped_with_paths(
                 paths,
                 scopes,
                 provider_scope,
-                explicit_forgejo,
+                legacy_numeric_leases,
             )
         })
         .collect()
@@ -350,7 +350,7 @@ fn classify(
     paths: &CanonicalPaths,
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
 ) -> DirectoryCandidate {
     let classification = classify_group(
         runner,
@@ -362,7 +362,7 @@ fn classify(
         paths,
         scopes,
         provider_scope,
-        explicit_forgejo,
+        legacy_numeric_leases,
     );
     let released_lease_ids = group
         .rows
@@ -419,12 +419,12 @@ fn classify_group(
     paths: &CanonicalPaths,
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
 ) -> Classification {
-    // Explicit Forgejo admits only complete exact-scope ownership. A purely
-    // legacy group, an absent path, and every mixed/foreign/same-number
-    // combination keep before provider reads or removal; compatible legacy
-    // providers keep their unscoped reconciliation.
+    // A provider without legacy numeric leases admits only complete
+    // exact-scope ownership. A purely legacy group, an absent path, and every
+    // mixed/foreign/same-number combination keep before provider reads or
+    // removal; legacy-capable providers keep their unscoped reconciliation.
     if group
         .issues
         .iter()
@@ -434,11 +434,9 @@ fn classify_group(
             "same-number unscoped history makes the ownership ambiguous".to_owned(),
         ));
     }
-    if (explicit_forgejo || provider_scope.is_some_and(|(provider, _)| provider == "forgejo"))
-        && !group.scoped
-    {
+    if !legacy_numeric_leases && !group.scoped {
         return Classification::keep(PruneDisposition::SkippedIssue(
-            "explicit Forgejo does not own unscoped legacy history".to_owned(),
+            "the selected provider does not own unscoped legacy history".to_owned(),
         ));
     }
     if group.scoped && !scoped_group_matches(provider_scope, group) {
@@ -725,7 +723,7 @@ pub(crate) fn prune_pass(
         mode,
         MovePolicy::NoWait,
         None,
-        false,
+        true,
         progress,
     )
 }
@@ -746,7 +744,7 @@ pub(crate) fn prune_pass_with_policy(
     mode: PruneMode,
     confirmation: MovePolicy<'_>,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
     progress: &dyn Fn(&str),
 ) -> PruneSummary {
     // The durable key of the physical repository this pass acts on, proven
@@ -780,7 +778,7 @@ pub(crate) fn prune_pass_with_policy(
         &CanonicalPaths::default(),
         &scopes,
         provider_scope,
-        explicit_forgejo,
+        legacy_numeric_leases,
     );
     let actions: Vec<PruneAction> = candidates
         .iter()
@@ -797,7 +795,7 @@ pub(crate) fn prune_pass_with_policy(
                 mode,
                 confirmation,
                 provider_scope,
-                explicit_forgejo,
+                legacy_numeric_leases,
                 progress,
             )
         })
@@ -818,7 +816,7 @@ fn apply_candidate(
     mode: PruneMode,
     confirmation: MovePolicy<'_>,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
     progress: &dyn Fn(&str),
 ) -> PruneAction {
     let mut action = PruneAction {
@@ -943,7 +941,7 @@ fn apply_candidate(
                     source,
                     candidate,
                     provider_scope,
-                    explicit_forgejo,
+                    legacy_numeric_leases,
                 ) {
                     Err(reason) => {
                         action.result = "skipped_protected".to_owned();
@@ -992,7 +990,7 @@ fn apply_candidate(
                                     candidate,
                                     true,
                                     provider_scope,
-                                    explicit_forgejo,
+                                    legacy_numeric_leases,
                                 ) {
                                     Err(reason) => {
                                         action.result = "skipped_protected".to_owned();
@@ -1009,7 +1007,7 @@ fn apply_candidate(
                                         source,
                                         candidate,
                                         provider_scope,
-                                        explicit_forgejo,
+                                        legacy_numeric_leases,
                                         &mut action,
                                     ),
                                 },
@@ -1086,7 +1084,7 @@ fn recheck(
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
 ) -> Result<(Vec<String>, Option<crate::worktree::cache::CacheInventory>), String> {
     let fresh = match list_all_for_repo(storage, scope.identity) {
         Ok(rows) => rows,
@@ -1146,7 +1144,7 @@ fn recheck(
             &paths,
             &fresh_scopes,
             provider_scope,
-            explicit_forgejo,
+            legacy_numeric_leases,
         );
         match classification.disposition {
             PruneDisposition::Removable => Ok((associated, classification.cache)),
@@ -1265,7 +1263,7 @@ fn post_move_recheck(
     candidate: &DirectoryCandidate,
     compare_cache: bool,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
 ) -> Result<(), String> {
     let fresh = match list_all_for_repo(storage, scope.identity) {
         Ok(rows) => rows,
@@ -1312,7 +1310,7 @@ fn post_move_recheck(
         &paths,
         &fresh_scopes,
         provider_scope,
-        explicit_forgejo,
+        legacy_numeric_leases,
     );
     if compare_cache && classification.cache != candidate.cache {
         return Err("the root .cache inventory changed after the moves".to_owned());
@@ -1352,7 +1350,7 @@ fn apply_removal(
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
     provider_scope: Option<(&str, &str)>,
-    explicit_forgejo: bool,
+    legacy_numeric_leases: bool,
     action: &mut PruneAction,
 ) {
     let worktree_path = PathBuf::from(&candidate.worktree_path);
@@ -1386,7 +1384,7 @@ fn apply_removal(
         candidate,
         false,
         provider_scope,
-        explicit_forgejo,
+        legacy_numeric_leases,
     ) {
         action.result = "skipped_protected".to_owned();
         action.message = Some(format!("kept after cache cleanup: {reason}"));

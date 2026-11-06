@@ -67,11 +67,16 @@ impl LocalProvider {
         f(&guard).map_err(|error| model::db_error(operation, error))
     }
 
-    pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+    pub(crate) const CAPABILITIES: crate::providers::ProviderCapabilities =
         crate::providers::ProviderCapabilities {
             issue_lifecycle: true,
             comments: true,
-        }
+            project_discovery: false,
+            legacy_numeric_leases: true,
+        };
+
+    pub(crate) fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+        Self::CAPABILITIES
     }
 
     pub(crate) fn supports(&self, capability: Capability) -> bool {

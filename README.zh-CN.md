@@ -113,11 +113,14 @@ phasegent --output json issue get 123      # 强制机器文档
 `--repository OWNER/REPOSITORY` 指定 Git 主机上的仓库，用于
 `workflow bootstrap` 与 project 发现。
 
-Forgejo 不会被已保存的默认值自动选中。创建 issue、用 `issue bind` 接管已有编号，
+Forgejo 与其他 provider 一样通过统一配置选择：创建 issue、用 `issue bind` 接管已有编号，
 或操作任何没有持久 task 的编号时，使用
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`，并通过
 `admin auth setup --provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`
-保存 role token。`INSTANCE_ROOT` 是不带 `/api/v1` 后缀的实例地址，客户端会自行追加该前缀。
+保存 role token。通过环境变量、TOML、已保存的机器级默认值或 role 配置设定的 Forgejo
+默认值会走同一套选择优先级（最终回退到 Redmine），因此无需显式 `--provider`；它只使用已声明的
+`owner/repo`，绝不会从 Git origin 推断仓库。`INSTANCE_ROOT` 是不带 `/api/v1` 后缀的实例地址，
+客户端会自行追加该前缀。
 已带持久 Forgejo task 的编号会自动路由到该 task 保存的 instance
 与 repository，无需重复这些参数。只需操作者准备 token。
 Forgejo 使用仓库内 issue 编号，并在结果中保留原生全局 id；它支持 issue、评论、record、仓库读取、

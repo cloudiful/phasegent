@@ -61,13 +61,16 @@ pub(crate) fn execute_version_with_caller(
         Ok(kind) => kind,
         Err(error) => return super::provider_error(error),
     };
-    let resolved_project_id: Option<String> = if resolved_kind == ProviderKind::Local {
-        None
-    } else if resolved_kind == ProviderKind::Forgejo
+    let resolved_project_id: Option<String> = if !crate::cli::provider_context::capabilities_for(
+        resolved_kind,
+    )
+    .project_discovery
         || project_id
             .map(str::trim)
             .is_some_and(|value| !value.is_empty())
     {
+        // No discovery capability (Local, Forgejo) or an explicit value:
+        // the attested scope is used as-is, with no origin heuristic.
         project_id.map(str::to_owned)
     } else {
         match super::project_resolution::resolve_redmine_project(

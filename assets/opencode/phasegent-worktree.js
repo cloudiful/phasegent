@@ -3316,9 +3316,11 @@ while the configured endpoint still attests that instance, and a changed
 default never repins it. An explicit \`--provider\`/\`--api-base\`/\`--repository\`/
 \`--project-id\` selects and disambiguates among several memberships but never
 remaps a bound task to another provider, project or instance; several matching
-memberships refuse as ambiguous. A stored or environment Forgejo default is
-still refused for any number without a matching durable task, and a session
-never hard-codes one.
+memberships refuse as ambiguous. A configured Forgejo default is selected
+through the same precedence chain as any other provider and needs no explicit
+\`--provider\`; without a durable task it owns only its attested \`owner/repo\`
+scope, never a repository inferred from the Git origin. A session never
+hard-codes a provider.
 
 ### Role gates
 

@@ -46,6 +46,9 @@ fn resolve_record_provider(
     let routed_project = routed
         .as_ref()
         .map(|route| route.binding.key().project().to_owned());
+    if !is_routed {
+        super::scope_guard::preflight_issue_scope(role, &context, issue)?;
+    }
     let provider = match routed {
         Some(route) => route.provider,
         None => super::provider_for(
@@ -223,9 +226,7 @@ pub(crate) fn execute_record_with_caller(
                 Err(error) => return super::provider_error(error),
             };
             let expected_project = routed_project.as_deref().or(project_id);
-            if !routed
-                && let Err(error) =
-                    super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            if !routed && let Err(error) = super::scope_guard::verify_issue_scope(&provider, issue)
             {
                 return super::provider_error(error);
             }
@@ -263,9 +264,7 @@ pub(crate) fn execute_record_with_caller(
                 Ok(value) => value,
                 Err(error) => return super::provider_error(error),
             };
-            if !routed
-                && let Err(error) =
-                    super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            if !routed && let Err(error) = super::scope_guard::verify_issue_scope(&provider, issue)
             {
                 return super::provider_error(error);
             }
@@ -290,9 +289,7 @@ pub(crate) fn execute_record_with_caller(
                 Ok(value) => value,
                 Err(error) => return super::provider_error(error),
             };
-            if !routed
-                && let Err(error) =
-                    super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            if !routed && let Err(error) = super::scope_guard::verify_issue_scope(&provider, issue)
             {
                 return super::provider_error(error);
             }

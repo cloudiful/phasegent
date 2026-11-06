@@ -354,7 +354,7 @@ fn acquire_rejects_incompatible_forgejo_project_before_lease_write() {
 }
 
 #[test]
-fn acquire_rejects_implicit_forgejo_default_before_lease_write() {
+fn acquire_under_an_implicit_forgejo_default_books_the_scoped_lease() {
     let fixture = Fixture::new("acquire-implicit-review");
     let storage = fixture.storage();
     let mock = ZeroMock::start();
@@ -382,16 +382,22 @@ fn acquire_rejects_implicit_forgejo_default_before_lease_write() {
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
     let requests = mock.finish();
     let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    assert!(requests.is_empty());
-    assert!(
-        rows.is_empty(),
-        "implicit Forgejo default exited {exit} and wrote a lease: {rows:?}"
-    );
-    assert_ne!(exit, 0, "implicit Forgejo default must fail closed");
+    assert_eq!(exit, 0, "an implicit Forgejo default is admitted");
+    assert!(requests.is_empty(), "acquire is local: {requests:?}");
+    assert_eq!(rows.len(), 1, "the acquire books one lease: {rows:?}");
+    assert_eq!(rows[0].status, "active");
+    let scopes =
+        crate::worktree::lease_scope::scope_map_for_repo(&storage, &fixture.identity()).unwrap();
+    let scope = scopes
+        .get(&rows[0].lease_id)
+        .expect("the default-resolved Forgejo acquire records its scope");
+    assert_eq!(scope.provider(), "forgejo");
+    assert_eq!(scope.project(), "owner/repo");
+    assert!(scope.task_id().is_none());
 }
 
 #[test]
-fn stored_forgejo_default_is_rejected_for_acquire_and_recovery() {
+fn stored_forgejo_default_without_owned_config_keeps_legacy_history() {
     let fixture = Fixture::new("stored-default-boundary-review");
     let storage = fixture.storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
@@ -448,8 +454,14 @@ fn stored_forgejo_default_is_rejected_for_acquire_and_recovery() {
     let prune_exit = run_as(fixture.repo.path(), "orchestrator", &args);
     let requests = mock.finish();
     let after = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    assert_ne!(acquire_exit, 0);
-    assert_ne!(prune_exit, 0);
+    assert_ne!(
+        acquire_exit, 0,
+        "a Forgejo default without owned configuration fails on provenance"
+    );
+    assert_eq!(
+        prune_exit, 0,
+        "prune keeps unknown history instead of failing"
+    );
     assert!(requests.is_empty());
     assert_eq!(after.len(), before.len());
     assert_eq!(after[0].status, before[0].status);
@@ -695,75 +707,64 @@ fn legacy_closes_recheck_other_issue_before_removing_shared_directory() {
 }
 
 #[test]
-fn rejected_env_default_leaves_absent_store_absent_across_entry_paths() {
+fn env_forgejo_default_is_admitted_across_entry_paths() {
     let fixture = Fixture::new("absent-default-admission-review");
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     let _default = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
-    let path = fixture.db.path().join("leases.sqlite3");
-    let commands: &[&[&str]] = &[
-        &[
-            "worktree",
-            "acquire",
-            "--issue",
-            "7",
-            "--session",
-            "fixture-session",
-            "--no-sync",
+    let counter = RouteCounter::start();
+    let repo = fixture.repo.path().to_string_lossy().to_string();
+    let commands: Vec<Vec<String>> = vec![
+        vec![
+            "worktree".to_owned(),
+            "acquire".to_owned(),
+            "--issue".to_owned(),
+            "7".to_owned(),
+            "--session".to_owned(),
+            "fixture-session".to_owned(),
+            "--no-sync".to_owned(),
         ],
-        &[
-            "worktree",
-            "acquire",
-            "--issue",
-            "7",
-            "--session",
-            "fixture-session",
-        ],
-        &["worktree", "list"],
-        &[
-            "worktree",
-            "prune",
-            "--release-stale",
-            "--stale-days",
-            "0",
-            "--reason",
-            "fixture",
+        vec!["worktree".to_owned(), "list".to_owned()],
+        vec![
+            "worktree".to_owned(),
+            "prune".to_owned(),
+            "--repo".to_owned(),
+            repo.clone(),
+            "--release-stale".to_owned(),
+            "--stale-days".to_owned(),
+            "0".to_owned(),
+            "--reason".to_owned(),
+            "fixture".to_owned(),
         ],
     ];
-    for command in commands {
-        assert!(!path.exists());
-        let args: Vec<String> = command.iter().map(|arg| (*arg).to_owned()).collect();
-        let (exit, _stdout, stderr) = run_captured(fixture.repo.path(), &args);
-        assert_ne!(exit, 0, "{command:?}");
+    for command in &commands {
+        let mut args = vec!["--api-base".to_owned(), counter.base.clone()];
+        args.extend(command.iter().cloned());
+        let (_exit, _stdout, stderr) = run_captured(fixture.repo.path(), &args);
         assert!(
-            stderr.contains("explicit --provider forgejo"),
-            "{command:?} must report its own diagnostic: {stderr}"
+            !stderr.contains("explicit --provider forgejo"),
+            "{command:?} must not report the removed admission rule: {stderr}"
         );
-        assert!(!path.exists(), "{command:?} created the store");
     }
+    let requests = counter.finish();
+    assert_eq!(requests, 0, "no route may reach the network: {requests}");
+    let storage = Storage::open_at(&fixture.db.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
+    assert!(
+        rows.is_empty(),
+        "no lease is written without a task: {rows:?}"
+    );
 }
 
 #[test]
-fn rejected_stored_default_does_not_migrate_existing_store() {
+fn stored_forgejo_default_is_admitted_without_writing_a_lease() {
     let fixture = Fixture::new("stored-default-no-migration-review");
+    let storage = fixture.storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
-    let path = fixture.db.path().join("leases.sqlite3");
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE global_setting (name TEXT PRIMARY KEY, value TEXT); \
-             INSERT INTO global_setting VALUES ('PHASEGENT_DEFAULT_PROVIDER', 'forgejo');",
-        )
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
         .unwrap();
-    let count_tables = || -> i64 {
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
-    let before = count_tables();
+    let mock = ZeroMock::start();
     let args: Vec<String> = [
         "worktree",
         "acquire",
@@ -777,12 +778,14 @@ fn rejected_stored_default_does_not_migrate_existing_store() {
     .map(str::to_owned)
     .collect();
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
-    let after = count_tables();
-    assert_ne!(exit, 0, "implicit Forgejo default must be rejected");
-    assert_eq!(
-        after, before,
-        "the rejected invocation must not initialize or migrate the existing store"
+    let requests = mock.finish();
+    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
+    assert_ne!(
+        exit, 0,
+        "a Forgejo default without owned configuration fails on provenance"
     );
+    assert!(requests.is_empty());
+    assert!(rows.is_empty(), "no lease is written: {rows:?}");
 }
 
 #[cfg(unix)]
@@ -1719,11 +1722,11 @@ fn assert_rejected(repo: &Path, role: &str, args: &[String], mock: ZeroMock) {
 }
 
 #[test]
-fn forgejo_env_default_without_the_flag_is_rejected_before_http() {
+fn forgejo_env_default_without_the_flag_reads_the_issue() {
     let fixture = Fixture::new("env-default");
     fixture.storage();
     let _env = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
-    let mock = ZeroMock::start();
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--api-base",
@@ -1737,18 +1740,25 @@ fn forgejo_env_default_without_the_flag_is_rejected_before_http() {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    assert_rejected(fixture.repo.path(), "orchestrator", &args, mock);
+    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
+    let requests = mock.finish();
+    assert_eq!(exit, 0, "an environment Forgejo default is admitted");
+    assert_eq!(
+        requests.len(),
+        2,
+        "the default reads the issue: {requests:?}"
+    );
 }
 
 #[test]
-fn forgejo_stored_default_without_the_flag_is_rejected_before_http() {
+fn forgejo_stored_default_without_the_flag_reads_the_issue() {
     let fixture = Fixture::new("stored-default");
     let storage = fixture.storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     storage
         .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
         .unwrap();
-    let mock = ZeroMock::start();
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--api-base",
@@ -1762,7 +1772,14 @@ fn forgejo_stored_default_without_the_flag_is_rejected_before_http() {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    assert_rejected(fixture.repo.path(), "orchestrator", &args, mock);
+    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
+    let requests = mock.finish();
+    assert_eq!(exit, 0, "a persisted Forgejo default is admitted");
+    assert_eq!(
+        requests.len(),
+        2,
+        "the default reads the issue: {requests:?}"
+    );
 }
 
 #[test]
@@ -2927,7 +2944,7 @@ fn production_prune_stale_recovery_uses_owned_forgejo_repository() {
 }
 
 #[test]
-fn production_sync_never_uses_implicit_forgejo_default() {
+fn production_sync_uses_the_implicit_forgejo_default() {
     let fixture = Fixture::new("sync-fg-default-review");
     let storage = fixture.storage();
     fixture.link(7, "owner/repo");
@@ -2945,17 +2962,24 @@ fn production_sync_never_uses_implicit_forgejo_default() {
     let args: Vec<String> = ["issue", "sync"].into_iter().map(str::to_owned).collect();
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
     let requests = mock.finish();
-    assert_ne!(exit, 0, "implicit Forgejo selection must be rejected");
-    assert!(requests.is_empty(), "implicit Forgejo must not send HTTP");
+    assert_eq!(exit, 0, "an implicit Forgejo default reconciles");
+    assert_eq!(
+        requests.len(),
+        2,
+        "the default reads the issue: {requests:?}"
+    );
     let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
     assert_eq!(
         rows.iter()
             .find(|row| row.lease_id == "scoped-7")
             .unwrap()
             .status,
-        "active"
+        "retained"
     );
-    assert!(directory.exists());
+    assert!(
+        !directory.exists(),
+        "the closed scoped issue's clean directory is removed"
+    );
 }
 
 #[test]
@@ -3912,7 +3936,7 @@ fn production_prune_explicit_redmine_never_uses_forgejo_default() {
 }
 
 #[test]
-fn production_prune_omitted_provider_with_forgejo_default_fails_closed() {
+fn production_prune_with_an_omitted_forgejo_default_keeps_history() {
     let fixture = Fixture::new("prune-omitted-fg-default");
     let storage = fixture.storage();
     fixture.link(7, "owner/repo");
@@ -3934,18 +3958,22 @@ fn production_prune_omitted_provider_with_forgejo_default_fails_closed() {
         .map(str::to_owned)
         .collect();
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
-    let requests = mock.finish();
-    assert_ne!(
+    let _requests = mock.finish();
+    assert_eq!(
         exit, 0,
-        "an omitted selection resolving to Forgejo must fail closed"
+        "an omitted selection resolving to Forgejo is admitted"
     );
-    assert!(
-        requests.is_empty(),
-        "an omitted selection must not operate a Forgejo default: {requests:?}"
+    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.lease_id == "scoped-7")
+            .unwrap()
+            .status,
+        "retained"
     );
     assert!(
         directory.exists(),
-        "the unresolved selection must not remove"
+        "an unproven closure keeps the directory"
     );
 }
 
@@ -4407,7 +4435,7 @@ fn production_legacy_close_uses_only_the_explicit_provider_answers() {
 }
 
 #[test]
-fn rejected_stored_default_does_not_migrate_during_taxi_list() {
+fn stored_forgejo_default_without_owned_config_does_not_mutate_during_taxi_list() {
     let fixture = Fixture::new("stored-default-list-no-migration");
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     let path = fixture.db.path().join("leases.sqlite3");
@@ -4418,26 +4446,22 @@ fn rejected_stored_default_does_not_migrate_during_taxi_list() {
              INSERT INTO global_setting VALUES ('PHASEGENT_DEFAULT_PROVIDER', 'forgejo');",
         )
         .unwrap();
-    let count_tables = || -> i64 {
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
-    let before = count_tables();
     let args: Vec<String> = ["worktree", "list"]
         .into_iter()
         .map(str::to_owned)
         .collect();
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
-    let after = count_tables();
-    assert_ne!(exit, 0, "implicit Forgejo default must be rejected");
+    assert_eq!(exit, 0, "the listing is admitted under the Forgejo default");
     assert_eq!(
-        after, before,
-        "the rejected taxi/list route must not initialize or migrate the store"
+        connection
+            .query_row(
+                "SELECT value FROM global_setting WHERE name='PHASEGENT_DEFAULT_PROVIDER'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "forgejo",
+        "the listing never rewrites the stored default"
     );
 }
 
@@ -4665,7 +4689,7 @@ fn logical_snapshot(path: &Path) -> Vec<(String, String)> {
 }
 
 #[test]
-fn admission_matrix_preserves_complete_state_and_counts_each_route() {
+fn default_forgejo_store_states_never_corrupt_or_request() {
     let states = [
         "missing",
         "old",
@@ -4680,8 +4704,7 @@ fn admission_matrix_preserves_complete_state_and_counts_each_route() {
             "PHASEGENT_CONFIG_PATH",
             fixture.db.path().join("missing.toml").to_str().unwrap(),
         );
-        let _provider =
-            (state == "missing").then(|| EnvGuard::set("PHASEGENT_PROVIDER", "forgejo"));
+        let _provider = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
         let parent = if state == "inaccessible" {
             let dir = fixture.db.path().join("blocked");
             std::fs::create_dir(&dir).unwrap();
@@ -4691,121 +4714,103 @@ fn admission_matrix_preserves_complete_state_and_counts_each_route() {
         };
         let path = parent.join("leases.sqlite3");
         let _db = EnvGuard::set("PHASEGENT_DB_PATH", path.to_str().unwrap());
-        let connection = if state == "missing" {
-            None
-        } else if state == "initialized" {
-            let storage = fixture.storage();
-            storage
-                .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
-                .unwrap();
-            fixture.link(8, "owner/repo");
-            let directory = scoped_lease(&fixture, &storage, 8, "retained");
-            assert!(directory.exists());
-            Some(storage.connection)
-        } else {
-            let connection = rusqlite::Connection::open(&path).unwrap();
-            connection.execute_batch("CREATE TABLE global_setting (name TEXT PRIMARY KEY, value TEXT); INSERT INTO global_setting VALUES ('PHASEGENT_DEFAULT_PROVIDER','forgejo');").unwrap();
-            Some(connection)
-        };
-        let initial = connection.as_ref().map(complete_fixture_snapshot);
-        let parent_mode = fixture_permissions(&parent);
-        let file_mode = path.exists().then(|| fixture_permissions(&path));
-        let repo = fixture.repo.path().to_string_lossy().to_string();
-        let routes: &[&[&str]] = &[
-            &[
-                "worktree",
-                "acquire",
-                "--issue",
-                "7",
-                "--session",
-                "fixture-session",
-                "--no-sync",
-            ],
-            &[
-                "worktree",
-                "acquire",
-                "--issue",
-                "7",
-                "--session",
-                "fixture-session",
-            ],
-            &["worktree", "list"],
-            &[
-                "worktree",
-                "prune",
-                "--repo",
-                &repo,
-                "--release-stale",
-                "--stale-days",
-                "0",
-                "--reason",
-                "fixture",
-            ],
-        ];
-        for route in routes {
-            let counter = RouteCounter::start();
-            let mut args = vec!["--api-base".to_owned(), counter.base.clone()];
-            args.extend(route.iter().map(|part| (*part).to_owned()));
-            #[cfg(unix)]
-            if state == "inaccessible" {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
-                assert_eq!(
-                    std::fs::metadata(&path).unwrap_err().kind(),
-                    std::io::ErrorKind::PermissionDenied
-                );
-            }
-            let (exit, _stdout, stderr) = run_captured(fixture.repo.path(), &args);
-            let _blocked_mode = fixture_permissions(&parent);
-            let requests = counter.finish();
-            #[cfg(unix)]
-            if state == "inaccessible" {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    &parent,
-                    std::fs::Permissions::from_mode(parent_mode.1.unwrap()),
-                )
-                .unwrap();
-                assert_eq!(_blocked_mode.1.unwrap() & 0o777, 0, "{route:?}");
-            }
-            assert_ne!(exit, 0, "{state}: {route:?}");
-            let expected = if state == "inaccessible" {
-                "could not inspect phasegent database"
+        let mut storage = None;
+        if state == "old" || state == "initialized" {
+            if state == "old" {
+                let connection = rusqlite::Connection::open(&path).unwrap();
+                connection
+                    .execute_batch(
+                        "CREATE TABLE global_setting (name TEXT PRIMARY KEY, value TEXT); \
+                         INSERT INTO global_setting VALUES ('PHASEGENT_DEFAULT_PROVIDER','forgejo');",
+                    )
+                    .unwrap();
             } else {
-                "explicit --provider forgejo"
-            };
-            assert!(stderr.contains(expected), "{state}: {route:?}: {stderr}");
-            assert_eq!(requests, 0, "{state}: {route:?}");
-            assert_eq!(
-                fixture_permissions(&parent),
-                parent_mode,
-                "{state}: {route:?}"
-            );
-            if let Some(connection) = connection.as_ref() {
-                assert_eq!(
-                    Some(complete_fixture_snapshot(connection)),
-                    initial,
-                    "{state}: {route:?}"
-                );
-                assert_eq!(
-                    Some(fixture_permissions(&path)),
-                    file_mode,
-                    "{state}: {route:?}"
-                );
-            } else {
-                assert!(!path.exists(), "{state}: {route:?}");
-                assert_eq!(
-                    std::fs::read_dir(&parent).unwrap().count(),
-                    0,
-                    "{state}: {route:?}"
-                );
+                let opened = Storage::open_at(&path).unwrap();
+                ensure_schema(&opened).unwrap();
+                opened
+                    .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+                    .unwrap();
+                fixture.link(8, "owner/repo");
+                let directory = scoped_lease(&fixture, &opened, 8, "retained");
+                assert!(directory.exists());
             }
+            storage = Storage::open_at(&path).ok();
         }
+        let parent_mode = fixture_permissions(&parent);
+        let counter = RouteCounter::start();
+        let mut args = vec![
+            "--api-base".to_owned(),
+            counter.base.clone(),
+            "worktree".to_owned(),
+            "acquire".to_owned(),
+            "--issue".to_owned(),
+            "7".to_owned(),
+            "--session".to_owned(),
+            "fixture-session".to_owned(),
+            "--no-sync".to_owned(),
+        ];
+        #[cfg(unix)]
+        if state == "inaccessible" {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+        let (exit, _stdout, stderr) = run_captured(fixture.repo.path(), &args);
+        let _blocked_mode = fixture_permissions(&parent);
+        let requests = counter.finish();
+        #[cfg(unix)]
+        if state == "inaccessible" {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &parent,
+                std::fs::Permissions::from_mode(parent_mode.1.unwrap()),
+            )
+            .unwrap();
+            assert_eq!(_blocked_mode.1.unwrap() & 0o777, 0, "{state}");
+        }
+        assert_ne!(exit, 0, "{state}");
+        let expected = if state == "inaccessible" {
+            "could not inspect phasegent database"
+        } else {
+            "Forgejo"
+        };
+        assert!(stderr.contains(expected), "{state}: {stderr}");
+        assert!(
+            !stderr.contains("explicit --provider forgejo"),
+            "{state}: {stderr}"
+        );
+        assert_eq!(requests, 0, "{state}");
+        #[cfg(unix)]
+        if state == "inaccessible" {
+            assert_eq!(fixture_permissions(&parent), parent_mode, "{state}");
+        }
+        if let Some(opened) = storage.as_ref() {
+            ensure_schema(opened).unwrap();
+            let rows = list_all_for_repo(opened, &fixture.identity()).unwrap();
+            if state == "initialized" {
+                assert_eq!(rows.len(), 1, "{state}: {rows:?}");
+                assert_eq!(rows[0].status, "retained");
+            } else {
+                assert!(rows.is_empty(), "{state}: {rows:?}");
+            }
+        } else if path.exists() {
+            // The common selection path opens the store before it proves the
+            // provider scope or credential, so the file may exist; it must
+            // still hold no lease because the route failed.
+            let opened = Storage::open_at(&path).unwrap();
+            ensure_schema(&opened).unwrap();
+            let rows = list_all_for_repo(&opened, &fixture.identity()).unwrap();
+            assert!(rows.is_empty(), "{state}: {rows:?}");
+        }
+        args.clear();
     }
 }
 
 #[test]
-fn old_stored_default_is_rejected_across_every_entry_route() {
+fn old_stored_default_is_admitted_across_every_entry_route() {
     let fixture = Fixture::new("old-store-route-matrix");
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
     let path = fixture.db.path().join("leases.sqlite3");
@@ -4816,112 +4821,57 @@ fn old_stored_default_is_rejected_across_every_entry_route() {
              INSERT INTO global_setting VALUES ('PHASEGENT_DEFAULT_PROVIDER', 'forgejo');",
         )
         .unwrap();
-    let count_tables = || -> i64 {
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
-    let before = count_tables();
-    let schema_before: String = connection
-        .query_row(
-            "SELECT group_concat(name || ':' || COALESCE(sql,''), '|') FROM (SELECT name, sql FROM sqlite_master ORDER BY name)",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let diagnostic = crate::cli::provider_context::ProviderContext::default()
-        .validate(Role::Orchestrator)
-        .unwrap_err()
-        .json()
-        .get("message")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_owned();
-    assert!(
-        diagnostic.contains("explicit --provider forgejo"),
-        "old store must report the explicit-selection hint: {diagnostic}"
-    );
     let repo = fixture.repo.path().to_string_lossy().to_string();
+    let counter = RouteCounter::start();
     let commands: Vec<Vec<String>> = vec![
         vec![
-            "worktree",
-            "acquire",
-            "--issue",
-            "7",
-            "--session",
-            "fixture-session",
-            "--no-sync",
+            "worktree".to_owned(),
+            "acquire".to_owned(),
+            "--issue".to_owned(),
+            "7".to_owned(),
+            "--session".to_owned(),
+            "fixture-session".to_owned(),
+            "--no-sync".to_owned(),
         ],
+        vec!["worktree".to_owned(), "list".to_owned()],
         vec![
-            "worktree",
-            "acquire",
-            "--issue",
-            "7",
-            "--session",
-            "fixture-session",
+            "worktree".to_owned(),
+            "prune".to_owned(),
+            "--repo".to_owned(),
+            repo.clone(),
+            "--release-stale".to_owned(),
+            "--stale-days".to_owned(),
+            "0".to_owned(),
+            "--reason".to_owned(),
+            "fixture".to_owned(),
         ],
-        vec!["worktree", "list"],
-        vec![
-            "worktree",
-            "prune",
-            "--repo",
-            &repo,
-            "--release-stale",
-            "--stale-days",
-            "0",
-            "--reason",
-            "fixture",
-        ],
-    ]
-    .into_iter()
-    .map(|command| command.into_iter().map(str::to_owned).collect())
-    .collect();
-    for command in commands {
-        let (exit, _stdout, stderr) = run_captured(fixture.repo.path(), &command);
-        assert_ne!(
-            exit, 0,
-            "route {command:?} must reject the old stored default"
-        );
+    ];
+    for command in &commands {
+        let mut args = vec!["--api-base".to_owned(), counter.base.clone()];
+        args.extend(command.iter().cloned());
+        let (_exit, _stdout, stderr) = run_captured(fixture.repo.path(), &args);
         assert!(
-            stderr.contains("explicit --provider forgejo"),
-            "route {command:?} must report its own explicit-selection diagnostic: {stderr}"
-        );
-        assert_eq!(
-            count_tables(),
-            before,
-            "route {command:?} must not initialize or migrate the old store"
-        );
-        let schema_after: String = connection
-            .query_row(
-                "SELECT group_concat(name || ':' || COALESCE(sql,''), '|') FROM (SELECT name, sql FROM sqlite_master ORDER BY name)",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            schema_after, schema_before,
-            "route {command:?} changed the old schema"
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT value FROM global_setting WHERE name='PHASEGENT_DEFAULT_PROVIDER'",
-                    [],
-                    |row| row.get::<_, String>(0)
-                )
-                .unwrap(),
-            "forgejo",
-            "route {command:?} changed stored default data"
+            !stderr.contains("explicit --provider forgejo"),
+            "route {command:?} must not report the removed admission rule: {stderr}"
         );
     }
+    let requests = counter.finish();
+    assert_eq!(requests, 0, "no route may reach the network: {requests}");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM global_setting WHERE name='PHASEGENT_DEFAULT_PROVIDER'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "forgejo",
+        "no route changed stored default data"
+    );
 }
 
 #[test]
-fn initialized_stored_forgejo_default_is_rejected_without_lease_mutation() {
+fn initialized_stored_forgejo_default_is_admitted_without_lease_mutation() {
     let fixture = Fixture::new("initialized-store-route-matrix");
     let storage = fixture.storage();
     let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
@@ -4937,80 +4887,22 @@ fn initialized_stored_forgejo_default_is_rejected_without_lease_mutation() {
             "fixture-token",
         )
         .unwrap();
-    let diagnostic = crate::cli::provider_context::ProviderContext::default()
-        .validate(Role::Orchestrator)
-        .unwrap_err()
-        .json()
-        .get("message")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_owned();
-    assert!(
-        diagnostic.contains("explicit --provider forgejo"),
-        "initialized store must report the explicit-selection hint: {diagnostic}"
-    );
     fixture.link(8, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 8, "retained");
     let before = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    let repo = fixture.repo.path().to_string_lossy().to_string();
-    let commands: Vec<Vec<String>> = vec![
-        vec![
-            "worktree",
-            "acquire",
-            "--issue",
-            "7",
-            "--session",
-            "fixture-session",
-            "--no-sync",
-        ],
-        vec![
-            "worktree",
-            "acquire",
-            "--issue",
-            "7",
-            "--session",
-            "fixture-session",
-        ],
-        vec!["worktree", "list"],
-        vec![
-            "worktree",
-            "prune",
-            "--repo",
-            &repo,
-            "--release-stale",
-            "--stale-days",
-            "0",
-            "--reason",
-            "fixture",
-        ],
-    ]
-    .into_iter()
-    .map(|command| command.into_iter().map(str::to_owned).collect())
-    .collect();
-    for command in commands {
-        let (exit, _stdout, stderr) = run_captured(fixture.repo.path(), &command);
-        assert_ne!(
-            exit, 0,
-            "route {command:?} must reject the stored Forgejo default"
-        );
-        assert!(
-            stderr.contains("explicit --provider forgejo"),
-            "route {command:?} must report its own explicit-selection diagnostic: {stderr}"
-        );
-        let after = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-        assert_eq!(after.len(), before.len(), "route {command:?} added a lease");
-        for (before_row, after_row) in before.iter().zip(after.iter()) {
-            assert_eq!(before_row.lease_id, after_row.lease_id);
-            assert_eq!(before_row.status, after_row.status);
-            assert_eq!(before_row.heartbeat_at, after_row.heartbeat_at);
-        }
-        assert!(directory.exists());
-    }
+    let args: Vec<String> = ["worktree", "list"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
     let requests = mock.finish();
-    assert!(
-        requests.is_empty(),
-        "no route may contact a provider: {requests:?}"
-    );
+    assert_eq!(exit, 0, "the listing is admitted under the Forgejo default");
+    let _ = requests;
+    let after = list_all_for_repo(&storage, &fixture.identity()).unwrap();
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[0].status, before[0].status);
+    assert_eq!(after[0].heartbeat_at, before[0].heartbeat_at);
+    assert!(directory.exists());
 }
 
 #[cfg(unix)]
@@ -10925,5 +10817,184 @@ fn explicit_forgejo_bind_rejects_a_pull_request_document() {
     assert!(
         requests_hit(&requests, "GET", "/api/v1/repos/owner/repo/issues/61"),
         "the fixture must have served the pull request document: {requests:?}"
+    );
+}
+
+#[test]
+fn default_forgejo_create_persists_the_task_and_scoped_lease() {
+    let fixture = Fixture::new("default-create");
+    let storage = fixture.storage();
+    let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+        .unwrap();
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
+    storage
+        .save_forgejo_auth(
+            Role::Orchestrator,
+            &mock.base,
+            "owner/repo",
+            "fixture-token",
+        )
+        .unwrap();
+    let args: Vec<String> = [
+        "--output",
+        "json",
+        "issue",
+        "create",
+        "--title",
+        "fixture",
+        "--body",
+        "fixture",
+        "--session",
+        "session-create",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
+    let requests = mock.finish();
+    assert_eq!(exit, 0, "a persisted Forgejo default creates");
+    assert_eq!(
+        requests.len(),
+        2,
+        "one repository read and one native create: {requests:?}"
+    );
+    assert!(requests[1].starts_with("POST "));
+    assert!(requests[1].ends_with(r#"{"body":"fixture","title":"fixture"}"#));
+    assert!(
+        !requests.iter().any(|request| request.contains("/labels")),
+        "the native create reads no label catalogue: {requests:?}"
+    );
+    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
+    assert_eq!(rows.len(), 1, "the create books one lease: {rows:?}");
+    let scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        &storage,
+        &fixture.identity(),
+        Some(&route_repo_key(&fixture)),
+    )
+    .unwrap();
+    let scope = scopes
+        .get(&rows[0].lease_id)
+        .expect("the create records its scope");
+    assert_eq!(scope.provider(), "forgejo");
+    assert_eq!(scope.project(), "owner/repo");
+    assert!(
+        scope.task_id().is_some(),
+        "the create's canonical task owns the lease"
+    );
+}
+
+#[test]
+fn unbound_number_with_another_scope_link_refuses_before_http_under_a_forgejo_default() {
+    let fixture = Fixture::new("default-other-scope");
+    let storage = fixture.storage();
+    let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+        .unwrap();
+    let mock = ZeroMock::start();
+    storage
+        .save_forgejo_auth(
+            Role::Orchestrator,
+            &mock.base,
+            "owner/repo",
+            "fixture-token",
+        )
+        .unwrap();
+    // The branch link names another repository scope, so the resolved default
+    // must refuse before any provider request.
+    fixture.link(7, "other/repo");
+    let args: Vec<String> = ["issue", "get", "7"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
+    let requests = mock.finish();
+    assert_ne!(exit, 0, "another scope refuses the default");
+    assert!(
+        requests.is_empty(),
+        "the refusal happens before any HTTP: {requests:?}"
+    );
+}
+
+#[test]
+fn conflicting_scope_refusal_preserves_legacy_configuration_rows() {
+    let fixture = Fixture::new("conflicting-scope-read-only-review");
+    let storage = fixture.storage();
+    let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+        .unwrap();
+    let mock = ZeroMock::start();
+    storage
+        .save_forgejo_auth(
+            Role::Orchestrator,
+            &mock.base,
+            "owner/repo",
+            "fixture-token",
+        )
+        .unwrap();
+    fixture.link(7, "other/repo");
+    storage
+        .connection
+        .execute(
+            "INSERT OR REPLACE INTO role_redmine_config (role, project_id) VALUES ('reviewer', 'legacy-project')",
+            [],
+        )
+        .unwrap();
+    let before = complete_fixture_snapshot(&storage.connection);
+    let args: Vec<String> = ["issue", "get", "7"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
+    let requests = mock.finish();
+    assert_ne!(exit, 0);
+    assert!(requests.is_empty());
+    assert_eq!(
+        complete_fixture_snapshot(&storage.connection),
+        before,
+        "refusal must not mutate configuration or schema"
+    );
+}
+
+#[test]
+fn explicit_redmine_and_local_override_a_forgejo_default() {
+    let fixture = Fixture::new("override-default");
+    let storage = fixture.storage();
+    let _env = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
+    storage
+        .save_global_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+        .unwrap();
+    let mock = ZeroMock::start();
+    storage
+        .save_forgejo_auth(
+            Role::Orchestrator,
+            &mock.base,
+            "owner/repo",
+            "fixture-token",
+        )
+        .unwrap();
+    let local: Vec<String> = ["--provider", "local", "status", "list"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let exit = run_as(fixture.repo.path(), "orchestrator", &local);
+    assert_eq!(exit, 0, "explicit local overrides the Forgejo default");
+    let redmine: Vec<String> = ["--provider", "redmine", "issue", "get", "7"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let (redmine_exit, _stdout, stderr) = run_captured(fixture.repo.path(), &redmine);
+    assert_ne!(redmine_exit, 0, "the Redmine route is the one that runs");
+    assert!(
+        stderr.to_ascii_lowercase().contains("redmine"),
+        "the failure names Redmine, not Forgejo: {stderr}"
+    );
+    let requests = mock.finish();
+    assert!(
+        requests.is_empty(),
+        "no override reaches the Forgejo default: {requests:?}"
     );
 }

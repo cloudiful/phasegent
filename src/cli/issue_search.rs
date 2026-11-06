@@ -196,7 +196,9 @@ pub(crate) fn execute_search_transparent(
     // identical; single-number paths never call this helper.
     let mut effective_project = project_id.map(str::to_owned);
     let mut effective_close = close_status_id.map(str::to_owned);
-    if resolved_kind == ProviderKind::Redmine && effective_project.is_none() {
+    if crate::cli::provider_context::capabilities_for(resolved_kind).project_discovery
+        && effective_project.is_none()
+    {
         match crate::cli::project_resolution::resolve_redmine_project_for_search_or_create(
             role,
             api_base,

@@ -152,12 +152,20 @@ pub(super) fn execute_acquire_scoped(
             None,
         );
     }
-    if context.provider == Some(crate::providers::ProviderKind::Forgejo) {
-        let repository = match context.owned_forgejo_repository(crate::policy::Role::Orchestrator) {
-            Ok(Some(repository)) => repository,
+    // A provider without legacy numeric leases always records its exact
+    // resolved scope; a legacy-capable provider (Redmine, Local) keeps the
+    // unscoped numeric path. The decision is a capability, never a kind or
+    // selection-string comparison.
+    let legacy_numeric_leases = match context.capabilities(crate::policy::Role::Orchestrator) {
+        Ok(capabilities) => capabilities.legacy_numeric_leases,
+        Err(error) => return structured_error(error.json(), 1),
+    };
+    if !legacy_numeric_leases {
+        let scope = match context.resolved_scope(crate::policy::Role::Orchestrator) {
+            Ok(Some(scope)) => scope,
             Ok(None) => {
                 return structured_error(
-                    serde_json::json!({"kind": "argument", "message": "Forgejo scope could not be resolved"}),
+                    serde_json::json!({"kind": "argument", "message": "the selected provider scope could not be resolved"}),
                     1,
                 );
             }
@@ -173,7 +181,7 @@ pub(super) fn execute_acquire_scoped(
             runner,
             &repo_path,
             None,
-            Some(&repository),
+            Some(&scope),
         )
     } else {
         execute_acquire_at(
@@ -203,7 +211,7 @@ fn execute_acquire_at_scoped(
     runner: &dyn crate::worktree::WorktreeRunner,
     repo_path: &std::path::Path,
     task: Option<&crate::task_identity::TaskBinding>,
-    repository: Option<&str>,
+    scope: Option<&crate::cli::provider_context::ResolvedScope>,
 ) -> i32 {
     let _ = format; // only "json" is accepted at the parser layer
     let session = match resolve_session(session) {
@@ -251,16 +259,20 @@ fn execute_acquire_at_scoped(
             }
         }
         None => {
-            let repository = match repository {
-                Some(repository) => repository.to_owned(),
+            let resolved = match scope {
+                Some(scope) => scope,
                 None => {
                     return structured_error(
-                        serde_json::json!({"kind": "argument", "message": "Forgejo scope could not be resolved"}),
+                        serde_json::json!({"kind": "argument", "message": "the selected provider scope could not be resolved"}),
                         1,
                     );
                 }
             };
-            match crate::worktree::LeaseScope::new("forgejo", &repository, issue) {
+            match crate::worktree::LeaseScope::new(
+                resolved.provider.as_str(),
+                &resolved.project,
+                issue,
+            ) {
                 Ok(scope) => scope,
                 Err(error) => {
                     return structured_error(

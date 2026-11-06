@@ -19,6 +19,12 @@ pub use redmine::model::{RedmineIssueStatus, RedmineProject, RedmineVersion};
 pub struct ProviderCapabilities {
     pub issue_lifecycle: bool,
     pub comments: bool,
+    /// The provider discovers a project from the repository origin (Redmine).
+    /// Providers without it use their attested scope only.
+    pub project_discovery: bool,
+    /// The provider keeps unscoped numeric lease compatibility for history
+    /// that carries no durable task or scope evidence (Redmine and Local).
+    pub legacy_numeric_leases: bool,
 }
 
 #[allow(dead_code)]

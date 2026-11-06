@@ -1301,7 +1301,7 @@ fn shared_skill_carries_task_routing_policy() {
     for needle in [
         "the current branch task reference, then a unique repository membership",
         "never remaps a bound task",
-        "still refused for any number without a matching durable task",
+        "the configured default — role or global setting",
         "confirmed closed through its own durable task",
     ] {
         assert!(
@@ -1316,6 +1316,29 @@ fn shared_skill_carries_task_routing_policy() {
     assert!(
         !skill.contains("closed on the configured provider"),
         "the stale one-default closure wording must stay removed"
+    );
+}
+
+/// Issue 1201 P12: a Forgejo default is an equal configured selection, not an
+/// opt-in that the operator must repeat as an explicit flag.
+#[test]
+fn shared_skill_states_equal_configured_forgejo_selection() {
+    let _lock = lock_workflow_tests();
+    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
+    for needle in [
+        "A configured Forgejo default is selected",
+        "needs no explicit",
+        "attested `owner/repo`",
+        "never a repository inferred from the Git origin",
+    ] {
+        assert!(
+            skill.contains(needle),
+            "the shared skill must state equal Forgejo selection {needle:?}"
+        );
+    }
+    assert!(
+        !skill.contains("A stored or environment Forgejo default is still refused"),
+        "the removed opt-in refusal must stay gone"
     );
 }
 

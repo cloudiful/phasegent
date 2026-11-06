@@ -73,7 +73,6 @@ pub(crate) use crate::cli::issue_closure::{
     ExplicitSelection, IssueStateSource, configured_source, configured_source_context,
     configured_source_scoped, configured_source_task_aware,
 };
-use crate::providers::ProviderKind;
 use host_cache::ScanHostCache;
 pub(crate) use leases::{ReleaseStaleAction, ReleaseStaleSummary};
 #[cfg(test)]
@@ -165,8 +164,8 @@ pub(super) fn execute_prune(
     context: &crate::cli::provider_context::ProviderContext,
 ) -> i32 {
     // The complete context is validated before storage, recovery, mutation or
-    // HTTP: an implicit Forgejo default and incompatible explicit flags fail
-    // closed, while explicit Local/Redmine remain valid.
+    // HTTP: incompatible Forgejo flags fail closed for any resolved selection,
+    // while every provider resolves through the common chain.
     if let Err(error) = context.validate(role) {
         return crate::cli::provider_error(error);
     }
@@ -174,22 +173,23 @@ pub(super) fn execute_prune(
     // omitted selection keeps endpoint overrides without being promoted to an
     // explicit provider and every explicit flag reaches validation.
     let source = configured_source_task_aware(role, context.clone());
-    let owned_forgejo_project = match context.provider {
-        Some(ProviderKind::Forgejo) => context.owned_forgejo_repository(role).ok().flatten(),
-        _ => None,
+    let legacy_numeric_leases = match context.capabilities(role) {
+        Ok(capabilities) => capabilities.legacy_numeric_leases,
+        Err(error) => return crate::cli::provider_error(error),
     };
-    let recovery_scope = match (&owned_forgejo_project, context.provider) {
-        // An explicit Forgejo selection is a legacy selector: it owns the
-        // legacy scoped rows of that repository and never a durable task row,
-        // because the task owns its own leases.
-        (Some(project), _) => StaleRecoveryScope::Exact {
-            provider: "forgejo",
-            project: project.as_str(),
+    // Stale recovery is evidence-driven: a provider without legacy numeric
+    // leases owns only its exact resolved scope, and a legacy-capable
+    // provider keeps its unscoped numeric compatibility.
+    let resolved_scope = context.resolved_scope(role).ok().flatten();
+    let recovery_scope = match (resolved_scope.as_ref(), legacy_numeric_leases) {
+        (Some(scope), false) => StaleRecoveryScope::Exact {
+            provider: scope.provider.as_str(),
+            project: scope.project.as_str(),
             task_id: None,
             instance: None,
         },
-        (None, Some(ProviderKind::Forgejo)) => StaleRecoveryScope::Nothing,
-        _ => StaleRecoveryScope::LegacyOnly,
+        (_, true) => StaleRecoveryScope::LegacyOnly,
+        (None, false) => StaleRecoveryScope::Nothing,
     };
     let api = ProcessOpenCodeApi::new();
     execute_prune_with_source(
@@ -203,7 +203,7 @@ pub(super) fn execute_prune(
         &api,
         &stderr_note,
         recovery_scope,
-        context.provider == Some(ProviderKind::Forgejo),
+        !legacy_numeric_leases,
     )
 }
 
@@ -225,11 +225,13 @@ pub(crate) fn execute_prune_with_source(
     api: &dyn crate::worktree::opencode::OpenCodeApi,
     progress: &dyn Fn(&str),
     recovery_scope: StaleRecoveryScope<'_>,
-    explicit_forgejo: bool,
+    scoped_only: bool,
 ) -> i32 {
     // Wall duration of the command's own work; reported in text only, never as a
     // machine field.
     let started = Instant::now();
+    // A provider without legacy numeric leases acts on exact scopes only.
+    let legacy_numeric_leases = !scoped_only;
     // One scheduling budget for every pending move of a removal invocation;
     // the deadline begins at the first pending accepted move and never resets
     // per directory or session. The preview always keeps the no-wait policy.
@@ -364,9 +366,9 @@ pub(crate) fn execute_prune_with_source(
             Err(error) => return storage_error(&error),
         };
         // Only rows this invocation's provider selection may own are shown
-        // or released: legacy/default contexts never flip a scoped Forgejo
-        // lease, and explicit Forgejo flips only its matching repository
-        // scope.
+        // or released: a legacy-capable selection never flips a scoped lease,
+        // and a provider without legacy numeric leases flips only its exact
+        // resolved scope.
         candidates.retain(|row| recovery_scope.allows(scope_map.get(&row.lease_id)));
         let lease_summary = match requested_reason.as_deref().filter(|_| apply_recovery) {
             Some(reason) => match recover_stale_active_leases_for_scope(
@@ -451,7 +453,7 @@ pub(crate) fn execute_prune_with_source(
                 provider_scope
                     .as_ref()
                     .map(|(provider, project)| (provider.as_str(), project.as_str())),
-                explicit_forgejo,
+                legacy_numeric_leases,
                 progress,
             )
         };
