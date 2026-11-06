@@ -35,7 +35,6 @@ pub fn resolve_link_scope(
     repository: Option<&str>,
     project_id: Option<&str>,
 ) -> Result<Option<LinkScope>, String> {
-    let _ = repository;
     let effective = role.unwrap_or(Role::Orchestrator);
     let literal = match select_provider_literal(effective, explicit_provider)? {
         Some(literal) => literal,
@@ -57,6 +56,22 @@ pub fn resolve_link_scope(
             provider: "local".to_owned(),
             project: "default".to_owned(),
         })),
+        "forgejo" => {
+            let config =
+                crate::providers::forgejo::ForgejoConfig::resolve(effective, None, repository)
+                    .map_err(|error| {
+                        let body = error.json();
+                        let detail = body
+                            .get("message")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("Forgejo repository is unresolved");
+                        format!("cannot scope branch link: {detail}")
+                    })?;
+            Ok(Some(LinkScope {
+                provider: "forgejo".to_owned(),
+                project: config.repository().to_owned(),
+            }))
+        }
         other => Err(format!(
             "cannot scope branch link: unknown provider '{other}'"
         )),

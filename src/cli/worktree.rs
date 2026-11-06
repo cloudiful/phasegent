@@ -82,6 +82,50 @@ fn validate_context_for_worktree(
     }
 }
 
+/// Validate the raw provider flags an acquisition can never honour.
+///
+/// The close-status id is parsed by the ordinary pinned Redmine route, so a
+/// non-numeric, zero or out-of-range value is rejected there. The provider
+/// selections are resolved by the ordinary numbered route, so a blank one is
+/// rejected there as well. An acquisition resolves only identity, so it
+/// validates the raw values itself: bound and legacy numbers alike refuse
+/// before the taxi pass or any lease write, independent of the resolved
+/// default provider. The Forgejo prohibition on the flag stays with the
+/// provider context and is unchanged.
+fn validate_acquire_flags(
+    context: &crate::cli::provider_context::ProviderContext,
+) -> Result<(), crate::providers::api::PhasegentError> {
+    use crate::providers::api::PhasegentError;
+    if let Some(value) = context.close_status_id.as_deref() {
+        let id = value
+            .parse::<u64>()
+            .map_err(|_| PhasegentError::config("Redmine close status id must be numeric"))?;
+        if id == 0 {
+            return Err(PhasegentError::config(
+                "Redmine close status id must be greater than zero",
+            ));
+        }
+    }
+    if let Some(value) = context.project_id.as_deref()
+        && value.trim().is_empty()
+    {
+        return Err(PhasegentError::config("Redmine project id cannot be empty"));
+    }
+    if let Some(value) = context.api_base.as_deref()
+        && value.trim().is_empty()
+    {
+        return Err(PhasegentError::config("provider endpoint cannot be empty"));
+    }
+    if let Some(value) = context.repository.as_deref()
+        && value.trim().is_empty()
+    {
+        return Err(PhasegentError::config(
+            "provider repository cannot be empty",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn execute_worktree_scoped(
     caller: CallerContext,
     context: &crate::cli::provider_context::ProviderContext,
@@ -112,10 +156,37 @@ pub(crate) fn execute_worktree_scoped(
     let credential = caller
         .credential_role()
         .expect("authorized caller has a credential");
+    // A malformed raw close-status or provider selection is refused for
+    // bound and legacy numbers alike, before the task resolution, the
+    // complete raw-context validation, the taxi reconciliation or any lease
+    // write.
+    if matches!(&command, WorktreeCommand::Acquire { .. })
+        && let Err(error) = validate_acquire_flags(context)
+    {
+        return crate::cli::provider_error(error);
+    }
+    // A durable task owns its acquisition. Resolve it strictly read-only with
+    // the same branch-reference then unique-membership rules and the same raw
+    // explicit filters as the ordinary numbered route, before any
+    // default-provider admission, taxi reconciliation or lease/store write. A
+    // known task is authoritative, so a changed or implicit default never
+    // rejects or re-points it; every other command and number keeps the
+    // complete raw-context validation below.
+    let acquire_task = match &command {
+        WorktreeCommand::Acquire { issue, .. } => {
+            match crate::cli::task_route::resolve_number_task(context, *issue) {
+                Ok(task) => task,
+                Err(error) => return crate::cli::provider_error(error),
+            }
+        }
+        _ => None,
+    };
     // Validate the complete raw context before taxi reconciliation or any
     // acquisition/recovery mutation, even when the taxi has no candidates or
     // the command is a supported --no-sync form.
-    if let Err(error) = validate_context_for_worktree(context, credential, &command) {
+    if acquire_task.is_none()
+        && let Err(error) = validate_context_for_worktree(context, credential, &command)
+    {
         return crate::cli::provider_error(error);
     }
     let runner = ProcessWorktreeRunner::new();
@@ -151,6 +222,7 @@ pub(crate) fn execute_worktree_scoped(
                 sync_setup.as_ref(),
                 context,
                 &runner,
+                acquire_task.as_ref(),
             )
         }
         WorktreeCommand::Release {

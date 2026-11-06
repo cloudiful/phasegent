@@ -45,6 +45,10 @@ impl CleanupContext {
     /// on the directory — scoped or not — carries that same provider and
     /// project; mixed or foreign directories keep. Individual release and
     /// candidate selection still use the exact per-issue key.
+    ///
+    /// A task-scoped pass is stricter still: every scoped lease on the
+    /// directory must carry the same durable task, so a same-number task on
+    /// another instance never shares a directory with the closed task.
     pub(super) fn directory_scope_allowed(
         &self,
         directory: &Path,
@@ -66,8 +70,17 @@ impl CleanupContext {
         };
         rows.iter().all(|row| {
             self.scopes.get(&row.lease_id).is_some_and(|scope| {
-                scope.provider() == allowed_scope.provider()
-                    && scope.project() == allowed_scope.project()
+                if scope.provider() != allowed_scope.provider()
+                    || scope.project() != allowed_scope.project()
+                {
+                    return false;
+                }
+                match allowed_scope.task_id() {
+                    // A task-scoped pass only owns the leases of that exact
+                    // task; a legacy or other-task row keeps the directory.
+                    Some(task_id) => scope.task_id() == Some(task_id),
+                    None => true,
+                }
             })
         })
     }
@@ -76,13 +89,23 @@ impl CleanupContext {
     /// A caller that owns the lease store reuses it instead of reopening
     /// the database, and the read is always fresh: the cleanup guards must
     /// see the rows as they are after any release, not a scan snapshot.
+    ///
+    /// The sidecar map is checked against the durable key of the physical
+    /// repository the identity names, so a task-bearing lease row that is
+    /// not a member of that repository is refused here and the whole pass
+    /// keeps its directories.
     pub(crate) fn load(storage: &Storage, identity: &str) -> Result<Self, String> {
+        let repo_key = crate::worktree::lease_scope::verified_repo_key_for_identity(identity);
         match load_repository(storage, identity) {
             Ok(rows) => Ok(Self {
                 identity: identity.to_owned(),
                 rows,
-                scopes: crate::worktree::lease_scope::scope_map_for_repo(storage, identity)
-                    .map_err(|error| error.message)?,
+                scopes: crate::worktree::lease_scope::scope_map_for_repo_with_key(
+                    storage,
+                    identity,
+                    repo_key.as_deref(),
+                )
+                .map_err(|error| error.message)?,
             }),
             Err(error) => Err(error),
         }

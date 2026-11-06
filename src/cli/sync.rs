@@ -57,6 +57,36 @@ pub(crate) use engine::set_retention_interleave_hook;
 pub(crate) use engine::{SyncSetup, resolve_setup, run_sync_resolved};
 use scopes::open_lease_storage;
 
+/// The production task resolver: a durable task's own stored instance
+/// decides the endpoint, and the current role credential is used only when
+/// the configured endpoint provenance matches that instance. A task on an
+/// instance this role does not serve fails here, so its group keeps before
+/// any request and without a token leaving the process.
+struct RoleTaskProviderResolver {
+    role: Role,
+    context: crate::cli::provider_context::ProviderContext,
+}
+
+impl engine::TaskProviderResolver for RoleTaskProviderResolver {
+    fn provider_for(
+        &self,
+        connection: &rusqlite::Connection,
+        task_id: i64,
+    ) -> Result<crate::providers::ProviderDispatcher, crate::providers::api::PhasegentError> {
+        match crate::cli::task_route::pinned_provider_for_task(
+            self.role,
+            connection,
+            task_id,
+            &self.context,
+        )? {
+            Some((_, provider)) => Ok(provider),
+            None => Err(crate::providers::api::PhasegentError::config(format!(
+                "the durable task reference {task_id} has no binding"
+            ))),
+        }
+    }
+}
+
 /// Lease `release_reason` recorded when the reconciliation converges an
 /// issue the provider already closed.
 const SYNC_RELEASE_REASON: &str = "issue closed on the remote (issue sync)";
@@ -193,6 +223,7 @@ pub(crate) fn run_sync(
         .map(|scope| (scope.source, scope.project));
     engine::run_sync_scopes(
         &|issue| provider.get_issue(issue),
+        None,
         provider_scope
             .as_ref()
             .map(|(a, b)| (a.as_str(), b.as_str())),
@@ -276,8 +307,13 @@ pub(crate) fn execute_sync_with_caller(
     let provider_scope = crate::providers::index_store::provider_scope(&provider)
         .ok()
         .map(|scope| (scope.source, scope.project));
+    let task_provider = RoleTaskProviderResolver {
+        role,
+        context: context.clone(),
+    };
     match run_sync_resolved(
         &|issue| provider.get_issue(issue),
+        Some(&task_provider),
         provider_scope
             .as_ref()
             .map(|(a, b)| (a.as_str(), b.as_str())),
@@ -331,7 +367,7 @@ pub(crate) fn taxi_sync_scoped(
         Some(raw) => PathBuf::from(raw),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    taxi_sync_in(runner, storage, &cwd, || {
+    taxi_sync_in(role, context, runner, storage, &cwd, || {
         let provider = context.resolve(role)?;
         let scope = crate::providers::index_store::provider_scope(&provider)
             .ok()
@@ -341,6 +377,8 @@ pub(crate) fn taxi_sync_scoped(
 }
 
 pub(crate) fn taxi_sync_in<G, R>(
+    role: Role,
+    context: &crate::cli::provider_context::ProviderContext,
     runner: &dyn crate::worktree::WorktreeRunner,
     storage: crate::infra::storage::Storage,
     cwd: &Path,
@@ -372,8 +410,13 @@ where
             );
         }
     };
+    let task_provider = RoleTaskProviderResolver {
+        role,
+        context: context.clone(),
+    };
     let warnings = match run_sync_resolved(
         &get_issue,
+        Some(&task_provider),
         provider_scope
             .as_ref()
             .map(|(a, b)| (a.as_str(), b.as_str())),

@@ -15,8 +15,8 @@ use crate::lifecycle::AutoCleanupOutcome;
 use crate::lifecycle::CleanupMode;
 use crate::lifecycle::cleanup::closure::DenyOtherIssues;
 use crate::lifecycle::cleanup::{CleanupContext, cleanup_closed_issue_worktrees_in_context};
-use crate::providers::IssueSummary;
 use crate::providers::api::PhasegentError;
+use crate::providers::{IssueProvider, IssueSummary};
 use crate::worktree::leases::release_active_leases_for_issue_with;
 use crate::worktree::opencode::ProcessOpenCodeApi;
 use crate::worktree::{
@@ -73,6 +73,7 @@ pub(crate) fn resolve_setup(
 /// legacy row is never touched.
 pub(crate) fn run_sync_resolved(
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    task_provider: Option<&dyn TaskProviderResolver>,
     provider_scope: Option<(&str, &str)>,
     runner: &dyn WorktreeRunner,
     setup: &mut SyncSetup,
@@ -86,6 +87,7 @@ pub(crate) fn run_sync_resolved(
     } = setup;
     run_sync_scopes(
         get_issue,
+        task_provider,
         provider_scope,
         runner,
         storage,
@@ -96,9 +98,25 @@ pub(crate) fn run_sync_resolved(
     )
 }
 
+/// Resolves the pinned provider of one durable task group.
+///
+/// This is the only path a task group takes to a provider: the task's own
+/// stored instance decides the endpoint, and a task whose instance the role
+/// does not serve fails here, before any request and without a token leaving
+/// the process. The lookup runs on the pass's own connection, so a pass
+/// reads the very store it owns.
+pub(crate) trait TaskProviderResolver {
+    fn provider_for(
+        &self,
+        connection: &rusqlite::Connection,
+        task_id: i64,
+    ) -> Result<crate::providers::ProviderDispatcher, PhasegentError>;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_sync_scopes(
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    task_provider: Option<&dyn TaskProviderResolver>,
     provider_scope: Option<(&str, &str)>,
     runner: &dyn WorktreeRunner,
     storage: &Storage,
@@ -117,33 +135,58 @@ pub(super) fn run_sync_scopes(
             let issue = *issue;
             let fresh = crate::worktree::leases::list_all_for_repo(storage, &scope.repo_identity)
                 .map_err(|error| PhasegentError::request("issue sync", error.message))?;
-            let scope_map =
-                crate::worktree::lease_scope::scope_map_for_repo(storage, &scope.repo_identity)
-                    .map_err(|error| PhasegentError::request("issue sync", error.message))?;
-            match scoped_processing(issue, rows, &fresh, &scope_map, provider_scope) {
-                ScopedProcessing::Unscoped => {}
-                ScopedProcessing::Keep(reason) => {
-                    report.skipped_repos.push(super::SyncSkippedRepo {
-                        repo_identity: scope.repo_identity.clone(),
-                        reason,
-                    });
-                    continue;
-                }
-                ScopedProcessing::Provider => {
-                    // Read and prove the remote state before any lease or
-                    // directory mutation. An open, missing, or failed read
-                    // leaves the active lease exactly as it was.
-                    let summary = match get_issue(issue) {
-                        Ok(summary) => summary,
-                        Err(PhasegentError::NotFound { .. }) => {
-                            report.not_found += 1;
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                    };
-                    if !summary.state.eq_ignore_ascii_case("closed") {
-                        report.not_closed += 1;
-                        report.issues.push(SyncIssueReport {
+            let scope_map = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+                storage,
+                &scope.repo_identity,
+                scope.repo_key.as_deref(),
+            )
+            .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+            // Every group of this number is reconciled on its own: a durable
+            // task and the legacy history are never merged, and two
+            // same-number tasks on two instances never share a group.
+            for group in lease_groups(issue, &fresh, &scope_map) {
+                match scoped_processing(&group, rows, &fresh, &scope_map, provider_scope) {
+                    ScopedProcessing::Unscoped => {}
+                    ScopedProcessing::Keep(reason) => {
+                        report.skipped_repos.push(super::SyncSkippedRepo {
+                            repo_identity: scope.repo_identity.clone(),
+                            reason,
+                        });
+                        continue;
+                    }
+                    ScopedProcessing::Provider => {
+                        // The group's own provider: a durable task is read
+                        // through its pinned instance, independently of the
+                        // pass-wide default. An instance this role does not
+                        // serve keeps the group before any request.
+                        let group_provider = match resolve_group_provider(
+                            &group,
+                            task_provider,
+                            &storage.connection,
+                        ) {
+                            Ok(provider) => provider,
+                            Err(reason) => {
+                                report.skipped_repos.push(super::SyncSkippedRepo {
+                                    repo_identity: scope.repo_identity.clone(),
+                                    reason: format!("issue {issue}: {reason}"),
+                                });
+                                continue;
+                            }
+                        };
+                        // Read and prove the remote state before any lease or
+                        // directory mutation. An open, missing, or failed read
+                        // leaves the active lease exactly as it was.
+                        let summary = match read_group_issue(&group_provider, get_issue, issue) {
+                            Ok(summary) => summary,
+                            Err(PhasegentError::NotFound { .. }) => {
+                                report.not_found += 1;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if !summary.state.eq_ignore_ascii_case("closed") {
+                            report.not_closed += 1;
+                            report.issues.push(SyncIssueReport {
                             repo_identity: scope.repo_identity.clone(),
                             issue,
                             remote_state: summary.state.clone(),
@@ -158,53 +201,65 @@ pub(super) fn run_sync_scopes(
                                 "issue {issue}: scoped lease kept because the provider reports the issue open"
                             )],
                         });
-                        continue;
-                    }
-                    // Fresh scope/lease evidence after the provider proof:
-                    // mixed, foreign, or unproven evidence keeps before the
-                    // exact key is retained.
-                    let fresh =
-                        crate::worktree::leases::list_all_for_repo(storage, &scope.repo_identity)
-                            .map_err(|error| PhasegentError::request("issue sync", error.message))?;
-                    let fresh_scopes = crate::worktree::lease_scope::scope_map_for_repo(
-                        storage,
-                        &scope.repo_identity,
-                    )
-                    .map_err(|error| PhasegentError::request("issue sync", error.message))?;
-                    match scoped_processing(issue, rows, &fresh, &fresh_scopes, provider_scope) {
-                        ScopedProcessing::Provider => {}
-                        ScopedProcessing::Keep(reason) => {
-                            report.skipped_repos.push(super::SyncSkippedRepo {
-                                repo_identity: scope.repo_identity.clone(),
-                                reason,
-                            });
                             continue;
                         }
-                        ScopedProcessing::Unscoped => {
-                            report.skipped_repos.push(super::SyncSkippedRepo {
+                        // Fresh scope/lease evidence after the provider proof:
+                        // mixed, foreign, or unproven evidence keeps before the
+                        // exact key is retained.
+                        let fresh = crate::worktree::leases::list_all_for_repo(
+                            storage,
+                            &scope.repo_identity,
+                        )
+                        .map_err(|error| PhasegentError::request("issue sync", error.message))?;
+                        let fresh_scopes =
+                            crate::worktree::lease_scope::scope_map_for_repo_with_key(
+                                storage,
+                                &scope.repo_identity,
+                                scope.repo_key.as_deref(),
+                            )
+                            .map_err(|error| {
+                                PhasegentError::request("issue sync", error.message)
+                            })?;
+                        match scoped_processing(&group, rows, &fresh, &fresh_scopes, provider_scope)
+                        {
+                            ScopedProcessing::Provider => {}
+                            ScopedProcessing::Keep(reason) => {
+                                report.skipped_repos.push(super::SyncSkippedRepo {
+                                    repo_identity: scope.repo_identity.clone(),
+                                    reason,
+                                });
+                                continue;
+                            }
+                            ScopedProcessing::Unscoped => {
+                                report.skipped_repos.push(super::SyncSkippedRepo {
                                 repo_identity: scope.repo_identity.clone(),
                                 reason: format!(
                                     "issue {issue}: scoped provider lease requires provider-aware cleanup"
                                 ),
                             });
-                            continue;
+                                continue;
+                            }
                         }
-                    }
-                    let lease_scope = lease_scope_for(issue, rows, &fresh_scopes, provider_scope)
-                        .map_err(|error| {
-                        PhasegentError::request("issue sync", error.message)
-                    })?;
-                    // A terminal lease leaves nothing to retain, but the
-                    // exact-scope closure proof still runs so a shared
-                    // directory can be cleaned once every associated issue is
-                    // confirmed closed.
-                    let verified =
-                        verified_scope_lease_ids(issue, &fresh, &fresh_scopes, provider_scope);
-                    let released = if mode == SyncMode::Clean {
-                        let closure =
-                            SyncScopedClosure::new(&scope.repo_path, get_issue, provider_scope);
-                        let associated = directory_associated_issues(issue, &fresh, &fresh_scopes);
-                        if let Err(reason) = crate::lifecycle::cleanup::closure::DirectoryIssueClosure::confirm_others_closed(
+                        let lease_scope = lease_scope_for(&group).map_err(|error| {
+                            PhasegentError::request("issue sync", error.message)
+                        })?;
+                        // A terminal lease leaves nothing to retain, but the
+                        // exact-scope closure proof still runs so a shared
+                        // directory can be cleaned once every associated issue is
+                        // confirmed closed.
+                        let verified = verified_scope_lease_ids(&group, &fresh, &fresh_scopes);
+                        let released = if mode == SyncMode::Clean {
+                            let closure = SyncGroupClosure::new(
+                                &scope.repo_path,
+                                &scope.repo_key,
+                                &storage.connection,
+                                get_issue,
+                                task_provider,
+                                provider_scope,
+                            );
+                            let associated =
+                                directory_associated_issues(&group, &fresh, &fresh_scopes);
+                            if let Err(reason) = crate::lifecycle::cleanup::closure::DirectoryIssueClosure::confirm_others_closed(
                             &closure,
                             issue,
                             &associated,
@@ -217,136 +272,143 @@ pub(super) fn run_sync_scopes(
                             });
                             continue;
                         }
-                        // Rebuild the complete scope/local proof after the
-                        // remote closure checks and immediately before the
-                        // mutation; a changed row set or association keeps
-                        // without an unbounded retry loop.
-                        let final_rows = crate::worktree::leases::list_all_for_repo(
-                            storage,
-                            &scope.repo_identity,
-                        )
-                        .map_err(|error| PhasegentError::request("issue sync", error.message))?;
-                        let final_scopes = crate::worktree::lease_scope::scope_map_for_repo(
-                            storage,
-                            &scope.repo_identity,
-                        )
-                        .map_err(|error| PhasegentError::request("issue sync", error.message))?;
-                        if !matches!(
-                            scoped_processing(
-                                issue,
-                                rows,
-                                &final_rows,
-                                &final_scopes,
-                                provider_scope
-                            ),
-                            ScopedProcessing::Provider
-                        ) {
-                            report.skipped_repos.push(super::SyncSkippedRepo {
+                            // Rebuild the complete scope/local proof after the
+                            // remote closure checks and immediately before the
+                            // mutation; a changed row set or association keeps
+                            // without an unbounded retry loop.
+                            let final_rows = crate::worktree::leases::list_all_for_repo(
+                                storage,
+                                &scope.repo_identity,
+                            )
+                            .map_err(|error| {
+                                PhasegentError::request("issue sync", error.message)
+                            })?;
+                            let final_scopes =
+                                crate::worktree::lease_scope::scope_map_for_repo_with_key(
+                                    storage,
+                                    &scope.repo_identity,
+                                    scope.repo_key.as_deref(),
+                                )
+                                .map_err(|error| {
+                                    PhasegentError::request("issue sync", error.message)
+                                })?;
+                            if !matches!(
+                                scoped_processing(
+                                    &group,
+                                    rows,
+                                    &final_rows,
+                                    &final_scopes,
+                                    provider_scope
+                                ),
+                                ScopedProcessing::Provider
+                            ) {
+                                report.skipped_repos.push(super::SyncSkippedRepo {
                                 repo_identity: scope.repo_identity.clone(),
                                 reason: format!(
                                     "issue {issue}: scoped provider proof changed before retention"
                                 ),
                             });
-                            continue;
-                        }
-                        let final_associated =
-                            directory_associated_issues(issue, &final_rows, &final_scopes);
-                        let final_ids = verified_scope_lease_ids(
-                            issue,
-                            &final_rows,
-                            &final_scopes,
-                            provider_scope,
-                        );
-                        if final_associated != associated || final_ids != verified {
-                            report.skipped_repos.push(super::SyncSkippedRepo {
+                                continue;
+                            }
+                            let final_associated =
+                                directory_associated_issues(&group, &final_rows, &final_scopes);
+                            let final_ids =
+                                verified_scope_lease_ids(&group, &final_rows, &final_scopes);
+                            if final_associated != associated || final_ids != verified {
+                                report.skipped_repos.push(super::SyncSkippedRepo {
                                 repo_identity: scope.repo_identity.clone(),
                                 reason: format!(
                                     "issue {issue}: scoped lease association changed before retention"
                                 ),
                             });
-                            continue;
-                        }
-                        let approved = crate::worktree::leases::scoped_retention_proof(
-                            issue,
-                            &final_rows,
-                            &final_scopes,
-                        );
-                        run_retention_interleave_hook(storage);
-                        crate::worktree::leases::retain_active_leases_for_scope_ids(
+                                continue;
+                            }
+                            let approved = crate::worktree::leases::scoped_retention_proof(
+                                issue,
+                                &final_rows,
+                                &final_scopes,
+                            );
+                            run_retention_interleave_hook(storage);
+                            crate::worktree::leases::retain_active_leases_for_scope_ids(
+                                storage,
+                                &scope.repo_identity,
+                                scope.repo_key.as_deref(),
+                                &lease_scope,
+                                &final_ids,
+                                &approved,
+                                super::SYNC_RELEASE_REASON,
+                                crate::worktree::now_unix_secs(),
+                            )
+                            .map_err(|error| PhasegentError::request("issue sync", error.message))?
+                        } else {
+                            0
+                        };
+                        let entry = sync_issue_scoped(
+                            runner,
                             storage,
-                            &scope.repo_identity,
+                            &guard,
+                            scope,
+                            issue,
+                            rows,
+                            &summary.state,
+                            mode,
+                            released,
                             &lease_scope,
-                            &final_ids,
-                            &approved,
-                            super::SYNC_RELEASE_REASON,
-                            crate::worktree::now_unix_secs(),
-                        )
-                        .map_err(|error| PhasegentError::request("issue sync", error.message))?
-                    } else {
-                        0
-                    };
-                    let entry = sync_issue_scoped(
-                        runner,
-                        storage,
-                        &guard,
-                        scope,
-                        issue,
-                        rows,
-                        &summary.state,
-                        mode,
-                        released,
-                        &lease_scope,
-                        get_issue,
-                        provider_scope,
-                    )?;
-                    report.checked += 1;
-                    report.released_leases += entry.released_leases;
-                    report.cleaned += entry.cleaned;
-                    report.kept += entry
-                        .directories
-                        .iter()
-                        .filter(|directory| {
-                            directory.action == "kept" || directory.action == "would_keep"
-                        })
-                        .count() as u64;
-                    report.issues.push(entry);
+                            get_issue,
+                            task_provider,
+                            provider_scope,
+                        )?;
+                        report.checked += 1;
+                        report.released_leases += entry.released_leases;
+                        report.cleaned += entry.cleaned;
+                        report.kept += entry
+                            .directories
+                            .iter()
+                            .filter(|directory| {
+                                directory.action == "kept" || directory.action == "would_keep"
+                            })
+                            .count() as u64;
+                        report.issues.push(entry);
+                        continue;
+                    }
+                }
+                report.checked += 1;
+                let summary = match get_issue(issue) {
+                    Ok(summary) => summary,
+                    // A remote issue that no longer exists is not "closed":
+                    // record it and keep going so one stale lease row cannot
+                    // wedge the whole pass.
+                    Err(PhasegentError::NotFound { .. }) => {
+                        report.not_found += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                if !summary.state.eq_ignore_ascii_case("closed") {
+                    report.not_closed += 1;
                     continue;
                 }
+                let entry = sync_issue(
+                    runner,
+                    storage,
+                    &guard,
+                    scope,
+                    issue,
+                    rows,
+                    &summary.state,
+                    mode,
+                )?;
+                report.released_leases += entry.released_leases;
+                report.cleaned += entry.cleaned;
+                report.kept += entry
+                    .directories
+                    .iter()
+                    .filter(|directory| {
+                        directory.action == "kept" || directory.action == "would_keep"
+                    })
+                    .count() as u64;
+                report.issues.push(entry);
             }
-            report.checked += 1;
-            let summary = match get_issue(issue) {
-                Ok(summary) => summary,
-                // A remote issue that no longer exists is not "closed":
-                // record it and keep going so one stale lease row cannot
-                // wedge the whole pass.
-                Err(PhasegentError::NotFound { .. }) => {
-                    report.not_found += 1;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            if !summary.state.eq_ignore_ascii_case("closed") {
-                report.not_closed += 1;
-                continue;
-            }
-            let entry = sync_issue(
-                runner,
-                storage,
-                &guard,
-                scope,
-                issue,
-                rows,
-                &summary.state,
-                mode,
-            )?;
-            report.released_leases += entry.released_leases;
-            report.cleaned += entry.cleaned;
-            report.kept += entry
-                .directories
-                .iter()
-                .filter(|directory| directory.action == "kept" || directory.action == "would_keep")
-                .count() as u64;
-            report.issues.push(entry);
         }
     }
     Ok(report)
@@ -381,7 +443,7 @@ fn run_retention_interleave_hook(storage: &Storage) {
 #[cfg(not(test))]
 fn run_retention_interleave_hook(_storage: &Storage) {}
 
-/// What the pass does with one candidate issue.
+/// What one reconciliation pass does with one candidate issue.
 pub(super) enum ScopedProcessing {
     /// The candidate has no scoped evidence: the legacy path handles it.
     Unscoped,
@@ -392,29 +454,125 @@ pub(super) enum ScopedProcessing {
     Provider,
 }
 
-/// Classify one candidate against the fresh scoped evidence. The affected
-/// directory set is derived from every scoped row of the exact issue in
-/// `all`, never from stale candidate paths, so a new same-issue lease in a
-/// second directory pulls that directory's full row set into the proof. Every
-/// lease row on every affected canonical directory must be scoped to the
-/// selected provider/project; legacy, foreign, mixed, or unreadable evidence
-/// keeps before any provider read or lease mutation.
-pub(super) fn scoped_processing(
+/// One reconciliation group inside a candidate number.
+///
+/// A number whose rows carry no sidecar scope is one legacy group. A number
+/// whose rows carry scopes produces one group per distinct exact scope: a
+/// durable task and a legacy provider/project scope are different groups and
+/// are never merged. Two same-number tasks on two instances therefore never
+/// share a group, and neither can be released together with the other.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct LeaseGroup {
+    /// The issue number the group belongs to.
+    pub(super) issue: u64,
+    /// The exact scope of the group, or `None` for the legacy unscoped
+    /// history.
+    pub(super) scope: Option<crate::worktree::LeaseScope>,
+}
+
+impl LeaseGroup {
+    /// The durable task this group belongs to, when it is task-bearing.
+    pub(super) fn task_id(&self) -> Option<i64> {
+        self.scope.as_ref().and_then(|scope| scope.task_id())
+    }
+}
+
+/// The first group of one candidate number, for the tests that classify a
+/// candidate against its proven scopes.
+#[cfg(test)]
+pub(super) fn group_for(
     issue: u64,
+    all: &[LeaseRow],
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
+) -> LeaseGroup {
+    lease_groups(issue, all, scopes)
+        .into_iter()
+        .next()
+        .unwrap_or(LeaseGroup { issue, scope: None })
+}
+
+/// The groups of one candidate number.
+///
+/// Only a row whose sidecar scope is proven contributes a group. A number
+/// with no scoped row is one legacy group; a number with scoped rows has no
+/// legacy group at all, because unscoped same-number history is genuine
+/// legacy uncertainty and keeps the whole number before any provider read.
+pub(super) fn lease_groups(
+    issue: u64,
+    all: &[LeaseRow],
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
+) -> Vec<LeaseGroup> {
+    let mut groups: Vec<LeaseGroup> = Vec::new();
+    for row in all.iter().filter(|row| row.issue == issue) {
+        let Some(scope) = scopes.get(&row.lease_id) else {
+            continue;
+        };
+        if groups
+            .iter()
+            .any(|group| group.scope.as_ref() == Some(scope))
+        {
+            continue;
+        }
+        groups.push(LeaseGroup {
+            issue,
+            scope: Some(scope.clone()),
+        });
+    }
+    if groups.is_empty() {
+        groups.push(LeaseGroup { issue, scope: None });
+    }
+    groups
+}
+
+/// Whether one row's scope names the same ownership as the group's scope.
+///
+/// The provider and project must agree, and a durable task must be the same
+/// task on the same instance: a legacy row or a row of another task is
+/// different ownership evidence and keeps the directory.
+fn same_ownership(
+    group_scope: &crate::worktree::LeaseScope,
+    row_scope: Option<&crate::worktree::LeaseScope>,
+) -> bool {
+    let Some(row_scope) = row_scope else {
+        return false;
+    };
+    if row_scope.provider() != group_scope.provider()
+        || row_scope.project() != group_scope.project()
+    {
+        return false;
+    }
+    match group_scope.task_id() {
+        Some(task_id) => {
+            row_scope.task_id() == Some(task_id) && row_scope.instance() == group_scope.instance()
+        }
+        None => row_scope.task_id().is_none(),
+    }
+}
+
+/// Classify one group against the fresh scoped evidence.
+///
+/// The affected directory set is derived from the group's own rows in `all`,
+/// never from stale candidate paths, so a new same-group lease in a second
+/// directory pulls that directory's full row set into the proof. Every lease
+/// row on every affected canonical directory must name the same ownership as
+/// the group; legacy, foreign, mixed, or unreadable evidence keeps before any
+/// provider read or lease mutation. A same-number row of another task is not
+/// legacy uncertainty: it is another group, and it never makes this group
+/// ambiguous on its own.
+pub(super) fn scoped_processing(
+    group: &LeaseGroup,
     candidate: &[LeaseRow],
     all: &[LeaseRow],
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
     provider_scope: Option<(&str, &str)>,
 ) -> ScopedProcessing {
-    let issue_scoped_rows: Vec<&LeaseRow> = all
-        .iter()
-        .filter(|row| row.issue == issue && scopes.contains_key(&row.lease_id))
-        .collect();
-    let paths = crate::worktree::CanonicalPaths::default();
-    if issue_scoped_rows.is_empty() {
-        // An explicit Forgejo context must never infer ownership of purely
-        // unscoped legacy rows from the same number: keep before any provider
-        // read or lease change. Compatible legacy providers still reconcile.
+    let issue = group.issue;
+    let Some(selected) = group.scope.as_ref() else {
+        // The legacy group exists only when the number has no scoped row at
+        // all. An explicit Forgejo context must never infer ownership of
+        // purely unscoped legacy rows from the same number: keep before any
+        // provider read or lease change. Compatible legacy providers still
+        // reconcile.
         if provider_scope.is_some_and(|(provider, _)| provider == "forgejo") {
             return ScopedProcessing::Keep(format!(
                 "issue {issue}: explicit Forgejo does not own unscoped legacy history"
@@ -429,6 +587,7 @@ pub(super) fn scoped_processing(
         } else {
             candidate.iter().collect()
         };
+        let paths = crate::worktree::CanonicalPaths::default();
         let own_directories: Vec<std::path::PathBuf> = own_rows
             .iter()
             .map(|row| paths.resolve(Path::new(&row.worktree_path)))
@@ -445,11 +604,11 @@ pub(super) fn scoped_processing(
             ));
         }
         return ScopedProcessing::Unscoped;
-    }
-    // Scoped ownership of this number is ambiguous regardless of path: any
-    // unscoped same-number row must keep before provider dispatch or
-    // retention. A purely legacy number with no scoped evidence is handled by
-    // the legacy path above.
+    };
+    // Scoped ownership of this number is ambiguous when unscoped same-number
+    // history exists: any such row must keep before provider dispatch or
+    // retention. A row of another durable task is scoped, so it is another
+    // group and not legacy uncertainty.
     if all
         .iter()
         .any(|row| row.issue == issue && !scopes.contains_key(&row.lease_id))
@@ -458,10 +617,19 @@ pub(super) fn scoped_processing(
             "issue {issue}: unscoped same-number history makes the ownership ambiguous"
         ));
     }
-    let affected: Vec<std::path::PathBuf> = issue_scoped_rows
+    let affected: Vec<std::path::PathBuf> = all
         .iter()
-        .map(|row| paths.resolve(Path::new(&row.worktree_path)))
+        .filter(|row| {
+            row.issue == issue
+                && scopes
+                    .get(&row.lease_id)
+                    .is_some_and(|scope| same_ownership(selected, Some(scope)))
+        })
+        .map(|row| {
+            crate::worktree::CanonicalPaths::default().resolve(Path::new(&row.worktree_path))
+        })
         .collect();
+    let paths = crate::worktree::CanonicalPaths::default();
     let directory_rows: Vec<&LeaseRow> = all
         .iter()
         .filter(|row| {
@@ -472,66 +640,113 @@ pub(super) fn scoped_processing(
         .collect();
     if directory_rows
         .iter()
-        .any(|row| !scopes.contains_key(&row.lease_id))
+        .any(|row| !same_ownership(selected, scopes.get(&row.lease_id)))
     {
         return ScopedProcessing::Keep(format!(
-            "issue {issue}: scoped provider lease shares a directory with unproven legacy ownership"
+            "issue {issue}: scoped provider lease shares a directory with other ownership evidence"
         ));
     }
-    let Some((provider, project)) = provider_scope else {
-        return ScopedProcessing::Keep(format!(
-            "issue {issue}: scoped provider lease requires provider-aware cleanup"
-        ));
+    // A durable task is dispatched through its own pinned provider, so the
+    // pass-wide provider scope does not apply to it; a legacy scoped group
+    // still needs the pass-wide scope to match exactly.
+    if selected.task_id().is_none() {
+        let Some((provider, project)) = provider_scope else {
+            return ScopedProcessing::Keep(format!(
+                "issue {issue}: scoped provider lease requires provider-aware cleanup"
+            ));
+        };
+        if selected.provider() != provider || selected.project() != project {
+            return ScopedProcessing::Keep(format!(
+                "issue {issue}: scoped provider lease requires provider-aware cleanup"
+            ));
+        }
+    }
+    ScopedProcessing::Provider
+}
+
+/// The provider one group may read through.
+///
+/// A durable task is dispatched through its own pinned provider; a legacy
+/// group uses the pass's own provider. An instance this role does not serve
+/// fails here, before any request and without a token leaving the process.
+fn resolve_group_provider(
+    group: &LeaseGroup,
+    task_provider: Option<&dyn TaskProviderResolver>,
+    connection: &rusqlite::Connection,
+) -> Result<Option<crate::providers::ProviderDispatcher>, String> {
+    let Some(task_id) = group.task_id() else {
+        return Ok(None);
     };
-    let exact = directory_rows.iter().all(|row| {
-        scopes
-            .get(&row.lease_id)
-            .is_some_and(|scope| scope.provider() == provider && scope.project() == project)
-    });
-    if exact {
-        ScopedProcessing::Provider
-    } else {
-        ScopedProcessing::Keep(format!(
-            "issue {issue}: scoped provider lease requires provider-aware cleanup"
-        ))
+    let Some(resolver) = task_provider else {
+        return Err("this pass has no task-aware provider dispatch".to_owned());
+    };
+    match resolver.provider_for(connection, task_id) {
+        Ok(provider) => Ok(Some(provider)),
+        Err(error) => Err(format!(
+            "the durable task provider is unavailable: {}",
+            error_message(&error)
+        )),
     }
 }
 
-/// The exact-scope active lease ids of one issue in the fresh complete row set.
-fn verified_scope_lease_ids(
+/// Read one group's issue through the group's own provider.
+fn read_group_issue(
+    group_provider: &Option<crate::providers::ProviderDispatcher>,
+    get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
     issue: u64,
+) -> Result<IssueSummary, PhasegentError> {
+    match group_provider {
+        Some(provider) => provider.get_issue(issue),
+        None => get_issue(issue),
+    }
+}
+
+/// The operator-facing message of a provider error.
+fn error_message(error: &PhasegentError) -> String {
+    error
+        .json()
+        .get("message")
+        .and_then(|value| value.as_str())
+        .unwrap_or("the provider read failed")
+        .to_owned()
+}
+
+/// The exact-scope active lease ids of one group in the fresh complete row set.
+fn verified_scope_lease_ids(
+    group: &LeaseGroup,
     all: &[LeaseRow],
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
-    provider_scope: Option<(&str, &str)>,
 ) -> Vec<String> {
-    let Some((provider, project)) = provider_scope else {
+    let Some(selected) = group.scope.as_ref() else {
         return Vec::new();
     };
     all.iter()
         .filter(|row| {
-            row.issue == issue
+            row.issue == group.issue
                 && row.status == LEASE_STATUS_ACTIVE
-                && scopes.get(&row.lease_id).is_some_and(|scope| {
-                    scope.provider() == provider
-                        && scope.project() == project
-                        && scope.external_id() == issue
-                })
+                && scopes
+                    .get(&row.lease_id)
+                    .is_some_and(|scope| scope == selected)
         })
         .map(|row| row.lease_id.clone())
         .collect()
 }
 
-/// Every issue associated with the candidate's canonical directories, so the
+/// Every issue associated with the group's canonical directories, so the
 /// pre-retention closure proof covers the whole affected physical path.
 fn directory_associated_issues(
-    issue: u64,
+    group: &LeaseGroup,
     all: &[LeaseRow],
     scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
 ) -> Vec<u64> {
     let paths = crate::worktree::CanonicalPaths::default();
+    let selected = group.scope.as_ref();
     let affected: Vec<_> = all
         .iter()
-        .filter(|row| row.issue == issue && scopes.contains_key(&row.lease_id))
+        .filter(|row| {
+            row.issue == group.issue
+                && selected.is_some_and(|selected| scopes.get(&row.lease_id) == Some(selected))
+        })
         .map(|row| paths.resolve(Path::new(&row.worktree_path)))
         .collect();
     let mut issues: Vec<u64> = all
@@ -542,32 +757,23 @@ fn directory_associated_issues(
                 .any(|path| paths.resolve(Path::new(&row.worktree_path)) == *path)
         })
         .map(|row| row.issue)
-        .chain(std::iter::once(issue))
+        .chain(std::iter::once(group.issue))
         .collect();
     issues.sort_unstable();
     issues.dedup();
     issues
 }
 
-/// The exact lease scope of a provider-processable candidate. The caller
-/// has already proven every involved row matches the provider scope, so
-/// the first scope is the exact key; a missing proof is a storage error.
-fn lease_scope_for(
-    issue: u64,
-    rows: &[LeaseRow],
-    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
-    provider_scope: Option<(&str, &str)>,
-) -> Result<crate::worktree::LeaseScope, WorktreeError> {
-    let _ = (issue, provider_scope);
-    rows.iter()
-        .find_map(|row| scopes.get(&row.lease_id))
-        .cloned()
-        .ok_or_else(|| {
-            WorktreeError::new(
-                "storage",
-                "scoped lease scope evidence disappeared during the sync pass",
-            )
-        })
+/// The exact lease scope of a provider-processable group. The caller has
+/// already proven every involved row matches the group's ownership, so the
+/// group's own scope is the exact key; a missing scope is a storage error.
+fn lease_scope_for(group: &LeaseGroup) -> Result<crate::worktree::LeaseScope, WorktreeError> {
+    group.scope.clone().ok_or_else(|| {
+        WorktreeError::new(
+            "storage",
+            "scoped lease scope evidence disappeared during the sync pass",
+        )
+    })
 }
 
 /// One scoped candidate's guarded cleanup. The provider-aware
@@ -588,6 +794,7 @@ fn sync_issue_scoped(
     released: u64,
     lease_scope: &crate::worktree::LeaseScope,
     get_issue: &dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    task_provider: Option<&dyn TaskProviderResolver>,
     provider_scope: Option<(&str, &str)>,
 ) -> Result<SyncIssueReport, PhasegentError> {
     let mut entry = SyncIssueReport {
@@ -605,7 +812,14 @@ fn sync_issue_scoped(
     };
     let context = CleanupContext::load(storage, &scope.repo_identity)
         .map_err(|error| PhasegentError::request("issue sync", error))?;
-    let closure = SyncScopedClosure::new(&scope.repo_path, get_issue, provider_scope);
+    let closure = SyncGroupClosure::new(
+        &scope.repo_path,
+        &scope.repo_key,
+        &storage.connection,
+        get_issue,
+        task_provider,
+        provider_scope,
+    );
     let cleanup_mode = match mode {
         SyncMode::Report => CleanupMode::Report,
         SyncMode::Clean => CleanupMode::Sync,
@@ -647,41 +861,118 @@ fn sync_issue_scoped(
     Ok(entry)
 }
 
-/// The invocation-scoped closure resolver: each associated issue is read
-/// through the same provider closure the pass already holds, and the durable
-/// link scope must agree with the invocation's provider/project before a
-/// closed answer authorizes cleanup.
-struct SyncScopedClosure<'a> {
+/// Where one number is confirmed in this repository.
+enum IssueRoute {
+    /// The number has no durable task here: the pass's own provider answers.
+    Legacy,
+    /// The number's own durable task, with its pinned provider.
+    Task {
+        provider: Box<crate::providers::ProviderDispatcher>,
+        source: String,
+        project: String,
+    },
+}
+
+/// The group-scoped closure resolver: every other issue of the directory is
+/// confirmed through its own durable task when this repository holds a
+/// membership for it, and through the pass's own provider otherwise. The
+/// membership is the only proof — a number whose task lives in another
+/// repository is never resolved through a global number lookup, so a foreign
+/// task never authorizes a removal here — and the durable link scope must
+/// agree with the resolved route before a closed answer authorizes cleanup.
+struct SyncGroupClosure<'a> {
     repo_path: std::path::PathBuf,
+    repo_key: Option<String>,
+    connection: &'a rusqlite::Connection,
     links: crate::cli::issue_closure::GitLinkScopeReader,
     get_issue: &'a dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+    task_provider: Option<&'a dyn TaskProviderResolver>,
     provider_scope: Option<(&'a str, &'a str)>,
 }
 
-impl<'a> SyncScopedClosure<'a> {
+impl<'a> SyncGroupClosure<'a> {
     fn new(
         repo_path: &Path,
+        repo_key: &Option<String>,
+        connection: &'a rusqlite::Connection,
         get_issue: &'a dyn Fn(u64) -> Result<IssueSummary, PhasegentError>,
+        task_provider: Option<&'a dyn TaskProviderResolver>,
         provider_scope: Option<(&'a str, &'a str)>,
     ) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
+            repo_key: repo_key.clone(),
+            connection,
             links: crate::cli::issue_closure::GitLinkScopeReader::new(),
             get_issue,
+            task_provider,
             provider_scope,
+        }
+    }
+
+    /// The route one number is confirmed through in this repository.
+    fn route(&self, issue: u64) -> Result<IssueRoute, String> {
+        let tasks = match &self.repo_key {
+            Some(repo_key) => {
+                crate::cli::task_route::tasks_for_repo_number(self.connection, repo_key, issue)
+                    .map_err(|error| {
+                        format!(
+                            "issue {issue}: the durable task lookup failed: {}",
+                            error_message(&error)
+                        )
+                    })?
+            }
+            None => Vec::new(),
+        };
+        match tasks.len() {
+            0 => Ok(IssueRoute::Legacy),
+            1 => {
+                let task = &tasks[0];
+                let key = task.key();
+                let Some(resolver) = self.task_provider else {
+                    return Err(format!(
+                        "issue {issue} has a durable task, but this pass has no task-aware dispatch"
+                    ));
+                };
+                let provider = resolver
+                    .provider_for(self.connection, task.task_id())
+                    .map_err(|error| {
+                        format!(
+                            "issue {issue}: the durable task provider is unavailable: {}",
+                            error_message(&error)
+                        )
+                    })?;
+                Ok(IssueRoute::Task {
+                    provider: Box::new(provider),
+                    source: key.provider().to_owned(),
+                    project: key.project().to_owned(),
+                })
+            }
+            _ => Err(format!(
+                "issue {issue} has several durable tasks in this repository; refusing to guess a provider"
+            )),
         }
     }
 }
 
-impl crate::lifecycle::cleanup::closure::DirectoryIssueClosure for SyncScopedClosure<'_> {
+impl crate::lifecycle::cleanup::closure::DirectoryIssueClosure for SyncGroupClosure<'_> {
     fn confirm_others_closed(&self, current_issue: u64, issues: &[u64]) -> Result<(), String> {
-        let Some((provider, project)) = self.provider_scope else {
-            return Err("the sync invocation has no provider scope".to_owned());
-        };
         for issue in issues {
             if *issue == current_issue {
                 continue;
             }
+            let route = self.route(*issue)?;
+            let (route_provider, route_project) = match &route {
+                IssueRoute::Legacy => {
+                    let Some((provider, project)) = self.provider_scope else {
+                        return Err("the sync invocation has no provider scope".to_owned());
+                    };
+                    (provider.to_owned(), project.to_owned())
+                }
+                IssueRoute::Task {
+                    source, project, ..
+                } => (source.clone(), project.clone()),
+            };
             let scopes = crate::cli::issue_closure::LinkScopeReader::scopes(
                 &self.links,
                 &self.repo_path,
@@ -700,10 +991,10 @@ impl crate::lifecycle::cleanup::closure::DirectoryIssueClosure for SyncScopedClo
                 ));
             }
             if let Some((scope_provider, scope_project)) = distinct.into_iter().next()
-                && (scope_provider != provider || scope_project != project)
+                && (scope_provider != route_provider || scope_project != route_project)
             {
                 return Err(format!(
-                    "issue {issue}: link scope '{scope_provider}/{scope_project}' does not match the sync provider '{provider}/{project}'"
+                    "issue {issue}: link scope '{scope_provider}/{scope_project}' does not match the resolved provider '{route_provider}/{route_project}'"
                 ));
             }
             if scopes
@@ -714,7 +1005,11 @@ impl crate::lifecycle::cleanup::closure::DirectoryIssueClosure for SyncScopedClo
                     "issue {issue}: branch-link external id does not match the lease number"
                 ));
             }
-            match (self.get_issue)(*issue) {
+            let read = match &route {
+                IssueRoute::Legacy => (self.get_issue)(*issue),
+                IssueRoute::Task { provider, .. } => provider.get_issue(*issue),
+            };
+            match read {
                 Ok(summary) if summary.state.eq_ignore_ascii_case("closed") => {}
                 Ok(_) => {
                     return Err(format!(

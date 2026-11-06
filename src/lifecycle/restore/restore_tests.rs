@@ -10,7 +10,8 @@ use crate::worktree::{ProcessWorktreeRunner, WorktreeRunner};
 use super::store::*;
 use super::test_support::{RealRepo, TempDb, TempDir};
 use super::{
-    CloseRestoreParams, RestoreOutcome, UpstreamOutcome, resolve_close_target, restore_on_close,
+    CloseRestoreParams, RestoreOutcome, UpstreamOutcome, ambiguous_restore_warning,
+    resolve_close_target, restore_on_close,
 };
 
 const ISSUE: u64 = 1175;
@@ -89,6 +90,100 @@ fn read_record(db: &TempDb, repo: &RealRepo) -> BaselineRecord {
 fn prepare_feature(repo: &RealRepo) -> String {
     repo.checkout_new(ISSUE_BRANCH);
     repo.commit_empty(&repo.work, "feature work")
+}
+
+/// One durable task for the fixture repository's provider, project and number.
+fn bind_task(storage: &Storage, repo: &RealRepo, instance: &str) -> i64 {
+    let key = crate::task_identity::TaskKey::new("redmine", instance, "tools", &ISSUE.to_string())
+        .expect("task key");
+    let binding = crate::task_identity::ensure_binding(storage, &key, 1).expect("binding");
+    crate::task_identity::add_repo_membership(
+        storage,
+        &repo.scope(ISSUE).repo_key,
+        binding.task_id(),
+        1,
+    )
+    .expect("membership");
+    binding.task_id()
+}
+
+#[test]
+fn restore_skips_ambiguous_same_provider_project_number_tasks() {
+    let repo = RealRepo::new("restore-ambiguous", true);
+    let db = TempDb::new("restore-ambiguous-db");
+    let baseline_head = repo.head(&repo.work);
+    prepare_feature(&repo);
+    let storage = db.open();
+    insert_baseline(&storage, &repo, CheckoutState::Active, &baseline_head);
+
+    // No durable task: the legacy restore path is unchanged.
+    assert!(
+        ambiguous_restore_warning(
+            &storage,
+            &repo.work,
+            Some("redmine"),
+            Some("tools"),
+            ISSUE,
+            None
+        )
+        .is_none()
+    );
+    // One matching task is unambiguous.
+    let task_id = bind_task(&storage, &repo, "https://redmine.one.example/");
+    assert!(
+        ambiguous_restore_warning(
+            &storage,
+            &repo.work,
+            Some("redmine"),
+            Some("tools"),
+            ISSUE,
+            Some(task_id)
+        )
+        .is_none()
+    );
+    assert!(
+        ambiguous_restore_warning(
+            &storage,
+            &repo.work,
+            Some("redmine"),
+            Some("tools"),
+            ISSUE,
+            Some(task_id + 1)
+        )
+        .is_some()
+    );
+    assert!(
+        ambiguous_restore_warning(
+            &storage,
+            &repo.work,
+            Some("redmine"),
+            Some("tools"),
+            ISSUE,
+            None
+        )
+        .is_none()
+    );
+    // A second canonical instance of the same provider/project/number can no
+    // longer be attributed to the instance-less baseline, so the restore is
+    // skipped with a bounded warning.
+    bind_task(&storage, &repo, "https://redmine.two.example/");
+    let warning = ambiguous_restore_warning(
+        &storage,
+        &repo.work,
+        Some("redmine"),
+        Some("tools"),
+        ISSUE,
+        None,
+    )
+    .expect("an ambiguous task set must skip the restore");
+    assert!(
+        warning.contains("durable tasks") && warning.contains("skipped"),
+        "bounded ambiguity warning: {warning}"
+    );
+    // The baseline row is untouched: the skip decides before restore_on_close.
+    let record = read_record(&db, &repo);
+    assert_eq!(record.state, CheckoutState::Active);
+    assert!(record.restored_at.is_none());
 }
 
 #[test]

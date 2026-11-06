@@ -182,6 +182,40 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 
 CREATE INDEX IF NOT EXISTS notification_deliveries_created_idx
     ON notification_deliveries (created_at DESC);
+
+-- Durable canonical task identity (issue 1201 P5). One immutable row per
+-- provider+instance+project+external_id four-tuple, addressed by an opaque
+-- local task_id. Additive so databases created by earlier versions gain the
+-- tables on open; nothing is inferred or backfilled from branch, lease or
+-- index data.
+CREATE TABLE IF NOT EXISTS task_bindings (
+    task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL CHECK (length(provider) > 0),
+    instance TEXT NOT NULL CHECK (length(instance) > 0),
+    project TEXT NOT NULL CHECK (length(project) > 0),
+    external_id TEXT NOT NULL CHECK (length(external_id) > 0),
+    created_at INTEGER NOT NULL CHECK (created_at > 0),
+    UNIQUE (provider, instance, project, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS task_bindings_external_idx
+    ON task_bindings (external_id);
+
+CREATE INDEX IF NOT EXISTS task_bindings_project_idx
+    ON task_bindings (provider, instance, project);
+
+-- Explicit physical-repository membership for a task. The repo key is a
+-- membership hint, never provider ownership, so a bare number only resolves
+-- inside the repositories that were explicitly linked.
+CREATE TABLE IF NOT EXISTS task_repo_memberships (
+    repo_key TEXT NOT NULL CHECK (length(repo_key) > 0),
+    task_id INTEGER NOT NULL REFERENCES task_bindings(task_id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL CHECK (created_at > 0),
+    PRIMARY KEY (repo_key, task_id)
+);
+
+CREATE INDEX IF NOT EXISTS task_repo_memberships_task_idx
+    ON task_repo_memberships (task_id);
 ";
 
 /// Additive migrations applied on every `Storage::open`. Each entry is a

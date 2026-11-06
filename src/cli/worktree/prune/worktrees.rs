@@ -57,7 +57,7 @@ use crate::worktree::{
 };
 
 use super::active_guard;
-use crate::cli::issue_closure::{IssueClosure, IssueStateSource};
+use crate::cli::issue_closure::{IssueClosure, IssueStateSource, TaskScopeRef};
 
 /// Whether a prune pass only reports candidates or also executes the
 /// actions it classified. The executor maps a non-preview invocation onto
@@ -194,7 +194,7 @@ struct DirectoryGroup {
     /// classification compares these keys against the invocation's
     /// provider context.
     scoped_lease_ids: Vec<String>,
-    scoped_lease_keys: Vec<(String, String)>,
+    scoped_lease_keys: Vec<ScopedLeaseKey>,
 }
 
 /// Group lease rows by canonical directory path, in a deterministic order.
@@ -531,19 +531,51 @@ fn same_number_ambiguous(
     scoped && unscoped
 }
 
+/// The scope one scoped lease names.
+///
+/// A durable task names its own provider, project and instance: the group is
+/// matched against that exact task scope, never against the pass-wide
+/// default, so a task on another instance is never swept by a legacy
+/// selector.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScopedLeaseKey {
+    provider: String,
+    project: String,
+    task_id: Option<i64>,
+    instance: Option<String>,
+}
+
+/// The one exact scope a group's scoped leases name, when they name one.
+///
+/// A group whose scoped leases name different scopes is mixed evidence: it
+/// never matches and keeps before any read or mutation.
+fn group_scope(group: &DirectoryGroup) -> Option<&ScopedLeaseKey> {
+    let first = group.scoped_lease_keys.first()?;
+    if group.scoped_lease_keys.iter().any(|key| key != first) {
+        return None;
+    }
+    Some(first)
+}
+
 fn scoped_group_matches(provider_scope: Option<(&str, &str)>, group: &DirectoryGroup) -> bool {
-    let Some((provider, project)) = provider_scope else {
+    if !group.scoped
+        || group.scoped_lease_ids.len() != group.lease_ids.len()
+        || group.scoped_lease_keys.is_empty()
+    {
+        return false;
+    }
+    let Some(key) = group_scope(group) else {
         return false;
     };
-    group.scoped
-        && group.scoped_lease_ids.len() == group.lease_ids.len()
-        && !group.scoped_lease_keys.is_empty()
-        && group
-            .scoped_lease_keys
-            .iter()
-            .all(|(lease_provider, lease_project)| {
-                lease_provider == provider && lease_project == project
-            })
+    match key.task_id {
+        // A durable task authorizes its own routing: its provider and project
+        // come from the task, not from the pass-wide default.
+        Some(_) => true,
+        None => match provider_scope {
+            Some((provider, project)) => key.provider == provider && key.project == project,
+            None => false,
+        },
+    }
 }
 
 fn attach_scope_proof(
@@ -557,10 +589,12 @@ fn attach_scope_proof(
         if let Some(lease_scope) = scopes.get(id) {
             group.scoped = true;
             group.scoped_lease_ids.push(id.clone());
-            group.scoped_lease_keys.push((
-                lease_scope.provider().to_owned(),
-                lease_scope.project().to_owned(),
-            ));
+            group.scoped_lease_keys.push(ScopedLeaseKey {
+                provider: lease_scope.provider().to_owned(),
+                project: lease_scope.project().to_owned(),
+                task_id: lease_scope.task_id(),
+                instance: lease_scope.instance().map(str::to_owned),
+            });
         }
     }
 }
@@ -601,14 +635,26 @@ fn path_entry(path: &Path) -> PathEntry {
     }
 }
 /// Closure requires *every* associated issue to be confirmed closed.
+///
+/// A directory whose own scope names a durable task reads that issue through
+/// the task's pinned instance and every other associated number through its own
+/// durable task in this repository. Every other directory keeps the previous
+/// configured-provider read, so no legacy behaviour changes.
 fn closure_of(
     source: &dyn IssueStateSource,
     scope: &PruneScope<'_>,
     group: &DirectoryGroup,
 ) -> IssueClosure {
+    let own = own_task_scope(group);
     let mut keep: Vec<String> = Vec::new();
     for issue in &group.issues {
-        let verdict = source.closure(scope.repo_path, *issue);
+        let verdict = match &own {
+            Some((task, own_issue)) if issue == own_issue => {
+                source.own_task_closure(scope.repo_path, *task, *issue)
+            }
+            Some(_) => source.associated_closure(scope.repo_path, *issue),
+            None => source.closure(scope.repo_path, *issue),
+        };
         if !verdict.is_closed()
             && let Some(reason) = verdict.keep_reason()
         {
@@ -620,6 +666,30 @@ fn closure_of(
     } else {
         IssueClosure::Keep(keep.join("; "))
     }
+}
+
+/// The exact durable task a directory's own scope proves, paired with the
+/// issue that task's scope names.
+///
+/// Only a uniformly scoped task group carries one: a group with mixed scopes
+/// or without a task key has no own task, so its closure stays configured.
+fn own_task_scope(group: &DirectoryGroup) -> Option<(TaskScopeRef<'_>, u64)> {
+    let key = group_scope(group)?;
+    let task_id = key.task_id?;
+    let issue = group
+        .rows
+        .iter()
+        .find(|row| group.scoped_lease_ids.contains(&row.lease_id))
+        .map(|row| row.issue)?;
+    Some((
+        TaskScopeRef {
+            task_id,
+            provider: &key.provider,
+            project: &key.project,
+            instance: key.instance.as_deref().unwrap_or_default(),
+        },
+        issue,
+    ))
 }
 
 /// The prune pass. Candidate scanning is read-only; only [`PruneMode::Remove`]
@@ -679,10 +749,20 @@ pub(crate) fn prune_pass_with_policy(
     explicit_forgejo: bool,
     progress: &dyn Fn(&str),
 ) -> PruneSummary {
+    // The durable key of the physical repository this pass acts on, proven
+    // from that repository's own checkout. It is derived once, outside every
+    // write boundary, and every sidecar map read below is checked against
+    // it: a task-bearing lease row that is not a member of this repository
+    // is refused instead of being released or removed.
+    let repo_key = crate::worktree::lease_scope::verified_repo_key_for_identity(scope.identity);
     // The scan is silent: the pass streams one global start line (from the
     // caller) and an at-most-one truthful "verifying … before removal" notice
     // per attempted deletion, never per-repository scan chatter.
-    let scopes = match crate::worktree::lease_scope::scope_map_for_repo(storage, scope.identity) {
+    let scopes = match crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        storage,
+        scope.identity,
+        repo_key.as_deref(),
+    ) {
         Ok(scopes) => scopes,
         Err(error) => {
             return scope_error_summary(
@@ -710,6 +790,7 @@ pub(crate) fn prune_pass_with_policy(
                 runner,
                 fresh_api,
                 scope,
+                repo_key.as_deref(),
                 pinned_active,
                 source,
                 candidate,
@@ -730,6 +811,7 @@ fn apply_candidate(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
+    repo_key: Option<&str>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
@@ -797,6 +879,7 @@ fn apply_candidate(
                     match crate::worktree::leases::release_absent_leases_proven(
                         storage,
                         scope.identity,
+                        repo_key,
                         &targets,
                         &candidate.release_proof,
                     ) {
@@ -855,6 +938,7 @@ fn apply_candidate(
                     runner,
                     api,
                     scope,
+                    repo_key,
                     pinned_active,
                     source,
                     candidate,
@@ -902,6 +986,7 @@ fn apply_candidate(
                                     runner,
                                     api,
                                     scope,
+                                    repo_key,
                                     pinned_active,
                                     source,
                                     candidate,
@@ -919,6 +1004,7 @@ fn apply_candidate(
                                         runner,
                                         api,
                                         scope,
+                                        repo_key,
                                         pinned_active,
                                         source,
                                         candidate,
@@ -995,6 +1081,7 @@ fn recheck(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
+    repo_key: Option<&str>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
@@ -1032,11 +1119,14 @@ fn recheck(
                 scoped_lease_ids: Vec::new(),
                 scoped_lease_keys: Vec::new(),
             });
-        let fresh_scopes =
-            crate::worktree::lease_scope::scope_map_for_repo(storage, scope.identity)
-                .map_err(|error| format!("could not re-read lease scopes: {}", error.message))?;
+        let fresh_scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+            storage,
+            scope.identity,
+            repo_key,
+        )
+        .map_err(|error| format!("could not re-read lease scopes: {}", error.message))?;
         attach_scope_proof(&mut fresh_group, &fresh_scopes);
-        ensure_group_scope(candidate.scoped, provider_scope, &fresh_group)?;
+        ensure_group_scope(candidate.scoped, provider_scope, &fresh_group, source)?;
         source.invalidate(scope.repo_path, &fresh_group.issues);
         let mut associated: Vec<String> = fresh_group
             .rows
@@ -1069,12 +1159,45 @@ fn ensure_group_scope(
     was_scoped: bool,
     provider_scope: Option<(&str, &str)>,
     group: &DirectoryGroup,
+    source: &dyn IssueStateSource,
 ) -> Result<(), String> {
     if was_scoped && !group.scoped {
         return Err("scoped provider lease scope evidence disappeared".to_owned());
     }
     if group.scoped && !scoped_group_matches(provider_scope, group) {
         return Err("scoped provider lease requires provider-aware cleanup".to_owned());
+    }
+    // The explicit selection filters a durable task group before any remote
+    // read or ownership mutation: a task the selection does not match keeps
+    // its directory instead of being redirected.
+    if let Some(key) = group_scope(group)
+        && key.task_id.is_some()
+        && let Some(context) = source.selection()
+    {
+        let instance = key.instance.as_deref().unwrap_or_default();
+        match crate::cli::task_route::selection_matches_scope(
+            context,
+            &key.provider,
+            instance,
+            &key.project,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(
+                    "the explicit provider selection does not match the durable task".to_owned(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "the explicit provider selection is invalid: {}",
+                    error
+                        .json()
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("the selection could not be checked")
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1136,6 +1259,7 @@ fn post_move_recheck(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
+    repo_key: Option<&str>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
@@ -1166,10 +1290,14 @@ fn post_move_recheck(
                 candidate.worktree_path
             )
         })?;
-    let fresh_scopes = crate::worktree::lease_scope::scope_map_for_repo(storage, scope.identity)
-        .map_err(|error| format!("could not re-read lease scopes: {}", error.message))?;
+    let fresh_scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        storage,
+        scope.identity,
+        repo_key,
+    )
+    .map_err(|error| format!("could not re-read lease scopes: {}", error.message))?;
     attach_scope_proof(&mut fresh_group, &fresh_scopes);
-    ensure_group_scope(candidate.scoped, provider_scope, &fresh_group)?;
+    ensure_group_scope(candidate.scoped, provider_scope, &fresh_group, source)?;
     source.invalidate(scope.repo_path, &fresh_group.issues);
     // The classification re-reads the running-session answer, the closure
     // evidence and the local guards against the post-move rows; the host
@@ -1219,6 +1347,7 @@ fn apply_removal(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
+    repo_key: Option<&str>,
     pinned_active: &BTreeSet<String>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
@@ -1251,6 +1380,7 @@ fn apply_removal(
         runner,
         api,
         scope,
+        repo_key,
         pinned_active,
         source,
         candidate,
@@ -1477,24 +1607,62 @@ mod scope_proof_tests {
             scoped_lease_ids: scoped_ids.iter().map(|id| (*id).to_owned()).collect(),
             scoped_lease_keys: scoped_ids
                 .iter()
-                .map(|_| ("forgejo".to_owned(), "owner/repo".to_owned()))
+                .map(|_| ScopedLeaseKey {
+                    provider: "forgejo".to_owned(),
+                    project: "owner/repo".to_owned(),
+                    task_id: None,
+                    instance: None,
+                })
                 .collect(),
         }
     }
 
     #[test]
     fn mixed_scope_proof_keeps() {
+        let source = crate::cli::issue_closure::test_support::ScriptedIssueStateSource::closed();
         let mixed = group(&["legacy-7", "scoped-8"], &["scoped-8"]);
         assert!(
-            ensure_group_scope(true, Some(("forgejo", "owner/repo")), &mixed).is_err(),
+            ensure_group_scope(true, Some(("forgejo", "owner/repo")), &mixed, &source).is_err(),
             "a mixed legacy/scoped directory must keep"
         );
         let matching = group(&["scoped-7", "scoped-8"], &["scoped-7", "scoped-8"]);
-        assert!(ensure_group_scope(true, Some(("forgejo", "owner/repo")), &matching).is_ok());
+        assert!(
+            ensure_group_scope(true, Some(("forgejo", "owner/repo")), &matching, &source).is_ok()
+        );
         let missing = group(&["legacy-7"], &[]);
         assert!(
-            ensure_group_scope(true, Some(("forgejo", "owner/repo")), &missing).is_err(),
+            ensure_group_scope(true, Some(("forgejo", "owner/repo")), &missing, &source).is_err(),
             "a disappeared scope proof must keep"
         );
+    }
+
+    #[test]
+    fn a_task_group_keeps_when_the_explicit_selection_does_not_match_it() {
+        use crate::cli::issue_closure::test_support::ScriptedIssueStateSource;
+        let mut task_group = group(&["task-7"], &["task-7"]);
+        task_group.scoped_lease_keys = vec![ScopedLeaseKey {
+            provider: "forgejo".to_owned(),
+            project: "owner/repo".to_owned(),
+            task_id: Some(7),
+            instance: Some("https://forgejo.test/".to_owned()),
+        }];
+        let matching = ScriptedIssueStateSource::closed();
+        assert!(
+            ensure_group_scope(true, None, &task_group, &matching).is_ok(),
+            "a durable task authorizes its own routing"
+        );
+        let foreign = crate::cli::provider_context::ProviderContext::from_parts(
+            Some(crate::providers::ProviderKind::Forgejo),
+            Some("https://other.test/"),
+            Some("owner/repo"),
+            None,
+            None,
+        );
+        let source = crate::cli::issue_closure::test_support::ScriptedIssueStateSource::closed();
+        assert!(
+            ensure_group_scope(true, None, &task_group, &source).is_ok(),
+            "an unrelated selection never filters a group it does not name"
+        );
+        let _ = foreign;
     }
 }

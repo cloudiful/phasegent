@@ -33,6 +33,10 @@ impl ForgejoProvider {
         self.config.repository()
     }
 
+    pub(crate) fn api_base(&self) -> &str {
+        self.config.api_base()
+    }
+
     pub fn new(config: ForgejoConfig, token: &str) -> Result<Self, PhasegentError> {
         let http = ForgejoHttp::new(&config, token)?;
         Ok(Self {

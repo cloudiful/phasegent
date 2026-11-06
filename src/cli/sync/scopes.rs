@@ -18,6 +18,10 @@ use super::SyncSkippedRepo;
 pub(crate) struct RepoScope {
     pub(crate) repo_identity: String,
     pub(crate) repo_path: PathBuf,
+    /// The durable key of the physical repository, proven from its own
+    /// checkout. `None` means it could not be proven, so a task-bearing
+    /// lease row cannot be shown to belong to this repository.
+    pub(crate) repo_key: Option<String>,
     pub(crate) candidates: Vec<(u64, Vec<LeaseRow>)>,
 }
 
@@ -38,6 +42,7 @@ pub(super) fn resolve_scopes(
         let (candidates, skipped) = scoped_candidates(storage, &identity, rows)?;
         return Ok((
             vec![RepoScope {
+                repo_key: crate::worktree::lease_scope::verified_repo_key_for_identity(&identity),
                 repo_identity: identity,
                 repo_path: cwd.to_path_buf(),
                 candidates,
@@ -89,7 +94,9 @@ pub(super) fn resolve_scopes(
         let rows = list_all_for_repo(storage, &identity)?;
         let (candidates, mut scope_skipped) = scoped_candidates(storage, &identity, rows)?;
         skipped.append(&mut scope_skipped);
+        let repo_key = crate::worktree::lease_scope::verified_repo_key_for_identity(&identity);
         scopes.push(RepoScope {
+            repo_key,
             repo_identity: identity,
             repo_path,
             candidates,

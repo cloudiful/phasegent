@@ -118,10 +118,13 @@ pub(super) fn execute_acquire_seeded(
     )
 }
 
-/// The explicit-provider acquire: a `--provider forgejo` invocation leases
-/// under the exact `(forgejo, owner/repo, issue)` sidecar key, so the
-/// acquisition is isolated from a same-number legacy lease. Any other
-/// provider selection keeps the legacy numeric path exactly as before.
+/// The scoped acquire dispatcher.
+///
+/// A number that resolved to a durable task in this repository is acquired
+/// under that exact task scope for every provider, so a changed default never
+/// changes what the lease names. Without a task, an explicit `--provider
+/// forgejo` keeps the explicit `(forgejo, owner/repo, issue)` sidecar scope,
+/// and every other selection keeps the legacy numeric path exactly as before.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_acquire_scoped(
     issue: u64,
@@ -132,8 +135,23 @@ pub(super) fn execute_acquire_scoped(
     setup: Option<&crate::cli::issue::sync::SyncSetup>,
     context: &crate::cli::provider_context::ProviderContext,
     runner: &dyn crate::worktree::WorktreeRunner,
+    task: Option<&crate::task_identity::TaskBinding>,
 ) -> i32 {
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(binding) = task {
+        return execute_acquire_at_scoped(
+            issue,
+            session,
+            format,
+            isolate,
+            base,
+            setup,
+            runner,
+            &repo_path,
+            Some(binding),
+            None,
+        );
+    }
     if context.provider == Some(crate::providers::ProviderKind::Forgejo) {
         let repository = match context.owned_forgejo_repository(crate::policy::Role::Orchestrator) {
             Ok(Some(repository)) => repository,
@@ -154,6 +172,7 @@ pub(super) fn execute_acquire_scoped(
             setup,
             runner,
             &repo_path,
+            None,
             Some(&repository),
         )
     } else {
@@ -163,12 +182,16 @@ pub(super) fn execute_acquire_scoped(
     }
 }
 
-/// The Forgejo-scoped acquire: the lease carries the exact
-/// `(forgejo, owner/repo, issue)` sidecar key. The owner/repo is the
-/// validated explicit provider config (explicit args first, then the
-/// provider-owned stored row) — never the legacy generic StoredConfig
-/// fields — and the acquisition fails closed when the scope cannot be
-/// proven, so a same-number legacy lease is never guessed over.
+/// The scoped acquire: either a durable task owns the lease, or an explicit
+/// Forgejo selection does.
+///
+/// A task scope records the exact task identity, so a same-number task on
+/// another instance is a different scope and is never reused as this one. The
+/// legacy Forgejo scope keeps the validated explicit provider config (explicit
+/// args first, then the provider-owned stored row) and fails closed when the
+/// scope cannot be proven, so a same-number legacy lease is never guessed
+/// over. An explicit selection that contradicts the task was already refused
+/// by admission, before this executor or the taxi runs.
 #[allow(clippy::too_many_arguments)]
 fn execute_acquire_at_scoped(
     issue: u64,
@@ -179,6 +202,7 @@ fn execute_acquire_at_scoped(
     setup: Option<&crate::cli::issue::sync::SyncSetup>,
     runner: &dyn crate::worktree::WorktreeRunner,
     repo_path: &std::path::Path,
+    task: Option<&crate::task_identity::TaskBinding>,
     repository: Option<&str>,
 ) -> i32 {
     let _ = format; // only "json" is accepted at the parser layer
@@ -195,22 +219,56 @@ fn execute_acquire_at_scoped(
             );
         }
     };
-    let repository = match repository {
-        Some(repository) => repository.to_owned(),
-        None => {
-            return structured_error(
-                serde_json::json!({"kind": "argument", "message": "Forgejo scope could not be resolved"}),
-                1,
-            );
+    let scope = match task {
+        Some(binding) => {
+            let key = binding.key();
+            if key.external_number() != Some(issue) {
+                return structured_error(
+                    serde_json::json!({
+                        "kind": "argument",
+                        "message": format!(
+                            "the durable task was resolved for number {}, not {issue}",
+                            key.external_number().unwrap_or(0),
+                        ),
+                    }),
+                    1,
+                );
+            }
+            match crate::worktree::LeaseScope::for_task(
+                key.provider(),
+                key.project(),
+                issue,
+                binding.task_id(),
+                key.instance(),
+            ) {
+                Ok(scope) => scope,
+                Err(error) => {
+                    return structured_error(
+                        serde_json::json!({"kind": error.kind, "message": error.message}),
+                        1,
+                    );
+                }
+            }
         }
-    };
-    let scope = match crate::worktree::LeaseScope::new("forgejo", &repository, issue) {
-        Ok(scope) => scope,
-        Err(error) => {
-            return structured_error(
-                serde_json::json!({"kind": error.kind, "message": error.message}),
-                1,
-            );
+        None => {
+            let repository = match repository {
+                Some(repository) => repository.to_owned(),
+                None => {
+                    return structured_error(
+                        serde_json::json!({"kind": "argument", "message": "Forgejo scope could not be resolved"}),
+                        1,
+                    );
+                }
+            };
+            match crate::worktree::LeaseScope::new("forgejo", &repository, issue) {
+                Ok(scope) => scope,
+                Err(error) => {
+                    return structured_error(
+                        serde_json::json!({"kind": error.kind, "message": error.message}),
+                        1,
+                    );
+                }
+            }
         }
     };
     crate::output::progress::stage("worktree acquire: preparing the scoped worktree");

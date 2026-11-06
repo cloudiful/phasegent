@@ -33,6 +33,57 @@ fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> Ph
     move |message| PhasegentError::request(operation, message)
 }
 
+/// The issue number of an existing run, read strictly read-only.
+///
+/// The ledger row is read only to obtain the number the admission guard
+/// needs: the read never creates the database, runs a migration, or writes
+/// a row.
+fn read_only_run_issue(run_id: &str) -> Result<Option<u64>, PhasegentError> {
+    let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
+    let Some(storage) = storage else {
+        return Ok(None);
+    };
+    if !storage
+        .table_exists("execution_timer_runs")
+        .map_err(PhasegentError::config)?
+    {
+        return Ok(None);
+    }
+    Ok(storage
+        .load_timer_run(run_id)
+        .map_err(timer_storage_error("timer finish"))?
+        .map(|run| run.issue))
+}
+
+/// The projection target of one timer route.
+///
+/// A bound Redmine task pins its own instance and project, a bound Local
+/// task keeps the run local with no remote target, and the legacy route
+/// keeps the caller's selection. Finish and recover share this mapping so
+/// the two projection entries cannot drift.
+pub(crate) fn projection_target(
+    route: Option<&crate::cli::task_route::TimerTaskRoute>,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    project_id: Option<&str>,
+) -> (Option<ProviderKind>, Option<String>, Option<String>) {
+    match route {
+        Some(crate::cli::task_route::TimerTaskRoute::Redmine { instance, project }) => (
+            Some(ProviderKind::Redmine),
+            Some(instance.clone()),
+            Some(project.clone()),
+        ),
+        Some(crate::cli::task_route::TimerTaskRoute::Local) => {
+            (Some(ProviderKind::Local), None, None)
+        }
+        _ => (
+            provider_kind,
+            api_base.map(str::to_owned),
+            project_id.map(str::to_owned),
+        ),
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn execute_finish(
     role_value: Option<Role>,
@@ -66,12 +117,37 @@ pub(crate) fn execute_finish_with_caller(
 ) -> Result<TimerOutput, PhasegentError> {
     let credential = timer_orchestrator_caller(caller, "timer finish")?
         .expect("authorized timer caller has a credential");
-    super::dispatch::reject_forgejo_timer(credential, provider_kind)?;
+
+    // The run row is read strictly read-only, only to learn the issue
+    // number the admission guard needs. No schema migration and no ledger
+    // write happens before the guard runs.
+    let route = match read_only_run_issue(run_id)? {
+        Some(issue) => Some(crate::cli::task_route::resolve_timer_route(issue)?),
+        None => None,
+    };
+    // An unbound legacy operation still follows the selected provider, so
+    // the Forgejo time-tracking refusal applies there. A durable task pins
+    // its own provider and is never blocked by a changed default.
+    if !matches!(
+        route,
+        Some(crate::cli::task_route::TimerTaskRoute::Redmine { .. })
+            | Some(crate::cli::task_route::TimerTaskRoute::Local)
+    ) {
+        super::dispatch::reject_forgejo_timer(credential, provider_kind)?;
+    }
 
     // This local transition precedes credential lookup and network requests.
     // A failed projection is recoverable by
     // retrying the same run id.
     let storage = Storage::open().map_err(timer_storage_error("timer finish"))?;
+    // A bound Redmine task pins the projection to its own instance and
+    // project, so the remote time entry never lands on the default
+    // endpoint of another instance. A bound Local task keeps the ledger
+    // local: there is no remote fallback projection.
+    let (provider_kind, api_base, project_id) =
+        projection_target(route.as_ref(), provider_kind, api_base, project_id);
+    let api_base = api_base.as_deref();
+    let project_id = project_id.as_deref();
     let finished_at = now_epoch_seconds();
     let mut run = storage
         .finish_timer_run(run_id, result, finished_at)
@@ -273,6 +349,14 @@ fn redmine_provider_for_finish_with_credential(
 /// successful transition; a failed transition already returned an
 /// error before reaching this helper.
 pub(crate) fn auto_finish_run(run_id: &str) -> Result<(), String> {
+    // Admission before any ledger write: the run's issue number is read
+    // strictly read-only, only to decide whether the run may be closed.
+    if let Some(issue) = read_only_run_issue(run_id)
+        .map_err(|error| format!("auto timer finish refused: {error}"))?
+    {
+        crate::cli::task_route::resolve_timer_route(issue)
+            .map_err(|error| format!("auto timer finish refused: {error}"))?;
+    }
     let storage = Storage::open().map_err(|error| format!("auto finish storage: {error}"))?;
     let finished_at = now_epoch_seconds();
     let _ = storage

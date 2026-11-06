@@ -76,11 +76,47 @@ pub(crate) trait IssueStateSource {
         None
     }
 
+    /// The explicit provider selection this source was built with, when it
+    /// has one.
+    ///
+    /// The selection filters the durable task groups before any remote read
+    /// or ownership mutation: a task it does not match keeps its directory
+    /// instead of being redirected. The default is no selection, and a source
+    /// without one never filters a group.
+    fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
+        None
+    }
+
     /// Drop any invocation-scoped memo so the next [`Self::closure`] reads the
     /// provider and scope afresh. Sources without targeted invalidation use
     /// this before a removal recheck. The default is a no-op: a source
     /// that caches nothing has nothing to invalidate.
     fn refresh(&self) {}
+
+    /// Closure evidence for the directory's own durable task.
+    ///
+    /// The directory's scope already proved this exact task belongs to the
+    /// repository, so the read is dispatched by task id. A source without
+    /// task routing answers through [`Self::closure`], exactly as before.
+    fn own_task_closure(
+        &self,
+        repo_path: &Path,
+        task: TaskScopeRef<'_>,
+        issue: u64,
+    ) -> IssueClosure {
+        let _ = task;
+        self.closure(repo_path, issue)
+    }
+
+    /// Closure evidence for one other number the directory is associated
+    /// with, read through that number's own durable task when the repository
+    /// holds exactly one membership for it.
+    ///
+    /// The default delegates to [`Self::closure`], so a source without task
+    /// routing is unchanged and no global number lookup is ever attempted.
+    fn associated_closure(&self, repo_path: &Path, issue: u64) -> IssueClosure {
+        self.closure(repo_path, issue)
+    }
 
     /// Invalidate the freshly rebuilt target only; legacy sources may refresh all.
     fn invalidate(&self, _repo_path: &Path, _issues: &[u64]) {
@@ -118,6 +154,40 @@ pub(crate) struct IssueStateFact {
     pub project_identifier: Option<String>,
 }
 
+/// One issue's state together with the exact owner that answered it.
+///
+/// A task route names the durable task's stored provider, project and
+/// instance, so the caller can prove the task still matches the scope it was
+/// resolved under before trusting the answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskRouteFact {
+    pub provider: String,
+    pub project: String,
+    pub instance: String,
+    pub state: String,
+    pub project_id: Option<u64>,
+    pub project_identifier: Option<String>,
+}
+
+impl TaskRouteFact {
+    fn into_fact(self) -> IssueStateFact {
+        IssueStateFact {
+            state: self.state,
+            project_id: self.project_id,
+            project_identifier: self.project_identifier,
+        }
+    }
+}
+
+/// The exact durable task a directory's own scope was proven to name.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TaskScopeRef<'a> {
+    pub task_id: i64,
+    pub provider: &'a str,
+    pub project: &'a str,
+    pub instance: &'a str,
+}
+
 /// Reads one issue's state from the configured provider.
 pub(crate) trait IssueStateReader {
     /// The configured provider literal (`redmine`/`local`).
@@ -130,15 +200,62 @@ pub(crate) trait IssueStateReader {
     fn scope(&self) -> Option<(String, String)> {
         None
     }
+
+    /// The explicit provider selection the reader was built with, when it
+    /// has one. The default has no selection.
+    fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
+        None
+    }
+
+    /// Read the group's own durable task through its stored instance.
+    ///
+    /// The group scope already proved this task belongs to the repository, so
+    /// the lookup is by task id, never by number. A reader with no
+    /// task-aware dispatch refuses, so the caller keeps instead of reading
+    /// the task's number from the configured provider.
+    fn own_task_state(
+        &self,
+        _task: TaskScopeRef<'_>,
+        _issue: u64,
+    ) -> Result<TaskRouteFact, String> {
+        Err("this source has no task-aware closure dispatch".to_owned())
+    }
+
+    /// Read one other associated number through its own durable task in this
+    /// repository, when the repository holds exactly one membership for it.
+    ///
+    /// `Ok(None)` means the number has no durable task here, so the legacy
+    /// configured read applies. `Err` means the membership is ambiguous or
+    /// the task's provider is unavailable, which always keeps.
+    fn associated_task_state(
+        &self,
+        _repo_path: &Path,
+        _issue: u64,
+    ) -> Result<Option<TaskRouteFact>, String> {
+        Ok(None)
+    }
 }
 
 /// Composes the scope check with the provider read and caches one answer per
-/// `(repo_path, issue)` for the invocation.
+/// `(repo_path, route, issue)` for the invocation.
 pub(crate) struct ComposedIssueStateSource {
     links: Box<dyn LinkScopeReader>,
     provider: Box<dyn IssueStateReader>,
-    cache: RefCell<HashMap<(String, u64), IssueClosure>>,
+    cache: RefCell<HashMap<(String, u8, u64), IssueClosure>>,
 }
+
+/// Which owner answers one closure question.
+#[derive(Clone, Copy)]
+enum ClosureRoute {
+    /// The configured provider answers an unbound number.
+    Legacy,
+    /// One issue's own durable task answers through its stored instance.
+    Task,
+}
+
+const ROUTE_LEGACY: u8 = 0;
+const ROUTE_OWN: u8 = 1;
+const ROUTE_ASSOCIATED: u8 = 2;
 
 impl ComposedIssueStateSource {
     pub(crate) fn new(
@@ -152,11 +269,35 @@ impl ComposedIssueStateSource {
         }
     }
 
+    /// The legacy verdict: the configured provider answers an unbound number.
+    ///
+    /// The scope checks run before the provider read, so a link that names a
+    /// different provider keeps without a cross-provider request.
     fn decide(&self, repo_path: &Path, issue: u64) -> IssueClosure {
         let configured = match self.provider.provider() {
             Ok(provider) => provider,
             Err(reason) => return IssueClosure::Keep(reason),
         };
+        self.decide_with(
+            ClosureRoute::Legacy,
+            repo_path,
+            issue,
+            &configured,
+            None,
+            || self.provider.state(issue),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decide_with(
+        &self,
+        route: ClosureRoute,
+        repo_path: &Path,
+        issue: u64,
+        route_provider: &str,
+        route_project: Option<&str>,
+        read: impl FnOnce() -> Result<Option<IssueStateFact>, String>,
+    ) -> IssueClosure {
         let scopes = match self.links.scopes(repo_path, issue) {
             Ok(scopes) => scopes,
             Err(reason) => return IssueClosure::Keep(reason),
@@ -175,11 +316,18 @@ impl ComposedIssueStateSource {
         }
         let scope = distinct.into_iter().next();
         if let Some((provider, _)) = &scope
-            && provider != &configured
+            && provider != route_provider
         {
             return IssueClosure::Keep(format!(
-                "issue {issue} is linked to provider '{provider}' but the configured provider is \
-                 '{configured}'; refusing to dispatch across providers"
+                "issue {issue} is linked to provider '{provider}' but its resolved route is \
+                 '{route_provider}'; refusing to dispatch across providers"
+            ));
+        }
+        if let (ClosureRoute::Task, Some((_, scope_project))) = (route, &scope)
+            && Some(scope_project.as_str()) != route_project
+        {
+            return IssueClosure::Keep(format!(
+                "issue {issue} link scope '{scope_project}' does not match its durable task project"
             ));
         }
         if let Some(scope) = scopes
@@ -191,11 +339,11 @@ impl ComposedIssueStateSource {
                 scope.external_id
             ));
         }
-        let fact = match self.provider.state(issue) {
+        let fact = match read() {
             Ok(Some(fact)) => fact,
             Ok(None) => {
                 return IssueClosure::Keep(format!(
-                    "issue {issue} was not found on the configured provider"
+                    "issue {issue} was not found on the resolved provider"
                 ));
             }
             Err(reason) => return IssueClosure::Keep(reason),
@@ -216,6 +364,81 @@ impl ComposedIssueStateSource {
                 fact.state
             ))
         }
+    }
+
+    /// The verdict for the group's own durable task.
+    ///
+    /// The task is dispatched by id, and its stored identity must still equal
+    /// the exact scope the group was proven under: a task whose reference
+    /// changed after the proof keeps the directory instead of being read.
+    fn own_task_verdict(
+        &self,
+        repo_path: &Path,
+        task: TaskScopeRef<'_>,
+        issue: u64,
+    ) -> IssueClosure {
+        let read = || -> Result<Option<IssueStateFact>, String> {
+            let route_fact = self.provider.own_task_state(task, issue)?;
+            if route_fact.provider != task.provider
+                || route_fact.project != task.project
+                || route_fact.instance != task.instance
+            {
+                return Err(format!(
+                    "issue {issue} durable task reference changed after the directory proof; \
+                     refusing to read it"
+                ));
+            }
+            Ok(Some(route_fact.into_fact()))
+        };
+        self.decide_with(
+            ClosureRoute::Task,
+            repo_path,
+            issue,
+            task.provider,
+            Some(task.project),
+            read,
+        )
+    }
+
+    /// The verdict for one other number the directory is associated with.
+    ///
+    /// The number's own durable task answers when this repository holds a
+    /// single membership for it; a number with no membership keeps the legacy
+    /// configured read, never a global number lookup.
+    fn associated_verdict(&self, repo_path: &Path, issue: u64) -> IssueClosure {
+        let route_fact = match self.provider.associated_task_state(repo_path, issue) {
+            Ok(Some(route_fact)) => route_fact,
+            Ok(None) => return self.decide(repo_path, issue),
+            Err(reason) => return IssueClosure::Keep(reason),
+        };
+        let provider = route_fact.provider.clone();
+        let project = route_fact.project.clone();
+        let fact = route_fact.into_fact();
+        self.decide_with(
+            ClosureRoute::Task,
+            repo_path,
+            issue,
+            &provider,
+            Some(&project),
+            || Ok(Some(fact)),
+        )
+    }
+
+    /// One cached answer per route tag, repository and issue.
+    fn cached(
+        &self,
+        tag: u8,
+        repo_path: &Path,
+        issue: u64,
+        decide: impl FnOnce() -> IssueClosure,
+    ) -> IssueClosure {
+        let key = (repo_path.to_string_lossy().into_owned(), tag, issue);
+        if let Some(cached) = self.cache.borrow().get(&key) {
+            return cached.clone();
+        }
+        let verdict = decide();
+        self.cache.borrow_mut().insert(key, verdict.clone());
+        verdict
     }
 }
 
@@ -246,20 +469,33 @@ fn format_scopes(scopes: &BTreeSet<(String, String)>) -> String {
 
 impl IssueStateSource for ComposedIssueStateSource {
     fn closure(&self, repo_path: &Path, issue: u64) -> IssueClosure {
-        let key = (repo_path.to_string_lossy().into_owned(), issue);
-        if let Some(cached) = self.cache.borrow().get(&key) {
-            return cached.clone();
-        }
-        let verdict = self.decide(repo_path, issue);
-        self.cache.borrow_mut().insert(key, verdict.clone());
-        verdict
+        self.cached(ROUTE_LEGACY, repo_path, issue, || {
+            self.decide(repo_path, issue)
+        })
+    }
+
+    fn own_task_closure(
+        &self,
+        repo_path: &Path,
+        task: TaskScopeRef<'_>,
+        issue: u64,
+    ) -> IssueClosure {
+        self.cached(ROUTE_OWN, repo_path, issue, || {
+            self.own_task_verdict(repo_path, task, issue)
+        })
+    }
+
+    fn associated_closure(&self, repo_path: &Path, issue: u64) -> IssueClosure {
+        self.cached(ROUTE_ASSOCIATED, repo_path, issue, || {
+            self.associated_verdict(repo_path, issue)
+        })
     }
 
     fn invalidate(&self, repo_path: &Path, issues: &[u64]) {
         let repo = repo_path.to_string_lossy();
         self.cache
             .borrow_mut()
-            .retain(|(path, issue), _| path != repo.as_ref() || !issues.contains(issue));
+            .retain(|(path, _, issue), _| path != repo.as_ref() || !issues.contains(issue));
         self.links.invalidate(repo_path, issues);
     }
 
@@ -268,6 +504,10 @@ impl IssueStateSource for ComposedIssueStateSource {
         self.provider
             .scope()
             .map(|(_, project)| (provider, project))
+    }
+
+    fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
+        self.provider.selection()
     }
 
     fn refresh(&self) {
@@ -451,6 +691,10 @@ impl IssueStateReader for ConfiguredIssueStateReader {
         Some((scope.source, scope.project))
     }
 
+    fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
+        Some(&self.context)
+    }
+
     fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
         let dispatcher = self.dispatcher()?;
         match dispatcher.get_issue(issue) {
@@ -504,6 +748,202 @@ pub(crate) fn configured_source_context(
     )
 }
 
+/// The task-aware form used by the prune pass: an unbound number still reads
+/// through the configured provider, while a number whose durable task is a
+/// member of this repository reads through that task's own pinned instance,
+/// independently of the configured default.
+pub(crate) fn configured_source_task_aware(
+    role: Role,
+    context: crate::cli::provider_context::ProviderContext,
+) -> ComposedIssueStateSource {
+    ComposedIssueStateSource::new(
+        Box::new(GitLinkScopeReader::new()),
+        Box::new(TaskAwareIssueStateReader::new(role, context)),
+    )
+}
+
+/// The production task-aware reader.
+///
+/// Every durable task is dispatched through
+/// [`crate::cli::task_route::pinned_provider_for_task`]: the task's own stored
+/// instance decides the endpoint and the role credential is only used when
+/// the configured provenance matches it. The group's own issue is looked up by
+/// task id, never by number, while an associated number is resolved by
+/// membership only — there is no global number fallback, and several
+/// same-number tasks keep instead of guessing.
+pub(crate) struct TaskAwareIssueStateReader {
+    configured: ConfiguredIssueStateReader,
+    role: Role,
+    context: crate::cli::provider_context::ProviderContext,
+    store: OnceCell<Result<Storage, String>>,
+    repo_keys: RefCell<HashMap<String, Result<String, String>>>,
+}
+
+impl TaskAwareIssueStateReader {
+    pub(crate) fn new(role: Role, context: crate::cli::provider_context::ProviderContext) -> Self {
+        Self {
+            configured: ConfiguredIssueStateReader::with_context(role, context.clone()),
+            role,
+            context,
+            store: OnceCell::new(),
+            repo_keys: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// The shared store the durable memberships live in, opened once.
+    fn connection(&self) -> Result<&rusqlite::Connection, String> {
+        let store = self
+            .store
+            .get_or_init(|| match Storage::open_existing_read_only() {
+                Ok(Some(store)) => Ok(store),
+                Ok(None) => Err("the local store is not initialized".to_owned()),
+                Err(reason) => Err(reason),
+            });
+        match store {
+            Ok(store) => Ok(&store.connection),
+            Err(reason) => Err(reason.clone()),
+        }
+    }
+
+    /// The verified durable key of the repository checked out at `repo_path`.
+    fn repo_key(&self, repo_path: &Path) -> Result<String, String> {
+        let cache_key = repo_path.to_string_lossy().into_owned();
+        if let Some(known) = self.repo_keys.borrow().get(&cache_key) {
+            return known.clone();
+        }
+        let resolved = crate::branch_links::resolve_checkout_repo_key(
+            &crate::git_runner::ProcessGitRunner::in_directory(repo_path),
+        );
+        self.repo_keys
+            .borrow_mut()
+            .insert(cache_key, resolved.clone());
+        resolved
+    }
+
+    /// Read one durable task's issue through its pinned instance.
+    ///
+    /// The binding is re-read on the shared connection and compared with the
+    /// exact scope the caller proved, before the provider is built: a task
+    /// whose reference changed after the proof keeps without a request.
+    fn read_task(
+        &self,
+        connection: &rusqlite::Connection,
+        task: TaskScopeRef<'_>,
+        issue: u64,
+    ) -> Result<TaskRouteFact, String> {
+        let binding = crate::task_identity::binding_for_task_id_on(connection, task.task_id)
+            .map_err(|reason| format!("issue {issue}: {reason}"))?
+            .ok_or_else(|| {
+                format!(
+                    "issue {issue}: durable task {} has no binding",
+                    task.task_id
+                )
+            })?;
+        let key = binding.key();
+        if key.provider() != task.provider
+            || key.project() != task.project
+            || key.instance() != task.instance
+        {
+            return Err(format!(
+                "issue {issue} durable task reference changed after the directory proof; \
+                 refusing to read it"
+            ));
+        }
+        let provider =
+            crate::cli::task_route::provider_for_binding(self.role, &binding, &self.context)
+                .map_err(|error| {
+                    format!(
+                        "issue {issue}: the durable task provider is unavailable: {}",
+                        bounded_error(&error.json())
+                    )
+                })?;
+        let summary = provider
+            .get_issue(issue)
+            .map_err(|error| bounded_error(&error.json()))?;
+        Ok(TaskRouteFact {
+            provider: key.provider().to_owned(),
+            project: key.project().to_owned(),
+            instance: key.instance().to_owned(),
+            state: summary.state,
+            project_id: summary.project.as_ref().map(|project| project.id),
+            project_identifier: summary
+                .project
+                .as_ref()
+                .and_then(|project| project.identifier.clone()),
+        })
+    }
+}
+
+impl IssueStateReader for TaskAwareIssueStateReader {
+    fn provider(&self) -> Result<String, String> {
+        self.configured.provider()
+    }
+
+    fn scope(&self) -> Option<(String, String)> {
+        self.configured.scope()
+    }
+
+    fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
+        Some(&self.context)
+    }
+
+    fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
+        self.configured.state(issue)
+    }
+
+    fn own_task_state(&self, task: TaskScopeRef<'_>, issue: u64) -> Result<TaskRouteFact, String> {
+        let connection = self.connection()?;
+        self.read_task(connection, task, issue)
+    }
+
+    fn associated_task_state(
+        &self,
+        repo_path: &Path,
+        issue: u64,
+    ) -> Result<Option<TaskRouteFact>, String> {
+        let repo_key = self.repo_key(repo_path)?;
+        let connection = self.connection()?;
+        let tasks = crate::cli::task_route::resolve_number_in_repo(connection, &repo_key, issue)
+            .map_err(|error| {
+                format!(
+                    "issue {issue}: the durable task lookup failed: {}",
+                    bounded_error(&error.json())
+                )
+            })?;
+        match tasks.len() {
+            0 => Ok(None),
+            1 => {
+                let key = tasks[0].key();
+                self.read_task(
+                    connection,
+                    TaskScopeRef {
+                        task_id: tasks[0].task_id(),
+                        provider: key.provider(),
+                        project: key.project(),
+                        instance: key.instance(),
+                    },
+                    issue,
+                )
+                .map(Some)
+            }
+            _ => Err(format!(
+                "issue {issue} has several durable tasks in this repository; refusing to guess \
+                 a provider"
+            )),
+        }
+    }
+}
+
+/// Which resolver answers the associated numbers of a close.
+#[derive(Clone, Copy)]
+enum CurrentClosureRoute {
+    /// The configured/default provider answers an unbound number.
+    Configured,
+    /// Every other number resolves by durable membership only and reads
+    /// through its own pinned task.
+    TaskAware,
+}
+
 /// The close-path adapter for the lifecycle's closure seam.
 ///
 /// The issue being closed is closed by definition — the remote close already
@@ -514,6 +954,7 @@ pub(crate) fn configured_source_context(
 pub(crate) struct CurrentIssueClosure {
     repo_path: PathBuf,
     source: ComposedIssueStateSource,
+    route: CurrentClosureRoute,
 }
 
 impl CurrentIssueClosure {
@@ -522,6 +963,26 @@ impl CurrentIssueClosure {
         Self {
             repo_path: repo_path.to_path_buf(),
             source: configured_source(role),
+            route: CurrentClosureRoute::Configured,
+        }
+    }
+
+    /// The task-aware form used by a routed close.
+    ///
+    /// Every other associated number is resolved by durable membership only
+    /// (never a global number lookup) and read through its own pinned task; an
+    /// ambiguous membership, a moved task reference, or an unavailable
+    /// instance keeps before any wrong-provider request. A number with no
+    /// membership keeps the configured read.
+    pub(crate) fn new_task_aware(
+        repo_path: &Path,
+        role: Role,
+        context: crate::cli::provider_context::ProviderContext,
+    ) -> Self {
+        Self {
+            repo_path: repo_path.to_path_buf(),
+            source: configured_source_task_aware(role, context),
+            route: CurrentClosureRoute::TaskAware,
         }
     }
 
@@ -537,6 +998,7 @@ impl CurrentIssueClosure {
         Self {
             repo_path: repo_path.to_path_buf(),
             source: configured_source_context(role, context),
+            route: CurrentClosureRoute::Configured,
         }
     }
 
@@ -551,6 +1013,7 @@ impl CurrentIssueClosure {
                 Box::new(GitLinkScopeReader::new()),
                 Box::new(ConfiguredIssueStateReader::with_selection(role, selection)),
             ),
+            route: CurrentClosureRoute::Configured,
         }
     }
 
@@ -561,6 +1024,7 @@ impl CurrentIssueClosure {
         Self {
             repo_path: repo_path.to_path_buf(),
             source,
+            route: CurrentClosureRoute::Configured,
         }
     }
 }
@@ -571,7 +1035,12 @@ impl DirectoryIssueClosure for CurrentIssueClosure {
             if *issue == current_issue {
                 continue;
             }
-            let verdict = self.source.closure(&self.repo_path, *issue);
+            let verdict = match self.route {
+                CurrentClosureRoute::Configured => self.source.closure(&self.repo_path, *issue),
+                CurrentClosureRoute::TaskAware => {
+                    self.source.associated_closure(&self.repo_path, *issue)
+                }
+            };
             if !verdict.is_closed() {
                 return Err(verdict
                     .keep_reason()

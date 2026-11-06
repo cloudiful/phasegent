@@ -129,27 +129,56 @@ pub(crate) fn execute_status_with_caller(
             3,
         );
     }
-    match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
-        Err(error) => return super::provider_error(error),
-    }
-    let provider = match super::provider_for(
-        role,
+    let number = match &command {
+        StatusCommand::Next { number }
+        | StatusCommand::Set { number, .. }
+        | StatusCommand::Advance { number, .. } => Some(*number),
+        StatusCommand::List => None,
+    };
+    let route_context = super::provider_context::ProviderContext::from_parts(
         provider_kind,
         api_base,
         repository,
         project_id,
         close_status_id,
-    ) {
-        Ok(provider) => provider,
-        Err(error) => return super::provider_error(error),
+    );
+    let routed = match number {
+        Some(number) => {
+            match super::task_route::resolve_single_number(role, &route_context, number) {
+                Ok(route) => route,
+                Err(error) => return super::provider_error(error),
+            }
+        }
+        None => None,
+    };
+    let is_routed = routed.is_some();
+    let provider = match routed {
+        Some(route) => route.provider,
+        None => {
+            match resolve_kind(role, provider_kind) {
+                Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
+                Err(error) => return super::provider_error(error),
+            }
+            match super::provider_for(
+                role,
+                provider_kind,
+                api_base,
+                repository,
+                project_id,
+                close_status_id,
+            ) {
+                Ok(provider) => provider,
+                Err(error) => return super::provider_error(error),
+            }
+        }
     };
     match &command {
         StatusCommand::Next { number }
         | StatusCommand::Set { number, .. }
         | StatusCommand::Advance { number, .. } => {
-            if let Err(error) =
-                super::scope_guard::verify_status_scope(&provider, provider_kind, *number)
+            if !is_routed
+                && let Err(error) =
+                    super::scope_guard::verify_status_scope(&provider, provider_kind, *number)
             {
                 return super::provider_error(error);
             }
@@ -169,16 +198,18 @@ pub(crate) fn execute_status_with_caller(
                 // Single-number scope guard (issue 394 P3 pre-read): GET-check
                 // before the catalogue + issue reads so cross-project numbers
                 // fail with a --project-id hint and never disclose status.
-                if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
-                    role,
-                    api_base,
-                    repository,
-                    project_id,
-                    close_status_id,
-                    crate::providers::ProviderKind::Redmine,
-                    &redmine,
-                    number,
-                ) {
+                if !is_routed
+                    && let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                        role,
+                        api_base,
+                        repository,
+                        project_id,
+                        close_status_id,
+                        crate::providers::ProviderKind::Redmine,
+                        &redmine,
+                        number,
+                    )
+                {
                     return super::provider_error(error);
                 }
                 super::print_result(redmine.status_next(number))
@@ -192,16 +223,18 @@ pub(crate) fn execute_status_with_caller(
             ProviderDispatcher::Redmine(redmine) => {
                 // Single-number scope guard (issue 394 P3 pre-write): fails
                 // before any PUT, including the NoOp path which still reads.
-                if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
-                    role,
-                    api_base,
-                    repository,
-                    project_id,
-                    close_status_id,
-                    provider.kind(),
-                    redmine,
-                    number,
-                ) {
+                if !is_routed
+                    && let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                        role,
+                        api_base,
+                        repository,
+                        project_id,
+                        close_status_id,
+                        provider.kind(),
+                        redmine,
+                        number,
+                    )
+                {
                     return super::provider_error(error);
                 }
                 let effective = if status.is_empty() {
@@ -308,16 +341,18 @@ pub(crate) fn execute_status_with_caller(
             ProviderDispatcher::Redmine(redmine) => {
                 // Single-number scope guard (issue 394 P3 pre-write): fails
                 // before the catalogue reads and the status PUT.
-                if let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
-                    role,
-                    api_base,
-                    repository,
-                    project_id,
-                    close_status_id,
-                    provider.kind(),
-                    redmine,
-                    number,
-                ) {
+                if !is_routed
+                    && let Err(error) = super::project_resolution::verify_redmine_scope_before_write(
+                        role,
+                        api_base,
+                        repository,
+                        project_id,
+                        close_status_id,
+                        provider.kind(),
+                        redmine,
+                        number,
+                    )
+                {
                     return super::provider_error(error);
                 }
                 let statuses = match redmine.list_issue_statuses() {

@@ -292,6 +292,23 @@ pub fn auto_close_issue_timer(issue: u64, provider_kind: ProviderKind) -> AutoCl
             reason: "Forgejo time tracking is unsupported".to_owned(),
         };
     }
+    // Admission before any ledger write: a task whose provider has no time
+    // tracking, an ambiguous current-repository task, or durable evidence
+    // that spans more than one Redmine scope skips the close sweep instead
+    // of closing a run the ledger could never attribute.
+    match crate::cli::task_route::resolve_timer_route(issue) {
+        Ok(_) => {}
+        Err(error) if error.is_not_supported() => {
+            return AutoCloseOutcome::Noop {
+                reason: bounded(&error.to_string()),
+            };
+        }
+        Err(error) => {
+            return AutoCloseOutcome::Warning {
+                reason: bounded(&format!("auto timer close refused: {error}")),
+            };
+        }
+    }
     match close_issue_runs(issue) {
         Ok(finished_runs) if finished_runs.is_empty() => AutoCloseOutcome::Noop {
             reason: format!("no running auto-runs to finish for issue {issue}"),

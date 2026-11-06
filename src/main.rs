@@ -18,6 +18,7 @@ mod plugin;
 mod policy;
 mod record;
 mod remote;
+mod task_identity;
 mod time_tracking;
 mod time_tracking_cli;
 mod workflow;

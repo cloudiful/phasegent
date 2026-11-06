@@ -10,6 +10,37 @@ fn timer_storage_error<'a>(operation: &'static str) -> impl FnOnce(String) -> Ph
     move |message| PhasegentError::request(operation, message)
 }
 
+/// Read-only admission for one recovery.
+///
+/// The run row is read without creating the database, running a migration or
+/// mutating a row, only to learn the issue number whose current-repository
+/// timer route must be decided before the ledger is opened for writing.
+/// `Ok(None)` means there is no readable run yet, so the legacy path keeps
+/// its existing not-found behavior.
+pub(crate) fn admit_recovery(
+    run_id: &str,
+) -> Result<Option<crate::cli::task_route::TimerTaskRoute>, PhasegentError> {
+    let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
+    let Some(storage) = storage else {
+        return Ok(None);
+    };
+    if !storage
+        .table_exists("execution_timer_runs")
+        .map_err(PhasegentError::config)?
+    {
+        return Ok(None);
+    }
+    let Some(run) = storage
+        .load_timer_run(run_id)
+        .map_err(timer_storage_error("timer recover"))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(crate::cli::task_route::resolve_timer_route(
+        run.issue,
+    )?))
+}
+
 #[allow(dead_code)]
 pub(crate) fn handle_recover(
     storage: Storage,
@@ -51,6 +82,17 @@ pub(crate) fn handle_recover_with_caller(
         .load_timer_run(run_id)
         .map_err(timer_storage_error("timer recover"))?
         .ok_or_else(|| PhasegentError::config(format!("timer run '{run_id}' was not found")))?;
+    // Admission before any mutable step: the current-repository task route
+    // owns the timer identity, so a bound Forgejo task, an ambiguous task or
+    // conflicting durable evidence refuses before the stale-claim reset,
+    // the FAILED transition or any projection. A bound Redmine task pins the
+    // projection to its own instance and project; a bound Local task keeps
+    // the run local; the legacy path keeps the caller's selection.
+    let route = crate::cli::task_route::resolve_timer_route(existing.issue)?;
+    let (provider_kind, api_base, project_id) =
+        super::finish::projection_target(Some(&route), provider_kind, api_base, project_id);
+    let api_base = api_base.as_deref();
+    let project_id = project_id.as_deref();
     if existing.status != TIMER_STATUS_RUNNING {
         // Terminal rows: a `projecting` row is a lease. Only a
         // stale lease (expired or legacy NULL claimed_at) may be

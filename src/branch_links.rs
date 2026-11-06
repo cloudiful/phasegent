@@ -26,8 +26,9 @@ pub use compat::{
 #[allow(unused_imports)]
 pub use identity::{
     LOCAL_KEY_PREFIX, ResolvedRepo, checkout_root, detect_default_branch, filesystem_fallback_key,
-    is_default_branch, is_protected_branch, read_origin_url, repo_key_for_origin, resolve_repo_key,
-    validate_not_default_branch, validate_not_protected_branch,
+    is_default_branch, is_protected_branch, read_origin_url, repo_key_for_origin,
+    resolve_checkout_repo_key, resolve_repo_key, validate_not_default_branch,
+    validate_not_protected_branch,
 };
 #[allow(unused_imports)]
 pub use index_snapshot::{IndexSnapshot, SNAPSHOT_SOURCE, read_snapshot};

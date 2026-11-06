@@ -19,6 +19,47 @@ use crate::record::{self, RecordFilter};
 
 use request::Gate;
 
+#[allow(clippy::too_many_arguments)]
+fn resolve_record_provider(
+    role: Role,
+    provider_kind: Option<ProviderKind>,
+    api_base: Option<&str>,
+    repository: Option<&str>,
+    project_id: Option<&str>,
+    close_status_id: Option<&str>,
+    issue: u64,
+) -> Result<(crate::providers::ProviderDispatcher, bool, Option<String>), PhasegentError> {
+    let context = super::provider_context::ProviderContext::from_parts(
+        provider_kind,
+        api_base,
+        repository,
+        project_id,
+        close_status_id,
+    );
+    let routed = super::task_route::resolve_single_number(role, &context, issue)?;
+    let is_routed = routed.is_some();
+    // A durable task identity already pins the project, so the Redmine
+    // scope guard compares against that project instead of re-discovering
+    // one from the current checkout. Discovery would build a second
+    // provider from the configured default endpoint, which is exactly the
+    // endpoint a bound task must never reach.
+    let routed_project = routed
+        .as_ref()
+        .map(|route| route.binding.key().project().to_owned());
+    let provider = match routed {
+        Some(route) => route.provider,
+        None => super::provider_for(
+            role,
+            provider_kind,
+            api_base,
+            repository,
+            project_id,
+            close_status_id,
+        )?,
+    };
+    Ok((provider, is_routed, routed_project))
+}
+
 #[allow(dead_code)]
 pub(crate) fn execute_record(
     role_value: Option<Role>,
@@ -169,19 +210,22 @@ pub(crate) fn execute_record_with_caller(
                 }
             };
             let (text, body_file) = body_input;
-            let provider = match super::provider_for(
+            let (provider, routed, routed_project) = match resolve_record_provider(
                 role,
                 provider_kind,
                 api_base,
                 repository,
                 project_id,
                 close_status_id,
+                issue,
             ) {
-                Ok(provider) => provider,
+                Ok(value) => value,
                 Err(error) => return super::provider_error(error),
             };
-            if let Err(error) =
-                super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            let expected_project = routed_project.as_deref().or(project_id);
+            if !routed
+                && let Err(error) =
+                    super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
             {
                 return super::provider_error(error);
             }
@@ -189,7 +233,7 @@ pub(crate) fn execute_record_with_caller(
                 role,
                 api_base,
                 repository,
-                project_id,
+                expected_project,
                 close_status_id,
                 provider.kind(),
                 &provider,
@@ -207,19 +251,21 @@ pub(crate) fn execute_record_with_caller(
             exit
         }
         RecordCommand::Get { issue, record } => {
-            let provider = match super::provider_for(
+            let (provider, routed, _routed_project) = match resolve_record_provider(
                 role,
                 provider_kind,
                 api_base,
                 repository,
                 project_id,
                 close_status_id,
+                issue,
             ) {
-                Ok(provider) => provider,
+                Ok(value) => value,
                 Err(error) => return super::provider_error(error),
             };
-            if let Err(error) =
-                super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            if !routed
+                && let Err(error) =
+                    super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
             {
                 return super::provider_error(error);
             }
@@ -232,19 +278,21 @@ pub(crate) fn execute_record_with_caller(
             recon,
             page,
         } => {
-            let provider = match super::provider_for(
+            let (provider, routed, _routed_project) = match resolve_record_provider(
                 role,
                 provider_kind,
                 api_base,
                 repository,
                 project_id,
                 close_status_id,
+                issue,
             ) {
-                Ok(provider) => provider,
+                Ok(value) => value,
                 Err(error) => return super::provider_error(error),
             };
-            if let Err(error) =
-                super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
+            if !routed
+                && let Err(error) =
+                    super::scope_guard::verify_issue_scope(&provider, provider_kind, issue)
             {
                 return super::provider_error(error);
             }

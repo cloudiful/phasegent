@@ -149,60 +149,114 @@ pub(crate) fn execute_issue_with_caller(
             options,
         );
     }
-    let explicit_provider = provider_kind;
-    let provider_kind = match resolve_kind(role, provider_kind) {
-        Ok(provider) => provider,
-        Err(error) => return super::provider_error(error),
-    };
-    // Uniform upload-attachment fast path: every provider's inherent `supports`
-    // reports `IssueAttachmentUpload = false`, so non-Redmine is rejected early
-    // — before any file, network, or credential access — with the structured
-    // not-supported result. The Redmine arm still falls through to
-    // `provider.supports(...)` below and short-circuits there, but the early
-    // branch keeps the message tight and avoids resolving `provider_for` for a
-    // command we already know to reject.
-    if let IssueCommand::UploadAttachment { .. } = &command
-        && provider_kind != ProviderKind::Redmine
-    {
-        return super::provider_error(PhasegentError::not_supported(
-            provider_kind.as_str(),
-            capability.operation(),
-        ));
-    }
-    let automatic_workflow = provider_kind == ProviderKind::Redmine
-        && project_id.is_none()
-        && matches!(&command, IssueCommand::Create { .. });
-    let (project_id, close_status_id) = if automatic_workflow {
-        // Repository-aware discovery with bootstrap fallback (issue 394
-        // P2): shared with search so the two branches stay identical.
-        // Discovery finds exactly one match we use directly and bypass
-        // bootstrap; only NoMatch keeps the automatic bootstrap fallback.
-        match super::project_resolution::resolve_redmine_project_for_search_or_create(
-            role,
-            api_base,
-            repository,
-            project_id,
-            close_status_id,
-        ) {
-            Ok((project, close)) => (project, close),
-            Err(error) => return super::provider_error(error),
-        }
-    } else {
-        (
-            project_id.map(str::to_owned),
-            close_status_id.map(str::to_owned),
-        )
-    };
-    let provider = match super::provider_for(
-        role,
-        explicit_provider,
+    let route_context = super::provider_context::ProviderContext::from_parts(
+        provider_kind,
         api_base,
         repository,
-        project_id.as_deref(),
-        close_status_id.as_deref(),
-    ) {
-        Ok(provider) => provider,
-        Err(error) => return super::provider_error(error),
+        project_id,
+        close_status_id,
+    );
+    // A batch resolves every number on its own, so the command's shared
+    // provider is never built up front: a bound-only batch must not
+    // construct an unproven default provider.
+    if let IssueCommand::GetBatch { numbers } = &command {
+        return execute_issue_batch(role, &route_context, capability, numbers);
+    }
+    let routed_number = match &command {
+        IssueCommand::Get { number }
+        | IssueCommand::Update { number, .. }
+        | IssueCommand::Close { number, .. } => Some(*number),
+        _ => None,
+    };
+    let routed = match routed_number {
+        Some(number) => {
+            match super::task_route::resolve_single_number(role, &route_context, number) {
+                Ok(route) => route,
+                Err(error) => return super::provider_error(error),
+            }
+        }
+        None => None,
+    };
+    let is_routed = routed.is_some();
+    let explicit_provider = provider_kind;
+    // The durable identity of the routed task, kept for the lease-scope
+    // decisions below: a routed close releases exactly this task's leases,
+    // never another instance's same-number task.
+    let routed_task = routed.as_ref().map(|route| {
+        let key = route.binding.key();
+        (
+            route.binding.task_id(),
+            key.instance().to_owned(),
+            key.project().to_owned(),
+            key.provider().to_owned(),
+        )
+    });
+    let (provider, provider_kind, project_id, close_status_id) = if let Some(route) = routed {
+        let key = route.binding.key();
+        (
+            route.provider,
+            key.provider()
+                .parse::<ProviderKind>()
+                .expect("validated task provider"),
+            Some(key.project().to_owned()),
+            close_status_id.map(str::to_owned),
+        )
+    } else {
+        let provider_kind = match resolve_kind(role, provider_kind) {
+            Ok(provider) => provider,
+            Err(error) => return super::provider_error(error),
+        };
+        // Uniform upload-attachment fast path: every provider's inherent `supports`
+        // reports `IssueAttachmentUpload = false`, so non-Redmine is rejected early
+        // — before any file, network, or credential access — with the structured
+        // not-supported result. The Redmine arm still falls through to
+        // `provider.supports(...)` below and short-circuits there, but the early
+        // branch keeps the message tight and avoids resolving `provider_for` for a
+        // command we already know to reject.
+        if let IssueCommand::UploadAttachment { .. } = &command
+            && provider_kind != ProviderKind::Redmine
+        {
+            return super::provider_error(PhasegentError::not_supported(
+                provider_kind.as_str(),
+                capability.operation(),
+            ));
+        }
+        let automatic_workflow = provider_kind == ProviderKind::Redmine
+            && project_id.is_none()
+            && matches!(&command, IssueCommand::Create { .. });
+        let (project_id, close_status_id) = if automatic_workflow {
+            // Repository-aware discovery with bootstrap fallback (issue 394
+            // P2): shared with search so the two branches stay identical.
+            // Discovery finds exactly one match we use directly and bypass
+            // bootstrap; only NoMatch keeps the automatic bootstrap fallback.
+            match super::project_resolution::resolve_redmine_project_for_search_or_create(
+                role,
+                api_base,
+                repository,
+                project_id,
+                close_status_id,
+            ) {
+                Ok((project, close)) => (project, close),
+                Err(error) => return super::provider_error(error),
+            }
+        } else {
+            (
+                project_id.map(str::to_owned),
+                close_status_id.map(str::to_owned),
+            )
+        };
+        let provider = match super::provider_for(
+            role,
+            explicit_provider,
+            api_base,
+            repository,
+            project_id.as_deref(),
+            close_status_id.as_deref(),
+        ) {
+            Ok(provider) => provider,
+            Err(error) => return super::provider_error(error),
+        };
+        (provider, provider_kind, project_id, close_status_id)
     };
     // Durable pre-HTTP scope guard (issue 1201 P3): a numbered Forgejo
     // binding is never mutated or read through an omitted or conflicting
@@ -212,21 +266,17 @@ pub(crate) fn execute_issue_with_caller(
         IssueCommand::Update { number, .. }
         | IssueCommand::Close { number, .. }
         | IssueCommand::Get { number } => {
-            if let Err(error) =
-                super::scope_guard::verify_issue_scope(&provider, explicit_provider, *number)
+            if !is_routed
+                && let Err(error) =
+                    super::scope_guard::verify_issue_scope(&provider, explicit_provider, *number)
             {
                 return super::provider_error(error);
             }
         }
-        IssueCommand::GetBatch { numbers } => {
-            for number in numbers {
-                if let Err(error) =
-                    super::scope_guard::verify_issue_scope(&provider, explicit_provider, *number)
-                {
-                    return super::provider_error(error);
-                }
-            }
-        }
+        // A batch resolves every number on its own, so its scope guard runs
+        // per item against that item's own provider instead of against one
+        // shared provider.
+        IssueCommand::GetBatch { .. } => {}
         _ => {}
     }
     if !provider.supports(capability) {
@@ -264,16 +314,19 @@ pub(crate) fn execute_issue_with_caller(
                 // Single-number scope guard (issue 394): Redmine verifies
                 // the fetched project before returning data; other
                 // providers no-op inside the helper.
-                if let Err(error) = super::project_resolution::enforce_redmine_single_number_scope(
-                    role,
-                    api_base,
-                    repository,
-                    project_id.as_deref(),
-                    close_status_id.as_deref(),
-                    provider_kind,
-                    &summary,
-                    number,
-                ) {
+                if !is_routed
+                    && let Err(error) =
+                        super::project_resolution::enforce_redmine_single_number_scope(
+                            role,
+                            api_base,
+                            repository,
+                            project_id.as_deref(),
+                            close_status_id.as_deref(),
+                            provider_kind,
+                            &summary,
+                            number,
+                        )
+                {
                     return super::provider_error(error);
                 }
                 issue_search::warm_single_summary(&provider, &summary, "issue get");
@@ -282,63 +335,10 @@ pub(crate) fn execute_issue_with_caller(
             Err(error) => super::provider_error(error),
         },
         IssueCommand::GetBatch { numbers } => {
-            let (issues, mut errors) = batch_fetch_issues(&provider, &numbers);
-            // Single-number scope guard per item (issue 394): Redmine
-            // partitions guard failures into the per-number `errors`
-            // envelope instead of failing the whole batch; other
-            // providers no-op. Only passing summaries are warmed.
-            let mut guarded = Vec::with_capacity(issues.len());
-            if provider_kind == ProviderKind::Redmine {
-                let expected = match super::project_resolution::resolve_expected_redmine_project(
-                    role,
-                    api_base,
-                    repository,
-                    project_id.as_deref(),
-                    close_status_id.as_deref(),
-                ) {
-                    Ok(expected) => Some(expected),
-                    Err(error) => {
-                        for summary in &issues {
-                            errors.push(serde_json::json!({
-                                "number": summary.number,
-                                "error": error.json(),
-                            }));
-                        }
-                        return super::print_json(
-                            &serde_json::json!({"issues": Vec::<IssueSummary>::new(), "errors": errors}),
-                        );
-                    }
-                };
-                if let Some(expected) = expected {
-                    for summary in issues {
-                        match super::project_resolution::guard_issue_summary_project(
-                            &summary,
-                            &expected,
-                            summary.number,
-                        ) {
-                            Ok(()) => guarded.push(summary),
-                            Err(error) => errors.push(serde_json::json!({
-                                "number": summary.number,
-                                "error": error.json(),
-                            })),
-                        }
-                    }
-                }
-            } else {
-                guarded = issues;
-            }
-            for summary in &guarded {
-                issue_search::warm_single_summary(&provider, summary, "issue get");
-            }
-            let failed = !errors.is_empty();
-            let code = super::print_json(&serde_json::json!({"issues": guarded, "errors": errors}));
-            if code != 0 {
-                code
-            } else if failed {
-                1
-            } else {
-                0
-            }
+            // Unreachable in practice: the batch resolves before the shared
+            // provider is built, so this keeps the dispatch total without
+            // ever using the legacy provider.
+            execute_issue_batch(role, &route_context, capability, &numbers)
         }
         IssueCommand::Search { .. } => {
             unreachable!("transparent search bypassed provider execution")
@@ -403,6 +403,51 @@ pub(crate) fn execute_issue_with_caller(
                     // `assignee_warning` stays `None`; the warning slot is
                     // retained for the create path.
                     super::report_local_warnings("issue create", assignee_warning);
+                    // Persist the durable task identity before best-effort
+                    // branch/lease work. A local persistence failure never
+                    // retries the remote POST and never hides the created
+                    // issue; it reports an actionable adoption warning.
+                    let mut created_task: Option<crate::task_identity::TaskBinding> = None;
+                    match super::task_route::persist_created_issue(&provider, summary.number) {
+                        Ok((binding, repo_associated)) => {
+                            super::report_local_warnings(
+                                "issue create",
+                                super::task_route::attach_created_task_to_branch(
+                                    &provider,
+                                    summary.number,
+                                    binding.task_id(),
+                                )
+                                .err()
+                                .map(|error| {
+                                    format!(
+                                        "created issue {} but could not attach its task identity to the branch link: {}",
+                                        summary.number,
+                                        crate::lifecycle::bounded(&error)
+                                    )
+                                }),
+                            );
+                            if repo_associated {
+                                created_task = Some(binding);
+                            } else {
+                                super::report_local_warnings(
+                                    "issue create",
+                                    Some(format!(
+                                        "created issue {} but no physical repository was identified; the task identity was persisted without repository association and no task lease was acquired",
+                                        summary.number
+                                    )),
+                                );
+                            }
+                        }
+                        Err(error) => super::report_local_warnings(
+                            "issue create",
+                            Some(format!(
+                                "created issue {} but local task identity persistence failed ({}) ;                                  adopt it with `phasegent issue bind {}`",
+                                summary.number,
+                                crate::lifecycle::bounded(&error),
+                                summary.number
+                            )),
+                        ),
+                    }
                     // Explicit `--branch` (issue 452 P2) is Redmine-only
                     // like the create auto-acquire hook; the create/link
                     // helpers live in `create_branch` so this arm stays
@@ -425,38 +470,41 @@ pub(crate) fn execute_issue_with_caller(
                     // and reports a created worktree as a bounded stderr
                     // warning so the stdout issue JSON stays byte-identical.
                     //
-                    // Issue 1201 P3: a Forgejo create acquires under the exact
-                    // `(forgejo, owner/repo, number)` sidecar scope and never
-                    // falls back to an unscoped lease; Redmine and Local keep
-                    // the unscoped hook unchanged.
-                    let create_scope = if provider_kind == ProviderKind::Forgejo {
-                        crate::providers::index_store::provider_scope(&provider)
-                            .ok()
-                            .and_then(|scope| {
-                                crate::worktree::LeaseScope::new(
-                                    &scope.source,
-                                    &scope.project,
+                    // Issue 1201 P7: every provider's create acquires under the
+                    // exact durable task scope just persisted — provider,
+                    // project, number, task id and stored instance — and never
+                    // falls back to an unscoped lease. A create whose identity
+                    // could not be persisted or associated with this physical
+                    // repository skips the acquisition with its existing
+                    // bounded warning instead of inventing an owner.
+                    let create_scope = created_task.as_ref().and_then(|binding| {
+                        let key = binding.key();
+                        crate::worktree::LeaseScope::for_task(
+                            key.provider(),
+                            key.project(),
+                            summary.number,
+                            binding.task_id(),
+                            key.instance(),
+                        )
+                        .ok()
+                    });
+                    if create_scope.is_some() || created_task.is_some() {
+                        super::report_local_warnings(
+                            "issue create",
+                            match &create_scope {
+                                Some(scope) => crate::worktree::auto_acquire_after_create_scoped(
                                     summary.number,
-                                )
-                                .ok()
-                            })
-                    } else {
-                        None
-                    };
-                    super::report_local_warnings(
-                        "issue create",
-                        match &create_scope {
-                            Some(scope) => crate::worktree::auto_acquire_after_create_scoped(
-                                summary.number,
-                                session.as_deref(),
-                                Some(scope),
-                            ),
-                            None => crate::worktree::auto_acquire_after_create(
-                                summary.number,
-                                session.as_deref(),
-                            ),
-                        },
-                    );
+                                    session.as_deref(),
+                                    Some(scope),
+                                ),
+                                None => Some(format!(
+                                    "created issue {} but its durable task scope could not be \
+                                     constructed; skipped task lease acquisition",
+                                    summary.number
+                                )),
+                            },
+                        );
+                    }
                     // Phase 3 relation auto: fire the helper
                     // after a successful create when the parent
                     // linkage was supplied. The helper is
@@ -656,22 +704,44 @@ pub(crate) fn execute_issue_with_caller(
                             )
                         }),
                     };
-                    // A Forgejo close releases only its exact
-                    // `(forgejo, owner/repo, number)` scope; a same-number
-                    // legacy Redmine/Local row is never flipped. Redmine and
-                    // Local closes keep their legacy unscoped path, whose
-                    // selector already excludes scoped rows.
-                    if provider_kind == ProviderKind::Forgejo {
-                        let exact_scope = crate::providers::index_store::provider_scope(&provider)
-                            .ok()
-                            .and_then(|scope| {
-                                crate::worktree::LeaseScope::new(
-                                    &scope.source,
-                                    &scope.project,
-                                    number,
-                                )
-                                .ok()
-                            });
+                    // A routed close owns exactly its durable task's scope —
+                    // provider, project, number, task id and stored instance —
+                    // so a same-number task on another instance keeps its own
+                    // lease and directory. An explicit Forgejo close with no
+                    // durable route keeps the legacy `(forgejo, owner/repo,
+                    // number)` scope, and a legacy unbound Redmine/Local close
+                    // keeps its unscoped release, whose selector already
+                    // excludes every scoped row.
+                    let exact_close_scope =
+                        |provider: &crate::providers::ProviderDispatcher| -> Option<crate::worktree::LeaseScope> {
+                            match &routed_task {
+                                Some((task_id, instance, project, source)) => {
+                                    crate::worktree::LeaseScope::for_task(
+                                        source,
+                                        project,
+                                        number,
+                                        *task_id,
+                                        instance,
+                                    )
+                                    .ok()
+                                }
+                                None if provider_kind == ProviderKind::Forgejo => {
+                                    crate::providers::index_store::provider_scope(provider)
+                                        .ok()
+                                        .and_then(|scope| {
+                                            crate::worktree::LeaseScope::new(
+                                                &scope.source,
+                                                &scope.project,
+                                                number,
+                                            )
+                                            .ok()
+                                        })
+                                }
+                                None => None,
+                            }
+                        };
+                    if provider_kind == ProviderKind::Forgejo || routed_task.is_some() {
+                        let exact_scope = exact_close_scope(&provider);
                         match (
                             exact_scope,
                             crate::worktree::repo_identity(
@@ -680,8 +750,18 @@ pub(crate) fn execute_issue_with_caller(
                             ),
                         ) {
                             (Some(scope), Ok(identity)) => {
+                                // The durable repository key is proven from the
+                                // repository's own checkout, outside every write
+                                // boundary, so the release can prove a task
+                                // lease's membership in this physical repository
+                                // before it flips a row.
+                                let repo_key =
+                                    crate::worktree::lease_scope::verified_repo_key_for_identity(
+                                        &identity,
+                                    );
                                 match crate::worktree::release_active_leases_for_scope(
                                     &identity,
+                                    repo_key.as_deref(),
                                     &scope,
                                     "issue closed",
                                 ) {
@@ -741,35 +821,45 @@ pub(crate) fn execute_issue_with_caller(
                     // The other issues the directory is associated with are
                     // confirmed closed through the scope-aware resolver
                     // before anything may move.
-                    // A Forgejo close threads its explicit resolved scope:
-                    // the closure check reads through the same provider and
-                    // a matching-scope-only directory may proceed through the
-                    // unchanged host, local, and cache guards. Legacy closes
-                    // keep the unscoped closure and keep every scoped group.
-                    if provider_kind == ProviderKind::Forgejo {
-                        let exact_scope = crate::providers::index_store::provider_scope(&provider)
-                            .ok()
-                            .and_then(|scope| {
-                                crate::worktree::LeaseScope::new(
-                                    &scope.source,
-                                    &scope.project,
-                                    number,
-                                )
-                                .ok()
-                            });
-                        let closure = exact_scope.as_ref().map(|_| {
-                            crate::cli::issue_closure::CurrentIssueClosure::new_scoped(
-                                &repo_path,
-                                role,
-                                crate::cli::issue_closure::ExplicitSelection {
-                                    provider_kind,
-                                    api_base: api_base.map(str::to_owned),
-                                    repository: repository.map(str::to_owned),
-                                    project_id: project_id.clone(),
-                                    close_status_id: close_status_id.clone(),
-                                },
-                            )
-                        });
+                    // A routed close threads its exact task scope and a
+                    // task-aware closure: the closed issue's directories are
+                    // filtered by that exact task, and every other associated
+                    // number is resolved by durable membership only and read
+                    // through its own pinned task. An explicit Forgejo close
+                    // with no durable route keeps the single-scope closure.
+                    // Legacy closes keep the unscoped closure and keep every
+                    // scoped group.
+                    if provider_kind == ProviderKind::Forgejo || routed_task.is_some() {
+                        let exact_scope = exact_close_scope(&provider);
+                        let closure = match (&routed_task, exact_scope.as_ref()) {
+                            (Some(_), Some(_)) => Some(
+                                crate::cli::issue_closure::CurrentIssueClosure::new_task_aware(
+                                    &repo_path,
+                                    role,
+                                    crate::cli::provider_context::ProviderContext::from_parts(
+                                        explicit_provider,
+                                        api_base,
+                                        repository,
+                                        project_id.as_deref(),
+                                        close_status_id.as_deref(),
+                                    ),
+                                ),
+                            ),
+                            (None, Some(_)) => {
+                                Some(crate::cli::issue_closure::CurrentIssueClosure::new_scoped(
+                                    &repo_path,
+                                    role,
+                                    crate::cli::issue_closure::ExplicitSelection {
+                                        provider_kind,
+                                        api_base: api_base.map(str::to_owned),
+                                        repository: repository.map(str::to_owned),
+                                        project_id: project_id.clone(),
+                                        close_status_id: close_status_id.clone(),
+                                    },
+                                ))
+                            }
+                            _ => None,
+                        };
                         let warnings = match (exact_scope.as_ref(), closure.as_ref()) {
                             (Some(scope), Some(closure)) => {
                                 crate::lifecycle::cleanup_closed_issue_worktrees_scoped(
@@ -822,31 +912,50 @@ pub(crate) fn execute_issue_with_caller(
                     if let Ok(target) = &restore_target {
                         match crate::infra::storage::Storage::open() {
                             Ok(storage) => {
-                                let git = crate::git_runner::ProcessGitRunner::in_directory(
-                                    &target.main_checkout,
-                                );
-                                let api = crate::worktree::opencode::ProcessOpenCodeApi::new();
-                                let runner = crate::worktree::ProcessWorktreeRunner::new();
-                                for warning in crate::lifecycle::restore::restore_on_close(
-                                    &crate::lifecycle::restore::CloseRestoreParams {
-                                        storage: &storage,
-                                        git: &git,
-                                        worktree: &runner,
-                                        api: &api,
-                                        target,
-                                        provider: restore_scope
-                                            .as_ref()
-                                            .map(|scope| scope.source.as_str()),
-                                        project: restore_scope
-                                            .as_ref()
-                                            .map(|scope| scope.project.as_str()),
-                                        issue_number: number,
-                                        session: release_session,
-                                    },
-                                )
-                                .warnings()
-                                {
+                                // A recorded baseline carries no instance or
+                                // task id, so it can only be attributed when
+                                // exactly one durable task in this repository
+                                // matches the provider, project and number.
+                                // An ambiguous or unprovable membership skips
+                                // the restore instead of guessing a baseline.
+                                let ambiguous =
+                                    crate::lifecycle::restore::ambiguous_restore_warning(
+                                        &storage,
+                                        &repo_path,
+                                        restore_scope.as_ref().map(|scope| scope.source.as_str()),
+                                        restore_scope.as_ref().map(|scope| scope.project.as_str()),
+                                        number,
+                                        routed_task.as_ref().map(|(id, _, _, _)| *id),
+                                    );
+                                if let Some(warning) = ambiguous {
                                     super::report_local_warnings("issue close", Some(warning));
+                                } else {
+                                    let git = crate::git_runner::ProcessGitRunner::in_directory(
+                                        &target.main_checkout,
+                                    );
+                                    let api = crate::worktree::opencode::ProcessOpenCodeApi::new();
+                                    let runner = crate::worktree::ProcessWorktreeRunner::new();
+                                    for warning in crate::lifecycle::restore::restore_on_close(
+                                        &crate::lifecycle::restore::CloseRestoreParams {
+                                            storage: &storage,
+                                            git: &git,
+                                            worktree: &runner,
+                                            api: &api,
+                                            target,
+                                            provider: restore_scope
+                                                .as_ref()
+                                                .map(|scope| scope.source.as_str()),
+                                            project: restore_scope
+                                                .as_ref()
+                                                .map(|scope| scope.project.as_str()),
+                                            issue_number: number,
+                                            session: release_session,
+                                        },
+                                    )
+                                    .warnings()
+                                    {
+                                        super::report_local_warnings("issue close", Some(warning));
+                                    }
                                 }
                             }
                             Err(error) => super::report_local_warnings(
@@ -891,11 +1000,175 @@ pub(crate) fn execute_issue_with_caller(
     }
 }
 
+/// Fetch a batch of issues, resolving every number on its own.
+///
+/// The command's shared provider is never built up front: a bound-only
+/// batch must not construct an unproven default provider. Every requested
+/// number is resolved read-only first, the legacy provider is built only
+/// when an item is truly unbound, and one item's ambiguity, corruption or
+/// provenance failure becomes an isolated error entry instead of
+/// preventing the readable items.
+fn execute_issue_batch(
+    role: Role,
+    context: &super::provider_context::ProviderContext,
+    capability: Capability,
+    numbers: &[u64],
+) -> i32 {
+    struct Item {
+        number: u64,
+        route: Option<super::task_route::ResolvedTaskRoute>,
+        error: Option<PhasegentError>,
+    }
+    let items: Vec<Item> = numbers
+        .iter()
+        .map(
+            |number| match super::task_route::resolve_single_number(role, context, *number) {
+                Ok(route) => Item {
+                    number: *number,
+                    route,
+                    error: None,
+                },
+                Err(error) => Item {
+                    number: *number,
+                    route: None,
+                    error: Some(error),
+                },
+            },
+        )
+        .collect();
+    let has_bound = items.iter().any(|item| item.route.is_some());
+    let needs_legacy = items
+        .iter()
+        .any(|item| item.error.is_none() && item.route.is_none());
+    // The legacy provider is built only when an item is truly unbound. A
+    // batch without any bound item keeps the legacy failure shape; an
+    // unbuildable default never prevents the bound items.
+    let mut legacy_error = None;
+    let legacy = if needs_legacy {
+        match context.resolve(role) {
+            Ok(provider) => Some(provider),
+            Err(error) if has_bound => {
+                legacy_error = Some(error);
+                None
+            }
+            Err(error) => return super::provider_error(error),
+        }
+    } else {
+        None
+    };
+    let mut issues: Vec<IssueSummary> = Vec::with_capacity(numbers.len());
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    for item in &items {
+        if let Some(error) = &item.error {
+            errors.push(serde_json::json!({"number": item.number, "error": error.json()}));
+            continue;
+        }
+        let (item_provider, expected_project) = match &item.route {
+            Some(route) => {
+                let key = route.binding.key();
+                let expected = if key.provider() == ProviderKind::Redmine.as_str() {
+                    Some(key.project().to_owned())
+                } else {
+                    None
+                };
+                (&route.provider, expected)
+            }
+            None => match &legacy {
+                Some(provider) => (provider, None),
+                None => {
+                    let error = legacy_error
+                        .as_ref()
+                        .expect("an unbound item has a bounded legacy failure");
+                    errors.push(serde_json::json!({"number": item.number, "error": error.json()}));
+                    continue;
+                }
+            },
+        };
+        if item.route.is_none()
+            && let Err(error) =
+                super::scope_guard::verify_issue_scope(item_provider, context.provider, item.number)
+        {
+            errors.push(serde_json::json!({"number": item.number, "error": error.json()}));
+            continue;
+        }
+        if !item_provider.supports(capability) {
+            errors.push(serde_json::json!({
+                "number": item.number,
+                "error": PhasegentError::not_supported(
+                    item_provider.kind().as_str(),
+                    capability.operation(),
+                )
+                .json(),
+            }));
+            continue;
+        }
+        let summary = match item_provider.get_issue(item.number) {
+            Ok(summary) => summary,
+            Err(error) => {
+                errors.push(serde_json::json!({"number": item.number, "error": error.json()}));
+                continue;
+            }
+        };
+        // A bound item carries its own project in its durable identity; an
+        // unbound Redmine item resolves the legacy expected project.
+        let expected = match expected_project {
+            Some(expected) => Some(expected),
+            None if item_provider.kind() == ProviderKind::Redmine => {
+                match super::project_resolution::resolve_expected_redmine_project(
+                    role,
+                    context.api_base.as_deref(),
+                    context.repository.as_deref(),
+                    context.project_id.as_deref(),
+                    context.close_status_id.as_deref(),
+                ) {
+                    Ok(expected) => Some(expected),
+                    Err(error) => {
+                        errors.push(
+                            serde_json::json!({"number": item.number, "error": error.json()}),
+                        );
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
+        if let Some(expected) = expected
+            && let Err(error) = super::project_resolution::guard_issue_summary_project(
+                &summary,
+                &expected,
+                summary.number,
+            )
+        {
+            errors.push(serde_json::json!({"number": item.number, "error": error.json()}));
+            continue;
+        }
+        // The cache write uses the item's own provider; the cache never
+        // grants ownership.
+        issue_search::warm_single_summary(item_provider, &summary, "issue get");
+        issues.push(summary);
+    }
+    let failed = !errors.is_empty();
+    let code = super::print_json(&serde_json::json!({"issues": issues, "errors": errors}));
+    if code != 0 {
+        code
+    } else if failed {
+        1
+    } else {
+        0
+    }
+}
+
 /// Fetch several issues for `issue get` batches. Successes and
 /// failures are collected side by side so one missing issue never
 /// discards the rest; the caller renders the `{issues, errors}`
 /// envelope. Generic over the provider so tests can drive it
 /// against a mock server without a full CLI invocation.
+/// Fetch several issues from one provider into the batch envelope.
+///
+/// The production batch resolves every number on its own, so a bound item
+/// is served by its own pinned provider; this shared helper stays for the
+/// Redmine provider contract coverage of the per-item error envelope.
+#[cfg(test)]
 pub(crate) fn batch_fetch_issues<P>(
     provider: &P,
     numbers: &[u64],

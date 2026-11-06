@@ -25,6 +25,7 @@ mod record;
 mod relation;
 mod scope_guard;
 mod status;
+pub(crate) mod task_route;
 mod version;
 mod workflow;
 mod workflow_all_projects;
@@ -253,13 +254,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             command @ (IssueCommand::Bind { .. }
             | IssueCommand::Unbind { .. }
             | IssueCommand::StatusBranch),
-        ) => branch::execute_branch_context_scoped(
-            invocation.role,
-            invocation.provider,
-            invocation.repository.as_deref(),
-            invocation.project_id.as_deref(),
-            command,
-        ),
+        ) => branch::execute_branch_context_scoped(invocation.role, &provider_invocation, command),
         Command::Issue(command) => issue::execute_issue_with_caller(
             invocation.caller,
             invocation.provider,

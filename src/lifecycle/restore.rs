@@ -290,6 +290,74 @@ pub(crate) fn close_restore_unavailable_warning(
     })
 }
 
+/// Why a close's baseline restore must be skipped because the closed number
+/// is ambiguous among the durable tasks of this provider, project and number
+/// in the verified repository.
+///
+/// `checkout_baselines` carries no instance or task id, so a recorded baseline
+/// can only be attributed when exactly one durable task in this repository
+/// matches the provider, project and number. More than one matching task — two
+/// canonical instances of the same number — keeps the restore skipped instead
+/// of restoring through a guessed baseline. A repository whose key or
+/// membership cannot be proven also skips, and a number with no durable task
+/// here keeps the existing no-op path.
+pub(crate) fn ambiguous_restore_warning(
+    storage: &Storage,
+    repo_path: &Path,
+    provider: Option<&str>,
+    project: Option<&str>,
+    issue_number: u64,
+    task_id: Option<i64>,
+) -> Option<String> {
+    let provider = provider.map(str::trim).filter(|value| !value.is_empty())?;
+    let project = project.map(str::trim).filter(|value| !value.is_empty())?;
+    let Some((repo_key, _)) = checkout_repo_key(repo_path) else {
+        return Some(format!(
+            "issue {issue_number} closed; checkout restoration was skipped because the \
+             repository identity could not be proven"
+        ));
+    };
+    let memberships = match crate::task_identity::bindings_for_repo_number_with(
+        &storage.connection,
+        &repo_key,
+        issue_number,
+    ) {
+        Ok(memberships) => memberships,
+        Err(reason) => {
+            return Some(format!(
+                "issue {issue_number} closed; checkout restoration was skipped because the \
+                 durable task membership could not be read: {}",
+                bounded(&reason)
+            ));
+        }
+    };
+    let mut matching: Vec<i64> = memberships
+        .iter()
+        .filter(|binding| {
+            let key = binding.key();
+            key.provider() == provider && key.project() == project
+        })
+        .map(|binding| binding.task_id())
+        .collect();
+    matching.sort_unstable();
+    matching.dedup();
+    if task_id.is_some_and(|id| !matching.contains(&id)) {
+        return Some(format!(
+            "issue {issue_number} closed; checkout restoration was skipped because the routed \
+             task membership could not be proven"
+        ));
+    }
+    if matching.len() > 1 {
+        return Some(format!(
+            "issue {issue_number} closed; checkout restoration was skipped because {} durable \
+             tasks in this repository share provider '{provider}', project '{project}' and \
+             number {issue_number}",
+            matching.len()
+        ));
+    }
+    None
+}
+
 pub(crate) struct CloseRestoreParams<'a> {
     pub storage: &'a Storage,
     pub git: &'a dyn GitRunner,

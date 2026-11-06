@@ -323,3 +323,51 @@ fn decode_issue_row(row: &rusqlite::Row<'_>) -> Result<LinkedIssue, rusqlite::Er
         state: None,
     })
 }
+
+/// Non-NULL durable task references for one `(repo_key, branch)`, ordered by
+/// task id. An older store without the table or the additive column has no
+/// task evidence: it returns an empty list rather than initialising or
+/// migrating during a read.
+pub(crate) fn branch_task_refs(
+    connection: &rusqlite::Connection,
+    repo_key: &str,
+    branch: &str,
+) -> Result<Vec<(u64, i64)>, String> {
+    let table_exists: bool = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'branch_issue_links'",
+            [],
+            |row| Ok(row.get::<_, i64>(0)? > 0),
+        )
+        .map_err(|error| format!("could not inspect branch link table: {error}"))?;
+    if !table_exists {
+        return Ok(Vec::new());
+    }
+    let column_exists: bool = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('branch_issue_links') WHERE name = 'task_id'",
+            [],
+            |row| Ok(row.get::<_, i64>(0)? > 0),
+        )
+        .map_err(|error| format!("could not inspect branch link task column: {error}"))?;
+    if !column_exists {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT issue_number, task_id FROM branch_issue_links \
+              WHERE repo_key = ?1 AND branch = ?2 AND task_id IS NOT NULL \
+              ORDER BY issue_number, task_id",
+        )
+        .map_err(|error| format!("could not prepare branch task read: {error}"))?;
+    let rows = statement
+        .query_map(rusqlite::params![repo_key, branch], |row| {
+            Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)?))
+        })
+        .map_err(|error| format!("could not read branch task refs: {error}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|error| format!("could not decode branch task ref: {error}"))?);
+    }
+    Ok(out)
+}

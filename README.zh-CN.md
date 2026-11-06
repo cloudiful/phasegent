@@ -113,11 +113,13 @@ phasegent --output json issue get 123      # 强制机器文档
 `--repository OWNER/REPOSITORY` 指定 Git 主机上的仓库，用于
 `workflow bootstrap` 与 project 发现。
 
-Forgejo 是显式启用的 provider，不会被已保存的默认值自动选中：在命令上使用
+Forgejo 不会被已保存的默认值自动选中。创建 issue、用 `issue bind` 接管已有编号，
+或操作任何没有持久 task 的编号时，使用
 `--provider forgejo --repository owner/repo --api-base URL`，并通过
 `admin auth setup --provider forgejo --repository owner/repo --api-base URL`
-保存 role token。token 与全部规范状态标签由人类操作者准备。Forgejo 使用仓库内
-issue 编号，并在结果中保留原生全局 id；它支持 issue、评论、record、仓库读取、
+保存 role token。已带持久 Forgejo task 的编号会自动路由到该 task 保存的 instance
+与 repository，无需重复这些参数。token 与全部规范状态标签由人类操作者准备。
+Forgejo 使用仓库内 issue 编号，并在结果中保留原生全局 id；它支持 issue、评论、record、仓库读取、
 milestone（作为 version）、状态标签，以及按 `owner/repo` 隔离的分支关联、worktree
 lease、清理与 sync。不支持时间记录、relation、附件、子任务/planning 与 project
 创建。`Resolved` 保持为原生 open 标签，close 清理仅限匹配的 `owner/repo` scope；
