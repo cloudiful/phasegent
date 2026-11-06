@@ -1319,8 +1319,9 @@ fn shared_skill_carries_task_routing_policy() {
     );
 }
 
-/// Issue 1201 P12: a Forgejo default is an equal configured selection, not an
-/// opt-in that the operator must repeat as an explicit flag.
+/// Issue 1201 P13: a Forgejo default is an equal configured selection whose
+/// repository comes from explicit selection, an attested origin, or the
+/// outside-Git stored default — never from a single implicit repository.
 #[test]
 fn shared_skill_states_equal_configured_forgejo_selection() {
     let _lock = lock_workflow_tests();
@@ -1328,8 +1329,10 @@ fn shared_skill_states_equal_configured_forgejo_selection() {
     for needle in [
         "A configured Forgejo default is selected",
         "needs no explicit",
-        "attested `owner/repo`",
-        "never a repository inferred from the Git origin",
+        "explicit `--repository`",
+        "checkout's origin when that host and deployment prefix",
+        "stored default outside Git",
+        "normalize exactly to the trusted instance",
     ] {
         assert!(
             skill.contains(needle),
@@ -1339,6 +1342,10 @@ fn shared_skill_states_equal_configured_forgejo_selection() {
     assert!(
         !skill.contains("A stored or environment Forgejo default is still refused"),
         "the removed opt-in refusal must stay gone"
+    );
+    assert!(
+        !skill.contains("never a repository inferred from the Git origin"),
+        "the replaced single-repository claim must stay gone"
     );
 }
 

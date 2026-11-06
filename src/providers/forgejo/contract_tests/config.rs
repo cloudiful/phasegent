@@ -203,15 +203,34 @@ fn role_credential_is_provider_and_role_scoped() {
             "fixture-token",
         )
         .unwrap();
-    let owned = ForgejoConfig::resolve_with_storage(
+    let mismatch = ForgejoConfig::resolve_with_storage(
         &storage,
         Role::Reviewer,
         Some("https://override.test"),
         None,
     )
+    .unwrap_err();
+    assert!(
+        mismatch.json()["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match the configured role instance"),
+        "an explicit endpoint never overrides the trusted instance: {mismatch}"
+    );
+    let other_repository = ForgejoConfig::resolve_with_storage(
+        &storage,
+        Role::Reviewer,
+        Some("https://forgejo.test"),
+        Some("other/repo"),
+    )
     .unwrap();
-    assert_eq!(owned.api_base(), "https://override.test");
-    assert_eq!(owned.repository(), "owner/repo");
+    assert_eq!(other_repository.api_base(), "https://forgejo.test");
+    assert_eq!(other_repository.repository(), "other/repo");
+    let stored_default =
+        ForgejoConfig::resolve_with_storage(&storage, Role::Reviewer, None, Some("owner/repo"))
+            .unwrap();
+    assert_eq!(stored_default.api_base(), "https://forgejo.test");
+    assert_eq!(stored_default.repository(), "owner/repo");
     storage.connection.execute_batch("CREATE TRIGGER reject_forgejo BEFORE INSERT ON role_credential WHEN NEW.provider = 'forgejo' AND NEW.role = 'reviewer' BEGIN SELECT RAISE(FAIL, 'fixture failure'); END;").unwrap();
     assert!(
         storage

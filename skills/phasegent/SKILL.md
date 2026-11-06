@@ -372,9 +372,12 @@ default never repins it. An explicit `--provider`/`--api-base`/`--repository`/
 remaps a bound task to another provider, project or instance; several matching
 memberships refuse as ambiguous. A configured Forgejo default is selected
 through the same precedence chain as any other provider and needs no explicit
-`--provider`; without a durable task it owns only its attested `owner/repo`
-scope, never a repository inferred from the Git origin. A session never
-hard-codes a provider.
+`--provider`; without a durable task it names the repository by explicit
+`--repository`, else the checkout's origin when that host and deployment prefix
+attest the role's trusted instance, else the stored default outside Git. An
+explicit `--api-base` must normalize exactly to the trusted instance; a bare
+credential with no trusted instance fails closed, and origin scheme/port never
+choose the request endpoint. A session never hard-codes a provider.
 
 ### Role gates
 

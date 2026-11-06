@@ -118,11 +118,12 @@ Forgejo 与其他 provider 一样通过统一配置选择：创建 issue、用 `
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`，并通过
 `admin auth setup --provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`
 保存 role token。通过环境变量、TOML、已保存的机器级默认值或 role 配置设定的 Forgejo
-默认值会走同一套选择优先级（最终回退到 Redmine），因此无需显式 `--provider`；它只使用已声明的
-`owner/repo`，绝不会从 Git origin 推断仓库。`INSTANCE_ROOT` 是不带 `/api/v1` 后缀的实例地址，
-客户端会自行追加该前缀。
+默认值会走同一套选择优先级（最终回退到 Redmine），因此无需显式 `--provider`；仓库依次由显式
+`--repository`、当前 checkout 中能证明受信实例的 origin、Git 之外的已保存默认值确定。
+`INSTANCE_ROOT` 是不带 `/api/v1` 后缀的受信实例地址，客户端会自行追加该前缀；
+显式 `--api-base` 必须与其规范化后完全一致。
 已带持久 Forgejo task 的编号会自动路由到该 task 保存的 instance
-与 repository，无需重复这些参数。只需操作者准备 token。
+与 repository，无需重复这些参数；不同的显式 repository 不会重新绑定该 task。只需操作者准备 token。
 Forgejo 使用仓库内 issue 编号，并在结果中保留原生全局 id；它支持 issue、评论、record、仓库读取、
 milestone（作为 version）、原生 `Open` 与 `Closed` 状态，以及按 `owner/repo` 隔离的分支关联、worktree
 lease、清理与 sync。不支持时间记录、relation、附件、子任务/planning 与 project
