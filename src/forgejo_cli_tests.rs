@@ -30,7 +30,8 @@ fn issue_json(number: u64, state: &str, labels: &str) -> String {
 
 struct Mock {
     base: String,
-    task: JoinHandle<Vec<String>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    task: Option<JoinHandle<Vec<String>>>,
 }
 
 impl Mock {
@@ -42,65 +43,270 @@ impl Mock {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let _expected = responses.len();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = stop.clone();
         let task = thread::spawn(move || {
             let mut requests = Vec::new();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             for (status, body) in responses {
-                let (mut stream, _) = loop {
+                let mut served = false;
+                while !served {
+                    if done.load(std::sync::atomic::Ordering::SeqCst) {
+                        drain_requests(
+                            &listener,
+                            &mut requests,
+                            std::time::Instant::now() + MOCK_DRAIN_TOTAL,
+                        );
+                        return requests;
+                    }
                     match listener.accept() {
-                        Ok(pair) => break pair,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            if std::time::Instant::now() > deadline {
+                        Ok((mut stream, _)) => match read_request(
+                            &mut stream,
+                            Some(&done),
+                            std::time::Instant::now() + MOCK_REQUEST_TOTAL,
+                        ) {
+                            Ok(data) => {
+                                requests.push(data);
+                                let response = format!(
+                                    "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                    if status == 200 { "OK" } else { "Error" },
+                                    body.len()
+                                );
+                                let _ = stream.write_all(response.as_bytes());
+                                served = true;
+                            }
+                            Err(error) => {
+                                requests.push(format!("<{error}>"));
                                 return requests;
                             }
-                            thread::sleep(std::time::Duration::from_millis(5));
+                        },
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                                drain_requests(
+                                    &listener,
+                                    &mut requests,
+                                    std::time::Instant::now() + MOCK_DRAIN_TOTAL,
+                                );
+                                return requests;
+                            }
+                            thread::sleep(std::time::Duration::from_millis(2));
                         }
                         Err(_) => return requests,
                     }
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                let mut data = Vec::new();
-                let mut buffer = [0; 4096];
-                loop {
-                    let size = stream.read(&mut buffer).unwrap();
-                    if size == 0 {
-                        break;
-                    }
-                    data.extend_from_slice(&buffer[..size]);
-                    if let Some(end) = data.windows(4).position(|part| part == b"\r\n\r\n") {
-                        let headers = String::from_utf8_lossy(&data[..end]);
-                        let length = headers
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length: ")
-                                    .and_then(|s| s.parse::<usize>().ok())
-                            })
-                            .unwrap_or(0);
-                        if data.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
                 }
-                requests.push(String::from_utf8_lossy(&data).into_owned());
-                let response = format!(
-                    "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    if status == 200 { "OK" } else { "Error" },
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).unwrap();
             }
-            requests
+            // Every scripted response was served; keep the endpoint alive until
+            // the test completes so stray traffic is observed, never waited on.
+            loop {
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    drain_requests(
+                        &listener,
+                        &mut requests,
+                        std::time::Instant::now() + MOCK_DRAIN_TOTAL,
+                    );
+                    return requests;
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => match read_request(
+                        &mut stream,
+                        Some(&done),
+                        std::time::Instant::now() + MOCK_REQUEST_TOTAL,
+                    ) {
+                        Ok(data) => requests.push(data),
+                        Err(error) => requests.push(format!("<{error}>")),
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if done.load(std::sync::atomic::Ordering::SeqCst) {
+                            drain_requests(
+                                &listener,
+                                &mut requests,
+                                std::time::Instant::now() + MOCK_DRAIN_TOTAL,
+                            );
+                            return requests;
+                        }
+                        thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    Err(_) => return requests,
+                }
+            }
         });
-        Self { base, task }
+        Self {
+            base,
+            stop,
+            task: Some(task),
+        }
     }
 
-    fn finish(self) -> Vec<String> {
-        self.task.join().unwrap()
+    fn finish(mut self) -> Vec<String> {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.task
+            .take()
+            .unwrap()
+            .join()
+            .expect("mock response server panicked")
+    }
+}
+
+impl Drop for Mock {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(task) = self.task.take() {
+            let _ = task.join();
+        }
+    }
+}
+
+/// A slow peer can trickle below the idle timeout for as long as it likes, so
+/// each request also has a total deadline and a stop-aware loop. Shutdown
+/// drains share one deadline so queued sockets cannot extend teardown.
+const MOCK_REQUEST_IDLE: std::time::Duration = std::time::Duration::from_millis(100);
+const MOCK_REQUEST_TOTAL: std::time::Duration = std::time::Duration::from_millis(500);
+const MOCK_DRAIN_TOTAL: std::time::Duration = std::time::Duration::from_millis(250);
+const MOCK_MAX_REQUEST_BYTES: usize = 64 * 1024;
+
+/// Read one request with a bounded idle timeout, a total deadline and an
+/// optional stop signal. Success requires complete headers plus the full
+/// advertised Content-Length body; any timeout, stop, EOF, deadline or size
+/// overflow before completion is an error, so a partial request can never be
+/// served as a successful scripted response.
+fn read_request(
+    stream: &mut std::net::TcpStream,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+    deadline: std::time::Instant,
+) -> Result<String, String> {
+    stream
+        .set_nonblocking(false)
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(MOCK_REQUEST_IDLE))
+        .map_err(|error| error.to_string())?;
+    let mut data = Vec::new();
+    let mut buffer = [0; 4096];
+    let reason;
+    loop {
+        if stop.is_some_and(|stop| stop.load(std::sync::atomic::Ordering::SeqCst)) {
+            reason = "stopped";
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            reason = "total deadline";
+            break;
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                reason = "connection closed";
+                break;
+            }
+            Ok(size) => {
+                data.extend_from_slice(&buffer[..size]);
+                match complete_request_length(&data) {
+                    Ok(Some(needed)) if data.len() >= needed => {
+                        return Ok(String::from_utf8_lossy(&data).into_owned());
+                    }
+                    Ok(_) => {}
+                    Err(error) => return Err(error),
+                }
+                if data.len() >= MOCK_MAX_REQUEST_BYTES {
+                    reason = "size limit";
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                reason = "idle timeout";
+                break;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    match complete_request_length(&data) {
+        Ok(Some(needed)) if data.len() >= needed => {
+            return Ok(String::from_utf8_lossy(&data).into_owned());
+        }
+        Ok(_) => {}
+        Err(error) => return Err(error),
+    }
+    if data.is_empty() {
+        return Err(format!("mock request {reason}"));
+    }
+    Err(format!(
+        "mock request incomplete ({reason}); bytes={}",
+        data.len()
+    ))
+}
+
+/// The total byte length of a complete request, once its headers are present.
+/// A Content-Length field is recognized by an exact case-insensitive field
+/// name after splitting on the first colon; its value may have surrounding
+/// ASCII whitespace and must be decimal digits that fit `usize`. Only an
+/// absent field means a zero-length body. Invalid, overflowing or conflicting
+/// framing is an explicit error, never an absent header. Arithmetic is
+/// checked. This stays a minimal request parser, not an HTTP stack.
+fn complete_request_length(data: &[u8]) -> Result<Option<usize>, String> {
+    let Some(end) = data.windows(4).position(|part| part == b"\r\n\r\n") else {
+        return Ok(None);
+    };
+    let headers = String::from_utf8_lossy(&data[..end]);
+    let mut content_length = None;
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(format!(
+                "unsupported Transfer-Encoding framing '{}'; this mock only accepts \
+                 Content-Length or a zero-length body",
+                value.trim_matches(|character: char| character.is_ascii_whitespace())
+            ));
+        }
+        if !name.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        let value = value.trim_matches(|character: char| character.is_ascii_whitespace());
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(format!("invalid Content-Length value '{value}'"));
+        }
+        let length = value
+            .parse::<usize>()
+            .map_err(|_| format!("Content-Length does not fit usize: '{value}'"))?;
+        if let Some(existing) = content_length
+            && existing != length
+        {
+            return Err(format!(
+                "conflicting Content-Length values ({existing} and {length})"
+            ));
+        }
+        content_length = Some(length);
+    }
+    let length = content_length.unwrap_or(0);
+    end.checked_add(4)
+        .and_then(|headers_end| headers_end.checked_add(length))
+        .map(Some)
+        .ok_or_else(|| "Content-Length overflows the request size".to_owned())
+}
+
+/// Drain every connection already queued when the observer stops, so an
+/// attempted request observed at teardown is still counted. One shared
+/// deadline bounds the whole drain; exhausting it records a nonempty overflow
+/// marker so a continuously replenished queue can neither prolong finish nor
+/// look like a clean zero count.
+fn drain_requests(
+    listener: &TcpListener,
+    requests: &mut Vec<String>,
+    deadline: std::time::Instant,
+) {
+    while let Ok((mut stream, _)) = listener.accept() {
+        if std::time::Instant::now() >= deadline {
+            requests.push("<mock drain overflow: deadline exhausted>".to_owned());
+            break;
+        }
+        match read_request(&mut stream, None, deadline) {
+            Ok(data) => requests.push(data),
+            Err(error) => requests.push(format!("<{error}>")),
+        }
     }
 }
 
@@ -681,7 +887,7 @@ fn legacy_closes_recheck_other_issue_before_removing_shared_directory() {
         );
     }
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(9, "closed", "[]")]);
+    let mock = ZeroMock::start();
     storage
         .save_forgejo_auth(
             Role::Orchestrator,
@@ -850,13 +1056,7 @@ fn forgejo_prune_keeps_same_number_legacy_on_another_path() {
         None,
     );
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-    ]);
+    let mock = ZeroMock::start();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -1619,10 +1819,12 @@ fn forgejo_close_releases_only_its_exact_scope() {
     );
 }
 
-/// A counting endpoint that records any connection while the command runs.
+/// A zero-request observer that records any connection while the command
+/// runs, closes it without a response, and stops promptly from its own test.
 struct ZeroMock {
     base: String,
-    task: JoinHandle<Vec<String>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    task: Option<JoinHandle<Vec<String>>>,
 }
 
 impl ZeroMock {
@@ -1630,31 +1832,173 @@ impl ZeroMock {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = stop.clone();
         let task = thread::spawn(move || {
             let mut requests = Vec::new();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(400);
-            while std::time::Instant::now() < deadline {
+            loop {
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    drain_requests(
+                        &listener,
+                        &mut requests,
+                        std::time::Instant::now() + MOCK_DRAIN_TOTAL,
+                    );
+                    break;
+                }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        stream.set_nonblocking(false).unwrap();
-                        let mut data = Vec::new();
-                        let _ = stream.read_to_end(&mut data);
-                        requests.push(String::from_utf8_lossy(&data).into_owned());
+                        match read_request(
+                            &mut stream,
+                            Some(&done),
+                            std::time::Instant::now() + MOCK_REQUEST_TOTAL,
+                        ) {
+                            Ok(data) => requests.push(data),
+                            Err(error) => requests.push(format!("<{error}>")),
+                        }
+                        // A zero-request endpoint never answers: closing the
+                        // stream gives the client an immediate failure, so a
+                        // retry loop cannot deadlock on a missing response.
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(std::time::Duration::from_millis(5));
+                        if done.load(std::sync::atomic::Ordering::SeqCst) {
+                            drain_requests(
+                                &listener,
+                                &mut requests,
+                                std::time::Instant::now() + MOCK_DRAIN_TOTAL,
+                            );
+                            break;
+                        }
+                        thread::sleep(std::time::Duration::from_millis(2));
                     }
                     Err(_) => break,
                 }
             }
             requests
         });
-        Self { base, task }
+        Self {
+            base,
+            stop,
+            task: Some(task),
+        }
     }
 
-    fn finish(self) -> Vec<String> {
-        self.task.join().unwrap()
+    fn finish(mut self) -> Vec<String> {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.task
+            .take()
+            .unwrap()
+            .join()
+            .expect("zero-request observer panicked")
     }
+}
+
+impl Drop for ZeroMock {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(task) = self.task.take() {
+            let _ = task.join();
+        }
+    }
+}
+
+#[test]
+fn scripted_mock_rejects_incomplete_or_unsupported_requests() {
+    let cases: [(&str, &[u8]); 3] = [
+        (
+            "incomplete header",
+            b"GET / HTTP/1.1\r\nHost: localhost\r\n",
+        ),
+        (
+            "incomplete body",
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length:5\r\n\r\nx",
+        ),
+        (
+            "unsupported transfer encoding",
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+        ),
+    ];
+    for (label, request) in cases {
+        let mock = Mock::start(vec!["ok".to_owned()]);
+        let address = mock.base.strip_prefix("http://").unwrap();
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(request).unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        let requests = mock.finish();
+        assert!(
+            response.is_empty() && !response.contains("200 OK"),
+            "{label} received a scripted success: {response:?}; {requests:?}"
+        );
+    }
+}
+
+#[test]
+fn zero_mock_teardown_is_bounded_for_a_trickling_request() {
+    let mock = ZeroMock::start();
+    let address = mock.base.strip_prefix("http://").unwrap();
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream.write_all(b"G").unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_stop = stop.clone();
+    let writer = thread::spawn(move || {
+        while !writer_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            if stream.write_all(b"x").is_err() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(40));
+        }
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    let observer = thread::spawn(move || tx.send(mock.finish()).unwrap());
+    let result = rx.recv_timeout(std::time::Duration::from_millis(800));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    writer.join().unwrap();
+    observer.join().unwrap();
+    assert!(
+        result.is_ok(),
+        "a trickling request prevented bounded teardown"
+    );
+    assert!(
+        !result.unwrap().is_empty(),
+        "the attempted request must be counted"
+    );
+}
+
+#[test]
+fn zero_mock_teardown_is_bounded_for_a_replenished_queue() {
+    let mock = ZeroMock::start();
+    let address = mock.base.strip_prefix("http://").unwrap().to_owned();
+    let mut seed = std::net::TcpStream::connect(&address).unwrap();
+    seed.write_all(b"G").unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_stop = stop.clone();
+    let writer_address = address.clone();
+    let writer = thread::spawn(move || {
+        while !writer_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok(mut stream) = std::net::TcpStream::connect(&writer_address) {
+                let _ = stream.write_all(b"G");
+            }
+            thread::yield_now();
+        }
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    let observer = thread::spawn(move || tx.send(mock.finish()).unwrap());
+    let result = rx.recv_timeout(std::time::Duration::from_millis(800));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    writer.join().unwrap();
+    observer.join().unwrap();
+    drop(seed);
+    assert!(
+        result.is_ok(),
+        "a continuously replenished queue prevented bounded teardown"
+    );
+    assert!(
+        !result.unwrap().is_empty(),
+        "observed connections must never look like a clean zero count"
+    );
 }
 
 fn run_as(repo: &Path, role: &str, args: &[String]) -> i32 {
@@ -2464,7 +2808,7 @@ fn explicit_forgejo_sync_does_not_reconcile_unscoped_legacy_issue() {
         "active",
         None,
     );
-    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "closed", "[]")]);
+    let mock = ZeroMock::start();
     let args: Vec<String> = [
         "--provider",
         "forgejo",
@@ -2662,13 +3006,7 @@ fn explicit_forgejo_prune_does_not_remove_unscoped_legacy_issue() {
         None,
     );
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-    ]);
+    let mock = ZeroMock::start();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -2790,13 +3128,7 @@ fn production_prune_explicit_local_never_uses_forgejo_default() {
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-    ]);
+    let mock = ZeroMock::start();
     storage
         .save_forgejo_auth(
             Role::Orchestrator,
@@ -2841,13 +3173,7 @@ fn production_prune_rejects_incompatible_forgejo_project_override() {
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-        issue_json(7, "closed", "[]"),
-    ]);
+    let mock = ZeroMock::start();
     let base = mock.base.clone();
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
@@ -3898,7 +4224,7 @@ fn production_prune_explicit_redmine_never_uses_forgejo_default() {
     fixture.link(7, "owner/repo");
     let directory = scoped_lease(&fixture, &storage, 7, "retained");
     let (_stub, _path) = opencode_stub();
-    let mock = Mock::start(vec![REPO_JSON.to_owned()]);
+    let mock = ZeroMock::start();
     storage
         .save_forgejo_auth(
             Role::Orchestrator,
@@ -4189,39 +4515,6 @@ fn scoped_sync_rejects_incompatible_forgejo_project_override_before_http() {
 }
 
 #[test]
-fn acquire_rejects_incompatible_forgejo_close_status_before_lease_write() {
-    let fixture = Fixture::new("acquire-incompatible-close");
-    let storage = fixture.storage();
-    let mock = ZeroMock::start();
-    let args: Vec<String> = [
-        "--provider",
-        "forgejo",
-        "--api-base",
-        &mock.base,
-        "--repository",
-        "owner/repo",
-        "--close-status-id",
-        "7",
-        "worktree",
-        "acquire",
-        "--issue",
-        "7",
-        "--session",
-        "fixture-session",
-        "--no-sync",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let exit = run_as(fixture.repo.path(), "orchestrator", &args);
-    let requests = mock.finish();
-    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    assert!(requests.is_empty());
-    assert!(rows.is_empty(), "no lease may be written: {rows:?}");
-    assert_ne!(exit, 0, "incompatible Forgejo flags must fail");
-}
-
-#[test]
 fn acquire_rejects_incompatible_flags_before_preexisting_taxi_candidates() {
     let fixture = Fixture::new("acquire-incompatible-preexisting");
     let storage = fixture.storage();
@@ -4393,11 +4686,7 @@ fn production_legacy_close_uses_only_the_explicit_provider_answers() {
             None,
         );
         let (_stub, _path) = opencode_stub();
-        let default_mock = Mock::start(vec![
-            REPO_JSON.to_owned(),
-            issue_json(9, "closed", "[]"),
-            issue_json(9, "closed", "[]"),
-        ]);
+        let default_mock = ZeroMock::start();
         storage
             .save_forgejo_auth(
                 Role::Orchestrator,
@@ -4715,6 +5004,7 @@ fn default_forgejo_store_states_never_corrupt_or_request() {
         let path = parent.join("leases.sqlite3");
         let _db = EnvGuard::set("PHASEGENT_DB_PATH", path.to_str().unwrap());
         let mut storage = None;
+        let mut initialized_heartbeat = None;
         if state == "old" || state == "initialized" {
             if state == "old" {
                 let connection = rusqlite::Connection::open(&path).unwrap();
@@ -4733,6 +5023,8 @@ fn default_forgejo_store_states_never_corrupt_or_request() {
                 fixture.link(8, "owner/repo");
                 let directory = scoped_lease(&fixture, &opened, 8, "retained");
                 assert!(directory.exists());
+                initialized_heartbeat =
+                    Some(list_all_for_repo(&opened, &fixture.identity()).unwrap()[0].heartbeat_at);
             }
             storage = Storage::open_at(&path).ok();
         }
@@ -4793,6 +5085,11 @@ fn default_forgejo_store_states_never_corrupt_or_request() {
             if state == "initialized" {
                 assert_eq!(rows.len(), 1, "{state}: {rows:?}");
                 assert_eq!(rows[0].status, "retained");
+                assert_eq!(
+                    Some(rows[0].heartbeat_at),
+                    initialized_heartbeat,
+                    "{state}: a read-only listing must not touch lease history"
+                );
             } else {
                 assert!(rows.is_empty(), "{state}: {rows:?}");
             }
@@ -4895,9 +5192,11 @@ fn initialized_stored_forgejo_default_is_admitted_without_lease_mutation() {
         .map(str::to_owned)
         .collect();
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
-    let requests = mock.finish();
-    assert_eq!(exit, 0, "the listing is admitted under the Forgejo default");
-    let _ = requests;
+    let _requests = mock.finish();
+    assert_eq!(
+        exit, 0,
+        "the configured list/taxi path is admitted under the Forgejo default"
+    );
     let after = list_all_for_repo(&storage, &fixture.identity()).unwrap();
     assert_eq!(after.len(), before.len());
     assert_eq!(after[0].status, before[0].status);
@@ -6083,78 +6382,6 @@ fn bound_task_acquire_refuses_ambiguity_before_taxi_and_writes() {
 
 /// Issue 1201 P10 N2: an explicit selection that contradicts the bound task
 /// refuses before any write instead of falling back to a legacy scope.
-#[test]
-fn legacy_acquire_rejects_blank_project_before_writes() {
-    let fixture = Fixture::new("acquire-blank-project-review");
-    let storage = fixture.storage();
-    let _config = EnvGuard::set(
-        "PHASEGENT_CONFIG_PATH",
-        fixture.db.path().join("missing.toml").to_str().unwrap(),
-    );
-    let args: Vec<String> = [
-        "--provider",
-        "redmine",
-        "--project-id",
-        "   ",
-        "worktree",
-        "acquire",
-        "--issue",
-        "7",
-        "--session",
-        "fixture-session",
-        "--no-sync",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
-    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    assert_ne!(
-        exit, 0,
-        "blank project accepted: {stdout} {stderr}; leases: {rows:?}"
-    );
-    assert!(rows.is_empty());
-}
-
-#[test]
-fn bound_task_acquire_rejects_invalid_close_status_before_writes() {
-    let fixture = Fixture::new("acquire-invalid-close-status-review");
-    let storage = fixture.storage();
-    let _config = EnvGuard::set(
-        "PHASEGENT_CONFIG_PATH",
-        fixture.db.path().join("missing.toml").to_str().unwrap(),
-    );
-    bind_task_in_repo(
-        &storage,
-        &route_repo_key(&fixture),
-        "redmine",
-        "https://redmine-a.test",
-        "23",
-        7,
-    );
-    let args: Vec<String> = [
-        "--close-status-id",
-        "0",
-        "worktree",
-        "acquire",
-        "--issue",
-        "7",
-        "--session",
-        "fixture-session",
-        "--no-sync",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
-    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    assert_ne!(
-        exit, 0,
-        "invalid close status accepted: {stdout} {stderr}; leases: {rows:?}"
-    );
-    assert!(rows.is_empty());
-}
-
 /// Issue 1201 P10 N2: every malformed raw close-status value refuses for a
 /// bound task and for a legacy number, before taxi reconciliation or any
 /// lease/store write; a valid value keeps the bound-task routing and a
@@ -6204,6 +6431,42 @@ fn acquire_rejects_blank_provider_selections_before_writes() {
             list_all_for_repo(&storage, &fixture.identity())
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    // A legacy number with a blank project selection keeps its own refusal.
+    {
+        let fixture = Fixture::new("acquire-blank-project-legacy");
+        let storage = fixture.storage();
+        let _config = EnvGuard::set(
+            "PHASEGENT_CONFIG_PATH",
+            fixture.db.path().join("missing.toml").to_str().unwrap(),
+        );
+        let _clean = UnsetEnv::apply(&["PHASEGENT_PROVIDER", "PHASEGENT_DEFAULT_PROVIDER"]);
+        let args: Vec<String> = [
+            "--provider",
+            "redmine",
+            "--project-id",
+            "   ",
+            "worktree",
+            "acquire",
+            "--issue",
+            "7",
+            "--session",
+            "fixture-session",
+            "--no-sync",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let (exit, _stdout, stderr) = run_captured(fixture.repo.path(), &args);
+        assert_ne!(exit, 0, "blank project accepted: {stderr}");
+        assert!(stderr.contains("project id cannot be empty"), "{stderr}");
+        assert!(
+            list_all_for_repo(&storage, &fixture.identity())
+                .unwrap()
+                .is_empty(),
+            "a rejected legacy invocation must not write a lease"
         );
     }
 
