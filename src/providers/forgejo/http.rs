@@ -1,7 +1,7 @@
 use crate::infra::http_client::{CONNECT_TIMEOUT, REQUEST_TIMEOUT, fetch_with_retry};
 use crate::providers::api::PhasegentError;
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
 use url::Url;
 
@@ -61,9 +61,20 @@ impl ForgejoHttp {
         request: RequestBuilder,
         operation: &str,
     ) -> Result<T, PhasegentError> {
-        let (status, _, text) =
+        self.get_page(request, operation).map(|(value, _, _)| value)
+    }
+
+    /// Read one GET response together with its headers and raw body, reusing
+    /// the existing retry, timeout and redaction path. Pagination needs the
+    /// response metadata without a second request.
+    pub fn get_page<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+    ) -> Result<(T, HeaderMap, String), PhasegentError> {
+        let (status, headers, text) =
             fetch_with_retry(request, operation, |_| "Forgejo request failed".to_owned())?;
-        Self::decode(status, &text, operation)
+        Ok((Self::decode(status, &text, operation)?, headers, text))
     }
 
     pub fn write<T: DeserializeOwned>(

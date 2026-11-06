@@ -10741,10 +10741,28 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
             *write_record.lock().unwrap() = Some(text.clone());
             (
                 200,
-                forgejo_comment_json(
-                    1,
-                    &text,
-                    &format!("{base}/api/v1/repos/owner/repo/issues/51"),
+                forgejo_comment_json(1, &text, &format!("{base}/owner/repo/issues/51")),
+            )
+        },
+    ));
+    rules.push(path_rule(
+        "GET",
+        "/api/v1/repos/owner/repo/issues/52",
+        &issue_json(52, "open", "[]"),
+    ));
+    rules.push(path_rule_fn(
+        "GET",
+        "/api/v1/repos/owner/repo/issues/52/comments",
+        |_, _, base| {
+            (
+                200,
+                format!(
+                    "[{}]",
+                    forgejo_comment_json(
+                        9,
+                        "repeat",
+                        &format!("{base}/api/v1/repos/owner/repo/issues/52")
+                    )
                 ),
             )
         },
@@ -10763,7 +10781,7 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         .save_credential(Role::Orchestrator, "redmine", "fixture-key")
         .unwrap();
     let mut identities = Vec::new();
-    for number in [41u64, 42, 43, 44, 45, 46, 47, 51] {
+    for number in [41u64, 42, 43, 44, 45, 46, 47, 51, 52] {
         identities.push((number, bind_task(&storage, &fixture, &mock.base, number)));
     }
     let _default = EnvGuard::set("PHASEGENT_DEFAULT_PROVIDER", "redmine");
@@ -10878,6 +10896,31 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         "record create must route to the bound Forgejo task"
     );
     assert_eq!(
+        run_as(fixture.repo.path(), "orchestrator", &create_args),
+        0,
+        "an identical retry must return the existing record"
+    );
+    let repeated = args_of(&[
+        "record",
+        "create",
+        "52",
+        "--kind",
+        "executor",
+        "--key",
+        "j3-forgejo-repeat",
+        "--phase",
+        "P6",
+        "--attempt",
+        "9",
+        "--body",
+        "note",
+    ]);
+    assert_ne!(
+        run_as(fixture.repo.path(), "orchestrator", &repeated),
+        0,
+        "a repeated pagination page must fail the pre-read before writing"
+    );
+    assert_eq!(
         run_as(
             fixture.repo.path(),
             "orchestrator",
@@ -10929,6 +10972,24 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
     assert!(
         record_write.contains("phasegent-record") && record_write.contains("j3-forgejo-record"),
         "the record write must carry the CLI-owned envelope: {record_write}"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(method, target, _)| {
+                method == "POST" && target == "/api/v1/repos/owner/repo/issues/51/comments"
+            })
+            .count(),
+        1,
+        "an identical record retry must not POST again: {requests:?}"
+    );
+    assert!(
+        !requests_hit(
+            &requests,
+            "POST",
+            "/api/v1/repos/owner/repo/issues/52/comments"
+        ),
+        "a repeated pre-read page must fail before any write: {requests:?}"
     );
     assert_eq!(
         counter.finish(),
