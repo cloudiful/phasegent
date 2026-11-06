@@ -29,6 +29,11 @@ use super::acquire::is_isolation_required;
 /// operator knows later tool calls land there; a refused conflict returns
 /// the actionable `isolation` guidance instead, and the create itself
 /// stays successful either way.
+///
+/// The production create path never calls this form any more: every
+/// successful create acquires under its durable task scope or skips. It
+/// remains the unscoped entry point the worktree hook tests drive directly.
+#[allow(dead_code)]
 pub(crate) fn auto_acquire_after_create(
     issue: u64,
     explicit_session: Option<&str>,
@@ -36,11 +41,10 @@ pub(crate) fn auto_acquire_after_create(
     auto_acquire_after_create_scoped(issue, explicit_session, None)
 }
 
-/// The scoped form of [`auto_acquire_after_create`]. A Forgejo create names
-/// its exact `(provider, project, external_id)` scope, so the hook writes a
-/// sidecar-scoped lease and never falls back to an unscoped one when the
-/// scope, identity, or store cannot be proven (a best-effort silence). The
-/// unscoped path is unchanged for Redmine and Local.
+/// The scoped form of [`auto_acquire_after_create`]. Every routed create
+/// names its exact durable task scope, so the hook writes a sidecar-scoped
+/// lease and never falls back to an unscoped one when the scope, identity, or
+/// store cannot be proven (a best-effort silence).
 pub(crate) fn auto_acquire_after_create_scoped(
     issue: u64,
     explicit_session: Option<&str>,

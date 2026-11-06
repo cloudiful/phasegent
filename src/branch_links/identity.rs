@@ -13,7 +13,7 @@
 //! P2 foundation API; production CLI wiring lands in P3.
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::git_runner::GitRunner;
 use crate::remote::canonical_git_url;
@@ -69,6 +69,35 @@ pub fn resolve_repo_key(
         key: filesystem_fallback_key(checkout_path)?,
         local_only: true,
     })
+}
+
+/// Resolve the durable key of the checkout the runner points at.
+///
+/// The key is derived from the verified checkout root and its origin, the
+/// same identity the durable task memberships use. The root must be proven
+/// by git: there is no current-directory fallback, so a caller can never
+/// read another repository's key, and a checkout whose root cannot be
+/// verified has no key at all.
+pub fn resolve_checkout_repo_key(runner: &dyn GitRunner) -> Result<String, String> {
+    let root = verified_checkout_root(runner)?;
+    let origin = read_origin_url(runner);
+    resolve_repo_key(origin.as_deref(), &root).map(|resolved| resolved.key)
+}
+
+/// The checkout root proven by git, without the current-directory fallback
+/// of [`checkout_root`].
+fn verified_checkout_root(runner: &dyn GitRunner) -> Result<PathBuf, String> {
+    let output = runner
+        .run(&["rev-parse", "--show-toplevel"])
+        .map_err(|error| format!("could not verify the checkout root: {}", error.message))?;
+    if output.status != 0 {
+        return Err("the checkout root could not be verified".to_owned());
+    }
+    let trimmed = output.stdout.trim();
+    if trimmed.is_empty() {
+        return Err("the checkout root could not be verified".to_owned());
+    }
+    Ok(PathBuf::from(trimmed))
 }
 
 /// Resolve the checkout root for filesystem-fallback keys from git

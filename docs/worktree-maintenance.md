@@ -18,6 +18,23 @@ reused within one invocation. Cleanup reads leases again after release, and
 list reads its rows after reconciliation finishes. There is no persistent or
 cross-command cache.
 
+## Acquire ownership
+
+`worktree acquire` is owned by the current repository's durable task when one
+is bound, for every provider and without repeating `--provider` or
+`--repository`: the route matches the branch task reference first, then a
+unique repository membership, filtered by any explicit provider, endpoint or
+project selection, before any default-provider admission or taxi pass. The
+lease records that exact task identity, a same-number task on another instance
+is a different scope that is never reused, and a contradicting explicit
+selection refuses before any lease write, so a changed or implicit default
+never rewrites a task-owned lease. A malformed raw `--close-status-id` value
+and a blank `--project-id`, `--api-base` or `--repository` selection are refused
+before any write, for a bound task and for a legacy number alike. Without a bound task, an explicit
+`--provider forgejo` keeps the explicit `owner/repo` scope, an implicit Forgejo
+default still fails closed, and any other selection keeps the legacy numeric
+lease.
+
 ## Sync host reads
 
 Sync may reuse successful OpenCode session lookups and listing pages within
@@ -41,7 +58,11 @@ A successful `issue close` may also return the repository's verified main
 checkout to the branch it was on before the automatic issue-branch switch. The
 baseline is captured before that switch and keyed by repository identity,
 provider/project/issue scope and canonical main-checkout path; an issue without
-a matching baseline is a no-op.
+a matching baseline is a no-op. The close reads every other issue associated
+with the directory through its own durable task, keeps the directory while any
+associated task is open, ambiguous or unreadable, and restores the main checkout
+only for an unambiguous provider/project/number task set; several same-scope
+tasks skip restoration with a bounded warning.
 
 Restoration runs only after the remote close, lease release and guarded worktree
 cleanup succeed. It requires the main checkout to be clean (untracked files
@@ -88,7 +109,9 @@ Each actual removal has a new verification window, independent of scan memo:
    repository setup remain reusable.
 4. Recheck active leases, main-checkout identity, dirty/untracked files and
    running sessions with current evidence, then require every target issue to
-   be confirmed closed through fresh branch-link and provider reads.
+   be confirmed closed through fresh branch-link and per-task provider reads;
+   a legacy number without a durable task keeps the configured-provider
+   resolution.
 5. Read fresh complete occupancy and the lineage the host reports. Only the
    idle members of the directory's lease family — the sessions its leases name
    and the descendants whose bounded `parentID` chain reaches them — may be

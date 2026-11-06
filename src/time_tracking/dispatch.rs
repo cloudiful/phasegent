@@ -66,11 +66,10 @@ pub(crate) fn execute_with_caller(
     close_status_id: Option<&str>,
     command: TimerCommand,
 ) -> Result<TimerOutput, PhasegentError> {
-    let role = timer_orchestrator_caller(caller, "timer")?;
-    reject_forgejo_timer(role, provider_kind)?;
-    // Authorization uses the invocation context; start/finish helpers take
-    // the same context so Operator identity is preserved (never collapsed
-    // to an Admin agent, which would be denied as non-orchestrator).
+    let _role = timer_orchestrator_caller(caller, "timer")?;
+    // The provider-kind gate lives in the start/finish helpers: a durable
+    // task pins its own provider, so the default selection only decides an
+    // unbound legacy operation.
     match command {
         TimerCommand::Start {
             issue,
@@ -82,6 +81,7 @@ pub(crate) fn execute_with_caller(
             owner_call_id,
         } => super::start::execute_start_with_caller(
             caller,
+            provider_kind,
             issue,
             &phase,
             agent_role,
@@ -183,7 +183,16 @@ pub(crate) fn execute_recovery_with_caller(
             Ok(TimerListOutput::Single { run: Box::new(run) })
         }
         TimerCommand::Recover { run_id } => {
-            reject_forgejo_timer(_role, provider_kind)?;
+            // The current-repository task route is decided strictly
+            // read-only before the ledger is opened, migrated or mutated, so
+            // a bound Forgejo task never reaches the transition or the
+            // projection even when the configured default is Redmine or
+            // Local. Only a legacy operation keeps the selected-provider
+            // Forgejo refusal.
+            let route = super::recover::admit_recovery(&run_id)?;
+            if route.as_ref().is_none_or(|route| route.is_legacy()) {
+                reject_forgejo_timer(_role, provider_kind)?;
+            }
             let storage = Storage::open().map_err(timer_storage_error("timer recover"))?;
             super::recover::handle_recover_with_caller(
                 caller,

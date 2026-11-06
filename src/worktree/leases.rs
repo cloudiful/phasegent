@@ -136,7 +136,37 @@ pub(crate) fn find_active_lease_for_scope(
     session: &str,
     scope: &super::LeaseScope,
 ) -> Result<Option<LeaseRow>, WorktreeError> {
-    storage.connection.query_row(&format!("{LEASE_SELECT} WHERE repo_identity = ?1 AND session = ?2 AND status = ?3 AND EXISTS (SELECT 1 FROM worktree_lease_scopes s WHERE s.lease_id = worktree_leases.lease_id AND s.provider = ?4 AND s.project = ?5 AND s.external_id = ?6) ORDER BY created_at DESC LIMIT 1"), rusqlite::params![identity, session, LEASE_STATUS_ACTIVE, scope.provider(), scope.project(), scope.external_id() as i64], decode_lease_row).optional()
+    // The task id is part of the identity: a same-number task on another
+    // instance is a different scope and must never be reused as this one.
+    // `IS` compares NULL with NULL, so a legacy sidecar without a task still
+    // matches a legacy scope. An older store has no task column at all, so
+    // the legacy query is used there.
+    let has_task_id = crate::worktree::lease_scope::scope_has_task_id(&storage.connection)?;
+    let sql = if has_task_id {
+        format!(
+            "{LEASE_SELECT} WHERE repo_identity = ?1 AND session = ?2 AND status = ?3 AND EXISTS (SELECT 1 FROM worktree_lease_scopes s WHERE s.lease_id = worktree_leases.lease_id AND s.provider = ?4 AND s.project = ?5 AND s.external_id = ?6 AND s.task_id IS ?7) ORDER BY created_at DESC LIMIT 1"
+        )
+    } else {
+        format!(
+            "{LEASE_SELECT} WHERE repo_identity = ?1 AND session = ?2 AND status = ?3 AND EXISTS (SELECT 1 FROM worktree_lease_scopes s WHERE s.lease_id = worktree_leases.lease_id AND s.provider = ?4 AND s.project = ?5 AND s.external_id = ?6) ORDER BY created_at DESC LIMIT 1"
+        )
+    };
+    storage
+        .connection
+        .query_row(
+            &sql,
+            rusqlite::params![
+                identity,
+                session,
+                LEASE_STATUS_ACTIVE,
+                scope.provider(),
+                scope.project(),
+                scope.external_id() as i64,
+                scope.task_id()
+            ],
+            decode_lease_row,
+        )
+        .optional()
         .map_err(|e| WorktreeError::new("storage", format!("scoped active lookup: {e}")))
 }
 
@@ -148,7 +178,33 @@ pub(crate) struct ScopedRetentionMember {
     pub issue: u64,
     pub status: String,
     pub directory: std::path::PathBuf,
-    pub scope: Option<(String, String, u64)>,
+    pub scope: Option<ScopedScopeProjection>,
+}
+
+/// The scope projection a retention proof compares.
+///
+/// It carries the durable task identity so a lease whose task binding or
+/// instance changed between the approved proof and the update aborts the
+/// transaction instead of being released on stale evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ScopedScopeProjection {
+    pub provider: String,
+    pub project: String,
+    pub external_id: u64,
+    pub task_id: Option<i64>,
+    pub instance: Option<String>,
+}
+
+impl ScopedScopeProjection {
+    fn of(scope: &super::LeaseScope) -> Self {
+        Self {
+            provider: scope.provider().to_owned(),
+            project: scope.project().to_owned(),
+            external_id: scope.external_id(),
+            task_id: scope.task_id(),
+            instance: scope.instance().map(str::to_owned),
+        }
+    }
 }
 
 /// The complete affected-directory membership, scope, and associated-issue
@@ -188,13 +244,7 @@ pub(crate) fn scoped_retention_proof(
             issue: row.issue,
             status: row.status.clone(),
             directory: paths.resolve(std::path::Path::new(&row.worktree_path)),
-            scope: scopes.get(&row.lease_id).map(|scope| {
-                (
-                    scope.provider().to_owned(),
-                    scope.project().to_owned(),
-                    scope.external_id(),
-                )
-            }),
+            scope: scopes.get(&row.lease_id).map(ScopedScopeProjection::of),
         })
         .collect();
     members.sort_by(|left, right| {
@@ -212,13 +262,7 @@ pub(crate) fn scoped_retention_proof(
             issue: row.issue,
             status: row.status.clone(),
             directory: paths.resolve(std::path::Path::new(&row.worktree_path)),
-            scope: scopes.get(&row.lease_id).map(|scope| {
-                (
-                    scope.provider().to_owned(),
-                    scope.project().to_owned(),
-                    scope.external_id(),
-                )
-            }),
+            scope: scopes.get(&row.lease_id).map(ScopedScopeProjection::of),
         })
         .collect();
     same_number_conflicts.sort_by(|left, right| {
@@ -238,9 +282,11 @@ pub(crate) fn scoped_retention_proof(
 /// unreadable evidence differs from the approved proof. Every selected id must
 /// still carry that exact provider/project/external id. Newly arrived rows
 /// outside the verified set stay active.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn retain_active_leases_for_scope_ids(
     storage: &Storage,
     identity: &str,
+    repo_key: Option<&str>,
     scope: &super::LeaseScope,
     lease_ids: &[String],
     approved: &ScopedRetentionProof,
@@ -258,7 +304,11 @@ pub(crate) fn retain_active_leases_for_scope_ids(
         &[&identity],
         "repo-all",
     )?;
-    let scopes = crate::worktree::lease_scope::scope_map_for_connection(&transaction, identity)?;
+    let scopes = crate::worktree::lease_scope::scope_map_for_connection_with_key(
+        &transaction,
+        identity,
+        repo_key,
+    )?;
     let current = scoped_retention_proof(scope.external_id(), &rows, &scopes);
     if current != *approved {
         return Err(WorktreeError::new(
@@ -314,6 +364,7 @@ pub(crate) fn retain_active_leases_for_scope_ids(
 pub(crate) fn retain_active_leases_for_scope(
     storage: &Storage,
     identity: &str,
+    repo_key: Option<&str>,
     scope: &super::LeaseScope,
     reason: &str,
     now: i64,
@@ -324,7 +375,11 @@ pub(crate) fn retain_active_leases_for_scope(
         &[&identity],
         "repo-all",
     )?;
-    let scopes = crate::worktree::lease_scope::scope_map_for_repo(storage, identity)?;
+    let scopes = crate::worktree::lease_scope::scope_map_for_connection_with_key(
+        &storage.connection,
+        identity,
+        repo_key,
+    )?;
     let approved = scoped_retention_proof(scope.external_id(), &rows, &scopes);
     let lease_ids: Vec<String> = rows
         .iter()
@@ -332,7 +387,9 @@ pub(crate) fn retain_active_leases_for_scope(
         .filter(|row| scopes.get(&row.lease_id) == Some(scope))
         .map(|row| row.lease_id.clone())
         .collect();
-    retain_active_leases_for_scope_ids(storage, identity, scope, &lease_ids, &approved, reason, now)
+    retain_active_leases_for_scope_ids(
+        storage, identity, repo_key, scope, &lease_ids, &approved, reason, now,
+    )
 }
 
 /// The `active` lease occupying `worktree_path` under `identity`, if
@@ -495,6 +552,7 @@ pub(crate) fn insert_lease_scoped(
     storage: &Storage,
     lease: NewLease<'_>,
     scope: &super::LeaseScope,
+    repo_key: Option<&str>,
 ) -> Result<(), WorktreeError> {
     if lease.issue != scope.external_id() {
         return Err(WorktreeError::new(
@@ -506,11 +564,62 @@ pub(crate) fn insert_lease_scoped(
         rusqlite::Transaction::new_unchecked(&storage.connection, TransactionBehavior::Immediate)
             .map_err(|e| WorktreeError::new("storage", format!("begin scoped lease: {e}")))?;
     ensure_no_unscoped_collision(&tx, lease.identity, lease.issue)?;
+    // The durable task is validated inside the write boundary: the task
+    // must exist, be canonical, match the scope, and be an explicit member
+    // of this physical repository. A task scope without a verified
+    // repository key cannot be proven, so it is refused.
+    if let Some(task_id) = scope.task_id() {
+        let repo_key = repo_key.ok_or_else(|| {
+            WorktreeError::new(
+                "storage",
+                "a durable task scope requires a verified repository key",
+            )
+        })?;
+        let binding = crate::task_identity::binding_for_task_id_on(&tx, task_id)
+            .map_err(|e| WorktreeError::new("storage", e))?
+            .ok_or_else(|| {
+                WorktreeError::new("storage", "lease scope references an unknown durable task")
+            })?;
+        let key = binding.key();
+        if key.provider() != scope.provider()
+            || key.project() != scope.project()
+            || key.external_number() != Some(scope.external_id())
+        {
+            return Err(WorktreeError::new(
+                "storage",
+                "lease scope does not match its durable task",
+            ));
+        }
+        if !crate::task_identity::task_repo_membership_exists_on(&tx, repo_key, task_id)
+            .map_err(|e| WorktreeError::new("storage", e))?
+        {
+            return Err(WorktreeError::new(
+                "storage",
+                "the durable task is not a member of this repository",
+            ));
+        }
+    }
     let id = lease.lease_id;
     let created = lease.created_at;
     insert_lease_on(&tx, lease)?;
-    tx.execute("INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, scope.provider(), scope.project(), scope.external_id() as i64, created])
-        .map_err(|e| WorktreeError::new("storage", format!("insert lease scope: {e}")))?;
+    // The durable task id is stored with the sidecar so the lease keeps its
+    // exact task identity. An older store has no task column, so a task
+    // scope cannot be recorded there and is refused instead of silently
+    // degraded to a legacy scope.
+    let has_task_id = crate::worktree::lease_scope::scope_has_task_id(&tx)?;
+    if has_task_id {
+        tx.execute("INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, task_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![id, scope.provider(), scope.project(), scope.external_id() as i64, scope.task_id(), created])
+            .map_err(|e| WorktreeError::new("storage", format!("insert lease scope: {e}")))?;
+    } else {
+        if scope.is_task_scoped() {
+            return Err(WorktreeError::new(
+                "storage",
+                "the lease store cannot record a durable task scope",
+            ));
+        }
+        tx.execute("INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, scope.provider(), scope.project(), scope.external_id() as i64, created])
+            .map_err(|e| WorktreeError::new("storage", format!("insert lease scope: {e}")))?;
+    }
     tx.commit()
         .map_err(|e| WorktreeError::new("storage", format!("commit scoped lease: {e}")))
 }
@@ -701,9 +810,21 @@ pub(crate) enum StaleRecoveryScope<'a> {
     /// Omitted/default and explicit legacy providers release only unscoped
     /// rows, never a scoped Forgejo lease.
     LegacyOnly,
-    /// Explicit Forgejo releases only rows whose sidecar scope matches the
-    /// invocation's provider and repository.
-    Exact { provider: &'a str, project: &'a str },
+    /// One exact scope: a legacy provider/project scope, or one durable task.
+    ///
+    /// A legacy selector (`task_id: None`) never sweeps a task row: the
+    /// durable task owns its own leases, and an explicit provider selection
+    /// is not a permission over them. A task selector owns exactly that task
+    /// on exactly that instance.
+    Exact {
+        provider: &'a str,
+        project: &'a str,
+        /// The durable task this selector owns, when the group is
+        /// task-bearing.
+        task_id: Option<i64>,
+        /// The canonical instance of that task, when the group is task-bearing.
+        instance: Option<&'a str>,
+    },
     /// An explicit provider without a usable exact scope releases nothing.
     Nothing,
 }
@@ -714,8 +835,27 @@ impl StaleRecoveryScope<'_> {
             (Self::All, _) => true,
             (Self::LegacyOnly, None) => true,
             (Self::LegacyOnly, Some(_)) => false,
-            (Self::Exact { provider, project }, Some(scope)) => {
-                scope.provider() == *provider && scope.project() == *project
+            (
+                Self::Exact {
+                    provider,
+                    project,
+                    task_id,
+                    instance,
+                },
+                Some(scope),
+            ) => {
+                if scope.provider() != *provider || scope.project() != *project {
+                    return false;
+                }
+                match task_id {
+                    Some(task_id) => {
+                        scope.task_id() == Some(*task_id)
+                            && instance
+                                .map(|instance| scope.instance() == Some(instance))
+                                .unwrap_or(true)
+                    }
+                    None => scope.task_id().is_none(),
+                }
             }
             (Self::Exact { .. }, None) => false,
             (Self::Nothing, _) => false,
@@ -728,6 +868,7 @@ impl StaleRecoveryScope<'_> {
 pub(crate) fn recover_stale_active_leases_for_scope(
     storage: &mut Storage,
     identity: &str,
+    repo_key: Option<&str>,
     stale_before: i64,
     reason: &str,
     now: i64,
@@ -752,7 +893,11 @@ pub(crate) fn recover_stale_active_leases_for_scope(
     // connection before any update. A missing row is unscoped; a malformed,
     // mismatched or unreadable row aborts every update instead of being
     // silently treated as unscoped legacy ownership.
-    let scopes = crate::worktree::lease_scope::scope_map_for_connection(&transaction, identity)?;
+    let scopes = crate::worktree::lease_scope::scope_map_for_connection_with_key(
+        &transaction,
+        identity,
+        repo_key,
+    )?;
     let mut flipped = Vec::with_capacity(candidates.len());
     for row in candidates {
         let lease_scope = scopes.get(&row.lease_id);
@@ -862,13 +1007,7 @@ pub(crate) fn directory_ownership_proof(
             issue: row.issue,
             status: row.status.clone(),
             directory: canonical.to_path_buf(),
-            scope: scopes.get(&row.lease_id).map(|scope| {
-                (
-                    scope.provider().to_owned(),
-                    scope.project().to_owned(),
-                    scope.external_id(),
-                )
-            }),
+            scope: scopes.get(&row.lease_id).map(ScopedScopeProjection::of),
         })
         .collect();
     members.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
@@ -882,13 +1021,7 @@ pub(crate) fn directory_ownership_proof(
             issue: row.issue,
             status: row.status.clone(),
             directory: paths.resolve(std::path::Path::new(&row.worktree_path)),
-            scope: scopes.get(&row.lease_id).map(|scope| {
-                (
-                    scope.provider().to_owned(),
-                    scope.project().to_owned(),
-                    scope.external_id(),
-                )
-            }),
+            scope: scopes.get(&row.lease_id).map(ScopedScopeProjection::of),
         })
         .collect();
     same_number_conflicts.sort_by(|left, right| {
@@ -904,6 +1037,7 @@ pub(crate) fn directory_ownership_proof(
 pub(crate) fn release_absent_leases_proven(
     storage: &Storage,
     identity: &str,
+    repo_key: Option<&str>,
     targets: &[(String, String, String)],
     approved: &ScopedRetentionProof,
 ) -> Result<Vec<String>, WorktreeError> {
@@ -918,7 +1052,11 @@ pub(crate) fn release_absent_leases_proven(
         &[&identity],
         "repo-all",
     )?;
-    let scopes = crate::worktree::lease_scope::scope_map_for_connection(&transaction, identity)?;
+    let scopes = crate::worktree::lease_scope::scope_map_for_connection_with_key(
+        &transaction,
+        identity,
+        repo_key,
+    )?;
     let canonical = approved.directories.first().ok_or_else(|| {
         WorktreeError::new("storage", "absent-release ownership proof has no directory")
     })?;

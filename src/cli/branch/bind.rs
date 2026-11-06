@@ -84,11 +84,12 @@ fn batch_entry(issue_id: u64, outcome: LinkOutcome) -> serde_json::Value {
 /// linked inside one transaction.
 pub(crate) fn execute_bind(
     role: Option<Role>,
-    provider: Option<ProviderKind>,
-    repository: Option<&str>,
-    project_id: Option<&str>,
+    context: &crate::cli::provider_context::ProviderContext,
     issue_ids: &[u64],
 ) -> i32 {
+    let provider = context.provider;
+    let repository = context.repository.as_deref();
+    let project_id = context.project_id.as_deref();
     let runner = ProcessGitRunner::new();
     let scope = match link_scope(role, provider, repository, project_id) {
         Ok(scope) => scope,
@@ -142,6 +143,35 @@ pub(crate) fn execute_bind(
             1,
         );
     }
+    // Snapshot the pre-bind link status so adoption-written rows still report
+    // the historical created/relinked outcome instead of "already bound".
+    let pre_status: std::collections::HashMap<(String, String, u64), String> = if provider.is_some()
+    {
+        match issues_for_branch(
+            &storage.connection,
+            &resolved.key,
+            &branch,
+            true,
+            &crate::branch_links::UnknownState,
+        ) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| {
+                    (
+                        (
+                            row.issue.provider.clone(),
+                            row.issue.project.clone(),
+                            row.issue_number,
+                        ),
+                        row.status,
+                    )
+                })
+                .collect(),
+            Err(error) => return crate::cli::structured_error(storage_error(error), 1),
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
     let mut issues = Vec::with_capacity(issue_ids.len());
     for issue_id in issue_ids {
         match IssueKey::from_number(&scope.provider, &scope.project, *issue_id) {
@@ -150,6 +180,33 @@ pub(crate) fn execute_bind(
         }
     }
     let now = now_secs();
+    // An explicit provider preflights every remote/local identity first, then
+    // commits the whole binding/membership/link set in one immediate local
+    // transaction. A later failure therefore leaves no partial adoption.
+    if provider.is_some() {
+        let adoption_role = role.unwrap_or(Role::Orchestrator);
+        let mut keys = Vec::with_capacity(issue_ids.len());
+        for issue_id in issue_ids {
+            match crate::cli::task_route::preflight_explicit_issue(
+                adoption_role,
+                context,
+                *issue_id,
+            ) {
+                Ok(Some(key)) => keys.push(key),
+                Ok(None) => {}
+                Err(error) => return crate::cli::provider_error(error),
+            }
+        }
+        if let Err(error) = crate::cli::task_route::commit_adoption_set(
+            &storage,
+            &resolved.key,
+            &branch,
+            &keys,
+            now,
+        ) {
+            return crate::cli::provider_error(error);
+        }
+    }
     let params: Vec<LinkParams<'_>> = issues
         .iter()
         .map(|(issue, issue_number)| LinkParams {
@@ -167,7 +224,16 @@ pub(crate) fn execute_bind(
     };
     let entries: Vec<serde_json::Value> = outcomes
         .iter()
-        .map(|(issue_id, outcome)| batch_entry(*issue_id, *outcome))
+        .map(|(issue_id, outcome)| {
+            let key = (scope.provider.clone(), scope.project.clone(), *issue_id);
+            let outcome = match (outcome, pre_status.get(&key).map(String::as_str)) {
+                (LinkOutcome::AlreadyLinked, Some("linked")) => LinkOutcome::AlreadyLinked,
+                (LinkOutcome::AlreadyLinked, Some("detached")) => LinkOutcome::Relinked,
+                (LinkOutcome::AlreadyLinked, None) => LinkOutcome::Created,
+                (other, _) => *other,
+            };
+            batch_entry(*issue_id, outcome)
+        })
         .collect();
     let mut document = serde_json::json!({
         "bound": true,
@@ -183,6 +249,13 @@ pub(crate) fn execute_bind(
     // The legacy single-id fields stay byte-compatible for existing
     // consumers; the batch fields above are additive.
     if let [(issue_id, outcome)] = outcomes.as_slice() {
+        let key = (scope.provider.clone(), scope.project.clone(), *issue_id);
+        let outcome = match (outcome, pre_status.get(&key).map(String::as_str)) {
+            (LinkOutcome::AlreadyLinked, Some("linked")) => LinkOutcome::AlreadyLinked,
+            (LinkOutcome::AlreadyLinked, Some("detached")) => LinkOutcome::Relinked,
+            (LinkOutcome::AlreadyLinked, None) => LinkOutcome::Created,
+            (other, _) => *other,
+        };
         let (already_bound, replaced) = match outcome {
             LinkOutcome::AlreadyLinked => (true, false),
             LinkOutcome::Relinked => (false, true),
@@ -214,11 +287,12 @@ fn detach_entry(issue_id: u64, outcome: DetachOutcome) -> serde_json::Value {
 /// atomic write.
 pub(crate) fn execute_unbind(
     role: Option<Role>,
-    provider: Option<ProviderKind>,
-    repository: Option<&str>,
-    project_id: Option<&str>,
+    context: &crate::cli::provider_context::ProviderContext,
     issue_ids: &[u64],
 ) -> i32 {
+    let provider = context.provider;
+    let repository = context.repository.as_deref();
+    let project_id = context.project_id.as_deref();
     let runner = ProcessGitRunner::new();
     let scope = match link_scope(role, provider, repository, project_id) {
         Ok(scope) => scope,

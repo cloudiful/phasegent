@@ -82,16 +82,46 @@ pub(crate) fn execute_comment_with_caller(
         }
         None => None,
     };
-    let provider = match super::provider_for(
-        role,
+    let number = match &command {
+        CommentCommand::Create { issue, .. }
+        | CommentCommand::Get { issue, .. }
+        | CommentCommand::List { issue, .. }
+        | CommentCommand::FindMarker { issue, .. } => *issue,
+    };
+    let route_context = super::provider_context::ProviderContext::from_parts(
         provider_kind,
         api_base,
         repository,
         project_id,
         close_status_id,
-    ) {
-        Ok(provider) => provider,
+    );
+    let routed = match super::task_route::resolve_single_number(role, &route_context, number) {
+        Ok(route) => route,
         Err(error) => return super::provider_error(error),
+    };
+    let is_routed = routed.is_some();
+    // A durable task identity already pins the project, so the Redmine
+    // scope guard compares against that project instead of re-discovering
+    // one from the current checkout. Discovery would build a second
+    // provider from the configured default endpoint, which is exactly the
+    // endpoint a bound task must never reach.
+    let routed_project = routed
+        .as_ref()
+        .map(|route| route.binding.key().project().to_owned());
+    let expected_project = routed_project.as_deref().or(project_id);
+    let provider = match routed {
+        Some(route) => route.provider,
+        None => match super::provider_for(
+            role,
+            provider_kind,
+            api_base,
+            repository,
+            project_id,
+            close_status_id,
+        ) {
+            Ok(provider) => provider,
+            Err(error) => return super::provider_error(error),
+        },
     };
     if !provider.supports(capability) {
         return super::provider_error(PhasegentError::not_supported(
@@ -103,17 +133,10 @@ pub(crate) fn execute_comment_with_caller(
     // binding is never addressed through an omitted or conflicting
     // provider. The read-only local check runs before any provider
     // request, and legacy non-repository checkouts are unaffected.
+    if !is_routed
+        && let Err(error) = super::scope_guard::verify_issue_scope(&provider, provider_kind, number)
     {
-        let number = match &command {
-            CommentCommand::Create { issue, .. }
-            | CommentCommand::Get { issue, .. }
-            | CommentCommand::List { issue, .. }
-            | CommentCommand::FindMarker { issue, .. } => *issue,
-        };
-        if let Err(error) = super::scope_guard::verify_issue_scope(&provider, provider_kind, number)
-        {
-            return super::provider_error(error);
-        }
+        return super::provider_error(error);
     }
     // Single-number scope guard (issue 394 P3 pre-write): comment outputs
     // carry no project ref, so every arm does a read-only GET-check via the
@@ -158,7 +181,7 @@ pub(crate) fn execute_comment_with_caller(
                 role,
                 api_base,
                 repository,
-                project_id,
+                expected_project,
                 close_status_id,
                 provider.kind(),
                 &provider,
@@ -204,7 +227,7 @@ pub(crate) fn execute_comment_with_caller(
                 role,
                 api_base,
                 repository,
-                project_id,
+                expected_project,
                 close_status_id,
                 provider.kind(),
                 &provider,
@@ -219,7 +242,7 @@ pub(crate) fn execute_comment_with_caller(
                 role,
                 api_base,
                 repository,
-                project_id,
+                expected_project,
                 close_status_id,
                 provider.kind(),
                 &provider,
@@ -247,7 +270,7 @@ pub(crate) fn execute_comment_with_caller(
                 role,
                 api_base,
                 repository,
-                project_id,
+                expected_project,
                 close_status_id,
                 provider.kind(),
                 &provider,

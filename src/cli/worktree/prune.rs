@@ -71,7 +71,7 @@ mod worktrees;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::issue_closure::{
     ExplicitSelection, IssueStateSource, configured_source, configured_source_context,
-    configured_source_scoped,
+    configured_source_scoped, configured_source_task_aware,
 };
 use crate::providers::ProviderKind;
 use host_cache::ScanHostCache;
@@ -139,8 +139,18 @@ pub(crate) struct PruneAggregate {
 
 /// A repository scope resolved before the pass touches anything.
 enum Scope {
-    Resolved { identity: String, path: PathBuf },
-    Skipped { identity: String, reason: String },
+    Resolved {
+        identity: String,
+        path: PathBuf,
+        /// The durable key of the physical repository, proven from its own
+        /// checkout. `None` means it could not be proven, so a task-bearing
+        /// lease row cannot be shown to belong to this repository.
+        repo_key: Option<String>,
+    },
+    Skipped {
+        identity: String,
+        reason: String,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -163,15 +173,20 @@ pub(super) fn execute_prune(
     // The complete raw invocation travels into the closure source, so an
     // omitted selection keeps endpoint overrides without being promoted to an
     // explicit provider and every explicit flag reaches validation.
-    let source = configured_source_context(role, context.clone());
+    let source = configured_source_task_aware(role, context.clone());
     let owned_forgejo_project = match context.provider {
         Some(ProviderKind::Forgejo) => context.owned_forgejo_repository(role).ok().flatten(),
         _ => None,
     };
     let recovery_scope = match (&owned_forgejo_project, context.provider) {
+        // An explicit Forgejo selection is a legacy selector: it owns the
+        // legacy scoped rows of that repository and never a durable task row,
+        // because the task owns its own leases.
         (Some(project), _) => StaleRecoveryScope::Exact {
             provider: "forgejo",
             project: project.as_str(),
+            task_id: None,
+            instance: None,
         },
         (None, Some(ProviderKind::Forgejo)) => StaleRecoveryScope::Nothing,
         _ => StaleRecoveryScope::LegacyOnly,
@@ -291,7 +306,7 @@ pub(crate) fn execute_prune_with_source(
         failed: 0,
     };
     for scope in scopes {
-        let (identity, path) = match scope {
+        let (identity, path, repo_key) = match scope {
             Scope::Skipped { identity, reason } => {
                 outcomes.push(PruneRepoOutcome {
                     repo_identity: identity,
@@ -302,16 +317,25 @@ pub(crate) fn execute_prune_with_source(
                 });
                 continue;
             }
-            Scope::Resolved { identity, path } => (identity, path),
+            Scope::Resolved {
+                identity,
+                path,
+                repo_key,
+            } => (identity, path, repo_key),
         };
         // Validate the complete sidecar scope map before any mutation,
         // including the `--release-stale` recovery below and every provider
         // read or removal in the scan. A corrupt or unreadable map skips this
         // repository with a bounded reason and leaves leases, heartbeats,
         // worktrees, provider calls, cache, and session moves untouched; the
-        // preview follows the same validation.
-        let scope_map = match crate::worktree::lease_scope::scope_map_for_repo(&storage, &identity)
-        {
+        // preview follows the same validation. The map is checked against the
+        // repository's own verified durable key, so a task lease that is not
+        // a member of this physical repository is refused here.
+        let scope_map = match crate::worktree::lease_scope::scope_map_for_repo_with_key(
+            &storage,
+            &identity,
+            repo_key.as_deref(),
+        ) {
             Ok(scopes) => scopes,
             Err(error) => {
                 outcomes.push(PruneRepoOutcome {
@@ -348,6 +372,7 @@ pub(crate) fn execute_prune_with_source(
             Some(reason) => match recover_stale_active_leases_for_scope(
                 &mut storage,
                 &identity,
+                repo_key.as_deref(),
                 window.before,
                 reason,
                 now,
@@ -501,7 +526,13 @@ fn resolve_scopes(
                 ));
             }
             match crate::worktree::repo_identity(runner, &path) {
-                Ok(identity) => Ok(vec![Scope::Resolved { identity, path }]),
+                Ok(identity) => Ok(vec![Scope::Resolved {
+                    repo_key: crate::worktree::lease_scope::verified_repo_key_for_identity(
+                        &identity,
+                    ),
+                    identity,
+                    path,
+                }]),
                 Err(error) => Err(structured_error(
                     serde_json::json!({
                         "kind": error.kind,
@@ -535,10 +566,14 @@ fn resolve_known_identity(runner: &ProcessWorktreeRunner, identity: String) -> S
         };
     }
     match crate::worktree::repo_identity(runner, &parent) {
-        Ok(resolved) if resolved == identity => Scope::Resolved {
-            identity,
-            path: parent,
-        },
+        Ok(resolved) if resolved == identity => {
+            let repo_key = crate::worktree::lease_scope::verified_repo_key_for_identity(&identity);
+            Scope::Resolved {
+                identity,
+                path: parent,
+                repo_key,
+            }
+        }
         Ok(resolved) => Scope::Skipped {
             identity,
             reason: format!(

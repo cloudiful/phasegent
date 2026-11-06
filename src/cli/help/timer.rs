@@ -35,7 +35,7 @@ fn timer_help_parts(role: Option<Role>) -> (String, Vec<HelpRow<'static>>) {
         ),
         (
             "recover",
-            "Mark a known orphan FAILED and project via the configured provider",
+            "Mark a known orphan FAILED and project through its timer route",
             &["timer", "recover"],
         ),
     ];
@@ -85,11 +85,11 @@ pub(crate) fn timer_command_help_text(role: Option<Role>, command: &str) -> Stri
     match command {
         "start" => orchestrator_help(
             role,
-            "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nManual fallback for opening a local ledger row. The lifecycle path opens runs automatically on status transitions, so AI workflows should not call timer start directly; this command exists so an operator can recover after a missed auto-start or a crashed orchestrator. The orchestrator writes a local ledger row before any remote operation. --agent-role is executor or reviewer; --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). The provider is resolved at parse time; an unsupported provider name is rejected before any ledger write.",
+            "Usage: timer start <ISSUE> --phase NAME --agent-role executor|reviewer --attempt N [--run-id ID] [--owner-session-id S --owner-call-id C]\n\nManual fallback for opening a local ledger row. The lifecycle path opens runs automatically on status transitions, so AI workflows should not call timer start directly; this command exists so an operator can recover after a missed auto-start or a crashed orchestrator. The orchestrator writes a local ledger row before any remote operation. --agent-role is executor or reviewer; --attempt is a positive integer. Optional --owner-session-id / --owner-call-id record the OpenCode subagent identity (bounded, control-character-free, never projected). The timer route is decided from the current repository's durable task before any ledger write: a Forgejo-bound task has no time tracking and is rejected, a Local-bound run stays local, and a Redmine-bound run is pinned to its stored instance and project. An ambiguous current-repository task, or durable Redmine tasks for the same number on more than one instance or project (including one recorded in another repository), also refuses before any ledger write because the ledger stores no task id. An unsupported provider name is still rejected before any ledger write.",
         ),
         "finish" => orchestrator_help(
             role,
-            "Usage: timer finish <RUN_ID> --result DONE|PARTIAL|BLOCKED|FAILED\n\nManual fallback for closing a run that the lifecycle path could not auto-finish. The lifecycle path auto-finishes on the next status transition and on issue close, so AI workflows should not call timer finish directly. When called manually, the orchestrator records exact elapsed seconds, then projects them to the configured provider (Redmine). Retries on the same run id are safe; the marker-based reconciliation short-circuits before any duplicate Time Entry POST. Redmine receives the rounded 0.01-hour summary with a stable run-marker comment.",
+            "Usage: timer finish <RUN_ID> --result DONE|PARTIAL|BLOCKED|FAILED\n\nManual fallback for closing a run that the lifecycle path could not auto-finish. The lifecycle path auto-finishes on the next status transition and on issue close, so AI workflows should not call timer finish directly. When called manually, the orchestrator records exact elapsed seconds, then projects them through the timer route: a Redmine-bound run is pinned to its own instance and project, a Local-bound run stays local, and a Forgejo-bound task is unsupported. An ambiguous task or conflicting durable Redmine scope refuses before the local transition. Retries on the same run id are safe; the marker-based reconciliation short-circuits before any duplicate Time Entry POST. Redmine receives the rounded 0.01-hour summary with a stable run-marker comment.",
         ),
         "list" => orchestrator_help(
             role,
@@ -101,7 +101,7 @@ pub(crate) fn timer_command_help_text(role: Option<Role>, command: &str) -> Stri
         ),
         "recover" => orchestrator_help(
             role,
-            "Usage: timer recover <RUN_ID>\n\nMark a known orphan FAILED and project it through the configured provider with the same-run marker reconciliation used by finish. Never infers a successful outcome from a missing child transcript. If the row is already terminal, the command returns the unchanged run without reopening it. Concurrent recovers on the same run id are safe; the SQLite primary key and finish_time idempotency make them no-ops. Missing owner metadata does not change recover's behaviour.",
+            "Usage: timer recover <RUN_ID>\n\nMark a known orphan FAILED and project it through the timer route with the same-run marker reconciliation used by finish. The route is decided from the existing run before the FAILED transition or any stale-claim reset, so a Forgejo-bound task, an ambiguous current-repository task or a conflicting durable Redmine scope refuses with the ledger unchanged. Never infers a successful outcome from a missing child transcript. If the row is already terminal, the command returns the unchanged run without reopening it. Concurrent recovers on the same run id are safe; the SQLite primary key and finish_time idempotency make them no-ops. Missing owner metadata does not change recover's behaviour.",
         ),
         _ => timer_help_text(role),
     }
@@ -139,7 +139,7 @@ mod tests {
             ("get", "Show one local phase run (read-only, local-only)"),
             (
                 "recover",
-                "Mark a known orphan FAILED and project via the configured provider",
+                "Mark a known orphan FAILED and project through its timer route",
             ),
         ] {
             assert!(
@@ -157,7 +157,7 @@ mod tests {
     fn overview_sinks_contract_prose_to_detail_pages_without_loss() {
         let overview = timer_help_text(Some(Role::Orchestrator));
         for sunk in [
-            "resolved at parse time",
+            "decided from the current repository's durable task",
             "never echoes secrets",
             "never infers success",
             "without reopening it",
@@ -174,12 +174,16 @@ mod tests {
         let start = timer_command_help_text(Some(Role::Orchestrator), "start");
         assert!(
             start.contains("writes a local ledger row before any remote operation")
-                && start.contains("The provider is resolved at parse time"),
-            "start detail keeps ledger order + provider boundary; got: {start}"
+                && start.contains("decided from the current repository's durable task"),
+            "start detail keeps ledger order + timer route boundary; got: {start}"
         );
         assert!(
             start.contains("--agent-role executor|reviewer --attempt") && !start.contains("tester"),
             "start detail keeps the two service roles only; got: {start}"
+        );
+        assert!(
+            start.contains("more than one instance or project"),
+            "start detail must state the conflicting Redmine scope refusal; got: {start}"
         );
         let finish = timer_command_help_text(Some(Role::Orchestrator), "finish");
         assert!(
@@ -197,6 +201,10 @@ mod tests {
                 && recover.contains("without reopening it")
                 && recover.contains("same-run marker reconciliation used by finish"),
             "recover detail keeps the orphan boundaries; got: {recover}"
+        );
+        assert!(
+            recover.contains("before the FAILED transition or any stale-claim reset"),
+            "recover detail must state the admission order; got: {recover}"
         );
     }
 

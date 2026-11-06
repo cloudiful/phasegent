@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS branch_issue_links (
     provider TEXT NOT NULL,
     project TEXT NOT NULL,
     external_id TEXT NOT NULL,
+    -- Nullable durable task identity reference (issue 1201 P5). Legacy rows
+    -- keep NULL; the column is added additively on open and never inferred.
+    task_id INTEGER,
     issue_number INTEGER NOT NULL CHECK (issue_number > 0),
     status TEXT NOT NULL CHECK (status IN ('linked', 'detached')),
     source TEXT NOT NULL,
@@ -48,6 +51,35 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> Result<(), String> {
     connection
         .execute_batch(SCHEMA)
         .map_err(|error| format!("could not initialise branch link table: {error}"))?;
+    ensure_task_id_column(connection)
+}
+
+/// Additive `task_id` migration for databases created before issue 1201 P5.
+/// Idempotent via `PRAGMA table_info`, mirroring the worktree lease schema.
+/// The lookup index is created only after the column is known to exist, so a
+/// legacy table never hits a missing-column error.
+fn ensure_task_id_column(connection: &rusqlite::Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('branch_issue_links') WHERE name = 'task_id'")
+        .map_err(|error| format!("could not inspect branch link table: {error}"))?;
+    let present: bool = statement
+        .exists([])
+        .map_err(|error| format!("could not inspect branch link table: {error}"))?;
+    if !present {
+        connection
+            .execute(
+                "ALTER TABLE branch_issue_links ADD COLUMN task_id INTEGER",
+                [],
+            )
+            .map_err(|error| format!("could not migrate branch link table: {error}"))?;
+    }
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS branch_issue_links_task_idx \
+             ON branch_issue_links (task_id)",
+            [],
+        )
+        .map_err(|error| format!("could not index branch link task column: {error}"))?;
     Ok(())
 }
 
@@ -172,21 +204,94 @@ pub fn link_many(
     connection: &rusqlite::Connection,
     params: &[LinkParams<'_>],
 ) -> Result<Vec<(u64, LinkOutcome)>, String> {
-    for entry in params {
+    let tagged: Vec<(LinkParams<'_>, Option<i64>)> = params
+        .iter()
+        .cloned()
+        .map(|params| (params, None))
+        .collect();
+    link_many_with_task(connection, &tagged)
+}
+
+/// Link rows atomically, attaching an optional durable task reference to each.
+/// An existing non-NULL task reference is never overwritten with a different
+/// id, so a legacy primary-key collision on the same provider/project/number
+/// for another instance fails before any committed write.
+pub fn link_many_with_task(
+    connection: &rusqlite::Connection,
+    params: &[(LinkParams<'_>, Option<i64>)],
+) -> Result<Vec<(u64, LinkOutcome)>, String> {
+    for (entry, task_id) in params {
         validate_link(entry)?;
+        if matches!(task_id, Some(value) if *value <= 0) {
+            return Err("task id must be greater than zero".to_owned());
+        }
     }
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("could not start branch link transaction: {error}"))?;
     let mut outcomes = Vec::with_capacity(params.len());
-    for entry in params {
-        let outcome = link(&transaction, entry)?;
+    for (entry, task_id) in params {
+        let outcome = link_with_task(&transaction, entry, *task_id)?;
         outcomes.push((entry.issue_number, outcome));
     }
     transaction
         .commit()
         .map_err(|error| format!("could not commit branch links: {error}"))?;
     Ok(outcomes)
+}
+
+/// Link one row on the caller's connection, never inside a new transaction, so
+/// an explicit adoption can persist task, membership and branch reference
+/// atomically.
+pub(crate) fn link_with_task(
+    connection: &rusqlite::Connection,
+    params: &LinkParams<'_>,
+    task_id: Option<i64>,
+) -> Result<LinkOutcome, String> {
+    let outcome = link(connection, params)?;
+    let Some(task_id) = task_id else {
+        return Ok(outcome);
+    };
+    let existing: Option<Option<i64>> = connection
+        .query_row(
+            "SELECT task_id FROM branch_issue_links \
+             WHERE repo_key = ?1 AND branch = ?2 AND provider = ?3 AND project = ?4 AND external_id = ?5",
+            params![
+                params.repo_key,
+                params.branch,
+                params.issue.provider,
+                params.issue.project,
+                params.issue.external_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("could not read branch task reference: {error}"))?;
+    match existing {
+        Some(Some(current)) if current == task_id => Ok(outcome),
+        Some(Some(_)) => Err(
+            "branch link already references another immutable task; refusing to overwrite it"
+                .to_owned(),
+        ),
+        Some(None) => {
+            connection
+                .execute(
+                    "UPDATE branch_issue_links SET task_id = ?6 \
+                     WHERE repo_key = ?1 AND branch = ?2 AND provider = ?3 AND project = ?4 AND external_id = ?5",
+                    params![
+                        params.repo_key,
+                        params.branch,
+                        params.issue.provider,
+                        params.issue.project,
+                        params.issue.external_id,
+                        task_id
+                    ],
+                )
+                .map_err(|error| format!("could not attach branch task reference: {error}"))?;
+            Ok(outcome)
+        }
+        None => Err("branch link disappeared during task attachment".to_owned()),
+    }
 }
 
 /// Explicit manual unlink. Flips a linked row to `detached`, retaining

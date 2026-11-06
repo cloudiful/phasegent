@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS worktree_lease_scopes (
     provider TEXT NOT NULL CHECK (length(provider) > 0),
     project TEXT NOT NULL CHECK (length(project) > 0),
     external_id INTEGER NOT NULL CHECK (external_id > 0),
+    -- Nullable durable task identity reference (issue 1201 P5). Legacy rows
+    -- keep NULL; no binding is inferred from the sidecar.
+    task_id INTEGER,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS worktree_lease_scopes_issue_idx
@@ -59,7 +62,41 @@ pub(super) fn ensure_lease_schema(storage: &Storage) -> Result<(), String> {
         .execute_batch(WORKTREE_LEASES_SCHEMA)
         .map_err(|error| format!("could not initialise worktree lease table: {error}"))?;
     ensure_release_reason_column(storage)?;
+    ensure_scope_task_id_column(storage)?;
     ensure_active_path_index(storage)
+}
+
+/// Additive `task_id` migration for `worktree_lease_scopes` (issue 1201 P5).
+/// The lookup index is created after the column is known to exist so a legacy
+/// table without it never hits a missing-column error.
+fn ensure_scope_task_id_column(storage: &Storage) -> Result<(), String> {
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT name FROM pragma_table_info('worktree_lease_scopes') WHERE name = 'task_id'",
+        )
+        .map_err(|error| format!("could not inspect worktree lease scope table: {error}"))?;
+    let present: bool = statement
+        .exists([])
+        .map_err(|error| format!("could not inspect worktree lease scope table: {error}"))?;
+    if !present {
+        storage
+            .connection
+            .execute(
+                "ALTER TABLE worktree_lease_scopes ADD COLUMN task_id INTEGER",
+                [],
+            )
+            .map_err(|error| format!("could not migrate worktree lease scope table: {error}"))?;
+    }
+    storage
+        .connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS worktree_lease_scopes_task_idx \
+             ON worktree_lease_scopes (task_id)",
+            [],
+        )
+        .map_err(|error| format!("could not index worktree lease scope task column: {error}"))?;
+    Ok(())
 }
 
 /// Migrate the `(repo_identity, worktree_path)` uniqueness to

@@ -9,7 +9,6 @@
 
 use crate::command::IssueCommand;
 use crate::policy::Role;
-use crate::providers::ProviderKind;
 
 #[path = "branch/bind.rs"]
 pub(crate) mod bind;
@@ -53,24 +52,21 @@ pub(crate) fn permission_denial(
 /// provider/project.
 pub(crate) fn execute_branch_context_scoped(
     role: Option<Role>,
-    provider: Option<ProviderKind>,
-    repository: Option<&str>,
-    project_id: Option<&str>,
+    context: &crate::cli::provider_context::ProviderContext,
     command: IssueCommand,
 ) -> i32 {
     if let Some(error) = permission_denial(role, &command) {
         return super::structured_error(error, 3);
     }
     match command {
-        IssueCommand::Bind { issue_ids } => {
-            bind::execute_bind(role, provider, repository, project_id, &issue_ids)
-        }
-        IssueCommand::Unbind { issue_ids } => {
-            bind::execute_unbind(role, provider, repository, project_id, &issue_ids)
-        }
-        IssueCommand::StatusBranch => {
-            status::execute_status(role, provider, repository, project_id)
-        }
+        IssueCommand::Bind { issue_ids } => bind::execute_bind(role, context, &issue_ids),
+        IssueCommand::Unbind { issue_ids } => bind::execute_unbind(role, context, &issue_ids),
+        IssueCommand::StatusBranch => status::execute_status(
+            role,
+            context.provider,
+            context.repository.as_deref(),
+            context.project_id.as_deref(),
+        ),
         _ => unreachable!("branch context dispatch handles only local issue commands"),
     }
 }

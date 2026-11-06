@@ -527,7 +527,7 @@ fn prune_scope_mixed_directory_never_queries_issue_provider() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -565,7 +565,7 @@ fn prune_scoped_group_matching_provider_context_is_removable() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -606,7 +606,7 @@ fn prune_scoped_group_with_foreign_provider_context_is_kept() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/other',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/other',8,1)",
             [],
         )
         .unwrap();

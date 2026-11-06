@@ -3306,10 +3306,19 @@ and a reviewer never work the same mutable tree at the same time.
 Source of truth: \`src/cli/help/\` role-filter plus \`src/policy.rs\`.
 \`phasegent --help <command>\` is the authoritative syntax for the command in
 hand, filtered by the session's role; this section records role gates and
-boundaries, never flag tables. The provider resolves from configuration at
-runtime — an explicit override wins, then the configured default (role or
-global setting, \`phasegent.toml\`, or environment), with Redmine as the final
-fallback — and a session never hard-codes one.
+boundaries, never flag tables. For a numbered command the durable task layer
+resolves first: the current branch task reference, then a unique repository
+membership, then the unchanged legacy resolution (an explicit override wins,
+then the configured default — role or global setting, \`phasegent.toml\`, or
+environment — with Redmine as the final fallback). A bound task is dispatched
+through its own stored instance and project; the role credential is used only
+while the configured endpoint still attests that instance, and a changed
+default never repins it. An explicit \`--provider\`/\`--api-base\`/\`--repository\`/
+\`--project-id\` selects and disambiguates among several memberships but never
+remaps a bound task to another provider, project or instance; several matching
+memberships refuse as ambiguous. A stored or environment Forgejo default is
+still refused for any number without a matching durable task, and a session
+never hard-codes one.
 
 ### Role gates
 
@@ -3418,8 +3427,9 @@ Boundaries:
   it enumerates every repository identity the local lease store records, and
   \`--dryrun\`/\`--dry-run\` is the read-only preview that mutates nothing. A
   directory is removed as soon as every issue associated with it is confirmed
-  closed on the configured provider, no active lease references it, and it is
-  Git-clean — with no waiting period, so \`--stale-days\` only affects the
+  closed through its own durable task (a legacy number without a durable task
+  keeps the configured-provider resolution), no active lease references it, and
+  it is Git-clean — with no waiting period, so \`--stale-days\` only affects the
   explicit \`--release-stale\` recovery. It reuses the close/sync *local* guards —
   never the main checkout, never an active peer's path (including the same
   owner), never dirty or untracked contents — and adds its own running-session
@@ -3479,9 +3489,11 @@ Boundaries:
   session, a session of another family, a running family member other than the
   closing session the close is finishing, or a move that has not taken effect yet
   keeps the directory with a warning. The other issues the directory is
-  associated with must be confirmed closed on the configured provider first. The
-  close never waits for the moves, and a pure CLI worktree never reaches the
-  API. \`issue sync\` runs the same guards for issues the provider already closed
+  associated with are each read through their own durable task and must be
+  confirmed closed; a legacy number without a durable task keeps the
+  configured-provider resolution. The close never waits for the moves, and a
+  pure CLI worktree never reaches the API. \`issue sync\` runs the same guards
+  for issues the provider already closed
   but never moves a session: it removes a deferred directory once the host
   reports the sessions elsewhere. Branches and lease rows are never deleted, and
   cleanup never changes the close exit code or its stdout. After that cleanup,

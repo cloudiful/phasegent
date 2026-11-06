@@ -1,6 +1,416 @@
 use super::support::*;
 use super::*;
 
+/// The durable task the membership proofs below use: one Forgejo task in
+/// one instance, with the external number the lease sidecar records.
+fn forgejo_task(storage: &Storage, number: &str) -> crate::task_identity::TaskBinding {
+    let key = crate::task_identity::TaskKey::new(
+        "forgejo",
+        "https://forgejo.test/",
+        "owner/repo",
+        number,
+    )
+    .unwrap();
+    crate::task_identity::ensure_binding(storage, &key, now_unix_secs()).unwrap()
+}
+
+/// One active lease row for the fixture repository.
+fn active_lease<'a>(
+    lease_id: &'a str,
+    identity: &'a str,
+    issue: u64,
+    path: &'a str,
+) -> NewLease<'a> {
+    NewLease {
+        lease_id,
+        identity,
+        issue,
+        session: lease_id,
+        checkout_path: "checkout",
+        worktree_path: path,
+        branch: "branch",
+        status: LEASE_STATUS_ACTIVE,
+        created_at: 1,
+        heartbeat_at: 1,
+    }
+}
+
+/// The complete lease table, so a refused proof can be compared against the
+/// state it was given.
+fn lease_snapshot(storage: &Storage, identity: &str) -> Vec<(String, String, u64, String)> {
+    crate::worktree::leases::list_all_for_repo(storage, identity)
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.lease_id, row.status, row.issue, row.worktree_path))
+        .collect()
+}
+
+#[test]
+fn task_scoped_reads_require_membership_in_the_verified_repository() {
+    use crate::worktree::leases::{insert_lease_scoped, list_all_for_repo};
+
+    let _lock = lock_workflow_tests();
+    let (temp, storage, _env) = open_temp_db("task-membership-read");
+    crate::worktree::ensure_schema(&storage).unwrap();
+    let now = now_unix_secs();
+    let binding = forgejo_task(&storage, "7");
+    let task_id = binding.task_id();
+    let repo_key = "forgejo.test/owner/repo";
+    crate::task_identity::add_repo_membership(&storage, repo_key, task_id, now).unwrap();
+    let scope = crate::worktree::LeaseScope::for_task(
+        "forgejo",
+        "owner/repo",
+        7,
+        task_id,
+        binding.key().instance(),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        active_lease("task-lease", "repo", 7, "task-path"),
+        &scope,
+        Some(repo_key),
+    )
+    .unwrap();
+
+    let map =
+        crate::worktree::lease_scope::scope_map_for_repo_with_key(&storage, "repo", Some(repo_key))
+            .unwrap();
+    assert_eq!(map.get("task-lease"), Some(&scope));
+    assert!(
+        crate::worktree::leases::find_active_lease_for_scope(
+            &storage,
+            "repo",
+            "task-lease",
+            &scope
+        )
+        .unwrap()
+        .is_some()
+    );
+
+    let foreign = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        &storage,
+        "repo",
+        Some("forgejo.test/owner/other"),
+    )
+    .unwrap_err();
+    assert!(
+        foreign.message.contains("not a member of this repository"),
+        "a task that is not a member of this repository is refused: {foreign}"
+    );
+    assert_eq!(
+        lease_snapshot(&storage, "repo"),
+        lease_snapshot(&storage, "repo"),
+        "the refused read changes nothing"
+    );
+    assert_eq!(list_all_for_repo(&storage, "repo").unwrap().len(), 1);
+    drop(temp);
+}
+
+#[test]
+fn a_task_row_is_refused_without_a_key_while_a_legacy_row_still_reads() {
+    use crate::worktree::leases::insert_lease_scoped;
+
+    let _lock = lock_workflow_tests();
+    let (temp, storage, _env) = open_temp_db("task-no-key-read");
+    crate::worktree::ensure_schema(&storage).unwrap();
+    let now = now_unix_secs();
+    let binding = forgejo_task(&storage, "7");
+    let task_id = binding.task_id();
+    crate::task_identity::add_repo_membership(&storage, "forgejo.test/owner/repo", task_id, now)
+        .unwrap();
+    let scope = crate::worktree::LeaseScope::for_task(
+        "forgejo",
+        "owner/repo",
+        7,
+        task_id,
+        binding.key().instance(),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        active_lease("task-lease", "repo", 7, "task-path"),
+        &scope,
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    let legacy = crate::worktree::LeaseScope::new("forgejo", "owner/repo", 9).unwrap();
+    insert_lease_scoped(
+        &storage,
+        active_lease("legacy-lease", "legacy-repo", 9, "legacy-path"),
+        &legacy,
+        None,
+    )
+    .unwrap();
+
+    let legacy_map =
+        crate::worktree::lease_scope::scope_map_for_repo(&storage, "legacy-repo").unwrap();
+    assert_eq!(legacy_map.get("legacy-lease"), Some(&legacy));
+    let error = crate::worktree::lease_scope::scope_map_for_repo(&storage, "repo").unwrap_err();
+    assert!(
+        error.message.contains("repository key is unknown"),
+        "a task row without a verified key is refused: {error}"
+    );
+    assert!(
+        crate::worktree::lease_scope::scope_map_for_repo_with_key(&storage, "repo", None).is_err(),
+        "an absent key is not a permission"
+    );
+    drop(temp);
+}
+
+#[test]
+fn retention_through_a_foreign_membership_refuses_and_changes_nothing() {
+    use crate::worktree::leases::{
+        insert_lease_scoped, list_all_for_repo, retain_active_leases_for_scope_ids,
+        scoped_retention_proof,
+    };
+
+    let _lock = lock_workflow_tests();
+    let (temp, storage, _env) = open_temp_db("task-membership-retention");
+    crate::worktree::ensure_schema(&storage).unwrap();
+    let now = now_unix_secs();
+    let binding = forgejo_task(&storage, "7");
+    let task_id = binding.task_id();
+    let repo_key = "forgejo.test/owner/repo";
+    crate::task_identity::add_repo_membership(&storage, repo_key, task_id, now).unwrap();
+    let scope = crate::worktree::LeaseScope::for_task(
+        "forgejo",
+        "owner/repo",
+        7,
+        task_id,
+        binding.key().instance(),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        active_lease("task-lease", "repo", 7, "task-path"),
+        &scope,
+        Some(repo_key),
+    )
+    .unwrap();
+
+    let before = lease_snapshot(&storage, "repo");
+    let rows = list_all_for_repo(&storage, "repo").unwrap();
+    let scopes =
+        crate::worktree::lease_scope::scope_map_for_repo_with_key(&storage, "repo", Some(repo_key))
+            .unwrap();
+    let approved = scoped_retention_proof(7, &rows, &scopes);
+
+    let result = retain_active_leases_for_scope_ids(
+        &storage,
+        "repo",
+        Some("forgejo.test/owner/other"),
+        &scope,
+        &["task-lease".to_owned()],
+        &approved,
+        "fixture",
+        now,
+    );
+    assert!(
+        result.is_err(),
+        "a task that is not a member of this repository cannot be retained: {result:?}"
+    );
+    assert_eq!(
+        lease_snapshot(&storage, "repo"),
+        before,
+        "the refused retention leaves the complete lease state unchanged"
+    );
+    assert_eq!(
+        list_all_for_repo(&storage, "repo").unwrap()[0].status,
+        LEASE_STATUS_ACTIVE
+    );
+    drop(temp);
+}
+
+#[test]
+fn a_membership_change_between_proof_and_transaction_aborts_the_write() {
+    use crate::worktree::leases::{
+        insert_lease_scoped, list_all_for_repo, retain_active_leases_for_scope_ids,
+        scoped_retention_proof,
+    };
+
+    let _lock = lock_workflow_tests();
+    let (temp, storage, _env) = open_temp_db("task-membership-race");
+    crate::worktree::ensure_schema(&storage).unwrap();
+    let now = now_unix_secs();
+    let binding = forgejo_task(&storage, "7");
+    let task_id = binding.task_id();
+    let repo_key = "forgejo.test/owner/repo";
+    crate::task_identity::add_repo_membership(&storage, repo_key, task_id, now).unwrap();
+    let scope = crate::worktree::LeaseScope::for_task(
+        "forgejo",
+        "owner/repo",
+        7,
+        task_id,
+        binding.key().instance(),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        active_lease("task-lease", "repo", 7, "task-path"),
+        &scope,
+        Some(repo_key),
+    )
+    .unwrap();
+
+    let rows = list_all_for_repo(&storage, "repo").unwrap();
+    let scopes =
+        crate::worktree::lease_scope::scope_map_for_repo_with_key(&storage, "repo", Some(repo_key))
+            .unwrap();
+    let approved = scoped_retention_proof(7, &rows, &scopes);
+    let before = lease_snapshot(&storage, "repo");
+
+    // The membership disappears after the proof was taken: the transaction
+    // rebuilds the map on its own connection and must refuse the write.
+    storage
+        .connection
+        .execute(
+            "DELETE FROM task_repo_memberships WHERE repo_key = ?1 AND task_id = ?2",
+            rusqlite::params![repo_key, task_id],
+        )
+        .unwrap();
+    let result = retain_active_leases_for_scope_ids(
+        &storage,
+        "repo",
+        Some(repo_key),
+        &scope,
+        &["task-lease".to_owned()],
+        &approved,
+        "fixture",
+        now,
+    );
+    assert!(
+        result.is_err(),
+        "the changed membership must abort the retention: {result:?}"
+    );
+    assert_eq!(
+        lease_snapshot(&storage, "repo"),
+        before,
+        "the aborted retention leaves the complete lease state unchanged"
+    );
+
+    // The task reference itself is repointed at another task: the sidecar no
+    // longer names the task it was written for, so the write is refused too.
+    crate::task_identity::add_repo_membership(&storage, repo_key, task_id, now).unwrap();
+    let other = forgejo_task(&storage, "8");
+    storage
+        .connection
+        .execute(
+            "UPDATE worktree_lease_scopes SET task_id = ?1 WHERE lease_id = 'task-lease'",
+            rusqlite::params![other.task_id()],
+        )
+        .unwrap();
+    let result = retain_active_leases_for_scope_ids(
+        &storage,
+        "repo",
+        Some(repo_key),
+        &scope,
+        &["task-lease".to_owned()],
+        &approved,
+        "fixture",
+        now,
+    );
+    assert!(
+        result.is_err(),
+        "the changed task reference must abort the retention: {result:?}"
+    );
+    assert_eq!(
+        lease_snapshot(&storage, "repo"),
+        before,
+        "the aborted retention leaves the complete lease state unchanged"
+    );
+    assert_eq!(
+        list_all_for_repo(&storage, "repo").unwrap()[0].status,
+        LEASE_STATUS_ACTIVE
+    );
+    drop(temp);
+}
+
+#[test]
+fn a_legacy_stale_recovery_selector_never_sweeps_a_task_row() {
+    use crate::worktree::leases::{
+        StaleRecoveryScope, insert_lease_scoped, list_all_for_repo,
+        recover_stale_active_leases_for_scope,
+    };
+
+    let _lock = lock_workflow_tests();
+    let (temp, mut storage, _env) = open_temp_db("task-stale-legacy-selector");
+    crate::worktree::ensure_schema(&storage).unwrap();
+    let now = now_unix_secs();
+    let binding = forgejo_task(&storage, "7");
+    let task_id = binding.task_id();
+    let repo_key = "forgejo.test/owner/repo";
+    crate::task_identity::add_repo_membership(&storage, repo_key, task_id, now).unwrap();
+    let scope = crate::worktree::LeaseScope::for_task(
+        "forgejo",
+        "owner/repo",
+        7,
+        task_id,
+        binding.key().instance(),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        active_lease("task-lease", "repo", 7, "task-path"),
+        &scope,
+        Some(repo_key),
+    )
+    .unwrap();
+
+    // A legacy explicit selector owns the legacy scoped rows of that
+    // repository and never a durable task row.
+    let flipped = recover_stale_active_leases_for_scope(
+        &mut storage,
+        "repo",
+        Some(repo_key),
+        50,
+        "fixture",
+        100,
+        StaleRecoveryScope::Exact {
+            provider: "forgejo",
+            project: "owner/repo",
+            task_id: None,
+            instance: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        flipped.is_empty(),
+        "a legacy selector must not sweep a task row: {flipped:?}"
+    );
+    assert_eq!(
+        list_all_for_repo(&storage, "repo").unwrap()[0].status,
+        LEASE_STATUS_ACTIVE
+    );
+
+    // The exact task selector owns that task, and only that task.
+    let flipped = recover_stale_active_leases_for_scope(
+        &mut storage,
+        "repo",
+        Some(repo_key),
+        50,
+        "fixture",
+        100,
+        StaleRecoveryScope::Exact {
+            provider: "forgejo",
+            project: "owner/repo",
+            task_id: Some(task_id),
+            instance: Some(binding.key().instance()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        flipped.len(),
+        1,
+        "the exact task selector flips its own row"
+    );
+    assert_eq!(
+        list_all_for_repo(&storage, "repo").unwrap()[0].status,
+        LEASE_STATUS_RETAINED
+    );
+    drop(temp);
+}
+
 #[test]
 fn legacy_stale_recovery_rejects_a_newly_corrupt_scoped_row() {
     use crate::worktree::leases::{
@@ -27,6 +437,7 @@ fn legacy_stale_recovery_rejects_a_newly_corrupt_scoped_row() {
             heartbeat_at: 1,
         },
         &scope,
+        None,
     )
     .unwrap();
     crate::worktree::lease_scope::scope_map_for_repo(&storage, "repo").unwrap();
@@ -40,6 +451,7 @@ fn legacy_stale_recovery_rejects_a_newly_corrupt_scoped_row() {
     let result = recover_stale_active_leases_for_scope(
         &mut storage,
         "repo",
+        None,
         50,
         "fixture",
         100,
@@ -72,7 +484,7 @@ fn scope_schema_is_additive_and_inserts_atomically() {
         heartbeat_at: now,
     };
     let scope = crate::worktree::LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
-    crate::worktree::leases::insert_lease_scoped(&storage, lease, &scope).unwrap();
+    crate::worktree::leases::insert_lease_scoped(&storage, lease, &scope, None).unwrap();
     crate::worktree::ensure_schema(&storage).unwrap();
     assert_eq!(
         crate::worktree::lease_scope::scope_map_for_repo(&storage, "repo")
@@ -97,7 +509,7 @@ fn scope_schema_is_additive_and_inserts_atomically() {
     );
     assert_eq!(
         crate::worktree::leases::retain_active_leases_for_scope(
-            &storage, "repo", &scope, "scope", now
+            &storage, "repo", None, &scope, "scope", now
         )
         .unwrap(),
         1
@@ -123,7 +535,7 @@ fn scope_schema_is_additive_and_inserts_atomically() {
         created_at: now,
         heartbeat_at: now,
     };
-    assert!(crate::worktree::leases::insert_lease_scoped(&storage, lease, &scope).is_err());
+    assert!(crate::worktree::leases::insert_lease_scoped(&storage, lease, &scope, None).is_err());
     assert!(
         crate::worktree::leases::load_lease(&storage, "scope-b")
             .unwrap()
@@ -152,11 +564,15 @@ fn scope_exact_identity_and_legacy_collision_are_isolated() {
     };
     let a = crate::worktree::LeaseScope::new("forgejo", "one/repo", 7).unwrap();
     let b = crate::worktree::LeaseScope::new("forgejo", "two/repo", 7).unwrap();
-    crate::worktree::leases::insert_lease_scoped(&storage, make("a", "path-a", 7), &a).unwrap();
-    crate::worktree::leases::insert_lease_scoped(&storage, make("b", "path-b", 7), &b).unwrap();
+    crate::worktree::leases::insert_lease_scoped(&storage, make("a", "path-a", 7), &a, None)
+        .unwrap();
+    crate::worktree::leases::insert_lease_scoped(&storage, make("b", "path-b", 7), &b, None)
+        .unwrap();
     assert_eq!(
-        crate::worktree::leases::retain_active_leases_for_scope(&storage, "repo", &a, "done", now)
-            .unwrap(),
+        crate::worktree::leases::retain_active_leases_for_scope(
+            &storage, "repo", None, &a, "done", now
+        )
+        .unwrap(),
         1
     );
     assert!(
@@ -170,7 +586,8 @@ fn scope_exact_identity_and_legacy_collision_are_isolated() {
             .is_some()
     );
     assert!(
-        crate::worktree::leases::insert_lease_scoped(&storage, make("c", "path-b", 7), &a).is_err()
+        crate::worktree::leases::insert_lease_scoped(&storage, make("c", "path-b", 7), &a, None)
+            .is_err()
     );
     crate::worktree::leases::insert_lease(&storage, make("legacy", "legacy-path", 9)).unwrap();
     let legacy_scope = crate::worktree::LeaseScope::new("forgejo", "one/repo", 9).unwrap();
@@ -178,6 +595,7 @@ fn scope_exact_identity_and_legacy_collision_are_isolated() {
         &storage,
         make("conflict", "new-path", 9),
         &legacy_scope,
+        None,
     )
     .unwrap_err();
     assert_eq!(error.kind, "scope_conflict");
@@ -223,7 +641,7 @@ fn scope_concurrent_active_path_has_one_complete_winner() {
                     heartbeat_at: 1,
                 };
                 barrier.wait();
-                crate::worktree::leases::insert_lease_scoped(&db, lease, &scope).is_ok()
+                crate::worktree::leases::insert_lease_scoped(&db, lease, &scope, None).is_ok()
             })
         })
         .collect();

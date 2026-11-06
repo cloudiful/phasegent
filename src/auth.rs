@@ -268,6 +268,20 @@ const REDMINE_ROLES: [Role; 5] = [
 /// values are runtime overrides only and are never persisted; only the
 /// legacy migration writes the global row.
 pub fn redmine_api_base(storage: &Storage) -> Result<Option<String>, String> {
+    redmine_api_base_with_legacy(storage, true)
+}
+
+/// Non-mutating variant for admission and routing: identical precedence
+/// (env, TOML, persisted global setting, legacy role lookup) but a legacy
+/// value is returned without migrating the role config.
+pub fn redmine_api_base_read_only(storage: &Storage) -> Result<Option<String>, String> {
+    redmine_api_base_with_legacy(storage, false)
+}
+
+fn redmine_api_base_with_legacy(
+    storage: &Storage,
+    persist_legacy: bool,
+) -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_API_BASE")? {
         return Ok(Some(value));
     }
@@ -282,17 +296,13 @@ pub fn redmine_api_base(storage: &Storage) -> Result<Option<String>, String> {
     if let Some(value) = storage.load_global_setting(GLOBAL_REDMINE_API_BASE)? {
         return Ok(Some(value));
     }
-    migrate_legacy_redmine_api_base(storage)
+    legacy_redmine_api_base(storage, persist_legacy)
 }
 
-/// Migrate the single legacy per-role Redmine address into the canonical
-/// global setting, or fail closed when the legacy values conflict.
-///
-/// Returns `Ok(None)` when no role carries a non-empty legacy address so
-/// the caller can keep its "not configured" diagnostic. Normalisation
-/// reuses the same Redmine URL rules as runtime resolution, and only a
-/// successful migration persists anything.
-fn migrate_legacy_redmine_api_base(storage: &Storage) -> Result<Option<String>, String> {
+/// Resolve the single legacy per-role Redmine address (or fail closed when
+/// the legacy values conflict). `persist` writes the canonical global row on
+/// the mutating path; the read-only routing path leaves role config intact.
+fn legacy_redmine_api_base(storage: &Storage, persist: bool) -> Result<Option<String>, String> {
     let mut distinct: Vec<String> = Vec::new();
     let mut roles_with_values: Vec<&'static str> = Vec::new();
     for role in REDMINE_ROLES {
@@ -332,7 +342,9 @@ fn migrate_legacy_redmine_api_base(storage: &Storage) -> Result<Option<String>, 
         0 => Ok(None),
         1 => {
             let value = distinct.pop().expect("one distinct legacy address");
-            storage.save_global_setting(GLOBAL_REDMINE_API_BASE, &value)?;
+            if persist {
+                storage.save_global_setting(GLOBAL_REDMINE_API_BASE, &value)?;
+            }
             Ok(Some(value))
         }
         _ => Err(format!(

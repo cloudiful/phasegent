@@ -1,10 +1,13 @@
 # Forgejo provider
 
 The Forgejo provider targets one explicitly configured `owner/repo` on an HTTP(S)
-Forgejo instance. It is opt-in and never selected by a stored default: select it
-per invocation with `--provider forgejo --repository owner/repo --api-base URL`,
-or store the same values per role with
+Forgejo instance. A stored default never selects it. Use
+`--provider forgejo --repository owner/repo --api-base URL` to create an issue,
+to adopt an existing number with `issue bind`, or for any number that carries no
+durable task, or store the same values per role with
 `phasegent --provider forgejo admin auth setup --repository owner/repo --api-base URL`.
+A number that already carries a durable Forgejo task routes to its stored
+instance and repository without repeating the flags.
 Forgejo rejects `--project-id` and `--close-status-id`.
 
 Each role reads its own Forgejo token from the secure `auth setup` prompt or
@@ -33,5 +36,81 @@ Not supported, rejected before any local or remote write: time tracking
 (start/finish), relations, attachments, parent/subtask and planning fields,
 project creation, and Forgejo-backed `workflow bootstrap`.
 
+## Task identity and routing
+
+A phasegent command can persist one immutable task identity for an issue:
+provider + instance + project + issue number, addressed by an opaque integer
+task id. Forgejo's instance is its canonical API base and its project is
+`owner/repo`.
+
+- `issue create` persists the identity once and records the current repository
+  membership.
+- `issue bind --provider forgejo ...` verifies the number on Forgejo before any
+  local write and commits the identity, repository membership and branch task
+  reference together. A branch link that already belongs to another immutable
+  task instance is refused, never overwritten. An ordinary bind without an
+  explicit provider stays an offline link and adopts nothing.
+- A numbered command resolves its route in order: the current branch task
+  reference, then a unique repository membership, then the unchanged legacy
+  resolution. `issue get`/`update`/`close` (batch items independently),
+  `comment create`, `record create`/`list`/`get` and `status transition`
+  dispatch through the resolved task. `worktree acquire` is owned by the
+  durable task bound to the issue in this repository when one exists, for every
+  provider and without repeating `--provider` or `--repository`: the lease
+  records that exact task identity, a same-number task on another instance is a
+  different scope that is never reused, and an explicit provider, endpoint or
+  project selection that contradicts the task refuses before any lease write or
+  taxi pass. Without a bound task, an explicit `--provider forgejo` keeps the
+  explicit `owner/repo` scope, an implicit Forgejo default still fails closed,
+  and every other selection keeps the legacy numeric lease. `timer start`,
+  `timer finish` and `timer recover` apply the timer route described below
+  (`timer list`/`get` are local ledger reads). `issue create`, search, project
+  and version reads keep the configured path.
+- An explicit `--provider`, `--api-base`, `--repository` or `--project-id`
+  selects and disambiguates among several memberships. It never remaps a bound
+  task to another provider, project or instance, and several memberships without
+  a matching selection are an actionable ambiguity error.
+- A bound task is dispatched through its stored instance and project. The role
+  token is used only while the configured credential endpoint still attests that
+  instance, so a changed default never repins the task and a mismatched endpoint
+  refuses before any request.
+- A stored or environment Forgejo default is still refused for a number without
+  a durable task. Pre-existing `NULL` task references are never guessed or
+  backfilled, and no host or tool selects a provider.
+
+## Task lifecycle and limitations
+
+`issue close` releases only the exact task leases of the closed task for every
+provider and reads every other associated task through its own pinned task; a
+directory is kept while any associated task is open, ambiguous or unreadable.
+`issue sync` and `worktree prune` resolve each candidate issue through its
+durable task membership and pin the provider and instance per task, with the
+configured-provider resolution for a legacy number without a durable task.
+
+Current limits: a branch link is unique by repository, branch, provider, project
+and issue number and carries no instance, so two instances of the same provider,
+project and number cannot both own one branch link and the adoption path refuses
+to overwrite such a link. In a repository without an origin the repository key
+falls back to the checkout root, so a linked worktree cannot see the main
+checkout's task memberships; bind or adopt inside that checkout, or select the
+provider explicitly. A close restores the main checkout only for an unambiguous
+provider/project/number task set; several same-scope tasks skip restoration with
+a bounded warning.
+
+The timer ledger stores no task id, so a run stays numeric. A Forgejo-bound task
+has no time tracking and refuses before any ledger write or projection. A
+Local-bound run stays local and is never projected remotely. A Redmine-bound run
+is pinned to its own instance and project and refuses when the configured
+endpoint no longer attests that instance. The route is decided from the current
+repository's task, so a task of another repository never selects the provider,
+and a Local or Forgejo task there is a different provider rather than a
+competing Redmine endpoint. Competing Redmine evidence still refuses: because
+the ledger cannot attribute a run, durable Redmine tasks for the same number on
+more than one instance or project — including one recorded in another
+repository — are conflicting scopes and refuse before any write instead of
+picking an endpoint. Single-instance Redmine numerics stay compatible, with no
+schema, no task column and no run-to-task mapping.
+
 Enabling Forgejo changes no Redmine or Local default, migrates no old issue, and
-does not reinterpret legacy generic configuration.
+does not reinterpret legacy generic configuration. No legacy branch link or lease
+row is backfilled with a task identity.

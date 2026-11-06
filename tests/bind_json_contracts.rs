@@ -26,11 +26,39 @@ fn checkout_branch(repo: &std::path::Path, branch: &str) {
     );
 }
 
+fn seed_local_issues(scratch: &Scratch, repo: &std::path::Path, count: u64) {
+    for _ in 0..count {
+        let output = snapshots::run(
+            scratch,
+            repo,
+            Some("orchestrator"),
+            &[
+                "--provider",
+                "local",
+                "issue",
+                "create",
+                "--title",
+                "fixture",
+                "--body",
+                "fixture",
+                "--branch",
+                "seed-ignore",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "seeding a Local issue failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[test]
 fn single_bind_and_unbind_keep_legacy_fields_and_add_batch_fields() {
     let scratch = Scratch::new("bind-json");
     let repo = init_repo(&scratch.join("repo"));
     checkout_branch(&repo, "feat/7");
+    seed_local_issues(&scratch, &repo, 7);
 
     let bound = expect_json(
         &scratch,

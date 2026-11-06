@@ -204,32 +204,73 @@ fn linked_rows(
     .expect("read must work")
 }
 
+fn local_store_path() -> std::path::PathBuf {
+    let db = std::env::var_os("PHASEGENT_DB_PATH").expect("scoped db path");
+    std::path::PathBuf::from(db).with_file_name("phasegent-local.sqlite3")
+}
+
+/// Explicit Local bind verifies the local issue offline; seed the fixture
+/// issues and point the Local provider at the test store.
+fn use_local_issues(issue_ids: &[u64]) -> EnvGuard {
+    let path = local_store_path();
+    let guard = EnvGuard::set(
+        "PHASEGENT_LOCAL_DB_PATH",
+        path.to_str().expect("utf-8 local path"),
+    );
+    let store = crate::infra::local_store::open_local_at(&path).expect("local store");
+    for id in issue_ids {
+        store
+            .connection
+            .execute(
+                "INSERT OR IGNORE INTO local_issues (id, title, status, created_at, updated_at) VALUES (?1, 'fixture', 'open', 1, 1)",
+                [*id as i64],
+            )
+            .expect("seed local issue");
+    }
+    guard
+}
+
 fn run_bind(role: Option<Role>, issue: u64) -> i32 {
+    let _local = use_local_issues(&[issue]);
     crate::cli::branch::execute_branch_context_scoped(
         role,
-        Some(crate::providers::ProviderKind::Redmine),
-        None,
-        Some("tools-phasegent"),
+        &crate::cli::provider_context::ProviderContext::from_parts(
+            Some(crate::providers::ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+        ),
         bind_issue_command(issue),
     )
 }
 
 fn run_unbind(role: Option<Role>) -> i32 {
+    let _ = local_store_path();
     crate::cli::branch::execute_branch_context_scoped(
         role,
-        Some(crate::providers::ProviderKind::Redmine),
-        None,
-        Some("tools-phasegent"),
+        &crate::cli::provider_context::ProviderContext::from_parts(
+            Some(crate::providers::ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+        ),
         IssueCommand::Unbind { issue_ids: vec![] },
     )
 }
 
 fn run_unbind_ids(role: Option<Role>, issue_ids: &[u64]) -> i32 {
+    let _ = local_store_path();
     crate::cli::branch::execute_branch_context_scoped(
         role,
-        Some(crate::providers::ProviderKind::Redmine),
-        None,
-        Some("tools-phasegent"),
+        &crate::cli::provider_context::ProviderContext::from_parts(
+            Some(crate::providers::ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+        ),
         IssueCommand::Unbind {
             issue_ids: issue_ids.to_vec(),
         },
@@ -237,11 +278,16 @@ fn run_unbind_ids(role: Option<Role>, issue_ids: &[u64]) -> i32 {
 }
 
 fn run_bind_ids(role: Option<Role>, issue_ids: &[u64]) -> i32 {
+    let _local = use_local_issues(issue_ids);
     crate::cli::branch::execute_branch_context_scoped(
         role,
-        Some(crate::providers::ProviderKind::Redmine),
-        None,
-        Some("tools-phasegent"),
+        &crate::cli::provider_context::ProviderContext::from_parts(
+            Some(crate::providers::ProviderKind::Local),
+            None,
+            None,
+            None,
+            None,
+        ),
         IssueCommand::Bind {
             issue_ids: issue_ids.to_vec(),
         },
@@ -355,9 +401,7 @@ fn cli_status_branch_passes_the_executor_role_gate() {
     let exit = in_temp_repo(&repo, || {
         crate::cli::branch::execute_branch_context_scoped(
             Some(Role::Executor),
-            None,
-            None,
-            None,
+            &crate::cli::provider_context::ProviderContext::default(),
             IssueCommand::StatusBranch,
         )
     });
@@ -572,5 +616,142 @@ fn batch_detach_validates_every_member_before_any_write() {
     assert!(
         rows.iter().all(|row| row.status == "linked"),
         "the valid member must not be detached when the batch fails: {rows:?}"
+    );
+}
+
+/// `(issue_number, task_id, status)` for every link row on one branch.
+fn link_task_refs(db: &std::path::Path, branch: &str) -> Vec<(u64, Option<i64>, String)> {
+    let storage = Storage::open_at(db).expect("temp storage must open");
+    crate::branch_links::ensure_schema(&storage.connection).expect("schema");
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT issue_number, task_id, status FROM branch_issue_links \
+             WHERE branch = ?1 ORDER BY issue_number",
+        )
+        .expect("prepare link task read");
+    let rows = statement
+        .query_map(rusqlite::params![branch], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .expect("read link task refs");
+    rows.map(|row| row.expect("decode link task ref")).collect()
+}
+
+/// Attach a durable task reference to an existing link, as the create and
+/// adoption paths do.
+fn attach_task_ref(
+    db: &std::path::Path,
+    repo_key: &str,
+    branch: &str,
+    provider: &str,
+    project: &str,
+    number: u64,
+    task_id: i64,
+) {
+    let storage = Storage::open_at(db).expect("temp storage must open");
+    crate::branch_links::ensure_schema(&storage.connection).expect("schema");
+    let issue = crate::branch_links::IssueKey::from_number(provider, project, number)
+        .expect("link identity");
+    let params = crate::branch_links::LinkParams {
+        repo_key,
+        branch,
+        issue: &issue,
+        issue_number: number,
+        source: "test",
+        now: 2,
+    };
+    crate::branch_links::store::link_with_task(&storage.connection, &params, Some(task_id))
+        .expect("attach task reference");
+}
+
+/// An ordinary bind that does not select a provider: the scope resolves from
+/// stored configuration/env, and no remote identity is verified or adopted.
+fn run_bind_without_provider(repo: &TempRepo, role: Option<Role>, issue: u64) -> i32 {
+    let missing = repo.dir.path().join("missing.toml");
+    let _provider = EnvGuard::set("PHASEGENT_PROVIDER", "local");
+    let _config = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        missing.to_str().expect("utf-8 config path"),
+    );
+    crate::cli::branch::execute_branch_context_scoped(
+        role,
+        &crate::cli::provider_context::ProviderContext::default(),
+        bind_issue_command(issue),
+    )
+}
+
+fn run_unbind_without_provider(repo: &TempRepo, role: Option<Role>) -> i32 {
+    let missing = repo.dir.path().join("missing.toml");
+    let _provider = EnvGuard::set("PHASEGENT_PROVIDER", "local");
+    let _config = EnvGuard::set(
+        "PHASEGENT_CONFIG_PATH",
+        missing.to_str().expect("utf-8 config path"),
+    );
+    crate::cli::branch::execute_branch_context_scoped(
+        role,
+        &crate::cli::provider_context::ProviderContext::default(),
+        IssueCommand::Unbind {
+            issue_ids: Vec::new(),
+        },
+    )
+}
+
+#[test]
+fn offline_bind_and_unbind_preserve_a_durable_task_reference() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("p7-taskref-offline") else {
+        return;
+    };
+    let (db_temp, _db_env) = scoped_env("p7-taskref-offline");
+    let db_path = db_temp.path().join("phasegent.sqlite3");
+    checkout_bind_branch(&repo);
+    let repo_key = repo_key(&repo);
+
+    // An ordinary no-provider bind creates the link without any task
+    // reference: it never verifies, adopts, or changes a provider.
+    let exit = in_temp_repo(&repo, || {
+        run_bind_without_provider(&repo, Some(Role::Orchestrator), 616)
+    });
+    assert_eq!(exit, 0, "the offline bind must succeed");
+    assert_eq!(
+        link_task_refs(&db_path, BIND_BRANCH),
+        vec![(616, None, "linked".to_owned())],
+        "a plain bind leaves the task reference null"
+    );
+
+    // A durable reference attached by the create/adoption path survives both
+    // an offline repeat bind and an unbind.
+    attach_task_ref(
+        &db_path,
+        &repo_key,
+        BIND_BRANCH,
+        "local",
+        "default",
+        616,
+        42,
+    );
+    let exit = in_temp_repo(&repo, || {
+        run_bind_without_provider(&repo, Some(Role::Orchestrator), 616)
+    });
+    assert_eq!(exit, 0, "the repeat bind must succeed");
+    assert_eq!(
+        link_task_refs(&db_path, BIND_BRANCH),
+        vec![(616, Some(42), "linked".to_owned())],
+        "a repeat bind must not clear or rewrite the durable task reference"
+    );
+
+    let exit = in_temp_repo(&repo, || {
+        run_unbind_without_provider(&repo, Some(Role::Orchestrator))
+    });
+    assert_eq!(exit, 0, "the unbind must succeed");
+    assert_eq!(
+        link_task_refs(&db_path, BIND_BRANCH),
+        vec![(616, Some(42), "detached".to_owned())],
+        "unbind detaches the status while preserving the task reference and history"
     );
 }

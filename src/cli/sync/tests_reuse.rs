@@ -222,21 +222,28 @@ fn taxi_list_and_acquire_reuse_identity_store_and_read_each_issue_once() {
     let runner = Runner(Cell::new(0));
     let reads = RefCell::new(Vec::new());
     let providers = Cell::new(0);
-    let (warnings, setup) = super::taxi_sync_in(&runner, storage, root.path(), || {
-        providers.set(providers.get() + 1);
-        Ok((None, |issue| {
-            reads.borrow_mut().push(issue);
-            Ok(crate::providers::IssueSummary {
-                id: issue,
-                number: issue,
-                title: String::new(),
-                body: String::new(),
-                state: "closed".to_owned(),
-                html_url: None,
-                project: None,
-            })
-        }))
-    });
+    let (warnings, setup) = super::taxi_sync_in(
+        crate::policy::Role::Orchestrator,
+        &crate::cli::provider_context::ProviderContext::default(),
+        &runner,
+        storage,
+        root.path(),
+        || {
+            providers.set(providers.get() + 1);
+            Ok((None, |issue| {
+                reads.borrow_mut().push(issue);
+                Ok(crate::providers::IssueSummary {
+                    id: issue,
+                    number: issue,
+                    title: String::new(),
+                    body: String::new(),
+                    state: "closed".to_owned(),
+                    html_url: None,
+                    project: None,
+                })
+            }))
+        },
+    );
     let setup = setup.unwrap();
     assert_eq!(providers.get(), 1);
     assert!(
@@ -332,7 +339,7 @@ fn scope_sync_skips_mixed_candidates_before_provider_reads() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -345,6 +352,7 @@ fn scope_sync_skips_mixed_candidates_before_provider_reads() {
             calls.set(calls.get() + 1);
             panic!("must not query provider")
         },
+        None,
         None,
         &Runner,
         &mut setup,
@@ -406,7 +414,7 @@ fn scope_sync_processes_a_matching_provider_group_and_releases_its_exact_scope()
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -429,6 +437,7 @@ fn scope_sync_processes_a_matching_provider_group_and_releases_its_exact_scope()
                 project: None,
             })
         },
+        None,
         Some(("forgejo", "owner/repo")),
         &Runner,
         &mut setup,
@@ -485,7 +494,7 @@ fn scope_sync_keeps_a_group_when_the_provider_scope_differs() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/other',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/other',8,1)",
             [],
         )
         .unwrap();
@@ -496,6 +505,7 @@ fn scope_sync_keeps_a_group_when_the_provider_scope_differs() {
             calls.set(calls.get() + 1);
             panic!("must not query the provider for a foreign scope")
         },
+        None,
         Some(("forgejo", "owner/repo")),
         &Runner,
         &mut setup,
@@ -550,7 +560,7 @@ fn scope_sync_rechecks_new_scoped_rows_before_provider_read() {
         .storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('later','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('later','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -560,6 +570,7 @@ fn scope_sync_rechecks_new_scoped_rows_before_provider_read() {
             calls.set(calls.get() + 1);
             panic!("must not query provider")
         },
+        None,
         None,
         &Runner,
         &mut setup,
@@ -580,6 +591,7 @@ fn scope_sync_rechecks_new_scoped_rows_before_provider_read() {
             calls.set(calls.get() + 1);
             panic!("must not query provider")
         },
+        None,
         None,
         &Runner,
         &mut setup,
@@ -624,7 +636,7 @@ fn scope_sync_proves_directories_of_new_exact_scope_leases() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('first','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('first','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -634,7 +646,7 @@ fn scope_sync_proves_directories_of_new_exact_scope_leases() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('later','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('later','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -644,7 +656,7 @@ fn scope_sync_proves_directories_of_new_exact_scope_leases() {
     assert!(
         matches!(
             super::engine::scoped_processing(
-                8,
+                &super::engine::group_for(8, &all, &scopes),
                 &candidate,
                 &all,
                 &scopes,
@@ -687,7 +699,7 @@ fn legacy_sync_is_not_blocked_by_scoped_lease_on_another_path() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('forgejo','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('forgejo','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -697,7 +709,13 @@ fn legacy_sync_is_not_blocked_by_scoped_lease_on_another_path() {
         crate::worktree::lease_scope::scope_map_for_repo(&storage, "/fixture/.git").unwrap();
     assert!(
         matches!(
-            super::engine::scoped_processing(7, &candidate, &rows, &scopes, None),
+            super::engine::scoped_processing(
+                &super::engine::group_for(7, &rows, &scopes),
+                &candidate,
+                &rows,
+                &scopes,
+                None
+            ),
             super::engine::ScopedProcessing::Unscoped
         ),
         "an unrelated scoped directory must not suppress the legacy sync path"
@@ -739,7 +757,7 @@ fn verified_retention_keeps_when_legacy_history_arrives_after_proof() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('scoped','forgejo','owner/repo',8,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('scoped','forgejo','owner/repo',8,1)",
             [],
         )
         .unwrap();
@@ -754,6 +772,7 @@ fn verified_retention_keeps_when_legacy_history_arrives_after_proof() {
     let result = retain_active_leases_for_scope_ids(
         &storage,
         "/fixture/.git",
+        None,
         &scope,
         &verified_ids,
         &approved,
@@ -805,7 +824,7 @@ fn scoped_sync_keeps_same_number_legacy_history_on_another_path() {
     storage
         .connection
         .execute(
-            "INSERT INTO worktree_lease_scopes VALUES ('forgejo','forgejo','owner/repo',7,1)",
+            "INSERT INTO worktree_lease_scopes (lease_id, provider, project, external_id, created_at) VALUES ('forgejo','forgejo','owner/repo',7,1)",
             [],
         )
         .unwrap();
@@ -815,7 +834,7 @@ fn scoped_sync_keeps_same_number_legacy_history_on_another_path() {
     assert!(
         matches!(
             super::engine::scoped_processing(
-                7,
+                &super::engine::group_for(7, &rows, &scopes),
                 &rows,
                 &rows,
                 &scopes,
@@ -899,21 +918,28 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
     )
     .unwrap();
     let reads = Cell::new(0);
-    let (warnings, setup) = super::taxi_sync_in(&Runner, storage, root.path(), || {
-        std::fs::remove_dir(&candidate).unwrap();
-        Ok((None, |issue| {
-            reads.set(reads.get() + 1);
-            Ok(crate::providers::IssueSummary {
-                id: issue,
-                number: issue,
-                title: String::new(),
-                body: String::new(),
-                state: "open".to_owned(),
-                html_url: None,
-                project: None,
-            })
-        }))
-    });
+    let (warnings, setup) = super::taxi_sync_in(
+        crate::policy::Role::Orchestrator,
+        &crate::cli::provider_context::ProviderContext::default(),
+        &Runner,
+        storage,
+        root.path(),
+        || {
+            std::fs::remove_dir(&candidate).unwrap();
+            Ok((None, |issue| {
+                reads.set(reads.get() + 1);
+                Ok(crate::providers::IssueSummary {
+                    id: issue,
+                    number: issue,
+                    title: String::new(),
+                    body: String::new(),
+                    state: "open".to_owned(),
+                    html_url: None,
+                    project: None,
+                })
+            }))
+        },
+    );
     assert!(warnings.is_empty());
     assert!(setup.is_some());
     assert_eq!(
@@ -923,16 +949,248 @@ fn candidate_grouping_is_retained_between_preflight_and_engine() {
     );
     let setup = setup.unwrap();
     let resolutions = Cell::new(0);
-    let (warnings, _) = super::taxi_sync_in(&Runner, setup.storage, root.path(), || {
-        resolutions.set(resolutions.get() + 1);
-        Ok((None, |_| unreachable!()))
-    });
+    let (warnings, _) = super::taxi_sync_in(
+        crate::policy::Role::Orchestrator,
+        &crate::cli::provider_context::ProviderContext::default(),
+        &Runner,
+        setup.storage,
+        root.path(),
+        || {
+            resolutions.set(resolutions.get() + 1);
+            Ok((None, |_| unreachable!()))
+        },
+    );
     assert_eq!(
         resolutions.get(),
         0,
         "no candidates must not resolve credentials or a provider"
     );
     assert!(warnings.is_empty());
+}
+
+/// One durable task with its canonical scope, for the group-identity tests.
+fn task_binding(
+    storage: &crate::infra::storage::Storage,
+    number: &str,
+    instance: &str,
+) -> crate::task_identity::TaskBinding {
+    let key =
+        crate::task_identity::TaskKey::new("forgejo", instance, "owner/repo", number).unwrap();
+    let now = crate::worktree::now_unix_secs();
+    let binding = crate::task_identity::ensure_binding(storage, &key, now).unwrap();
+    crate::task_identity::add_repo_membership(
+        storage,
+        "forgejo.test/owner/repo",
+        binding.task_id(),
+        now,
+    )
+    .unwrap();
+    binding
+}
+
+#[test]
+fn one_number_becomes_one_group_per_durable_task() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease_scoped};
+
+    let root = Scratch::new("task-groups");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let first = task_binding(&storage, "7", "https://forgejo.test/one");
+    let second = task_binding(&storage, "7", "https://forgejo.test/two");
+    fn lease<'a>(id: &'a str, path: &'a str) -> NewLease<'a> {
+        NewLease {
+            lease_id: id,
+            identity: "/fixture/.git",
+            issue: 7,
+            session: id,
+            checkout_path: "/fixture",
+            worktree_path: path,
+            branch: "branch",
+            status: "active",
+            created_at: 1,
+            heartbeat_at: 1,
+        }
+    }
+    let one_path = root.path().join("one");
+    let two_path = root.path().join("two");
+    std::fs::create_dir_all(&one_path).unwrap();
+    std::fs::create_dir_all(&two_path).unwrap();
+    fn scope_of(binding: &crate::task_identity::TaskBinding) -> crate::worktree::LeaseScope {
+        crate::worktree::LeaseScope::for_task(
+            "forgejo",
+            "owner/repo",
+            7,
+            binding.task_id(),
+            binding.key().instance(),
+        )
+        .unwrap()
+    }
+    insert_lease_scoped(
+        &storage,
+        lease("one", one_path.to_str().unwrap()),
+        &scope_of(&first),
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        lease("two", two_path.to_str().unwrap()),
+        &scope_of(&second),
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    let rows = crate::worktree::leases::list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        &storage,
+        "/fixture/.git",
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    let groups = super::engine::lease_groups(7, &rows, &scopes);
+    assert_eq!(
+        groups.len(),
+        2,
+        "two same-number tasks on two instances are two groups"
+    );
+    let mut task_ids: Vec<i64> = groups.iter().filter_map(|group| group.task_id()).collect();
+    task_ids.sort_unstable();
+    assert_eq!(task_ids, vec![first.task_id(), second.task_id()]);
+}
+
+#[test]
+fn a_same_number_task_is_not_legacy_ambiguity_for_its_own_group() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease_scoped};
+
+    let root = Scratch::new("task-ambiguity");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let first = task_binding(&storage, "7", "https://forgejo.test/one");
+    let second = task_binding(&storage, "7", "https://forgejo.test/two");
+    fn lease<'a>(id: &'a str, path: &'a str) -> NewLease<'a> {
+        NewLease {
+            lease_id: id,
+            identity: "/fixture/.git",
+            issue: 7,
+            session: id,
+            checkout_path: "/fixture",
+            worktree_path: path,
+            branch: "branch",
+            status: "active",
+            created_at: 1,
+            heartbeat_at: 1,
+        }
+    }
+    fn scope_of(binding: &crate::task_identity::TaskBinding) -> crate::worktree::LeaseScope {
+        crate::worktree::LeaseScope::for_task(
+            "forgejo",
+            "owner/repo",
+            7,
+            binding.task_id(),
+            binding.key().instance(),
+        )
+        .unwrap()
+    }
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    insert_lease_scoped(
+        &storage,
+        lease("one", one.to_str().unwrap()),
+        &scope_of(&first),
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        lease("two", two.to_str().unwrap()),
+        &scope_of(&second),
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    let rows = crate::worktree::leases::list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        &storage,
+        "/fixture/.git",
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    let groups = super::engine::lease_groups(7, &rows, &scopes);
+    for group in &groups {
+        assert!(
+            matches!(
+                super::engine::scoped_processing(group, &rows, &rows, &scopes, None),
+                super::engine::ScopedProcessing::Provider
+            ),
+            "a same-number task on another path is not legacy ambiguity"
+        );
+    }
+}
+
+#[test]
+fn a_task_group_sharing_a_directory_with_a_legacy_row_keeps() {
+    use crate::infra::storage::Storage;
+    use crate::worktree::leases::{NewLease, ensure_schema, insert_lease_scoped};
+
+    let root = Scratch::new("task-mixed");
+    let storage = Storage::open_at(&root.path().join("leases.sqlite3")).unwrap();
+    ensure_schema(&storage).unwrap();
+    let binding = task_binding(&storage, "7", "https://forgejo.test/one");
+    let shared = root.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    fn lease<'a>(id: &'a str, issue: u64, path: &'a str, status: &'a str) -> NewLease<'a> {
+        NewLease {
+            lease_id: id,
+            identity: "/fixture/.git",
+            issue,
+            session: id,
+            checkout_path: "/fixture",
+            worktree_path: path,
+            branch: "branch",
+            status,
+            created_at: 1,
+            heartbeat_at: 1,
+        }
+    }
+    let shared_path = shared.to_str().unwrap();
+    let scope = crate::worktree::LeaseScope::for_task(
+        "forgejo",
+        "owner/repo",
+        7,
+        binding.task_id(),
+        binding.key().instance(),
+    )
+    .unwrap();
+    insert_lease_scoped(
+        &storage,
+        lease("task-seven", 7, shared_path, "active"),
+        &scope,
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    crate::worktree::leases::insert_lease(
+        &storage,
+        lease("legacy-eight", 8, shared_path, "retained"),
+    )
+    .unwrap();
+    let rows = crate::worktree::leases::list_all_for_repo(&storage, "/fixture/.git").unwrap();
+    let scopes = crate::worktree::lease_scope::scope_map_for_repo_with_key(
+        &storage,
+        "/fixture/.git",
+        Some("forgejo.test/owner/repo"),
+    )
+    .unwrap();
+    let groups = super::engine::lease_groups(7, &rows, &scopes);
+    assert_eq!(groups.len(), 1);
+    assert!(
+        matches!(
+            super::engine::scoped_processing(&groups[0], &rows, &rows, &scopes, None),
+            super::engine::ScopedProcessing::Keep(_)
+        ),
+        "a task lease sharing a directory with legacy ownership keeps"
+    );
 }
 
 #[test]

@@ -1292,6 +1292,33 @@ fn shared_skill_defers_delivery_policy_and_drops_stale_claims() {
     );
 }
 
+/// Issue 1201 P8: the shared skill carries the durable routing layer, the
+/// explicit-selection rule and the unchanged implicit-Forgejo refusal.
+#[test]
+fn shared_skill_carries_task_routing_policy() {
+    let _lock = lock_workflow_tests();
+    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
+    for needle in [
+        "the current branch task reference, then a unique repository membership",
+        "never remaps a bound task",
+        "still refused for any number without a matching durable task",
+        "confirmed closed through its own durable task",
+    ] {
+        assert!(
+            skill.contains(needle),
+            "the shared skill must state the durable routing rule {needle:?}"
+        );
+    }
+    assert!(
+        !skill.contains("resolved at parse time"),
+        "the stale parse-time provider claim must stay removed"
+    );
+    assert!(
+        !skill.contains("closed on the configured provider"),
+        "the stale one-default closure wording must stay removed"
+    );
+}
+
 /// Issue 1201 P4: child roles own no Git or PR mutation authority.
 #[test]
 fn child_skills_forbid_git_and_pull_request_mutations() {
