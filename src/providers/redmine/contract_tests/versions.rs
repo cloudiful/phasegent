@@ -197,7 +197,22 @@ fn version_list_enforces_role_and_provider_boundaries() {
     }
     // ...while an unknown provider name is rejected at argument parsing,
     // and the supported Forgejo provider fails on its missing owned
-    // configuration, before any provider request.
+    // configuration, before any provider request. The assertion must never
+    // read this machine's configured role credentials: an empty task-owned
+    // store keeps the missing-configuration exit deterministic and off the
+    // network. The lock is declared first so the environment guard restores
+    // before it releases.
+    let _lock = lock_workflow_tests();
+    let directory = crate::test_scratch::root().join(format!(
+        "phasegent-redmine-versions-{}-{}",
+        std::process::id(),
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let database = directory.join(crate::infra::storage::DB_FILENAME);
+    let _database_env = EnvGuard::set("PHASEGENT_DB_PATH", database.to_string_lossy().as_ref());
     assert_eq!(
         crate::cli::run_with_role(
             strings(["--provider", "forgejo", "version", "list",]),
@@ -205,4 +220,7 @@ fn version_list_enforces_role_and_provider_boundaries() {
         ),
         1
     );
+
+    drop(_database_env);
+    let _ = fs::remove_dir_all(&directory);
 }

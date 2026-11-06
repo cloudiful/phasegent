@@ -1,7 +1,4 @@
-use super::{
-    ForgejoProvider,
-    model::{Label, Milestone},
-};
+use super::{ForgejoProvider, model::Milestone};
 use crate::pagination::{self, PageRequest, Paged};
 use crate::providers::api::PhasegentError;
 use crate::providers::{
@@ -39,9 +36,9 @@ impl RedmineMetadataProvider for ForgejoProvider {
         Err(PhasegentError::not_supported("forgejo", "project create"))
     }
     fn list_issue_statuses(&self) -> Result<Vec<RedmineIssueStatus>, Self::Error> {
-        self.repository()?;
-        let labels: Vec<Label> = self.collect(&["labels"], &[], "issue status list")?;
-        Ok(super::status::statuses(&labels))
+        // The native catalogue is synthetic: the two states need no server
+        // data, so the read performs no request at all.
+        Ok(super::status::native_states())
     }
     fn list_project_versions(&self) -> Result<Vec<RedmineVersion>, Self::Error> {
         self.repository()?;

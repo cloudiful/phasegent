@@ -20,7 +20,6 @@ use crate::worktree::leases::{
 use crate::worktree::{LeaseScope, ProcessWorktreeRunner, repo_identity};
 
 const REPO_JSON: &str = r#"{"id":17,"name":"repo","full_name":"owner/repo"}"#;
-const LABELS_JSON: &str = r#"[{"id":1,"name":"status/New"},{"id":2,"name":"status/In Progress"},{"id":3,"name":"status/In Review"},{"id":4,"name":"status/Resolved"},{"id":5,"name":"status/Blocked"},{"id":6,"name":"status/Changes Requested"},{"id":7,"name":"status/Cancelled"}]"#;
 
 fn issue_json(number: u64, state: &str, labels: &str) -> String {
     format!(
@@ -1213,12 +1212,7 @@ fn absent_release_keeps_when_different_issue_legacy_joins_same_path() {
 fn forgejo_create_records_only_a_scoped_lease() {
     let fixture = Fixture::new("create");
     let storage = fixture.storage();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-    ]);
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -1307,13 +1301,10 @@ fn forgejo_close_keeps_active_lease_with_mismatched_sidecar_number() {
         .unwrap();
     let mock = Mock::start(vec![
         REPO_JSON.to_owned(),
-        issue_json(7, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        LABELS_JSON.to_owned(),
+        issue_json(7, "open", "[]"),
         "[]".to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        issue_json(7, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        "[]".to_owned(),
+        issue_json(7, "open", "[]"),
+        issue_json(7, "closed", "[]"),
     ]);
     let args: Vec<String> = [
         "--provider",
@@ -1402,13 +1393,10 @@ fn forgejo_close_aborts_all_scope_release_on_corrupt_map_and_closes_normally() {
     let responses = || {
         vec![
             REPO_JSON.to_owned(),
-            issue_json(7, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-            LABELS_JSON.to_owned(),
+            issue_json(7, "open", "[]"),
             "[]".to_owned(),
-            "[]".to_owned(),
-            issue_json(7, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-            issue_json(7, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
-            "[]".to_owned(),
+            issue_json(7, "open", "[]"),
+            issue_json(7, "closed", "[]"),
         ]
     };
 
@@ -1555,13 +1543,10 @@ fn forgejo_close_releases_only_its_exact_scope() {
 
     let mock = Mock::start(vec![
         REPO_JSON.to_owned(),
-        issue_json(7, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        LABELS_JSON.to_owned(),
+        issue_json(7, "open", "[]"),
         "[]".to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        issue_json(7, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        "[]".to_owned(),
+        issue_json(7, "open", "[]"),
+        issue_json(7, "closed", "[]"),
     ]);
     let base = mock.base.clone();
     let args: Vec<String> = [
@@ -1905,16 +1890,89 @@ fn record_create_rejects_an_omitted_provider_on_a_forgejo_bound_number() {
     assert_rejected(fixture.repo.path(), "executor", &args, ZeroMock::start());
 }
 
-fn status_transition_responses(current_label: &str, target_label: &str) -> Vec<String> {
-    vec![
-        REPO_JSON.to_owned(),
-        issue_json(7, "open", current_label),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", current_label),
-        issue_json(7, "open", current_label),
-        target_label.to_owned(),
+/// The responses one native status transition produces: the repository,
+/// the issue before the write, the dependency preflight of a close, the
+/// issue read again before the write and the patched issue.
+fn status_transition_responses(current_state: &str, target_state: &str) -> Vec<String> {
+    let mut responses = vec![REPO_JSON.to_owned(), issue_json(7, current_state, "[]")];
+    if target_state == "closed" {
+        responses.push("[]".to_owned());
+    }
+    responses.push(issue_json(7, current_state, "[]"));
+    responses.push(issue_json(7, target_state, "[]"));
+    responses
+}
+
+#[test]
+fn forgejo_status_list_matrix() {
+    let fixture = Fixture::new("status-list");
+    fixture.storage();
+    let mock = ZeroMock::start();
+    let base = mock.base.clone();
+    let args: Vec<String> = [
+        "--output",
+        "json",
+        "--provider",
+        "forgejo",
+        "--api-base",
+        &base,
+        "--repository",
+        "owner/repo",
+        "status",
+        "list",
     ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    let requests = mock.finish();
+    assert_eq!(exit, 0, "status list must succeed: {stderr}");
+    assert!(
+        requests.is_empty(),
+        "the native status catalogue reads nothing: {requests:?}"
+    );
+    assert!(
+        stdout.contains("Open") && stdout.contains("Closed"),
+        "status list must name the two native states: {stdout}"
+    );
+}
+
+#[test]
+fn forgejo_status_set_refuses_an_unsupported_target_before_http() {
+    let fixture = Fixture::new("status-set-invalid");
+    fixture.storage();
+    let mock = ZeroMock::start();
+    let base = mock.base.clone();
+    let args: Vec<String> = [
+        "--output",
+        "json",
+        "--provider",
+        "forgejo",
+        "--api-base",
+        &base,
+        "--repository",
+        "owner/repo",
+        "status",
+        "set",
+        "7",
+        "--status",
+        "Resolved",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    let requests = mock.finish();
+    assert_ne!(exit, 0, "an unsupported target must be refused");
+    assert!(
+        requests.is_empty(),
+        "the refusal happens before any request: {requests:?}"
+    );
+    let reported = format!("{stdout}{stderr}");
+    assert!(
+        reported.contains("Open") && reported.contains("Closed"),
+        "the refusal must name the two native states: {reported}"
+    );
 }
 
 #[test]
@@ -1922,12 +1980,7 @@ fn forgejo_status_next_matrix() {
     let fixture = Fixture::new("status-next");
     fixture.storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        issue_json(7, "open", r#"[{"id":2,"name":"status/In Progress"}]"#),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-    ]);
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -1946,6 +1999,15 @@ fn forgejo_status_next_matrix() {
     let exit = run_as(fixture.repo.path(), "orchestrator", &args);
     let requests = mock.finish();
     assert_eq!(exit, 0, "status next must succeed: {requests:?}");
+    assert_eq!(
+        requests.len(),
+        2,
+        "status next reads the repository and the issue only: {requests:?}"
+    );
+    assert!(
+        !requests.iter().any(|request| request.contains("/labels")),
+        "status next reads no label catalogue: {requests:?}"
+    );
 }
 
 #[test]
@@ -1953,17 +2015,7 @@ fn forgejo_status_set_matrix() {
     let fixture = Fixture::new("status-set");
     fixture.storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-        r#"[{"id":2,"name":"status/In Progress"}]"#.to_owned(),
-    ]);
+    let mock = Mock::start(status_transition_responses("open", "closed"));
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -1976,7 +2028,7 @@ fn forgejo_status_set_matrix() {
         "set",
         "7",
         "--status",
-        "In Progress",
+        "Closed",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -1988,6 +2040,20 @@ fn forgejo_status_set_matrix() {
         requests.iter().any(|request| request.starts_with("PATCH ")),
         "status set must patch the native state: {requests:?}"
     );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.ends_with(r#"{"state":"closed"}"#)),
+        "status set must patch the native closed state: {requests:?}"
+    );
+    assert!(
+        !requests.iter().any(|request| request.starts_with("PUT ")),
+        "status set never writes labels: {requests:?}"
+    );
+    assert!(
+        !requests.iter().any(|request| request.contains("/labels")),
+        "status set reads no label catalogue: {requests:?}"
+    );
 }
 
 #[test]
@@ -1995,10 +2061,7 @@ fn forgejo_status_advance_matrix() {
     let fixture = Fixture::new("status-advance");
     fixture.storage();
     fixture.link(7, "owner/repo");
-    let mock = Mock::start(status_transition_responses(
-        r#"[{"id":3,"name":"status/In Review"}]"#,
-        r#"[{"id":4,"name":"status/Resolved"}]"#,
-    ));
+    let mock = Mock::start(status_transition_responses("closed", "open"));
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--provider",
@@ -2011,7 +2074,7 @@ fn forgejo_status_advance_matrix() {
         "advance",
         "7",
         "--status",
-        "Resolved",
+        "Open",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -2020,8 +2083,20 @@ fn forgejo_status_advance_matrix() {
     let requests = mock.finish();
     assert_eq!(exit, 0, "status advance must succeed: {requests:?}");
     assert!(
-        requests.iter().any(|request| request.starts_with("PUT ")),
-        "status advance must update labels: {requests:?}"
+        requests
+            .iter()
+            .any(|request| request.ends_with(r#"{"state":"open"}"#)),
+        "status advance must patch the native open state: {requests:?}"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.contains("/dependencies")),
+        "reopening has no dependency gate: {requests:?}"
+    );
+    assert!(
+        !requests.iter().any(|request| request.starts_with("PUT ")),
+        "status advance never writes labels: {requests:?}"
     );
 }
 
@@ -2055,17 +2130,14 @@ fn same_repository_multi_issue_history_cleans_up_once_all_are_closed() {
 
     let mock = Mock::start(vec![
         REPO_JSON.to_owned(),
-        issue_json(8, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        LABELS_JSON.to_owned(),
+        issue_json(8, "open", "[]"),
         "[]".to_owned(),
-        "[]".to_owned(),
-        issue_json(8, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        issue_json(8, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        "[]".to_owned(),
+        issue_json(8, "open", "[]"),
+        issue_json(8, "closed", "[]"),
         REPO_JSON.to_owned(),
-        issue_json(7, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        issue_json(7, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
-        issue_json(7, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
+        issue_json(7, "closed", "[]"),
+        issue_json(7, "closed", "[]"),
+        issue_json(7, "closed", "[]"),
     ]);
     let base = mock.base.clone();
     let args: Vec<String> = [
@@ -3988,12 +4060,7 @@ fn forgejo_create_binding_rejects_a_later_omitted_provider() {
             "https://example.test/owner/repo.git",
         ])
         .unwrap();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-    ]);
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -8109,12 +8176,7 @@ fn create_acquires_the_exact_task_lease_for_each_provider() {
     {
         let fixture = Fixture::new("create-task-forgejo");
         let storage = fixture.storage();
-        let mock = Mock::start(vec![
-            REPO_JSON.to_owned(),
-            LABELS_JSON.to_owned(),
-            "[]".to_owned(),
-            issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-        ]);
+        let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
         let base = mock.base.clone();
         let args: Vec<String> = [
             "--output",
@@ -8652,12 +8714,7 @@ fn stored_instance_drift_fails_before_http() {
 fn forgejo_create_persists_the_task_identity_and_membership() {
     let fixture = Fixture::new("route-create-persist");
     let storage = fixture.storage();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-    ]);
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     let base = mock.base.clone();
     let args: Vec<String> = [
         "--output",
@@ -8846,12 +8903,7 @@ fn bound_local_task_routes_each_single_number_command_before_the_default() {
 fn create_persistence_failure_warns_without_retrying_the_post() {
     let fixture = Fixture::new("route-create-persist-fail");
     let storage = fixture.storage();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(7, "open", r#"[{"id":1,"name":"status/New"}]"#),
-    ]);
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(7, "open", "[]")]);
     storage
         .save_forgejo_auth(
             Role::Orchestrator,
@@ -9737,12 +9789,7 @@ fn bound_redmine_task_routes_get_against_the_stored_instance() {
 fn create_without_a_repository_persists_the_key_without_membership() {
     let fixture = Fixture::new("route-create-nonrepo");
     let storage = fixture.storage();
-    let mock = Mock::start(vec![
-        REPO_JSON.to_owned(),
-        LABELS_JSON.to_owned(),
-        "[]".to_owned(),
-        issue_json(28, "open", r#"[{"id":1,"name":"status/New"}]"#),
-    ]);
+    let mock = Mock::start(vec![REPO_JSON.to_owned(), issue_json(28, "open", "[]")]);
     let base = mock.base.clone();
     storage
         .save_forgejo_auth(Role::Orchestrator, &base, "owner/repo", "fixture-token")
@@ -10259,16 +10306,7 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
     let counter = RouteCounter::start();
     let written_comment = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let written_record = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-    let mut rules = vec![
-        path_rule("GET", "/api/v1/repos/owner/repo", REPO_JSON),
-        path_rule_fn("GET", "/api/v1/repos/owner/repo/labels", |target, _, _| {
-            if target.contains("page=2") {
-                (200, "[]".to_owned())
-            } else {
-                (200, LABELS_JSON.to_owned())
-            }
-        }),
-    ];
+    let mut rules = vec![path_rule("GET", "/api/v1/repos/owner/repo", REPO_JSON)];
     // The read and update rows.
     rules.push(path_rule(
         "GET",
@@ -10285,11 +10323,12 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         "/api/v1/repos/owner/repo/issues/42",
         &issue_json(42, "open", "[]"),
     ));
-    // A closeable issue: Resolved may move to Closed.
+    // A closeable issue: the native open state moves to the native closed
+    // state after the dependency preflight.
     rules.push(path_rule(
         "GET",
         "/api/v1/repos/owner/repo/issues/43",
-        &issue_json(43, "open", r#"[{"id":4,"name":"status/Resolved"}]"#),
+        &issue_json(43, "open", "[]"),
     ));
     rules.push(path_rule(
         "GET",
@@ -10299,32 +10338,39 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
     rules.push(path_rule(
         "PATCH",
         "/api/v1/repos/owner/repo/issues/43",
-        &issue_json(43, "closed", r#"[{"id":4,"name":"status/Resolved"}]"#),
+        &issue_json(43, "closed", "[]"),
+    ));
+    // The status rows: the native state is read, never a label catalogue.
+    rules.push(path_rule(
+        "GET",
+        "/api/v1/repos/owner/repo/issues/44",
+        &issue_json(44, "open", "[]"),
     ));
     rules.push(path_rule(
-        "PUT",
-        "/api/v1/repos/owner/repo/issues/43/labels",
+        "GET",
+        "/api/v1/repos/owner/repo/issues/45",
+        &issue_json(45, "open", "[]"),
+    ));
+    rules.push(path_rule(
+        "GET",
+        "/api/v1/repos/owner/repo/issues/45/dependencies",
         "[]",
     ));
-    // The status rows: New may move to In Progress.
-    for number in [44u64, 45, 46] {
-        let issue_path = format!("/api/v1/repos/owner/repo/issues/{number}");
-        rules.push(path_rule(
-            "GET",
-            &issue_path,
-            &issue_json(number, "open", r#"[{"id":1,"name":"status/New"}]"#),
-        ));
-        rules.push(path_rule(
-            "PATCH",
-            &issue_path,
-            &issue_json(number, "open", r#"[{"id":1,"name":"status/New"}]"#),
-        ));
-        rules.push(path_rule(
-            "PUT",
-            &format!("{issue_path}/labels"),
-            r#"[{"id":2,"name":"status/In Progress"}]"#,
-        ));
-    }
+    rules.push(path_rule(
+        "PATCH",
+        "/api/v1/repos/owner/repo/issues/45",
+        &issue_json(45, "closed", "[]"),
+    ));
+    rules.push(path_rule(
+        "GET",
+        "/api/v1/repos/owner/repo/issues/46",
+        &issue_json(46, "closed", "[]"),
+    ));
+    rules.push(path_rule(
+        "PATCH",
+        "/api/v1/repos/owner/repo/issues/46",
+        &issue_json(46, "open", "[]"),
+    ));
     // The comment row: the written comment is echoed back by the fixture.
     rules.push(path_rule(
         "GET",
@@ -10471,13 +10517,13 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         ),
         (
             "status-set",
-            args_of(&["status", "set", "45", "--status", "In Progress"]),
+            args_of(&["status", "set", "45", "--status", "Closed"]),
             "PATCH",
             "/api/v1/repos/owner/repo/issues/45",
         ),
         (
             "status-advance",
-            args_of(&["status", "advance", "46", "--status", "In Progress"]),
+            args_of(&["status", "advance", "46", "--status", "Open"]),
             "PATCH",
             "/api/v1/repos/owner/repo/issues/46",
         ),

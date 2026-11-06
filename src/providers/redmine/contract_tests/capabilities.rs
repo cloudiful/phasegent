@@ -155,6 +155,22 @@ fn project_creation_is_admin_only_and_status_catalogue_is_available() {
         assert!(role.allows(Capability::IssueStatusRead));
     }
 
+    // The provider-boundary assertions must never read this machine's
+    // configured role credentials: an empty task-owned store keeps the
+    // missing-configuration exit deterministic and off the network. The lock
+    // is declared first so the environment guard restores before it releases.
+    let _lock = lock_workflow_tests();
+    let directory = crate::test_scratch::root().join(format!(
+        "phasegent-redmine-capabilities-{}-{}",
+        std::process::id(),
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let database = directory.join(crate::infra::storage::DB_FILENAME);
+    let _database_env = EnvGuard::set("PHASEGENT_DB_PATH", database.to_string_lossy().as_ref());
+
     // An unknown provider name is rejected at argument parsing (exit 2)
     // before any provider build or network access; the supported Forgejo
     // provider fails on its missing owned configuration (exit 1) without
@@ -207,6 +223,9 @@ fn project_creation_is_admin_only_and_status_catalogue_is_available() {
             3
         );
     }
+
+    drop(_database_env);
+    let _ = fs::remove_dir_all(&directory);
 }
 
 #[test]

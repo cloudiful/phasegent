@@ -1,21 +1,33 @@
 use super::{
     ForgejoProvider,
-    model::{Dependency, Issue, Label, Repository},
+    model::{Dependency, Issue, Repository},
 };
 use crate::providers::api::PhasegentError;
-use crate::providers::redmine::model::{
-    RedmineIssueStatus, STATUS_POLICY_SOURCE, StatusNextReport, StatusRef, canonical_allowed_next,
-};
+use crate::providers::redmine::model::{RedmineIssueStatus, StatusNextReport, StatusRef};
 use reqwest::Method;
 use serde_json::json;
 
-impl ForgejoProvider {
-    pub(super) fn required_status_labels(&self) -> Result<Vec<Label>, PhasegentError> {
-        let labels = self.collect(&["labels"], &[], "issue status list")?;
-        require_labels(&labels)?;
-        Ok(labels)
-    }
+/// The native open state of a Forgejo issue.
+pub(crate) const OPEN: &str = "Open";
+/// The native closed state of a Forgejo issue.
+pub(crate) const CLOSED: &str = "Closed";
 
+/// Provider-local numeric selectors for the two synthetic states. `Closed`
+/// keeps the historical `0` and `Open` uses `1`. They are Forgejo-local
+/// selectors, not server identifiers, and they are not stable.
+pub(crate) const OPEN_ID: u64 = 1;
+pub(crate) const CLOSED_ID: u64 = 0;
+
+/// The policy identity of the native two-state contract, so a caller can
+/// tell it apart from the canonical Redmine/Local phase graph.
+pub(crate) const NATIVE_POLICY_SOURCE: &str = "phasegent/forgejo-native-state@v1";
+
+/// The caveat attached to every native-state answer: a Forgejo issue is
+/// open or closed, the phase detail lives in the phasegent record, and no
+/// status label is required, read or written.
+pub(crate) const NATIVE_POLICY_CAVEAT: &str = "Native state only: a Forgejo issue is open or closed, the phase detail lives in the phasegent record, and no status label is required, read or written.";
+
+impl ForgejoProvider {
     pub(super) fn require_closed_dependencies(&self, number: u64) -> Result<(), PhasegentError> {
         if number == 0 {
             return Err(PhasegentError::config("issue number must be positive"));
@@ -50,102 +62,54 @@ impl ForgejoProvider {
         Ok(issue)
     }
 
+    /// The native state of one issue and the single opposite state it may
+    /// move to. No label is read and no phase graph is consulted.
     pub(crate) fn status_next(&self, number: u64) -> Result<StatusNextReport, PhasegentError> {
         let repo = self.repository()?;
         let issue = self.status_issue(number, &repo)?;
-        let name = current_status(&issue.state, &issue.labels)?;
-        let current_id = if name == "Closed" {
-            Some(0)
-        } else {
-            issue
-                .labels
-                .iter()
-                .find(|label| label.name == format!("status/{name}"))
-                .map(|label| label.id)
-        };
-        let current = StatusRef {
-            id: current_id,
-            name: name.to_owned(),
-            is_closed: Some(matches!(name, "Closed" | "Cancelled")),
-            canonical: true,
-        };
-        let labels: Vec<Label> = self.collect(&["labels"], &[], "issue status list")?;
-        let catalogue = statuses(&labels);
-        let mut allowed_next = Vec::new();
-        let mut missing = Vec::new();
-        for next in canonical_allowed_next(name).unwrap_or(&[]) {
-            match catalogue.iter().find(|status| status.name == *next) {
-                Some(status) => allowed_next.push(StatusRef::from_installation(status)),
-                None => missing.push((*next).to_owned()),
-            }
-        }
+        let name = native_state_name(&issue.state)?;
+        let opposite = opposite_state(name);
         Ok(StatusNextReport {
             issue: number,
-            current,
-            allowed_next,
-            allowed_next_missing_on_server: missing,
-            policy_source: STATUS_POLICY_SOURCE,
+            current: native_state_ref(name),
+            allowed_next: vec![native_state_ref(opposite)],
+            allowed_next_missing_on_server: Vec::new(),
+            policy_source: NATIVE_POLICY_SOURCE,
             advisory: false,
-            caveat: "The Forgejo repository must have its canonical status labels provisioned before a transition.",
-            recovery: format!("Inspect status labels and retry issue {number}."),
+            caveat: NATIVE_POLICY_CAVEAT,
+            recovery: format!("Inspect the native Forgejo state of issue {number} and retry."),
         })
     }
 
+    /// Move one issue to the native state a target names.
+    ///
+    /// The target is validated first, so an unsupported state refuses before
+    /// any request. Closing runs the dependency preflight, reopening does
+    /// not, and the same state is a read-only no-op. The write is a single
+    /// native `PATCH {"state": ...}`: no label is read, written or removed,
+    /// and the response must confirm the target.
     pub(crate) fn transition_status(
         &self,
         number: u64,
         target: &str,
     ) -> Result<crate::providers::api::IssueSummary, PhasegentError> {
+        let target = canonical_target(target)?;
         let repo = self.repository()?;
         let first = self.status_issue(number, &repo)?;
-        let current = current_status(&first.state, &first.labels)?;
-        validate_transition(current, target)?;
+        let current = native_state_name(&first.state)?;
         if current == target {
             return self.summary(first, &repo, Some(number));
         }
-        let catalogue = self.required_status_labels()?;
-        let desired = if target == "Closed" {
-            None
-        } else {
-            Some(
-                catalogue
-                    .iter()
-                    .find(|label| label.name == format!("status/{target}"))
-                    .ok_or_else(|| PhasegentError::config("invalid Forgejo target status"))?
-                    .id,
-            )
-        };
-        if matches!(target, "Closed" | "Cancelled") {
+        if target == CLOSED {
             self.require_closed_dependencies(number)?;
         }
         let fresh = self.status_issue(number, &repo)?;
-        if first.id != fresh.id
-            || first.state != fresh.state
-            || label_identity(&first.labels) != label_identity(&fresh.labels)
-        {
+        if first.id != fresh.id || first.state != fresh.state {
             return Err(PhasegentError::config(
-                "Forgejo issue status or labels changed during preflight; retry",
+                "Forgejo issue state changed during preflight; retry",
             ));
         }
-        let mut label_ids: Vec<u64> = fresh
-            .labels
-            .iter()
-            .filter(|label| !is_status_label(&label.name))
-            .map(|label| label.id)
-            .collect();
-        if let Some(id) = desired {
-            label_ids.push(id);
-        }
-        if label_ids.contains(&0) {
-            return Err(PhasegentError::config("invalid Forgejo issue label id"));
-        }
-        label_ids.sort_unstable();
-        label_ids.dedup();
-        let native = if matches!(target, "Closed" | "Cancelled") {
-            "closed"
-        } else {
-            "open"
-        };
+        let native = native_state_value(target);
         let index = number.to_string();
         let request = self
             .http
@@ -158,133 +122,100 @@ impl ForgejoProvider {
                     .to_owned(),
             )
         })?;
-        let summary = self
-            .summary(patched.clone(), &repo, Some(number))
-            .map_err(|_| {
-                PhasegentError::request(
-                    "status transition",
-                    "native state update is unconfirmed; inspect issue before retrying".to_owned(),
-                )
-            })?;
-        if patched.state != native {
+        if !patched.state.trim().eq_ignore_ascii_case(native) {
             return Err(PhasegentError::request("status transition", "partial transition: native state response did not confirm target; inspect issue before retrying".to_owned()));
         }
-        if label_identity(&patched.labels) != label_identity(&fresh.labels) {
-            return Err(PhasegentError::request("status transition", "partial transition: labels changed during native state update; inspect issue before retrying".to_owned()));
-        }
-        let request = self
-            .http
-            .request(Method::PUT, &["issues", &index, "labels"])?
-            .json(&json!({"labels": label_ids}));
-        let actual: Vec<Label> = self.http.write(request, "status labels").map_err(|_| PhasegentError::request("status transition", "partial transition: native state changed but label update failed; inspect issue before retrying".to_owned()))?;
-        let mut actual_ids: Vec<_> = actual.iter().map(|label| label.id).collect();
-        actual_ids.sort_unstable();
-        actual_ids.dedup();
-        if actual_ids != label_ids || current_status(native, &actual).ok() != Some(target) {
-            return Err(PhasegentError::request("status transition", "partial transition: label response did not confirm target; inspect issue before retrying".to_owned()));
-        }
-        Ok(summary)
-    }
-}
-
-fn is_status_label(name: &str) -> bool {
-    name.strip_prefix("status/")
-        .is_some_and(|suffix| CANONICAL.contains(&suffix))
-}
-
-fn label_identity(labels: &[Label]) -> Vec<(u64, String)> {
-    let mut values: Vec<_> = labels
-        .iter()
-        .map(|label| (label.id, label.name.clone()))
-        .collect();
-    values.sort_unstable();
-    values
-}
-
-const CANONICAL: [&str; 7] = [
-    "New",
-    "In Progress",
-    "In Review",
-    "Resolved",
-    "Blocked",
-    "Changes Requested",
-    "Cancelled",
-];
-
-pub(super) fn statuses(labels: &[Label]) -> Vec<RedmineIssueStatus> {
-    let mut result: Vec<_> = labels
-        .iter()
-        .filter_map(|label| {
-            label
-                .name
-                .strip_prefix("status/")
-                .filter(|name| CANONICAL.contains(name))
-                .map(|name| RedmineIssueStatus {
-                    id: label.id,
-                    name: name.to_owned(),
-                    is_closed: name == "Cancelled",
-                })
+        self.summary(patched, &repo, Some(number)).map_err(|_| {
+            PhasegentError::request(
+                "status transition",
+                "native state update is unconfirmed; inspect issue before retrying".to_owned(),
+            )
         })
-        .collect();
-    result.push(RedmineIssueStatus {
-        id: 0,
-        name: "Closed".to_owned(),
-        is_closed: true,
-    });
-    result
-}
-
-pub(super) fn require_labels(labels: &[Label]) -> Result<(), PhasegentError> {
-    for name in CANONICAL {
-        if labels
-            .iter()
-            .filter(|label| label.name == format!("status/{name}") && label.id > 0)
-            .count()
-            != 1
-        {
-            return Err(PhasegentError::config(format!(
-                "Forgejo status label status/{name} must exist exactly once; ask an operator to configure it"
-            )));
-        }
     }
-    Ok(())
-}
 
-pub(super) fn current_status<'a>(
-    native: &str,
-    labels: &'a [Label],
-) -> Result<&'a str, PhasegentError> {
-    let selected: Vec<_> = labels
-        .iter()
-        .filter_map(|label| {
-            label
-                .name
-                .strip_prefix("status/")
-                .filter(|name| CANONICAL.contains(name))
-        })
-        .collect();
-    match native {
-        "closed" => Ok(if selected.contains(&"Cancelled") {
-            "Cancelled"
-        } else {
-            "Closed"
-        }),
-        "open" if selected.len() == 1 && selected[0] != "Cancelled" => Ok(selected[0]),
-        "open" => Err(PhasegentError::config(
-            "open Forgejo issue must have exactly one non-cancelled canonical status label",
-        )),
-        _ => Err(PhasegentError::config("invalid Forgejo issue state")),
+    /// The native state a status selector names.
+    ///
+    /// The catalogue is synthetic, so the selector is resolved locally: a
+    /// numeric `0`/`1` and the names `Open`/`Closed` (trimmed and case
+    /// insensitive) select a state, and anything else refuses with the two
+    /// supported names before any request.
+    pub(crate) fn select_native_target(&self, value: &str) -> Result<&'static str, PhasegentError> {
+        select_native_target(value)
     }
 }
 
-pub(super) fn validate_transition(current: &str, target: &str) -> Result<(), PhasegentError> {
-    if current == target {
-        return Ok(());
+/// The synthetic native catalogue: the two states a Forgejo issue can have.
+pub(super) fn native_states() -> Vec<RedmineIssueStatus> {
+    vec![
+        RedmineIssueStatus {
+            id: OPEN_ID,
+            name: OPEN.to_owned(),
+            is_closed: false,
+        },
+        RedmineIssueStatus {
+            id: CLOSED_ID,
+            name: CLOSED.to_owned(),
+            is_closed: true,
+        },
+    ]
+}
+
+/// The canonical name of the native state an issue carries.
+pub(super) fn native_state_name(native: &str) -> Result<&'static str, PhasegentError> {
+    let trimmed = native.trim();
+    if trimmed.eq_ignore_ascii_case("open") {
+        return Ok(OPEN);
     }
-    if canonical_allowed_next(current).is_some_and(|allowed| allowed.contains(&target)) {
-        return Ok(());
+    if trimmed.eq_ignore_ascii_case("closed") {
+        return Ok(CLOSED);
     }
-    Err(PhasegentError::config(
-        "Forgejo status transition is not allowed by canonical workflow",
-    ))
+    Err(PhasegentError::config("invalid Forgejo issue state"))
+}
+
+/// The native wire value of one canonical state.
+pub(super) fn native_state_value(name: &str) -> &'static str {
+    if name == CLOSED { "closed" } else { "open" }
+}
+
+/// The provider-local selector of one canonical state.
+pub(super) fn native_state_id(name: &str) -> u64 {
+    if name == CLOSED { CLOSED_ID } else { OPEN_ID }
+}
+
+/// The single state an issue may move to from the state it carries.
+pub(super) fn opposite_state(name: &str) -> &'static str {
+    if name == CLOSED { OPEN } else { CLOSED }
+}
+
+fn native_state_ref(name: &str) -> StatusRef {
+    StatusRef {
+        id: Some(native_state_id(name)),
+        name: name.to_owned(),
+        is_closed: Some(name == CLOSED),
+        canonical: true,
+    }
+}
+
+/// The canonical state a target name selects.
+pub(super) fn canonical_target(target: &str) -> Result<&'static str, PhasegentError> {
+    let trimmed = target.trim();
+    if trimmed.eq_ignore_ascii_case(OPEN) {
+        return Ok(OPEN);
+    }
+    if trimmed.eq_ignore_ascii_case(CLOSED) {
+        return Ok(CLOSED);
+    }
+    Err(PhasegentError::config(format!(
+        "Forgejo supports only the native {OPEN} and {CLOSED} states; '{target}' is not a Forgejo state"
+    )))
+}
+
+/// The canonical state a numeric or named selector selects.
+pub(super) fn select_native_target(value: &str) -> Result<&'static str, PhasegentError> {
+    let trimmed = value.trim();
+    match trimmed {
+        "0" => Ok(CLOSED),
+        "1" => Ok(OPEN),
+        _ => canonical_target(trimmed),
+    }
 }

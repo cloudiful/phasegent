@@ -11,8 +11,6 @@ fn resolved() -> String {
     )
 }
 
-const LABELS: &str = r#"[{"id":1,"name":"status/New"},{"id":2,"name":"status/In Progress"},{"id":3,"name":"status/In Review"},{"id":4,"name":"status/Resolved"},{"id":5,"name":"status/Blocked"},{"id":6,"name":"status/Changes Requested"},{"id":7,"name":"status/Cancelled"}]"#;
-
 #[test]
 fn scoped_issue_get_and_search_keep_global_and_local_ids() {
     let (base, server) = server::sequence(vec![
@@ -124,8 +122,6 @@ fn update_and_unconfirmed_close_are_not_silently_successful() {
         ISSUE.into(),
         ISSUE.into(),
         resolved(),
-        LABELS.into(),
-        "[]".into(),
         "[]".into(),
         resolved(),
         ISSUE.into(),
@@ -136,34 +132,47 @@ fn update_and_unconfirmed_close_are_not_silently_successful() {
     assert!(provider.close_issue(7).is_err());
     let requests = server.join().unwrap();
     assert!(requests[2].ends_with(r#"{"body":"changed"}"#));
-    assert!(requests[6].contains("/issues/7/dependencies?"));
-    assert!(requests[8].ends_with(r#"{"state":"closed"}"#));
+    assert!(requests[4].contains("/issues/7/dependencies?"));
+    assert!(requests[6].ends_with(r#"{"state":"closed"}"#));
 }
 
 #[test]
-fn create_requires_all_status_labels_before_post() {
-    let (base, server) = server::sequence(vec![REPO.into(), "[]".into()]);
+fn create_posts_title_and_body_without_any_label_read() {
+    let (base, server) = server::sequence(vec![REPO.into(), ISSUE.into()]);
     let provider =
         ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
-    assert!(provider.create_issue("title", "body").is_err());
+    assert_eq!(provider.create_issue("title", "body").unwrap().number, 7);
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 2);
-    assert!(requests.iter().all(|request| request.starts_with("GET ")));
+    assert!(requests[1].starts_with("POST /api/v1/repos/owner/repo/issues "));
+    assert!(requests[1].ends_with(r#"{"body":"body","title":"title"}"#));
+    assert!(
+        !requests.iter().any(|request| request.contains("/labels")),
+        "the native create reads no label catalogue: {requests:?}"
+    );
 }
 
 #[test]
-fn close_requires_all_status_labels_before_dependency_or_patch() {
-    let (base, server) = server::sequence(vec![REPO.into(), resolved(), "[]".into()]);
+fn close_runs_the_dependency_preflight_before_the_native_patch() {
+    let (base, server) = server::sequence(vec![
+        REPO.into(),
+        resolved(),
+        r#"[{"state":"open"}]"#.into(),
+        "[]".into(),
+    ]);
     let provider =
         ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
     assert!(provider.close_issue(7).is_err());
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert!(requests.iter().all(|request| request.starts_with("GET ")));
+    assert_eq!(requests.len(), 4);
+    assert!(requests[2].contains("/issues/7/dependencies?"));
     assert!(
-        !requests
-            .iter()
-            .any(|request| request.contains("dependencies"))
+        !requests.iter().any(|request| request.starts_with("PATCH ")),
+        "an open dependency prevents the native close: {requests:?}"
+    );
+    assert!(
+        !requests.iter().any(|request| request.contains("/labels")),
+        "the native close reads no label catalogue: {requests:?}"
     );
 }
 
@@ -172,8 +181,6 @@ fn close_rejects_open_dependencies_before_patch() {
     let (base, server) = server::sequence(vec![
         REPO.into(),
         resolved(),
-        LABELS.into(),
-        "[]".into(),
         r#"[{"state":"open"}]"#.into(),
         "[]".into(),
     ]);
@@ -181,25 +188,20 @@ fn close_rejects_open_dependencies_before_patch() {
         ForgejoProvider::new(ForgejoConfig::new(base, "owner/repo").unwrap(), "fixture").unwrap();
     assert!(provider.close_issue(7).is_err());
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 4);
     assert!(requests.iter().all(|request| request.starts_with("GET ")));
 }
 
 #[test]
-fn create_and_close_use_exact_wire_contracts() {
+fn create_and_close_use_exact_native_wire_contracts() {
     let closed = resolved().replace("\"state\":\"open\"", "\"state\":\"closed\"");
     let (base, server) = server::sequence(vec![
         REPO.into(),
-        LABELS.into(),
-        "[]".into(),
         ISSUE.into(),
         resolved(),
-        LABELS.into(),
-        "[]".into(),
         "[]".into(),
         resolved(),
         closed,
-        "[]".into(),
     ]);
     let provider = ForgejoProvider::new(
         ForgejoConfig::new(base, "owner/repo").unwrap(),
@@ -209,10 +211,17 @@ fn create_and_close_use_exact_wire_contracts() {
     assert_eq!(provider.create_issue("example", "text").unwrap().number, 7);
     assert_eq!(provider.close_issue(7).unwrap().state, "closed");
     let req = server.join().unwrap();
-    assert!(req[3].starts_with("POST /api/v1/repos/owner/repo/issues "));
-    assert!(req[3].ends_with(r#"{"body":"text","labels":[1],"title":"example"}"#));
-    assert!(req[7].contains("/issues/7/dependencies?"));
-    assert!(req[9].starts_with("PATCH /api/v1/repos/owner/repo/issues/7 "));
-    assert!(req[9].ends_with(r#"{"state":"closed"}"#));
-    assert!(req[10].starts_with("PUT /api/v1/repos/owner/repo/issues/7/labels "));
+    assert!(req[1].starts_with("POST /api/v1/repos/owner/repo/issues "));
+    assert!(req[1].ends_with(r#"{"body":"text","title":"example"}"#));
+    assert!(req[3].contains("/issues/7/dependencies?"));
+    assert!(req[5].starts_with("PATCH /api/v1/repos/owner/repo/issues/7 "));
+    assert!(req[5].ends_with(r#"{"state":"closed"}"#));
+    assert!(
+        !req.iter().any(|request| request.contains("/labels")),
+        "the native contract never reads or writes labels: {req:?}"
+    );
+    assert!(
+        !req.iter().any(|request| request.starts_with("PUT ")),
+        "the native contract never writes labels: {req:?}"
+    );
 }
