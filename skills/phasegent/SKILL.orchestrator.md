@@ -219,7 +219,9 @@ pending-question request on the human's behalf or fabricate a human response.
 - `Resolved` means the AI work is finished and awaits human acceptance;
   `Closed` is the verified terminal state. An issue that ends with an open PR,
   or with Redmine acceptance still pending, moves to `Resolved`, not `Closed`,
-  and keeps its worktrees until the close.
+  and keeps its worktrees until the close. A Forgejo issue has no `Resolved`
+  state and no status label: it stays `Open` until it is really closed, an open
+  PR keeps it `Open`, and the phase outcome goes into the record.
 - Close only once the task's acceptance is actually met. Without delivery
   authorization, close the source with an explicit `not committed / not
   published` result; with authorized delivery, close only after the requested
@@ -267,7 +269,8 @@ push, tag, mutate refs, create or update a PR, or merge.
   unrelated ref change, and you never auto-merge. A user-authorized integration
   lets you merge server-side with the repository's strategy once required checks
   pass, verify the result, record the merge SHA, and only then close the issue.
-- Provider-specific closure: a Forgejo `Resolved` is a native open label. Only
+- Provider-specific closure: a Forgejo issue stays `Open` until it is closed, so
+  its phase detail lives in the record and never in a state or a label. Only
   the final same-repository PR may carry a `Closes` marker for the native Forgejo
   issue; every other PR uses `Refs` only, and you wait until all required
   PRs/repositories have delivered before that final closing PR. Redmine has no

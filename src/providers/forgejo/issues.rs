@@ -138,15 +138,12 @@ impl IssueProvider for ForgejoProvider {
     }
     fn create_issue(&self, title: &str, body: &str) -> Result<IssueSummary, Self::Error> {
         let repo = self.repository()?;
-        let labels = self.required_status_labels()?;
-        let new = labels
-            .iter()
-            .find(|label| label.name == "status/New")
-            .ok_or_else(|| PhasegentError::config("Forgejo status/New label is missing"))?;
+        // The native issue starts open: no status label is required, read or
+        // sent, so no label catalogue can block a create.
         let request = self
             .http
             .request(Method::POST, &["issues"])?
-            .json(&json!({"title": title, "body": body, "labels": [new.id]}));
+            .json(&json!({"title": title, "body": body}));
         let issue = self.http.write(request, "issue create")?;
         self.summary(issue, &repo, None)
     }

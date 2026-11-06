@@ -126,20 +126,22 @@ discovery when required; `--repository OWNER/REPOSITORY` names the Git host
 repository for `workflow bootstrap` and project discovery.
 
 Forgejo is never selected by a stored default. Use
-`--provider forgejo --repository owner/repo --api-base URL` to create an issue,
-to adopt an existing number with `issue bind`, or for any number that carries no
-durable task, and store the role token with `admin auth setup --provider forgejo
---repository owner/repo --api-base URL`. A number that already carries a durable
-Forgejo task routes to its stored instance and repository without repeating the
-flags. The operator provisions the token and every
-canonical status label. Forgejo uses repository-local issue numbers and keeps the
-native global id in results; it supports issues, comments, records, repository
-reads, milestones as versions, status labels, and scoped branch links, worktree
-leases, cleanup, and sync. Time tracking, relations, attachments,
-subtasks/planning, and project creation are unsupported. `Resolved` stays a
-native open label, close cleanup is limited to the matching `owner/repo` scope,
-and a Redmine issue has no automatic PR bridge. See
-[Forgejo provider](docs/forgejo-provider.md).
+`--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT` to create
+an issue, to adopt an existing number with `issue bind`, or for any number that
+carries no durable task, and store the role token with `admin auth setup
+--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`.
+`INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the client
+appends that prefix itself. A number that already carries a durable Forgejo task
+routes to its stored instance and repository without repeating the flags. The
+operator provisions the token only. Forgejo uses repository-local issue numbers
+and keeps the native global id in results; it supports issues, comments,
+records, repository reads, milestones as versions, the native `Open` and
+`Closed` issue states, and scoped branch links, worktree leases, cleanup, and
+sync. Time tracking, relations, attachments, subtasks/planning, and project
+creation are unsupported. A Forgejo issue has no status label: it is `Open`
+until it is closed, the phase detail lives in the record, close cleanup is
+limited to the matching `owner/repo` scope, and a Redmine issue has no automatic
+PR bridge. See [Forgejo provider](docs/forgejo-provider.md).
 
 Ordinary human CLI needs no agent role: without `PHASEGENT_ROLE` and without
 `PHASEGENT_SESSION_ID` it runs as Operator with the admin credential resolved

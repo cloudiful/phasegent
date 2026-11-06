@@ -20,8 +20,6 @@ pub(super) struct Issue {
     pub body: Option<String>,
     pub state: String,
     #[serde(default)]
-    pub labels: Vec<Label>,
-    #[serde(default)]
     pub html_url: Option<String>,
     #[serde(default)]
     pub pull_request: Option<serde_json::Value>,
@@ -50,10 +48,4 @@ pub(super) struct Milestone {
     pub state: String,
     #[serde(default)]
     pub due_on: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-pub(super) struct Label {
-    pub id: u64,
-    pub name: String,
 }

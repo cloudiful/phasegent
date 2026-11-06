@@ -2,20 +2,20 @@
 
 The Forgejo provider targets one explicitly configured `owner/repo` on an HTTP(S)
 Forgejo instance. A stored default never selects it. Use
-`--provider forgejo --repository owner/repo --api-base URL` to create an issue,
-to adopt an existing number with `issue bind`, or for any number that carries no
-durable task, or store the same values per role with
-`phasegent --provider forgejo admin auth setup --repository owner/repo --api-base URL`.
-A number that already carries a durable Forgejo task routes to its stored
-instance and repository without repeating the flags.
+`--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT` to create
+an issue, to adopt an existing number with `issue bind`, or for any number that
+carries no durable task, or store the same values per role with
+`phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT`.
+`INSTANCE_ROOT` is the instance address without a `/api/v1` suffix; the client
+appends that prefix itself. A number that already carries a durable Forgejo task
+routes to its stored instance and repository without repeating the flags.
 Forgejo rejects `--project-id` and `--close-status-id`.
 
 Each role reads its own Forgejo token from the secure `auth setup` prompt or
 stdin; tokens never come from a command-line value, URL, log, or error. The
-human operator provisions the token and, in the repository, every canonical
-status label before status writes. Read commands never create labels, so a
-missing label fails the write with guidance. Forgejo has no `workflow bootstrap`;
-that provisioning surface remains Redmine-only.
+human operator provisions the token only: no status label is required, read or
+written, and no label is created, deleted or migrated. Forgejo has no
+`workflow bootstrap`; that provisioning surface remains Redmine-only.
 
 Issues use the repository-local issue number. Results retain the native global
 Forgejo issue id, but that id is never a CLI issue number. Branch links,
@@ -24,13 +24,26 @@ number, so a same-number issue in another provider or repository is never
 released or cleaned.
 
 Supported: issue get/search/create/update/close, comments, records, project
-(repository) reads, milestones as versions, the canonical status labels, and
-scoped branch links, worktree leases, cleanup, and sync. Status writes follow
-the canonical graph and native state: `Resolved` stays a native open label, and a
-native close maps to `Closed` or `Cancelled` by its labels. A merged Forgejo PR
-that carries a `Closes` marker closes the native issue at the Git host; that is
-not a phasegent `issue close`, and a Redmine issue has no such bridge. Reference
-a Redmine issue by full URL and never put `Closes #<redmine-id>` in a Forgejo PR.
+(repository) reads, milestones as versions, the native issue states, and
+scoped branch links, worktree leases, cleanup, and sync.
+
+A Forgejo issue has exactly two native states, `Open` and `Closed`. There is no
+status label, no `Resolved` state and no canonical phase graph: `status list`
+returns those two entries without a request, `status next` reports the current
+state and the single opposite state it may move to, and `status set`,
+`status advance` and `status transition` accept `Open` and `Closed` (trimmed,
+case insensitive) or the provider-local selectors `1` and `0`; any other target
+refuses before a request. A close runs the dependency preflight and then
+patches the native state, a reopen patches the native state without a
+dependency gate, and a transition to the state an issue already carries is a
+read-only no-op. Existing labels stay ordinary metadata: they never decide the
+state and are never altered. The phase detail lives in the phasegent record, so
+an issue stays `Open` through planning, implementation and review.
+
+A merged Forgejo PR that carries a `Closes` marker closes the native issue at
+the Git host; that is not a phasegent `issue close`, and a Redmine issue has no
+such bridge. Reference a Redmine issue by full URL and never put
+`Closes #<redmine-id>` in a Forgejo PR.
 
 Not supported, rejected before any local or remote write: time tracking
 (start/finish), relations, attachments, parent/subtask and planning fields,

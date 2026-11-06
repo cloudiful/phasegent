@@ -334,7 +334,15 @@ pub(crate) fn execute_status_with_caller(
                 } else {
                     status.clone()
                 };
-                print_advance_result(forgejo.transition_status(number, &effective))
+                // The native catalogue is synthetic, so the target is
+                // resolved locally: a numeric 0/1 or the names Open/Closed
+                // select a state, and any other target refuses with the two
+                // supported names before a request is sent.
+                let target = match forgejo.select_native_target(&effective) {
+                    Ok(target) => target,
+                    Err(error) => return super::provider_error(error),
+                };
+                print_advance_result(forgejo.transition_status(number, target))
             }
         },
         StatusCommand::Set { number, status } => match &provider {
@@ -411,26 +419,15 @@ pub(crate) fn execute_status_with_caller(
                 super::print_result(result)
             }
             ProviderDispatcher::Forgejo(forgejo) => {
-                let statuses = match forgejo.list_issue_statuses() {
-                    Ok(statuses) => statuses,
+                // The native catalogue is synthetic, so the selector is
+                // resolved locally: a numeric 0/1 or the names Open/Closed
+                // select a state, and any other target refuses with the two
+                // supported names before a request is sent.
+                let target = match forgejo.select_native_target(&status) {
+                    Ok(target) => target,
                     Err(error) => return super::provider_error(error),
                 };
-                let target = if status == "0" {
-                    match statuses.iter().find(|candidate| candidate.id == 0) {
-                        Some(target) => target,
-                        None => {
-                            return super::provider_error(PhasegentError::config(
-                                "Forgejo Closed status is unavailable",
-                            ));
-                        }
-                    }
-                } else {
-                    match RedmineProvider::select_status_by_value(&statuses, &status) {
-                        Ok(target) => target,
-                        Err(error) => return super::provider_error(error),
-                    }
-                };
-                super::print_result(forgejo.transition_status(number, &target.name))
+                super::print_result(forgejo.transition_status(number, target))
             }
         },
     }

@@ -1319,6 +1319,44 @@ fn shared_skill_carries_task_routing_policy() {
     );
 }
 
+/// Issue 1201 P11: the skills state the native Forgejo status contract — two
+/// states, the phase detail in the record, and no status label or `Resolved`
+/// state presented as a Forgejo phase.
+#[test]
+fn skills_state_the_native_forgejo_status_contract() {
+    let _lock = lock_workflow_tests();
+    let shared = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
+    for needle in [
+        "exactly two native states, `Open` and `Closed`",
+        "the phase outcome lives in the phasegent record",
+        "Never use a status transition to express a Forgejo phase",
+    ] {
+        assert!(
+            shared.contains(needle),
+            "the shared skill must state the native Forgejo contract {needle:?}"
+        );
+    }
+    let orchestrator = flat_policy(include_str!("../skills/phasegent/SKILL.orchestrator.md"));
+    for needle in [
+        "A Forgejo issue has no `Resolved` state and no status label",
+        "it stays `Open` until it is really closed",
+        "its phase detail lives in the record",
+    ] {
+        assert!(
+            orchestrator.contains(needle),
+            "the orchestrator skill must state the native Forgejo contract {needle:?}"
+        );
+    }
+    assert!(
+        !shared.contains("a Forgejo `Resolved` is a native open label"),
+        "the stale Forgejo Resolved label claim must stay removed"
+    );
+    assert!(
+        !orchestrator.contains("a Forgejo `Resolved` is a native open label"),
+        "the stale Forgejo Resolved label claim must stay removed"
+    );
+}
+
 /// Issue 1201 P4: child roles own no Git or PR mutation authority.
 #[test]
 fn child_skills_forbid_git_and_pull_request_mutations() {
