@@ -150,8 +150,10 @@ mod posix {
     /// a required part of the POSIX test environment, so a missing interpreter
     /// fails the test instead of silently skipping it.
     const PTY_DRIVER: &str = r#"
-import os, pty, select, subprocess, sys
+import fcntl, os, pty, select, struct, subprocess, sys, termios
 master, slave = pty.openpty()
+columns = int(os.environ.get("PTY_COLUMNS", "100"))
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
 proc = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 data = b""
@@ -202,6 +204,7 @@ sys.exit(code)
             .env("PHASEGENT_CONFIG_PATH", scratch.path("missing.toml"))
             .env("TERM", "xterm-256color")
             .env("LANG", "C.UTF-8")
+            .env("PTY_COLUMNS", "100")
             .env_remove("LC_ALL")
             .env_remove("LC_CTYPE")
             .env_remove("NO_COLOR")
@@ -546,14 +549,165 @@ sys.exit(code)
             run.transcript,
         );
         assert!(
-            visible.contains("kept "),
-            "the kept directory keeps its row; transcript:\n{}",
+            visible.contains("repos verifying"),
+            "the progress line names the verification stage: transcript:\n{}",
+            run.transcript,
+        );
+        assert!(
+            !run.transcript.contains("\u{1b}[1A") && !run.transcript.contains("\u{1b}[1B"),
+            "the progress must occupy exactly one physical terminal row; transcript:\n{}",
+            run.transcript,
+        );
+        assert!(
+            visible.contains("[##########]"),
+            "the progress line carries the bounded bar: transcript:\n{}",
+            run.transcript,
+        );
+        let flat = unwrapped(&visible);
+        assert!(
+            flat.contains("1dirs"),
+            "the progress line counts completed directories: transcript:\n{}",
+            run.transcript,
+        );
+        assert!(
+            flat.contains("removed0,absent0,kept1"),
+            "the progress line carries the distinct outcome counters: transcript:\n{}",
+            run.transcript,
+        );
+        assert!(
+            visible.contains("1/1 repos complete"),
+            "the final line reports the repository as complete only after it finished: transcript:\n{}",
+            run.transcript,
+        );
+        assert!(
+            visible.contains("kept 1"),
+            "the summary counts the kept directory: transcript:\n{}",
+            run.transcript,
+        );
+        assert!(
+            !visible.contains("kept /"),
+            "the default summary lists no kept path: transcript:\n{}",
             run.transcript,
         );
         assert!(
             !visible.trim_start().starts_with('{'),
             "the default on a terminal is text, not JSON; transcript:\n{}",
             run.transcript,
+        );
+    }
+
+    /// A narrow terminal still gets one physical progress row: the supported
+    /// wide message truncates to the width instead of wrapping, while the
+    /// repository count and stage stay visible at the start.
+    #[test]
+    fn a_narrow_prune_progress_stays_on_one_physical_row() {
+        let scratch = Scratch::new("prune-narrow-progress");
+        let fixture = PruneFixture::new(&scratch);
+        let bin = slow_opencode(&scratch, Duration::from_millis(400));
+        let path = path_with(&bin);
+        let run = run_pty(
+            &scratch,
+            None,
+            &[("PATH", path.as_str()), ("PTY_COLUMNS", "60")],
+            &[
+                "worktree",
+                "prune",
+                "--repo",
+                fixture.repo.to_str().expect("fixture path"),
+            ],
+        );
+
+        assert_eq!(run.code, 0, "transcript:\n{}", run.transcript);
+        assert!(
+            !run.transcript.contains("\u{1b}[1A") && !run.transcript.contains("\u{1b}[1B"),
+            "a narrow progress line must not wrap to a second row; transcript:\n{}",
+            run.transcript,
+        );
+        let visible = plain(&run.transcript.replace("\u{1b}[2K", "<CLEAR>"));
+        assert!(
+            visible.contains("0/1 repos verifying") || visible.contains("1/1 repos complete"),
+            "the narrow line keeps the repository progress at the start; transcript:\n{}",
+            run.transcript,
+        );
+        let clear_at = visible
+            .rfind("<CLEAR>")
+            .expect("the progress line is cleared");
+        let heading_at = visible
+            .rfind("worktree prune (removal)")
+            .expect("the text summary reaches stdout");
+        assert!(
+            clear_at < heading_at,
+            "the narrow ticker is cleared before the summary; transcript:\n{}",
+            run.transcript,
+        );
+    }
+
+    /// The verbose prune on a terminal adds the bounded per-directory rows to
+    /// the same summary, and the machine document stays exactly the aggregate.
+    #[test]
+    fn a_verbose_prune_on_a_terminal_adds_the_detail_rows() {
+        let scratch = Scratch::new("prune-verbose");
+        let fixture = PruneFixture::new(&scratch);
+        let bin = slow_opencode(&scratch, Duration::from_millis(200));
+        let path = path_with(&bin);
+        let repo = fixture.repo.to_str().expect("fixture path");
+
+        let concise = run_pty(
+            &scratch,
+            None,
+            &[("PATH", path.as_str())],
+            &["worktree", "prune", "--repo", repo],
+        );
+        assert_eq!(concise.code, 0, "transcript:\n{}", concise.transcript);
+        let verbose = run_pty(
+            &scratch,
+            None,
+            &[("PATH", path.as_str())],
+            &["worktree", "prune", "--repo", repo, "--verbose"],
+        );
+        assert_eq!(verbose.code, 0, "transcript:\n{}", verbose.transcript);
+
+        let normalized = |text: &str| plain(text).split_whitespace().collect::<Vec<_>>().join(" ");
+        let concise_text = normalized(&concise.transcript);
+        let verbose_text = normalized(&verbose.transcript);
+        assert!(
+            !concise_text.contains("branch link store has no branch link table"),
+            "the concise summary lists no kept reason:\n{}",
+            concise_text,
+        );
+        assert!(
+            verbose_text.contains("branch link store has no branch link table"),
+            "the verbose rendering lists the kept directory and its reason:\n{}",
+            verbose_text,
+        );
+        assert!(
+            verbose_text.contains("removed 0, eligible 0, absent 0, kept 1"),
+            "the verbose rendering keeps the same aggregate:\n{}",
+            verbose_text,
+        );
+
+        // The machine document is the same aggregate either way.
+        let machine = run_pty(
+            &scratch,
+            None,
+            &[("PATH", path.as_str())],
+            &["worktree", "prune", "--repo", repo, "--json", "--verbose"],
+        );
+        assert_eq!(machine.code, 0, "transcript:\n{}", machine.transcript);
+        let value: serde_json::Value =
+            serde_json::from_str(without_newline_translation(&machine.transcript).trim())
+                .expect("one JSON document on the terminal");
+        assert!(
+            value.get("__verbose").is_none(),
+            "the verbose marker never reaches the machine document: {value}"
+        );
+        assert_eq!(
+            value
+                .get("totals")
+                .and_then(|totals| totals.get("kept_issue"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1),
+            "the machine document keeps the aggregate: {value}"
         );
     }
 

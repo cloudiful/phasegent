@@ -43,6 +43,7 @@ fn executor_cannot_prune() {
             reason: None,
             dry_run: true,
             format: "json".to_owned(),
+            verbose: false,
             no_sync: false,
         },
     );
@@ -197,6 +198,7 @@ fn reviewer_cannot_prune() {
             reason: None,
             dry_run: true,
             format: "json".to_owned(),
+            verbose: false,
             no_sync: false,
         },
     );

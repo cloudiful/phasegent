@@ -47,6 +47,18 @@ impl LocalProvider {
         })
     }
 
+    /// Open the existing local store read-only.
+    ///
+    /// An absent store is an error, never a creation: no schema, no seed and
+    /// no write happen here.
+    pub fn open_read_only() -> Result<Self, PhasegentError> {
+        let store =
+            crate::infra::local_store::open_local_read_only().map_err(PhasegentError::config)?;
+        Ok(Self {
+            conn: Mutex::new(store.connection),
+        })
+    }
+
     #[cfg(test)]
     pub fn open_at(path: &Path) -> Result<Self, PhasegentError> {
         let store =

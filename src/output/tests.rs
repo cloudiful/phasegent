@@ -1099,16 +1099,100 @@ fn headings_and_prune_rows_fit_the_width_without_truncation() {
             }
             if view == HumanView::WorktreePrune {
                 assert!(
-                    text.replace('\n', "").contains(path),
-                    "the path survives the wrap at width {width}: {text}"
-                );
-                assert!(
-                    text.replace('\n', " ").contains(reason),
-                    "the reason survives the wrap at width {width}: {text}"
+                    !text.replace('\n', "").contains(path),
+                    "the default summary lists no directory path: {text}"
                 );
             }
         }
     }
+}
+
+/// The verbose prune rows keep the actionable path and reason, and they fit
+/// the terminal width at 40 and 80 columns.
+#[test]
+fn the_verbose_prune_rows_fit_the_width_without_truncation() {
+    let path = "/home/operator/cache/phasegent/worktrees/fingerprint/phasegent-7-5136c6";
+    let reason = "the configured provider reports the issue as still open";
+    let mut prune = json!({
+        "dry_run": false,
+        "__verbose": true,
+        "repos": [{
+            "worktrees": {"actions": [{
+                "worktree_path": path,
+                "result": "skipped_issue",
+                "message": reason,
+            }]},
+        }],
+        "totals": {
+            "removed": 0, "eligible": 0, "absent": 0, "kept_active": 0,
+            "kept_unknown": 0, "kept_protected": 0, "kept_issue": 1, "failed": 0,
+        },
+    });
+    for width in [40, 80] {
+        let text = render_view(HumanView::WorktreePrune, &prune, width);
+        for line in text.lines() {
+            assert!(
+                console::measure_text_width(line) <= width,
+                "width {width} overflows: {line:?}\n{text}"
+            );
+        }
+        assert!(
+            text.replace('\n', "").contains(path),
+            "the path survives the wrap at width {width}: {text}"
+        );
+        assert!(
+            text.replace('\n', " ").contains(reason),
+            "the reason survives the wrap at width {width}: {text}"
+        );
+    }
+    prune["__verbose"] = json!(false);
+    let text = render_view(HumanView::WorktreePrune, &prune, 80);
+    assert!(
+        !text.contains(path),
+        "the default summary lists no directory path: {text}"
+    );
+}
+
+/// The default prune summary caps the failure examples and names the omitted
+/// count, so a failing pass stays bounded and actionable.
+#[test]
+fn the_default_prune_summary_caps_the_failure_examples() {
+    let actions: Vec<serde_json::Value> = (0..9)
+        .map(|index| {
+            json!({
+                "worktree_path": format!("/tmp/repo/failed-{index}"),
+                "result": "failed",
+                "message": "git worktree remove failed",
+            })
+        })
+        .collect();
+    let value = json!({
+        "dry_run": false,
+        "repos": [{
+            "worktrees": {"actions": actions},
+        }],
+        "totals": {
+            "removed": 0, "eligible": 0, "absent": 0, "kept_active": 0,
+            "kept_unknown": 0, "kept_protected": 0, "kept_issue": 0, "failed": 9,
+        },
+    });
+    let text = render_view(HumanView::WorktreePrune, &value, 120);
+    let failures = text
+        .lines()
+        .filter(|line| line.starts_with("failed "))
+        .count();
+    assert_eq!(
+        failures, 5,
+        "the summary caps the failure examples:\n{text}"
+    );
+    assert!(
+        text.contains("4 further removal failure(s) not shown"),
+        "the omitted count is named:\n{text}"
+    );
+    assert!(
+        text.contains("removed 0, eligible 0, absent 0, kept 0, removal failures 9"),
+        "the aggregate still matches:\n{text}"
+    );
 }
 
 /// The progress gate reads the effective mode, so a legacy JSON selection never

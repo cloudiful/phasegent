@@ -3181,6 +3181,7 @@ fn production_prune_with_explicit_forgejo_context_cleans_the_scoped_worktree() {
         issue_json(7, "closed", "[]"),
     ]);
     let base = mock.base.clone();
+    fixture.set_origin(&base, "owner/repo");
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -3216,6 +3217,10 @@ fn production_prune_foreign_and_default_contexts_keep_the_scoped_worktree() {
             "foreign",
             vec!["--provider", "forgejo", "--repository", "other/repo"],
         ),
+        (
+            "foreign-origin",
+            vec!["--provider", "forgejo", "--repository", "owner/repo"],
+        ),
         ("default", vec![]),
     ] {
         let fixture = Fixture::new(&format!("prune-{label}"));
@@ -3225,9 +3230,12 @@ fn production_prune_foreign_and_default_contexts_keep_the_scoped_worktree() {
         let (_stub, _path) = opencode_stub();
         let mock = fixture.zero_mock();
         let base = mock.base.clone();
+        if label == "foreign-origin" {
+            fixture.set_origin(&base, "other/repo");
+        }
         let repo = fixture.repo.path().to_string_lossy().to_string();
         let mut args: Vec<String> = extra.iter().map(|value| (*value).to_owned()).collect();
-        if label == "foreign" {
+        if label != "default" {
             args.extend(["--api-base".to_owned(), base]);
         }
         args.extend(
@@ -3291,6 +3299,114 @@ fn production_prune_explicit_local_never_uses_forgejo_default() {
     assert!(
         directory.exists(),
         "explicit Local must keep a Forgejo worktree"
+    );
+}
+
+/// A read-only prune preview of a bound Local task must open the separate
+/// Local store only when it already exists: an absent store is never created,
+/// seeded, or migrated, and the directory is kept with a bounded reason.
+#[cfg(unix)]
+#[test]
+fn production_prune_bound_local_task_never_writes_its_separate_store() {
+    let fixture = Fixture::new("prune-local-absent");
+    let storage = fixture.attested_storage();
+    // The read-only link reader needs its existing table; an empty scope set
+    // still exercises the pinned task read.
+    crate::branch_links::ensure_schema(&storage.connection).expect("link schema");
+    let local_path = fixture.db.path().join("local.sqlite3");
+    let key = crate::task_identity::TaskKey::new("local", "local", "default", "7").unwrap();
+    let binding = crate::task_identity::ensure_binding(&storage, &key, 7).unwrap();
+    let repo_key = route_repo_key(&fixture);
+    crate::task_identity::add_repo_membership(&storage, &repo_key, binding.task_id(), 7).unwrap();
+    let directory = fixture.worktree("phasegent/7-local-absent");
+    let scope = LeaseScope::for_task(
+        "local",
+        "default",
+        7,
+        binding.task_id(),
+        binding.key().instance(),
+    )
+    .unwrap();
+    let lease = NewLease {
+        lease_id: "local-absent",
+        identity: &fixture.identity(),
+        issue: 7,
+        session: "session-fixture",
+        checkout_path: fixture.repo.path().to_str().unwrap(),
+        worktree_path: directory.to_str().unwrap(),
+        branch: "phasegent/7-local-absent",
+        status: "retained",
+        created_at: 1,
+        heartbeat_at: crate::worktree::now_unix_secs(),
+    };
+    insert_lease_scoped(&storage, lease, &scope, Some(&repo_key)).unwrap();
+    assert!(
+        !local_path.exists(),
+        "the separate Local store starts absent"
+    );
+    let repo = fixture.repo.path().to_string_lossy().to_string();
+    let args: Vec<String> = [
+        "--provider",
+        "local",
+        "worktree",
+        "prune",
+        "--repo",
+        &repo,
+        "--dryrun",
+        "--format",
+        "json",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    assert_eq!(exit, 0, "a preview keep is not a failure: {stderr}");
+    assert!(
+        !local_path.exists(),
+        "a preview must not create, seed, or migrate the Local store"
+    );
+    assert!(
+        directory.exists(),
+        "the unreadable pinned task keeps its directory"
+    );
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("one JSON aggregate");
+    let message = value["repos"][0]["worktrees"]["actions"][0]
+        .get("message")
+        .and_then(|message| message.as_str())
+        .unwrap_or("");
+    assert!(
+        message.contains("local store"),
+        "the pinned Local read used the existing-file opener: {message}"
+    );
+
+    // An existing but older/incomplete Local store is read without applying
+    // schema or seed: its schema is byte-for-byte unchanged after the preview.
+    rusqlite::Connection::open(&local_path)
+        .expect("create an old local store")
+        .execute_batch("CREATE TABLE legacy_only (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    let tables = |path: &std::path::Path| -> Vec<String> {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        connection
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let before = tables(&local_path);
+    let (exit, _, stderr) = run_captured(fixture.repo.path(), &args);
+    assert_eq!(exit, 0, "an old store keep is not a failure: {stderr}");
+    assert!(
+        directory.exists(),
+        "the old-store keep leaves the directory"
+    );
+    assert_eq!(
+        tables(&local_path),
+        before,
+        "an existing old Local store must not gain a schema or seed"
     );
 }
 
@@ -3789,6 +3905,7 @@ fn production_prune_mid_pass_mixed_legacy_arrival_keeps() {
         "phasegent/7-sync".to_owned(),
     );
     let base = mock.base.clone();
+    fixture.set_origin(&base, "owner/repo");
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",
@@ -4391,6 +4508,66 @@ fn production_prune_explicit_redmine_never_uses_forgejo_default() {
     assert!(
         directory.exists(),
         "explicit Redmine must keep a Forgejo scoped worktree"
+    );
+    drop(_default);
+    drop(storage);
+    drop(fixture);
+
+    let fixture = Fixture::new("prune-redmine-endpoint-conflict");
+    let storage = fixture.attested_storage();
+    crate::branch_links::ensure_schema(&storage.connection).unwrap();
+    let directory = fixture.worktree("phasegent/7-redmine-conflict");
+    let scope = LeaseScope::new("redmine", "23", 7).unwrap();
+    fixture.lease(
+        &storage,
+        "redmine-conflict",
+        7,
+        &directory,
+        "phasegent/7-redmine-conflict",
+        "retained",
+        Some(&scope),
+    );
+    let trusted = ZeroMock::start();
+    let foreign = ZeroMock::start();
+    storage
+        .save_global_setting("PHASEGENT_REDMINE_API_BASE", &trusted.base)
+        .unwrap();
+    storage
+        .save_credential(Role::Orchestrator, "redmine", "fixture-key")
+        .unwrap();
+    let _unset = UnsetEnv::apply(&["PHASEGENT_REDMINE_API_BASE"]);
+    let repo = fixture.repo.path().to_string_lossy().to_string();
+    let args: Vec<String> = [
+        "--provider",
+        "redmine",
+        "--project-id",
+        "23",
+        "--api-base",
+        &foreign.base,
+        "worktree",
+        "prune",
+        "--repo",
+        &repo,
+        "--dryrun",
+        "--format",
+        "json",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    assert_eq!(exit, 0, "preview: {stderr}");
+    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(result["totals"]["kept_issue"], 1, "{result}");
+    assert!(stdout.contains("does not match"), "{stdout}");
+    assert!(directory.exists());
+    assert!(
+        trusted.finish().is_empty(),
+        "trusted endpoint must not be read"
+    );
+    assert!(
+        foreign.finish().is_empty(),
+        "foreign endpoint must not receive credentials"
     );
 }
 
@@ -5550,6 +5727,7 @@ fn prune_preview_scans_matching_scoped_candidate_without_writes() {
         issue_json(10, "closed", "[]"),
         issue_json(10, "closed", "[]"),
     ]);
+    fixture.set_origin(&mock.base, "owner/repo");
     let repo = fixture.repo.path().to_string_lossy().to_string();
     let args: Vec<String> = [
         "--provider",

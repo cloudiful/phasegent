@@ -32,7 +32,7 @@
 //! associated with before it moves a session out of it.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::infra::storage::Storage;
@@ -122,6 +122,23 @@ pub(crate) trait IssueStateSource {
     fn invalidate(&self, _repo_path: &Path, _issues: &[u64]) {
         self.refresh();
     }
+
+    /// Closure evidence for one number whose lease carries a provider
+    /// sidecar.
+    ///
+    /// The prune pass knows the sidecar its own lease row proved; a source
+    /// that can dispatch on that scope answers here. The default ignores the
+    /// sidecar and answers through [`Self::closure`], so every existing
+    /// source is unchanged.
+    fn scoped_closure(
+        &self,
+        repo_path: &Path,
+        issue: u64,
+        scope: Option<&crate::worktree::LeaseScope>,
+    ) -> IssueClosure {
+        let _ = scope;
+        self.closure(repo_path, issue)
+    }
 }
 
 /// One resolved durable link scope for a number.
@@ -201,6 +218,10 @@ pub(crate) trait IssueStateReader {
         None
     }
 
+    /// Drop any invocation-scoped memo so the next read proves its scope
+    /// afresh. The default is a no-op.
+    fn refresh(&self) {}
+
     /// The explicit provider selection the reader was built with, when it
     /// has one. The default has no selection.
     fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
@@ -234,6 +255,49 @@ pub(crate) trait IssueStateReader {
     ) -> Result<Option<TaskRouteFact>, String> {
         Ok(None)
     }
+
+    /// Read one number through the provider its own scope names.
+    ///
+    /// The prune pass resolves the provider and project from the candidate's
+    /// own evidence (a durable link scope or a lease sidecar), never from the
+    /// configured default. The default refuses: a source that cannot prove a
+    /// provider scope never answers for one.
+    fn scoped_state(
+        &self,
+        _repo_path: &Path,
+        issue: u64,
+        _provider: &str,
+        _project: &str,
+    ) -> Result<Option<IssueStateFact>, String> {
+        Err(format!(
+            "issue {issue}: this source cannot prove a provider scope"
+        ))
+    }
+
+    /// The provider scope an explicit manual selection names, when the
+    /// invocation carries one.
+    ///
+    /// A candidate whose own scope contradicts an explicit selection keeps
+    /// instead of being dispatched somewhere else; a pass without an
+    /// explicit selection has no such scope.
+    fn explicit_scope(&self) -> Option<(String, String)> {
+        None
+    }
+
+    /// Read one number that carries no scope evidence at all.
+    ///
+    /// Only an explicit, trusted manual selection may answer here; the
+    /// default refuses so an unbound number is never dispatched to the
+    /// configured default.
+    fn prune_fallback_state(
+        &self,
+        _repo_path: &Path,
+        issue: u64,
+    ) -> Result<Option<IssueStateFact>, String> {
+        Err(format!(
+            "issue {issue}: no provider scope evidence and no explicit selection"
+        ))
+    }
 }
 
 /// Composes the scope check with the provider read and caches one answer per
@@ -242,6 +306,18 @@ pub(crate) struct ComposedIssueStateSource {
     links: Box<dyn LinkScopeReader>,
     provider: Box<dyn IssueStateReader>,
     cache: RefCell<HashMap<(String, u8, u64), IssueClosure>>,
+    policy: SourcePolicy,
+}
+
+/// Which dispatch policy the composition applies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourcePolicy {
+    /// The configured provider answers an unbound number. This is the
+    /// unchanged close and sync behaviour.
+    Legacy,
+    /// Every candidate resolves through its own proven scope: the prune
+    /// pass never answers from the configured default.
+    Prune,
 }
 
 /// Which owner answers one closure question.
@@ -266,6 +342,21 @@ impl ComposedIssueStateSource {
             links,
             provider,
             cache: RefCell::new(HashMap::new()),
+            policy: SourcePolicy::Legacy,
+        }
+    }
+
+    /// The prune composition: the reader answers through each candidate's
+    /// own proven scope, never through the configured default.
+    pub(crate) fn new_prune(
+        links: Box<dyn LinkScopeReader>,
+        provider: Box<dyn IssueStateReader>,
+    ) -> Self {
+        Self {
+            links,
+            provider,
+            cache: RefCell::new(HashMap::new()),
+            policy: SourcePolicy::Prune,
         }
     }
 
@@ -274,6 +365,9 @@ impl ComposedIssueStateSource {
     /// The scope checks run before the provider read, so a link that names a
     /// different provider keeps without a cross-provider request.
     fn decide(&self, repo_path: &Path, issue: u64) -> IssueClosure {
+        if self.policy == SourcePolicy::Prune {
+            return self.decide_prune(repo_path, issue);
+        }
         let configured = match self.provider.provider() {
             Ok(provider) => provider,
             Err(reason) => return IssueClosure::Keep(reason),
@@ -286,6 +380,80 @@ impl ComposedIssueStateSource {
             None,
             || self.provider.state(issue),
         )
+    }
+
+    /// The prune verdict: the reader answers through the scope the
+    /// candidate's own evidence proves.
+    fn decide_prune(&self, repo_path: &Path, issue: u64) -> IssueClosure {
+        let scopes = match self.links.scopes(repo_path, issue) {
+            Ok(scopes) => scopes,
+            Err(reason) => return IssueClosure::Keep(reason),
+        };
+        let distinct: BTreeSet<(String, String)> = scopes
+            .iter()
+            .map(|scope| (scope.provider.clone(), scope.project.clone()))
+            .collect();
+        if distinct.len() > 1 {
+            return IssueClosure::Keep(format!(
+                "issue {issue} has conflicting link scopes ({}); refusing to guess a provider",
+                format_scopes(&distinct)
+            ));
+        }
+        if let Some(scope) = scopes
+            .iter()
+            .find(|scope| scope.external_id.parse::<u64>().ok() != Some(issue))
+        {
+            return IssueClosure::Keep(format!(
+                "issue {issue} link external id '{}' does not match the lease number",
+                scope.external_id
+            ));
+        }
+        let Some((provider, project)) = distinct.into_iter().next() else {
+            return match self.provider.prune_fallback_state(repo_path, issue) {
+                Ok(Some(fact)) => self.prune_verdict(issue, &None, fact),
+                Ok(None) => IssueClosure::Keep(format!(
+                    "issue {issue} was not found on its proven provider"
+                )),
+                Err(reason) => IssueClosure::Keep(reason),
+            };
+        };
+        let fact = match self
+            .provider
+            .scoped_state(repo_path, issue, &provider, &project)
+        {
+            Ok(Some(fact)) => fact,
+            Ok(None) => {
+                return IssueClosure::Keep(format!(
+                    "issue {issue} was not found on its proven provider"
+                ));
+            }
+            Err(reason) => return IssueClosure::Keep(reason),
+        };
+        let agrees = project_agrees(&project, &fact);
+        self.prune_verdict(issue, &agrees, fact)
+    }
+
+    /// The shared closing rule: the provider's own state decides, and a
+    /// project that contradicts the proven scope keeps.
+    fn prune_verdict(
+        &self,
+        issue: u64,
+        agrees: &Option<bool>,
+        fact: IssueStateFact,
+    ) -> IssueClosure {
+        if let Some(false) = agrees {
+            return IssueClosure::Keep(format!(
+                "issue {issue} project does not match its proven scope"
+            ));
+        }
+        if fact.state.eq_ignore_ascii_case("closed") {
+            IssueClosure::Closed
+        } else {
+            IssueClosure::Keep(format!(
+                "issue {issue} state '{}' is not closed",
+                fact.state
+            ))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -499,7 +667,88 @@ impl IssueStateSource for ComposedIssueStateSource {
         self.links.invalidate(repo_path, issues);
     }
 
+    /// The prune sidecar verdict: the lease sidecar names the provider and
+    /// project, and the reader answers through exactly that scope. The
+    /// sidecar must agree with the durable link scope when one exists.
+    fn scoped_closure(
+        &self,
+        repo_path: &Path,
+        issue: u64,
+        scope: Option<&crate::worktree::LeaseScope>,
+    ) -> IssueClosure {
+        if self.policy != SourcePolicy::Prune {
+            return self.closure(repo_path, issue);
+        }
+        let Some(scope) = scope else {
+            return self.closure(repo_path, issue);
+        };
+        if scope.external_id() != issue {
+            return IssueClosure::Keep(format!(
+                "issue {issue} lease sidecar external id '{}' does not match the lease number",
+                scope.external_id()
+            ));
+        }
+        let scopes = match self.links.scopes(repo_path, issue) {
+            Ok(scopes) => scopes,
+            Err(reason) => return IssueClosure::Keep(reason),
+        };
+        // Every returned link is checked against the canonical candidate issue
+        // before any scope comparison or provider dispatch: a row that names
+        // another external issue is contradictory evidence, never a match.
+        if let Some(link) = scopes
+            .iter()
+            .find(|link| link.external_id.parse::<u64>().ok() != Some(issue))
+        {
+            return IssueClosure::Keep(format!(
+                "issue {issue} link external id '{}' does not match the lease number",
+                link.external_id
+            ));
+        }
+        let distinct: BTreeSet<(String, String)> = scopes
+            .iter()
+            .map(|link| (link.provider.clone(), link.project.clone()))
+            .collect();
+        if distinct.len() > 1 {
+            return IssueClosure::Keep(format!(
+                "issue {issue} has conflicting link scopes ({}); refusing to guess a provider",
+                format_scopes(&distinct)
+            ));
+        }
+        if let Some((provider, project)) = distinct.into_iter().next()
+            && (provider != scope.provider() || project != scope.project())
+        {
+            return IssueClosure::Keep(format!(
+                "issue {issue} lease sidecar scope '{}/{}' does not match its durable link scope \
+                 '{provider}/{project}'",
+                scope.provider(),
+                scope.project()
+            ));
+        }
+        let fact =
+            match self
+                .provider
+                .scoped_state(repo_path, issue, scope.provider(), scope.project())
+            {
+                Ok(Some(fact)) => fact,
+                Ok(None) => {
+                    return IssueClosure::Keep(format!(
+                        "issue {issue} was not found on its proven provider"
+                    ));
+                }
+                Err(reason) => return IssueClosure::Keep(reason),
+            };
+        let agrees = project_agrees(scope.project(), &fact);
+        self.prune_verdict(issue, &agrees, fact)
+    }
+
+    /// The scope the pass classifies scoped groups against.
+    ///
+    /// The prune pass has no pass-wide default scope, so only an explicit
+    /// manual selection names one.
     fn provider_scope(&self) -> Option<(String, String)> {
+        if self.policy == SourcePolicy::Prune {
+            return self.provider.explicit_scope();
+        }
         let provider = self.provider.provider().ok()?;
         self.provider
             .scope()
@@ -516,6 +765,7 @@ impl IssueStateSource for ComposedIssueStateSource {
         // cached `closed` can never outlive the scan.
         self.cache.borrow_mut().clear();
         self.links.refresh();
+        self.provider.refresh();
     }
 }
 
@@ -530,6 +780,15 @@ impl IssueStateSource for ComposedIssueStateSource {
 /// branch-link rows; [`Self::refresh`] still clears all setup.
 pub(crate) struct GitLinkScopeReader {
     repos: RefCell<HashMap<String, RepoScope>>,
+    /// Repositories whose physical link identity changed (or could no longer
+    /// be proven) after the invocation first resolved it. The prune
+    /// composition keeps every candidate of such a repository instead of
+    /// silently authorizing a removal under a different origin.
+    poisoned: RefCell<HashSet<String>>,
+    /// The prune composition reads only an existing store: no creation, no
+    /// schema, no migration. The close and sync compositions keep the
+    /// write-capable open they have always used.
+    read_only: bool,
 }
 
 struct RepoScope {
@@ -541,36 +800,112 @@ impl GitLinkScopeReader {
     pub(crate) fn new() -> Self {
         Self {
             repos: RefCell::new(HashMap::new()),
+            poisoned: RefCell::new(HashSet::new()),
+            read_only: false,
         }
+    }
+
+    /// The prune composition: the branch-link store is opened only when it
+    /// already exists with the expected table and columns. A missing, old or
+    /// unreadable store reads as an unavailable scope (the caller keeps), and
+    /// nothing is ever created, migrated or written.
+    pub(crate) fn new_read_only() -> Self {
+        Self {
+            repos: RefCell::new(HashMap::new()),
+            poisoned: RefCell::new(HashSet::new()),
+            read_only: true,
+        }
+    }
+
+    /// The physical link identity of the checkout at `repo_path`, derived the
+    /// same way the store memo is keyed.
+    fn link_identity(repo_path: &Path) -> Result<String, String> {
+        use crate::branch_links::{checkout_root, read_origin_url, resolve_repo_key};
+        use crate::git_runner::ProcessGitRunner;
+
+        let runner = ProcessGitRunner::in_directory(repo_path);
+        resolve_repo_key(read_origin_url(&runner).as_deref(), &checkout_root(&runner))
+            .map(|resolved| resolved.key)
+            .map_err(|error| format!("could not resolve the repository identity: {error}"))
     }
 
     /// Resolve the repository identity and open the reuse store once per
     /// repository, memoizing both under the caller's `repo_path` spelling.
     fn ensure(&self, repo_path: &Path) -> Result<(), String> {
         let cache_key = repo_path.to_string_lossy().into_owned();
+        if self.poisoned.borrow().contains(&cache_key) {
+            return Err(
+                "the repository link identity changed after the scan; keeping the directory"
+                    .to_owned(),
+            );
+        }
         if self.repos.borrow().contains_key(&cache_key) {
             return Ok(());
         }
-        use crate::branch_links::{checkout_root, read_origin_url, resolve_repo_key};
-        use crate::git_runner::ProcessGitRunner;
-
-        let runner = ProcessGitRunner::in_directory(repo_path);
-        let resolved =
-            resolve_repo_key(read_origin_url(&runner).as_deref(), &checkout_root(&runner))
-                .map_err(|error| format!("could not resolve the repository identity: {error}"))?;
-        let storage =
-            Storage::open().map_err(|error| format!("branch link store unavailable: {error}"))?;
-        crate::branch_links::ensure_schema(&storage.connection)
-            .map_err(|error| format!("branch link store unavailable: {error}"))?;
+        let resolved_key = Self::link_identity(repo_path)?;
+        let storage = if self.read_only {
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("branch link store unavailable: {error}"))?
+                .ok_or_else(|| "branch link store is not initialized".to_owned())?;
+            require_branch_link_schema(&storage)?;
+            storage
+        } else {
+            let storage = Storage::open()
+                .map_err(|error| format!("branch link store unavailable: {error}"))?;
+            crate::branch_links::ensure_schema(&storage.connection)
+                .map_err(|error| format!("branch link store unavailable: {error}"))?;
+            storage
+        };
         self.repos.borrow_mut().insert(
             cache_key,
             RepoScope {
-                key: resolved.key,
+                key: resolved_key,
                 storage,
             },
         );
         Ok(())
     }
+}
+
+/// The columns the read-only number lookup relies on. An older store without
+/// them is treated as absent evidence, never migrated on a read path.
+const BRANCH_LINK_COLUMNS: &[&str] = &[
+    "repo_key",
+    "branch",
+    "provider",
+    "project",
+    "external_id",
+    "task_id",
+    "issue_number",
+    "status",
+    "source",
+    "created_at",
+    "updated_at",
+    "detached_at",
+    "detached_reason",
+];
+
+/// Whether an already existing store carries the branch-link table the read
+/// needs, without creating or migrating anything.
+fn require_branch_link_schema(storage: &Storage) -> Result<(), String> {
+    const TABLE: &str = "branch_issue_links";
+    if !storage
+        .table_exists(TABLE)
+        .map_err(|error| format!("branch link store unavailable: {error}"))?
+    {
+        return Err("branch link store has no branch link table".to_owned());
+    }
+    for column in BRANCH_LINK_COLUMNS {
+        if !storage
+            .table_has_column(TABLE, column)
+            .map_err(|error| format!("branch link store unavailable: {error}"))?
+        {
+            return Err(format!(
+                "branch link store is missing the '{column}' column"
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl LinkScopeReader for GitLinkScopeReader {
@@ -603,10 +938,31 @@ impl LinkScopeReader for GitLinkScopeReader {
 
     fn refresh(&self) {
         self.repos.borrow_mut().clear();
+        self.poisoned.borrow_mut().clear();
     }
 
-    fn invalidate(&self, _repo_path: &Path, _issues: &[u64]) {
-        // Scope rows are never cached; only identity and the open store survive.
+    fn invalidate(&self, repo_path: &Path, _issues: &[u64]) {
+        // Only the prune composition re-proves the physical identity at the
+        // final boundaries. The shared close/sync reader keeps its existing
+        // no-op invalidation.
+        if !self.read_only {
+            return;
+        }
+        let cache_key = repo_path.to_string_lossy().into_owned();
+        let initial = {
+            let repos = self.repos.borrow();
+            repos.get(&cache_key).map(|scope| scope.key.clone())
+        };
+        let Some(initial) = initial else {
+            return;
+        };
+        // A changed or unprovable identity keeps every candidate of this
+        // repository: the cached key is never swapped and a newly matching
+        // link under another origin cannot authorize a removal.
+        let still_proven = Self::link_identity(repo_path).is_ok_and(|key| key == initial);
+        if !still_proven {
+            self.poisoned.borrow_mut().insert(cache_key);
+        }
     }
 }
 
@@ -762,6 +1118,169 @@ pub(crate) fn configured_source_task_aware(
     )
 }
 
+/// The prune form: every candidate resolves through its own proven scope.
+///
+/// A durable task still reads through its own pinned instance, and the
+/// configured default never answers for a candidate.
+pub(crate) fn configured_source_prune(
+    role: Role,
+    context: crate::cli::provider_context::ProviderContext,
+) -> ComposedIssueStateSource {
+    ComposedIssueStateSource::new_prune(
+        Box::new(GitLinkScopeReader::new_read_only()),
+        Box::new(TaskAwareIssueStateReader::new_prune(role, context)),
+    )
+}
+
+/// The endpoint one scope names, after the caller's explicit selection and
+/// the role's trusted configuration agree.
+///
+/// The proof is independent of any provider build: a Forgejo scope needs the
+/// candidate's own physical origin to attest the trusted instance and to name
+/// the scoped repository, and an explicit endpoint must equal that trusted
+/// instance. A Redmine scope needs the explicit endpoint to equal the single
+/// trusted configured Redmine address.
+fn scoped_instance(
+    role: Role,
+    repo_path: &Path,
+    provider: &str,
+    project: &str,
+    context: &crate::cli::provider_context::ProviderContext,
+) -> Result<String, String> {
+    match provider {
+        "redmine" => {
+            if context.provider == Some(crate::providers::ProviderKind::Redmine)
+                && let Some(selected) = context.project_id.as_deref()
+                && selected != project
+            {
+                return Err(format!(
+                    "the explicit Redmine selection names project '{selected}', not '{project}'"
+                ));
+            }
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("the local store is not available: {error}"))?
+                .ok_or_else(|| "the local store is not initialized".to_owned())?;
+            let trusted = crate::providers::config::RedmineConfig::resolve_with_storage(
+                &storage,
+                role,
+                None,
+                Some(project),
+                None,
+            )
+            .map_err(|error| bounded_error(&error.json()))?;
+            if let Some(explicit) = context.api_base.as_deref() {
+                let selected = crate::remote::normalize_redmine_api_base(explicit)
+                    .map_err(|error| crate::worktree::bounded(&error))?;
+                if selected != trusted.api_base {
+                    return Err(
+                        "the selected Redmine endpoint does not match the role's trusted instance"
+                            .to_owned(),
+                    );
+                }
+            }
+            Ok(trusted.api_base)
+        }
+        "forgejo" => {
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("the local store is not available: {error}"))?
+                .ok_or_else(|| "the local store is not initialized".to_owned())?;
+            let stored = storage
+                .load_forgejo_config(role)
+                .map_err(|error| format!("could not read the Forgejo role instance: {error}"))?
+                .ok_or_else(|| {
+                    "the Forgejo role instance is not configured for this role".to_owned()
+                })?;
+            let trusted = crate::providers::forgejo::ForgejoConfig::new(&stored.api_base, project)
+                .map_err(|error| bounded_error(&error.json()))?;
+            if let Some(explicit) = context.api_base.as_deref() {
+                let selected = crate::providers::forgejo::ForgejoConfig::new(explicit, project)
+                    .map_err(|error| bounded_error(&error.json()))?;
+                if selected.api_base() != trusted.api_base() {
+                    return Err(
+                        "the selected Forgejo endpoint does not match the role's trusted instance"
+                            .to_owned(),
+                    );
+                }
+            }
+            let origin = crate::remote::forgejo_origin_evidence_at(repo_path)?;
+            let attested = crate::providers::forgejo::ForgejoConfig::attest_origin_repository(
+                trusted.api_base(),
+                &origin,
+            )
+            .map_err(|error| bounded_error(&error.json()))?;
+            if attested != project {
+                return Err(format!(
+                    "the physical origin repository '{attested}' does not attest the scoped \
+                     repository '{project}'"
+                ));
+            }
+            Ok(trusted.api_base().to_owned())
+        }
+        "local" => {
+            if project != "default" {
+                return Err(format!(
+                    "the local provider owns the 'default' project, not '{project}'"
+                ));
+            }
+            Ok("default".to_owned())
+        }
+        other => Err(format!("unsupported provider scope '{other}'")),
+    }
+}
+
+/// Build the provider one proven scope names, read-only.
+///
+/// The construction never creates or migrates a store, never writes a
+/// credential and never resolves a default provider: the scope names the
+/// provider and project, and the role's own credential proves the instance.
+fn scoped_provider(
+    role: Role,
+    repo_path: &Path,
+    provider: &str,
+    project: &str,
+    context: &crate::cli::provider_context::ProviderContext,
+) -> Result<ProviderDispatcher, String> {
+    let instance = scoped_instance(role, repo_path, provider, project, context)?;
+    match provider {
+        "redmine" => {
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("the local store is not available: {error}"))?
+                .ok_or_else(|| "the local store is not initialized".to_owned())?;
+            let config = crate::providers::config::RedmineConfig::resolve_with_storage(
+                &storage,
+                role,
+                Some(&instance),
+                Some(project),
+                None,
+            )
+            .map_err(|error| bounded_error(&error.json()))?;
+            let api_key = crate::auth::redmine_api_key(role, &storage)?;
+            crate::providers::config::RedmineProvider::new(config, api_key)
+                .map(ProviderDispatcher::Redmine)
+                .map_err(|error| bounded_error(&error.json()))
+        }
+        "forgejo" => {
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("the local store is not available: {error}"))?
+                .ok_or_else(|| "the local store is not initialized".to_owned())?;
+            let token = storage
+                .load_credential(role, "forgejo")
+                .map_err(|error| format!("could not read the Forgejo role credential: {error}"))?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "the Forgejo role credential is not configured".to_owned())?;
+            let config = crate::providers::forgejo::ForgejoConfig::new(&instance, project)
+                .map_err(|error| bounded_error(&error.json()))?;
+            crate::providers::forgejo::ForgejoProvider::new(config, &token)
+                .map(ProviderDispatcher::Forgejo)
+                .map_err(|error| bounded_error(&error.json()))
+        }
+        "local" => crate::providers::local::LocalProvider::open_read_only()
+            .map(ProviderDispatcher::local)
+            .map_err(|error| bounded_error(&error.json())),
+        other => Err(format!("unsupported provider scope '{other}'")),
+    }
+}
+
 /// The production task-aware reader.
 ///
 /// Every durable task is dispatched through
@@ -777,6 +1296,12 @@ pub(crate) struct TaskAwareIssueStateReader {
     context: crate::cli::provider_context::ProviderContext,
     store: OnceCell<Result<Storage, String>>,
     repo_keys: RefCell<HashMap<String, Result<String, String>>>,
+    scoped_providers: RefCell<HashMap<(String, String, String, String), ProviderDispatcher>>,
+    /// The prune composition reads a pinned Local task through the existing
+    /// read-only store opener: an absent store keeps instead of being created,
+    /// seeded, or migrated. Every close/sync caller keeps the write-capable
+    /// provider path.
+    local_read_only: bool,
 }
 
 impl TaskAwareIssueStateReader {
@@ -787,6 +1312,21 @@ impl TaskAwareIssueStateReader {
             context,
             store: OnceCell::new(),
             repo_keys: RefCell::new(HashMap::new()),
+            scoped_providers: RefCell::new(HashMap::new()),
+            local_read_only: false,
+        }
+    }
+
+    /// The prune reader: the only difference from [`Self::new`] is that a
+    /// pinned Local task opens an existing store read-only instead of
+    /// creating or seeding one.
+    pub(crate) fn new_prune(
+        role: Role,
+        context: crate::cli::provider_context::ProviderContext,
+    ) -> Self {
+        Self {
+            local_read_only: true,
+            ..Self::new(role, context)
         }
     }
 
@@ -820,6 +1360,26 @@ impl TaskAwareIssueStateReader {
         resolved
     }
 
+    /// The repository the candidate's own physical origin names, proven
+    /// against the role's trusted Forgejo instance.
+    fn forgejo_origin_repository(&self, repo_path: &Path) -> Result<String, String> {
+        let storage = Storage::open_existing_read_only()
+            .map_err(|error| format!("the local store is not available: {error}"))?
+            .ok_or_else(|| "the local store is not initialized".to_owned())?;
+        let stored = storage
+            .load_forgejo_config(self.role)
+            .map_err(|error| format!("could not read the Forgejo role instance: {error}"))?
+            .ok_or_else(|| {
+                "the Forgejo role instance is not configured for this role".to_owned()
+            })?;
+        let origin = crate::remote::forgejo_origin_evidence_at(repo_path)?;
+        crate::providers::forgejo::ForgejoConfig::attest_origin_repository(
+            &stored.api_base,
+            &origin,
+        )
+        .map_err(|error| bounded_error(&error.json()))
+    }
+
     /// Read one durable task's issue through its pinned instance.
     ///
     /// The binding is re-read on the shared connection and compared with the
@@ -849,14 +1409,21 @@ impl TaskAwareIssueStateReader {
                  refusing to read it"
             ));
         }
-        let provider =
+        let provider = if self.local_read_only {
+            crate::cli::task_route::provider_for_binding_read_only(
+                self.role,
+                &binding,
+                &self.context,
+            )
+        } else {
             crate::cli::task_route::provider_for_binding(self.role, &binding, &self.context)
-                .map_err(|error| {
-                    format!(
-                        "issue {issue}: the durable task provider is unavailable: {}",
-                        bounded_error(&error.json())
-                    )
-                })?;
+        }
+        .map_err(|error| {
+            format!(
+                "issue {issue}: the durable task provider is unavailable: {}",
+                bounded_error(&error.json())
+            )
+        })?;
         let summary = provider
             .get_issue(issue)
             .map_err(|error| bounded_error(&error.json()))?;
@@ -877,6 +1444,10 @@ impl TaskAwareIssueStateReader {
 impl IssueStateReader for TaskAwareIssueStateReader {
     fn provider(&self) -> Result<String, String> {
         self.configured.provider()
+    }
+
+    fn refresh(&self) {
+        self.scoped_providers.borrow_mut().clear();
     }
 
     fn scope(&self) -> Option<(String, String)> {
@@ -930,6 +1501,152 @@ impl IssueStateReader for TaskAwareIssueStateReader {
                 "issue {issue} has several durable tasks in this repository; refusing to guess \
                  a provider"
             )),
+        }
+    }
+
+    /// The scope an explicit selection names, when the invocation has one.
+    fn explicit_scope(&self) -> Option<(String, String)> {
+        let kind = self.context.provider?;
+        let project = match kind {
+            crate::providers::ProviderKind::Forgejo => self.context.repository.clone()?,
+            crate::providers::ProviderKind::Redmine => self.context.project_id.clone()?,
+            crate::providers::ProviderKind::Local => "default".to_owned(),
+        };
+        Some((kind.as_str().to_owned(), project))
+    }
+
+    /// Read one number through the provider its own scope names.
+    ///
+    /// The scope is the only authority: the provider is built read-only for
+    /// exactly that provider and project, and the candidate's own physical
+    /// repository proves a Forgejo instance.
+    fn scoped_state(
+        &self,
+        repo_path: &Path,
+        issue: u64,
+        provider: &str,
+        project: &str,
+    ) -> Result<Option<IssueStateFact>, String> {
+        // The scope proof runs on every read, so a cached dispatcher never
+        // carries a stale origin, endpoint or selection into a verdict.
+        let instance = scoped_instance(self.role, repo_path, provider, project, &self.context)
+            .map_err(|reason| format!("issue {issue}: {reason}"))?;
+        let key = (
+            provider.to_owned(),
+            project.to_owned(),
+            repo_path.to_string_lossy().into_owned(),
+            instance,
+        );
+        if !self.scoped_providers.borrow().contains_key(&key) {
+            let dispatcher =
+                scoped_provider(self.role, repo_path, provider, project, &self.context)
+                    .map_err(|reason| format!("issue {issue}: {reason}"))?;
+            self.scoped_providers
+                .borrow_mut()
+                .insert(key.clone(), dispatcher);
+        }
+        let summary = self
+            .scoped_providers
+            .borrow()
+            .get(&key)
+            .expect("the scoped provider was just cached")
+            .get_issue(issue)
+            .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+        Ok(Some(IssueStateFact {
+            state: summary.state,
+            project_id: summary.project.as_ref().map(|project| project.id),
+            project_identifier: summary
+                .project
+                .as_ref()
+                .and_then(|project| project.identifier.clone()),
+        }))
+    }
+
+    /// A number without scope evidence is answered only by an explicit,
+    /// trusted manual selection.
+    fn prune_fallback_state(
+        &self,
+        repo_path: &Path,
+        issue: u64,
+    ) -> Result<Option<IssueStateFact>, String> {
+        let Some(kind) = self.context.provider else {
+            return Err(format!(
+                "issue {issue}: no link or sidecar scope proves a provider, and no explicit \
+                 provider was selected"
+            ));
+        };
+        match kind {
+            crate::providers::ProviderKind::Redmine => {
+                let Some(project) = self.context.project_id.clone() else {
+                    return Err(format!(
+                        "issue {issue}: an explicit Redmine selection needs --project-id to prove \
+                         which project owns the legacy number"
+                    ));
+                };
+                let dispatcher =
+                    scoped_provider(self.role, repo_path, "redmine", &project, &self.context)
+                        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+                let summary = dispatcher
+                    .get_issue(issue)
+                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                let fact = IssueStateFact {
+                    state: summary.state,
+                    project_id: summary.project.as_ref().map(|project| project.id),
+                    project_identifier: summary
+                        .project
+                        .as_ref()
+                        .and_then(|project| project.identifier.clone()),
+                };
+                if let Some(false) = project_agrees(&project, &fact) {
+                    return Err(format!(
+                        "issue {issue} project does not match the selected Redmine project \
+                         '{project}'"
+                    ));
+                }
+                Ok(Some(fact))
+            }
+            crate::providers::ProviderKind::Local => {
+                let dispatcher =
+                    scoped_provider(self.role, repo_path, "local", "default", &self.context)
+                        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+                let summary = dispatcher
+                    .get_issue(issue)
+                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                Ok(Some(IssueStateFact {
+                    state: summary.state,
+                    project_id: summary.project.as_ref().map(|project| project.id),
+                    project_identifier: summary
+                        .project
+                        .as_ref()
+                        .and_then(|project| project.identifier.clone()),
+                }))
+            }
+            crate::providers::ProviderKind::Forgejo => {
+                // A Forgejo legacy number still needs the physical origin proof.
+                let project = self.forgejo_origin_repository(repo_path)?;
+                if let Some(selected) = self.context.repository.as_deref()
+                    && selected != project
+                {
+                    return Err(format!(
+                        "issue {issue}: the selected repository '{selected}' does not match the \
+                         physical origin repository '{project}'"
+                    ));
+                }
+                let dispatcher =
+                    scoped_provider(self.role, repo_path, "forgejo", &project, &self.context)
+                        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+                let summary = dispatcher
+                    .get_issue(issue)
+                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                Ok(Some(IssueStateFact {
+                    state: summary.state,
+                    project_id: summary.project.as_ref().map(|project| project.id),
+                    project_identifier: summary
+                        .project
+                        .as_ref()
+                        .and_then(|project| project.identifier.clone()),
+                }))
+            }
         }
     }
 }
@@ -1113,6 +1830,36 @@ mod reuse_tests {
         assert_eq!(scopes.len(), 1);
         assert_eq!(scopes[0].external_id, "7");
     }
+
+    /// The prune link reader accepts only an existing store that already
+    /// carries the branch-link table and the columns the read selects; it
+    /// never migrates an older one.
+    #[test]
+    fn the_read_only_link_store_check_never_migrates() {
+        let root = crate::test_scratch::root().join(format!(
+            "prune-links-readonly-{}-{}",
+            std::process::id(),
+            crate::worktree::now_unix_secs()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let storage = Storage::open_at(&root.join("fresh.sqlite3")).unwrap();
+        let absent = require_branch_link_schema(&storage)
+            .expect_err("a store without the branch link table is not usable evidence");
+        assert!(absent.contains("branch link"), "got: {absent}");
+        assert!(
+            !storage.table_exists("branch_issue_links").unwrap(),
+            "the read-only check must not create the table"
+        );
+        crate::branch_links::ensure_schema(&storage.connection).unwrap();
+        assert!(require_branch_link_schema(&storage).is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -1186,6 +1933,27 @@ pub(crate) mod test_support {
 
         fn provider_scope(&self) -> Option<(String, String)> {
             self.scope.clone()
+        }
+
+        /// A sidecar that names another provider scope keeps without a
+        /// provider read.
+        fn scoped_closure(
+            &self,
+            repo_path: &Path,
+            issue: u64,
+            scope: Option<&crate::worktree::LeaseScope>,
+        ) -> IssueClosure {
+            if let (Some(scope), Some((provider, project))) = (scope, self.scope.as_ref())
+                && (scope.provider() != provider || scope.project() != project)
+            {
+                return IssueClosure::Keep(format!(
+                    "issue {issue} lease sidecar scope '{}/{}' is not the proven scope \
+                     '{provider}/{project}'",
+                    scope.provider(),
+                    scope.project()
+                ));
+            }
+            self.closure(repo_path, issue)
         }
     }
 }

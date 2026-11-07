@@ -106,8 +106,9 @@ fn cli_prune_streams_progress_before_a_blocked_host_check() {
         .expect("prune must reach the host check");
     let seen = lines.lock().expect("progress lock").clone();
     assert!(
-        seen.iter().any(|line| line.contains("scanning")),
-        "a scan notice must be streamed before the host check blocks, got {seen:?}"
+        seen.iter()
+            .any(|line| line.contains("0/1 repos") && line.contains("verifying")),
+        "a stage notice must be streamed before the host check blocks, got {seen:?}"
     );
     release_tx.send(()).expect("release the host");
     let exit = handle.join().expect("prune thread");
@@ -119,6 +120,117 @@ fn cli_prune_streams_progress_before_a_blocked_host_check() {
             .iter()
             .any(|line| line.contains("verifying")),
         "the removal recheck also streams a notice"
+    );
+}
+
+#[test]
+fn prune_keeps_when_origin_changes_after_real_local_provider_scan() {
+    use crate::cli::issue_closure::configured_source_prune;
+    use crate::cli::provider_context::ProviderContext;
+    use crate::infra::storage::test_support::EnvGuard;
+    use crate::policy::Role;
+    use crate::worktree::LeaseScope;
+    use crate::worktree::leases::insert_lease_scoped;
+
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-real-cached-origin") else {
+        return;
+    };
+    let (temp, storage, _env) = open_temp_db("prune-real-cached-origin");
+    ensure_schema(&storage).unwrap();
+    crate::branch_links::ensure_schema(&storage.connection).unwrap();
+    let local_path = temp.path().join("local.sqlite3");
+    let _local = EnvGuard::set("PHASEGENT_LOCAL_DB_PATH", local_path.to_str().unwrap());
+    let provider = crate::providers::local::LocalProvider::open().unwrap();
+    let issue = provider.create_issue("fixture", "").unwrap().number;
+    provider
+        .with_conn("fixture close", |conn| {
+            conn.execute(
+                "UPDATE local_issues SET status = 'Closed' WHERE id = ?1",
+                [issue],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    drop(provider);
+
+    let runner = ProcessWorktreeRunner::new();
+    runner
+        .run(
+            &["remote", "add", "origin", "https://example.test/a/repo.git"],
+            repo.dir.path(),
+        )
+        .unwrap();
+    let identity = repo_identity(&runner, repo.dir.path()).unwrap();
+    let directory = add_real_worktree(&repo, "phasegent/1-real-cached-origin");
+    let lease_scope = LeaseScope::new("local", "default", issue).unwrap();
+    insert_lease_scoped(
+        &storage,
+        NewLease {
+            lease_id: "real-cached-origin",
+            identity: &identity,
+            issue,
+            session: "fixture",
+            checkout_path: repo.dir.path().to_str().unwrap(),
+            worktree_path: directory.to_str().unwrap(),
+            branch: "phasegent/1-real-cached-origin",
+            status: LEASE_STATUS_RETAINED,
+            created_at: 1,
+            heartbeat_at: 1,
+        },
+        &lease_scope,
+        None,
+    )
+    .unwrap();
+    let rows = list_all_for_repo(&storage, &identity).unwrap();
+    let pinned = pinned_active_paths(&rows);
+    let target = TargetResolver::new(repo.dir.path(), &identity);
+    let scope = PruneScope {
+        identity: &identity,
+        repo_path: repo.dir.path(),
+        rows: &rows,
+        target: &target,
+    };
+    let host = FakeOpenCodeApi::empty();
+    let source = configured_source_prune(Role::Orchestrator, ProviderContext::default());
+    let changed = std::cell::Cell::new(false);
+    let summary = prune_pass(
+        &storage,
+        &runner,
+        &host,
+        &host,
+        &scope,
+        &pinned,
+        &source,
+        14,
+        PruneMode::Remove,
+        &|_stage| {
+            if !changed.get() {
+                runner
+                    .run(
+                        &[
+                            "remote",
+                            "set-url",
+                            "origin",
+                            "https://example.test/b/repo.git",
+                        ],
+                        repo.dir.path(),
+                    )
+                    .unwrap();
+                changed.set(true);
+            }
+        },
+    );
+    assert!(changed.get());
+    assert!(directory.exists(), "changed origin must keep the candidate");
+    assert_eq!(summary.removed, 0);
+    assert_eq!(summary.kept_protected, 1, "{:?}", summary.actions);
+    assert!(
+        summary.actions[0]
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("link identity changed")
     );
 }
 
@@ -499,16 +611,14 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
             failed: 0,
         },
     };
-    let text = render_text(&aggregate, std::time::Duration::from_millis(1234));
+    let text = render_text(&aggregate, std::time::Duration::from_millis(1234), false);
     assert!(text.starts_with("worktree prune (removal)"), "got: {text}");
-    // Actual actions print with their paths and explanations.
-    assert!(text.contains("removed /tmp/repo-a/wt"), "got: {text}");
-    assert!(text.contains("prunable /tmp/repo-a/wt2"), "got: {text}");
-    // A kept directory is listed with the reason it was kept, so a reader
-    // knows what still blocks the removal.
+    // The default is the fixed-size summary: no per-directory row survives.
+    assert!(!text.contains("removed /tmp/repo-a/wt"), "got: {text}");
+    assert!(!text.contains("prunable /tmp/repo-a/wt2"), "got: {text}");
     assert!(
-        text.contains("kept /tmp/repo-a/wt-kept:"),
-        "kept rows carry their reason: {text}"
+        !text.contains("kept /tmp/repo-a/wt-kept:"),
+        "the default lists no kept path: {text}"
     );
     // No per-repository headings or counts in the compact default.
     assert!(
@@ -528,9 +638,9 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
     );
     assert!(text.contains("skipped repositories: 1"), "got: {text}");
     assert!(text.contains("elapsed 1.234s"), "got: {text}");
-    // The default stays bounded: one line per action plus the summary lines.
+    // The default stays bounded: the summary lines only.
     assert!(
-        text.lines().count() <= 10,
+        text.lines().count() <= 8,
         "bounded output, got {} lines: {text}",
         text.lines().count()
     );
@@ -541,6 +651,23 @@ fn prune_aggregate_text_is_concise_and_json_is_equivalent() {
     assert!(
         !text.contains("checkout directory is missing"),
         "skip reasons stay in --json: {text}"
+    );
+
+    // The verbose rendering lists every bounded action row with its path and
+    // its reason.
+    let verbose = render_text(&aggregate, std::time::Duration::from_millis(1234), true);
+    assert!(verbose.contains("removed /tmp/repo-a/wt"), "got: {verbose}");
+    assert!(
+        verbose.contains("prunable /tmp/repo-a/wt2"),
+        "got: {verbose}"
+    );
+    assert!(
+        verbose.contains("kept /tmp/repo-a/wt-kept:"),
+        "kept rows carry their reason: {verbose}"
+    );
+    assert!(
+        verbose.contains("removed 1, eligible 1, absent 0, kept 1, removal failures 0"),
+        "the verbose rendering keeps the same aggregate: {verbose}"
     );
 
     // JSON keeps the complete detail unchanged.
@@ -590,15 +717,15 @@ fn prune_aggregate_empty_state_is_actionable() {
             failed: 0,
         },
     };
-    let text = render_text(&aggregate, std::time::Duration::ZERO);
+    let text = render_text(&aggregate, std::time::Duration::ZERO, false);
     assert!(
         text.contains("no repositories with recorded worktree leases"),
         "got: {text}"
     );
     assert!(text.contains("dry-run preview"), "got: {text}");
     assert!(
-        text.contains("removed 0, eligible 0, absent 0, kept 0, removal failures 0"),
-        "got: {text}"
+        text.contains("would remove 0, absent 0, kept 0, removal failures 0"),
+        "a preview never claims a removal: {text}"
     );
     assert!(text.contains("elapsed 0.000s"), "got: {text}");
     // A no-op default is bounded.
@@ -680,11 +807,11 @@ fn prune_compact_text_is_bounded_across_many_repositories() {
         repos,
         totals,
     };
-    let text = render_text(&aggregate, std::time::Duration::from_millis(42));
-    // The report stays bounded by the number of actionable rows: one line per
-    // kept directory plus the summary lines.
+    let text = render_text(&aggregate, std::time::Duration::from_millis(42), false);
+    // The report stays bounded by the summary lines, not by the number of
+    // repositories.
     assert!(
-        text.lines().count() <= 19 + 8,
+        text.lines().count() <= 8,
         "19 repositories must stay bounded, got {}: {text}",
         text.lines().count()
     );
@@ -692,10 +819,120 @@ fn prune_compact_text_is_bounded_across_many_repositories() {
         text.contains("removed 0, eligible 0, absent 19, kept 38, removal failures 0"),
         "got: {text}"
     );
-    // A kept directory is listed with its reason; an absent directory is
-    // reported by the counts only.
-    assert!(text.contains("kept /tmp/repo-0/kept-a:"), "got: {text}");
+    // The default lists no kept directory and no absent path.
+    assert!(!text.contains("kept /tmp/repo-0/kept-a:"), "got: {text}");
     assert!(!text.contains("absent /tmp"), "got: {text}");
+    // The verbose rendering carries every bounded row.
+    let verbose = render_text(&aggregate, std::time::Duration::from_millis(42), true);
+    assert!(
+        verbose.contains("kept /tmp/repo-0/kept-a:"),
+        "got: {verbose}"
+    );
+    assert!(
+        verbose.contains("absent /tmp/repo-0/absent: worktree directory already absent"),
+        "the verbose detail names the absent path and its reason: {verbose}"
+    );
+}
+
+/// The default summary is independent of the number of kept directories: a
+/// thousands-kept fixture renders the same bounded text as a small one.
+#[test]
+fn prune_default_text_is_bounded_for_thousands_of_kept_directories() {
+    let kept_action = |index: usize| PruneAction {
+        worktree_path: format!("/tmp/repo/kept-{index}"),
+        branch: format!("phasegent/{index}-kept"),
+        status: LEASE_STATUS_RETAINED.to_owned(),
+        heartbeat_at: 0,
+        lease_ids: vec![format!("lease-{index}")],
+        issues: vec![index as u64],
+        prunable: false,
+        result: "skipped_protected".to_owned(),
+        message: Some("uncommitted or untracked files".to_owned()),
+        relocated_children: Vec::new(),
+        planned_children: Vec::new(),
+    };
+    let summary = |count: usize| PruneSummary {
+        scanned: count,
+        removed: 0,
+        eligible: 0,
+        absent: 0,
+        kept_active: 0,
+        kept_unknown: 0,
+        kept_protected: count,
+        kept_issue: 0,
+        failed: 0,
+        dry_run: false,
+        stale_days: 7,
+        actions: (0..count).map(kept_action).collect(),
+    };
+    let small = PruneAggregate {
+        dry_run: false,
+        remove: true,
+        release_stale: false,
+        stale_days: 7,
+        repos: vec![PruneRepoOutcome {
+            repo_identity: "/tmp/repo/.git".to_owned(),
+            repo_path: Some("/tmp/repo".to_owned()),
+            skipped_reason: None,
+            leases: None,
+            worktrees: Some(summary(3)),
+        }],
+        totals: PruneTotals {
+            repositories: 1,
+            removed: 0,
+            eligible: 0,
+            absent: 0,
+            kept_active: 0,
+            kept_unknown: 0,
+            kept_protected: 3,
+            kept_issue: 0,
+            failed: 0,
+        },
+    };
+    let large = PruneAggregate {
+        dry_run: false,
+        remove: true,
+        release_stale: false,
+        stale_days: 7,
+        repos: vec![PruneRepoOutcome {
+            repo_identity: "/tmp/repo/.git".to_owned(),
+            repo_path: Some("/tmp/repo".to_owned()),
+            skipped_reason: None,
+            leases: None,
+            worktrees: Some(summary(2000)),
+        }],
+        totals: PruneTotals {
+            repositories: 1,
+            removed: 0,
+            eligible: 0,
+            absent: 0,
+            kept_active: 0,
+            kept_unknown: 0,
+            kept_protected: 2000,
+            kept_issue: 0,
+            failed: 0,
+        },
+    };
+    let small_text = render_text(&small, std::time::Duration::ZERO, false);
+    let large_text = render_text(&large, std::time::Duration::ZERO, false);
+    assert_eq!(
+        small_text.lines().count(),
+        large_text.lines().count(),
+        "the default summary does not grow with the kept count:\n{small_text}\n{large_text}"
+    );
+    assert!(
+        large_text.lines().count() <= 8,
+        "bounded output, got {} lines: {large_text}",
+        large_text.lines().count()
+    );
+    assert!(
+        !large_text.contains("/tmp/repo/kept-"),
+        "the default lists no kept path: {large_text}"
+    );
+    assert!(
+        large_text.contains("removed 0, eligible 0, absent 0, kept 2000, removal failures 0"),
+        "the summary still matches the aggregate: {large_text}"
+    );
 }
 
 /// A `--release-stale` recovery stays visible in the compact default.
@@ -747,7 +984,7 @@ fn prune_compact_text_reports_recovery_results() {
             failed: 0,
         },
     };
-    let text = render_text(&aggregate, std::time::Duration::from_millis(500));
+    let text = render_text(&aggregate, std::time::Duration::from_millis(500), false);
     assert!(
         text.contains("leases: 3 stale candidate(s), 2 released"),
         "recovery counts stay visible: {text}"
@@ -885,6 +1122,69 @@ fn cli_prune_remove_deletes_clean_closed_worktree_and_keeps_branch() {
         .find(|row| row.lease_id == "lease-remove")
         .expect("row");
     assert_eq!(row.status, LEASE_STATUS_RELEASED);
+}
+
+/// A corrupt or unreadable scope map skips the repository without reading or
+/// mutating its unsafe scope, but it still finishes in the pass-wide tally:
+/// the final progress line reports the real processed total and the skipped
+/// count exactly as the aggregate does.
+#[test]
+fn cli_prune_reports_a_corrupt_scope_map_as_a_finished_skipped_repository() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("cli-prune-corrupt-scope") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("cli-prune-corrupt-scope");
+    ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = add_real_worktree(&repo, "phasegent/916-corrupt");
+    insert_lease_for_identity(
+        &storage,
+        "lease-corrupt",
+        &identity,
+        "session-A",
+        LEASE_STATUS_RETAINED,
+        now_unix_secs(),
+        &target.to_string_lossy(),
+    );
+    // The sidecar names a different issue than its own lease, so the whole
+    // scope map is corrupt evidence and the repository must be skipped.
+    storage
+        .connection
+        .execute(
+            "INSERT INTO worktree_lease_scopes              (lease_id, provider, project, external_id, task_id, created_at)              VALUES ('lease-corrupt', 'redmine', 'tools', 99, NULL, 1)",
+            [],
+        )
+        .expect("corrupt scope row");
+    let repo_path = repo.dir.path().to_string_lossy().into_owned();
+    let lines = std::sync::Mutex::new(Vec::<String>::new());
+    let exit = execute_prune_with_source(
+        Some(&repo_path),
+        999,
+        false,
+        None,
+        false,
+        "json",
+        &ScriptedIssueStateSource::closed(),
+        &FakeOpenCodeApi::empty(),
+        &|line: &str| {
+            lines.lock().expect("progress lock").push(line.to_owned());
+        },
+        StaleRecoveryScope::All,
+        false,
+    );
+    assert_eq!(exit, 0, "a skipped repository is not a failure");
+    assert!(
+        target.exists(),
+        "the corrupt scope map must keep the unsafe worktree"
+    );
+    let seen = lines.lock().expect("progress lock").clone();
+    assert!(
+        seen.iter()
+            .any(|line| line.contains("1/1 repos") && line.contains("skipped 1")),
+        "the skipped repository finishes the tally: {seen:?}"
+    );
 }
 
 #[test]

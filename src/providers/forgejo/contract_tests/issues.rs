@@ -293,7 +293,6 @@ fn metadata_total_and_link_complete_exactly() {
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.total_count, Some(2));
     assert_eq!(server.join().unwrap().len(), 3);
-
 }
 
 #[test]
