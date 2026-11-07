@@ -13,7 +13,9 @@ use crate::cli::issue_closure::{
     LinkScopeReader,
 };
 use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// Scripted link scopes keyed by issue number.
 struct FakeLinks {
@@ -522,4 +524,259 @@ fn the_close_adapter_keeps_a_neighbour_the_provider_does_not_know() {
         .confirm_others_closed(7, &[7, 8])
         .expect_err("a missing issue keeps the directory");
     assert!(reason.contains("was not found"), "got: {reason}");
+}
+
+/// The prune policy: a candidate answers through the provider and project
+/// its own scope names, never through the configured default.
+#[derive(Clone)]
+struct ScopedProvider {
+    provider: String,
+    closed: Rc<Vec<(String, String, u64)>>,
+    asked: Rc<RefCell<Vec<(String, String, u64)>>>,
+    default_asked: Rc<RefCell<Vec<u64>>>,
+}
+
+impl ScopedProvider {
+    fn new(provider: &str) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            closed: Rc::new(Vec::new()),
+            asked: Rc::new(RefCell::new(Vec::new())),
+            default_asked: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn closed_for(self, provider: &str, project: &str, issue: u64) -> Self {
+        Self {
+            closed: Rc::new(vec![(provider.to_owned(), project.to_owned(), issue)]),
+            ..self
+        }
+    }
+
+    fn asked(&self) -> Vec<(String, String, u64)> {
+        self.asked.borrow().clone()
+    }
+
+    /// The numbers the default provider was asked about.
+    fn default_asked(&self) -> Vec<u64> {
+        self.default_asked.borrow().clone()
+    }
+}
+
+impl IssueStateReader for ScopedProvider {
+    fn provider(&self) -> Result<String, String> {
+        Ok(self.provider.clone())
+    }
+
+    fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
+        self.default_asked.borrow_mut().push(issue);
+        Ok(None)
+    }
+
+    fn scoped_state(
+        &self,
+        _repo_path: &Path,
+        issue: u64,
+        provider: &str,
+        project: &str,
+    ) -> Result<Option<IssueStateFact>, String> {
+        self.asked
+            .borrow_mut()
+            .push((provider.to_owned(), project.to_owned(), issue));
+        if self
+            .closed
+            .iter()
+            .any(|(known, scope, number)| known == provider && scope == project && *number == issue)
+        {
+            return Ok(Some(fact("closed", None, None)));
+        }
+        Ok(None)
+    }
+}
+
+fn prune_source(links: FakeLinks, provider: ScopedProvider) -> ComposedIssueStateSource {
+    ComposedIssueStateSource::new_prune(Box::new(links), Box::new(provider))
+}
+
+#[test]
+fn prune_dispatches_a_link_scope_to_its_own_provider() {
+    use crate::cli::issue_closure::IssueStateSource;
+    let provider = ScopedProvider::new("forgejo").closed_for("redmine", "23", 7);
+    let source = prune_source(
+        FakeLinks::none().with(7, "redmine", "23", "7"),
+        provider.clone(),
+    );
+    assert_eq!(
+        source.closure(&repo(), 7),
+        IssueClosure::Closed,
+        "the Redmine link scope must answer even under a Forgejo default"
+    );
+    assert_eq!(
+        provider.asked(),
+        vec![("redmine".to_owned(), "23".to_owned(), 7)],
+        "only the scoped provider answers"
+    );
+    assert!(
+        provider.default_asked().is_empty(),
+        "the configured default must not answer a scoped candidate"
+    );
+}
+
+#[test]
+fn prune_keeps_an_ambiguous_link_scope() {
+    use crate::cli::issue_closure::IssueStateSource;
+    let provider = ScopedProvider::new("forgejo").closed_for("redmine", "23", 7);
+    let source = prune_source(
+        FakeLinks::none()
+            .with(7, "redmine", "23", "7")
+            .with(7, "forgejo", "owner/repo", "7"),
+        provider,
+    );
+    let verdict = source.closure(&repo(), 7);
+    assert!(matches!(verdict, IssueClosure::Keep(_)), "{verdict:?}");
+}
+
+#[test]
+fn prune_keeps_a_link_external_id_mismatch() {
+    use crate::cli::issue_closure::IssueStateSource;
+    let provider = ScopedProvider::new("forgejo").closed_for("redmine", "23", 7);
+    let source = prune_source(FakeLinks::none().with(7, "redmine", "23", "8"), provider);
+    let verdict = source.closure(&repo(), 7);
+    assert!(matches!(verdict, IssueClosure::Keep(_)), "{verdict:?}");
+}
+
+#[test]
+fn prune_keeps_a_number_without_scope_evidence() {
+    use crate::cli::issue_closure::IssueStateSource;
+    let provider = ScopedProvider::new("forgejo");
+    let source = prune_source(FakeLinks::none(), provider.clone());
+    let verdict = source.closure(&repo(), 7);
+    assert!(matches!(verdict, IssueClosure::Keep(_)), "{verdict:?}");
+    assert!(
+        provider.default_asked().is_empty(),
+        "the configured default must not answer a number without scope evidence"
+    );
+}
+
+#[test]
+fn prune_dispatches_a_sidecar_through_its_own_scope() {
+    use crate::cli::issue_closure::IssueStateSource;
+    let provider = ScopedProvider::new("forgejo").closed_for("redmine", "23", 7);
+    let source = prune_source(FakeLinks::none(), provider);
+    let sidecar = crate::worktree::LeaseScope::new("redmine", "23", 7).unwrap();
+    assert_eq!(
+        source.scoped_closure(&repo(), 7, Some(&sidecar)),
+        IssueClosure::Closed,
+        "the lease sidecar names its own provider"
+    );
+}
+
+#[test]
+fn prune_keeps_a_sidecar_that_contradicts_the_link_scope() {
+    use crate::cli::issue_closure::IssueStateSource;
+    let provider = ScopedProvider::new("forgejo").closed_for("redmine", "23", 7);
+    let source = prune_source(FakeLinks::none().with(7, "redmine", "23", "7"), provider);
+    let sidecar = crate::worktree::LeaseScope::new("forgejo", "owner/repo", 7).unwrap();
+    let verdict = source.scoped_closure(&repo(), 7, Some(&sidecar));
+    assert!(matches!(verdict, IssueClosure::Keep(_)), "{verdict:?}");
+
+    let provider = ScopedProvider::new("forgejo").closed_for("redmine", "23", 7);
+    let source = prune_source(
+        FakeLinks::none().with(7, "redmine", "23", "8"),
+        provider.clone(),
+    );
+    let sidecar = crate::worktree::LeaseScope::new("redmine", "23", 7).unwrap();
+    let verdict = source.scoped_closure(&repo(), 7, Some(&sidecar));
+    assert!(matches!(verdict, IssueClosure::Keep(_)), "{verdict:?}");
+    assert!(provider.asked().is_empty());
+}
+
+/// The prune link reader proves the physical link identity once and re-proves
+/// it at the final boundaries. An origin change between the scan and the
+/// removal recheck keeps the directory instead of swapping the cached key and
+/// authorizing a removal under another repository identity.
+#[test]
+fn a_changed_link_identity_before_removal_keeps() {
+    use super::support::{TempRepo, open_temp_db};
+    use crate::branch_links::{
+        IssueKey, LinkParams, ensure_schema as ensure_link_schema, store::link,
+    };
+    use crate::cli::issue_closure::GitLinkScopeReader;
+
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-link-identity") else {
+        return;
+    };
+    let (_temp, storage, _env) = open_temp_db("prune-link-identity");
+    crate::worktree::ensure_schema(&storage).expect("worktree schema");
+    ensure_link_schema(&storage.connection).expect("link schema");
+    let runner = ProcessWorktreeRunner::new();
+    runner
+        .run(
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.test/first/repo.git",
+            ],
+            repo.dir.path(),
+        )
+        .expect("origin A");
+    let issue = 7;
+    let repo_key = crate::worktree::lease_scope::verified_repo_key_for_identity(
+        &crate::worktree::repo_identity(&runner, repo.dir.path()).expect("identity"),
+    )
+    .expect("origin-derived key A");
+    let branch = crate::git_runner::current_branch(
+        &crate::git_runner::ProcessGitRunner::in_directory(repo.dir.path()),
+    )
+    .expect("branch");
+    link(
+        &storage.connection,
+        &LinkParams {
+            repo_key: &repo_key,
+            branch: &branch,
+            issue: &IssueKey::new("redmine", "tools", issue.to_string()).unwrap(),
+            issue_number: issue,
+            source: "test",
+            now: now_unix_secs().max(1),
+        },
+    )
+    .expect("link under identity A");
+
+    let source = ComposedIssueStateSource::new_prune(
+        Box::new(GitLinkScopeReader::new_read_only()),
+        Box::new(ScopedProvider::new("redmine").closed_for("redmine", "tools", issue)),
+    );
+    assert_eq!(
+        source.closure(repo.dir.path(), issue),
+        IssueClosure::Closed,
+        "the scan proves the issue closed under identity A"
+    );
+
+    // The checkout origin changes before the removal recheck.
+    runner
+        .run(
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.test/second/repo.git",
+            ],
+            repo.dir.path(),
+        )
+        .expect("origin B");
+    // The final proof boundary invalidates the target and must re-prove the
+    // physical link identity rather than reuse the cached key.
+    source.invalidate(repo.dir.path(), &[issue]);
+    let verdict = source.closure(repo.dir.path(), issue);
+    match verdict {
+        IssueClosure::Keep(reason) => assert!(
+            reason.contains("link identity changed"),
+            "the keep names the changed identity: {reason}"
+        ),
+        IssueClosure::Closed => {
+            panic!("a changed repository link identity must never authorize the removal")
+        }
+    }
 }

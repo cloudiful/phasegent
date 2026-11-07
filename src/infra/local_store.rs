@@ -55,6 +55,22 @@ impl SqliteLocalStore {
         Ok(Self { connection })
     }
 
+    /// Open an already existing local store read-only.
+    ///
+    /// No directory is created, no schema is applied, no seed runs and no
+    /// write is possible: an absent store is an error, never a creation.
+    pub fn open_read_only_at(path: &Path) -> Result<Self, String> {
+        if !path.exists() {
+            return Err("the local store is not present".to_owned());
+        }
+        let connection = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(|error| format!("could not open the local store read-only: {error}"))?;
+        Ok(Self { connection })
+    }
+
     fn initialise(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(PRAGMA_STATEMENTS_LOCAL)
             .map_err(|e| format!("could not configure local database: {e}"))?;
@@ -70,6 +86,20 @@ impl SqliteLocalStore {
 /// `CREATE TABLE IF NOT EXISTS` via [`SqliteLocalStore::open`].
 pub fn open_local() -> Result<SqliteLocalStore, String> {
     SqliteLocalStore::open()
+}
+
+/// Read-only opener for the exact-name store: an existing file only, never
+/// created, migrated or written.
+pub fn open_local_read_only() -> Result<SqliteLocalStore, String> {
+    if let Some(p) = std::env::var_os("PHASEGENT_LOCAL_DB_PATH") {
+        let path = PathBuf::from(p);
+        if !path.is_absolute() {
+            return Err("PHASEGENT_LOCAL_DB_PATH must be an absolute path".to_owned());
+        }
+        return SqliteLocalStore::open_read_only_at(&path);
+    }
+    let path = project_dirs_local_path()?;
+    SqliteLocalStore::open_read_only_at(&path)
 }
 
 /// Testable exact-name opener at an explicit path.

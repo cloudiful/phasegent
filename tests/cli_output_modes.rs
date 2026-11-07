@@ -309,6 +309,23 @@ fn the_prune_keeps_its_legacy_formats_and_the_default_follows_auto() {
             run.stderr
         );
     }
+    // A dry-run preview against an absent store creates nothing: no database
+    // file and no schema, whether or not stale recovery was requested.
+    assert!(
+        !scratch.path("phasegent.sqlite3").exists(),
+        "a preview must not create the lease store"
+    );
+    let stale_preview = run_cli(
+        &scratch,
+        Some("orchestrator"),
+        &["worktree", "prune", "--dryrun", "--release-stale"],
+    );
+    assert_eq!(stale_preview.code, 0, "stderr: {}", stale_preview.stderr);
+    assert!(
+        !scratch.path("phasegent.sqlite3").exists(),
+        "a stale preview must not create the lease store"
+    );
+
     // A contradictory pair is rejected at parse time.
     let conflict = run_cli(
         &scratch,
@@ -322,6 +339,62 @@ fn the_prune_keeps_its_legacy_formats_and_the_default_follows_auto() {
         conflict.stderr.contains("conflicts with --output"),
         "stderr: {}",
         conflict.stderr
+    );
+    assert!(
+        !scratch.path("phasegent.sqlite3").exists(),
+        "even a refused invocation must not create the lease store"
+    );
+}
+
+/// The verbose selection changes the human text only: the machine document
+/// stays exactly the aggregate, and a pipe never carries a control sequence.
+#[test]
+fn the_verbose_prune_selection_never_changes_the_machine_document() {
+    let scratch = Scratch::new("prune-verbose");
+    let concise = run_cli(
+        &scratch,
+        Some("orchestrator"),
+        &["worktree", "prune", "--dryrun", "--json"],
+    );
+    assert_eq!(concise.code, 0, "stderr: {}", concise.stderr);
+    let verbose = run_cli(
+        &scratch,
+        Some("orchestrator"),
+        &["worktree", "prune", "--dryrun", "--json", "--verbose"],
+    );
+    assert_eq!(verbose.code, 0, "stderr: {}", verbose.stderr);
+    assert_eq!(
+        concise.stdout, verbose.stdout,
+        "the verbose selection leaves the machine document unchanged"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(verbose.stdout.trim()).expect("one JSON document");
+    assert!(
+        value.get("__verbose").is_none(),
+        "the verbose marker never reaches the machine document: {value}"
+    );
+    let text = run_cli(
+        &scratch,
+        Some("orchestrator"),
+        &[
+            "worktree",
+            "prune",
+            "--dryrun",
+            "--format",
+            "text",
+            "--verbose",
+        ],
+    );
+    assert_eq!(text.code, 0, "stderr: {}", text.stderr);
+    assert!(
+        text.stdout.starts_with("worktree prune ("),
+        "the verbose text keeps the summary: {}",
+        text.stdout
+    );
+    assert!(
+        !text.stdout.contains('\u{1b}') && !text.stdout.contains('\r'),
+        "a pipe carries no control sequence: {:?}",
+        text.stdout
     );
 }
 

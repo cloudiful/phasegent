@@ -272,6 +272,7 @@ pub(crate) fn execute_worktree_scoped(
             reason,
             dry_run,
             format,
+            verbose,
             no_sync: _,
         } => {
             if !caller.is_orchestrator_authorized() {
@@ -284,6 +285,7 @@ pub(crate) fn execute_worktree_scoped(
                 reason,
                 dry_run,
                 &format,
+                verbose,
                 credential,
                 context,
             )

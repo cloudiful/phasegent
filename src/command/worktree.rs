@@ -233,6 +233,7 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
             "--dryrun",
             "--dry-run",
             "--json",
+            "--verbose",
         ],
         "worktree prune",
     )?;
@@ -293,6 +294,7 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         reason,
         dry_run,
         format,
+        verbose: has_flag(args, "--verbose"),
         no_sync: has_flag(args, "--no-sync"),
     }))
 }
@@ -621,6 +623,7 @@ mod tests {
                 reason,
                 dry_run,
                 format,
+                verbose,
                 no_sync,
             }) => {
                 assert_eq!(repo, None);
@@ -633,6 +636,7 @@ mod tests {
                     "the stored legacy default stays text; the effective format follows the global output mode"
                 );
                 assert_eq!(reason, None);
+                assert!(!verbose, "--verbose must default off");
                 assert!(!no_sync, "--no-sync must default off");
             }
             other => panic!("unexpected command {other:?}"),
@@ -822,6 +826,7 @@ mod tests {
                 reason: None,
                 dry_run: false,
                 format: "text".to_owned(),
+                verbose: false,
                 no_sync: false,
             }
             .sync_taxi()

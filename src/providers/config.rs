@@ -242,6 +242,66 @@ impl RedmineConfig {
         })
     }
 
+    /// The read-only resolution used by admission and by the prune pass.
+    ///
+    /// It resolves the same address and close-status precedence as
+    /// [`Self::resolve`], but over an already existing store: no schema
+    /// creation, no migration and no credential write. A legacy role address
+    /// is read, never migrated.
+    pub fn resolve_with_storage(
+        storage: &Storage,
+        role: Role,
+        api_base: Option<&str>,
+        project_id: Option<&str>,
+        close_status_id: Option<&str>,
+    ) -> Result<Self, PhasegentError> {
+        let stored = auth::load_redmine_config(role, storage).map_err(PhasegentError::config)?;
+        let base = match api_base {
+            Some(value) => value.to_owned(),
+            None => auth::redmine_api_base_read_only(storage)
+                .map_err(PhasegentError::config)?
+                .ok_or_else(|| {
+                    PhasegentError::config(
+                        "Redmine API base is not configured; set the global redmine_api_base \
+                         (config set redmine-api-base) or use --api-base",
+                    )
+                })?,
+        };
+        let project_id = project_id
+            .map(str::to_owned)
+            .filter(|value| !value.trim().is_empty());
+        let close_status_id = close_status_id
+            .map(str::to_owned)
+            .or_else(|| {
+                std::env::var("PHASEGENT_REDMINE_CLOSE_STATUS_ID")
+                    .ok()
+                    .or_else(|| std::env::var("PHASEGENT_CLOSE_STATUS_ID").ok())
+            })
+            .or_else(|| {
+                stored
+                    .as_ref()
+                    .and_then(|config| config.close_status_id)
+                    .map(|value| value.to_string())
+            })
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| PhasegentError::config("Redmine close status id must be numeric"))
+            })
+            .transpose()?;
+        if close_status_id == Some(0) {
+            return Err(PhasegentError::config(
+                "Redmine close status id must be greater than zero.",
+            ));
+        }
+        let api_base = remote::normalize_redmine_api_base(&base).map_err(PhasegentError::config)?;
+        Ok(Self {
+            api_base,
+            project_id,
+            close_status_id,
+        })
+    }
+
     pub fn require_project_id(&self) -> Result<&str, PhasegentError> {
         self.project_id
             .as_deref()

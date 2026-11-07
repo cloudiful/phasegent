@@ -203,6 +203,18 @@ fn attest_origin_repository(
     validate_repository(&origin.repository)
 }
 
+impl ForgejoConfig {
+    /// The same origin attestation, exposed on the configuration type so a
+    /// caller outside this module can compare a candidate's physical origin
+    /// against a trusted instance without duplicating the rule.
+    pub(crate) fn attest_origin_repository(
+        trusted_api_base: &str,
+        origin: &OriginRepositoryEvidence,
+    ) -> Result<String, PhasegentError> {
+        attest_origin_repository(trusted_api_base, origin)
+    }
+}
+
 /// Validate an instance base URL: http(s), a host, no userinfo, no query, no
 /// fragment. A sub-path is preserved so self-hosted instances under a prefix
 /// keep working.

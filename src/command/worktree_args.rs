@@ -23,11 +23,11 @@
 ///   lease, or syncs. Read-only; available to orchestrator, executor,
 ///   and reviewer.
 /// * `prune [--repo PATH] [--stale-days N] [--release-stale --reason
-///   TEXT] [--dryrun] [--json|--format text|json] [--remove] [--no-sync]` is
-///   the single pruning entry point (folds the former `release-stale`).
-///   Removal is the default and covers every repository identity the
-///   local lease store records; `--repo PATH` restricts the pass to one
-///   verified checkout and `--dryrun` (alias `--dry-run`) is the
+///   TEXT] [--dryrun] [--json|--format text|json] [--verbose] [--remove]
+///   [--no-sync]` is the single pruning entry point (folds the former
+///   `release-stale`). Removal is the default and covers every repository
+///   identity the local lease store records; `--repo PATH` restricts the pass
+///   to one verified checkout and `--dryrun` (alias `--dry-run`) is the
 ///   read-only preview that mutates nothing. `--release-stale` requires
 ///   a non-empty `--reason` unless it is a preview and flips exactly the
 ///   stale active leases to `retained`; the directory pass then removes
@@ -37,7 +37,9 @@
 ///   format follows the global `--output auto|text|json` selection;
 ///   `--json` / `--format json` select the machine-readable aggregate and
 ///   `--format text` the concise English text, and an explicit legacy
-///   selection wins over the automatic default. `--remove` is an accepted
+///   selection wins over the automatic default. The English text is the
+///   fixed-size summary; `--verbose` adds the bounded per-directory rows and
+///   never changes the machine document. `--remove` is an accepted
 ///   compatibility no-op and `--no-sync` is accepted but no longer runs a
 ///   sync pass. Branches are never deleted; only `git worktree remove` (no
 ///   `--force`) is invoked. Orchestrator-only.
@@ -122,6 +124,10 @@ pub enum WorktreeCommand {
         /// The effective format follows the resolved global output mode
         /// unless a legacy format was requested explicitly.
         format: String,
+        /// The verbose detail selection: the human text lists every bounded
+        /// action row instead of the fixed-size summary. It never changes the
+        /// machine document, and the JSON output ignores it.
+        verbose: bool,
         no_sync: bool,
     },
     Heartbeat {

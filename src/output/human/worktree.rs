@@ -257,6 +257,12 @@ pub(crate) fn render_acquire(value: &Value, context: &OutputContext) -> String {
 }
 
 /// The curated `worktree prune` rendering.
+///
+/// The default view is the fixed-size summary: the aggregate counts, the
+/// kept-reason breakdown, and at most a few failure examples. The per
+/// directory rows are the verbose detail, selected by the `__verbose` marker
+/// the prune command sets on the rendered copy (the machine document never
+/// carries it).
 pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
     let mut lines = Lines::new(context);
     let dry_run = value
@@ -273,18 +279,6 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
     if repos.is_some_and(|repos| repos.is_empty()) {
         lines.text(0, "no repositories with recorded worktree leases");
     }
-    for repo in repos.into_iter().flatten() {
-        let Some(actions) = repo
-            .get("worktrees")
-            .and_then(|worktrees| worktrees.get("actions"))
-            .and_then(Value::as_array)
-        else {
-            continue;
-        };
-        for action in actions {
-            render_prune_action(&mut lines, action);
-        }
-    }
     let totals = value.get("totals");
     if let Some(totals) = totals {
         let count = |key: &str| totals.get(key).and_then(Value::as_u64).unwrap_or(0);
@@ -296,9 +290,18 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
             + count("kept_protected")
             + count("kept_issue");
         let failed = count("failed");
-        lines.row(format!(
-            "removed {removed}, eligible {eligible}, absent {absent}, kept {kept}, removal failures {failed}"
-        ));
+        // A preview reports what it would remove; it never claims a removal.
+        let counts = if dry_run {
+            format!(
+                "would remove {eligible}, absent {absent}, kept {kept}, removal failures {failed}"
+            )
+        } else {
+            format!(
+                "removed {removed}, eligible {eligible}, absent {absent}, kept {kept}, removal \
+                 failures {failed}"
+            )
+        };
+        lines.row(counts);
         let mut main = 0u64;
         let mut waiting = 0u64;
         for repo in repos.into_iter().flatten() {
@@ -330,6 +333,31 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
             count("kept_issue"),
             count("kept_unknown")
         ));
+    }
+    let verbose = value
+        .get(VERBOSE_MARKER)
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if verbose {
+        for repo in repos.into_iter().flatten() {
+            let Some(actions) = repo
+                .get("worktrees")
+                .and_then(|worktrees| worktrees.get("actions"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for action in actions {
+                render_prune_action(&mut lines, action);
+            }
+        }
+    } else {
+        render_prune_failures(&mut lines, repos.into_iter().flatten());
+    }
+    let totals = value.get("totals");
+    if let Some(totals) = totals {
+        let count = |key: &str| totals.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let absent = count("absent");
         if absent > 0 {
             lines.row(format!(
                 "absent: {absent} recorded worktree path(s) no longer exist on disk (historical lease evidence, not an OpenCode registration state)"
@@ -365,6 +393,51 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         lines.row(format!("skipped repositories: {skipped}"));
     }
     lines.finish()
+}
+
+/// The marker the verbose prune rendering is selected with. The prune command
+/// sets it on the rendered copy only, so the machine document never carries it.
+const VERBOSE_MARKER: &str = "__verbose";
+
+/// The maximum number of failure examples the default summary shows.
+const MAX_FAILURE_EXAMPLES: usize = 5;
+
+/// The bounded failure examples of the default summary: the actionable
+/// removals that failed, with the omitted count as a hint.
+fn render_prune_failures<'a>(lines: &mut Lines, repos: impl Iterator<Item = &'a Value>) {
+    let mut failures: Vec<(&str, &str)> = Vec::new();
+    for repo in repos {
+        let Some(actions) = repo
+            .get("worktrees")
+            .and_then(|worktrees| worktrees.get("actions"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for action in actions {
+            if action.get("result").and_then(Value::as_str) != Some("failed") {
+                continue;
+            }
+            let path = action
+                .get("worktree_path")
+                .and_then(Value::as_str)
+                .unwrap_or("-");
+            let message = action
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("removal failed");
+            failures.push((path, message));
+        }
+    }
+    for (path, message) in failures.iter().take(MAX_FAILURE_EXAMPLES) {
+        lines.row(format!("failed {}: {message}", shorten_path(path)));
+    }
+    let omitted = failures.len().saturating_sub(MAX_FAILURE_EXAMPLES);
+    if omitted > 0 {
+        lines.row(format!(
+            "{omitted} further removal failure(s) not shown; run with --verbose for every one"
+        ));
+    }
 }
 
 /// The stable classification of one kept-protected message for the human
@@ -415,8 +488,13 @@ fn render_prune_action(lines: &mut Lines, action: &Value) {
                 None => lines.row(format!("kept {path}")),
             }
         }
-        // The absent directories and the no-op rows are reported by the
-        // counts; they carry no action of their own.
+        // Historical lease paths that no longer exist are complete detail in
+        // verbose mode; the compact default still reports them by count only.
+        "absent" => match message {
+            Some(message) => lines.row(format!("absent {path}: {message}")),
+            None => lines.row(format!("absent {path}")),
+        },
+        // The no-op rows are reported by the counts.
         _ => {}
     }
 }

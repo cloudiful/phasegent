@@ -3,6 +3,7 @@ use super::support::*;
 use super::*;
 
 use crate::lifecycle::cleanup::TargetResolver;
+use crate::worktree::leases::StaleRecoveryScope;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 
 /// Build a scope and pinned-active set over the temp repo's rows.
@@ -478,6 +479,7 @@ fn prune_operator_authorized_and_managed_denied() {
         reason: None,
         dry_run: true,
         format: "json".to_owned(),
+        verbose: false,
         no_sync: true,
     };
     // The role gate fires before any issue-state read, so the production
@@ -491,4 +493,275 @@ fn prune_operator_authorized_and_managed_denied() {
         preview(),
     );
     assert_eq!(denied, 3, "managed prune without a role must be denied");
+}
+
+/// A preview never claims a removal: the summary counts what it would remove
+/// and the verbose rows label the eligible directory as prunable.
+#[test]
+fn a_preview_text_never_reports_a_removal() {
+    let aggregate = crate::cli::worktree::PruneAggregate {
+        dry_run: true,
+        remove: false,
+        release_stale: false,
+        stale_days: 7,
+        repos: vec![crate::cli::worktree::PruneRepoOutcome {
+            repo_identity: "/tmp/repo/.git".to_owned(),
+            repo_path: Some("/tmp/repo".to_owned()),
+            skipped_reason: None,
+            leases: None,
+            worktrees: Some(crate::cli::worktree::PruneSummary {
+                scanned: 1,
+                removed: 0,
+                eligible: 1,
+                absent: 0,
+                kept_active: 0,
+                kept_unknown: 0,
+                kept_protected: 0,
+                kept_issue: 0,
+                failed: 0,
+                dry_run: true,
+                stale_days: 7,
+                actions: vec![crate::cli::worktree::PruneAction {
+                    worktree_path: "/tmp/repo/wt".to_owned(),
+                    branch: "phasegent/7-a".to_owned(),
+                    status: LEASE_STATUS_RETAINED.to_owned(),
+                    heartbeat_at: 0,
+                    lease_ids: vec!["lease-a".to_owned()],
+                    issues: vec![7],
+                    prunable: true,
+                    result: "prunable".to_owned(),
+                    message: Some("dry-run: would call git worktree remove".to_owned()),
+                    relocated_children: Vec::new(),
+                    planned_children: Vec::new(),
+                }],
+            }),
+        }],
+        totals: crate::cli::worktree::PruneTotals {
+            repositories: 1,
+            removed: 0,
+            eligible: 1,
+            absent: 0,
+            kept_active: 0,
+            kept_unknown: 0,
+            kept_protected: 0,
+            kept_issue: 0,
+            failed: 0,
+        },
+    };
+    let text = crate::cli::worktree::render_text(&aggregate, std::time::Duration::ZERO, true);
+    assert!(
+        text.contains("would remove 1"),
+        "the preview counts what it would remove: {text}"
+    );
+    assert!(
+        !text.contains("removed 0, eligible"),
+        "the preview never reports a removal: {text}"
+    );
+    assert!(
+        text.contains("prunable /tmp/repo/wt"),
+        "the eligible row stays labelled prunable: {text}"
+    );
+}
+
+/// The prune composition reads the branch-link store read-only: an absent
+/// store is no scope evidence and is never created by the candidate proof.
+#[test]
+fn the_prune_link_evidence_never_creates_the_store() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-readonly-store") else {
+        return;
+    };
+    let temp = TempDir::new("prune-readonly-store");
+    let db = temp.path().join("absent.sqlite3");
+    let _env = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        db.as_os_str().to_string_lossy().as_ref(),
+    );
+    let source = crate::cli::issue_closure::configured_source_prune(
+        Role::Orchestrator,
+        crate::cli::provider_context::ProviderContext::default(),
+    );
+    let verdict = source.closure(repo.dir.path(), 7);
+    match verdict {
+        IssueClosure::Keep(reason) => assert!(
+            reason.contains("branch link store"),
+            "the absent store must keep with a bounded reason: {reason}"
+        ),
+        other => panic!("an absent branch-link store must keep, got {other:?}"),
+    }
+    assert!(
+        !db.exists(),
+        "the read-only candidate proof must never create the store"
+    );
+}
+
+/// A preview never creates or migrates the lease store. An absent database and
+/// an existing database without the lease table both report the normal empty
+/// preview, leaving the filesystem and schema untouched.
+#[test]
+fn a_preview_against_an_absent_lease_store_creates_nothing() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-absent-preview") else {
+        return;
+    };
+    let repo_path = repo.dir.path().to_string_lossy().into_owned();
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let temp = TempDir::new("prune-absent-preview");
+
+    let absent = temp.path().join("absent.sqlite3");
+    {
+        let _env = EnvGuard::set(
+            "PHASEGENT_DB_PATH",
+            absent.as_os_str().to_string_lossy().as_ref(),
+        );
+        let code = execute_prune_with_source(
+            Some(&repo_path),
+            14,
+            false,
+            None,
+            true,
+            "json",
+            &source,
+            &api,
+            &|_| {},
+            StaleRecoveryScope::All,
+            false,
+        );
+        assert_eq!(code, 0, "an absent store is an empty successful preview");
+    }
+    assert!(
+        !absent.exists(),
+        "a preview must not create an absent lease store"
+    );
+
+    let empty = temp.path().join("empty.sqlite3");
+    {
+        let connection = rusqlite::Connection::open(&empty).expect("create the empty database");
+        connection
+            .execute_batch("CREATE TABLE unrelated (id INTEGER PRIMARY KEY);")
+            .expect("an unrelated table");
+    }
+    {
+        let _env = EnvGuard::set(
+            "PHASEGENT_DB_PATH",
+            empty.as_os_str().to_string_lossy().as_ref(),
+        );
+        let code = execute_prune_with_source(
+            Some(&repo_path),
+            14,
+            false,
+            None,
+            true,
+            "json",
+            &source,
+            &api,
+            &|_| {},
+            StaleRecoveryScope::All,
+            false,
+        );
+        assert_eq!(code, 0, "an absent lease table is an empty preview");
+    }
+    let connection = rusqlite::Connection::open(&empty).expect("reopen the empty database");
+    let lease_table: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'worktree_leases'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect the schema");
+    assert_eq!(lease_table, 0, "a preview must not create the lease table");
+}
+
+/// A present but older lease schema is a bounded configuration error, never a
+/// migration on the preview path.
+#[test]
+fn a_preview_against_an_old_lease_schema_is_a_bounded_error() {
+    let _lock = lock_workflow_tests();
+    let Some(repo) = TempRepo::init("prune-old-preview") else {
+        return;
+    };
+    let repo_path = repo.dir.path().to_string_lossy().into_owned();
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let temp = TempDir::new("prune-old-preview");
+    let db = temp.path().join("old.sqlite3");
+    {
+        let connection = rusqlite::Connection::open(&db).expect("create the old database");
+        connection
+            .execute_batch("CREATE TABLE worktree_leases (lease_id TEXT PRIMARY KEY);")
+            .expect("an old lease table");
+    }
+    {
+        let _env = EnvGuard::set(
+            "PHASEGENT_DB_PATH",
+            db.as_os_str().to_string_lossy().as_ref(),
+        );
+        let code = execute_prune_with_source(
+            Some(&repo_path),
+            14,
+            false,
+            None,
+            true,
+            "json",
+            &source,
+            &api,
+            &|_| {},
+            StaleRecoveryScope::All,
+            false,
+        );
+        assert_eq!(code, 1, "an old schema is a bounded configuration error");
+    }
+    let connection = rusqlite::Connection::open(&db).expect("reopen the old database");
+    let columns: Vec<String> = connection
+        .prepare("PRAGMA table_info(worktree_leases)")
+        .expect("describe the lease table")
+        .query_map([], |row| row.get(1))
+        .expect("read the columns")
+        .collect::<Result<_, _>>()
+        .expect("decode the columns");
+    assert_eq!(
+        columns,
+        vec!["lease_id".to_owned()],
+        "a preview must never migrate the lease schema"
+    );
+}
+
+/// An existing directory that is not a Git repository is an identity error for
+/// an explicit `--repo`, even when the store is absent: it must never succeed
+/// as an empty preview, and validating it must not create the store.
+#[test]
+fn a_preview_of_a_non_repository_directory_fails_without_creating_the_store() {
+    let _lock = lock_workflow_tests();
+    let temp = TempDir::new("prune-non-repo-preview");
+    let not_a_repo = temp.path().join("not-a-repo");
+    std::fs::create_dir_all(&not_a_repo).expect("create the plain directory");
+    let db = temp.path().join("absent.sqlite3");
+    let _env = EnvGuard::set(
+        "PHASEGENT_DB_PATH",
+        db.as_os_str().to_string_lossy().as_ref(),
+    );
+    let api = FakeOpenCodeApi::empty();
+    let source = ScriptedIssueStateSource::closed();
+    let code = execute_prune_with_source(
+        Some(not_a_repo.to_str().expect("utf-8 path")),
+        14,
+        false,
+        None,
+        true,
+        "json",
+        &source,
+        &api,
+        &|_| {},
+        StaleRecoveryScope::All,
+        false,
+    );
+    assert_eq!(
+        code, 1,
+        "an explicit non-repository directory must fail as an identity error"
+    );
+    assert!(
+        !db.exists(),
+        "validating the explicit selection must not create the lease store"
+    );
 }

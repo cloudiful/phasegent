@@ -71,7 +71,7 @@ pub(crate) enum PruneMode {
 }
 
 impl PruneMode {
-    fn is_report(self) -> bool {
+    pub(crate) fn is_report(self) -> bool {
         matches!(self, PruneMode::Report)
     }
 }
@@ -434,11 +434,6 @@ fn classify_group(
             "same-number unscoped history makes the ownership ambiguous".to_owned(),
         ));
     }
-    if !legacy_numeric_leases && !group.scoped {
-        return Classification::keep(PruneDisposition::SkippedIssue(
-            "the selected provider does not own unscoped legacy history".to_owned(),
-        ));
-    }
     if group.scoped && !scoped_group_matches(provider_scope, group) {
         return Classification::keep(PruneDisposition::SkippedIssue(
             "scoped provider lease requires provider-aware cleanup".to_owned(),
@@ -464,7 +459,14 @@ fn classify_group(
     }
     match path_entry(&group.canonical_path) {
         PathEntry::Present => {}
-        PathEntry::Missing => return Classification::keep(PruneDisposition::MissingDirectory),
+        PathEntry::Missing => {
+            if !group.scoped && !legacy_numeric_leases {
+                return Classification::keep(PruneDisposition::SkippedIssue(
+                    "the selected provider does not own unscoped legacy history".to_owned(),
+                ));
+            }
+            return Classification::keep(PruneDisposition::MissingDirectory);
+        }
         PathEntry::Unreadable(reason) => {
             return Classification::keep(PruneDisposition::SkippedProtected(reason));
         }
@@ -498,7 +500,7 @@ fn classify_group(
             }
         }
     }
-    match closure_of(source, scope, group) {
+    match closure_of(source, scope, group, scopes) {
         IssueClosure::Closed => Classification {
             disposition: PruneDisposition::Removable,
             cache,
@@ -569,9 +571,10 @@ fn scoped_group_matches(provider_scope: Option<(&str, &str)>, group: &DirectoryG
         // A durable task authorizes its own routing: its provider and project
         // come from the task, not from the pass-wide default.
         Some(_) => true,
+        // Without an explicit selection the group's own scope decides.
         None => match provider_scope {
             Some((provider, project)) => key.provider == provider && key.project == project,
-            None => false,
+            None => true,
         },
     }
 }
@@ -642,16 +645,22 @@ fn closure_of(
     source: &dyn IssueStateSource,
     scope: &PruneScope<'_>,
     group: &DirectoryGroup,
+    scopes: &std::collections::HashMap<String, crate::worktree::LeaseScope>,
 ) -> IssueClosure {
     let own = own_task_scope(group);
     let mut keep: Vec<String> = Vec::new();
     for issue in &group.issues {
+        let sidecar = group
+            .rows
+            .iter()
+            .find(|row| row.issue == *issue)
+            .and_then(|row| scopes.get(&row.lease_id));
         let verdict = match &own {
             Some((task, own_issue)) if issue == own_issue => {
                 source.own_task_closure(scope.repo_path, *task, *issue)
             }
             Some(_) => source.associated_closure(scope.repo_path, *issue),
-            None => source.closure(scope.repo_path, *issue),
+            None => source.scoped_closure(scope.repo_path, *issue, sidecar),
         };
         if !verdict.is_closed()
             && let Some(reason) = verdict.keep_reason()
@@ -690,6 +699,49 @@ fn own_task_scope(group: &DirectoryGroup) -> Option<(TaskScopeRef<'_>, u64)> {
     ))
 }
 
+/// The typed progress stage of one prune pass. The sink is deliberately
+/// narrow: it carries the verification and deletion boundaries plus one
+/// completed outcome per candidate, never a rendered line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PruneStage {
+    /// A candidate's verification starts.
+    Verifying { candidate: usize },
+    /// A real directory removal starts, immediately before `apply_removal`.
+    Deleting { candidate: usize },
+    /// A candidate's action completed.
+    Applied { outcome: PruneOutcome },
+}
+
+/// The classified outcome of one candidate action. It is derived from the
+/// action's own result field so the progress tally and the aggregate summary
+/// share one classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PruneOutcome {
+    Pruned,
+    Prunable,
+    Absent,
+    KeptActive,
+    KeptUnknown,
+    KeptProtected,
+    KeptIssue,
+    Failed,
+    Noop,
+}
+
+fn classify_outcome(action: &PruneAction) -> PruneOutcome {
+    match action.result.as_str() {
+        "pruned" => PruneOutcome::Pruned,
+        "prunable" => PruneOutcome::Prunable,
+        "absent" => PruneOutcome::Absent,
+        "skipped_active" => PruneOutcome::KeptActive,
+        "skipped_unknown" => PruneOutcome::KeptUnknown,
+        "skipped_protected" => PruneOutcome::KeptProtected,
+        "skipped_issue" => PruneOutcome::KeptIssue,
+        "failed" => PruneOutcome::Failed,
+        _ => PruneOutcome::Noop,
+    }
+}
+
 /// The prune pass. Candidate scanning is read-only; only [`PruneMode::Remove`]
 /// may delete a directory, and only after a fresh re-read of rows and guards
 /// through `fresh_api` (never the scan cache).
@@ -709,7 +761,7 @@ pub(crate) fn prune_pass(
     source: &dyn IssueStateSource,
     stale_days: u32,
     mode: PruneMode,
-    progress: &dyn Fn(&str),
+    stages: &dyn Fn(PruneStage),
 ) -> PruneSummary {
     prune_pass_with_policy(
         storage,
@@ -724,7 +776,7 @@ pub(crate) fn prune_pass(
         MovePolicy::NoWait,
         None,
         true,
-        progress,
+        stages,
     )
 }
 
@@ -745,7 +797,7 @@ pub(crate) fn prune_pass_with_policy(
     confirmation: MovePolicy<'_>,
     provider_scope: Option<(&str, &str)>,
     legacy_numeric_leases: bool,
-    progress: &dyn Fn(&str),
+    stages: &dyn Fn(PruneStage),
 ) -> PruneSummary {
     // The durable key of the physical repository this pass acts on, proven
     // from that repository's own checkout. It is derived once, outside every
@@ -780,26 +832,37 @@ pub(crate) fn prune_pass_with_policy(
         provider_scope,
         legacy_numeric_leases,
     );
-    let actions: Vec<PruneAction> = candidates
-        .iter()
-        .map(|candidate| {
-            apply_candidate(
-                storage,
-                runner,
-                fresh_api,
-                scope,
-                repo_key.as_deref(),
-                pinned_active,
-                source,
-                candidate,
-                mode,
-                confirmation,
-                provider_scope,
-                legacy_numeric_leases,
-                progress,
-            )
-        })
-        .collect();
+    // The candidate loop reports the verification and deletion boundaries and
+    // one completed outcome per candidate. The cumulative counters are owned by
+    // the caller, so nothing here invents a total or counts an unfinished
+    // action.
+    let total = candidates.len();
+    let mut actions: Vec<PruneAction> = Vec::with_capacity(total);
+    for (index, candidate) in candidates.iter().enumerate() {
+        stages(PruneStage::Verifying {
+            candidate: index + 1,
+        });
+        let action = apply_candidate(
+            storage,
+            runner,
+            fresh_api,
+            scope,
+            repo_key.as_deref(),
+            pinned_active,
+            source,
+            candidate,
+            mode,
+            confirmation,
+            provider_scope,
+            legacy_numeric_leases,
+            stages,
+            index + 1,
+        );
+        stages(PruneStage::Applied {
+            outcome: classify_outcome(&action),
+        });
+        actions.push(action);
+    }
     summarize(actions, candidates.len(), mode, stale_days)
 }
 
@@ -817,7 +880,8 @@ fn apply_candidate(
     confirmation: MovePolicy<'_>,
     provider_scope: Option<(&str, &str)>,
     legacy_numeric_leases: bool,
-    progress: &dyn Fn(&str),
+    stages: &dyn Fn(PruneStage),
+    candidate_index: usize,
 ) -> PruneAction {
     let mut action = PruneAction {
         worktree_path: candidate.worktree_path.clone(),
@@ -924,10 +988,6 @@ fn apply_candidate(
                     });
                 }
             } else {
-                progress(&format!(
-                    "verifying {} before removal",
-                    candidate.worktree_path
-                ));
                 // Re-read rows and guards immediately before removal so a
                 // running session, a new active lease, or a dirty state that
                 // appeared after the scan keeps the directory.
@@ -997,19 +1057,24 @@ fn apply_candidate(
                                         action.message =
                                             Some(format!("kept on re-check: {reason}"));
                                     }
-                                    Ok(()) => apply_removal(
-                                        storage,
-                                        runner,
-                                        api,
-                                        scope,
-                                        repo_key,
-                                        pinned_active,
-                                        source,
-                                        candidate,
-                                        provider_scope,
-                                        legacy_numeric_leases,
-                                        &mut action,
-                                    ),
+                                    Ok(()) => {
+                                        stages(PruneStage::Deleting {
+                                            candidate: candidate_index,
+                                        });
+                                        apply_removal(
+                                            storage,
+                                            runner,
+                                            api,
+                                            scope,
+                                            repo_key,
+                                            pinned_active,
+                                            source,
+                                            candidate,
+                                            provider_scope,
+                                            legacy_numeric_leases,
+                                            &mut action,
+                                        )
+                                    }
                                 },
                             }
                         }
@@ -1469,16 +1534,16 @@ fn summarize(
         actions: Vec::with_capacity(actions.len()),
     };
     for action in actions {
-        match action.result.as_str() {
-            "pruned" => summary.removed += 1,
-            "prunable" => summary.eligible += 1,
-            "absent" => summary.absent += 1,
-            "skipped_active" => summary.kept_active += 1,
-            "skipped_unknown" => summary.kept_unknown += 1,
-            "skipped_protected" => summary.kept_protected += 1,
-            "skipped_issue" => summary.kept_issue += 1,
-            "failed" => summary.failed += 1,
-            _ => {}
+        match classify_outcome(&action) {
+            PruneOutcome::Pruned => summary.removed += 1,
+            PruneOutcome::Prunable => summary.eligible += 1,
+            PruneOutcome::Absent => summary.absent += 1,
+            PruneOutcome::KeptActive => summary.kept_active += 1,
+            PruneOutcome::KeptUnknown => summary.kept_unknown += 1,
+            PruneOutcome::KeptProtected => summary.kept_protected += 1,
+            PruneOutcome::KeptIssue => summary.kept_issue += 1,
+            PruneOutcome::Failed => summary.failed += 1,
+            PruneOutcome::Noop => {}
         }
         summary.actions.push(action);
     }

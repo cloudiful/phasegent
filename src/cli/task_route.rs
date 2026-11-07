@@ -348,7 +348,7 @@ pub(crate) fn resolve_single_number(
     let Some(binding) = resolve_number_binding(context, number)? else {
         return Ok(None);
     };
-    let provider = pinned_provider(role, &binding, context)?;
+    let provider = pinned_provider(role, &binding, context, false)?;
     Ok(Some(ResolvedTaskRoute { binding, provider }))
 }
 
@@ -486,6 +486,30 @@ pub(crate) fn provider_for_binding(
     binding: &TaskBinding,
     context: &ProviderContext,
 ) -> Result<ProviderDispatcher, PhasegentError> {
+    provider_for_binding_with(role, binding, context, false)
+}
+
+/// The read-only form of [`provider_for_binding`]: the same binding, context
+/// and provenance checks, but a Local task opens only an existing store and a
+/// missing store keeps instead of creating or seeding one.
+///
+/// The prune composition uses this so a read-only candidate proof never
+/// initializes the separate Local database. Every other provider and every
+/// close/sync caller keeps the write-capable [`provider_for_binding`].
+pub(crate) fn provider_for_binding_read_only(
+    role: Role,
+    binding: &TaskBinding,
+    context: &ProviderContext,
+) -> Result<ProviderDispatcher, PhasegentError> {
+    provider_for_binding_with(role, binding, context, true)
+}
+
+fn provider_for_binding_with(
+    role: Role,
+    binding: &TaskBinding,
+    context: &ProviderContext,
+    local_read_only: bool,
+) -> Result<ProviderDispatcher, PhasegentError> {
     if !binding_matches_context(binding, context)? {
         return Err(config_error(format!(
             "explicit provider/endpoint/project does not match durable task {}; \
@@ -493,7 +517,7 @@ pub(crate) fn provider_for_binding(
             binding.key().external_id()
         )));
     }
-    pinned_provider(role, binding, context)
+    pinned_provider(role, binding, context, local_read_only)
 }
 
 /// The durable tasks of one number inside one physical repository, read on
@@ -513,6 +537,7 @@ fn pinned_provider(
     role: Role,
     binding: &TaskBinding,
     context: &ProviderContext,
+    local_read_only: bool,
 ) -> Result<ProviderDispatcher, PhasegentError> {
     let key = binding.key();
     match key.provider() {
@@ -592,7 +617,14 @@ fn pinned_provider(
             crate::providers::config::RedmineProvider::new(config, api_key)
                 .map(ProviderDispatcher::Redmine)
         }
-        "local" => crate::providers::local::LocalProvider::open().map(ProviderDispatcher::local),
+        "local" => {
+            let open = if local_read_only {
+                crate::providers::local::LocalProvider::open_read_only
+            } else {
+                crate::providers::local::LocalProvider::open
+            };
+            open().map(ProviderDispatcher::local)
+        }
         other => Err(config_error(format!(
             "durable task has unsupported provider '{other}'"
         ))),

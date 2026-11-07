@@ -38,7 +38,21 @@ pub(crate) struct OriginRepositoryEvidence {
 /// error, so an unbound selection inside Git fails closed instead of guessing
 /// the first one.
 pub(crate) fn forgejo_origin_evidence() -> Result<OriginRepositoryEvidence, String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    forgejo_origin_evidence_at(&cwd)
+}
+
+/// The same evidence read from one named checkout.
+///
+/// The candidate's own repository is proven, never the process working
+/// directory, so a prune candidate in another repository is judged by its own
+/// origin.
+pub(crate) fn forgejo_origin_evidence_at(
+    path: &std::path::Path,
+) -> Result<OriginRepositoryEvidence, String> {
     let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
         .args(["remote", "get-url", "--all", "origin"])
         .output()
         .map_err(|error| format!("could not inspect git remote: {error}"))?;

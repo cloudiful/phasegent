@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-use crate::output::context::{OutputContext, OutputMode};
+use crate::output::context::{HumanView, OutputContext, OutputMode};
 
 /// The draw rate of the ticker: about ten frames per second.
 const REFRESH_HZ: u8 = 10;
@@ -48,7 +48,7 @@ impl ProgressGuard {
         let bar = if allowed(context) {
             let bar = ProgressBar::new_spinner();
             bar.set_draw_target(ProgressDrawTarget::stderr_with_hz(REFRESH_HZ));
-            bar.set_style(spinner_style());
+            bar.set_style(style_for(context.view));
             bar.set_message(sanitize(message));
             bar.enable_steady_tick(TICK_INTERVAL);
             Some(bar)
@@ -150,6 +150,19 @@ pub fn clear() {
 /// Publish the ticker of the running command.
 fn publish(bar: Option<ProgressBar>) {
     ACTIVE.with(|active| *active.borrow_mut() = bar);
+}
+
+/// The style of the command's ticker. Worktree prune uses the supported
+/// `wide_msg` field so the whole visible line, including its prefix and
+/// counts, is truncated to the terminal width instead of wrapping to a
+/// second physical row. Every other command keeps its existing style.
+fn style_for(view: HumanView) -> ProgressStyle {
+    match view {
+        HumanView::WorktreePrune => spinner_style()
+            .template("{spinner} {wide_msg}")
+            .expect("the prune progress template is static"),
+        _ => spinner_style(),
+    }
 }
 
 /// The spinner style of the terminal.

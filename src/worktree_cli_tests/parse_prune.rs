@@ -15,6 +15,7 @@ fn parse_prune_defaults_to_removal_and_text_output() {
             reason,
             dry_run,
             format,
+            verbose,
             no_sync: _,
         }) => {
             assert_eq!(repo, None);
@@ -24,6 +25,44 @@ fn parse_prune_defaults_to_removal_and_text_output() {
             assert_eq!(reason, None);
             assert!(!dry_run, "prune defaults to removal, not preview");
             assert_eq!(format, "text", "default output is concise text");
+            assert!(!verbose, "the concise summary is the default");
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+#[test]
+fn parse_prune_verbose_selects_the_detailed_text() {
+    let invocation = crate::command::parse_with_role_env(
+        &strings(["worktree", "prune", "--verbose"]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match invocation.command {
+        Command::Worktree(WorktreeCommand::Prune {
+            verbose, format, ..
+        }) => {
+            assert!(verbose, "--verbose selects the detailed text");
+            assert_eq!(
+                format, "text",
+                "--verbose never selects the machine document"
+            );
+        }
+        other => panic!("unexpected command {other:?}"),
+    }
+    // The flag is accepted next to the legacy format aliases and never
+    // changes the machine selection.
+    let machine = crate::command::parse_with_role_env(
+        &strings(["worktree", "prune", "--verbose", "--json"]),
+        Some("orchestrator"),
+    )
+    .unwrap();
+    match machine.command {
+        Command::Worktree(WorktreeCommand::Prune {
+            verbose, format, ..
+        }) => {
+            assert!(verbose);
+            assert_eq!(format, "json");
         }
         other => panic!("unexpected command {other:?}"),
     }
