@@ -40,7 +40,8 @@ own PATH entry without removing user configuration or credentials. The MSI is
 built from `wix/phasegent.wxs` by `scripts/build-windows-msi.ps1` with WiX CLI
 6.0.2 and is inspected by `scripts/check-windows-msi.ps1` before upload. The
 workflow uploads only the raw executables and MSI, and checksums those assets.
-The product is the CLI plus the portable OpenCode plugin and skills; it has no
+The product is the CLI plus the portable OpenCode plugin and its single
+filesystem skill; it has no
 desktop runtime or macOS installer.
 
 ### Bump procedure

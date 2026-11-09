@@ -21,6 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
+#[path = "broker.rs"]
+pub mod broker;
+
 // Canonical status ids. Ids are stable so the close status seed lines
 // up with the actual mock row.
 pub const STATUS_NEW: u64 = 1;
@@ -424,17 +427,19 @@ pub fn phasegent_bin() -> &'static str {
 /// Redmine env so a developer's shell cannot leak overrides into the subprocess.
 /// `PHASEGENT_CONFIG_PATH` points at a guaranteed-missing per-test path so the
 /// ProjectDirs default TOML can never shadow integration assertions. `role` is
-/// passed explicitly through `PHASEGENT_ROLE`; `None` removes it so role-less
+/// a verified agent role granted through the loopback identity broker the
+/// spawn starts for the run; `None` removes every identity source so role-less
 /// paths stay deterministic. Both managed markers (`PHASEGENT_SESSION_ID` and
-/// the host `OPENCODE_SESSION_ID`) are removed so an ordinary Operator and a
-/// managed-missing path stay deterministic however the host looks (issue
-/// #859 P1).
+/// the host `OPENCODE_SESSION_ID`) are cleared first so an ordinary Operator
+/// and a managed-missing path stay deterministic however the host looks, and
+/// the broker then sets the session it answers for.
 pub fn run_cli(
     db_path: &Path,
     api_base: &str,
     role: Option<&str>,
     args: &[&str],
 ) -> std::process::Output {
+    let broker = role.map(|role| broker::TestBroker::start(role, "ses-test-cli-1"));
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -444,6 +449,8 @@ pub fn run_cli(
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove(broker::BROKER_ADDR_ENV)
+        .env_remove(broker::BROKER_TOKEN_ENV)
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_REDMINE_PROJECT_ID")
@@ -461,8 +468,10 @@ pub fn run_cli(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command.env(broker::BROKER_ADDR_ENV, broker.addr());
+        command.env(broker::BROKER_TOKEN_ENV, broker.token());
+        command.env("PHASEGENT_SESSION_ID", broker.session());
     }
     command.output().expect("spawn phasegent binary")
 }

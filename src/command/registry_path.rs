@@ -10,7 +10,7 @@ use super::{
     Command, CommentCommand, IssueCommand, ProjectCommand, RecordCommand, RelationCommand,
     StatusCommand, TimerCommand, VersionCommand, WorkflowCommand, WorktreeCommand,
 };
-use super::{HooksCommand, NotifyCommand, PluginCommand};
+use super::{HooksCommand, NotifyCommand, PluginCommand, SkillCommand};
 
 /// Registry path for one parsed command, or `None` for the role-agnostic
 /// `Help`/`Version` toggles.
@@ -37,6 +37,7 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::Plugin(PluginCommand::Install { .. }) => &["plugin", "install"],
         Command::Plugin(PluginCommand::Status { .. }) => &["plugin", "status"],
         Command::Plugin(PluginCommand::Uninstall { .. }) => &["plugin", "uninstall"],
+        Command::Skill(SkillCommand::Install { .. }) => &["skill", "install"],
         Command::Relation(command) => &["relation", relation_name(command)],
         Command::Timer(command) => &["timer", timer_name(command)],
         Command::Worktree(command) => &["worktree", worktree_name(command)],

@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "support/mod.rs"]
+mod support;
+
 /// A per-test scratch directory that removes itself when the test ends.
 struct Scratch {
     root: PathBuf,
@@ -52,10 +55,12 @@ impl Run {
     }
 }
 
-/// Run the binary with the given arguments. `role` models `PHASEGENT_ROLE`;
-/// `None` removes it. The managed markers are always removed so an ordinary
-/// operator stays deterministic.
+/// Run the binary with the given arguments. `role` is a verified agent role
+/// granted through the loopback identity broker the run starts; `None`
+/// removes every identity source so an ordinary operator stays
+/// deterministic.
 fn run_cli(scratch: &Scratch, role: Option<&str>, args: &[&str]) -> Run {
+    let broker = role.map(|role| support::broker::TestBroker::start(role, "ses-test-output-1"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_phasegent"));
     command
         .args(args)
@@ -68,6 +73,8 @@ fn run_cli(scratch: &Scratch, role: Option<&str>, args: &[&str]) -> Run {
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove(support::broker::BROKER_ADDR_ENV)
+        .env_remove(support::broker::BROKER_TOKEN_ENV)
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("CI")
@@ -76,8 +83,10 @@ fn run_cli(scratch: &Scratch, role: Option<&str>, args: &[&str]) -> Run {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command.env(support::broker::BROKER_ADDR_ENV, broker.addr());
+        command.env(support::broker::BROKER_TOKEN_ENV, broker.token());
+        command.env("PHASEGENT_SESSION_ID", broker.session());
     }
     let output = command.output().expect("spawn phasegent binary");
     Run {
@@ -137,7 +146,7 @@ fn every_agent_role_reads_machine_json_on_a_pipe() {
         Some("executor"),
         Some("reviewer"),
         Some("explore"),
-        Some("admin"),
+        None,
     ] {
         let run = run_cli(&scratch, role, &["doctor"]);
         assert_eq!(run.code, 0, "role {role:?} stderr: {}", run.stderr);

@@ -115,6 +115,8 @@ fn reviewer_non_utf8_role_must_error_instead_of_operator_downgrade() {
 
 /// Every denial is a structured `permission` envelope on stderr with exit
 /// 3 and nothing on stdout, and it fires before the provider is resolved.
+/// The record kind is derived from the verified role, so a role can no
+/// longer name another role's kind.
 #[test]
 fn record_create_denials_fire_before_any_provider_access() {
     let scratch = Scratch::new();
@@ -132,32 +134,9 @@ fn record_create_denials_fire_before_any_provider_access() {
         error_envelope(&out)
     };
 
-    // admin is never an agent role.
-    let envelope = deny(
-        "admin",
-        &[
-            "--provider",
-            "local",
-            "record",
-            "create",
-            "1",
-            "--kind",
-            "executor",
-            "--key",
-            "k",
-            "--phase",
-            "P1",
-            "--attempt",
-            "1",
-            "--body",
-            "n",
-        ],
-    );
-    assert_eq!(envelope["error"]["kind"], "permission");
-    assert_eq!(envelope["error"]["operation"], "record create");
-
-    // executor may not publish another role's kind.
-    let envelope = deny(
+    // The kind is derived, so a create that names one is an argument error.
+    let out = run_local(
+        &db,
         "executor",
         &[
             "--provider",
@@ -173,49 +152,17 @@ fn record_create_denials_fire_before_any_provider_access() {
             "P1",
             "--attempt",
             "1",
-            "--review",
-            "final",
             "--body",
             "n",
             "--authorized",
         ],
     );
-    assert!(
-        envelope["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("reviewer")
-    );
-
-    // recon belongs to explore, not executor.
-    let envelope = deny(
-        "executor",
-        &[
-            "--provider",
-            "local",
-            "record",
-            "create",
-            "1",
-            "--kind",
-            "recon",
-            "--key",
-            "k",
-            "--recon",
-            "scan",
-            "--body",
-            "n",
-            "--authorized",
-        ],
-    );
-    assert!(
-        envelope["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("recon")
-    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr_text(&out));
+    assert!(stderr_text(&out).contains("unknown option '--kind'"));
 
     // explore may only publish recon...
-    let envelope = deny(
+    let out = run_local(
+        &db,
         "explore",
         &[
             "--provider",
@@ -223,8 +170,6 @@ fn record_create_denials_fire_before_any_provider_access() {
             "record",
             "create",
             "1",
-            "--kind",
-            "executor",
             "--key",
             "k",
             "--phase",
@@ -236,11 +181,16 @@ fn record_create_denials_fire_before_any_provider_access() {
             "--authorized",
         ],
     );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "");
+    let envelope = error_envelope(&out);
+    assert_eq!(envelope["error"]["kind"], "argument");
     assert!(
         envelope["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("executor")
+            .contains("--recon"),
+        "a recon record requires --recon: {envelope:?}"
     );
 
     // ...and only with explicit authorization.
@@ -252,8 +202,6 @@ fn record_create_denials_fire_before_any_provider_access() {
             "record",
             "create",
             "1",
-            "--kind",
-            "recon",
             "--key",
             "k",
             "--recon",
@@ -278,8 +226,6 @@ fn record_create_denials_fire_before_any_provider_access() {
             "record",
             "create",
             "1",
-            "--kind",
-            "executor",
             "--key",
             "k",
             "--phase",
@@ -316,8 +262,6 @@ fn operator_admin_malformed_and_managed_record_denials() {
             "record",
             "create",
             "1",
-            "--kind",
-            "executor",
             "--key",
             "k",
             "--phase",
@@ -340,7 +284,8 @@ fn operator_admin_malformed_and_managed_record_denials() {
             .contains("use comment create instead")
     );
 
-    // Explicit Admin publishes no record kind (narrow, unchanged).
+    // A broker that reports the human bootstrap role is refused: `admin` is
+    // never an agent, so the verified context fails closed.
     let out = run_local(
         &db,
         "admin",
@@ -350,8 +295,6 @@ fn operator_admin_malformed_and_managed_record_denials() {
             "record",
             "create",
             "1",
-            "--kind",
-            "recon",
             "--key",
             "k",
             "--recon",
@@ -361,10 +304,34 @@ fn operator_admin_malformed_and_managed_record_denials() {
             "--authorized",
         ],
     );
-    assert_eq!(out.status.code(), Some(3), "{}", stderr_text(&out));
-    assert_eq!(error_envelope(&out)["error"]["kind"], "permission");
+    assert_eq!(out.status.code(), Some(2), "{}", stderr_text(&out));
+    assert_eq!(error_envelope(&out)["error"]["kind"], "argument");
+    assert!(
+        stderr_text(&out).contains("managed session requires a role"),
+        "an unknown agent role fails closed: {}",
+        stderr_text(&out)
+    );
 
-    // Malformed role errors as an argument failure, never a downgrade.
+    // A malformed role variable errors as an argument failure, never a
+    // downgrade: the legacy variable is still validated, it just never
+    // grants an identity.
+    #[cfg(unix)]
+    {
+        let out = isolated_raw_context(
+            &scratch,
+            "PHASEGENT_ROLE",
+            std::ffi::OsStr::new("wizard"),
+            &["--provider", "local", "record", "list", "1"],
+        );
+        assert_eq!(out.status.code(), Some(2), "{}", stderr_text(&out));
+        assert!(
+            stderr_text(&out).contains("PHASEGENT_ROLE is invalid"),
+            "malformed role must error: {}",
+            stderr_text(&out)
+        );
+    }
+
+    // A broker that reports an unknown agent role fails closed as well.
     let out = run_local_with_role(
         &db,
         Some("wizard"),
@@ -372,8 +339,8 @@ fn operator_admin_malformed_and_managed_record_denials() {
     );
     assert_eq!(out.status.code(), Some(2), "{}", stderr_text(&out));
     assert!(
-        stderr_text(&out).contains("PHASEGENT_ROLE is invalid"),
-        "malformed role must error: {}",
+        stderr_text(&out).contains("managed session requires a role"),
+        "an unknown broker role fails closed: {}",
         stderr_text(&out)
     );
 
@@ -386,8 +353,6 @@ fn operator_admin_malformed_and_managed_record_denials() {
             "record",
             "create",
             "1",
-            "--kind",
-            "executor",
             "--key",
             "k",
             "--phase",
@@ -437,8 +402,6 @@ fn host_marker_without_role_fails_closed_like_managed_session() {
                 "record",
                 "create",
                 "1",
-                "--kind",
-                "executor",
                 "--key",
                 "k",
                 "--phase",
@@ -489,8 +452,6 @@ fn host_marker_without_role_fails_closed_like_managed_session() {
             "record",
             "create",
             "1",
-            "--kind",
-            "executor",
             "--key",
             "k",
             "--phase",
@@ -511,8 +472,8 @@ fn host_marker_without_role_fails_closed_like_managed_session() {
         stderr_text(&out)
     );
 
-    // A known role with the host marker present stays authorized: the marker
-    // is classification-only and never overrides the explicit role.
+    // A known role with a matching host marker stays authorized: the marker
+    // is classification-only and never overrides the verified role.
     super::fixtures::init_local(&db);
     let issue = super::fixtures::seed_issue(&db, "host marker role check");
     let id = issue.to_string();
@@ -520,7 +481,7 @@ fn host_marker_without_role_fails_closed_like_managed_session() {
         &db,
         Some("explore"),
         None,
-        Some("host-session"),
+        Some("ses-test-1"),
         &["--provider", "local", "record", "list", &id],
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
@@ -577,8 +538,6 @@ fn record_create_permission_denial_precedes_unavailable_forgejo_provider() {
             "record",
             "create",
             "7",
-            "--kind",
-            "reviewer",
             "--key",
             "k",
             "--phase",

@@ -24,6 +24,7 @@ pub(crate) mod provider_context;
 mod record;
 mod relation;
 mod scope_guard;
+mod skill;
 mod status;
 pub(crate) mod task_route;
 mod version;
@@ -49,8 +50,8 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
 }
 
 /// Role-injectable entry point for in-process tests. Mirrors [`run`] but
-/// takes the role context directly so a test never has to mutate the
-/// process-global environment.
+/// takes an already verified agent role directly, so a test never has to
+/// mutate the process-global environment or run a host broker.
 #[cfg(test)]
 pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Option<&str>) -> i32 {
     let args = args.into_iter().collect::<Vec<_>>();
@@ -67,8 +68,9 @@ pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Op
 }
 
 /// Fully injectable entry point for deterministic caller tests: `role_env`
-/// models `PHASEGENT_ROLE`, `session_present` models `PHASEGENT_SESSION_ID`
-/// presence. Parallel tests use this instead of mutating process env.
+/// models an already verified agent role, `session_present` models the
+/// managed session marker. Parallel tests use this instead of mutating
+/// process env.
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn run_with_caller(
@@ -134,17 +136,16 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             api_base: auth_base,
             repository: auth_repository,
             close_status_id: auth_close_status_id,
+            target_role,
         } => {
-            // Operator provisions through the admin scope; a managed session
-            // without a role fails closed before any credential or storage
-            // access. Explicit agents keep their own role scope.
-            let role = match invocation.caller {
-                CallerContext::Operator => Role::Admin,
-                CallerContext::Agent(role) => role,
-                CallerContext::ManagedWithoutRole => {
-                    return managed_denial("admin auth setup");
-                }
-            };
+            // Provisioning is a human-operator surface. A verified agent or a
+            // managed session without a role is rejected before any secret or
+            // storage access, even when it tries to choose a target row.
+            let role =
+                match operator_supply_scope(invocation.caller, target_role, "admin auth setup") {
+                    Ok(target) => target.unwrap_or(Role::Admin),
+                    Err(code) => return code,
+                };
             let requested_provider = auth_provider.or(invocation.provider);
             let provider = match resolve_kind(role, requested_provider) {
                 Ok(provider) => provider,
@@ -168,9 +169,8 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         }
         Command::Doctor => doctor::execute_doctor(),
         Command::ConfigShow => {
-            // The CLI re-uses `invocation.role` so a user that runs
-            // `PHASEGENT_ROLE=executor phasegent config show` gets a
-            // single-role view, and `phasegent config show` (no
+            // The CLI re-uses `invocation.role` so a verified agent role
+            // gets a single-role view, and `phasegent config show` (no
             // role) returns the global snapshot. Open the SQLite
             // database once so any structured failure surfaces
             // through the same path as the config facade.
@@ -187,15 +187,15 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             setting,
             value,
             stdin,
+            target_role,
         } => {
+            let write_role =
+                match operator_supply_scope(invocation.caller, target_role, "admin config set") {
+                    Ok(role) => role,
+                    Err(code) => return code,
+                };
             let result = open_storage().and_then(|storage| {
-                crate::config::set_json(
-                    invocation.role,
-                    &setting,
-                    value.as_deref(),
-                    stdin,
-                    &storage,
-                )
+                crate::config::set_json(write_role, &setting, value.as_deref(), stdin, &storage)
             });
             match result {
                 Ok(outcome) => print_json(&outcome),
@@ -204,9 +204,17 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                 }
             }
         }
-        Command::ConfigClear { setting } => {
+        Command::ConfigClear {
+            setting,
+            target_role,
+        } => {
+            let write_role =
+                match operator_supply_scope(invocation.caller, target_role, "admin config clear") {
+                    Ok(role) => role,
+                    Err(code) => return code,
+                };
             let result = open_storage()
-                .and_then(|storage| crate::config::clear_json(invocation.role, &setting, &storage));
+                .and_then(|storage| crate::config::clear_json(write_role, &setting, &storage));
             match result {
                 Ok(outcome) => print_json(&outcome),
                 Err(message) => {
@@ -356,6 +364,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         },
         Command::Hooks(command) => hooks::execute_hooks(command),
         Command::Plugin(command) => plugin::execute_plugin(command),
+        Command::Skill(command) => skill::execute_skill(command),
         Command::Notify(command) => notify::execute_notify_with_caller(invocation.caller, command),
         Command::Worktree(command) => {
             worktree::execute_worktree_scoped(invocation.caller, &provider_invocation, command)
@@ -395,6 +404,7 @@ fn shows_progress(command: &Command) -> bool {
         | Command::ConfigProviderClear
         | Command::Hooks(_)
         | Command::Plugin(_)
+        | Command::Skill(_)
         | Command::Notify(_)
         | Command::Doctor
         | Command::Worktree(_) => false,
@@ -469,15 +479,36 @@ pub(crate) fn required_role(role: Option<Role>) -> Role {
     role.expect("operation parsing requires a role")
 }
 
-/// Fail-closed denial for a managed session without a role attempting a
-/// business/permissioned command. Fires before any credential, provider, or
-/// side effect; utility commands never reach here.
+/// Human-only provisioning scope. `--target-role` selects the storage row,
+/// never the caller identity; a verified agent or a managed session without a
+/// role is refused here, before any secret or storage access. `None` keeps the
+/// existing default (Admin for credential writes, the config layer's central
+/// resolver for settings).
+fn operator_supply_scope(
+    caller: CallerContext,
+    target_role: Option<Role>,
+    operation: &str,
+) -> Result<Option<Role>, i32> {
+    match caller {
+        CallerContext::Operator => Ok(target_role),
+        CallerContext::Agent(role) => Err(permission_denial(role, operation)),
+        CallerContext::ManagedWithoutRole => Err(managed_denial(operation)),
+    }
+}
+
+/// Fail-closed denial for a managed session without a verified role
+/// attempting a business/permissioned command. Fires before any credential,
+/// provider, or side effect; utility commands never reach here.
+///
+/// The wording keeps the established "managed session requires a role"
+/// prefix; the hint names the verified host context instead of the legacy
+/// self-selected role variable, which no longer grants an identity.
 pub(crate) fn managed_denial(operation: &str) -> i32 {
     structured_error(
         serde_json::json!({
             "kind":"permission",
             "operation":operation,
-            "message":format!("managed session requires a role for {operation}; set PHASEGENT_ROLE")
+            "message":managed_denial_message(operation)
         }),
         3,
     )
@@ -486,7 +517,13 @@ pub(crate) fn managed_denial(operation: &str) -> i32 {
 /// Fail-closed denial for a managed session without a role at the config
 /// layer (which returns strings, not exit codes).
 pub(crate) fn managed_denial_message(operation: &str) -> String {
-    format!("managed session requires a role for {operation}; set PHASEGENT_ROLE")
+    let mut message = format!(
+        "managed session requires a role for {operation}; the host did not verify this session"
+    );
+    if let Some(reason) = crate::host_context::last_denial() {
+        message.push_str(&format!(" ({reason})"));
+    }
+    message
 }
 
 pub(crate) fn permission_error(role: Role, capability: Capability) -> i32 {

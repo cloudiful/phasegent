@@ -43,11 +43,14 @@ impl Role {
         Self::Explore,
     ];
 
-    /// The roles that may create a structured record. Equal to
-    /// [`Role::RECORD_READ_ROLES`]; the narrower per-kind and
-    /// `--authorized` restrictions are enforced by the record command
-    /// itself, not by widening the set of write-capable roles.
-    pub const RECORD_WRITE_ROLES: &'static [Role] = Self::RECORD_READ_ROLES;
+    /// The roles that may create a structured record. The record kind is
+    /// derived from the verified role, so only the roles that own one can
+    /// publish: `executor` publishes an executor record, `reviewer` a
+    /// reviewer record, and `explore` a recon record. The orchestrator
+    /// owns no kind (it publishes comments) and the human bootstrap role
+    /// never publishes an agent record.
+    pub const RECORD_WRITE_ROLES: &'static [Role] =
+        &[Self::Executor, Self::Reviewer, Self::Explore];
 
     pub const fn allows(self, capability: Capability) -> bool {
         match self {
@@ -120,16 +123,28 @@ impl FromStr for Role {
     }
 }
 
-/// Invocation policy context: unmanaged human Operator vs managed Agent roles.
+/// Invocation policy context: unmanaged human Operator vs verified Agent
+/// roles.
 ///
-/// The environment signals are routing/policy, not authenticated identity:
-/// without `PHASEGENT_ROLE` and without either managed marker
-/// (`PHASEGENT_SESSION_ID` or the host-driven `OPENCODE_SESSION_ID`) the CLI
-/// is an unmanaged Operator; an explicit valid role keeps the existing
-/// agent-role permission matrix; with either marker present (even blank) but
-/// no role the invocation is a managed session missing its role and fails
-/// closed for business commands. Invalid roles always error and never
-/// downgrade.
+/// The agent identity of a managed session is never read from a
+/// self-selected environment variable. It is verified locally against the
+/// host broker, which owns the facts it observed in a host tool event (see
+/// [`crate::host_context`]). The environment signals are routing/policy,
+/// not authenticated identity:
+///
+/// * without a verifiable host context and without any managed marker
+///   (`PHASEGENT_SESSION_ID`, the host-driven `OPENCODE_SESSION_ID`, or the
+///   legacy `PHASEGENT_ROLE`) the CLI is an unmanaged Operator;
+/// * a verified host context yields the agent role the broker derived
+///   from its stored host facts;
+/// * with any managed marker present but no verifiable host context the
+///   invocation is a managed session missing its role and fails closed for
+///   business commands.
+///
+/// `PHASEGENT_ROLE` never grants identity. It is a legacy marker only: a
+/// malformed value is still an argument error (never a silent downgrade),
+/// and a well-formed value marks the invocation as managed so it fails
+/// closed instead of inheriting operator authority.
 ///
 /// `OPENCODE_SESSION_ID` is classification-only: the host shell tool sets it
 /// unconditionally for every managed shell invocation, so its presence proves
@@ -164,7 +179,10 @@ pub const SESSION_ENV: &str = "PHASEGENT_SESSION_ID";
 /// proves a managed shell even when the bridge left no `PHASEGENT_SESSION_ID`,
 /// but it never supplies a worktree/session identity.
 pub const HOST_SESSION_ENV: &str = "OPENCODE_SESSION_ID";
-/// Environment variable that carries the explicit agent role.
+/// Legacy environment variable that once carried the explicit agent role.
+/// It is now a marker only: it never grants an identity, it only marks the
+/// invocation as managed so it fails closed without a verified host
+/// context.
 #[allow(dead_code)]
 pub const ROLE_ENV: &str = "PHASEGENT_ROLE";
 
@@ -180,13 +198,18 @@ pub fn session_present() -> bool {
     std::env::var_os(SESSION_ENV).is_some() || std::env::var_os(HOST_SESSION_ENV).is_some()
 }
 
-/// Resolve `PHASEGENT_ROLE` from the process environment with Unix raw-value
-/// semantics: absent (`NotPresent`) or blank means no explicit role;
-/// present non-Unicode (`NotUnicode`) is an argument error and is never
-/// treated as absent; otherwise the trimmed value must parse as a [`Role`].
-/// Central helper for the production parse path so both the parser and
-/// [`CallerContext`] detection obey the same rule before any permissioned
-/// side effect. Pure parser tests stay deterministic by injecting `&str`.
+/// Resolve the legacy `PHASEGENT_ROLE` variable with Unix raw-value
+/// semantics: absent (`NotPresent`) or blank means the variable carries no
+/// role; present non-Unicode (`NotUnicode`) is an argument error and is
+/// never treated as absent; otherwise the trimmed value must parse as a
+/// [`Role`].
+///
+/// The parsed value is **not** an identity: a self-selected variable can
+/// neither select an agent credential nor reach the admin surface. It only
+/// reports whether the variable is syntactically usable, so a malformed
+/// value stays an argument error (never a silent downgrade) while a
+/// well-formed value is inert. Pure parser tests stay deterministic by
+/// injecting `&str`.
 pub fn role_from_env() -> Result<Option<Role>, String> {
     match std::env::var_os(ROLE_ENV) {
         None => Ok(None),
@@ -204,6 +227,18 @@ pub fn role_from_env() -> Result<Option<Role>, String> {
                 }
             }
         },
+    }
+}
+
+/// Whether the legacy `PHASEGENT_ROLE` marker is present with a
+/// non-blank value. The marker never carries an identity; it only marks
+/// the invocation as managed so it fails closed when no host broker
+/// context verifies it. A blank value is not a marker (it matches the
+/// "absent" semantics of [`role_from_env`]).
+pub fn legacy_role_marker_present() -> bool {
+    match std::env::var_os(ROLE_ENV) {
+        Some(raw) => raw.to_str().is_some_and(|value| !value.trim().is_empty()),
+        None => false,
     }
 }
 

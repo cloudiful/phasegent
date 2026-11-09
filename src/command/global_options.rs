@@ -68,7 +68,7 @@ fn global_option_example(flag: &str, value: &str) -> String {
     } else {
         format!("phasegent {flag} {value}")
     };
-    format!("PHASEGENT_ROLE=executor {invocation} issue create --title TITLE --body BODY")
+    format!("{invocation} issue create --title TITLE --body BODY")
 }
 
 /// Bounded presentation pre-scan of the leading global-option prefix.

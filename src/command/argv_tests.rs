@@ -425,10 +425,10 @@ fn empty_argv_is_root_help_and_role_is_required_for_operations() {
         "unexpected error: {error}"
     );
 
-    // Invalid roles always error, even with a managed marker.
+    // An invalid verified role always errors, even with a managed marker.
     let error = parse_with_caller_env(&args(&["issue", "get", "1"]), Some("wizard"), true)
         .expect_err("invalid role must error");
-    assert!(error.contains("PHASEGENT_ROLE is invalid"), "got: {error}");
+    assert!(error.contains("invalid agent role"), "got: {error}");
 }
 
 #[test]
@@ -456,8 +456,6 @@ fn operator_parses_business_commands_and_utility_stays_available_for_managed() {
             "record",
             "create",
             "1",
-            "--kind",
-            "executor",
             "--key",
             "k",
             "--phase",

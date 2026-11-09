@@ -16,7 +16,8 @@ cargo install --path . --force --features postgres,notify-dingtalk,notify-email
 ```
 
 checkout 构建（`cargo install --path .`）激活本地源码；release 包激活对应 tag
-二进制；`phasegent plugin install` 激活 OpenCode worktree 适配器。一次验证不要混用。
+二进制；`phasegent plugin install` 激活 OpenCode worktree 适配器；`phasegent skill
+install` 部署单一 `phasegent` skill。一次验证不要混用。
 
 Windows x64 用户可安装对应版本的
 `phasegent-<tag>-x86_64-pc-windows-msvc.msi` release 文件。它只为当前用户安装到
@@ -39,6 +40,9 @@ phasegent admin auth setup --stdin < /secure/path/token
 # 显式选择其他 provider 及其 API base
 phasegent --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
+
+# 将 credential 写入某个 agent role 而不是默认的 Admin 行
+phasegent admin auth setup --provider redmine --stdin --api-base https://redmine.example.com --target-role executor < /secure/path/executor-key
 
 # 准备 Redmine 的 project 和 role membership
 phasegent --provider redmine admin workflow bootstrap \
@@ -116,8 +120,8 @@ phasegent --output json issue get 123      # 强制机器文档
 Forgejo 与其他 provider 一样通过统一配置选择：创建 issue、用 `issue bind` 接管已有编号，
 或操作任何没有持久 task 的编号时，使用
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`，并通过
-`admin auth setup --provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`
-保存 role token。通过环境变量、TOML、已保存的机器级默认值或 role 配置设定的 Forgejo
+`admin auth setup --provider forgejo --repository owner/repo --api-base INSTANCE_ROOT --target-role <role>`
+保存该 role 的 token（省略 `--target-role` 则写入 Admin 行）。通过环境变量、TOML、已保存的机器级默认值或 role 配置设定的 Forgejo
 默认值会走同一套选择优先级（最终回退到 Redmine），因此无需显式 `--provider`；仓库依次由显式
 `--repository`、当前 checkout 中能证明受信实例的 origin、Git 之外的已保存默认值确定。
 `INSTANCE_ROOT` 是不带 `/api/v1` 后缀的受信实例地址，客户端会自行追加该前缀；
@@ -131,11 +135,12 @@ lease、清理与 sync。不支持时间记录、relation、附件、子任务/p
 close 清理仅限匹配的 `owner/repo` scope；
 Redmine issue 没有自动 PR 关联。详见 [Forgejo provider](docs/forgejo-provider.md)。
 
-普通人类 CLI 无需 agent role：没有 `PHASEGENT_ROLE` 且没有
-`PHASEGENT_SESSION_ID` 时即为 Operator，集中使用 admin credential。显式
-`PHASEGENT_ROLE` 保留 agent 过滤 help 与 scoped config；无 role 的受管会话在任何
-credential 或网络访问之前 fail-closed。`PHASEGENT_ROLE`/`PHASEGENT_SESSION_ID`
-只是路由，不是身份认证。
+普通人类 CLI 不需要 agent role：没有经过验证的 host broker 上下文、也没有受管标记时，
+即以 Operator 运行并集中使用 admin credential。agent role 由本地 host broker 验证，
+绝不由环境变量选择；没有经过验证的 role 的受管会话会在任何 credential 或网络访问之前
+fail-closed。`PHASEGENT_ROLE` 只是 legacy 标记，不授予任何身份。为特定 agent role
+提供 credential 属于人类写操作：`admin auth setup --target-role <role>` 只选择存储行，
+不改变调用者身份。
 
 已授权的 `issue create` 可能以内建系统准备步骤触发 auto-bootstrap（admin
 credential；单匹配或显式 `--project-id` 跳过，多匹配在写入前失败；无 fallback，
@@ -145,8 +150,10 @@ credential；单匹配或显式 `--project-id` 跳过，多匹配在写入前失
 Provisioning（`auth setup`、config 写操作、`workflow bootstrap`）位于
 人类操作者专用的 `admin` 组（`phasegent admin ...`），AI role 永不调用。
 
-完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`），OpenCode
-skill 见 `skills/phasegent`：它选择 tracking 模式（`INLINE` /
+完整命令参考见 `phasegent --help`（或 `phasegent --help <topic>`）。
+`phasegent skill install` 将单一 `phasegent` skill 部署到 agent home skills 根
+（默认 `~/.agents/skills`；`--project` 用于当前 checkout；`--path DIR` 指定根），
+host 的文件系统 skill 发现即可加载。它选择 tracking 模式（`INLINE` /
 `TRACKED_ISSUE` / `LOCAL_ISSUE`），通过 `--provider` 从配置解析 provider
 （最终回退 Redmine），并记录当前的 `issue update`、结构化 `record` 发布、
 `worktree acquire --base`、`worktree probe` 与 `worktree prune` 用法。
@@ -231,9 +238,10 @@ checkout 或 dirty 目录不会产生任何 host 调用；由于 prune 对运行
 agent role。详见 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
 
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
-dist。真源为 `assets/opencode/src/` 和 `skills/phasegent/` 的提示词文件；用
-`bun run build:plugin` 重建（`bun` 仅开发时需要），绝不手改仓库中的 dist
-`assets/opencode/phasegent-worktree.js` 或已安装副本。适配器为每个会话保留精确的
+dist。唯一真源为 `assets/opencode/src/`；用 `bun run build:plugin` 重建（`bun`
+仅开发时需要），绝不手改仓库中的 dist `assets/opencode/phasegent-worktree.js` 或
+已安装副本。插件不注册内嵌 skill，只注入简短的路由/安全提示；协议与角色参考是一个由
+`phasegent skill install` 安装的文件系统 skill。适配器为每个会话保留精确的
 worktree 注册：会话只会使用记录在自己 id 下的 worktree，子会话只继承其父会话的
 目录，未知会话绝不被重定向到其他会话的 worktree。host 无法核实的既定迁移会让
 prompt 失败，而不是在未核实的目录中运行。

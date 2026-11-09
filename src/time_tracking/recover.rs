@@ -73,9 +73,9 @@ pub(crate) fn handle_recover_with_caller(
     let credential = match caller.credential_role() {
         Some(role) => role,
         None => {
-            return Err(PhasegentError::config(
-                "managed session requires a role for timer recover; set PHASEGENT_ROLE=orchestrator",
-            ));
+            return Err(PhasegentError::config(crate::cli::managed_denial_message(
+                "timer recover",
+            )));
         }
     };
     let existing = storage

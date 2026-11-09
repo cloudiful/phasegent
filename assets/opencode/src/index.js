@@ -2,8 +2,9 @@
 //
 // The deployable artifact is the checked-in single file
 // `assets/opencode/phasegent-worktree.js`, generated from this tree by
-// `bun run build:plugin` (see `build.js`); prompt bodies are inlined at build
-// time from `skills/phasegent/*.md`, and the runtime never reads a file.
+// `bun run build:plugin` (see `build.js`). The protocol prompt is the
+// filesystem skill installed by `phasegent skill install`; the adapter carries
+// only a short routing/safety hint.
 //
 // OpenCode >= 2.0 is required: the v1 plugin shape is rejected by the v2 module
 // loader (`PluginModule.LoadError: Plugin must export a default definition with
@@ -30,15 +31,11 @@
 //     `context.session.move` (packages/core/src/session/move.ts:41-49). The strategy
 //     is only claimed when the checkout already carries a phasegent issue binding,
 //     so a non-phasegent project keeps the host git strategy.
-//   * `context.skill.transform(draft => draft.add({ id, name, description, path, content }))`
-//     registers the embedded `phasegent` skill. The live v2.0.11
-//     runtime draft is `{ list, get, add, update, remove }`, and `add` takes the
-//     same flat `Skill.Info` the host's builtin skills use; the typed SDK's
-//     `source({ type: "embedded", skill })` draft does not exist at runtime.
-//   * `context.agent.transform(draft => draft.update(id, mutate))` binds each
-//     protocol agent to its own slim skill: the skill body is prepended to the
-//     agent's `system`, so the role skill is the stable, cacheable prefix of
-//     that agent's system prompt. The live v2.0.12 draft is
+//   * `context.agent.transform(draft => draft.update(id, mutate))` prepends one
+//     short routing/safety hint to each protocol agent's `system`. The full
+//     protocol and role references are one filesystem skill installed by
+//     `phasegent skill install`; the plugin registers no embedded duplicate and
+//     injects no full role document. The live v2.0.12 draft is
 //     `{ list, get, default, update, remove }`, and `update` mutates the live
 //     agent info (its `system` included). The callback is re-run whenever the
 //     agent state invalidates, so the prefix is applied idempotently.
@@ -79,6 +76,7 @@ import {
   readIssueLeases,
 } from "./binding.js";
 import { rewritePhasegentCommand } from "./command.js";
+import { createIdentityBroker, BROKER_ADDR_ENV, BROKER_TOKEN_ENV } from "./broker.js";
 import { discoverWorktreeForSession, ensureSessionWorktree } from "./discovery.js";
 import { createPromptHook, createRedirectHook } from "./hook.js";
 import {
@@ -109,8 +107,8 @@ import {
   worktreeForSession,
 } from "./session.js";
 import { reconcileSessionLocation } from "./session-reconcile.js";
-import { registerAgentSkills, roleSkillContent, roleSkillId, withSkillPrefix } from "./agents.js";
-import { registerSkill, roleSkillDefinitions, skillDefinition, skillDefinitions } from "./skills.js";
+import { registerAgentSkills, isProtocolAgent, withSkillPrefix } from "./agents.js";
+import { SKILL_ROUTING_HINT } from "./skills.js";
 import {
   gitWorktreeAdd,
   registerWorktreeStrategy,
@@ -124,17 +122,34 @@ const PhasegentWorktreePlugin = {
     // Per-plugin-instance managed shell bridge (issue #859 P1): one Map per
     // setup, never a global. It is only wired into the tool hook when the
     // host exposes the shell hook; otherwise the rewrite-only path stays.
+    //
+    // The loopback identity broker (issue #22 P1) is the only source of an
+    // agent role: the CLI asks it, the broker answers from the host facts it
+    // stored for the live tool call. Without a broker the managed shell
+    // still carries the session marker, so the CLI fails closed instead of
+    // becoming an ordinary operator CLI.
     let shellBridge = null;
     let shellBridgeEnabled = false;
+    let identityBroker = null;
     try {
       if (isShellHookSupported(context)) {
-        shellBridge = createManagedShellBridge();
+        identityBroker = createIdentityBroker();
+        await identityBroker.start();
+        shellBridge = createManagedShellBridge({ broker: identityBroker });
         shellBridgeEnabled = true;
       } else {
         warn("phasegent: host exposes no shell hook; managed shell env is disabled, command rewriting stays available");
       }
     } catch (error) {
       warn(`phasegent: managed shell bridge unavailable (${errorText(error)})`);
+      if (identityBroker && typeof identityBroker.stop === "function") {
+        try {
+          identityBroker.stop();
+        } catch (_) {
+          // stopping a broker must never break the host
+        }
+      }
+      identityBroker = null;
       shellBridge = null;
       shellBridgeEnabled = false;
     }
@@ -208,12 +223,6 @@ const PhasegentWorktreePlugin = {
       warn(`phasegent: shell hook registration failed (${errorText(error)})`);
     }
     try {
-      const skill = await registerSkill(context);
-      if (skill) registrations.push(skill);
-    } catch (error) {
-      warn(`phasegent: skill.transform registration failed (${errorText(error)})`);
-    }
-    try {
       const bound = await registerAgentSkills(context);
       if (bound) registrations.push(bound);
     } catch (error) {
@@ -234,6 +243,12 @@ const PhasegentWorktreePlugin = {
           if (registration && typeof registration.dispose === "function") {
             await registration.dispose();
           }
+        } catch (_) {
+        }
+      }
+      if (identityBroker && typeof identityBroker.stop === "function") {
+        try {
+          identityBroker.stop();
         } catch (_) {
         }
       }
@@ -263,6 +278,9 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   createManagedShellBridge,
   createShellEnvHook,
   createToolAfterHook,
+  createIdentityBroker,
+  BROKER_ADDR_ENV,
+  BROKER_TOKEN_ENV,
   isShellHookSupported,
   pickActiveWorktreePath,
   issueClosedLocally,
@@ -280,14 +298,10 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   gitWorktreeAdd,
-  registerSkill,
-  skillDefinition,
-  roleSkillDefinitions,
-  skillDefinitions,
   registerAgentSkills,
-  roleSkillId,
-  roleSkillContent,
+  isProtocolAgent,
   withSkillPrefix,
+  SKILL_ROUTING_HINT,
   createQuestionNotifier,
 });
 

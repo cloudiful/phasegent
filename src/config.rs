@@ -5,7 +5,8 @@
 //! `show` is safe to invoke without a role so an operator can read
 //! the global picture. `config set` / `config clear` persist a single
 //! setting at a time; global settings are machine-wide and usable
-//! without a role, while role-scoped settings require `PHASEGENT_ROLE`.
+//! without a role, while role-scoped settings use the Admin scope for an
+//! ordinary Operator or the human-selected `--target-role` storage row.
 //! The mirror bearer key is never accepted as a direct value; it
 //! must be supplied via `--stdin` or the secure interactive prompt.
 //!

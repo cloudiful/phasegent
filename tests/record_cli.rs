@@ -24,6 +24,8 @@ mod body_file;
 mod denials;
 #[path = "record_cli/fixtures.rs"]
 mod fixtures;
+#[path = "record_cli/identity.rs"]
+mod identity;
 #[path = "record_cli/role.rs"]
 mod role;
 #[path = "record_cli/roundtrip.rs"]

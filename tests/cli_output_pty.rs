@@ -12,6 +12,10 @@
 //! scenarios assert on the merged terminal transcript and the exit code.
 
 #[cfg(unix)]
+#[path = "support/mod.rs"]
+mod support;
+
+#[cfg(unix)]
 mod posix {
     use std::fs;
     use std::io::{Read, Write};
@@ -177,10 +181,11 @@ sys.exit(code)
 
     /// Run the binary on a pseudo-terminal with an isolated environment.
     ///
-    /// `role` models `PHASEGENT_ROLE` as a test input; `None` leaves the caller
-    /// as the ordinary Operator. The managed markers are cleared so the caller
-    /// context is explicit, and `TERM`/`LANG` are pinned so terminal detection
-    /// and the spinner glyph set are deterministic.
+    /// `role` is a verified agent role granted through the loopback identity
+    /// broker the run starts; `None` leaves the caller as the ordinary
+    /// Operator. The managed markers are cleared first so the caller context
+    /// is explicit, and `TERM`/`LANG` are pinned so terminal detection and the
+    /// spinner glyph set are deterministic.
     fn run_pty(
         scratch: &Scratch,
         role: Option<&str>,
@@ -191,6 +196,8 @@ sys.exit(code)
         if !driver.exists() {
             fs::write(&driver, PTY_DRIVER).expect("write pty driver");
         }
+        let broker =
+            role.map(|role| crate::support::broker::TestBroker::start(role, "ses-test-pty-1"));
         let mut command = Command::new("python3");
         command
             .arg(&driver)
@@ -215,16 +222,16 @@ sys.exit(code)
             .env_remove("PHASEGENT_API_BASE")
             .env_remove("PHASEGENT_REDMINE_API_BASE")
             .env_remove("PHASEGENT_SEARCH_ENDPOINT");
-        match role {
-            Some(role) => {
-                command.env("PHASEGENT_ROLE", role);
-            }
-            None => {
-                command.env_remove("PHASEGENT_ROLE");
-            }
-        }
+        command.env_remove("PHASEGENT_ROLE");
         command.env_remove("PHASEGENT_SESSION_ID");
         command.env_remove("OPENCODE_SESSION_ID");
+        command.env_remove(crate::support::broker::BROKER_ADDR_ENV);
+        command.env_remove(crate::support::broker::BROKER_TOKEN_ENV);
+        if let Some(broker) = broker.as_ref() {
+            command.env(crate::support::broker::BROKER_ADDR_ENV, broker.addr());
+            command.env(crate::support::broker::BROKER_TOKEN_ENV, broker.token());
+            command.env("PHASEGENT_SESSION_ID", broker.session());
+        }
         for (name, value) in extra_env {
             command.env(name, value);
         }

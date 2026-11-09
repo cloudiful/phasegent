@@ -1,70 +1,57 @@
-// v2 agent.transform: bind each protocol agent to its own slim role skill.
+// v2 agent.transform: prepend one short routing/safety hint to each protocol
+// agent (issue #22 P2).
 //
-// The role skill is prepended to the agent's `system`, so it is the stable
-// prefix of that agent's system prompt and a delegation only has to carry the
-// issue number. The agent is matched by id (task-spawned children use the same
-// ids), and every protocol agent is bound: `explore` receives its own read-only
-// research skill while keeping the reviewer capability rewrite.
+// The full role documents are filesystem references installed by
+// `phasegent skill install` and load on demand. The plugin injects only a
+// minimal hint (how to load the skill and what never counts as identity), so
+// every agent's system prompt stays lean and no role document is duplicated or
+// made stale here.
 //
 // The live v2.0.12 draft is `{ list, get, default, update, remove }` with
 // `update(id, mutate)` mutating the live agent info. The host resolves plugin
 // `setup` before it materializes the configured agents and never re-runs an
 // already-registered callback, so the binding runs one attempt inline and the
 // rest detached on a bounded backoff, replacing the previous callback instead
-// of stacking it. A host whose draft has no `update` keeps the skills
-// registered as inert metadata and warns.
+// of stacking it. A host whose draft has no `update` keeps the hint inert and
+// warns.
 
-import { ROLE_SKILLS } from "./skills.js";
+import { SKILL_ROUTING_HINT } from "./skills.js";
 import { errorText, warn } from "./runtime.js";
 
-export const ROLE_SKILL_BINDINGS = [
-  ["orchestrator", "phasegent-orchestrator"],
-  ["executor", "phasegent-executor"],
-  ["reviewer", "phasegent-reviewer"],
-  ["explore", "phasegent-explore"],
-];
+// Exact protocol agent ids. A delegated child uses the same id, so the hint is
+// stable across primary and child sessions.
+export const PROTOCOL_AGENTS = ["orchestrator", "executor", "reviewer", "explore"];
 
 // Total worst case ~0.8s, and only when the host never materializes a protocol
 // agent (a host without the phasegent agents at all).
 export const AGENT_BIND_BACKOFF_MS = [0, 10, 25, 50, 100, 200, 400];
 
-export function roleSkillId(agentId) {
+export function isProtocolAgent(agentId) {
   const agent = typeof agentId === "string" ? agentId.toLowerCase() : "";
-  if (!agent) return null;
-  for (const [hint, skillId] of ROLE_SKILL_BINDINGS) {
-    if (agent.includes(hint)) return skillId;
-  }
-  return null;
-}
-
-export function roleSkillContent(skillId) {
-  const entry = ROLE_SKILLS.find((candidate) => candidate.id === skillId);
-  return entry ? entry.content : null;
+  return PROTOCOL_AGENTS.includes(agent);
 }
 
 // Idempotent prefixing: the host re-runs the callback on every agent-state
-// invalidation, and a repeated pass must not stack the skill body.
+// invalidation, and a repeated pass must not stack the hint.
 export function withSkillPrefix(system, content) {
   const current = typeof system === "string" ? system : "";
   if (current.startsWith(content)) return current;
   return current.length > 0 ? `${content}\n${current}` : content;
 }
 
-// One registration pass: prepend each present protocol agent's own skill and
+// One registration pass: prepend the hint to each present protocol agent and
 // report how many protocol agents were seen and how many are bound now.
 export function bindPresentAgents(draft) {
   const protocol = [];
   for (const info of draft.list()) {
     const id = info && typeof info.id === "string" ? info.id : "";
-    if (roleSkillId(id)) protocol.push(id);
+    if (isProtocolAgent(id)) protocol.push(id);
   }
   let bound = 0;
   for (const id of protocol) {
-    const content = roleSkillContent(roleSkillId(id));
-    if (!content) continue;
     draft.update(id, (entry) => {
       if (!entry || typeof entry !== "object") return;
-      entry.system = withSkillPrefix(entry.system, content);
+      entry.system = withSkillPrefix(entry.system, SKILL_ROUTING_HINT);
     });
     bound += 1;
   }
@@ -75,7 +62,7 @@ export async function registerAgentSkills(context, deps) {
   const agent = context && context.agent;
   const transform = agent && agent.transform;
   if (typeof transform !== "function") {
-    warn("phasegent: host exposes no agent.transform; role skills stay inert metadata and are not injected");
+    warn("phasegent: host exposes no agent.transform; the routing hint stays uninjected");
     return null;
   }
   const backoff = (deps && deps.backoff) || AGENT_BIND_BACKOFF_MS;
@@ -87,7 +74,7 @@ export async function registerAgentSkills(context, deps) {
     const previous = holder.registration;
     holder.registration = await transform((draft) => {
       if (!draft || typeof draft.list !== "function" || typeof draft.update !== "function") {
-        warn("phasegent: host agent draft exposes no update; role skills stay inert metadata and are not injected");
+        warn("phasegent: host agent draft exposes no update; the routing hint stays uninjected");
         return;
       }
       try {
@@ -95,7 +82,7 @@ export async function registerAgentSkills(context, deps) {
         for (const id of pass.protocol) holder.seen.add(id);
         holder.bound = pass.bound;
       } catch (error) {
-        warn(`phasegent: role skill injection was rejected (${errorText(error)})`);
+        warn(`phasegent: routing hint injection was rejected (${errorText(error)})`);
       }
     });
     // Replace the stale callback: it would otherwise keep re-running on every
@@ -124,10 +111,10 @@ export async function registerAgentSkills(context, deps) {
       await runAttempt();
     }
     if (!holder.settled && holder.bound === 0) {
-      warn("phasegent: no protocol agent was found; role skills stay inert metadata and are not injected");
+      warn("phasegent: no protocol agent was found; the routing hint stays uninjected");
     }
   })().catch((error) => {
-    warn(`phasegent: role skill binding failed (${errorText(error)})`);
+    warn(`phasegent: routing hint binding failed (${errorText(error)})`);
   });
 
   return {

@@ -8,10 +8,12 @@ audit protocol.
 ## One CLI-owned header
 
 The CLI generates and parses exactly one versioned metadata header on the note
-body. An agent supplies metadata (`--kind`, `--key`, `--phase`, `--attempt`,
-`--review`, `--recon`) plus a plain note body and never writes a header by hand.
-The body is opaque to the parser: it is never scanned for substring authority, and
-a body that begins with the reserved header prefix is rejected rather than decoded.
+body. An agent supplies metadata (`--key`, `--phase`, `--attempt`, `--review`,
+`--recon`) plus a plain note body and never writes a header by hand. The record
+kind is derived from the verified host role; there is no `--kind` create flag
+and no actor override. The body is opaque to the parser: it is never scanned
+for substring authority, and a body that begins with the reserved header prefix
+is rejected rather than decoded.
 
 `record get` and `record list` return the plain body plus the structured fields;
 the generated header is never shown.
@@ -45,13 +47,21 @@ transcribed:
 
 ## Kinds and roles
 
-The kind is bound to the CLI session role; there is no actor override.
+The kind is derived from the verified host role; there is no create flag and no
+actor override.
 
-- `executor` and `reviewer` notes keep their `status` / `VERDICT:`/`REVIEW:` note
-  semantics; only the transport (record instead of comment) and the header
-  ownership (CLI instead of handwritten) change.
-- `recon` is the explorer's only write, and only with `--authorized`.
-- An orchestrator may publish any kind; `admin` publishes no records.
+- `executor` publishes an `executor` record.
+- `reviewer` publishes a `reviewer` record.
+- `explore` publishes a `recon` record, its only write, and only with
+  `--authorized`.
+- The orchestrator owns no record kind and is denied `record create`; it
+  publishes comments instead. `admin` is never an agent role and publishes no
+  records.
+
+`executor` and `reviewer` notes keep their `status` / `VERDICT:`/`REVIEW:` note
+semantics; only the transport (record instead of comment) and the header
+ownership (CLI instead of handwritten) change. `record list --kind` remains a
+read filter over the stored kinds.
 
 A recon record is evidence for the parent, not an audit note or a VERDICT.
 

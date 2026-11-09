@@ -265,7 +265,7 @@ describe("property: scanner invariants over generated commands (issue #558 Phase
   test("the #544 redirection seed keeps its --session outside the redirection", () => {
     const out = rewritePhasegentCommand(REDIRECT_SEED, SESSION, ORCHESTRATOR);
     expect(out).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_544p3 | tail -c 900",
+      "phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_544p3 | tail -c 900",
     );
     expect(out.includes("2>&1")).toBe(true);
     expect(out.indexOf(`--session ${SESSION}`)).toBeLessThan(out.indexOf("| tail"));
@@ -299,8 +299,8 @@ const HEREDOC_BODIES = [
   "body & with && and | pipe",
   "phasegent issue get 9",
   "phasegent issue create --title t --body b",
-  "PHASEGENT_ROLE=orchestrator phasegent issue get 9",
-  "PHASEGENT_ROLE=admin phasegent issue get 1",
+  "phasegent issue get 9",
+  "phasegent issue get 1",
   "plain body",
 ];
 

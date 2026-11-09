@@ -29,8 +29,6 @@ fn body_file_is_consumed_only_after_a_confirmed_write() {
             "record",
             "create",
             &issue_s,
-            "--kind",
-            "executor",
             "--key",
             "k-file",
             "--phase",
@@ -48,7 +46,8 @@ fn body_file_is_consumed_only_after_a_confirmed_write() {
         "a confirmed write consumes the one-shot body file"
     );
 
-    // A denied request never reads the file.
+    // A denied request never reads the file. The kind follows the verified
+    // role, so the reviewer scope is the field rule that rejects it.
     let denied_path = scratch.path().join("denied.txt");
     fs::write(&denied_path, "kept").unwrap();
     let denied_s = denied_path.to_str().unwrap().to_owned();
@@ -61,8 +60,6 @@ fn body_file_is_consumed_only_after_a_confirmed_write() {
             "record",
             "create",
             &issue_s,
-            "--kind",
-            "reviewer",
             "--key",
             "k-denied",
             "--phase",
@@ -76,7 +73,12 @@ fn body_file_is_consumed_only_after_a_confirmed_write() {
             "--authorized",
         ],
     );
-    assert_eq!(denied.status.code(), Some(3));
+    assert_eq!(denied.status.code(), Some(2));
+    assert!(
+        stderr_text(&denied).contains("--review"),
+        "an impossible field combination is an argument error: {}",
+        stderr_text(&denied)
+    );
     assert!(
         denied_path.exists(),
         "a denied request must not consume the body file"
@@ -95,8 +97,6 @@ fn body_file_is_consumed_only_after_a_confirmed_write() {
             "record",
             "create",
             &issue_s,
-            "--kind",
-            "executor",
             "--key",
             "k-kept",
             "--phase",

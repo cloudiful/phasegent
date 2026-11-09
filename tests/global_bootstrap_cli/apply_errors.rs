@@ -53,7 +53,7 @@ fn membership_failure_emits_structured_project_error_and_error_count() {
     let output = run_cli(
         &db.path,
         &server.base_url,
-        Some("admin"),
+        None,
         &["admin", "workflow", "bootstrap", "--all-projects"],
     );
 

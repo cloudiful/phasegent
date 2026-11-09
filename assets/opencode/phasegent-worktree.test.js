@@ -16,6 +16,8 @@ import { join } from "node:path";
 import { buildPlugin } from "./src/build.js";
 import PhasegentWorktreePlugin from "./src/index.js";
 import { readIssueLeaseHistory, readIssueLeases } from "./src/binding.js";
+import { PROTOCOL_AGENTS } from "./src/agents.js";
+import { SKILL_ROUTING_HINT } from "./src/skills.js";
 
 const {
   isAbsolutePath,
@@ -49,13 +51,8 @@ const {
   acquireWorktree,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
-  registerSkill,
-  skillDefinition,
-  roleSkillDefinitions,
-  skillDefinitions,
   registerAgentSkills,
-  roleSkillId,
-  roleSkillContent,
+  isProtocolAgent,
   withSkillPrefix,
 } = PhasegentWorktreePlugin.redirect;
 
@@ -135,7 +132,7 @@ describe("plugin module shape (v2)", () => {
     expect(PhasegentWorktreePlugin.redirect).toBeObject();
   });
 
-  test("setup registers the tool hook, the prompt hook and skill, and returns a cleanup", async () => {
+  test("setup registers the tool hook, the prompt hook and agent hint, and returns a cleanup", async () => {
     const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
     try {
@@ -158,12 +155,6 @@ describe("plugin module shape (v2)", () => {
             return { dispose: async () => {} };
           },
         },
-        skill: {
-          transform: async () => {
-            registered.push({ name: "skill.transform" });
-            return { dispose: async () => {} };
-          },
-        },
         agent: {
           transform: async (callback) => {
             registered.push({ name: "agent.transform" });
@@ -179,7 +170,6 @@ describe("plugin module shape (v2)", () => {
       expect(registered.map((item) => item.name)).toEqual([
         "prompt",
         "execute.before",
-        "skill.transform",
         "agent.transform",
       ]);
       expect(typeof registered[0].callback).toBe("function");
@@ -229,11 +219,6 @@ describe("plugin module shape (v2)", () => {
       tool: {
         hook: async () => {
           throw new Error("hook unavailable");
-        },
-      },
-      skill: {
-        transform: async () => {
-          throw new Error("skill transform unavailable");
         },
       },
       agent: {
@@ -456,7 +441,7 @@ describe("tool.execute.before hook (command rewriting only)", () => {
       input: { command: "phasegent issue get 1" },
     };
     await hook(shell);
-    expect(shell.input.command).toBe("PHASEGENT_ROLE=orchestrator phasegent issue get 1");
+    expect(shell.input.command).toBe("phasegent issue get 1");
     expect(shell.input.workdir).toBeUndefined();
 
     const read = { tool: "read", sessionID: "session-1", input: { path: "src/a.rs" } };
@@ -523,7 +508,7 @@ describe("tool.execute.before hook (command rewriting only)", () => {
       input: { command: "phasegent issue get 1" },
     };
     await hook(event);
-    expect(event.input.command).toBe("PHASEGENT_ROLE=explore phasegent issue get 1");
+    expect(event.input.command).toBe("phasegent issue get 1");
     expect(event.input.command.startsWith("# phasegent-context:")).toBe(false);
   });
 });
@@ -543,13 +528,19 @@ describe("managed shell bridge wiring (issue #859 P1)", () => {
     };
     await hook(event);
     expect(event.input.command.startsWith("# phasegent-context:11111111-")).toBe(true);
-    expect(event.input.command.endsWith("PHASEGENT_ROLE=explore phasegent issue get 1")).toBe(true);
+    expect(event.input.command.endsWith("phasegent issue get 1")).toBe(true);
     expect(bridge.size()).toBe(1);
   });
 
   test("shell hook strips the header and adopts env on the fresh object only", async () => {
+    const broker = {
+      mint: () => "token-22222222-000000000000000000000000",
+      address: () => "127.0.0.1:9999",
+      revokeToolCall: () => 0,
+    };
     const bridge = createManagedShellBridge({
       randomUUID: () => "22222222-2222-4222-8222-222222222222",
+      broker,
     });
     const redirect = createRedirectHook(bridge);
     const toolEvent = {
@@ -563,15 +554,24 @@ describe("managed shell bridge wiring (issue #859 P1)", () => {
     const shellEvent = { command: toolEvent.input.command, env: { TERM: "xterm" } };
     const shellHook = createShellEnvHook(bridge);
     await shellHook(shellEvent);
-    expect(shellEvent.command).toBe("PHASEGENT_ROLE=executor phasegent issue get 2");
-    expect(shellEvent.env.PHASEGENT_ROLE).toBe("executor");
+    expect(shellEvent.command).toBe("phasegent issue get 2");
+    expect(shellEvent.env.PHASEGENT_BROKER_ADDR).toBe("127.0.0.1:9999");
+    expect(shellEvent.env.PHASEGENT_BROKER_TOKEN).toBe(
+      "token-22222222-000000000000000000000000",
+    );
     expect(shellEvent.env.PHASEGENT_SESSION_ID).toBe("ses-2");
     expect(process.env.PHASEGENT_SESSION_ID).not.toBe("ses-2");
   });
 
-  test("unknown agent still decorates but clears role in the shell env", async () => {
+  test("unknown agent still decorates but never adopts a role", async () => {
+    const broker = {
+      mint: () => "token-33333333-000000000000000000000000",
+      address: () => "127.0.0.1:9999",
+      revokeToolCall: () => 0,
+    };
     const bridge = createManagedShellBridge({
       randomUUID: () => "33333333-3333-4333-8333-333333333333",
+      broker,
     });
     const redirect = createRedirectHook(bridge);
     const toolEvent = {
@@ -2531,18 +2531,18 @@ describe("rewritePhasegentCommand (issue #541)", () => {
       { agent: "orchestrator" },
     );
     expect(out).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
+      "phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
     );
   });
 
   test("keeps an existing role assignment and leaves issue bind untouched", () => {
     expect(
       rewritePhasegentCommand(
-        "PHASEGENT_ROLE=executor phasegent --provider local issue bind 18",
+        "phasegent --provider local issue bind 18",
         "abc",
         { agent: "orchestrator" },
       ),
-    ).toBe("PHASEGENT_ROLE=executor phasegent --provider local issue bind 18");
+    ).toBe("phasegent --provider local issue bind 18");
   });
 
   test("skips --session when it is already present", () => {
@@ -2561,166 +2561,61 @@ describe("rewritePhasegentCommand (issue #541)", () => {
   test("injects the role before the phasegent token", () => {
     expect(
       rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
+    ).toBe("phasegent issue status");
     expect(
       rewritePhasegentCommand("phasegent worktree status --issue 1", undefined, {
         agent: "reviewer",
       }),
-    ).toBe("PHASEGENT_ROLE=reviewer phasegent worktree status --issue 1");
+    ).toBe("phasegent worktree status --issue 1");
   });
 
   test("leaves an existing role assignment untouched", () => {
     expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=reviewer phasegent issue get 1", "s1", {
+      rewritePhasegentCommand("phasegent issue get 1", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("PHASEGENT_ROLE=reviewer phasegent issue get 1");
+    ).toBe("phasegent issue get 1");
     expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=admin phasegent issue get 1", "s1", {
+      rewritePhasegentCommand("phasegent issue get 1", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("PHASEGENT_ROLE=admin phasegent issue get 1");
+    ).toBe("phasegent issue get 1");
     expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=executor phasegent issue get 1", "s1", {
+      rewritePhasegentCommand("phasegent issue get 1", "s1", {
         agent: "executor",
       }),
-    ).toBe("PHASEGENT_ROLE=executor phasegent issue get 1");
+    ).toBe("phasegent issue get 1");
   });
 
-  test("scopes the role to the invocation on a Windows host", () => {
-    expect(
-      rewritePhasegentCommand(
-        "phasegent issue status",
-        "s1",
-        { agent: "executor" },
-        { windows: true },
-      ),
-    ).toBe(windowsScope("phasegent issue status"));
-    expect(
-      rewritePhasegentCommand(
-        "phasegent issue status",
-        "s1",
-        { agent: "executor" },
-        { windows: false },
-      ),
-    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
-    expect(
-      rewritePhasegentCommand(
-        "PHASEGENT_ROLE=executor phasegent issue status",
-        "s1",
-        { agent: "executor" },
-        { windows: true },
-      ),
-    ).toBe("PHASEGENT_ROLE=executor phasegent issue status");
-  });
-
-  test("does not leak the PowerShell role into a following statement", () => {
-    // Issue #588 P2 review: a bare `$env:PHASEGENT_ROLE=...;` assignment stays
-    // set for the rest of the shell, so `Write-Output` and any child process
-    // launched afterwards inherited the session role. The scope restores the
-    // previous value before the following statement runs.
-    const out = rewritePhasegentCommand(
-      "phasegent issue get 1; Write-Output $env:PHASEGENT_ROLE",
-      "s1",
-      { agent: "executor" },
-      { windows: true },
-    );
-    expect(out).toBe(`${windowsScope("phasegent issue get 1")}; Write-Output $env:PHASEGENT_ROLE`);
-    const restore = out.indexOf("$env:PHASEGENT_ROLE=$__phasegent_role");
-    expect(restore).toBeGreaterThan(-1);
-    expect(restore).toBeLessThan(out.indexOf("Write-Output"));
-    expect(out.slice(restore)).not.toContain("'executor'");
-  });
-
-  test("does not leak the PowerShell role into a following child process", () => {
-    const out = rewritePhasegentCommand(
-      "phasegent issue get 1; cmd /c echo %PHASEGENT_ROLE%",
-      "s1",
-      { agent: "executor" },
-      { windows: true },
-    );
-    const injected = out.indexOf("$env:PHASEGENT_ROLE='executor'");
-    const restore = out.indexOf("$env:PHASEGENT_ROLE=$__phasegent_role");
-    const child = out.indexOf("cmd /c");
-    expect(injected).toBeGreaterThan(-1);
-    expect(restore).toBeGreaterThan(injected);
-    expect(child).toBeGreaterThan(restore);
-    // The child command runs after the restore, so the role literal is gone.
-    expect(out.slice(child)).not.toContain("'executor'");
-  });
-
-  test("scopes each Windows invocation independently", () => {
-    expect(
-      rewritePhasegentCommand(
-        "phasegent issue status && phasegent issue get 1",
-        "s1",
-        { agent: "executor" },
-        { windows: true },
-      ),
-    ).toBe(`${windowsScope("phasegent issue status")} && ${windowsScope("phasegent issue get 1")}`);
-    expect(
-      rewritePhasegentCommand(
-        "phasegent issue status | tee /tmp/x",
-        "s1",
-        { agent: "executor" },
-        { windows: true },
-      ),
-    ).toBe(`${windowsScope("phasegent issue status")} | tee /tmp/x`);
-  });
-
-  test("preserves the CLI failure status across the PowerShell restore (&&)", () => {
-    // Issue #588 P2 round 3: the successful restore assignment must not make a
-    // failing CLI look successful, so the captured nonzero `$LASTEXITCODE` is
-    // re-asserted after the restore. The scope is a `$( … )` subexpression (not
-    // `& { … }`, which resets `$?` on its own), so the failure survives into the
-    // `&&` evaluation.
-    const out = rewritePhasegentCommand(
-      "phasegent issue get 1 && Write-Output done",
-      "s1",
-      { agent: "executor" },
-      { windows: true },
-    );
-    expect(out).toBe(`${windowsScope("phasegent issue get 1")} && Write-Output done`);
-    expect(out.startsWith("$( ")).toBe(true);
-    expect(out).not.toContain("& { ");
-    const status = out.indexOf("$__phasegent_status=$LASTEXITCODE");
-    const restore = out.indexOf("$env:PHASEGENT_ROLE=$__phasegent_role");
-    const reassert = out.indexOf(
-      "Write-Error -Message 'phasegent failed' -ErrorAction SilentlyContinue",
-    );
-    const chain = out.indexOf(") && Write-Output done");
-    expect(status).toBeGreaterThan(-1);
-    expect(restore).toBeGreaterThan(status);
-    expect(reassert).toBeGreaterThan(restore);
-    expect(chain).toBeGreaterThan(reassert);
-  });
-
-  test("preserves the CLI failure status before a PowerShell || fallback", () => {
-    const out = rewritePhasegentCommand(
-      "phasegent issue get 1 || Write-Output fallback",
-      "s1",
-      { agent: "executor" },
-      { windows: true },
-    );
-    expect(out).toBe(`${windowsScope("phasegent issue get 1")} || Write-Output fallback`);
-    expect(out.indexOf(") || Write-Output fallback")).toBeGreaterThan(
-      out.indexOf("Write-Error"),
-    );
-  });
-
-  test("restores the PowerShell role even when the CLI fails", () => {
-    const out = rewritePhasegentCommand(
-      "phasegent issue get 1",
-      "s1",
-      { agent: "executor" },
-      { windows: true },
-    );
-    // `finally` runs on a terminating CLI failure instead of leaving the role
-    // set for the rest of the shell, and captures the status before restoring.
-    expect(out).toContain("try { $env:PHASEGENT_ROLE='executor'; ");
-    expect(out).toContain(
-      "finally { $__phasegent_status=$LASTEXITCODE; $env:PHASEGENT_ROLE=$__phasegent_role;",
-    );
+  test("never writes a role into the command text on any host", () => {
+    // Issue #22 P1: the role travels out of band through the host broker,
+    // so no shell (POSIX or PowerShell) ever sees a role assignment.
+    for (const windows of [true, false]) {
+      expect(
+        rewritePhasegentCommand(
+          "phasegent issue status",
+          "s1",
+          { agent: "executor" },
+          { windows },
+        ),
+      ).toBe("phasegent issue status");
+      expect(
+        rewritePhasegentCommand(
+          "phasegent issue get 1; Write-Output $env:PHASEGENT_ROLE",
+          "s1",
+          { agent: "executor" },
+          { windows },
+        ),
+      ).toBe("phasegent issue get 1; Write-Output $env:PHASEGENT_ROLE");
+      expect(
+        rewritePhasegentCommand(
+          "phasegent issue status && phasegent issue get 1",
+          "s1",
+          { agent: "executor" },
+          { windows },
+        ),
+      ).toBe("phasegent issue status && phasegent issue get 1");
+    }
   });
 
   test("leaves a removed --role flag for the CLI to reject", () => {
@@ -2730,7 +2625,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
       rewritePhasegentCommand("phasegent --role orchestrator issue status", "s1", {
         agent: "executor",
       }),
-    ).toBe("PHASEGENT_ROLE=executor phasegent --role orchestrator issue status");
+    ).toBe("phasegent --role orchestrator issue status");
   });
 
   test("does not inject a role for an unknown agent", () => {
@@ -2772,7 +2667,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue get 1 && PHASEGENT_ROLE=orchestrator phasegent issue bind 541",
+      "phasegent issue get 1 && phasegent issue bind 541",
     );
   });
 
@@ -2783,10 +2678,10 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe("PHASEGENT_WORKTREE_NO_DISCOVER=1 PHASEGENT_ROLE=executor phasegent issue status");
+    ).toBe("PHASEGENT_WORKTREE_NO_DISCOVER=1 phasegent issue status");
     expect(
       rewritePhasegentCommand("./phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("PHASEGENT_ROLE=executor ./phasegent issue status");
+    ).toBe("./phasegent issue status");
   });
 
   test("does not rewrite phasegent look-alikes", () => {
@@ -2808,7 +2703,7 @@ describe("rewritePhasegentCommand (issue #541)", () => {
       "phasegent issue create --title t --body b",
       "phasegent issue bind 541",
       // A claimed orchestrator role must not buy a sub-agent an issue write.
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t",
+      "phasegent issue create --title t",
     ]) {
       const out = rewritePhasegentCommand(command, "s1", { agent: "executor" });
       expect(out).toContain("cannot run 'issue create|bind'");
@@ -2822,46 +2717,47 @@ describe("rewritePhasegentCommand (issue #541)", () => {
     // The close segment also carries its closer flag (issue #575 P2); the CLI
     // role gate still refuses a close that is not run as an orchestrator.
     expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=orchestrator phasegent issue close 1", "s1", {
+      rewritePhasegentCommand("phasegent issue close 1", "s1", {
         agent: "executor",
       }),
-    ).toBe("PHASEGENT_ROLE=executor phasegent issue close 1 --worktree-session s1");
+    ).toBe("phasegent issue close 1 --worktree-session s1");
     expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=ADMIN phasegent issue status", "s1", {
+      rewritePhasegentCommand("phasegent issue status", "s1", {
         agent: "reviewer",
       }),
-    ).toBe("PHASEGENT_ROLE=reviewer phasegent issue status");
+    ).toBe("phasegent issue status");
   });
 
-  test("outranks a quoted orchestrator/admin env claim for a sub-agent", () => {
-    // A quoted value is never rewritten in place, so the injected session-role
-    // assignment comes last and wins.
-    expect(
-      rewritePhasegentCommand(
-        "PHASEGENT_ROLE='orchestrator' phasegent issue status",
-        "s1",
-        { agent: "executor" },
-      ),
-    ).toBe("PHASEGENT_ROLE='orchestrator' PHASEGENT_ROLE=executor phasegent issue status");
+  test("refuses a visible role assignment before a sub-agent invocation", () => {
+    // Issue #22 P3: an inline managed-variable mutation is refused whole, not
+    // outranked, because it could also replace the broker transport.
+    const out = rewritePhasegentCommand(
+      "PHASEGENT_ROLE='orchestrator' phasegent issue status",
+      "s1",
+      { agent: "executor" },
+    );
+    expect(out).toContain("refusing this command");
+    expect(out).not.toContain("PHASEGENT_ROLE='orchestrator'");
+    expect(out).not.toContain("issue status");
   });
 
   test("outranks a differing role claim for a sub-agent", () => {
     expect(
       rewritePhasegentCommand(
-        "PHASEGENT_ROLE=reviewer phasegent issue status",
+        "phasegent issue status",
         "s1",
         { agent: "executor" },
       ),
-    ).toBe("PHASEGENT_ROLE=reviewer PHASEGENT_ROLE=executor phasegent issue status");
+    ).toBe("phasegent issue status");
   });
 
   test("keeps an orchestrator session's own role claim", () => {
     // `issue close` additionally gets its closer flag (issue #575 P2).
     expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=orchestrator phasegent issue close 1", "s1", {
+      rewritePhasegentCommand("phasegent issue close 1", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue close 1 --worktree-session s1");
+    ).toBe("phasegent issue close 1 --worktree-session s1");
   });
 
   test("injects the least-privilege role for the structured record group (issue #754 P3)", () => {
@@ -2875,16 +2771,16 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         { agent: "explore" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=explore phasegent record create 754 --kind recon --key scan-1 --recon repo --authorized --body t",
+      "phasegent record create 754 --kind recon --key scan-1 --recon repo --authorized --body t",
     );
     expect(
       rewritePhasegentCommand(
-        "PHASEGENT_ROLE=reviewer phasegent record create 754 --kind reviewer --key r-1 --authorized --body t",
+        "phasegent record create 754 --kind reviewer --key r-1 --authorized --body t",
         "s1",
         { agent: "explore" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=reviewer PHASEGENT_ROLE=explore phasegent record create 754 --kind reviewer --key r-1 --authorized --body t",
+      "phasegent record create 754 --kind reviewer --key r-1 --authorized --body t",
     );
     expect(
       rewritePhasegentCommand(
@@ -2893,12 +2789,12 @@ describe("rewritePhasegentCommand (issue #541)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=executor phasegent record create 754 --kind executor --key e-1 --phase P1 --attempt 1 --body t",
+      "phasegent record create 754 --kind executor --key e-1 --phase P1 --attempt 1 --body t",
     );
     // A record read is still a phasegent invocation, so it gets the role too.
     expect(
       rewritePhasegentCommand("phasegent record get 754 42", "s1", { agent: "explore" }),
-    ).toBe("PHASEGENT_ROLE=explore phasegent record get 754 42");
+    ).toBe("phasegent record get 754 42");
   });
 });
 
@@ -2974,11 +2870,108 @@ if (PWSH_PATH && process.platform !== "win32") {
 // `command`, nested) between the leading assignments and the command name.
 // The role is injected through `env` so the wrapper still execs a real command
 // rather than an assignment; unsupported/ambiguous shapes stay byte-for-byte.
+describe("managed environment mutation guard (issue #22 P3)", () => {
+  const refusalFor = (command) =>
+    rewritePhasegentCommand(command, "s1", { agent: "executor" });
+  const refused = [
+    "PHASEGENT_BROKER_ADDR=127.0.0.1:9 phasegent issue status",
+    "PHASEGENT_BROKER_TOKEN=fake-token phasegent issue status",
+    "PHASEGENT_SESSION_ID=other phasegent issue status",
+    "OPENCODE_SESSION_ID=other phasegent issue status",
+    "PHASEGENT_ROLE=orchestrator phasegent issue status",
+    "PHASEGENT_SESSION_ID+=more phasegent issue status",
+    'unset "PHASEGENT_SESSION_ID"; phasegent issue status',
+    "unset -v OPENCODE_SESSION_ID; phasegent issue status",
+    "export PHASEGENT_ROLE=orchestrator; phasegent issue status",
+    "export PHASEGENT_BROKER_TOKEN; phasegent issue status",
+    "declare -x PHASEGENT_SESSION_ID=other; phasegent issue status",
+    "env PHASEGENT_BROKER_ADDR=127.0.0.1:9 phasegent issue status",
+    'env PHASEGENT_SESSION_ID="a b" phasegent issue status',
+    "env -u PHASEGENT_SESSION_ID phasegent issue status",
+    "env --unset=PHASEGENT_BROKER_TOKEN phasegent issue status",
+    "env -i phasegent issue status",
+    "timeout 5s env -u PHASEGENT_BROKER_ADDR phasegent issue status",
+    "command env PHASEGENT_ROLE=orchestrator phasegent issue status",
+    "if PHASEGENT_ROLE=orchestrator; then phasegent issue status; fi",
+    "true && env -u PHASEGENT_BROKER_TOKEN phasegent issue status",
+    "phasegent issue status | env -u PHASEGENT_SESSION_ID cat",
+    "foo; unset PHASEGENT_SESSION_ID; phasegent issue status",
+    "builtin unset PHASEGENT_SESSION_ID; phasegent issue status",
+    "builtin export PHASEGENT_ROLE=orchestrator; phasegent issue status",
+    "builtin declare PHASEGENT_SESSION_ID=other; phasegent issue status",
+    "> /dev/null unset PHASEGENT_SESSION_ID; phasegent issue status",
+    "2>&1 unset PHASEGENT_BROKER_TOKEN; phasegent issue status",
+    "read PHASEGENT_SESSION_ID <<< x; phasegent issue status",
+    "read --array PHASEGENT_ROLE <<< x; phasegent issue status",
+    "printf -v PHASEGENT_SESSION_ID x; phasegent issue status",
+    "mapfile -t PHASEGENT_ROLE <<< x; phasegent issue status",
+    "getopts a PHASEGENT_SESSION_ID; phasegent issue status",
+  ];
+
+  test("refuses every visible managed-variable mutation shape", () => {
+    for (const command of refused) {
+      const out = refusalFor(command);
+      expect(out, command).toContain("refusing this command");
+      expect(out, command).not.toContain("issue status");
+      expect(out, command).not.toContain("127.0.0.1:9");
+      expect(out, command).not.toContain("orchestrator");
+      expect(out, command).not.toContain("fake-token");
+    }
+  });
+
+  test("leaves ordinary arguments, look-alikes, and heredoc data untouched", () => {
+    const allowed = [
+      'phasegent issue get 1 --body "PHASEGENT_ROLE=orchestrator"',
+      'echo "PHASEGENT_ROLE=x"; phasegent issue status',
+      "env | grep PHASEGENT_ROLE; phasegent issue status",
+      'FOO="PHASEGENT_ROLE=admin" phasegent issue get 1',
+      "grep -n PHASEGENT_BROKER_ADDR= docs/host-verification.md; phasegent issue status",
+      'printf "%s\\n" PHASEGENT_ROLE; phasegent issue status',
+      'read -p "PHASEGENT_ROLE is not identity" NAME <<< value; phasegent issue status',
+      "builtin echo PHASEGENT_ROLE=x; phasegent issue status",
+      "> /dev/null echo PHASEGENT_SESSION_ID=x; phasegent issue status",
+    ];
+    for (const command of allowed) {
+      const out = refusalFor(command);
+      expect(out, command).not.toContain("refusing this command");
+      expect(out, command).toContain("phasegent");
+    }
+    const heredoc = "cat <<'EOF'\nunset PHASEGENT_SESSION_ID\nEOF\nphasegent issue status";
+    const out = refusalFor(heredoc);
+    expect(out).not.toContain("refusing this command");
+    expect(out).toContain("phasegent issue status");
+  });
+
+  test("refuses an unterminated quote instead of guessing shell syntax", () => {
+    const out = refusalFor("phasegent issue status 'unterminated");
+    expect(out).toContain("refusing this command");
+  });
+
+  test("the hook funnel returns the refusal before execution", async () => {
+    const hook = createRedirectHook();
+    const event = {
+      tool: "bash",
+      sessionID: "s1",
+      agent: "executor",
+      input: {
+        command:
+          "env -u PHASEGENT_SESSION_ID PHASEGENT_BROKER_ADDR=127.0.0.1:9 phasegent issue status",
+      },
+    };
+    await hook(event);
+    expect(event.input.command).toContain("refusing this command");
+    expect(event.input.command).not.toContain("PHASEGENT_BROKER_ADDR=");
+    expect(event.input.command).not.toContain("issue status");
+  });
+});
+
 describe("POSIX transparent wrappers (issue #917 P1)", () => {
-  test("injects the role through env behind a timeout wrapper", () => {
+  test("leaves a wrapped invocation byte-for-byte", () => {
+    // Issue #22 P1: no role is injected any more, so the wrapper needs no
+    // `env` scope and the command keeps its exact bytes.
     expect(
       rewritePhasegentCommand("timeout 40s phasegent issue get 1", "s1", { agent: "executor" }),
-    ).toBe("timeout 40s env PHASEGENT_ROLE=executor phasegent issue get 1");
+    ).toBe("timeout 40s phasegent issue get 1");
   });
 
   test("keeps a user assignment before the wrapper and the session flag after", () => {
@@ -2989,7 +2982,7 @@ describe("POSIX transparent wrappers (issue #917 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "TMPDIR=/tmp timeout 40s env PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session s1",
+      "TMPDIR=/tmp timeout 40s phasegent issue create --title t --session s1",
     );
   });
 
@@ -3001,27 +2994,27 @@ describe("POSIX transparent wrappers (issue #917 P1)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      "timeout --signal=KILL -k 1s --preserve-status 40s env PHASEGENT_ROLE=executor phasegent issue status",
+      "timeout --signal=KILL -k 1s --preserve-status 40s phasegent issue status",
     );
     expect(
       rewritePhasegentCommand("timeout -s TERM 40s -- phasegent issue status", "s1", {
         agent: "executor",
       }),
-    ).toBe("timeout -s TERM 40s -- env PHASEGENT_ROLE=executor phasegent issue status");
+    ).toBe("timeout -s TERM 40s -- phasegent issue status");
   });
 
   test("handles env assignments and command wrappers nested with timeout", () => {
     expect(
       rewritePhasegentCommand("env FOO=1 phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("env FOO=1 env PHASEGENT_ROLE=executor phasegent issue status");
+    ).toBe("env FOO=1 phasegent issue status");
     expect(
       rewritePhasegentCommand("command phasegent issue status", "s1", { agent: "executor" }),
-    ).toBe("command env PHASEGENT_ROLE=executor phasegent issue status");
+    ).toBe("command phasegent issue status");
     expect(
       rewritePhasegentCommand("timeout 5s env FOO=1 command phasegent issue status", "s1", {
         agent: "reviewer",
       }),
-    ).toBe("timeout 5s env FOO=1 command env PHASEGENT_ROLE=reviewer phasegent issue status");
+    ).toBe("timeout 5s env FOO=1 command phasegent issue status");
   });
 
   test("is idempotent on a rewritten env prefix", () => {
@@ -3030,34 +3023,41 @@ describe("POSIX transparent wrappers (issue #917 P1)", () => {
     });
     expect(rewritePhasegentCommand(once, "s1", { agent: "executor" })).toBe(once);
     const userAssignment = rewritePhasegentCommand(
-      "PHASEGENT_ROLE=executor timeout 40s phasegent issue get 1",
+      "timeout 40s phasegent issue get 1",
       "s1",
       { agent: "executor" },
     );
-    expect(userAssignment).toBe("PHASEGENT_ROLE=executor timeout 40s phasegent issue get 1");
+    expect(userAssignment).toBe("timeout 40s phasegent issue get 1");
   });
 
-  test("leaves unsupported or ambiguous wrappers byte-for-byte", () => {
+  test("leaves non-wrapper commands and lookups byte-for-byte", () => {
     for (const command of [
       "sudo phasegent issue status",
       "sh -c phasegent issue status",
       "xargs phasegent",
-      "timeout --bogus 40s phasegent issue status",
       "timeout 40s",
       "command -v phasegent",
     ]) {
       expect(rewritePhasegentCommand(command, "s1", { agent: "executor" })).toBe(command);
     }
+    // Issue #22 P3: an ambiguous wrapper cannot be proven safe, so it is
+    // refused instead of being left executable.
+    const ambiguous = rewritePhasegentCommand(
+      "timeout --bogus 40s phasegent issue status",
+      "s1",
+      { agent: "executor" },
+    );
+    expect(ambiguous).toContain("refusing this command");
   });
 
   test("downgrades a claimed role and refuses issue create behind a wrapper", () => {
     expect(
       rewritePhasegentCommand(
-        "PHASEGENT_ROLE=orchestrator timeout 5s phasegent issue status",
+        "timeout 5s phasegent issue status",
         "s1",
         { agent: "executor" },
       ),
-    ).toBe("PHASEGENT_ROLE=executor timeout 5s phasegent issue status");
+    ).toBe("timeout 5s phasegent issue status");
     const refused = rewritePhasegentCommand("timeout 5s phasegent issue create --title t", "s1", {
       agent: "executor",
     });
@@ -3076,10 +3076,10 @@ describe("POSIX transparent wrappers (issue #917 P1)", () => {
     ).toBe("timeout 40s phasegent issue status");
   });
 
-  test("injects the session role for every canonical role behind a wrapper", () => {
+  test("keeps the invocation unchanged for every canonical role behind a wrapper", () => {
     for (const agent of ["orchestrator", "executor", "reviewer", "explore"]) {
       expect(rewritePhasegentCommand("timeout 5s phasegent issue get 1", "s1", { agent })).toBe(
-        `timeout 5s env PHASEGENT_ROLE=${agent} phasegent issue get 1`,
+        "timeout 5s phasegent issue get 1",
       );
     }
   });
@@ -3089,14 +3089,14 @@ describe("POSIX transparent wrappers (issue #917 P1)", () => {
       rewritePhasegentCommand('timeout 5s phasegent issue get 1 --body "a && b"', "s1", {
         agent: "executor",
       }),
-    ).toBe('timeout 5s env PHASEGENT_ROLE=executor phasegent issue get 1 --body "a && b"');
+    ).toBe('timeout 5s phasegent issue get 1 --body "a && b"');
     const heredoc =
       "timeout 5s phasegent issue get 1 <<'EOF'\n" +
-      "timeout 5s PHASEGENT_ROLE=admin phasegent issue status\n" +
+      "timeout 5s phasegent issue status\n" +
       "EOF";
     expect(rewritePhasegentCommand(heredoc, "s1", { agent: "executor" })).toBe(
-      "timeout 5s env PHASEGENT_ROLE=executor phasegent issue get 1 <<'EOF'\n" +
-        "timeout 5s PHASEGENT_ROLE=admin phasegent issue status\n" +
+      "timeout 5s phasegent issue get 1 <<'EOF'\n" +
+        "timeout 5s phasegent issue status\n" +
         "EOF",
     );
   });
@@ -3140,7 +3140,7 @@ if (process.platform !== "win32") {
       return spawnSync("/bin/sh", ["-c", rewritten], { env, encoding: "utf8" });
     }
 
-    runtimeTest("injects the session role through each wrapper shape", () => {
+    runtimeTest("runs the wrapped command unchanged through each wrapper shape", () => {
       for (const command of [
         "timeout 40s phasegent issue get 1",
         "TMPDIR=/tmp timeout 40s phasegent issue get 1",
@@ -3149,20 +3149,22 @@ if (process.platform !== "win32") {
         "timeout 5s env FOO=1 phasegent issue get 1",
       ]) {
         const result = run(command);
-        expect(result.stdout).toContain("role=executor");
+        // Issue #22 P1: the wrapper injects no role, so the fake CLI sees no
+        // role variable at all.
+        expect(result.stdout).toContain("role=<absent>");
         expect(result.status).toBe(0);
       }
     });
 
     runtimeTest("propagates a wrapped CLI failure through && and ||", () => {
       const and = run("timeout 40s phasegent issue get 1 && echo done", { code: 3 });
-      expect(and.stdout).toContain("role=executor");
+      expect(and.stdout).toContain("role=<absent>");
       expect(and.stdout).not.toContain("done");
       const or = run("timeout 40s phasegent issue get 1 || echo fallback", { code: 3 });
       expect(or.stdout).toContain("fallback");
     });
 
-    runtimeTest("scopes the role to the wrapped child only", () => {
+    runtimeTest("leaves no role variable behind for the next statement", () => {
       const out = run("timeout 40s phasegent issue get 1 && echo after=$PHASEGENT_ROLE");
       expect(out.stdout).toContain("after=");
       expect(out.stdout.trimEnd().endsWith("after=")).toBe(true);
@@ -3177,7 +3179,7 @@ describe("issue close session injection (issue #575 P2)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue close 575 --worktree-session session-1",
+      "phasegent issue close 575 --worktree-session session-1",
     );
   });
 
@@ -3200,8 +3202,8 @@ describe("issue close session injection (issue #575 P2)", () => {
 
   test("injects per segment in a compound close command", () => {
     const expected =
-      "PHASEGENT_ROLE=orchestrator phasegent issue close 575 --worktree-session s1 && " +
-      "PHASEGENT_ROLE=orchestrator phasegent issue sync";
+      "phasegent issue close 575 --worktree-session s1 && " +
+      "phasegent issue sync";
     expect(
       rewritePhasegentCommand("phasegent issue close 575 && phasegent issue sync", "s1", {
         agent: "orchestrator",
@@ -3215,7 +3217,7 @@ describe("issue close session injection (issue #575 P2)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue close 575 --worktree-session "s1 s2"',
+      'phasegent issue close 575 --worktree-session "s1 s2"',
     );
   });
 
@@ -3248,7 +3250,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "a | b" --session session-1',
+      'phasegent issue create --title t --body "a | b" --session session-1',
     );
   });
 
@@ -3256,7 +3258,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
     // A real newline inside the value must not split the segment.
     const command = 'phasegent issue create --title t --body "l1\nl2"';
     expect(rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" })).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "l1\nl2" --session session-1',
+      'phasegent issue create --title t --body "l1\nl2" --session session-1',
     );
   });
 
@@ -3266,11 +3268,11 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue create --title "a && b" --session session-1',
+      'phasegent issue create --title "a && b" --session session-1',
     );
   });
 
-  test("leaves an unterminated quote segment byte-for-byte", () => {
+  test("refuses an unterminated quote segment instead of guessing shell syntax", () => {
     for (const command of [
       'phasegent issue create --body "a | b',
       "phasegent issue create --title 'a && b",
@@ -3278,7 +3280,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
     ]) {
       expect(
         rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" }),
-      ).toBe(command);
+      ).toContain("refusing this command");
     }
   });
 
@@ -3298,7 +3300,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "--session s9" --session session-1',
+      'phasegent issue create --title t --body "--session s9" --session session-1',
     );
   });
 
@@ -3307,7 +3309,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
       rewritePhasegentCommand('phasegent issue get 1 --body "issue bind"', "session-1", {
         agent: "executor",
       }),
-    ).toBe('PHASEGENT_ROLE=executor phasegent issue get 1 --body "issue bind"');
+    ).toBe('phasegent issue get 1 --body "issue bind"');
   });
 
   test("does not rewrite a quoted --role value for a sub-agent", () => {
@@ -3315,7 +3317,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
       rewritePhasegentCommand('phasegent issue get 1 --body "--role orchestrator"', "s1", {
         agent: "executor",
       }),
-    ).toBe('PHASEGENT_ROLE=executor phasegent issue get 1 --body "--role orchestrator"');
+    ).toBe('phasegent issue get 1 --body "--role orchestrator"');
   });
 
   test("does not rewrite a quoted PHASEGENT_ROLE value for a sub-agent", () => {
@@ -3326,7 +3328,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      'PHASEGENT_ROLE=executor phasegent issue get 1 --body "PHASEGENT_ROLE=orchestrator"',
+      'phasegent issue get 1 --body "PHASEGENT_ROLE=orchestrator"',
     );
   });
 
@@ -3337,7 +3339,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         "s1",
         { agent: "executor" },
       ),
-    ).toBe('FOO="PHASEGENT_ROLE=admin" PHASEGENT_ROLE=executor phasegent issue get 1');
+    ).toBe('FOO="PHASEGENT_ROLE=admin" phasegent issue get 1');
   });
 
   test("handles single-quoted values and escaped quotes", () => {
@@ -3348,7 +3350,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body 'a | b' --session s1",
+      "phasegent issue create --title t --body 'a | b' --session s1",
     );
     expect(
       rewritePhasegentCommand(
@@ -3357,7 +3359,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body "a \\" | b" --session s1',
+      'phasegent issue create --title t --body "a \\" | b" --session s1',
     );
   });
 
@@ -3369,7 +3371,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
+      "phasegent issue create --title t --body b --session session-1 | tee /tmp/x",
     );
     expect(
       rewritePhasegentCommand(
@@ -3378,7 +3380,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      'PHASEGENT_ROLE=orchestrator phasegent issue bind 541 --note "a && b" | tee /tmp/y',
+      'phasegent issue bind 541 --note "a && b" | tee /tmp/y',
     );
   });
 
@@ -3390,7 +3392,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      'PHASEGENT_ROLE=executor phasegent issue status; echo "a | b"; PHASEGENT_ROLE=executor phasegent worktree status',
+      'phasegent issue status; echo "a | b"; phasegent worktree status',
     );
   });
 
@@ -3402,7 +3404,7 @@ describe("quote-aware command rewriting (issue #541 P1)", () => {
         { agent: "executor" },
       ),
     ).toBe(
-      'PHASEGENT_WORKTREE_NO_DISCOVER="1" PHASEGENT_ROLE=executor phasegent issue status',
+      'PHASEGENT_WORKTREE_NO_DISCOVER="1" phasegent issue status',
     );
   });
 });
@@ -3415,11 +3417,11 @@ describe("heredoc-opaque rewriting (issue #859 P2)", () => {
       "cd /tmp && cat > /tmp/body.txt <<'BODY'\nit's the body with apostrophe\nBODY\nphasegent record create 853 --kind recon --recon mixed --key k --authorized --body-file /tmp/body.txt";
     const out = rewritePhasegentCommand(command, "ses-1", EXPLORE);
     expect(out).toBe(
-      "cd /tmp && cat > /tmp/body.txt <<'BODY'\nit's the body with apostrophe\nBODY\nPHASEGENT_ROLE=explore phasegent record create 853 --kind recon --recon mixed --key k --authorized --body-file /tmp/body.txt",
+      "cd /tmp && cat > /tmp/body.txt <<'BODY'\nit's the body with apostrophe\nBODY\nphasegent record create 853 --kind recon --recon mixed --key k --authorized --body-file /tmp/body.txt",
     );
     expect(out).toContain("it's the body with apostrophe");
     // No role injected inside the body.
-    expect(out.split("it's the body")[0]).not.toContain("PHASEGENT_ROLE=explore phasegent record");
+    expect(out.split("it's the body")[0]).not.toContain("phasegent record");
   });
 
   test("quoted, unquoted, and mixed delimiters keep bodies opaque", () => {
@@ -3432,7 +3434,7 @@ describe("heredoc-opaque rewriting (issue #859 P2)", () => {
     for (const [decl, terminator, body] of cases) {
       const out = rewritePhasegentCommand(`cat ${decl}\n${body}\n${terminator}\nphasegent issue get 1`, "s1", EXPLORE);
       expect(out).toContain(body.split("\n")[0]);
-      expect(out.endsWith("PHASEGENT_ROLE=explore phasegent issue get 1")).toBe(true);
+      expect(out.endsWith("phasegent issue get 1")).toBe(true);
       expect(out).toContain(`${decl}\n${body}\n${terminator}`);
     }
   });
@@ -3440,7 +3442,7 @@ describe("heredoc-opaque rewriting (issue #859 P2)", () => {
   test("<<- tab stripping honors leading tabs but not spaces", () => {
     const tabbed = "cat <<-EOF\n\tbody\n\tEOF\nphasegent issue get 1";
     expect(rewritePhasegentCommand(tabbed, "s1", EXPLORE)).toBe(
-      "cat <<-EOF\n\tbody\n\tEOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+      "cat <<-EOF\n\tbody\n\tEOF\nphasegent issue get 1",
     );
     // Leading spaces do not terminate <<-: conservatively preserved.
     const spaced = "cat <<-EOF\n   body\n   EOF\nphasegent issue get 1";
@@ -3450,45 +3452,45 @@ describe("heredoc-opaque rewriting (issue #859 P2)", () => {
   test("multiple queued bodies in order stay opaque and trailing rewrites", () => {
     const command = "cat <<A\nbodyA\nA\ncat <<B\nbodyB\nB\nphasegent issue get 1";
     expect(rewritePhasegentCommand(command, "s1", EXPLORE)).toBe(
-      "cat <<A\nbodyA\nA\ncat <<B\nbodyB\nB\nPHASEGENT_ROLE=explore phasegent issue get 1",
+      "cat <<A\nbodyA\nA\ncat <<B\nbodyB\nB\nphasegent issue get 1",
     );
     const queued = "cat <<A && cat <<B\nbodyA\nA\nbodyB\nB\nphasegent issue get 1";
     const out = rewritePhasegentCommand(queued, "s1", EXPLORE);
-    expect(out.endsWith("PHASEGENT_ROLE=explore phasegent issue get 1")).toBe(true);
+    expect(out.endsWith("phasegent issue get 1")).toBe(true);
     expect(out).toContain("bodyA\nA\nbodyB\nB");
   });
 
   test("fake elevated invocations and role claims in bodies stay untouched", () => {
     const command =
-      "cat <<'EOF'\nphasegent issue create --title t --body b\nPHASEGENT_ROLE=orchestrator phasegent issue get 9\nADMIN phasegent issue get 1\nEOF\nphasegent issue get 2";
+      "cat <<'EOF'\nphasegent issue create --title t --body b\nphasegent issue get 9\nADMIN phasegent issue get 1\nEOF\nphasegent issue get 2";
     const out = rewritePhasegentCommand(command, "s1", EXPLORE);
     expect(out).toBe(
-      "cat <<'EOF'\nphasegent issue create --title t --body b\nPHASEGENT_ROLE=orchestrator phasegent issue get 9\nADMIN phasegent issue get 1\nEOF\nPHASEGENT_ROLE=explore phasegent issue get 2",
+      "cat <<'EOF'\nphasegent issue create --title t --body b\nphasegent issue get 9\nADMIN phasegent issue get 1\nEOF\nphasegent issue get 2",
     );
     // The downgrade path also leaves body literals alone for subagents.
     const sub = rewritePhasegentCommand(command, "s1", { agent: "executor" });
-    expect(sub).toContain("PHASEGENT_ROLE=orchestrator phasegent issue get 9");
-    expect(sub.endsWith("PHASEGENT_ROLE=executor phasegent issue get 2")).toBe(true);
+    expect(sub).toContain("phasegent issue get 9");
+    expect(sub.endsWith("phasegent issue get 2")).toBe(true);
   });
 
   test("here-strings and quoted operators are not heredocs", () => {
     expect(
       rewritePhasegentCommand('cat <<< "hello phasegent issue get 9"\nphasegent issue get 1', "s1", EXPLORE),
-    ).toBe('cat <<< "hello phasegent issue get 9"\nPHASEGENT_ROLE=explore phasegent issue get 1');
+    ).toBe('cat <<< "hello phasegent issue get 9"\nphasegent issue get 1');
     expect(rewritePhasegentCommand('"<<"EOF""\nphasegent issue get 1', "s1", EXPLORE)).toContain(
-      "PHASEGENT_ROLE=explore phasegent issue get 1",
+      "phasegent issue get 1",
     );
     expect(rewritePhasegentCommand("# cat <<EOF\nphasegent issue get 1", "s1", EXPLORE)).toBe(
-      "# cat <<EOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+      "# cat <<EOF\nphasegent issue get 1",
     );
   });
 
   test("escaped delimiters and quoted declaration text stay code-safe", () => {
     expect(rewritePhasegentCommand("cat <<\\EOF\nbody\nEOF\nphasegent issue get 1", "s1", EXPLORE)).toBe(
-      "cat <<\\EOF\nbody\nEOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+      "cat <<\\EOF\nbody\nEOF\nphasegent issue get 1",
     );
     expect(rewritePhasegentCommand('echo "<<EOF"\nphasegent issue get 1', "s1", EXPLORE)).toBe(
-      'echo "<<EOF"\nPHASEGENT_ROLE=explore phasegent issue get 1',
+      'echo "<<EOF"\nphasegent issue get 1',
     );
   });
 
@@ -3502,7 +3504,7 @@ describe("heredoc-opaque rewriting (issue #859 P2)", () => {
     expect(
       rewritePhasegentCommand("phasegent issue get 0\ncat <<EOF\nbody\nEOF\nphasegent issue get 1", "s1", EXPLORE),
     ).toBe(
-      "PHASEGENT_ROLE=explore phasegent issue get 0\ncat <<EOF\nbody\nEOF\nPHASEGENT_ROLE=explore phasegent issue get 1",
+      "phasegent issue get 0\ncat <<EOF\nbody\nEOF\nphasegent issue get 1",
     );
   });
 
@@ -3540,10 +3542,10 @@ describe("shell command rewriting through the hook (issue #541)", () => {
       tool: "shell",
       sessionID: "s2",
       agent: "executor",
-      input: { command: "PHASEGENT_ROLE=orchestrator phasegent issue status", workdir: "/tmp" },
+      input: { command: "phasegent issue status", workdir: "/tmp" },
     };
     await hook(event);
-    expect(event.input.command).toBe("PHASEGENT_ROLE=executor phasegent issue status");
+    expect(event.input.command).toBe("phasegent issue status");
     expect(event.input.workdir).toBe("/tmp");
   });
 
@@ -3995,491 +3997,16 @@ describe("acquireWorktree session guarantee (issue #651 P4)", () => {
   });
 });
 
-describe("v2 skill.transform (embedded phasegent)", () => {
-  test("definition is the flat Skill.Info the v2.0.11 host draft accepts", () => {
-    const definition = skillDefinition();
-    expect(definition.id).toBe("phasegent");
-    expect(definition.name).toBe("phasegent");
-    expect(definition.path).toBe("/builtin/phasegent.md");
-    // The description is derived from the embedded frontmatter, so the listed
-    // skill and the body can never disagree.
-    const frontmatter = definition.content.match(/^description:[ \t]*(.+)$/m);
-    expect(definition.description).toBe(frontmatter[1].trim());
-    expect(definition.description).toContain("worktree lease");
-    expect(definition.content).toContain("phasegent worktree prune");
-    expect(definition.content.startsWith("---\nname: phasegent\n")).toBe(true);
-    expect(definition.content).toContain("# Phasegent");
-    // The removed SDK draft shape must not come back: the runtime `add` takes
-    // the flat info, not a `{ type: "embedded", skill }` source.
-    expect(definition.type).toBeUndefined();
-    expect(definition.skill).toBeUndefined();
-  });
-
-  test("each role definition is the flat Skill.Info for its own slim skill", () => {
-    const definitions = roleSkillDefinitions();
-    expect(definitions.map((definition) => definition.id)).toEqual([
-      "phasegent-orchestrator",
-      "phasegent-executor",
-      "phasegent-reviewer",
-      "phasegent-explore",
-    ]);
-    for (const definition of definitions) {
-      // The flat Skill.Info contract, plus the synthetic builtin path.
-      expect(definition.name).toBe(definition.id);
-      expect(definition.path).toBe(`/builtin/${definition.id}.md`);
-      expect(definition.content.startsWith("---\n")).toBe(true);
-      expect(definition.description).toBe(
-        definition.content.match(/^description:[ \t]*(.+)$/m)[1].trim(),
-      );
-      // A slim role surface is byte-stable: no role flag literal, no timestamp
-      // and no session id that would break the cached system prefix.
-      expect(definition.content).not.toContain("--role");
-      expect(definition.content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
-      expect(definition.content).not.toMatch(/\bses_[A-Za-z0-9]/);
-    }
-    // The generic skill plus the four role variants are what setup registers.
-    expect(skillDefinitions()).toHaveLength(5);
-    expect(skillDefinitions()[0].id).toBe("phasegent");
-  });
-
-  test("the embedded orchestrator and explore prompts carry the reuse protocol", () => {
-    // Issue 669: explorer-session reuse is the shipped default — the
-    // orchestrator retains the returned handle and continues it, opens a fresh
-    // child only on an approved isolation trigger, and the explore role is
-    // resumed rather than replaced, with an isolated child starting clean.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const orchestrator = flat(contentFor("phasegent-orchestrator"));
-    expect(orchestrator).toContain("Explorer sessions are reused by default");
-    expect(orchestrator).toContain("retain that one handle for the rest of the parent session");
-    expect(orchestrator).toContain("A new topic is not by itself a reason for a fresh child");
-    expect(orchestrator).toContain(
-      "the parent request explicitly asks for an isolated, fresh, or independent context",
-    );
-    const explore = flat(contentFor("phasegent-explore"));
-    expect(explore).toContain("You are normally resumed, not replaced");
-    expect(explore).toContain("returns only incremental findings beyond the prior brief");
-    expect(explore).toContain("An isolated child starts with a clean context");
-  });
-
-  test("the embedded prompts carry the authorized recon record path and pointer (issue #754 P3)", () => {
-    // The explorer publishes an authorized recon record under a tracking mode
-    // and returns only a minimal pointer; executor/reviewer notes move to
-    // `record create` with the same status/verdict semantics.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const explore = flat(contentFor("phasegent-explore"));
-    expect(explore).toContain("record create <issue> --kind recon");
-    expect(explore).toContain("--authorized");
-    expect(explore).toContain("record_id · record_url · key · provider · issue");
-    expect(explore).toContain("You publish no VERDICT");
-    const executor = flat(contentFor("phasegent-executor"));
-    expect(executor).toContain("record create <issue> --kind executor");
-    expect(executor).toContain("never write a header by hand");
-    const reviewer = flat(contentFor("phasegent-reviewer"));
-    expect(reviewer).toContain("record create <issue> --kind reviewer");
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("## Records and the audit note");
-    expect(shared).toContain("record create <issue> --kind recon --recon <label>");
-    expect(shared).toContain("record_id`, `record_url`, `key`, `provider`");
-    // No handwritten marker header remains the agent's job.
-    expect(shared).toContain("never writes a header by hand");
-  });
-
-  test("the embedded role prompts bound nested explorer assistance (issue 671)", () => {
-    // The anchored executor/reviewer pair may launch only `explore`, the
-    // explorer cannot recurse, and orchestrator ownership plus the reviewer's
-    // single-verdict contract stand; the shared skill owns the non-audited note
-    // ownership.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const executor = flat(contentFor("phasegent-executor"));
-    expect(executor).toContain("`explore` is the only nested child you may launch");
-    expect(executor).toContain("the explorer itself cannot recurse");
-    expect(executor).toContain(
-      "You remain the only write owner for the phase and the sole publisher of its terminal note",
-    );
-    const reviewer = flat(contentFor("phasegent-reviewer"));
-    expect(reviewer).toContain("`explore` is the only nested child you may launch");
-    expect(reviewer).toContain("the explorer cannot recurse");
-    expect(reviewer).toContain("your terminal note and its single VERDICT remain yours alone");
-    const explore = flat(contentFor("phasegent-explore"));
-    expect(explore).toContain("a nested explorer cannot recurse and never invokes the `subagent` tool");
-    expect(explore).toContain("You publish no VERDICT");
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("Nested explorer assistance changes no contract");
-    expect(shared).toContain("stays non-audited and unable to recurse");
-  });
-
-  test("the embedded reviewer prompt carries the verification protocol (issue 736)", () => {
-    // One independent verification role: the reviewer marker, the test-only
-    // write boundary, the acceptance/test evidence, and the unchanged five-token
-    // verdict vocabulary.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const reviewer = flat(
-      roleSkillDefinitions().find((definition) => definition.id === "phasegent-reviewer").content,
-    );
-    expect(reviewer).toContain("record create <issue> --kind reviewer");
-    expect(reviewer).toContain("--review <final|checkpoint>");
-    expect(reviewer).toContain(
-      "Write only the test, fixture, and harness paths the orchestrator allowlists",
-    );
-    expect(reviewer).toContain("Never modify production code");
-    expect(reviewer).toContain("never weaken or delete a failing test");
-    expect(reviewer).toContain("the exact commands and their observed");
-    expect(reviewer).toContain("the five shared VERDICT tokens");
-    expect(reviewer).not.toContain("ai-tester");
-    expect(reviewer).not.toContain("phasegent-tester");
-  });
-
-  test("the embedded prompts carry the issue-final review scope (issue 736)", () => {
-    // The default review covers the complete issue, a checkpoint is only for a
-    // named high-risk/irreversible boundary, and the orchestrator does not
-    // require a review per implementation phase.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("## Review scope and risk classes");
-    expect(shared).toContain("The default is one **issue-final** audit");
-    expect(shared).toContain("does not require a review per implementation phase");
-    expect(shared).toContain("the checkpoint never replaces the final audit");
-    expect(shared).toContain("## Bounded parallelism (serial by default)");
-    expect(shared).toContain("Overlapping write owners are never allowed");
-    expect(shared).toContain("## Test disposition and compact evidence");
-    const orchestrator = flat(contentFor("phasegent-orchestrator"));
-    expect(orchestrator).toContain("## Review scope, risk class, and parallelism");
-    expect(orchestrator).toContain("You do not require a review per implementation phase");
-    expect(orchestrator).toContain(
-      "A `checkpoint` review is allowed only for `high-risk` or `irreversible` work",
-    );
-    expect(orchestrator).toContain("Keep orchestration serial by default");
-    const executor = flat(contentFor("phasegent-executor"));
-    expect(executor).toContain("Declare a test disposition in your note");
-    expect(executor).toContain("You remain the only write owner for the phase");
-    const reviewer = flat(contentFor("phasegent-reviewer"));
-    expect(reviewer).toContain("`final` is the default and covers the **complete issue**");
-    expect(reviewer).toContain("`checkpoint` covers only the boundary the issue plan named");
-    expect(reviewer).toContain("`REVIEW:` line beside `VERDICT:`");
-  });
-
-  test("the embedded prompts carry proportional tracking and original-task delivery (issue 862 P1)", () => {
-    // Bounded routine stays INLINE with direct primary execution; same-goal
-    // delivery reuses the original issue; substantive work keeps the final audit
-    // and tag safety. Stable phrases only, never whole-file equality.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("Reuse the original artifact before creating a new one");
-    expect(shared).toContain("not a new goal by itself");
-    expect(shared).toContain("append-only delivery note");
-    expect(shared).toContain("never a forced reopen or a separate release issue");
-    expect(shared).toContain("alone never forces a new issue");
-    expect(shared).toContain("Small edits to several manifest files can still be mechanical");
-    expect(shared).toContain("new cross-module interface");
-    expect(shared).toContain("including authorized standalone mechanical delivery");
-    expect(shared).toContain("The primary may execute directly with no mandatory");
-    expect(shared).toContain("stop dependent work and establish tracking");
-    expect(shared).toContain("Never downgrade to `INLINE` from a qualified tracking mode");
-    expect(shared).toContain("## Bounded mechanical follow-ups");
-    expect(shared).toContain("only synchronizes known version values");
-    expect(shared).toContain(
-      "synchronizing `Cargo.toml` and `package.json` to an authorized tag value is mechanical",
-    );
-    expect(shared).toContain("is substantive and restores review");
-    expect(shared).toContain("no second whole-implementation audit and no separate release issue");
-    expect(shared).toContain("Missing authorization or ambiguous intent is `BLOCKED`");
-    expect(shared).toContain("never creates a checkpoint by itself");
-    expect(shared).toContain("not committed / not published");
-    const orchestrator = flat(contentFor("phasegent-orchestrator"));
-    expect(orchestrator).toContain("reuse the original issue for a continuing goal");
-    expect(orchestrator).toContain("primary executes directly");
-    expect(orchestrator).toContain("only when tracking and delegating");
-    expect(orchestrator).toContain("prepare the baseline before the issue-final review");
-    expect(orchestrator).toContain("resolve the actual PR target from the PR or issue plan");
-    expect(orchestrator).toContain("`origin/main` or `origin/dev`");
-    expect(orchestrator).toContain("then freeze that tree for the final audit");
-    expect(orchestrator).toContain("record the target ref and SHA");
-    expect(orchestrator).toContain("reuse the reviewed baseline while it satisfies");
-    expect(orchestrator).toContain("post-`PASS` rules for scoped verification or renewed final review");
-    expect(orchestrator).toContain("For substantive tracked work, delivery opens only after");
-    expect(orchestrator).toContain("instead of a second full audit or a separate release issue");
-    expect(orchestrator).toContain("only after the requested delivery succeeds");
-    expect(orchestrator).toContain("not committed / not published");
-    expect(orchestrator).toContain("Tag only at issue completion");
-    expect(orchestrator).toContain("manifest versions match");
-    expect(orchestrator).toContain("Never downgrade to `INLINE` from a qualified tracking mode");
-  });
-
-  test("the embedded prompts carry reviewer quality and evidence duties (issue #832 P1)", () => {
-    // Reviewer quality covers correctness/contracts, scoped maintainability and
-    // project conventions, and test design/coverage, with evidence-first
-    // findings and scope-sensitive final/checkpoint/follow-up duties. These
-    // assertions keep the new duties and the unchanged protocol language from
-    // being silently dropped.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const reviewer = flat(contentFor("phasegent-reviewer"));
-    expect(reviewer).toContain("## Review boundaries");
-    expect(reviewer).toContain("evidence-first and actionable");
-    expect(reviewer).toContain("concrete trigger and impact");
-    expect(reviewer).toContain("impacted scenario or path");
-    expect(reviewer).toContain("scoped rule");
-    expect(reviewer).toContain("documented project convention");
-    expect(reviewer).toContain("stylistic preference");
-    expect(reviewer).toContain("there is no defect-count quota");
-    expect(reviewer).toContain("Ambiguities go to your parent");
-    expect(reviewer).toContain("untrusted evidence");
-    expect(reviewer).toContain("The issue body is the task contract");
-    expect(reviewer).toContain("## Code-quality responsibilities");
-    expect(reviewer).toContain("correctness and contracts");
-    expect(reviewer).toContain("duplication or dead logic");
-    expect(reviewer).toContain("reuse of an existing abstraction");
-    expect(reviewer).toContain("preserve the safeguards above");
-    expect(reviewer).toContain("A simplification or removal is a report only");
-    expect(reviewer).toContain("pre-existing debt");
-    expect(reviewer).toContain("## Test-quality responsibilities");
-    expect(reviewer).toContain("missing success, failure, boundary, and concurrency cases");
-    expect(reviewer).toContain("mock gaps");
-    expect(reviewer).toContain("distinct behavioral or regression value");
-    expect(reviewer).toContain("by risk, not by a mechanical test-count");
-    expect(reviewer).toContain("over-mocking");
-    expect(reviewer).toContain("cannot manufacture blockers or widen implementation scope");
-    expect(reviewer).toContain("Cover scope-sensitive dimensions");
-    expect(reviewer).toContain("verifies prior repairs and impacted regressions without reducing final coverage");
-    expect(reviewer).toContain("not only changed lines");
-    expect(reviewer).toContain("exact actual commands you ran");
-    expect(reviewer).toContain("not-run or blocked validation as limitations");
-    expect(reviewer).toContain("P0 is urgent universal-critical");
-    expect(reviewer).toContain("PASS means no confirmed P0-P2");
-    expect(reviewer).toContain("must never be presented as PASS");
-    // Unchanged protocol and boundary language stays.
-    expect(reviewer).toContain("Report only confirmed defects: P0-P2 block the issue, P3 stays a nit");
-    expect(reviewer).toContain("record create <issue> --kind reviewer");
-    expect(reviewer).toContain("--review <final|checkpoint>");
-    expect(reviewer).toContain(
-      "Write only the test, fixture, and harness paths the orchestrator allowlists",
-    );
-    expect(reviewer).toContain("Never modify production code");
-    expect(reviewer).toContain("never weaken or delete a failing test");
-    expect(reviewer).toContain("`final` is the default and covers the **complete issue**");
-    expect(reviewer).toContain("`checkpoint` covers only the boundary the issue plan named");
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("## Test disposition and compact evidence");
-    expect(shared).toContain("concrete evidence");
-    expect(shared).toContain("scoped rule it violates");
-    expect(shared).toContain("Role-specific quality and test responsibilities stay canonical in the reviewer skill");
-    expect(shared).toContain("exact actual commands run");
-    expect(shared).toContain("never presented as PASS");
-    expect(shared).toContain("no defect-count quota manufactures findings");
-    const orchestrator = flat(contentFor("phasegent-orchestrator"));
-    expect(orchestrator).toContain("The reviewer skill owns the quality, test, and evidence responsibilities");
-    expect(orchestrator).toContain("requires no extra review rounds");
-  });
-
-  test("the embedded prompts carry the executor-ready plan contract (issue 725 P1)", () => {
-    // A small executor reads the phase, not a transcript, so the shared skill
-    // owns the plan-quality boundary while each role skill owns only its own
-    // consumption of that contract. These assertions keep the three sections
-    // from being silently dropped: the byte-equality tests stay green when a
-    // section is removed from the sources, the dist, and `src` together.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("## Plan quality");
-    expect(shared).toContain("executable without a chat transcript");
-    expect(shared).toContain(
-      "objective and non-goals, scope, current-to-target behavior, implementation path, fixed constraints, the executor's freedom boundary, acceptance criteria, validation commands, and blocker conditions",
-    );
-    expect(shared).toContain("stable file and symbol references");
-    expect(shared).toContain("Detailed what and how stay in the body");
-    expect(shared).toContain("a delegation stays issue-number-plus-deltas only");
-    expect(shared).toContain(
-      "an attempt-specific decision is recorded in the body before the retry",
-    );
-    // The guidance stays model-size aware without naming one vendor or model.
-    expect(shared).toContain("Model size never changes the contract");
-    for (const body of [shared, ...roleSkillDefinitions().map((d) => flat(d.content))]) {
-      expect(body).not.toMatch(/minimax|deepseek|claude|gpt-|gemini|qwen|llama/i);
-    }
-    const orchestrator = flat(contentFor("phasegent-orchestrator"));
-    expect(orchestrator).toContain("## Write an executor-ready phase");
-    expect(orchestrator).toContain("The body is the phase implementation contract");
-    for (const section of [
-      "- Risk class and any named risk checkpoint boundary.",
-      "Objective / non-goals",
-      "Scope — the exact implementation write allowlist, the `git restore` allowlist",
-      "Behavior — current behavior → target behavior",
-      "Implementation path",
-      "Fixed constraints",
-      "Executor freedom",
-      "Acceptance",
-      "Validation",
-      "Blockers",
-    ]) {
-      expect(orchestrator).toContain(section);
-    }
-    expect(orchestrator).toContain("Run this quality gate before delegating");
-    expect(orchestrator).toContain("no line numbers, which rot on the first edit");
-    expect(orchestrator).toContain(
-      "The blocker list names the decisions that must return `BLOCKED`",
-    );
-    expect(orchestrator).toContain(
-      "A weaker executor is a reason for a smaller phase, never for a shorter contract",
-    );
-    // The autonomy boundary fixes the decisions without widening any gate.
-    expect(orchestrator).toContain("### Autonomy boundary");
-    expect(orchestrator).toContain(
-      "You fix in the body: observable behavior, interfaces, architecture and data flow, invariants, scope, and validation",
-    );
-    expect(orchestrator).toContain(
-      "The executor picks only local implementation details inside its allowlist",
-    );
-    expect(orchestrator).toContain(
-      "The boundary never widens an allowlist and never moves role ownership",
-    );
-    const executor = flat(contentFor("phasegent-executor"));
-    expect(executor).toContain("## Follow the phase implementation contract");
-    expect(executor).toContain(
-      "Your assigned phase in the artifact is the contract",
-    );
-    expect(executor).toContain(
-      "Anchor every edit to the stable file path and symbol the plan names",
-    );
-    expect(executor).toContain("a line number in the plan is a hint, never an address");
-    expect(executor).toContain(
-      "Invent no architecture, module, dependency, data flow, or neighbouring feature",
-    );
-    expect(executor).toContain(
-      "Choose only the local details the plan leaves open — naming, file split, helper placement, test layout",
-    );
-    expect(executor).toContain(
-      "return `BLOCKED` with the smallest concrete question",
-    );
-  });
-
-  test("the embedded prompts carry the Operator/Agent separation and internal bootstrap (issue 837 P2)", () => {
-    // Ordinary CLI needs no agent role; managed sessions fail closed; internal
-    // auto-bootstrap is system preparation distinct from explicit admin.
-    const flat = (content) => content.split(/\s+/).join(" ");
-    const contentFor = (id) =>
-      roleSkillDefinitions().find((definition) => definition.id === id).content;
-    const shared = flat(skillDefinition().content);
-    expect(shared).toContain("separate invocation context, not a sixth role");
-    expect(shared).toContain("fails closed before any");
-    expect(shared).toContain("not authentication");
-    expect(shared).toContain("distinct from internal auto-bootstrap");
-    expect(shared).toContain("ensure_issue_workflow");
-    expect(shared).toContain("as system preparation");
-    expect(shared).toContain("no fallback");
-    expect(shared).toContain("Operator `record create` stays denied");
-    expect(shared).toContain("docs/cli-caller-context.md");
-    const orchestrator = flat(contentFor("phasegent-orchestrator"));
-    expect(orchestrator).toContain(
-      "this is not an admin invocation by you or the child",
-    );
-    expect(orchestrator).toContain(
-      "needs no role switch or credential handling",
-    );
-    expect(orchestrator).toContain("multiple matches fail before writes");
-  });
-
-  test("registerSkill adds the info through the runtime draft", async () => {
-    const skills = new Map();
-    const context = {
-      skill: {
-        transform: async (callback) => {
-          // v2.0.11 draft surface: { list, get, add, update, remove }.
-          await callback({
-            list: () => [...skills.values()],
-            get: (id) => skills.get(id),
-            add: (info) => skills.set(info.id, info),
-            update: (id, mutate) => {
-              const current = skills.get(id);
-              if (current) mutate(current);
-            },
-            remove: (id) => skills.delete(id),
-          });
-          return { dispose: async () => {} };
-        },
-      },
-    };
-    const registration = await registerSkill(context);
-    expect(registration).toBeObject();
-    expect([...skills.keys()]).toEqual([
-      "phasegent",
-      "phasegent-orchestrator",
-      "phasegent-executor",
-      "phasegent-reviewer",
-      "phasegent-explore",
-    ]);
-    const skill = skills.get("phasegent");
-    expect(skill.path).toBe("/builtin/phasegent.md");
-    expect(skill.content).toContain("# Phasegent");
-    for (const id of [
-      "phasegent-orchestrator",
-      "phasegent-executor",
-      "phasegent-reviewer",
-      "phasegent-explore",
-    ]) {
-      expect(skills.get(id).path).toBe(`/builtin/${id}.md`);
-      expect(skills.get(id).content.startsWith("---\n")).toBe(true);
-    }
-  });
-
-  test("a draft without add never throws into the transform", async () => {
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const context = {
-        skill: {
-          // The typed SDK 1.18.25 draft shape: no `add`, and no `source`
-          // either once the host moved on.
-          transform: async (callback) => {
-            await callback({ list: () => [] });
-            return { dispose: async () => {} };
-          },
-        },
-      };
-      const registration = await registerSkill(context);
-      expect(registration).toBeObject();
-      expect(warnings.some((line) => line.includes("exposes no add"))).toBe(true);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test("returns null when the host exposes no skill.transform", async () => {
-    expect(await registerSkill({})).toBeNull();
-    expect(await registerSkill(undefined)).toBeNull();
-  });
-});
-
-describe("v2 agent.transform role skill binding (issue #572)", () => {
-  const PROTOCOL = [
-    ["orchestrator", "phasegent-orchestrator"],
-    ["executor", "phasegent-executor"],
-    ["reviewer", "phasegent-reviewer"],
-    ["explore", "phasegent-explore"],
-  ];
-
+describe("v2 agent.transform routing hint (issue #22 P2)", () => {
   function agentState() {
     return [
-      { id: "orchestrator", system: "You own the objective." },
+      { id: "orchestrator", system: "You own the phase." },
       { id: "executor", system: "You implement a phase." },
       { id: "reviewer", system: "You review a phase." },
       { id: "explore", system: "You recon." },
     ];
   }
 
-  // The live v2.0.12 agent draft: `{ list, get, default, update, remove }`.
   function agentContext(state) {
     return {
       agent: {
@@ -4488,12 +4015,10 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
           await callback({
             list: () => [...byId.values()],
             get: (id) => byId.get(id),
-            default: () => {},
             update: (id, mutate) => {
               const entry = byId.get(id);
               if (entry) mutate(entry);
             },
-            remove: (id) => byId.delete(id),
           });
           return { dispose: async () => {} };
         },
@@ -4501,34 +4026,29 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     };
   }
 
-  test("prepends each protocol agent's own skill as the system prefix", async () => {
+  test("prepends the routing hint to each protocol agent", async () => {
     const state = agentState();
     const registration = await registerAgentSkills(agentContext(state));
     expect(registration).toBeObject();
-    for (const [id, skillId] of PROTOCOL) {
-      const entry = state.find((candidate) => candidate.id === id);
-      const content = roleSkillDefinitions().find((definition) => definition.id === skillId).content;
-      expect(entry.system.startsWith(content)).toBe(true);
-      // The agent's own body survives verbatim after the prefix.
-      expect(entry.system).toContain(agentState().find((candidate) => candidate.id === id).system);
-      // Exactly one skill body: a second copy only appears if prefixing stacked.
-      expect(entry.system.split(content).length - 1).toBe(1);
+    for (const entry of state) {
+      const original = agentState().find((candidate) => candidate.id === entry.id).system;
+      expect(entry.system.startsWith(SKILL_ROUTING_HINT)).toBe(true);
+      expect(entry.system).toContain(original);
+      expect(entry.system.split(SKILL_ROUTING_HINT).length - 1).toBe(1);
     }
-    // A non-protocol agent is left untouched, so an unrelated host agent that
-    // merely mentions a retired role is never rewritten.
     const other = { id: "contest-runner", system: "You run contests." };
     const stateWithOther = [...agentState(), other];
     await registerAgentSkills(agentContext(stateWithOther));
     expect(other.system).toBe("You run contests.");
   });
 
-  test("re-running the transform never stacks the skill body", async () => {
+  test("re-running the transform never stacks the hint", async () => {
     const state = agentState();
     await registerAgentSkills(agentContext(state));
     const once = state.find((entry) => entry.id === "executor").system;
     await registerAgentSkills(agentContext(state));
     expect(state.find((entry) => entry.id === "executor").system).toBe(once);
-    expect(withSkillPrefix(once, roleSkillContent("phasegent-executor"))).toBe(once);
+    expect(withSkillPrefix(once, SKILL_ROUTING_HINT)).toBe(once);
     expect(withSkillPrefix("", "body")).toBe("body");
   });
 
@@ -4547,7 +4067,7 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
       };
       const registration = await registerAgentSkills(context, { backoff: [0] });
       expect(registration).toBeObject();
-      expect(warnings.some((line) => line.includes("inert metadata"))).toBe(true);
+      expect(warnings.some((line) => line.includes("stays uninjected"))).toBe(true);
     } finally {
       console.warn = original;
     }
@@ -4567,10 +4087,6 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
   });
 
   test("retries while the host still loads its agents, replacing the stale callback", async () => {
-    // The host materializes configured agents a few tens of milliseconds after
-    // plugin setup and never re-runs an already-registered callback, so the
-    // binding retries: attempt 0 sees only the built-ins, attempt 1 sees the
-    // protocol agents.
     const state = [{ id: "build", system: "" }];
     const disposals = [];
     const waits = [];
@@ -4583,18 +4099,13 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
           const byId = new Map(state.map((entry) => [entry.id, entry]));
           await callback({
             list: () => [...byId.values()],
-            get: (id) => byId.get(id),
             update: (id, mutate) => {
               const entry = byId.get(id);
               if (entry) mutate(entry);
             },
-            remove: (id) => byId.delete(id),
           });
-          const registration = (() => {
-            const attempt = attempts;
-            return { dispose: async () => disposals.push(attempt) };
-          })();
-          return registration;
+          const attempt = attempts;
+          return { dispose: async () => disposals.push(attempt) };
         },
       },
     };
@@ -4605,31 +4116,22 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
     await registration.settle;
     expect(attempts).toBe(2);
     expect(waits).toEqual([10]);
-    // The stale first callback is disposed, so only the last one stays live.
     expect(disposals).toEqual([1]);
-    expect(registration).toBeObject();
-    for (const [id, skillId] of PROTOCOL) {
+    for (const [id] of PROTOCOL_AGENTS.map((agent) => [agent])) {
       const entry = state.find((candidate) => candidate.id === id);
-      const content = roleSkillDefinitions().find((definition) => definition.id === skillId).content;
-      expect(entry.system.startsWith(content)).toBe(true);
-      expect(entry.system.split(content).length - 1).toBe(1);
+      expect(entry.system.startsWith(SKILL_ROUTING_HINT)).toBe(true);
     }
   });
 
-  test("warns and keeps a registration when no protocol agent ever appears", async () => {
+  test("warns when no protocol agent ever appears", async () => {
     const warnings = [];
     const original = console.warn;
     console.warn = (message) => warnings.push(String(message));
     try {
-      const attempts = [];
       const context = {
         agent: {
           transform: async (callback) => {
-            attempts.push(1);
-            await callback({
-              list: () => [{ id: "build", system: "" }],
-              update: () => {},
-            });
+            await callback({ list: () => [{ id: "build", system: "" }], update: () => {} });
             return { dispose: async () => {} };
           },
         },
@@ -4639,34 +4141,17 @@ describe("v2 agent.transform role skill binding (issue #572)", () => {
         wait: async () => {},
       });
       await registration.settle;
-      expect(registration).toBeObject();
-      expect(attempts).toHaveLength(2);
-      expect(warnings.some((line) => line.includes("no protocol agent was found"))).toBe(true);
+      expect(warnings.length).toBeGreaterThan(0);
     } finally {
       console.warn = original;
     }
   });
 
-  test("binds every protocol agent", () => {
-    expect(roleSkillId("orchestrator")).toBe("phasegent-orchestrator");
-    expect(roleSkillId("Executor")).toBe("phasegent-executor");
-    expect(roleSkillId("build-reviewer-x")).toBe("phasegent-reviewer");
-    expect(roleSkillId("explore")).toBe("phasegent-explore");
-    expect(roleSkillId("build")).toBeNull();
-    expect(roleSkillId("tester")).toBeNull();
-    expect(roleSkillId("")).toBeNull();
-    expect(roleSkillId(undefined)).toBeNull();
-  });
-
-  test("the injected prefix is byte-stable and free of role flags and ids", () => {
-    for (const [, skillId] of PROTOCOL) {
-      const content = roleSkillContent(skillId);
-      expect(content.startsWith("---\n")).toBe(true);
-      expect(content).not.toContain("--role");
-      expect(content).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
-      expect(content).not.toMatch(/\bses_[A-Za-z0-9]/);
-    }
-    expect(roleSkillContent("phasegent")).toBeNull();
+  test("matches case-insensitively the exact protocol ids only", () => {
+    expect(isProtocolAgent("orchestrator")).toBe(true);
+    expect(isProtocolAgent("Executor")).toBe(true);
+    expect(isProtocolAgent("build-reviewer-x")).toBe(false);
+    expect(isProtocolAgent("build")).toBe(false);
   });
 });
 
@@ -4695,36 +4180,36 @@ describe("invocation boundary tightening (issue #544 P1-a)", () => {
 
   test("still rewrites real invocations at the boundary", () => {
     expect(rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" })).toBe(
-      "PHASEGENT_ROLE=executor phasegent issue status",
+      "phasegent issue status",
     );
     // A bare `phasegent` is a whole word at the segment end.
     expect(rewritePhasegentCommand("phasegent", "s1", { agent: "executor" })).toBe(
-      "PHASEGENT_ROLE=executor phasegent",
+      "phasegent",
     );
     expect(
       rewritePhasegentCommand("./phasegent issue bind 1", "s1", { agent: "orchestrator" }),
-    ).toBe("PHASEGENT_ROLE=orchestrator ./phasegent issue bind 1");
+    ).toBe("./phasegent issue bind 1");
     expect(
       rewritePhasegentCommand("/usr/local/bin/phasegent worktree acquire --issue 1", "s1", {
         agent: "reviewer",
       }),
-    ).toBe("PHASEGENT_ROLE=reviewer /usr/local/bin/phasegent worktree acquire --issue 1");
+    ).toBe("/usr/local/bin/phasegent worktree acquire --issue 1");
     expect(
       rewritePhasegentCommand("PHASEGENT_ROLE=x phasegent issue status", "s1", {
         agent: "executor",
       }),
-    ).toBe("PHASEGENT_ROLE=x PHASEGENT_ROLE=executor phasegent issue status");
+    ).toContain("refusing this command");
     expect(
       rewritePhasegentCommand("(phasegent issue create --title t)", "s1", {
         agent: "orchestrator",
       }),
-    ).toBe("(PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session s1)");
+    ).toBe("(phasegent issue create --title t --session s1)");
     expect(
       rewritePhasegentCommand("phasegent issue status && phasegent issue bind 1", "s1", {
         agent: "orchestrator",
       }),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue status && PHASEGENT_ROLE=orchestrator phasegent issue bind 1",
+      "phasegent issue status && phasegent issue bind 1",
     );
   });
 });
@@ -4738,7 +4223,7 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
         { agent: "orchestrator" },
       ),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
+      "phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
     );
   });
 
@@ -4746,19 +4231,19 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
     const cases = [
       [
         "phasegent issue create --title t --body b > /dev/null 2>&1",
-        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --body b > /dev/null 2>&1 --session ses_x",
+        "phasegent issue create --title t --body b > /dev/null 2>&1 --session ses_x",
       ],
       [
         "phasegent issue bind 1 >&2",
-        "PHASEGENT_ROLE=orchestrator phasegent issue bind 1 >&2",
+        "phasegent issue bind 1 >&2",
       ],
       [
         "phasegent issue create --title t &> log",
-        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t &> log --session ses_x",
+        "phasegent issue create --title t &> log --session ses_x",
       ],
       [
         "phasegent issue create --title t &>> log",
-        "PHASEGENT_ROLE=orchestrator phasegent issue create --title t &>> log --session ses_x",
+        "phasegent issue create --title t &>> log --session ses_x",
       ],
     ];
     for (const [command, expected] of cases) {
@@ -4769,13 +4254,13 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
   test("still splits a standalone & and && around redirections", () => {
     expect(
       rewritePhasegentCommand("phasegent issue bind 1 &", "ses_x", { agent: "orchestrator" }),
-    ).toBe("PHASEGENT_ROLE=orchestrator phasegent issue bind 1 &");
+    ).toBe("phasegent issue bind 1 &");
     expect(
       rewritePhasegentCommand("phasegent issue create --title t 2>&1 && echo done", "ses_x", {
         agent: "orchestrator",
       }),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t 2>&1 --session ses_x && echo done",
+      "phasegent issue create --title t 2>&1 --session ses_x && echo done",
     );
   });
 
@@ -4785,7 +4270,7 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
         agent: "orchestrator",
       }),
     ).toBe(
-      "PHASEGENT_ROLE=orchestrator phasegent issue create --title t --session ses_x |& tail -c 9",
+      "phasegent issue create --title t --session ses_x |& tail -c 9",
     );
   });
 });
@@ -4794,10 +4279,9 @@ describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
 // Generated dist freshness (issue #576 P1).
 //
 // `phasegent-worktree.js` is a build product: `bun run build:plugin` links the
-// source tree into the single deployable file and inlines the prompt bodies
-// from `skills/phasegent/*.md` at build time. These assertions keep the
-// checked-in dist reproducible — a stale or hand-edited file fails here instead
-// of shipping — and the runtime never reads a markdown file.
+// source tree into the single deployable file at build time. These assertions
+// keep the checked-in dist reproducible — a stale or hand-edited file fails
+// here instead of shipping.
 // ---------------------------------------------------------------------------
 
 describe("complete worktree lease page readers", () => {

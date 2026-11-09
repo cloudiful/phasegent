@@ -15,6 +15,7 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
     let mut api_base = None;
     let mut repository = None;
     let mut close_status_id = None;
+    let mut target_role = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -35,6 +36,16 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
             "--close-status-id" => {
                 close_status_id = Some(required_value(args, index, "--close-status-id")?);
                 index += 1;
+            }
+            value if value == "--target-role" || value.starts_with("--target-role=") => {
+                let parsed = required_value(args, index, "--target-role")?;
+                if target_role.is_some() {
+                    return Err("duplicate --target-role for auth setup".to_owned());
+                }
+                target_role = Some(parse_target_role(&parsed)?);
+                if split_inline(value, "--target-role").is_none() {
+                    index += 1;
+                }
             }
             value if value.starts_with("--") => {
                 if let Some(parsed) = split_inline(value, "--provider") {
@@ -59,5 +70,12 @@ pub(crate) fn parse_auth(args: &[String]) -> Result<Command, String> {
         api_base,
         repository,
         close_status_id,
+        target_role,
     })
+}
+
+fn parse_target_role(value: &str) -> Result<Role, String> {
+    value
+        .parse::<Role>()
+        .map_err(|error| format!("--target-role {error}"))
 }

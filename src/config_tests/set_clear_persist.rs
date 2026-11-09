@@ -173,7 +173,7 @@ fn config_clear_command_parsing() {
     let inv =
         command::parse_with_role_env(&args, None).expect("clear global without role must parse");
     match inv.command {
-        Command::ConfigClear { setting } => {
+        Command::ConfigClear { setting, .. } => {
             assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
         }
         other => panic!("got {other:?}"),
@@ -185,7 +185,7 @@ fn config_clear_command_parsing() {
     let inv =
         command::parse_with_role_env(&args, None).expect("operator role-scoped clear must parse");
     match inv.command {
-        Command::ConfigClear { setting } => {
+        Command::ConfigClear { setting, .. } => {
             assert_eq!(setting, "PHASEGENT_REDMINE_CLOSE_STATUS_ID")
         }
         other => panic!("got {other:?}"),
@@ -204,7 +204,7 @@ fn config_clear_command_parsing() {
     let inv =
         command::parse_with_role_env(&args, Some("admin")).expect("clear with role must parse");
     match inv.command {
-        Command::ConfigClear { setting } => {
+        Command::ConfigClear { setting, .. } => {
             assert_eq!(setting, "PHASEGENT_REDMINE_CLOSE_STATUS_ID")
         }
         other => panic!("got {other:?}"),

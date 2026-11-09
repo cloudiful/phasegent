@@ -46,6 +46,7 @@ impl ScratchDb {
 
 fn run_help(role: Option<&str>, args: &[&str]) -> Output {
     let db = ScratchDb::new();
+    let broker = role.map(|role| support::broker::TestBroker::start(role, "ses-record-help-1"));
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -55,6 +56,8 @@ fn run_help(role: Option<&str>, args: &[&str]) -> Output {
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove(support::broker::BROKER_ADDR_ENV)
+        .env_remove(support::broker::BROKER_TOKEN_ENV)
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")
@@ -69,8 +72,11 @@ fn run_help(role: Option<&str>, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command
+            .env(support::broker::BROKER_ADDR_ENV, broker.addr())
+            .env(support::broker::BROKER_TOKEN_ENV, broker.token())
+            .env("PHASEGENT_SESSION_ID", broker.session());
     }
     command.output().expect("spawn phasegent binary")
 }
@@ -97,7 +103,7 @@ fn record_create_help_documents_the_fixed_contract() {
     let stdout = stdout_text(&run_help(None, &["--help", "record", "create"]));
     for needle in [
         "Usage: record create",
-        "kind is bound to the session role",
+        "The kind is derived from the verified role",
         "--key is a stable request token",
         "--authorized",
         "--body-file",
@@ -138,23 +144,12 @@ fn record_get_and_list_help_document_usage() {
 
 #[test]
 fn record_help_respects_the_role_gate() {
-    // admin is never an agent role: the whole group and every page deny.
-    for args in [
-        &["--help", "record"][..],
-        &["--help", "record", "create"][..],
-        &["--help", "record", "get"][..],
-    ] {
-        let stdout = stdout_text(&run_help(Some("admin"), args));
-        assert_eq!(
-            stdout.trim_end(),
-            "No command available for admin.",
-            "{args:?} must deny admin:\n{stdout}"
-        );
-    }
-
-    // A child agent role keeps the pages for its own kind and the read
-    // surface; explore may publish recon, so it keeps `create` too.
-    for role in ["executor", "reviewer", "orchestrator", "explore"] {
+    // `admin` is the human bootstrap role, never a host agent: the broker
+    // cannot verify it, so a broker claiming `admin` grants no roleful help.
+    // Every verified role keeps the read surface; only the roles that own a
+    // record kind keep `create`. The orchestrator publishes comments, owns no
+    // record kind, and the create gate denies it.
+    for role in ["executor", "reviewer", "explore"] {
         let group = stdout_text(&run_help(Some(role), &["--help", "record"]));
         assert!(
             group.contains("create") && group.contains("get") && group.contains("list"),
@@ -166,6 +161,27 @@ fn record_help_respects_the_role_gate() {
             "record create for {role} must render its page:\n{create}"
         );
     }
+
+    let orchestrator_group = stdout_text(&run_help(Some("orchestrator"), &["--help", "record"]));
+    assert!(
+        orchestrator_group.contains("get") && orchestrator_group.contains("list"),
+        "record group for orchestrator must list the read surface:\n{orchestrator_group}"
+    );
+    assert!(
+        !orchestrator_group
+            .lines()
+            .any(|line| line.trim_start().starts_with("create")),
+        "record group for orchestrator must not list create:\n{orchestrator_group}"
+    );
+    let orchestrator_create = stdout_text(&run_help(
+        Some("orchestrator"),
+        &["--help", "record", "create"],
+    ));
+    assert_eq!(
+        orchestrator_create.trim_end(),
+        "No command available for orchestrator.",
+        "orchestrator must be denied record create:\n{orchestrator_create}"
+    );
 }
 
 #[test]

@@ -18,7 +18,8 @@ cargo install --path . --force --features postgres,notify-dingtalk,notify-email
 
 A checkout build (`cargo install --path .`) activates the local sources; a
 release asset activates the tagged binary; `phasegent plugin install` activates
-the OpenCode worktree adapter. Do not mix them for one verification.
+the OpenCode worktree adapter; `phasegent skill install` deploys the single
+`phasegent` skill. Do not mix them for one verification.
 
 On Windows x64, install the matching `phasegent-<tag>-x86_64-pc-windows-msvc.msi`
 release asset. It installs for the current user under
@@ -43,6 +44,9 @@ phasegent admin auth setup --stdin < /secure/path/token
 # Select another provider and its API base explicitly
 phasegent --provider redmine admin auth setup \
   --stdin --api-base https://redmine.example.com
+
+# Store the credential for one agent role instead of the Admin default
+phasegent admin auth setup --provider redmine --stdin --api-base https://redmine.example.com --target-role executor < /secure/path/executor-key
 
 # Prepare the Redmine project and role memberships
 phasegent --provider redmine admin workflow bootstrap \
@@ -129,7 +133,8 @@ Forgejo is configured like any other provider: use
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT` to create
 an issue, to adopt an existing number with `issue bind`, or for any number that
 carries no durable task, and store the role token with `admin auth setup
---provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`. A Forgejo
+--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT
+--target-role <role>` (omit `--target-role` to store the Admin row). A Forgejo
 default configured through the environment, TOML, the persisted machine-wide
 default or stored role configuration is selected by the shared precedence chain
 (which ends with the Redmine fallback), so it needs no explicit `--provider`; it
@@ -150,11 +155,14 @@ until it is closed, the phase detail lives in the record, close cleanup is
 limited to the matching `owner/repo` scope, and a Redmine issue has no automatic
 PR bridge. See [Forgejo provider](docs/forgejo-provider.md).
 
-Ordinary human CLI needs no agent role: without `PHASEGENT_ROLE` and without
-`PHASEGENT_SESSION_ID` it runs as Operator with the admin credential resolved
-centrally. Explicit `PHASEGENT_ROLE` keeps agent-filtered help and scoped config;
-managed sessions without a role fail closed before any credential or network
-access. `PHASEGENT_ROLE`/`PHASEGENT_SESSION_ID` are routing, not authentication.
+Ordinary human CLI needs no agent role: with no verified host broker context and
+no managed marker it runs as Operator with the admin credential resolved
+centrally. An agent role is verified against the local host broker and is never
+selected by an environment variable; managed sessions without a verified role
+fail closed before any credential or network access. `PHASEGENT_ROLE` is a
+legacy marker only and grants no identity. Provisioning a credential for a
+specific agent role is a human write: `admin auth setup --target-role <role>`
+selects the storage row without changing who the caller is.
 
 Authorized `issue create` may run internal auto-bootstrap as system preparation
 with the admin credential (one match or explicit `--project-id` skips it;
@@ -167,7 +175,10 @@ the human-operator `admin` group (`phasegent admin ...`) and is never invoked
 by AI roles.
 
 Run `phasegent --help` (or `phasegent --help <topic>`) for the full command
-reference, and see `skills/phasegent` for the OpenCode skill: it picks
+reference. `phasegent skill install` deploys the single `phasegent` skill into
+the agent home skills root (`~/.agents/skills`; `--project` for the current
+checkout; `--path DIR` for an explicit root), where the host's filesystem skill
+discovery finds it. It picks
 the tracking mode (`INLINE` / `TRACKED_ISSUE` / `LOCAL_ISSUE`), resolves the
 provider from configuration through `--provider` with a Redmine fallback, and
 covers the current `issue update`, structured `record` publication, `worktree
@@ -283,10 +294,12 @@ or the single JSON document. Invocations wrapped in a transparent `timeout`,
 See [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
 
 The OpenCode worktree adapter deployed by `phasegent plugin install` is a
-generated single-file dist. Its sources are `assets/opencode/src/` plus the
-`skills/phasegent/` prompts; rebuild with `bun run build:plugin` (`bun` is a
-development requirement only), and never hand-edit the checked-in dist
-`assets/opencode/phasegent-worktree.js` or an installed copy. The adapter keeps
+generated single-file dist. Its only source is `assets/opencode/src/`; rebuild
+with `bun run build:plugin` (`bun` is a development requirement only), and
+never hand-edit the checked-in dist `assets/opencode/phasegent-worktree.js` or
+an installed copy. The plugin registers no embedded skill and injects only a
+short routing/safety hint: the protocol and role references are one filesystem
+skill installed by `phasegent skill install`. The adapter keeps
 an exact per-session worktree registry: a session only ever uses the worktree
 recorded under its own id, a child inherits only its parent's directory, and an
 unknown session is never redirected into another session's worktree. A decided

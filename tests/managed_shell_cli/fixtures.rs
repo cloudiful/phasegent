@@ -8,9 +8,11 @@
 // and asserted to carry no body/secret logging.
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
+use super::support::broker::{BROKER_ADDR_ENV, BROKER_TOKEN_ENV, TestBroker};
 use super::support::{phasegent_bin, stderr_text, stdout_text};
 
 /// Per-test scratch directory holding the isolated local SQLite file and any
@@ -52,15 +54,30 @@ impl Scratch {
 }
 
 /// Spawn the compiled binary against an isolated local store with both
-/// managed markers cleared unless explicitly set. `role` models
-/// `PHASEGENT_ROLE`, `session` models `PHASEGENT_SESSION_ID`, `host_session`
-/// models `OPENCODE_SESSION_ID` (`None` removes, `Some` sets even when
-/// blank).
+/// managed markers cleared unless explicitly set. `role` models the
+/// legacy role marker, `session` models `PHASEGENT_SESSION_ID`, and
+/// `host_session` models `OPENCODE_SESSION_ID` (`None` removes, `Some`
+/// sets even when blank).
 pub(crate) fn run_local_with_markers(
     db: &Path,
     role: Option<&str>,
     session: Option<&str>,
     host_session: Option<&str>,
+    args: &[&str],
+) -> Output {
+    run_local_with_context(db, role, session, host_session, None, args)
+}
+
+/// Spawn the compiled binary with the full managed context: the legacy role
+/// marker, the session markers, and the loopback identity broker the
+/// plugin handed to the shell. The role is only ever granted through the
+/// broker, so a caller that has no broker context fails closed.
+pub(crate) fn run_local_with_context(
+    db: &Path,
+    role: Option<&str>,
+    session: Option<&str>,
+    host_session: Option<&str>,
+    broker: Option<(&str, &str)>,
     args: &[&str],
 ) -> Output {
     let missing_toml = db
@@ -90,6 +107,8 @@ pub(crate) fn run_local_with_markers(
         .env_remove("PHASEGENT_REDMINE_CLOSE_STATUS_ID")
         .env_remove("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
         .env_remove("PHASEGENT_REDMINE_REPOSITORY_URL")
+        .env_remove(BROKER_ADDR_ENV)
+        .env_remove(BROKER_TOKEN_ENV)
         .env("PHASEGENT_CONFIG_PATH", missing_toml.as_os_str())
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
@@ -104,17 +123,24 @@ pub(crate) fn run_local_with_markers(
     if let Some(host_session) = host_session {
         command.env("OPENCODE_SESSION_ID", host_session);
     }
+    if let Some((addr, token)) = broker {
+        command.env(BROKER_ADDR_ENV, addr);
+        command.env(BROKER_TOKEN_ENV, token);
+    }
     command.output().expect("spawn phasegent binary")
 }
 
 /// Initialize the local store (schema + seeds) with a read that touches no
-/// issue.
+/// issue. The read runs as a verified executor through the loopback
+/// identity broker, exactly like a managed shell.
 pub(crate) fn init_local(db: &Path) {
-    let out = run_local_with_markers(
+    let broker = TestBroker::start("executor", "ses-fixture-1");
+    let out = run_local_with_context(
         db,
-        Some("executor"),
         None,
+        Some(broker.session()),
         None,
+        Some((broker.addr(), broker.token())),
         &["--provider", "local", "record", "list", "1"],
     );
     assert_eq!(
@@ -152,10 +178,26 @@ pub(crate) fn error_envelope(output: &Output) -> serde_json::Value {
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct BridgeResult {
     pub(crate) command: String,
-    pub(crate) env_role: Option<String>,
     pub(crate) env_session: Option<String>,
+    pub(crate) env_broker_addr: Option<String>,
+    pub(crate) env_broker_token: Option<String>,
     pub(crate) host_session: Option<String>,
     pub(crate) decorated_had_header: bool,
+}
+
+/// A running Bun driver with its identity broker. The driver keeps the
+/// broker alive so the CLI can verify itself against it; dropping the
+/// driver stops the broker and revokes its credential.
+pub(crate) struct BridgeDriver {
+    child: Child,
+    pub(crate) result: BridgeResult,
+}
+
+impl Drop for BridgeDriver {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// Drive the checked-in dist through Bun: `tool.execute.before` (rewrite +
@@ -169,7 +211,7 @@ pub(crate) fn drive_bridge_via_bun(
     tool_command: &str,
     inherited_role: Option<&str>,
     host_session: &str,
-) -> BridgeResult {
+) -> BridgeDriver {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dist = repo_root.join("assets/opencode/phasegent-worktree.js");
     assert!(
@@ -188,12 +230,16 @@ pub(crate) fn drive_bridge_via_bun(
 
     // The driver imports the dist (proving source/dist currency), drives the
     // two hooks, simulates the host native marker, and prints one bounded
-    // JSON document. No command or env secret is printed to stderr.
+    // JSON document. The identity broker stays alive until the driver is
+    // stopped, so the CLI can verify the managed context against it. No
+    // command or env secret is printed to stderr.
     let script = format!(
         r##"
 import Plugin from "{dist_str}";
-const {{ createRedirectHook, createShellEnvHook, createManagedShellBridge }} = Plugin.redirect;
-const bridge = createManagedShellBridge();
+const {{ createRedirectHook, createShellEnvHook, createManagedShellBridge, createIdentityBroker }} = Plugin.redirect;
+const broker = createIdentityBroker();
+const brokerAddress = await broker.start();
+const bridge = createManagedShellBridge({{ broker }});
 const redirect = createRedirectHook(bridge);
 const shellHook = createShellEnvHook(bridge);
 const toolEvent = {{ tool: "shell", sessionID: {session_json}, agent: {agent_json}, id: "tool-managed-1", input: {{ command: {command_json} }} }};
@@ -210,12 +256,15 @@ await shellHook(shellEvent);
 shellEvent.env["OPENCODE_SESSION_ID"] = {host_json};
 const out = {{
   command: shellEvent.command,
-  env_role: shellEvent.env["PHASEGENT_ROLE"] ?? null,
   env_session: shellEvent.env["PHASEGENT_SESSION_ID"] ?? null,
+  env_broker_addr: shellEvent.env["PHASEGENT_BROKER_ADDR"] ?? null,
+  env_broker_token: shellEvent.env["PHASEGENT_BROKER_TOKEN"] ?? null,
   host_session: shellEvent.env["OPENCODE_SESSION_ID"] ?? null,
   decorated_had_header: decoratedHadHeader,
 }};
 console.log(JSON.stringify(out));
+// The broker keeps serving until the parent stops the driver.
+await new Promise(() => {{}});
 "##
     );
 
@@ -227,36 +276,30 @@ console.log(JSON.stringify(out));
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove("PHASEGENT_BROKER_ADDR")
+        .env_remove("PHASEGENT_BROKER_TOKEN")
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = command.output().expect("spawn bun driver");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let mut child = command.spawn().expect("spawn bun driver");
+    let stdout = child.stdout.take().expect("driver stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("driver JSON line");
+    let trimmed = line.trim().to_owned();
     assert!(
-        output.status.success(),
-        "bun driver failed: status={} stderr={stderr} stdout={stdout}",
-        output.status
+        trimmed.len() < 8192,
+        "bridge driver output must stay bounded: {trimmed}"
     );
-    // Bounded output and no secret logging: the driver prints one JSON line;
-    // stderr must not echo the tool command or any role/session secret.
-    assert!(
-        stdout.trim().len() < 8192,
-        "bridge driver output must stay bounded: {stdout}"
-    );
-    assert!(
-        !stderr.contains(tool_command),
-        "driver must not log the full command: {stderr}"
-    );
-    let trimmed = stdout.trim();
-    // Only the last line is the JSON document; Bun may prefix warnings.
-    let last_line = trimmed.lines().last().unwrap_or("");
-    let parsed: BridgeResult = serde_json::from_str(last_line).expect("bridge JSON on stdout");
+    let parsed: BridgeResult = serde_json::from_str(&trimmed).expect("bridge JSON on stdout");
     // The restored command must not retain the nonce header.
     assert!(
         !parsed.command.starts_with("# phasegent-context:"),
         "shell hook must strip its own header"
     );
-    parsed
+    BridgeDriver {
+        child,
+        result: parsed,
+    }
 }

@@ -22,6 +22,7 @@ mod project;
 mod provider_args;
 mod record;
 mod record_args;
+mod skill;
 // Phase 1 command registry skeleton (issue 597): top-level parser routing
 // consults `registry::top_level`; Phase 2 wires the same tree into the
 // parser role gate, root help, and the help detail gate; Phase 3 wires the
@@ -53,7 +54,7 @@ pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
 pub(crate) use argv::{parse_outcome_with_caller_env, parse_with_caller_env};
 pub(crate) use global_options::prescan_presentation;
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
-pub use local_args::{NotifyCommand, PluginCommand};
+pub use local_args::{NotifyCommand, PluginCommand, SkillCommand};
 pub(crate) use parse_helpers::{has_flag, optional_option};
 pub use provider_args::{
     CommentCommand, ProjectCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand,
@@ -104,6 +105,8 @@ pub enum Command {
         api_base: Option<String>,
         repository: Option<String>,
         close_status_id: Option<String>,
+        /// Human-only credential storage scope. Never the caller identity.
+        target_role: Option<Role>,
     },
     ConfigShow,
     /// bearer key is never accepted as a direct value; it must be
@@ -113,9 +116,13 @@ pub enum Command {
         setting: String,
         value: Option<String>,
         stdin: bool,
+        /// Human-only setting storage scope. Never the caller identity.
+        target_role: Option<Role>,
     },
     ConfigClear {
         setting: String,
+        /// Human-only setting storage scope. Never the caller identity.
+        target_role: Option<Role>,
     },
     ConfigProviderGet,
     ConfigProviderSet {
@@ -136,6 +143,8 @@ pub enum Command {
     Workflow(WorkflowCommand),
     Hooks(HooksCommand),
     Plugin(PluginCommand),
+    /// Single bundled skill installation (`phasegent skill install`).
+    Skill(SkillCommand),
     Relation(RelationCommand),
     /// Orchestrator-owned local phase timer and Redmine Time Entry
     /// projection. The child executor/reviewer roles do not call this CLI.
@@ -195,6 +204,8 @@ pub enum HelpTopic {
     HooksCommand(String),
     Plugin,
     PluginCommand(String),
+    Skill,
+    SkillCommand(String),
     Relation,
     RelationCommand(String),
     Timer,

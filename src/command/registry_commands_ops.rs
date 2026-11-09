@@ -81,6 +81,17 @@ pub(super) const OPS: &[CommandSpec] = &[
         ],
     ),
     group(
+        "skill",
+        "Install the bundled phasegent skill directory",
+        RoleAccess::Open,
+        ProviderScope::Any,
+        &[leaf(
+            "install",
+            "Install the phasegent skill and references",
+            RoleAccess::Open,
+        )],
+    ),
+    group(
         "notify",
         "Bounded agent notifications",
         RoleAccess::Open,

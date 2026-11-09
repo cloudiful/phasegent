@@ -4,7 +4,7 @@ A role's stored Forgejo `api_base` plus its own token is the trust for one
 normalized instance. The per-operation repository is independent: use
 `--repository owner/repo` to name it, or let the current checkout's `origin`
 attest it. Store the instance root and the outside-Git repository default with
-`phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT`; the
+`phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT --target-role <role>`; the
 stored repository is a default only outside Git, never a credential
 restriction. A Forgejo default configured through the environment, TOML, the
 persisted machine-wide default or stored role configuration is selected through
@@ -44,7 +44,10 @@ repository without repeating the flags. Forgejo rejects `--project-id` and
 
 Each role reads its own Forgejo token from the secure `auth setup` prompt or
 stdin; tokens never come from a command-line value, URL, log, or error. The
-human operator provisions the token only: no status label is required, read or
+human operator selects the storage row with `--target-role <role>` (default
+Admin) and is the only caller admitted to provisioning; a verified agent or a
+managed session without a role is rejected before any secret or storage access.
+The human operator provisions the token only: no status label is required, read or
 written, and no label is created, deleted or migrated. Forgejo has no
 `workflow bootstrap`; that provisioning surface remains Redmine-only.
 

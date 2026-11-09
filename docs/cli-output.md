@@ -39,7 +39,6 @@ Both switches are listed on `phasegent --help`.
 | Caller | stdout is a terminal, not CI | stdout is a pipe, or CI |
 | --- | --- | --- |
 | Operator (no role, no managed marker) | text | json |
-| `PHASEGENT_ROLE=admin` | text | json |
 | orchestrator, executor, reviewer, explore | json | json |
 | managed session without a role | json (fails closed anyway) | json |
 

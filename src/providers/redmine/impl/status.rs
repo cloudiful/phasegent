@@ -467,7 +467,7 @@ impl RedmineProvider {
 /// Concrete recovery command an AI can run to see the current status and
 /// the policy-allowed next statuses for one issue.
 fn recovery_hint(number: u64) -> String {
-    format!("PHASEGENT_ROLE=orchestrator phasegent --provider redmine status next {number}")
+    format!("phasegent --provider redmine status next {number}")
 }
 
 /// Structured, self-describing message for a policy-rejected

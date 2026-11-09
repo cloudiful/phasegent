@@ -116,11 +116,13 @@ fn run_help(args: &[&str]) -> Output {
     run_help_with_role(args, None)
 }
 
-/// Run help/CLI with an explicit `PHASEGENT_ROLE` so the role-aware surface can
-/// be asserted black-box. Both managed markers are cleared so help stays
-/// deterministic however the host looks (issue #859 P1).
+/// Run help/CLI with a verified agent role granted through the loopback
+/// identity broker, so the role-aware surface can be asserted black-box.
+/// Both managed markers are cleared first so help stays deterministic
+/// however the host looks (issue #859 P1).
 fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
     let db = ScratchDb::new();
+    let broker = role.map(|role| support::broker::TestBroker::start(role, "ses-test-help-1"));
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -130,6 +132,8 @@ fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove(support::broker::BROKER_ADDR_ENV)
+        .env_remove(support::broker::BROKER_TOKEN_ENV)
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")
@@ -147,8 +151,10 @@ fn run_help_with_role(args: &[&str], role: Option<&str>) -> Output {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command.env(support::broker::BROKER_ADDR_ENV, broker.addr());
+        command.env(support::broker::BROKER_TOKEN_ENV, broker.token());
+        command.env("PHASEGENT_SESSION_ID", broker.session());
     }
     command.output().expect("spawn phasegent binary")
 }
@@ -264,7 +270,7 @@ fn root_help_groups_the_command_index_and_advertises_the_output_contract() {
     let rows = root_rows(&stdout);
     for command in [
         "issue", "comment", "record", "project", "status", "version", "relation", "timer",
-        "worktree", "admin", "config", "notify", "doctor", "hooks", "plugin",
+        "worktree", "admin", "config", "notify", "doctor", "hooks", "plugin", "skill",
     ] {
         assert_eq!(
             rows.iter().filter(|row| row.as_str() == command).count(),
@@ -274,7 +280,7 @@ fn root_help_groups_the_command_index_and_advertises_the_output_contract() {
     }
     assert_eq!(
         rows.len(),
-        15,
+        16,
         "the redmine superset lists every command once; rows: {rows:?}",
     );
 
@@ -632,9 +638,6 @@ fn role_denied_help_pages_print_the_stable_denial() {
         ("executor", &["--help", "admin"][..]),
         ("orchestrator", &["--help", "admin"][..]),
         ("executor", &["--help", "timer", "start"][..]),
-        ("admin", &["--help", "worktree"][..]),
-        ("admin", &["--help", "record"][..]),
-        ("admin", &["--help", "record", "create"][..]),
     ] {
         let output = run_help_with_role(args, Some(role));
         assert!(output.status.success(), "{args:?} exited non-zero");
@@ -644,6 +647,14 @@ fn role_denied_help_pages_print_the_stable_denial() {
             "denied page {args:?} must not leak parameters",
         );
     }
+    // The human bootstrap role is never an agent: a broker that reports it
+    // yields no verified role, so the page renders as the role-less
+    // superset instead of an admin surface.
+    let admin = stdout_text(&run_help_with_role(&["--help", "worktree"], Some("admin")));
+    assert!(
+        admin.contains("Worktree commands for all roles"),
+        "an unknown agent role must not narrow help: {admin}"
+    );
     // Allowed pages still render, including the role-open local branch status.
     let get = stdout_text(&run_help_with_role(
         &["--help", "issue", "get"],

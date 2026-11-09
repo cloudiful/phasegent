@@ -1,4 +1,5 @@
-// Managed shell execution bridge (issue #859 P1).
+// Managed shell execution bridge (issue #859 P1; issue #22 P1 verified
+// identity).
 //
 // Per-plugin-instance correlation between `tool.execute.before` and
 // `shell.create.before` via an opaque unique per-tool-call nonce, not a
@@ -7,28 +8,36 @@
 // Flow:
 //   1. `tool.execute.before` first performs the existing phasegent command
 //      rewrite (`rewritePhasegentCommand`), then the bridge stores
-//      `{ nonce, sessionID, role, toolCallId, expected, timestamp }` where
+//      `{ nonce, sessionID, token, toolCallId, expected, timestamp }` where
 //      `expected` is the exact header-prefixed command, and prepends one
 //      POSIX/PowerShell-safe comment line `# phasegent-context:<nonce>\n`.
 //      The header is inert in both shells and never an identity claim.
 //   2. `shell.create.before` consumes only on exact nonce plus exact
 //      decorated-command match, once. It strips only its own leading line,
 //      restores the exact rewritten bytes, and mutates the fresh `event.env`
-//      properties only: `PHASEGENT_ROLE` when the role is trusted, otherwise
-//      it deletes any inherited `PHASEGENT_ROLE`, and always sets
-//      `PHASEGENT_SESSION_ID` to the real tool session. A real session id is
-//      required; without one the bridge decorates nothing.
+//      properties only: the host broker endpoint and the opaque broker token
+//      of the live tool call, plus `PHASEGENT_SESSION_ID` with the real tool
+//      session. A real session id is required; without one the bridge
+//      decorates nothing.
 //   3. `tool.execute.after` evicts by tool call id so cancelled or failed
-//      calls never leak. Bounded TTL (5 minutes) and capacity (64 entries)
-//      evict lazily; an evicted entry only deletes, never reuses or pairs.
-//      A lost entry falls back to the host native `OPENCODE_SESSION_ID`
-//      marker rejection, never a guessed identity.
+//      calls never leak, and revokes the broker credentials of the call.
+//      Bounded TTL (5 minutes) and capacity (64 entries) evict lazily; an
+//      evicted entry only deletes, never reuses or pairs. A lost entry falls
+//      back to the host native `OPENCODE_SESSION_ID` marker rejection, never
+//      a guessed identity.
+//
+// The role never travels in the command text: the CLI reads it from the
+// host broker, which derived it from the host facts it stored.
 //
 // No global `process.env` mutation, no FIFO, no mutable cross-session current
 // role. Expired, replayed, forged, or mismatched headers never provide an
 // identity. No full commands or secret data are logged; warnings stay generic.
 
+import { BROKER_ADDR_ENV, BROKER_TOKEN_ENV } from "./broker.js";
+
 export const MANAGED_CONTEXT_PREFIX = "# phasegent-context:";
+// The legacy role variable. The plugin never sets it any more; the bridge
+// removes an inherited one so a stale role claim never reaches the CLI.
 export const MANAGED_ROLE_ENV = "PHASEGENT_ROLE";
 export const MANAGED_SESSION_ENV = "PHASEGENT_SESSION_ID";
 export const MANAGED_BRIDGE_CAPACITY = 64;
@@ -60,6 +69,12 @@ function defaultRandomUUID() {
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
+}
+
+// A credential can only be revoked by its host tool-call id, so a missing,
+// null, or blank id never receives one.
+function isUsableLifecycleId(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 // Capability probe: the host must expose `context.shell.hook` before the
@@ -94,8 +109,14 @@ export function managedHeaderFor(nonce) {
 }
 
 // Per-setup bridge factory. Options are injectable for deterministic tests:
-// `{ now, randomUUID, capacity, ttlMs }`. Each setup call owns an isolated
-// Map; no module-global state is shared across plugin instances.
+// `{ now, randomUUID, capacity, ttlMs, broker }`. Each setup call owns an
+// isolated Map; no module-global state is shared across plugin instances.
+//
+// The broker is the identity authority: the bridge mints one opaque
+// credential per tool call through it and hands the endpoint and the token
+// to the shell through the fresh env. Without a broker the bridge still
+// marks the shell as managed, so the CLI fails closed instead of becoming
+// an ordinary operator CLI.
 export function createManagedShellBridge(options) {
   const now =
     options && typeof options.now === "function" ? options.now : defaultNow;
@@ -111,8 +132,12 @@ export function createManagedShellBridge(options) {
     options && typeof options.ttlMs === "number" && options.ttlMs >= 0
       ? options.ttlMs
       : MANAGED_BRIDGE_TTL_MS;
+  const broker =
+    options && options.broker && typeof options.broker === "object"
+      ? options.broker
+      : null;
 
-  // nonce -> { nonce, sessionID, role, toolCallId, expected, timestamp }
+  // nonce -> { nonce, sessionID, token, toolCallId, expected, timestamp }
   // Insertion order is the eviction order: the oldest entry is discarded
   // first when capacity is reached. Entries are never reused or re-paired.
   const entries = new Map();
@@ -157,18 +182,29 @@ export function createManagedShellBridge(options) {
     evictOldestIfNeeded();
     const header = managedHeaderFor(nonce);
     const expected = `${header}${rewritten}`;
-    const trustedRole =
-      role === "orchestrator" ||
-      role === "executor" ||
-      role === "reviewer" ||
-      role === "explore"
-        ? role
-        : null;
+    // The broker mints the opaque credential of this tool call and keeps
+    // the host facts; the role never leaves the plugin. A broker that is
+    // absent, refuses (capacity), fails, or has no usable lifecycle id still
+    // leaves the command marked as managed: the shell then carries the
+    // session marker without a usable credential, so the CLI fails closed
+    // instead of becoming an ordinary operator CLI.
+    const lifecycleId = isUsableLifecycleId(toolCallId) ? toolCallId : null;
+    let token = null;
+    if (lifecycleId) {
+      try {
+        token =
+          broker && typeof broker.mint === "function"
+            ? broker.mint(role, sessionID, lifecycleId)
+            : null;
+      } catch (_) {
+        token = null;
+      }
+    }
     entries.set(nonce, {
       nonce,
       sessionID,
-      role: trustedRole,
-      toolCallId: isNonEmptyString(toolCallId) ? toolCallId : null,
+      token: isNonEmptyString(token) ? token : null,
+      toolCallId: lifecycleId,
       expected,
       timestamp: current,
     });
@@ -210,19 +246,26 @@ export function createManagedShellBridge(options) {
       shellEvent.env = env;
     }
     try {
-      if (entry.role) {
-        env[MANAGED_ROLE_ENV] = entry.role;
-      } else {
-        // Unknown role: clear any inherited role so the CLI cannot mistake
-        // ambient state for a trusted identity, but still mark the shell as
-        // managed so the CLI fails closed instead of becoming Operator.
-        delete env[MANAGED_ROLE_ENV];
+      // The shell receives the broker endpoint and the opaque credential of
+      // this tool call. A stale inherited endpoint, token, or role claim is
+      // removed first, so a shell never verifies against another call's
+      // facts.
+      delete env[BROKER_ADDR_ENV];
+      delete env[BROKER_TOKEN_ENV];
+      delete env[MANAGED_ROLE_ENV];
+      if (entry.token) {
+        const address =
+          broker && typeof broker.address === "function" ? broker.address() : null;
+        if (isNonEmptyString(address)) {
+          env[BROKER_ADDR_ENV] = address;
+          env[BROKER_TOKEN_ENV] = entry.token;
+        }
       }
       env[MANAGED_SESSION_ENV] = entry.sessionID;
     } catch (_) {
       return { consumed: false, reason: "env-failed" };
     }
-    return { consumed: true, nonce, role: entry.role, sessionID: entry.sessionID };
+    return { consumed: true, nonce, sessionID: entry.sessionID };
   }
 
   function cleanupByToolCallId(toolCallId) {
@@ -233,6 +276,11 @@ export function createManagedShellBridge(options) {
         entries.delete(nonce);
         removed += 1;
       }
+    }
+    // The call is over: its broker credential is revoked too, so a later
+    // invocation cannot reuse the finished call's identity.
+    if (broker && typeof broker.revokeToolCall === "function") {
+      broker.revokeToolCall(toolCallId);
     }
     // Lazy expiry keeps the map bounded even when after-hooks never fire
     // (for example a cancelled tool call whose after event is unproven).

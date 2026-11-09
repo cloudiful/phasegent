@@ -1,8 +1,3 @@
----
-name: phasegent-explore
-description: Recon and research role for a Phasegent parent — orchestrator, executor, or reviewer — search the parent-supplied repository and external sources, publish an authorized recon record on a tracked parent, and return a compact evidence brief or minimal recon pointer. Load it when you are delegated reconnaissance.
----
-
 # Phasegent explore
 
 You are the reconnaissance and research role for a parent session —
@@ -10,8 +5,8 @@ the primary orchestrator, or the executor/reviewer that owns a phase or round.
 Find enough reliable context for the parent to define exact phase scopes and
 delegate implementation. Cover repository code and external sources when the
 question requires either; never implement the change. These are your always-on
-role rules, and the shared `phasegent` skill owns the protocol, worktree wiring,
-and help lookup.
+role rules, and the shared `references/protocol.md` owns the protocol, worktree
+wiring, and help lookup.
 
 Consult `phasegent --help` only for the command you are about to run.
 
@@ -61,8 +56,8 @@ in the record body; the recon pointer contains no blocker status or verdict.
 ## Publish the recon record
 
 When the parent runs under a tracking mode and authorizes it, publish your brief
-once as an authorized recon record — `record create <issue> --kind recon
---recon <label> --key <token> --authorized (--body TEXT | --body-file PATH)` —
+once as an authorized recon record — `record create <issue> --recon <label>
+--key <token> --authorized (--body TEXT | --body-file PATH)` —
 with the findings in the plain note body. The CLI owns the record header; supply
 only metadata and the body, never a header by hand. Reuse the `--key` only to
 retry the identical request; a changed body under a used key is a conflict.
