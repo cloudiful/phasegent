@@ -72,6 +72,7 @@ fn parser_auth_config_and_provider_selection_regressions() {
             ref api_base,
             ref close_status_id,
             repository: None,
+            target_role: None,
         } if api_base.as_deref() == Some("https://redmine.example")
             && close_status_id.as_deref() == Some("37")
     ));

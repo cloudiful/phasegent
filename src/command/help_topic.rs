@@ -132,6 +132,11 @@ pub(crate) fn help_topic(
             }
             Some(value) => Err(format!("unknown plugin help topic '{value}'")),
         },
+        "skill" => match subcommand {
+            None => Ok(HelpTopic::Skill),
+            Some("install") => Ok(HelpTopic::SkillCommand("install".to_owned())),
+            Some(value) => Err(format!("unknown skill help topic '{value}'")),
+        },
         "notify" => match subcommand {
             None => Ok(HelpTopic::Notify),
             Some("send") => Ok(HelpTopic::NotifyCommand("send".to_owned())),

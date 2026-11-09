@@ -3,10 +3,10 @@
 //! `phasegent plugin install` writes the worktree adapter into the
 //! OpenCode plugin directory: `$XDG_CONFIG_HOME/opencode/plugins/`,
 //! `<HOME>/.config/opencode/plugins/`, or, on Windows without `HOME`,
-//! `<USERPROFILE>/.config/opencode/plugins/` for the global scope, or
-//! `.opencode/plugins/` (relative to the current working directory) for
-//! the project scope. The installer targets OpenCode only: it never
-//! probes other agent hosts. Files are tagged with
+//! `<USERPROFILE>/.config/opencode/plugins/` for the default global
+//! target, or `.opencode/plugins/` (relative to the current working
+//! directory) when `--project` is selected. The installer targets OpenCode
+//! only: it never probes other agent hosts. Files are tagged with
 //! the `// phasegent:managed` header marker and never clobber
 //! foreign files unless the operator passes `--force`, in which
 //! case the foreign file is moved to
@@ -27,29 +27,20 @@
 //! and claims the v2 worktree strategy (`context.worktree.transform`)
 //! only when the checkout already carries a phasegent issue binding, so
 //! a non-phasegent project keeps the host git strategy. The strategy
-//! runs `phasegent worktree acquire --issue N --format json` with
-//! `PHASEGENT_ROLE=orchestrator` scoped to that call, and falls back to
-//! a plain git worktree when acquire fails. The acquired worktree
+//! runs `phasegent worktree acquire --issue N --format json` and falls back
+//! to a plain git worktree when acquire fails. The acquired worktree
 //! becomes the session directory through `context.session.move`,
 //! because the v2 worktree domain has no v1 `target` callback.
 //!
-//! `setup` also registers the issue #533 surface: the embedded
-//! `phasegent` skill (`context.skill.transform`; the body is inlined at
-//! build time from `skills/phasegent/SKILL.md`). It registers no slash
-//! command: the live v2.0.11 command draft only accepts an
-//! Effect-returning `execute` callback, which a promise plugin cannot
-//! build, and registering through the typed SDK's `update(name,
-//! mutate)` draft disabled the whole plugin at runtime (issue #533
-//! host evidence), so `phasegent worktree acquire` stays the manual
-//! path. The adapter targets the OpenCode binary's runtime plugin
-//! context, not the npm `@opencode-ai/plugin` type package, which can
-//! lag the binary (1.18.25 exposes no `tool`, `worktree`, `session`,
-//! or `location`); a missing registration surface degrades to a
-//! console warning.
+//! `setup` also registers the issue #533 surface: no embedded skill and no
+//! slash command. The `phasegent` skill is one filesystem directory installed
+//! by `phasegent skill install`, so the host's normal skill discovery owns it
+//! and the adapter never registers a conflicting embedded copy. Each protocol
+//! agent receives only a short routing/safety hint, never a full role document.
+//!
 //! `PHASEGENT_SESSION_ID` and `PHASEGENT_WORKTREE_NO_DISCOVER=1` are the
-//! only hard environment guarantees; each rewritten `phasegent`
-//! invocation additionally carries the session role as a
-//! per-invocation `PHASEGENT_ROLE` assignment (issue #588).
+//! only hard environment guarantees; the managed shell bridge carries the
+//! broker endpoint/token for verified identity (issue #22 P1).
 //!
 //! Once a session has acquired a worktree, relative file paths and a
 //! bare or relative shell `workdir` are redirected into it, while
@@ -115,12 +106,6 @@ pub struct PluginTargetStatus {
     pub size: u64,
     /// Unix-epoch mtime seconds; `None` when the file does not exist.
     pub mtime: Option<i64>,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct StatusReport {
-    pub global: PluginTargetStatus,
-    pub project: PluginTargetStatus,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -271,17 +256,16 @@ pub fn install_at(dir: &Path, force: bool) -> Result<InstallOutcome, PluginError
     }
 }
 
-/// Compute the status of the global + project slots without touching
-/// the filesystem beyond the metadata reads. Used by `plugin status`.
-/// Propagates the global resolver error instead of falling back to a
-/// relative current-directory target.
-pub fn status_at(cwd: &Path) -> Result<StatusReport, PluginError> {
-    let global_dir = resolve_global_dir()?;
-    let project_dir = resolve_project_dir(cwd);
-    Ok(StatusReport {
-        global: inspect_target(&global_dir),
-        project: inspect_target(&project_dir),
-    })
+/// Compute the status of the default global slot without touching the
+/// filesystem beyond metadata reads. Propagates the resolver error instead of
+/// falling back to a relative current-directory target.
+pub fn status_global() -> Result<PluginTargetStatus, PluginError> {
+    Ok(inspect_target(&resolve_global_dir()?))
+}
+
+/// Compute the status of the project slot under `cwd`.
+pub fn status_project(cwd: &Path) -> PluginTargetStatus {
+    inspect_target(&resolve_project_dir(cwd))
 }
 
 /// Remove the managed file at `dir` only when it exists AND contains
@@ -349,38 +333,48 @@ pub(crate) fn adapter_source() -> &'static str {
 }
 
 fn ensure_dir(dir: &Path) -> Result<(), PluginError> {
-    match std::fs::create_dir_all(dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+    let existed = match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => true,
+        Ok(_) => {
+            return Err(PluginError::new(
+                "conflict",
+                format!(
+                    "refusing to manage plugin directory {}: it is not a directory",
+                    dir.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => {
             return Err(PluginError::new(
                 "filesystem",
-                format!("cannot create plugin directory {}: {error}", dir.display()),
+                format!("cannot inspect plugin directory {}: {error}", dir.display()),
             ));
         }
+    };
+    if existed {
+        // A pre-existing directory keeps its mode: a private plugin root must
+        // not be widened by an install or a refusal.
+        return Ok(());
     }
+    std::fs::create_dir_all(dir).map_err(|error| {
+        PluginError::new(
+            "filesystem",
+            format!("cannot create plugin directory {}: {error}", dir.display()),
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::metadata(dir).map_err(|error| {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).map_err(|error| {
             PluginError::new(
                 "filesystem",
-                format!("cannot stat plugin directory {}: {error}", dir.display()),
+                format!(
+                    "cannot set plugin directory mode {}: {error}",
+                    dir.display()
+                ),
             )
         })?;
-        let mut permissions = metadata.permissions();
-        if permissions.mode() & 0o777 != 0o755 {
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(dir, permissions).map_err(|error| {
-                PluginError::new(
-                    "filesystem",
-                    format!(
-                        "cannot set plugin directory mode {}: {error}",
-                        dir.display()
-                    ),
-                )
-            })?;
-        }
     }
     Ok(())
 }

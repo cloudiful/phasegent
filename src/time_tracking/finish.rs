@@ -7,18 +7,6 @@ use crate::providers::{ProviderKind, RedmineConfig, RedmineProvider};
 use super::dispatch::TimerOutput;
 use super::util::{bounded_error_message, generate_projection_token, now_epoch_seconds};
 
-#[allow(dead_code)]
-fn timer_orchestrator(role_value: Option<Role>, operation: &str) -> Result<Role, PhasegentError> {
-    let caller = CallerContext::from_role(role_value);
-    timer_orchestrator_caller(caller, operation).and_then(|credential| {
-        credential.ok_or_else(|| {
-            PhasegentError::config(format!(
-                "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
-            ))
-        })
-    })
-}
-
 pub(crate) fn timer_orchestrator_caller(
     caller: CallerContext,
     operation: &str,

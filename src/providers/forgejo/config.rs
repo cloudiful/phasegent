@@ -78,7 +78,8 @@ impl ForgejoConfig {
         let Some((stored_api_base, stored_repository)) = stored else {
             return Err(PhasegentError::config(
                 "Forgejo role configuration is not present; an operator must store the trusted \
-                 instance and credential with `admin auth setup`",
+                 instance and credential with `phasegent admin auth setup --provider forgejo \
+                 --target-role <ROLE>` for the intended agent role",
             ));
         };
         let trusted = validate_api_base(&stored_api_base)?;

@@ -1,21 +1,16 @@
----
-name: phasegent-orchestrator
-description: Orchestrator-side phasegent protocol for tracked phases — pick the tracking mode, own the issue plan, delegate with an issue number plus deltas only, hold status, timer, worktree-lease and closure ownership, and close the phase from the published audit notes. Load it when you own a phase.
----
-
 # Phasegent orchestrator
 
 You own a tracked phase end to end: the plan artifact, the delegation, the
 status flow, and the closure. These are your always-on role rules; the shared
-`phasegent` skill is the single source for the tracking-mode decision tree, the
-marker and result contracts, and worktree lease detail.
+`references/protocol.md` is the single source for the tracking-mode decision
+tree, the marker and result contracts, and worktree lease detail.
 
-This skill is also the single portable authority for Git delivery, PR, and
-issue-closure policy. The shared skill and the child role skills reference that
-policy instead of restating or contradicting it.
+This reference is also the single portable authority for Git delivery, PR, and
+issue-closure policy. The shared protocol and the child role references point to
+that policy instead of restating or contradicting it.
 
 Consult `phasegent --help` only for the command you are about to run; the
-shared skill owns the syntax rule and the rest of the protocol.
+shared protocol owns the syntax rule and the rest of the protocol.
 
 ## Own the artifact
 
@@ -87,7 +82,7 @@ written into the body before the next attempt.
 ## Delegate with an issue number plus deltas
 
 A delegation prompt carries the issue number; the child reads the artifact and
-its own role skill for the rest. Add only what the artifact cannot carry:
+its own role reference for the rest. Add only what the artifact cannot carry:
 
 - the marker (the child's record `--key`), and the attempt or round,
 - the exact allowlist and the `git restore` allowlist delta,

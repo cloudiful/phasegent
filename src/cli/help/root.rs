@@ -5,13 +5,15 @@ use super::common::{HelpRow, HelpSection, render_group_help_visible};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Root usage block. Ordinary human CLI needs no agent role: without
-/// `PHASEGENT_ROLE` and without `PHASEGENT_SESSION_ID` the invocation is
-/// the unmanaged Operator, so the common invocation shape never carries a
-/// role flag. `--provider` is resolved from configuration and named only in
-/// the options list, so the common invocation shape never tags it on either.
+/// Root usage block. Ordinary human CLI needs no agent role: without a
+/// managed marker the invocation is the unmanaged Operator, so the common
+/// invocation shape never carries a role flag. A managed shell's agent role
+/// is verified against the local host broker, never selected by an
+/// environment variable. `--provider` is resolved from configuration and
+/// named only in the options list, so the common invocation shape never tags
+/// it on either.
 const ROOT_USAGE: &str = "Usage:\n  phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]";
-const ROOT_USAGE_ROLE: &str = "\n\nCaller context:\n  No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); explicit PHASEGENT_ROLE selects agent-filtered help and scoped config; managed sessions without a role fail closed. PHASEGENT_ROLE/PHASEGENT_SESSION_ID are routing, not authentication. See 'phasegent --help admin' and docs/cli-caller-context.md.";
+const ROOT_USAGE_ROLE: &str = "\n\nCaller context:\n  No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); a managed shell's agent role is verified against the local host broker, never selected by an environment variable; managed sessions without a verified role fail closed. PHASEGENT_ROLE is a legacy marker only and grants no identity. See 'phasegent --help admin' and docs/cli-caller-context.md.";
 
 /// The root usage block for this build.
 fn root_usage() -> String {
@@ -37,7 +39,7 @@ const ROOT_GROUPS: &[(&str, &[&str])] = &[
         "Configuration and operations",
         &["admin", "config", "notify"],
     ),
-    ("Meta", &["doctor", "hooks", "plugin"]),
+    ("Meta", &["doctor", "hooks", "plugin", "skill"]),
 ];
 
 /// The root overview names in print order.
@@ -129,13 +131,14 @@ mod tests {
         let usage = root_usage();
         assert!(
             usage.contains("runs as Operator")
-                && usage.contains("PHASEGENT_ROLE")
+                && usage.contains("host broker")
                 && usage.contains("fail closed"),
-            "root usage must state Operator default, explicit PHASEGENT_ROLE, and managed fail-closed: {usage}"
+            "root usage must state Operator default, broker-verified role, and managed fail-closed: {usage}"
         );
         assert!(
-            usage.contains("routing, not authentication"),
-            "root usage must state role env is routing, not authentication: {usage}"
+            usage.contains("PHASEGENT_ROLE is a legacy marker only")
+                && usage.contains("grants no identity"),
+            "root usage must state PHASEGENT_ROLE grants no identity: {usage}"
         );
         assert!(
             !usage.contains("--role"),

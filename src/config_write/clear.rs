@@ -9,8 +9,9 @@ use super::{ConfigClearOutcome, is_role_scoped_setting};
 /// value was actually removed. The legacy `PHASEGENT_INDEX_BACKEND`
 /// remains clearable for compatibility but clearing it never changes
 /// backend selection; only `PHASEGENT_INDEX_PG_URL` presence selects
-/// PostgreSQL. An unmanaged Operator clears through the admin scope; a
-/// managed session without a role fails closed for role-scoped clears.
+/// PostgreSQL. An ordinary Operator clears through the admin scope or a
+/// human-selected target storage role; a managed session without a role fails
+/// closed for role-scoped clears.
 pub fn clear_setting(
     role: Option<Role>,
     canonical: &str,

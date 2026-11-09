@@ -15,7 +15,7 @@ use crate::command::RecordCommand;
 use crate::policy::{CallerContext, Role};
 use crate::providers::ProviderKind;
 use crate::providers::api::PhasegentError;
-use crate::record::{self, RecordFilter};
+use crate::record::{self, RecordFilter, RecordKind};
 
 use request::Gate;
 
@@ -144,7 +144,6 @@ pub(crate) fn execute_record_with_caller(
     match command {
         RecordCommand::Create {
             issue,
-            kind,
             key,
             phase,
             attempt,
@@ -155,6 +154,21 @@ pub(crate) fn execute_record_with_caller(
             keep_body_file,
             authorized,
         } => {
+            // The kind follows the verified role, never a flag: an agent
+            // cannot label its own work as another role's record. A role
+            // that owns no kind (the orchestrator publishes comments) is
+            // denied before any provider or body-file access.
+            let Some(kind) = RecordKind::for_role(role) else {
+                return super::structured_error(
+                    serde_json::json!({
+                        "kind":"permission",
+                        "role":role.as_str(),
+                        "operation":"record create",
+                        "message":RecordKind::denied_for_role(role)
+                    }),
+                    3,
+                );
+            };
             let spec = match request::authorize(
                 role,
                 request::GateInput {

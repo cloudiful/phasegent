@@ -1,4 +1,5 @@
-//! Parser for the `plugin` command group (issue #239 Phase 3).
+//! Parser for the `plugin` command group (issue #239 Phase 3; issue #22 P2
+//! scope cleanup).
 //!
 //! Mirrors the `command/<name>.rs` pattern used by `hooks`,
 //! `comment`, `worktree`, and others:
@@ -11,11 +12,13 @@
 //!   `optional_nonempty_option` / `has_flag` helpers so the
 //!   leading-dash escape hatch (`--path=VALUE`) works for values that
 //!   begin with `-`.
-//! * `--path DIR` (issue 666) names an explicit plugin directory — the
-//!   directory holding `phasegent-worktree.js`, not the file itself —
-//!   and is mutually exclusive with the `--global` / `--project` scope
-//!   selectors. A missing, empty, or whitespace-only value is a parser
-//!   error rather than a silent fallback to the default scopes.
+//! * The default target is the global OpenCode plugin directory.
+//!   `--project` selects only the project directory. `--path DIR` (issue
+//!   666) names an explicit plugin directory — the directory holding
+//!   `phasegent-worktree.js`, not the file itself — and is mutually
+//!   exclusive with `--project`. A missing, empty, or whitespace-only value
+//!   is a parser error rather than a silent fallback. `--global` was removed
+//!   and is rejected as an unknown option.
 //! * No role / provider / network is touched here; the role gate is
 //!   not applied because plugin management is operator-local and
 //!   mirrors the hooks install surface (no role required).
@@ -50,15 +53,13 @@ fn parse_install(args: &[String]) -> Result<RootCommand, String> {
         args,
         0,
         &["--path"],
-        &["--global", "--project", "--force"],
+        &["--project", "--force"],
         "plugin install",
     )?;
-    let global = has_flag(args, "--global");
     let project = has_flag(args, "--project");
     let force = has_flag(args, "--force");
-    let path = parse_explicit_path(args, global, project, "plugin install")?;
+    let path = parse_explicit_path(args, project, "plugin install")?;
     Ok(RootCommand::Plugin(PluginCommand::Install {
-        global,
         project,
         force,
         path,
@@ -66,42 +67,34 @@ fn parse_install(args: &[String]) -> Result<RootCommand, String> {
 }
 
 fn parse_status(args: &[String]) -> Result<RootCommand, String> {
-    validate_options(args, 0, &["--path"], &[], "plugin status")?;
-    let path = optional_nonempty_option(args, "--path", "plugin status")?;
-    Ok(RootCommand::Plugin(PluginCommand::Status { path }))
+    validate_options(args, 0, &["--path"], &["--project"], "plugin status")?;
+    let project = has_flag(args, "--project");
+    let path = parse_explicit_path(args, project, "plugin status")?;
+    Ok(RootCommand::Plugin(PluginCommand::Status { project, path }))
 }
 
 fn parse_uninstall(args: &[String]) -> Result<RootCommand, String> {
-    validate_options(
-        args,
-        0,
-        &["--path"],
-        &["--global", "--project"],
-        "plugin uninstall",
-    )?;
-    let global = has_flag(args, "--global");
+    validate_options(args, 0, &["--path"], &["--project"], "plugin uninstall")?;
     let project = has_flag(args, "--project");
-    let path = parse_explicit_path(args, global, project, "plugin uninstall")?;
+    let path = parse_explicit_path(args, project, "plugin uninstall")?;
     Ok(RootCommand::Plugin(PluginCommand::Uninstall {
-        global,
         project,
         path,
     }))
 }
 
 /// Resolve `--path DIR` for a scope-bearing subcommand. The explicit
-/// directory replaces the scope selectors, so combining them is a parser
+/// directory replaces the project selector, so combining them is a parser
 /// error instead of an implicit precedence winner.
 fn parse_explicit_path(
     args: &[String],
-    global: bool,
     project: bool,
     operation: &str,
 ) -> Result<Option<String>, String> {
     let path = optional_nonempty_option(args, "--path", operation)?;
-    if path.is_some() && (global || project) {
+    if path.is_some() && project {
         return Err(format!(
-            "{operation} --path cannot be combined with --global or --project"
+            "{operation} --path cannot be combined with --project"
         ));
     }
     Ok(path)
@@ -117,18 +110,16 @@ mod tests {
     }
 
     #[test]
-    fn install_defaults_to_both_scopes_unforced() {
+    fn install_defaults_to_the_global_target_unforced() {
         let invocation =
             command::parse_with_role_env(&strings(["plugin", "install"]), Some("orchestrator"))
                 .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install {
-                global,
                 project,
                 force,
                 path,
             }) => {
-                assert!(!global);
                 assert!(!project);
                 assert!(!force);
                 assert_eq!(path, None);
@@ -138,26 +129,34 @@ mod tests {
     }
 
     #[test]
-    fn install_parses_global_project_force_flags() {
+    fn install_parses_project_and_force_flags() {
         let invocation = command::parse_with_role_env(
-            &strings(["plugin", "install", "--global", "--project", "--force"]),
+            &strings(["plugin", "install", "--project", "--force"]),
             Some("orchestrator"),
         )
         .unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install {
-                global,
                 project,
                 force,
                 path,
             }) => {
-                assert!(global);
                 assert!(project);
                 assert!(force);
                 assert_eq!(path, None);
             }
             other => panic!("unexpected command {other:?}"),
         }
+    }
+
+    #[test]
+    fn install_rejects_the_removed_global_flag() {
+        let err = command::parse_with_role_env(
+            &strings(["plugin", "install", "--global"]),
+            Some("orchestrator"),
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown option '--global'"), "got: {err}");
     }
 
     #[test]
@@ -168,13 +167,7 @@ mod tests {
         )
         .unwrap();
         match invocation.command {
-            Command::Plugin(PluginCommand::Install {
-                global,
-                project,
-                path,
-                ..
-            }) => {
-                assert!(!global);
+            Command::Plugin(PluginCommand::Install { project, path, .. }) => {
                 assert!(!project);
                 assert_eq!(path.as_deref(), Some("/tmp/chezmoi/plugins"));
             }
@@ -184,8 +177,6 @@ mod tests {
 
     #[test]
     fn install_parses_inline_path_escape_hatch() {
-        // `--path=VALUE` carries a value that starts with `-` without
-        // tripping the two-argument missing-value guard.
         let invocation = command::parse_with_role_env(
             &strings(["plugin", "install", "--path=-dashed-dir"]),
             Some("orchestrator"),
@@ -200,39 +191,28 @@ mod tests {
     }
 
     #[test]
-    fn install_rejects_path_combined_with_a_scope_flag() {
-        for scope in ["--global", "--project"] {
-            let err = command::parse_with_role_env(
-                &strings(["plugin", "install", "--path", "/tmp/plugins", scope]),
-                Some("orchestrator"),
-            )
-            .unwrap_err();
-            assert!(err.contains("cannot be combined"), "got: {err}");
-        }
+    fn install_rejects_path_combined_with_project() {
+        let err = command::parse_with_role_env(
+            &strings(["plugin", "install", "--path", "/tmp/plugins", "--project"]),
+            Some("orchestrator"),
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be combined"), "got: {err}");
     }
 
     #[test]
     fn install_rejects_missing_or_blank_path_values() {
-        let missing = command::parse_with_role_env(
-            &strings(["plugin", "install", "--path"]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(missing.contains("requires a value"), "got: {missing}");
-
-        let empty = command::parse_with_role_env(
-            &strings(["plugin", "install", "--path="]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(empty.contains("non-empty --path"), "got: {empty}");
-
-        let blank = command::parse_with_role_env(
-            &strings(["plugin", "install", "--path", "   "]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(blank.contains("non-empty --path"), "got: {blank}");
+        for args in [
+            strings(["plugin", "install", "--path"]),
+            strings(["plugin", "install", "--path="]),
+            strings(["plugin", "install", "--path", "   "]),
+        ] {
+            let err = command::parse_with_role_env(&args, Some("orchestrator")).unwrap_err();
+            assert!(
+                err.contains("requires a value") || err.contains("non-empty --path"),
+                "got: {err}"
+            );
+        }
     }
 
     #[test]
@@ -246,63 +226,12 @@ mod tests {
     }
 
     #[test]
-    fn status_parses_without_flags() {
+    fn status_defaults_to_the_global_target() {
         let invocation =
             command::parse_with_role_env(&strings(["plugin", "status"]), Some("orchestrator"))
                 .unwrap();
         match invocation.command {
-            Command::Plugin(PluginCommand::Status { path }) => assert_eq!(path, None),
-            other => panic!("unexpected command {other:?}"),
-        }
-    }
-
-    #[test]
-    fn status_parses_explicit_path() {
-        let invocation = command::parse_with_role_env(
-            &strings(["plugin", "status", "--path", "/tmp/plugins"]),
-            Some("orchestrator"),
-        )
-        .unwrap();
-        match invocation.command {
-            Command::Plugin(PluginCommand::Status { path }) => {
-                assert_eq!(path.as_deref(), Some("/tmp/plugins"));
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
-    }
-
-    #[test]
-    fn status_rejects_blank_path_value() {
-        let err = command::parse_with_role_env(
-            &strings(["plugin", "status", "--path="]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(err.contains("non-empty --path"), "got: {err}");
-    }
-
-    #[test]
-    fn status_rejects_unknown_option() {
-        let err = command::parse_with_role_env(
-            &strings(["plugin", "status", "--global"]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(err.contains("unknown option"), "got: {err}");
-    }
-
-    #[test]
-    fn uninstall_defaults_to_both_scopes() {
-        let invocation =
-            command::parse_with_role_env(&strings(["plugin", "uninstall"]), Some("orchestrator"))
-                .unwrap();
-        match invocation.command {
-            Command::Plugin(PluginCommand::Uninstall {
-                global,
-                project,
-                path,
-            }) => {
-                assert!(!global);
+            Command::Plugin(PluginCommand::Status { project, path }) => {
                 assert!(!project);
                 assert_eq!(path, None);
             }
@@ -311,20 +240,60 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_parses_scope_flags() {
-        let invocation = command::parse_with_role_env(
-            &strings(["plugin", "uninstall", "--project"]),
+    fn status_parses_project_and_explicit_path() {
+        let project = command::parse_with_role_env(
+            &strings(["plugin", "status", "--project"]),
             Some("orchestrator"),
         )
         .unwrap();
+        assert!(matches!(
+            project.command,
+            Command::Plugin(PluginCommand::Status {
+                project: true,
+                path: None
+            })
+        ));
+        let path = command::parse_with_role_env(
+            &strings(["plugin", "status", "--path", "/tmp/plugins"]),
+            Some("orchestrator"),
+        )
+        .unwrap();
+        assert!(matches!(
+            path.command,
+            Command::Plugin(PluginCommand::Status {
+                project: false,
+                path: Some(ref value)
+            }) if value == "/tmp/plugins"
+        ));
+    }
+
+    #[test]
+    fn status_rejects_blank_path_and_removed_global() {
+        let blank = command::parse_with_role_env(
+            &strings(["plugin", "status", "--path="]),
+            Some("orchestrator"),
+        )
+        .unwrap_err();
+        assert!(blank.contains("non-empty --path"), "got: {blank}");
+        let global = command::parse_with_role_env(
+            &strings(["plugin", "status", "--global"]),
+            Some("orchestrator"),
+        )
+        .unwrap_err();
+        assert!(
+            global.contains("unknown option '--global'"),
+            "got: {global}"
+        );
+    }
+
+    #[test]
+    fn uninstall_defaults_to_the_global_target() {
+        let invocation =
+            command::parse_with_role_env(&strings(["plugin", "uninstall"]), Some("orchestrator"))
+                .unwrap();
         match invocation.command {
-            Command::Plugin(PluginCommand::Uninstall {
-                global,
-                project,
-                path,
-            }) => {
-                assert!(!global);
-                assert!(project);
+            Command::Plugin(PluginCommand::Uninstall { project, path }) => {
+                assert!(!project);
                 assert_eq!(path, None);
             }
             other => panic!("unexpected command {other:?}"),
@@ -332,31 +301,54 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_parses_explicit_path_and_rejects_scope_combination() {
-        let invocation = command::parse_with_role_env(
+    fn uninstall_parses_project_and_explicit_path() {
+        let project = command::parse_with_role_env(
+            &strings(["plugin", "uninstall", "--project"]),
+            Some("orchestrator"),
+        )
+        .unwrap();
+        assert!(matches!(
+            project.command,
+            Command::Plugin(PluginCommand::Uninstall {
+                project: true,
+                path: None
+            })
+        ));
+        let path = command::parse_with_role_env(
             &strings(["plugin", "uninstall", "--path", "/tmp/plugins"]),
             Some("orchestrator"),
         )
         .unwrap();
-        match invocation.command {
-            Command::Plugin(PluginCommand::Uninstall { path, .. }) => {
-                assert_eq!(path.as_deref(), Some("/tmp/plugins"));
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
+        assert!(matches!(
+            path.command,
+            Command::Plugin(PluginCommand::Uninstall {
+                project: false,
+                path: Some(ref value)
+            }) if value == "/tmp/plugins"
+        ));
+    }
 
-        let err = command::parse_with_role_env(
-            &strings(["plugin", "uninstall", "--path", "/tmp/plugins", "--global"]),
+    #[test]
+    fn uninstall_rejects_path_combined_with_project_and_removed_global() {
+        let combined = command::parse_with_role_env(
+            &strings(["plugin", "uninstall", "--path", "/tmp/plugins", "--project"]),
             Some("orchestrator"),
         )
         .unwrap_err();
-        assert!(err.contains("cannot be combined"), "got: {err}");
+        assert!(combined.contains("cannot be combined"), "got: {combined}");
+        let global = command::parse_with_role_env(
+            &strings(["plugin", "uninstall", "--global"]),
+            Some("orchestrator"),
+        )
+        .unwrap_err();
+        assert!(
+            global.contains("unknown option '--global'"),
+            "got: {global}"
+        );
     }
 
     #[test]
     fn plugin_install_does_not_require_role() {
-        // `plugin install` mirrors `hooks install`: operator-local,
-        // never touches a provider, so no role is required.
         let invocation = command::parse(&strings(["plugin", "install"])).unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install { .. }) => {}

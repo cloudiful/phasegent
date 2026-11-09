@@ -10,7 +10,7 @@ Usage:
   phasegent [GLOBAL OPTIONS] <COMMAND> [ARGS]
 
 Caller context:
-  No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); explicit PHASEGENT_ROLE selects agent-filtered help and scoped config; managed sessions without a role fail closed. PHASEGENT_ROLE/PHASEGENT_SESSION_ID are routing, not authentication. See 'phasegent --help admin' and docs/cli-caller-context.md.
+  No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); a managed shell's agent role is verified against the local host broker, never selected by an environment variable; managed sessions without a verified role fail closed. PHASEGENT_ROLE is a legacy marker only and grants no identity. See 'phasegent --help admin' and docs/cli-caller-context.md.
 
 Options:
   --provider <NAME>      redmine, local, or forgejo (default: configured selection, else redmine)
@@ -40,6 +40,7 @@ Meta:
   doctor                 Read-only self-check: credential presence, index backend, masked PG URL (no role needed)
   hooks                  Managed Git hook installation
   plugin                 Managed OpenCode plugin installation
+  skill                  Install the bundled phasegent skill directory
 
 Use 'phasegent --help <command>' for the next level.
 Provider resolution chain and machine-wide default: 'phasegent --help config provider'.

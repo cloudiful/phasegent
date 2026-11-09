@@ -91,8 +91,8 @@ fn parse_config_for(args: &[String], origin: ConfigOrigin) -> Result<Command, St
             }
             Ok(Command::ConfigShow)
         }
-        Some("set") => parse_config_set(&args[1..]),
-        Some("clear") => parse_config_clear(&args[1..]),
+        Some("set") => parse_config_set(&args[1..], origin),
+        Some("clear") => parse_config_clear(&args[1..], origin),
         Some("provider") => parse_config_provider(&args[1..], origin),
         Some(other) => Err(format!("unknown config command '{other}'")),
         None => Err("config requires a subcommand (show, set, clear, or provider)".to_owned()),
@@ -121,7 +121,7 @@ fn config_detail_help(origin: ConfigOrigin, subcommand: &str, rest: &[String]) -
     }
 }
 
-fn parse_config_set(args: &[String]) -> Result<Command, String> {
+fn parse_config_set(args: &[String], origin: ConfigOrigin) -> Result<Command, String> {
     if args.is_empty() {
         return Err("config set requires a setting name".to_owned());
     }
@@ -140,13 +140,25 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
 
     let mut value: Option<String> = None;
     let mut stdin = false;
+    let mut target_role = None;
     let secret_setting = crate::config_write::is_secret_setting(&canonical);
-    for token in &args[1..] {
+    let mut index = 1;
+    while index < args.len() {
+        let token = &args[index];
         if token == "--stdin" {
             if stdin {
                 return Err("duplicate --stdin for config set".to_owned());
             }
             stdin = true;
+        } else if token == "--target-role" || token.starts_with("--target-role=") {
+            let parsed = required_value(args, index, "--target-role")?;
+            if target_role.is_some() {
+                return Err("duplicate --target-role for config set".to_owned());
+            }
+            target_role = Some(parse_target_role(&parsed)?);
+            if split_inline(token, "--target-role").is_none() {
+                index += 1;
+            }
         } else if token.starts_with('-') {
             // A dash-prefixed token is either an unknown flag or a candidate
             // secret value; neither may be echoed, so a secret setting gets a
@@ -163,7 +175,9 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
             }
             value = Some(token.clone());
         }
+        index += 1;
     }
+    reject_target_role_scope(&canonical, target_role, origin)?;
 
     // Secret settings reject a direct value except the SMTP password, whose
     // API-token flow accepts one; every other secret keeps --stdin/prompt.
@@ -189,10 +203,11 @@ fn parse_config_set(args: &[String]) -> Result<Command, String> {
         setting: canonical,
         value,
         stdin,
+        target_role,
     })
 }
 
-fn parse_config_clear(args: &[String]) -> Result<Command, String> {
+fn parse_config_clear(args: &[String], origin: ConfigOrigin) -> Result<Command, String> {
     if args.is_empty() {
         return Err("config clear requires a setting name".to_owned());
     }
@@ -204,21 +219,63 @@ fn parse_config_clear(args: &[String]) -> Result<Command, String> {
     if args[0].starts_with('-') {
         return Err(format!("unknown option '{}' for config clear", args[0]));
     }
-    if args.len() != 1 {
-        if args.iter().skip(1).any(|v| v.starts_with('-')) {
-            for token in &args[1..] {
-                if token.starts_with('-') {
-                    return Err(format!("unknown option '{token}' for config clear"));
-                }
-            }
-        }
-        return Err("config clear takes exactly one setting".to_owned());
-    }
     let setting_raw = &args[0];
     let canonical = crate::config_write::canonical_setting_name(setting_raw)
         .ok_or_else(|| format!("unknown config setting '{setting_raw}'"))?
         .to_owned();
-    Ok(Command::ConfigClear { setting: canonical })
+    let mut target_role = None;
+    let mut index = 1;
+    while index < args.len() {
+        let token = &args[index];
+        if token == "--target-role" || token.starts_with("--target-role=") {
+            let parsed = required_value(args, index, "--target-role")?;
+            if target_role.is_some() {
+                return Err("duplicate --target-role for config clear".to_owned());
+            }
+            target_role = Some(parse_target_role(&parsed)?);
+            if split_inline(token, "--target-role").is_none() {
+                index += 1;
+            }
+        } else if token.starts_with('-') {
+            return Err(format!("unknown option '{token}' for config clear"));
+        } else {
+            return Err("config clear takes exactly one setting".to_owned());
+        }
+        index += 1;
+    }
+    reject_target_role_scope(&canonical, target_role, origin)?;
+    Ok(Command::ConfigClear {
+        setting: canonical,
+        target_role,
+    })
+}
+
+fn parse_target_role(value: &str) -> Result<Role, String> {
+    value
+        .parse::<Role>()
+        .map_err(|error| format!("--target-role {error}"))
+}
+
+/// `--target-role` is an admin-write destination. It is rejected on the
+/// read-only top-level alias and on a machine-wide setting, which has no role
+/// row; accepting either would silently do nothing.
+fn reject_target_role_scope(
+    canonical: &str,
+    target_role: Option<Role>,
+    origin: ConfigOrigin,
+) -> Result<(), String> {
+    if target_role.is_none() {
+        return Ok(());
+    }
+    if origin == ConfigOrigin::TopLevel {
+        return Err("--target-role is only valid with `admin config set|clear`".to_owned());
+    }
+    if crate::config_write::is_global_setting(canonical) {
+        return Err(format!(
+            "--target-role is not valid for global setting '{canonical}'"
+        ));
+    }
+    Ok(())
 }
 
 /// Parse the `config provider` surface, which exposes the persisted

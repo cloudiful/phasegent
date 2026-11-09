@@ -54,7 +54,6 @@ fn parse_create(args: &[String]) -> Result<Command, String> {
         args,
         1,
         &[
-            "--kind",
             "--key",
             "--phase",
             "--attempt",
@@ -70,7 +69,6 @@ fn parse_create(args: &[String]) -> Result<Command, String> {
         crate::body_file::parse_body_flags(args, "record create", true)?;
     Ok(Command::Record(RecordCommand::Create {
         issue: positional_number(args, 1, "record create")?,
-        kind: required_kind(args, "--kind", "record create")?,
         key: required_nonempty_option(args, "--key", "record create")?,
         phase: optional_nonempty_option(args, "--phase", "record create")?,
         attempt: optional_attempt(args)?,
@@ -81,13 +79,6 @@ fn parse_create(args: &[String]) -> Result<Command, String> {
         keep_body_file,
         authorized: has_flag(args, "--authorized"),
     }))
-}
-
-fn required_kind(args: &[String], option: &str, operation: &str) -> Result<RecordKind, String> {
-    optional_nonempty_option(args, option, operation)?
-        .map(|value| value.parse::<RecordKind>())
-        .transpose()?
-        .ok_or_else(|| format!("{operation} requires {option}"))
 }
 
 /// The attempt is a positive integer; zero never names a real attempt and
@@ -132,8 +123,6 @@ mod tests {
         let command = parse_record(&args(&[
             "create",
             "42",
-            "--kind",
-            "executor",
             "--key",
             "k1",
             "--phase",
@@ -147,7 +136,6 @@ mod tests {
         match command {
             Command::Record(RecordCommand::Create {
                 issue,
-                kind,
                 key,
                 phase,
                 attempt,
@@ -156,7 +144,6 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(issue, 42);
-                assert_eq!(kind.as_str(), "executor");
                 assert_eq!(key, "k1");
                 assert_eq!(phase.as_deref(), Some("P1"));
                 assert_eq!(attempt, Some(2));
@@ -168,17 +155,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_missing_key_or_kind() {
-        assert!(create_error(&["create", "1", "--body", "n"]).contains("--kind"));
+    fn the_kind_is_derived_and_never_requested() {
+        // The public create option is gone: the kind follows the verified
+        // role, so an agent cannot label its own work as another role's.
         assert!(
-            create_error(&["create", "1", "--kind", "executor", "--body", "n"]).contains("--key")
+            create_error(&[
+                "create", "1", "--kind", "executor", "--key", "k", "--body", "n"
+            ])
+            .contains("unknown option '--kind'"),
+            "create must reject --kind"
         );
         assert!(
             create_error(&[
-                "create", "1", "--kind", "wizard", "--key", "k", "--body", "n"
+                "create",
+                "1",
+                "--key",
+                "k",
+                "--body",
+                "n",
+                "--kind=reviewer"
             ])
-            .contains("invalid record kind")
+            .contains("unknown option '--kind=reviewer'"),
+            "create must reject the inline --kind form too"
         );
+    }
+
+    #[test]
+    fn rejects_a_missing_key() {
+        assert!(create_error(&["create", "1", "--body", "n"]).contains("--key"));
     }
 
     #[test]
@@ -188,8 +192,6 @@ mod tests {
                 create_error(&[
                     "create",
                     "1",
-                    "--kind",
-                    "executor",
                     "--key",
                     "k",
                     "--phase",
@@ -207,16 +209,11 @@ mod tests {
 
     #[test]
     fn requires_a_body_source() {
-        assert!(
-            create_error(&["create", "1", "--kind", "executor", "--key", "k"])
-                .contains("--body or --body-file")
-        );
+        assert!(create_error(&["create", "1", "--key", "k"]).contains("--body or --body-file"));
         assert!(
             create_error(&[
                 "create",
                 "1",
-                "--kind",
-                "executor",
                 "--key",
                 "k",
                 "--body",
@@ -227,16 +224,8 @@ mod tests {
             .contains("mutually exclusive")
         );
         assert!(
-            create_error(&[
-                "create",
-                "1",
-                "--kind",
-                "executor",
-                "--key",
-                "k",
-                "--keep-body-file"
-            ])
-            .contains("--keep-body-file requires --body-file")
+            create_error(&["create", "1", "--key", "k", "--keep-body-file"])
+                .contains("--keep-body-file requires --body-file")
         );
     }
 

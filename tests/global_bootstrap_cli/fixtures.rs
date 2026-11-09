@@ -1,4 +1,5 @@
 use super::support::{TestDb, make_test_db, phasegent_bin};
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -89,23 +90,13 @@ pub(super) fn no_network_db() -> TestDb {
     make_test_db("http://127.0.0.1:1")
 }
 
-pub(super) fn run_cli_in(
-    working_dir: &Path,
-    db_path: &Path,
-    api_base: &str,
-    role: &str,
-    args: &[&str],
-) -> std::process::Output {
-    run_cli_in_with_role(working_dir, db_path, api_base, Some(role), None, args)
-}
-
-/// Role/session-injectable spawn: `role` models `PHASEGENT_ROLE` (`None`
-/// removes it for unmanaged Operator), `session` models
-/// `PHASEGENT_SESSION_ID` (`None` removes it, `Some` sets it even when
-/// blank). Always clears inherited role/session env plus the host
-/// `OPENCODE_SESSION_ID` and the Redmine
-/// overrides so Operator, managed-missing, and agent paths stay
-/// deterministic (issue #859 P1).
+/// Role/session-injectable spawn: `role` is a verified agent role granted
+/// through the loopback identity broker the spawn starts (`None` removes
+/// every identity source for unmanaged Operator), `session` models
+/// `PHASEGENT_SESSION_ID` (`None` uses the broker's session, `Some` sets it
+/// even when blank). Always clears inherited role/session env plus the host
+/// `OPENCODE_SESSION_ID` and the Redmine overrides so Operator,
+/// managed-missing, and agent paths stay deterministic.
 pub(super) fn run_cli_in_with_role(
     working_dir: &Path,
     db_path: &Path,
@@ -114,7 +105,23 @@ pub(super) fn run_cli_in_with_role(
     session: Option<&str>,
     args: &[&str],
 ) -> std::process::Output {
+    run_cli_in_with_role_stdin(working_dir, db_path, api_base, role, session, None, args)
+}
+
+/// Same spawn with optional stdin content, used by the credential
+/// provisioning paths that read a secret from `--stdin`.
+pub(super) fn run_cli_in_with_role_stdin(
+    working_dir: &Path,
+    db_path: &Path,
+    api_base: &str,
+    role: Option<&str>,
+    session: Option<&str>,
+    stdin_content: Option<&str>,
+    args: &[&str],
+) -> std::process::Output {
     let config_path = working_dir.join("phasegent-missing.toml");
+    let broker =
+        role.map(|role| super::support::broker::TestBroker::start(role, "ses-test-bootstrap-1"));
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -124,6 +131,8 @@ pub(super) fn run_cli_in_with_role(
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove(super::support::broker::BROKER_ADDR_ENV)
+        .env_remove(super::support::broker::BROKER_TOKEN_ENV)
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
         .env_remove("PHASEGENT_REDMINE_PROJECT_ID")
@@ -135,14 +144,31 @@ pub(super) fn run_cli_in_with_role(
         .env_remove("PHASEGENT_REDMINE_REPOSITORY_URL")
         .env("PHASEGENT_CONFIG_PATH", config_path)
         .env("RUST_BACKTRACE", "0")
-        .stdin(Stdio::null())
+        .stdin(if stdin_content.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command.env(super::support::broker::BROKER_ADDR_ENV, broker.addr());
+        command.env(super::support::broker::BROKER_TOKEN_ENV, broker.token());
+        if session.is_none() {
+            command.env("PHASEGENT_SESSION_ID", broker.session());
+        }
     }
     if let Some(session) = session {
         command.env("PHASEGENT_SESSION_ID", session);
     }
-    command.output().expect("spawn phasegent binary")
+    let mut child = command.spawn().expect("spawn phasegent binary");
+    if let Some(content) = stdin_content {
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(content.as_bytes())
+            .expect("write stdin");
+    }
+    child.wait_with_output().expect("wait for phasegent binary")
 }

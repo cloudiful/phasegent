@@ -10,9 +10,9 @@ use super::{
 };
 
 /// Resolve the effective role for a config write: global settings stay
-/// roleless; role-scoped settings use the explicit agent role, or the admin
-/// scope for an unmanaged Operator. A managed session without a role fails
-/// closed.
+/// roleless; role-scoped settings use the human-selected target storage role,
+/// or the admin scope for an ordinary Operator. A managed session without a
+/// role fails closed.
 fn resolve_write_role(role: Option<Role>, canonical: &str) -> Result<Option<Role>, String> {
     if !is_role_scoped_setting(canonical) {
         return Ok(role);

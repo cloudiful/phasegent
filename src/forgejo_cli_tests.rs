@@ -19,6 +19,9 @@ use crate::worktree::leases::{
 };
 use crate::worktree::{LeaseScope, ProcessWorktreeRunner, repo_identity};
 
+#[path = "../tests/support/broker.rs"]
+mod identity_broker;
+
 const REPO_JSON: &str = r#"{"id":17,"name":"repo","full_name":"owner/repo"}"#;
 
 /// A repository response whose `full_name` matches the per-operation scope, so
@@ -2171,10 +2174,19 @@ fn cli_binary() -> PathBuf {
 }
 
 fn run_captured(repo: &Path, args: &[String]) -> (i32, String, String) {
+    run_captured_as(repo, args, "orchestrator")
+}
+
+fn run_captured_as(repo: &Path, args: &[String], role: &str) -> (i32, String, String) {
+    let broker = identity_broker::TestBroker::start(role, "forgejo-cli-test");
     let output = std::process::Command::new(cli_binary())
         .args(args)
         .current_dir(repo)
-        .env("PHASEGENT_ROLE", "orchestrator")
+        .env_remove("PHASEGENT_ROLE")
+        .env(identity_broker::BROKER_ADDR_ENV, broker.addr())
+        .env(identity_broker::BROKER_TOKEN_ENV, broker.token())
+        .env("PHASEGENT_SESSION_ID", broker.session())
+        .env("OPENCODE_SESSION_ID", broker.session())
         .output()
         .unwrap();
     (
@@ -2362,8 +2374,6 @@ fn record_create_rejects_an_omitted_provider_on_a_forgejo_bound_number() {
         "record",
         "create",
         "7",
-        "--kind",
-        "executor",
         "--key",
         "k",
         "--phase",
@@ -9622,8 +9632,6 @@ fn bound_local_task_routes_comment_and_record_commands_before_the_default() {
         "record",
         "create",
         "1002",
-        "--kind",
-        "executor",
         "--key",
         "k",
         "--phase",
@@ -9632,11 +9640,12 @@ fn bound_local_task_routes_comment_and_record_commands_before_the_default() {
         "1",
         "--body",
         "note",
+        "--authorized",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect();
-    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &create_args);
+    let (exit, stdout, stderr) = run_captured_as(fixture.repo.path(), &create_args, "executor");
     assert_eq!(exit, 0, "record create route failed: {stderr}");
     assert!(stdout.contains("\"id\""), "record create output: {stdout}");
     let record_id = stdout
@@ -10956,6 +10965,9 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         )
         .unwrap();
     storage
+        .save_forgejo_auth(Role::Executor, &mock.base, "owner/repo", "fixture-token")
+        .unwrap();
+    storage
         .save_credential(Role::Orchestrator, "redmine", "fixture-key")
         .unwrap();
     let mut identities = Vec::new();
@@ -11057,8 +11069,6 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         "record",
         "create",
         "51",
-        "--kind",
-        "executor",
         "--key",
         "j3-forgejo-record",
         "--phase",
@@ -11067,14 +11077,15 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         "9",
         "--body",
         "note",
+        "--authorized",
     ]);
     assert_eq!(
-        run_as(fixture.repo.path(), "orchestrator", &create_args),
+        run_as(fixture.repo.path(), "executor", &create_args),
         0,
         "record create must route to the bound Forgejo task"
     );
     assert_eq!(
-        run_as(fixture.repo.path(), "orchestrator", &create_args),
+        run_as(fixture.repo.path(), "executor", &create_args),
         0,
         "an identical retry must return the existing record"
     );
@@ -11082,8 +11093,6 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         "record",
         "create",
         "52",
-        "--kind",
-        "executor",
         "--key",
         "j3-forgejo-repeat",
         "--phase",
@@ -11092,9 +11101,10 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
         "9",
         "--body",
         "note",
+        "--authorized",
     ]);
     assert_ne!(
-        run_as(fixture.repo.path(), "orchestrator", &repeated),
+        run_as(fixture.repo.path(), "executor", &repeated),
         0,
         "a repeated pagination page must fail the pre-read before writing"
     );
@@ -11221,6 +11231,9 @@ fn bound_redmine_task_routes_each_single_number_command_before_the_default() {
         .save_credential(Role::Orchestrator, "redmine", "fixture-key")
         .unwrap();
     storage
+        .save_credential(Role::Executor, "redmine", "fixture-key")
+        .unwrap();
+    storage
         .save_forgejo_auth(
             Role::Orchestrator,
             &counter.base,
@@ -11326,8 +11339,6 @@ fn bound_redmine_task_routes_each_single_number_command_before_the_default() {
         "record",
         "create",
         "54",
-        "--kind",
-        "executor",
         "--key",
         "j3-redmine-record",
         "--phase",
@@ -11336,9 +11347,10 @@ fn bound_redmine_task_routes_each_single_number_command_before_the_default() {
         "9",
         "--body",
         "note",
+        "--authorized",
     ]);
     assert_eq!(
-        run_as(fixture.repo.path(), "orchestrator", &create_args),
+        run_as(fixture.repo.path(), "executor", &create_args),
         0,
         "record create must route to the bound Redmine task"
     );
@@ -11895,8 +11907,6 @@ fn two_checkouts_on_one_trusted_instance_keep_same_number_repositories_distinct(
                 "record",
                 "create",
                 "7",
-                "--kind",
-                "executor",
                 "--key",
                 "a5-executor",
                 "--phase",
@@ -11911,8 +11921,6 @@ fn two_checkouts_on_one_trusted_instance_keep_same_number_repositories_distinct(
                 "record",
                 "create",
                 "7",
-                "--kind",
-                "reviewer",
                 "--key",
                 "a5-reviewer",
                 "--phase",
@@ -11929,8 +11937,6 @@ fn two_checkouts_on_one_trusted_instance_keep_same_number_repositories_distinct(
                 "record",
                 "create",
                 "7",
-                "--kind",
-                "recon",
                 "--key",
                 "a5-explore",
                 "--recon",

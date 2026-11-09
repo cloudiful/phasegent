@@ -23,7 +23,7 @@ fn dry_run_prints_complete_report_without_writes() {
     let output = run_cli(
         &db.path,
         &server.base_url,
-        Some("admin"),
+        None,
         &[
             "admin",
             "workflow",
@@ -97,7 +97,7 @@ fn apply_reports_provisioned_roles_without_creating_projects_or_mirrors() {
     let output = run_cli(
         &db.path,
         &server.base_url,
-        Some("admin"),
+        None,
         &["admin", "workflow", "bootstrap", "--all-projects"],
     );
 
@@ -145,7 +145,7 @@ fn partial_failure_prints_the_complete_report_and_exits_nonzero() {
     let output = run_cli(
         &db.path,
         &server.base_url,
-        Some("admin"),
+        None,
         &[
             "admin",
             "workflow",

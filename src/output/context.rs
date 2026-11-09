@@ -429,6 +429,7 @@ pub fn view_for(command: &Command) -> HumanView {
         | Command::Workflow(_)
         | Command::Hooks(_)
         | Command::Plugin(_)
+        | Command::Skill(_)
         | Command::Relation(_)
         | Command::Timer(_)
         | Command::Worktree(_)
@@ -465,6 +466,7 @@ pub fn label_for(command: &Command) -> &'static str {
         Command::Workflow(_) => "workflow",
         Command::Hooks(_) => "hooks",
         Command::Plugin(_) => "plugin",
+        Command::Skill(_) => "skill",
         Command::Relation(_) => "relation",
         Command::Timer(_) => "timer",
         Command::Worktree(WorktreeCommand::Acquire { .. }) => "worktree acquire",

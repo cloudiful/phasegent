@@ -1,22 +1,33 @@
 /// `plugin` subcommands. `path` is the explicit plugin directory named by
 /// `--path DIR`: the directory that contains (or will contain)
 /// `phasegent-worktree.js`, not the file itself. It is mutually exclusive
-/// with the `--global` / `--project` scope selectors; when it is absent the
-/// existing scope defaults apply.
+/// with `--project`; when both are absent the global target is used.
 #[derive(Debug)]
 pub enum PluginCommand {
     Install {
-        global: bool,
         project: bool,
         force: bool,
         path: Option<String>,
     },
     Status {
+        project: bool,
         path: Option<String>,
     },
     Uninstall {
-        global: bool,
         project: bool,
+        path: Option<String>,
+    },
+}
+
+/// `skill` subcommands. `phasegent skill install` writes the single bundled
+/// `phasegent` skill directory into a skills root. `path` is an explicit
+/// skills root that will contain `phasegent/`; it is mutually exclusive with
+/// the project scope.
+#[derive(Debug)]
+pub enum SkillCommand {
+    Install {
+        project: bool,
+        force: bool,
         path: Option<String>,
     },
 }

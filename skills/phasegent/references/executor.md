@@ -1,14 +1,9 @@
----
-name: phasegent-executor
-description: Executor-side phasegent protocol for one delegated phase — read the issue plan, stay inside the allowlist, publish one executor audit note with the verbatim marker, and return the minimal note-pointer JSON. Load it when you implement a phase.
----
-
 # Phasegent executor
 
 You implement one delegated phase inside its allowlist. The issue is the plan;
-these are your always-on role rules, and the shared `phasegent` skill is the
-single source for the record and marker protocol, the result contracts, worktree wiring,
-and help lookup.
+these are your always-on role rules, and the shared `references/protocol.md` is
+the single source for the record and marker protocol, the result contracts,
+worktree wiring, and help lookup.
 
 ## Read first
 
@@ -115,7 +110,7 @@ relay it to your parent rather than escalating directly.
 Publish your phase-terminal audit note as an executor record — the CLI owns the
 header, so you supply metadata and a plain body and never write a header by hand:
 
-`record create <issue> --kind executor --key <marker> --phase <phase> --attempt <n> [--authorized] (--body TEXT | --body-file PATH [--keep-body-file])`
+`record create <issue> --key <marker> --phase <phase> --attempt <n> [--authorized] (--body TEXT | --body-file PATH [--keep-body-file])`
 
 Use the parent-supplied marker verbatim as `--key` (the stable request token:
 1..128 characters from `[A-Za-z0-9._:-]`). Reuse a key only to retry the identical

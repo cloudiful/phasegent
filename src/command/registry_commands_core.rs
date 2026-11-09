@@ -29,10 +29,13 @@ pub(super) const CORE: &[CommandSpec] = &[
                 ProviderScope::Any,
                 &[leaf_op(
                     "setup",
-                    "Store the per-role credential",
-                    // Credential setup stays role-scoped: every role provisions
-                    // its own key (`PHASEGENT_ROLE=<role> ... admin auth setup`),
-                    // while the rest of the admin group is human-only.
+                    "Store the credential for one target role",
+                    // The dispatch layer admits only an unmanaged Operator and
+                    // rejects every verified agent or managed-without-role
+                    // caller before any secret or storage access; the optional
+                    // `--target-role` names the storage row, never the caller.
+                    // Parsing stays role-agnostic so the dispatch denial can
+                    // name the caller role precisely.
                     RoleAccess::AnyRole,
                     "admin auth setup",
                 )],

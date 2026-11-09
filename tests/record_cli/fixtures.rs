@@ -9,7 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use super::support::broker::{BROKER_ADDR_ENV, BROKER_TOKEN_ENV, TestBroker};
 use super::support::{phasegent_bin, stderr_text};
+
+/// The session the test broker answers for.
+const TEST_SESSION: &str = "ses-test-1";
 
 /// Per-test scratch directory holding the isolated local SQLite file and
 /// any `--body-file` fixtures.
@@ -57,16 +61,19 @@ pub(super) fn run_local(db: &Path, role: &str, args: &[&str]) -> Output {
 }
 
 /// Role-optional spawn: `None` models an unmanaged Operator (no role and
-/// no managed session marker). Always clears `PHASEGENT_SESSION_ID` and the
-/// host `OPENCODE_SESSION_ID` so a developer's managed session never leaks
-/// into the subprocess (issue #859 P1).
+/// no managed session marker). A role is never granted by an environment
+/// variable: the spawn starts a loopback identity broker that reports the
+/// role for the spawned session, and the CLI verifies itself against it.
+/// Always clears `PHASEGENT_SESSION_ID` and the host `OPENCODE_SESSION_ID`
+/// so a developer's managed session never leaks into the subprocess.
 pub(super) fn run_local_with_role(db: &Path, role: Option<&str>, args: &[&str]) -> Output {
     run_local_with_session(db, role, None, args)
 }
 
-/// Fully injectable spawn: `role` models `PHASEGENT_ROLE` (`None` removes
-/// it), `session` models `PHASEGENT_SESSION_ID` (`None` removes it, `Some`
-/// sets it even when blank so managed-missing stays fail-closed).
+/// Fully injectable spawn: `role` models a verified agent role (`None`
+/// removes it), `session` models `PHASEGENT_SESSION_ID` (`None` removes
+/// it, `Some` sets it even when blank so managed-missing stays
+/// fail-closed).
 /// `host_session` models `OPENCODE_SESSION_ID` the same way; `None` removes
 /// it so ordinary Operator stays deterministic.
 pub(super) fn run_local_with_session(
@@ -78,10 +85,14 @@ pub(super) fn run_local_with_session(
     run_local_with_both_sessions(db, role, session, None, args)
 }
 
-/// Fully injectable spawn with both managed markers: `role` models
-/// `PHASEGENT_ROLE`, `session` models `PHASEGENT_SESSION_ID`, `host_session`
-/// models `OPENCODE_SESSION_ID` (`None` removes, `Some` sets even when
-/// blank so managed-missing stays fail-closed).
+/// Fully injectable spawn with both managed markers: `role` models a
+/// verified agent role, `session` models `PHASEGENT_SESSION_ID`, and
+/// `host_session` models `OPENCODE_SESSION_ID` (`None` removes, `Some`
+/// sets even when blank so managed-missing stays fail-closed).
+///
+/// A role is only ever granted through the identity broker: the spawn
+/// starts one for the session the CLI presents, and the CLI fails closed
+/// when the broker is absent.
 pub(super) fn run_local_with_both_sessions(
     db: &Path,
     role: Option<&str>,
@@ -89,20 +100,28 @@ pub(super) fn run_local_with_both_sessions(
     host_session: Option<&str>,
     args: &[&str],
 ) -> Output {
+    let broker_session = session
+        .filter(|value| !value.is_empty())
+        .unwrap_or(TEST_SESSION);
+    let broker = role.map(|role| TestBroker::start(role, broker_session));
     let missing_toml = db
         .parent()
         .map(|dir| dir.join("phasegent-missing.toml"))
         .unwrap_or_else(|| std::env::temp_dir().join("phasegent-missing.toml"));
+    // The fixture owns the main config store too, so the scope guard can
+    // never read the machine's branch links. It sits beside the distinct
+    // local store and starts absent in the fixture-owned scratch directory.
+    let main_db = db.with_file_name("phasegent-main.sqlite3");
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
         .env("PHASEGENT_LOCAL_DB_PATH", db.as_os_str())
+        .env("PHASEGENT_DB_PATH", main_db.as_os_str())
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
         .env_remove("PHASEGENT_PROVIDER")
         .env_remove("PHASEGENT_DEFAULT_PROVIDER")
-        .env_remove("PHASEGENT_DB_PATH")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")
@@ -112,13 +131,21 @@ pub(super) fn run_local_with_both_sessions(
         .env_remove("PHASEGENT_REDMINE_CLOSE_STATUS_ID")
         .env_remove("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
         .env_remove("PHASEGENT_REDMINE_REPOSITORY_URL")
+        .env_remove(BROKER_ADDR_ENV)
+        .env_remove(BROKER_TOKEN_ENV)
         .env("PHASEGENT_CONFIG_PATH", missing_toml.as_os_str())
         .env("RUST_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command.env(BROKER_ADDR_ENV, broker.addr());
+        command.env(BROKER_TOKEN_ENV, broker.token());
+        // The broker answers for the session the CLI presents, so a
+        // verified invocation always carries the session id.
+        if session.is_none() {
+            command.env("PHASEGENT_SESSION_ID", broker.session());
+        }
     }
     if let Some(session) = session {
         command.env("PHASEGENT_SESSION_ID", session);

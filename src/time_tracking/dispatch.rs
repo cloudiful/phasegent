@@ -223,15 +223,6 @@ pub(crate) fn reject_forgejo_timer(
     Ok(())
 }
 
-#[allow(dead_code)]
-pub(crate) fn timer_orchestrator(
-    role_value: Option<Role>,
-    operation: &str,
-) -> Result<Role, PhasegentError> {
-    let caller = CallerContext::from_role(role_value);
-    timer_orchestrator_caller(caller, operation)
-}
-
 pub(crate) fn timer_orchestrator_caller(
     caller: CallerContext,
     operation: &str,
@@ -242,19 +233,17 @@ pub(crate) fn timer_orchestrator_caller(
     // credential and is never collapsed to an Admin agent.
     if !caller.is_orchestrator_authorized() {
         if caller.is_managed_without_role() {
-            return Err(PhasegentError::config(format!(
-                "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
+            return Err(PhasegentError::config(crate::cli::managed_denial_message(
+                operation,
             )));
         }
         return Err(PhasegentError::config(format!(
             "{operation} is orchestrator-only"
         )));
     }
-    caller.credential_role().ok_or_else(|| {
-        PhasegentError::config(format!(
-            "managed session requires a role for {operation}; set PHASEGENT_ROLE=orchestrator"
-        ))
-    })
+    caller
+        .credential_role()
+        .ok_or_else(|| PhasegentError::config(crate::cli::managed_denial_message(operation)))
 }
 
 pub(crate) fn timer_storage_error<'a>(

@@ -11,6 +11,9 @@
 #[path = "fixtures.rs"]
 pub mod fixtures;
 
+#[path = "../support/broker.rs"]
+pub mod broker;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -80,9 +83,10 @@ impl Drop for Scratch {
 /// environment: the scratch databases are pinned and every host override a
 /// developer may have exported is removed, including both managed markers
 /// (`PHASEGENT_SESSION_ID` and host `OPENCODE_SESSION_ID`, issue #859 P1).
-/// `role` is passed explicitly
-/// through `PHASEGENT_ROLE`; `None` removes it.
+/// `role` is a verified agent role granted through the loopback identity
+/// broker the run starts; `None` removes every identity source.
 pub fn run(scratch: &Scratch, cwd: &Path, role: Option<&str>, args: &[&str]) -> Output {
+    let broker = role.map(|role| broker::TestBroker::start(role, "ses-test-snapshot-1"));
     let mut command = Command::new(phasegent_bin());
     command
         .args(args)
@@ -105,6 +109,8 @@ pub fn run(scratch: &Scratch, cwd: &Path, role: Option<&str>, args: &[&str]) -> 
         .env_remove("PHASEGENT_ROLE")
         .env_remove("PHASEGENT_SESSION_ID")
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove("PHASEGENT_BROKER_ADDR")
+        .env_remove("PHASEGENT_BROKER_TOKEN")
         .env_remove("PHASEGENT_API_BASE")
         .env_remove("PHASEGENT_REDMINE_API_BASE")
         .env_remove("PHASEGENT_REPOSITORY")
@@ -119,8 +125,10 @@ pub fn run(scratch: &Scratch, cwd: &Path, role: Option<&str>, args: &[&str]) -> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(role) = role {
-        command.env("PHASEGENT_ROLE", role);
+    if let Some(broker) = broker.as_ref() {
+        command.env("PHASEGENT_BROKER_ADDR", broker.addr());
+        command.env("PHASEGENT_BROKER_TOKEN", broker.token());
+        command.env("PHASEGENT_SESSION_ID", broker.session());
     }
     command.output().expect("spawn phasegent binary")
 }

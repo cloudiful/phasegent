@@ -56,33 +56,27 @@ impl RecordSpec {
         match self.kind {
             RecordKind::Executor | RecordKind::Reviewer => {
                 if self.phase.is_none() {
-                    return Err(format!(
-                        "record create --kind {} requires --phase",
-                        self.kind
-                    ));
+                    return Err(format!("a {} record requires --phase", self.kind));
                 }
                 if !self.attempt.is_some_and(|attempt| attempt > 0) {
                     return Err(format!(
-                        "record create --kind {} requires a positive --attempt",
+                        "a {} record requires a positive --attempt",
                         self.kind
                     ));
                 }
                 if self.recon.is_some() {
-                    return Err(format!(
-                        "record create --kind {} does not accept --recon",
-                        self.kind
-                    ));
+                    return Err(format!("a {} record does not accept --recon", self.kind));
                 }
             }
             RecordKind::Recon => {
                 if self.recon.is_none() {
-                    return Err("record create --kind recon requires --recon".to_owned());
+                    return Err("a recon record requires --recon".to_owned());
                 }
                 if self.phase.is_some() {
-                    return Err("record create --kind recon does not accept --phase".to_owned());
+                    return Err("a recon record does not accept --phase".to_owned());
                 }
                 if self.attempt.is_some() {
-                    return Err("record create --kind recon does not accept --attempt".to_owned());
+                    return Err("a recon record does not accept --attempt".to_owned());
                 }
             }
         }
@@ -92,17 +86,11 @@ impl RecordSpec {
         // reject its absence. Every other kind rejects `--review`.
         match &self.review {
             None if self.kind == RecordKind::Reviewer => {
-                return Err(
-                    "record create --kind reviewer requires --review (final or checkpoint)"
-                        .to_owned(),
-                );
+                return Err("a reviewer record requires --review (final or checkpoint)".to_owned());
             }
             None => {}
             Some(review) if self.kind != RecordKind::Reviewer => {
-                return Err(format!(
-                    "record create --kind {} does not accept --review",
-                    self.kind
-                ));
+                return Err(format!("a {} record does not accept --review", self.kind));
             }
             Some(review) => {
                 if !REVIEW_KINDS.contains(&review.as_str()) {
@@ -111,7 +99,7 @@ impl RecordSpec {
                     ));
                 }
                 if self.recon.is_some() {
-                    return Err("record create --kind recon does not accept --review".to_owned());
+                    return Err("a recon record does not accept --review".to_owned());
                 }
             }
         }

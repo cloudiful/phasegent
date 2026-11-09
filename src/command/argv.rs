@@ -2,8 +2,8 @@ use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
     Command, HelpTopic, Invocation, IssueCommand, WorktreeCommand, admin, auth, comment, config,
-    help_topic, hooks, issue, notify, plugin, project, record, registry, relation, status, timer,
-    version, workflow, worktree,
+    help_topic, hooks, issue, notify, plugin, project, record, registry, relation, skill, status,
+    timer, version, workflow, worktree,
 };
 use crate::output::context::{OutputMode, OutputOptions, OutputSelection};
 use crate::policy::{CallerContext, Role};
@@ -60,16 +60,30 @@ pub(crate) fn parse_outcome(args: &[String]) -> Result<ParseOutcome, String> {
 /// Resolve the invocation caller from the process environment. The parser and
 /// the presentation pre-scan share this resolution, so both agree on the same
 /// caller context and neither re-decides a permission.
+///
+/// The identity of a managed session comes from the host broker, never from
+/// the environment: the legacy `PHASEGENT_ROLE` marker is validated (a
+/// malformed value stays an argument error) and then only marks the
+/// invocation as managed.
 pub(crate) fn caller_from_env() -> Result<CallerContext, String> {
-    let role = crate::policy::role_from_env()?;
-    Ok(CallerContext::from_role_and_session(
-        role,
-        crate::policy::session_present(),
-    ))
+    crate::policy::role_from_env()?;
+    Ok(crate::host_context::resolve_caller())
+}
+
+/// Resolve the invocation caller from an already verified agent role and the
+/// managed session marker.
+///
+/// This is the injectable seam for the pure parser tests: the role is
+/// treated as already verified by the host broker, so no test needs a
+/// running broker. The production path is [`caller_from_env`].
+#[allow(dead_code)]
+pub(crate) fn caller_from_verified(role: Option<Role>, session_present: bool) -> CallerContext {
+    CallerContext::from_role_and_session(role, session_present)
 }
 
 /// Resolve the invocation caller from an injected role value and the managed
-/// session marker.
+/// session marker. The injected value models a verified agent role.
+#[allow(dead_code)]
 pub(crate) fn caller_from(
     role_env: Option<&str>,
     session_present: bool,
@@ -80,17 +94,18 @@ pub(crate) fn caller_from(
         .map(|value| {
             value
                 .parse::<Role>()
-                .map_err(|error| format!("PHASEGENT_ROLE is invalid: {error}"))
+                .map_err(|error| format!("invalid agent role '{value}': {error}"))
         })
         .transpose()?;
-    Ok(CallerContext::from_role_and_session(role, session_present))
+    Ok(caller_from_verified(role, session_present))
 }
 
-/// Role-injectable parser used by legacy unit tests. `role_env`
-/// models `PHASEGENT_ROLE` so tests never mutate process-global state
-/// (which would race the parallel parser assertions). Legacy tests assume
-/// an unmanaged context (no managed session marker); pure caller-aware
-/// tests use [`parse_outcome_with_caller_env`] with an explicit session flag.
+/// Role-injectable parser used by the unit tests. `role_env` models an
+/// already verified agent role, so tests never mutate process-global state
+/// (which would race the parallel parser assertions) and never need a running
+/// host broker. Legacy tests assume an unmanaged context (no managed session
+/// marker); pure caller-aware tests use [`parse_outcome_with_caller_env`]
+/// with an explicit session flag.
 #[allow(dead_code)]
 pub(crate) fn parse_outcome_with_role_env(
     args: &[String],
@@ -99,8 +114,8 @@ pub(crate) fn parse_outcome_with_role_env(
     parse_outcome_for_caller(args, caller_from(role_env, false)?)
 }
 
-/// Fully injectable parser: `role_env` models `PHASEGENT_ROLE` and
-/// `session_present` models `PHASEGENT_SESSION_ID` presence (even blank).
+/// Fully injectable parser: `role_env` models an already verified agent role
+/// and `session_present` models `PHASEGENT_SESSION_ID` presence (even blank).
 /// Pure unit tests use this so parallel assertions never read global env.
 #[allow(dead_code)] // used by the cfg(test) caller-injectable entry point
 pub(crate) fn parse_outcome_with_caller_env(
@@ -116,13 +131,11 @@ pub(crate) fn parse_outcome_for_caller(
     args: &[String],
     caller: CallerContext,
 ) -> Result<ParseOutcome, String> {
-    // Role context comes only from `PHASEGENT_ROLE`, which a managed session
-    // exports for its child processes. A blank value means "not provided", but
-    // a non-empty invalid value is an error rather than a silent downgrade to
-    // role-less execution. Session presence models `PHASEGENT_SESSION_ID`
-    // (even blank counts as present) and selects unmanaged Operator vs
-    // managed-missing fail-closed; it is never TTY detection and never an
-    // identity claim.
+    // The role context comes from the verified host context (or, in the pure
+    // test seam, from an injected verified role). The environment signals are
+    // routing only: a managed session marker (even blank) selects unmanaged
+    // Operator vs managed-missing fail-closed; it is never TTY detection and
+    // never an identity claim.
     let role = caller.role();
 
     if args.is_empty() {
@@ -344,11 +357,12 @@ pub(crate) fn parse_outcome_for_caller(
         | Command::ConfigProviderClear
         | Command::Hooks(_)
         | Command::Plugin(_)
+        | Command::Skill(_)
         | Command::Issue(
             IssueCommand::Bind { .. } | IssueCommand::Unbind { .. } | IssueCommand::StatusBranch,
         ) => true,
         Command::ConfigSet { setting, .. } => crate::config_write::is_global_setting(setting),
-        Command::ConfigClear { setting } => crate::config_write::is_global_setting(setting),
+        Command::ConfigClear { setting, .. } => crate::config_write::is_global_setting(setting),
         _ => false,
     };
     match caller {
@@ -357,7 +371,8 @@ pub(crate) fn parse_outcome_for_caller(
         CallerContext::ManagedWithoutRole => {
             if !no_role_allowed {
                 return Err(
-                    "managed session requires a role for operations; set PHASEGENT_ROLE".to_owned(),
+                    "managed session requires a role for operations; the host did not verify this session"
+                        .to_owned(),
                 );
             }
         }
@@ -501,6 +516,7 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
         "worktree" => worktree::parse_worktree(rest)?,
         "hooks" => hooks::parse_hooks(rest)?,
         "plugin" => plugin::parse_plugin(rest)?,
+        "skill" => skill::parse_skill(rest)?,
         "notify" => notify::parse_notify(rest)?,
         value => return Err(format!("unknown command '{value}'")),
     })

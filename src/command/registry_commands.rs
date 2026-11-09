@@ -65,7 +65,7 @@ mod tests {
             [
                 "doctor", "admin", "auth", "config", "issue", "comment", "project", "status",
                 "version", "relation", "timer", "workflow", "record", "worktree", "hooks",
-                "plugin", "notify",
+                "plugin", "skill", "notify",
             ]
         );
     }

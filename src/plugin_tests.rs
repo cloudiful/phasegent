@@ -13,27 +13,17 @@
 //!   `--force` is supplied.
 //! * **Uninstall** — managed files are removed; foreign files are
 //!   refused; missing files report a warning instead of an error.
-//! * **Adapter template** — the embedded JS contains the
+//! * **Adapter template** — the generated JS contains the
 //!   `// phasegent:managed` marker, the OpenCode v2
-//!   `export default { id, setup }` shape, the
-//!   `phasegent worktree acquire` call with its per-call
-//!   `PHASEGENT_ROLE` scope, the v2
-//!   `worktree.transform` strategy, the issue #440
-//!   `tool.execute.before` redirect helpers, and the issue #533
-//!   `skill.transform` embedded skill registration. Issue #572 adds
-//!   the `agent.transform` binding that prepends each protocol
-//!   agent's own slim skill to its system prompt; issue 665 adds the
-//!   `explore` read-only research skill so every protocol agent is bound. Issue #616
-//!   makes
+//!   `export default { id, setup }` shape, the `worktree.transform`
+//!   strategy, the issue #440 `tool.execute.before` redirect helpers,
+//!   and the issue #22 `agent.transform` binding that prepends only a
+//!   short routing/safety hint. It registers no embedded skill and no
+//!   slash command: the protocol and role references are one filesystem
+//!   skill installed by `phasegent skill install`. Issue #616 makes
 //!   worktree creation opt-in: the lazy path never acquires one, and a
 //!   host create request passes `isolate` so the dedicated directory is
-//!   really created. It must not
-//!   register a slash command: the live v2.0.11 command draft only
-//!   accepts an Effect-returning `execute`, which a promise plugin
-//!   cannot build. The embedded skill body must also match
-//!   `skills/phasegent/SKILL.md` byte-for-byte (issue #544), and each
-//!   embedded role prompt must match `skills/phasegent/SKILL.<role>.md`
-//!   (issue #602; issue 665 adds `SKILL.explore.md`).
+//!   really created.
 //!
 //! All filesystem tests use a temp directory and override
 //! `HOME`/`XDG_CONFIG_HOME` so the operator's real `~/.config` is
@@ -45,7 +35,7 @@ use crate::command::{self, Command, PluginCommand};
 use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 use crate::plugin::{
     FOREIGN_BACKUP_SUFFIX, MANAGED_MARKER, PLUGIN_FILENAME, adapter_source, install_at,
-    resolve_global_dir, status_at, uninstall_at,
+    resolve_global_dir, status_global, status_project, uninstall_at,
 };
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -159,12 +149,10 @@ fn install_parses_with_no_flags() {
     let invocation = command::parse(&strings(["plugin", "install"])).unwrap();
     match invocation.command {
         Command::Plugin(PluginCommand::Install {
-            global,
             project,
             force,
             path,
         }) => {
-            assert!(!global);
             assert!(!project);
             assert!(!force);
             assert_eq!(path, None);
@@ -174,24 +162,16 @@ fn install_parses_with_no_flags() {
 }
 
 #[test]
-fn install_parses_with_all_flags() {
+fn install_parses_project_and_force_flags() {
     let _lock = lock_workflow_tests();
-    let invocation = command::parse(&strings([
-        "plugin",
-        "install",
-        "--global",
-        "--project",
-        "--force",
-    ]))
-    .unwrap();
+    let invocation =
+        command::parse(&strings(["plugin", "install", "--project", "--force"])).unwrap();
     match invocation.command {
         Command::Plugin(PluginCommand::Install {
-            global,
             project,
             force,
             path,
         }) => {
-            assert!(global);
             assert!(project);
             assert!(force);
             assert_eq!(path, None);
@@ -205,7 +185,10 @@ fn status_parses_without_flags() {
     let _lock = lock_workflow_tests();
     let invocation = command::parse(&strings(["plugin", "status"])).unwrap();
     match invocation.command {
-        Command::Plugin(PluginCommand::Status { path }) => assert_eq!(path, None),
+        Command::Plugin(PluginCommand::Status { project, path }) => {
+            assert!(!project);
+            assert_eq!(path, None);
+        }
         other => panic!("unexpected command {other:?}"),
     }
 }
@@ -222,7 +205,8 @@ fn status_parses_explicit_path_without_a_role() {
     .unwrap();
     assert!(invocation.role.is_none());
     match invocation.command {
-        Command::Plugin(PluginCommand::Status { path }) => {
+        Command::Plugin(PluginCommand::Status { project, path }) => {
+            assert!(!project);
             assert_eq!(path.as_deref(), Some("/tmp/chezmoi/plugins"));
         }
         other => panic!("unexpected command {other:?}"),
@@ -234,12 +218,7 @@ fn uninstall_parses_with_project_flag() {
     let _lock = lock_workflow_tests();
     let invocation = command::parse(&strings(["plugin", "uninstall", "--project"])).unwrap();
     match invocation.command {
-        Command::Plugin(PluginCommand::Uninstall {
-            global,
-            project,
-            path,
-        }) => {
-            assert!(!global);
+        Command::Plugin(PluginCommand::Uninstall { project, path }) => {
             assert!(project);
             assert_eq!(path, None);
         }
@@ -425,43 +404,52 @@ fn install_at_handles_dir_at_target_path() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn status_at_reports_both_slots_when_nothing_is_installed() {
+fn status_global_reports_the_default_target_when_nothing_is_installed() {
     let _lock = lock_workflow_tests();
     let (_temp, _home, _xdg) = override_home("status-empty");
-    let project = TempDir::new("status-empty-project");
-    let report = status_at(project.path()).expect("status resolves");
-    assert!(!report.global.exists);
-    assert!(!report.global.managed);
-    assert!(!report.project.exists);
-    assert!(!report.project.managed);
-    assert!(report.global.path.contains(PLUGIN_FILENAME));
-    assert!(report.project.path.contains(PLUGIN_FILENAME));
+    let report = status_global().expect("status resolves");
+    assert!(!report.exists);
+    assert!(!report.managed);
+    assert!(report.path.contains(PLUGIN_FILENAME));
 }
 
 #[test]
-fn status_at_reflects_installed_marker_and_size() {
+fn install_at_preserves_an_existing_private_directory_mode() {
+    let _lock = lock_workflow_tests();
+    let dir = TempDir::new("install-private-mode");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        install_at(dir.path(), false).expect("install");
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        install_at(dir.path(), false).expect("install");
+    }
+}
+
+#[test]
+fn status_project_reflects_installed_marker_and_size() {
     let _lock = lock_workflow_tests();
     let (_temp, _home, _xdg) = override_home("status-installed");
     let dir = TempDir::new("status-installed-target");
-    // install_at writes <dir>/<PLUGIN_FILENAME>; status_at(cwd) reads
-    // the project slot at <cwd>/.opencode/plugins/<PLUGIN_FILENAME>.
-    // Pass the project plugins dir directly so the two paths agree.
     let project_plugins = dir.child(".opencode").join("plugins");
     install_at(&project_plugins, false).expect("install");
-    let report = status_at(dir.path()).expect("status resolves");
+    let report = status_project(dir.path());
     let project_path = project_plugins
         .join(PLUGIN_FILENAME)
         .to_string_lossy()
         .to_string();
-    let slots = [&report.global, &report.project];
-    let matching = slots
-        .iter()
-        .find(|target| target.path == project_path)
-        .expect("project path appears in status");
-    assert!(matching.exists);
-    assert!(matching.managed);
-    assert!(matching.size > 0);
-    assert!(matching.mtime.is_some());
+    assert_eq!(report.path, project_path);
+    assert!(report.exists);
+    assert!(report.managed);
+    assert!(report.size > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,14 +565,14 @@ fn global_dir_errors_when_no_root_is_usable() {
 }
 
 #[test]
-fn status_at_errors_instead_of_resolving_a_relative_target() {
+fn status_global_errors_instead_of_resolving_a_relative_target() {
     let _lock = lock_workflow_tests();
     let _env = ScopedEnv::apply(&[
         ("XDG_CONFIG_HOME", None),
         ("HOME", None),
         ("USERPROFILE", None),
     ]);
-    let error = status_at(Path::new("/tmp")).expect_err("unresolved status must error");
+    let error = status_global().expect_err("unresolved status must error");
     assert_eq!(error.kind, "filesystem");
     assert!(
         error.message.contains("USERPROFILE"),
@@ -617,7 +605,6 @@ fn plugin_scopes_share_the_global_resolver_via_userprofile() {
         .join(PLUGIN_FILENAME);
 
     let install_rc = execute_plugin(PluginCommand::Install {
-        global: true,
         project: false,
         force: false,
         path: None,
@@ -629,17 +616,16 @@ fn plugin_scopes_share_the_global_resolver_via_userprofile() {
         global_target.display()
     );
 
-    let report = status_at(&project_cwd).expect("status resolves through the same resolver");
+    let report = status_global().expect("status resolves through the same resolver");
     assert_eq!(
-        report.global.path,
+        report.path,
         global_target.to_string_lossy(),
         "status must inspect the USERPROFILE-derived path"
     );
-    assert!(report.global.exists);
-    assert!(report.global.managed);
+    assert!(report.exists);
+    assert!(report.managed);
 
     let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
-        global: true,
         project: false,
         path: None,
     });
@@ -705,7 +691,6 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
     std::env::set_current_dir(&project_cwd).expect("set cwd");
 
     let install_rc = execute_plugin(PluginCommand::Install {
-        global: false,
         project: true,
         force: false,
         path: None,
@@ -726,7 +711,6 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
 
     // Second install must be idempotent (skipped, not duplicated).
     let install_rc2 = execute_plugin(PluginCommand::Install {
-        global: false,
         project: true,
         force: false,
         path: None,
@@ -735,13 +719,12 @@ fn execute_install_then_status_then_uninstall_round_trip_via_home_override() {
 
     let _xdg_for_type = xdg_guard;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let report = status_at(&cwd).expect("status resolves");
-    assert!(report.project.exists);
-    assert!(report.project.managed);
-    assert!(report.project.size > 0);
+    let report = status_project(&cwd);
+    assert!(report.exists);
+    assert!(report.managed);
+    assert!(report.size > 0);
 
     let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
-        global: false,
         project: true,
         path: None,
     });
@@ -771,7 +754,6 @@ fn explicit_path_install_status_uninstall_targets_only_that_directory() {
 
     let path = source_dir.to_string_lossy().to_string();
     let install_rc = execute_plugin(PluginCommand::Install {
-        global: false,
         project: false,
         force: false,
         path: Some(path.clone()),
@@ -799,7 +781,6 @@ fn explicit_path_install_status_uninstall_targets_only_that_directory() {
 
     // Idempotent re-run leaves the managed bytes in place.
     let install_rc2 = execute_plugin(PluginCommand::Install {
-        global: false,
         project: false,
         force: false,
         path: Some(path.clone()),
@@ -810,17 +791,15 @@ fn explicit_path_install_status_uninstall_targets_only_that_directory() {
     // Explicit status inspects exactly this directory through the same
     // primitive the scoped slots use, and returns it under `target`.
     let status_rc = execute_plugin(PluginCommand::Status {
+        project: false,
         path: Some(path.clone()),
     });
     assert_eq!(status_rc, 0, "explicit status rc=0");
-    let envelope = crate::cli::plugin::explicit_status_envelope(&source_dir);
-    assert!(envelope.global.is_none() && envelope.project.is_none());
-    let status = envelope.target.expect("explicit target status");
+    let status = crate::plugin::inspect_target(&source_dir);
     assert!(status.exists && status.managed && status.size > 0);
     assert_eq!(status.path, target.to_string_lossy().to_string());
 
     let uninstall_rc = execute_plugin(PluginCommand::Uninstall {
-        global: false,
         project: false,
         path: Some(path),
     });
@@ -843,7 +822,6 @@ fn explicit_path_install_keeps_the_foreign_file_backup_behavior() {
     let path = dir.to_string_lossy().to_string();
 
     let refused = execute_plugin(PluginCommand::Install {
-        global: false,
         project: false,
         force: false,
         path: Some(path.clone()),
@@ -853,7 +831,6 @@ fn explicit_path_install_keeps_the_foreign_file_backup_behavior() {
     assert!(!backup.exists(), "a refused install writes no backup");
 
     let forced = execute_plugin(PluginCommand::Install {
-        global: false,
         project: false,
         force: true,
         path: Some(path),
@@ -1079,342 +1056,6 @@ fn adapter_template_documents_redirect_contract() {
     assert!(source.contains("\"create.before\""));
     assert!(source.contains("\"execute.after\""));
     assert!(source.contains("host exposes no shell hook"));
-}
-
-#[test]
-fn adapter_template_registers_embedded_skill_without_a_command() {
-    let _lock = lock_workflow_tests();
-    let source = adapter_source();
-    // issue #533: the live v2.0.11 command draft only accepts an
-    // Effect-returning `execute`, which a promise plugin cannot build, so the
-    // adapter must not touch the command domain at all. The previous
-    // `update(name, mutate)` template raised a TypeError in the host and the
-    // host then disabled the whole plugin, redirect hook included.
-    assert!(!source.contains("context.command"));
-    assert!(!source.contains("ACQUIRE_COMMAND_NAME"));
-    assert!(!source.contains("worktreeAcquireCommandTemplate"));
-    // issue #533: the phasegent skill travels with the plugin as an embedded
-    // `Skill.Info` added through the runtime skill draft.
-    assert!(source.contains("skill.transform"));
-    // issue #572: each protocol agent gets its own slim skill prepended to its
-    // `system` through the agent draft, so the role skill is the agent's stable
-    // system prefix. The command domain stays untouched.
-    assert!(source.contains("agent.transform"));
-    assert!(source.contains("draft.add(definition)"));
-    // Issue 665: every protocol agent is bound, explore included, and its
-    // read-only research prompt ships embedded like the other role skills.
-    assert!(source.contains("[\"orchestrator\", \"phasegent-orchestrator\"]"));
-    assert!(source.contains("[\"executor\", \"phasegent-executor\"]"));
-    assert!(source.contains("[\"reviewer\", \"phasegent-reviewer\"]"));
-    assert!(source.contains("[\"explore\", \"phasegent-explore\"]"));
-    assert!(source.contains("const SKILL_EXPLORE_CONTENT = `"));
-    assert!(source.contains("id: \"phasegent-explore\""));
-    assert!(source.contains("/builtin/phasegent-explore.md"));
-    assert!(source.contains("const SKILL_ID = \"phasegent\""));
-    assert!(source.contains("/builtin/phasegent.md"));
-    assert!(source.contains("PHASEGENT_SESSION_ID"));
-    assert!(source.contains("PHASEGENT_WORKTREE_NO_DISCOVER"));
-    // The old SDK source shape is gone; the definition is the flat info with
-    // the runtime field names.
-    assert!(!source.contains("draft.source("));
-    assert!(source.contains("path: SKILL_PATH"));
-    // A missing registration surface degrades to a warning instead of failing
-    // setup.
-    assert!(source.contains("the phasegent skill stays unregistered"));
-    assert!(source.contains("host skill draft exposes no add"));
-}
-
-/// Extract the JS template literal assigned to `declaration` and resolve its
-/// escapes back to the bytes the adapter hands the host, so an embedded prompt
-/// can be compared with the repository copy (issue #544; issue #602 extends the
-/// same contract to the three role skills).
-///
-/// Only the escapes the prompt text actually needs are resolved: `` \` ``,
-/// `\\` and `\$`. Any other backslash pair keeps both characters, so an
-/// unsupported escape shows up as a difference instead of being dropped.
-fn embedded_prompt(declaration: &str) -> String {
-    let source = adapter_source();
-    let start = source
-        .find(declaration)
-        .unwrap_or_else(|| panic!("the adapter must declare {declaration}"))
-        + declaration.len();
-    let body = &source[start..];
-    let mut resolved = String::new();
-    let mut chars = body.char_indices();
-    let mut end = None;
-    while let Some((index, ch)) = chars.next() {
-        match ch {
-            '`' => {
-                end = Some(index);
-                break;
-            }
-            '\\' => {
-                let escaped = chars
-                    .next()
-                    .expect("an embedded prompt must not end inside an escape")
-                    .1;
-                match escaped {
-                    '`' => resolved.push('`'),
-                    '\\' => resolved.push('\\'),
-                    '$' => resolved.push('$'),
-                    other => {
-                        resolved.push('\\');
-                        resolved.push(other);
-                    }
-                }
-            }
-            other => resolved.push(other),
-        }
-    }
-    let end = end.expect("the embedded prompt must close its template literal");
-    assert!(
-        body[end..].starts_with("`;"),
-        "an embedded prompt must be terminated by a lone backtick + semicolon"
-    );
-    resolved
-}
-
-fn embedded_skill() -> String {
-    let resolved = embedded_prompt("const SKILL_CONTENT = `");
-    assert!(
-        resolved.contains("# Phasegent") && resolved.contains("## Records and the audit note"),
-        "the extracted SKILL_CONTENT must carry the skill body"
-    );
-    resolved
-}
-
-#[test]
-fn embedded_skill_matches_the_repository_copy() {
-    let _lock = lock_workflow_tests();
-    // src/plugin.rs declares the embedded skill ships "same bytes" as
-    // `skills/phasegent/SKILL.md`; this is the assertion behind that contract.
-    // It reads the JS source rather than importing Bun, so the mirror stays
-    // enforced even where Bun is unavailable.
-    let embedded = embedded_skill();
-    let on_disk = include_str!("../skills/phasegent/SKILL.md");
-    assert_eq!(
-        embedded, on_disk,
-        "the adapter's embedded SKILL_CONTENT and \
-         skills/phasegent/SKILL.md must stay byte-for-byte identical; \
-         editing one means re-escaping the other in the same change \
-         (改一份必须同步另一份)"
-    );
-}
-
-/// Issue #602 keeps the role prompts slim, so the embedded mirror matters just
-/// as much for them: every `SKILL.<role>.md` the adapter inlines must equal the
-/// repository copy byte-for-byte, and still open with its frontmatter. Issue 665
-/// adds the `explore` read-only research skill to the same contract.
-#[test]
-fn embedded_role_skills_match_the_repository_copies() {
-    let _lock = lock_workflow_tests();
-    for (declaration, on_disk) in [
-        (
-            "const SKILL_ORCHESTRATOR_CONTENT = `",
-            include_str!("../skills/phasegent/SKILL.orchestrator.md"),
-        ),
-        (
-            "const SKILL_EXECUTOR_CONTENT = `",
-            include_str!("../skills/phasegent/SKILL.executor.md"),
-        ),
-        (
-            "const SKILL_REVIEWER_CONTENT = `",
-            include_str!("../skills/phasegent/SKILL.reviewer.md"),
-        ),
-        (
-            "const SKILL_EXPLORE_CONTENT = `",
-            include_str!("../skills/phasegent/SKILL.explore.md"),
-        ),
-    ] {
-        let embedded = embedded_prompt(declaration);
-        assert!(
-            embedded.starts_with("---\n"),
-            "the embedded prompt for {declaration} must keep its frontmatter"
-        );
-        assert_eq!(
-            embedded, on_disk,
-            "the adapter's {declaration} and the repository role skill must stay \
-             byte-for-byte identical; editing one means re-escaping the other in the \
-             same change (改一份必须同步另一份)"
-        );
-    }
-}
-
-fn flat_policy(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Issue 1201 P4: the orchestrator skill is the single portable authority for
-/// Git delivery, PR, and closure policy. These are semantic policy contracts,
-/// not paragraph snapshots.
-#[test]
-fn orchestrator_skill_owns_portable_delivery_and_closure_policy() {
-    let _lock = lock_workflow_tests();
-    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.orchestrator.md"));
-    for needle in [
-        "one final PR per repository",
-        "opens no PR",
-        "never fabricate a hosted PR",
-        "never auto-merge",
-        "never close merely because a PR was opened",
-        "`Closes` marker",
-        "automatic PR bridge",
-        "full Redmine URL",
-    ] {
-        assert!(
-            skill.contains(needle),
-            "the orchestrator policy must state {needle:?}"
-        );
-    }
-}
-
-/// Issue 1201 P4: the shared skill defers delivery/closure policy to the
-/// orchestrator and keeps no stale startup claim or close-at-PR rule.
-#[test]
-fn shared_skill_defers_delivery_policy_and_drops_stale_claims() {
-    let _lock = lock_workflow_tests();
-    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
-    assert!(
-        skill.contains("canonical in `phasegent-orchestrator`"),
-        "the shared skill must point at the portable orchestrator policy"
-    );
-    assert!(
-        skill.contains("verify that copy"),
-        "the shared skill must verify the installed/injected artifact"
-    );
-    assert!(
-        !skill.contains("needs a new session"),
-        "the stale absolute restart claim must stay removed"
-    );
-    assert!(
-        !skill.contains("finish and close only after the requested delivery succeeds"),
-        "the unconditional close-at-delivery rule must stay removed"
-    );
-}
-
-/// Issue 1201 P8: the shared skill carries the durable routing layer, the
-/// explicit-selection rule and the unchanged implicit-Forgejo refusal.
-#[test]
-fn shared_skill_carries_task_routing_policy() {
-    let _lock = lock_workflow_tests();
-    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
-    for needle in [
-        "the current branch task reference, then a unique repository membership",
-        "never remaps a bound task",
-        "the configured default — role or global setting",
-        "confirmed closed through its own durable task",
-    ] {
-        assert!(
-            skill.contains(needle),
-            "the shared skill must state the durable routing rule {needle:?}"
-        );
-    }
-    assert!(
-        !skill.contains("resolved at parse time"),
-        "the stale parse-time provider claim must stay removed"
-    );
-    assert!(
-        !skill.contains("closed on the configured provider"),
-        "the stale one-default closure wording must stay removed"
-    );
-}
-
-/// Issue 1201 P13: a Forgejo default is an equal configured selection whose
-/// repository comes from explicit selection, an attested origin, or the
-/// outside-Git stored default — never from a single implicit repository.
-#[test]
-fn shared_skill_states_equal_configured_forgejo_selection() {
-    let _lock = lock_workflow_tests();
-    let skill = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
-    for needle in [
-        "A configured Forgejo default is selected",
-        "needs no explicit",
-        "explicit `--repository`",
-        "checkout's origin when that host and deployment prefix",
-        "stored default outside Git",
-        "normalize exactly to the trusted instance",
-    ] {
-        assert!(
-            skill.contains(needle),
-            "the shared skill must state equal Forgejo selection {needle:?}"
-        );
-    }
-    assert!(
-        !skill.contains("A stored or environment Forgejo default is still refused"),
-        "the removed opt-in refusal must stay gone"
-    );
-    assert!(
-        !skill.contains("never a repository inferred from the Git origin"),
-        "the replaced single-repository claim must stay gone"
-    );
-}
-
-/// Issue 1201 P11: the skills state the native Forgejo status contract — two
-/// states, the phase detail in the record, and no status label or `Resolved`
-/// state presented as a Forgejo phase.
-#[test]
-fn skills_state_the_native_forgejo_status_contract() {
-    let _lock = lock_workflow_tests();
-    let shared = flat_policy(include_str!("../skills/phasegent/SKILL.md"));
-    for needle in [
-        "exactly two native states, `Open` and `Closed`",
-        "the phase outcome lives in the phasegent record",
-        "Never use a status transition to express a Forgejo phase",
-    ] {
-        assert!(
-            shared.contains(needle),
-            "the shared skill must state the native Forgejo contract {needle:?}"
-        );
-    }
-    let orchestrator = flat_policy(include_str!("../skills/phasegent/SKILL.orchestrator.md"));
-    for needle in [
-        "A Forgejo issue has no `Resolved` state and no status label",
-        "it stays `Open` until it is really closed",
-        "its phase detail lives in the record",
-    ] {
-        assert!(
-            orchestrator.contains(needle),
-            "the orchestrator skill must state the native Forgejo contract {needle:?}"
-        );
-    }
-    assert!(
-        !shared.contains("a Forgejo `Resolved` is a native open label"),
-        "the stale Forgejo Resolved label claim must stay removed"
-    );
-    assert!(
-        !orchestrator.contains("a Forgejo `Resolved` is a native open label"),
-        "the stale Forgejo Resolved label claim must stay removed"
-    );
-}
-
-/// Issue 1201 P4: child roles own no Git or PR mutation authority.
-#[test]
-fn child_skills_forbid_git_and_pull_request_mutations() {
-    let _lock = lock_workflow_tests();
-    for (name, skill) in [
-        (
-            "executor",
-            flat_policy(include_str!("../skills/phasegent/SKILL.executor.md")),
-        ),
-        (
-            "reviewer",
-            flat_policy(include_str!("../skills/phasegent/SKILL.reviewer.md")),
-        ),
-    ] {
-        assert!(
-            skill.contains("Never commit, push, tag, or mutate refs"),
-            "the {name} skill must forbid Git mutation"
-        );
-        assert!(
-            skill.contains("pull request"),
-            "the {name} skill must explicitly forbid PR mutation"
-        );
-    }
-    let explore = flat_policy(include_str!("../skills/phasegent/SKILL.explore.md"));
-    assert!(
-        explore.contains("pull-request create/update/merge"),
-        "the explore skill must explicitly forbid PR mutation"
-    );
 }
 
 #[test]

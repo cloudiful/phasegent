@@ -479,7 +479,7 @@ function nextShellToken(masked, pos) {
   return { word: masked.slice(index, end), start: index, end };
 }
 
-const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 
 // `timeout` option tail: bounded arity before its command word. `null` means
 // an unsupported/ambiguous shape, so the caller leaves the bytes untouched.
@@ -607,6 +607,88 @@ function parseWrappers(masked, pos) {
     return { pos: token.start, wrapped };
   }
   return null;
+}
+
+// Split one shell segment into words while respecting quotes (issue #22 P3).
+// Each word keeps its raw bytes and a quote-removed `value`, so a caller can
+// recognise an assignment name written as `"PHASEGENT_ROLE"=…` without ever
+// reading a quoted value as syntax. Words never cross an unquoted space or tab;
+// quoting only joins bytes inside one word.
+function unquoteShellWord(raw) {
+  let value = "";
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index];
+    if (char === "'") {
+      const end = raw.indexOf("'", index + 1);
+      if (end < 0) {
+        value += raw.slice(index + 1);
+        break;
+      }
+      value += raw.slice(index + 1, end);
+      index = end + 1;
+      continue;
+    }
+    if (char === '"') {
+      let cursor = index + 1;
+      while (cursor < raw.length && raw[cursor] !== '"') {
+        if (raw[cursor] === "\\" && cursor + 1 < raw.length) {
+          const next = raw[cursor + 1];
+          if (next === '"' || next === "\\" || next === "$" || next === "`") {
+            value += next;
+            cursor += 2;
+            continue;
+          }
+        }
+        value += raw[cursor];
+        cursor += 1;
+      }
+      index = cursor + 1;
+      continue;
+    }
+    if (char === "\\" && index + 1 < raw.length) {
+      value += raw[index + 1];
+      index += 2;
+      continue;
+    }
+    value += char;
+    index += 1;
+  }
+  return value;
+}
+
+export function shellWords(text) {
+  const words = [];
+  let index = 0;
+  const n = text.length;
+  while (index < n) {
+    while (index < n && (text[index] === " " || text[index] === "\t")) index += 1;
+    if (index >= n) break;
+    const start = index;
+    let raw = "";
+    while (index < n && text[index] !== " " && text[index] !== "\t") {
+      if (text[index] === "'" || text[index] === '"') {
+        const end = skipQuoted(text, index);
+        if (end < 0) {
+          raw += text.slice(index);
+          index = n;
+          break;
+        }
+        raw += text.slice(index, end);
+        index = end;
+        continue;
+      }
+      if (text[index] === "\\" && index + 1 < n) {
+        raw += text.slice(index, index + 2);
+        index += 2;
+        continue;
+      }
+      raw += text[index];
+      index += 1;
+    }
+    words.push({ start, end: index, raw, value: unquoteShellWord(raw) });
+  }
+  return words;
 }
 
 export function phasegentInvocation(segment) {

@@ -1,4 +1,4 @@
-use super::fixtures::{no_network_db, project_list, run_cli_in, run_cli_in_with_role};
+use super::fixtures::{no_network_db, project_list, run_cli_in_with_role};
 use super::support::{MockResponse, make_test_db, run_cli, start_mock_server, stderr_text};
 
 #[test]
@@ -127,7 +127,7 @@ fn non_redmine_provider_is_rejected_before_network() {
     let output = run_cli(
         &db.path,
         "http://127.0.0.1:1",
-        Some("admin"),
+        None,
         &[
             "--provider",
             "local",
@@ -147,11 +147,12 @@ fn all_projects_runs_from_a_directory_without_git_metadata() {
     let db = make_test_db(&server.base_url);
     let working_dir = db.path.parent().expect("database temp directory");
     assert!(!working_dir.join(".git").exists());
-    let output = run_cli_in(
+    let output = run_cli_in_with_role(
         working_dir,
         &db.path,
         &server.base_url,
-        "admin",
+        None,
+        None,
         &["admin", "workflow", "bootstrap", "--all-projects"],
     );
     assert_eq!(output.status.code(), Some(0), "{}", stderr_text(&output));

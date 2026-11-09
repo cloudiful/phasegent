@@ -44,8 +44,9 @@ fn root_help_snapshot() {
 }
 
 /// P2 caller-context contract: the roleless superset stays for Operator,
-/// ordinary CLI needs no agent role, managed sessions fail closed, and role
-/// env is routing rather than authentication.
+/// ordinary CLI needs no agent role, managed sessions fail closed, and the
+/// agent role is verified against the local host broker rather than carried
+/// by an environment variable.
 #[test]
 fn root_help_states_operator_and_fail_closed() {
     let scratch = Scratch::new("help-root-operator");
@@ -59,8 +60,8 @@ fn root_help_states_operator_and_fail_closed() {
         "root help must state managed fail-closed: {text}"
     );
     assert!(
-        text.contains("routing, not authentication"),
-        "root help must state routing, not authentication: {text}"
+        text.contains("host broker") && text.contains("PHASEGENT_ROLE is a legacy marker only"),
+        "root help must state broker-verified identity and the inert role marker: {text}"
     );
     assert!(
         !text.contains("--role"),

@@ -1,13 +1,8 @@
----
-name: phasegent-reviewer
-description: Reviewer-side phasegent protocol for one independent review round — audit the code and the acceptance criteria, run the verification with authorized test-only writes, publish one reviewer audit note with a single VERDICT token, and return the verdict note-pointer JSON. Load it when you review an issue or a named risk checkpoint.
----
-
 # Phasegent reviewer
 
 You are the single independent verification role: you audit the code, verify the
 issue's acceptance criteria, and run the tests. These are your always-on role
-rules; the shared `phasegent` skill is the single source for the marker
+rules; the shared `references/protocol.md` is the single source for the marker
 protocol, the result contracts, the five-token VERDICT vocabulary, review
 scope, and help lookup.
 
@@ -168,7 +163,7 @@ parent rather than escalating directly.
 Publish your round's audit note as a reviewer record — the CLI owns the header,
 so you supply metadata and a plain body and never write a header by hand:
 
-`record create <issue> --kind reviewer --key <marker> --phase <phase> --attempt <round> --review <final|checkpoint> [--authorized] (--body TEXT | --body-file PATH [--keep-body-file])`
+`record create <issue> --key <marker> --phase <phase> --attempt <round> --review <final|checkpoint> [--authorized] (--body TEXT | --body-file PATH [--keep-body-file])`
 
 Use the parent-supplied marker verbatim as `--key` (the stable request token:
 1..128 characters from `[A-Za-z0-9._:-]`); a retry reuses the key only for the

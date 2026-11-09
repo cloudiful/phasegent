@@ -23,6 +23,7 @@ impl Fixture {
         Self { root }
     }
     fn run(&self, role: &str, args: &[&str]) -> Output {
+        let broker = support::broker::TestBroker::start(role, "ses-pagination-1");
         Command::new(env!("CARGO_BIN_EXE_phasegent"))
             .args(args)
             .current_dir(&self.root)
@@ -34,9 +35,12 @@ impl Fixture {
             .env("PHASEGENT_LOCAL_DB_PATH", self.root.join("local.sqlite3"))
             .env("PHASEGENT_INDEX_DB_PATH", self.root.join("index.sqlite3"))
             .env("PHASEGENT_CONFIG_PATH", self.root.join("missing.toml"))
-            .env("PHASEGENT_ROLE", role)
+            .env_remove("PHASEGENT_ROLE")
             .env_remove("PHASEGENT_SESSION_ID")
             .env_remove("OPENCODE_SESSION_ID")
+            .env(support::broker::BROKER_ADDR_ENV, broker.addr())
+            .env(support::broker::BROKER_TOKEN_ENV, broker.token())
+            .env("PHASEGENT_SESSION_ID", broker.session())
             .env_remove("PHASEGENT_PROVIDER")
             .env_remove("PHASEGENT_DEFAULT_PROVIDER")
             .env_remove("CI")

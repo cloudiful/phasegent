@@ -16,6 +16,7 @@ pub mod project;
 pub mod record;
 pub mod relation;
 pub mod root;
+pub mod skill;
 pub mod status;
 pub mod timer;
 pub mod version;
@@ -40,6 +41,7 @@ use project::{print_project_command_help, print_project_help};
 use record::{print_record_command_help, print_record_help};
 use relation::{print_relation_command_help, print_relation_help};
 use root::print_root_help;
+use skill::{print_skill_command_help, print_skill_help};
 use status::{print_status_command_help, print_status_help};
 use timer::{print_timer_command_help, print_timer_help};
 use version::{print_version_command_help, print_version_help};
@@ -95,6 +97,8 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
         HelpTopic::HooksCommand(command) => vec!["hooks", command.as_str()],
         HelpTopic::Plugin => vec!["plugin"],
         HelpTopic::PluginCommand(command) => vec!["plugin", command.as_str()],
+        HelpTopic::Skill => vec!["skill"],
+        HelpTopic::SkillCommand(command) => vec!["skill", command.as_str()],
         HelpTopic::Relation => vec!["relation"],
         HelpTopic::RelationCommand(command) => vec!["relation", command.as_str()],
         HelpTopic::Timer => vec!["timer"],
@@ -158,6 +162,8 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::HooksCommand(command) => print_hooks_command_help(&command),
         HelpTopic::Plugin => print_plugin_help(),
         HelpTopic::PluginCommand(command) => print_plugin_command_help(&command),
+        HelpTopic::Skill => print_skill_help(),
+        HelpTopic::SkillCommand(command) => print_skill_command_help(&command),
         HelpTopic::Notify => print_notify_help(role),
         HelpTopic::NotifyCommand(command) => print_notify_command_help(role, &command),
         HelpTopic::Worktree => print_worktree_help(role),

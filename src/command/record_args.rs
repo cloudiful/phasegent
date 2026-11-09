@@ -11,7 +11,6 @@ use crate::record::RecordKind;
 pub enum RecordCommand {
     Create {
         issue: u64,
-        kind: RecordKind,
         /// Stable request key. Reused only to retry one identical
         /// logical request; a new attempt must use a new key.
         key: String,
