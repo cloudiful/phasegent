@@ -1,7 +1,7 @@
-//! Executors for the mutating `worktree` subcommands owned by the
-//! orchestrator: `acquire`, `release`, and `heartbeat`.
+//! Executor for the mutating `worktree acquire` subcommand owned by the
+//! orchestrator.
 //!
-//! Each executor maps a domain outcome to its stable JSON envelope and
+//! The executor maps a directory outcome to its stable JSON envelope and
 //! keeps the structured-error vocabulary (`kind`, `message`) that the
 //! parser-level tests assert on. The role gate lives in the parent
 //! module's dispatcher, not here.
@@ -11,16 +11,13 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
-use crate::worktree::{
-    AcquireOutcome, ProcessWorktreeRunner, ReleaseOutcome, heartbeat_lease, now_unix_secs,
-    resolve_session,
-};
+use crate::worktree::{AcquireOutcome, ProcessWorktreeRunner, resolve_session};
 
 /// One row of the JSON envelope returned by `acquire`. Field order
 /// is stable for downstream parsing.
 #[derive(Debug, Serialize)]
 pub(crate) struct AcquireJson {
-    pub lease_id: String,
+    pub directory_id: String,
     pub path: String,
     pub branch: String,
     pub repo_identity: String,
@@ -31,55 +28,12 @@ pub(crate) struct AcquireJson {
 impl From<AcquireOutcome> for AcquireJson {
     fn from(outcome: AcquireOutcome) -> Self {
         Self {
-            lease_id: outcome.lease_id,
+            directory_id: outcome.directory_id,
             path: outcome.path,
             branch: outcome.branch,
             repo_identity: outcome.repo_identity,
             created: outcome.created,
             reason: outcome.reason,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ReleaseJson {
-    pub lease_id: String,
-    pub status: String,
-    pub forced: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-impl From<ReleaseOutcome> for ReleaseJson {
-    fn from(outcome: ReleaseOutcome) -> Self {
-        Self {
-            lease_id: outcome.lease_id,
-            status: outcome.status,
-            forced: outcome.forced,
-            reason: outcome.reason,
-        }
-    }
-}
-
-/// Envelope returned by `heartbeat`. Only the fields an operator needs to
-/// confirm ownership and freshness are surfaced.
-#[derive(Debug, Serialize)]
-pub(crate) struct HeartbeatJson {
-    pub lease_id: String,
-    pub issue: u64,
-    pub session: String,
-    pub status: String,
-    pub heartbeat_at: i64,
-}
-
-impl From<crate::worktree::LeaseRow> for HeartbeatJson {
-    fn from(row: crate::worktree::LeaseRow) -> Self {
-        Self {
-            lease_id: row.lease_id,
-            issue: row.issue,
-            session: row.session,
-            status: row.status,
-            heartbeat_at: row.heartbeat_at,
         }
     }
 }
@@ -122,7 +76,7 @@ pub(super) fn execute_acquire_seeded(
 ///
 /// A number that resolved to a durable task in this repository is acquired
 /// under that exact task scope for every provider, so a changed default never
-/// changes what the lease names. Without a task, an explicit `--provider
+/// changes what the directory scope names. Without a task, an explicit `--provider
 /// forgejo` keeps the explicit `(forgejo, owner/repo, issue)` sidecar scope,
 /// and every other selection keeps the legacy numeric path exactly as before.
 #[allow(clippy::too_many_arguments)]
@@ -138,6 +92,10 @@ pub(super) fn execute_acquire_scoped(
     task: Option<&crate::task_identity::TaskBinding>,
 ) -> i32 {
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let occupancy = crate::cli::issue_closure::ClosureOccupancy::task_aware(
+        crate::policy::Role::Orchestrator,
+        context.clone(),
+    );
     if let Some(binding) = task {
         return execute_acquire_at_scoped(
             issue,
@@ -150,6 +108,7 @@ pub(super) fn execute_acquire_scoped(
             &repo_path,
             Some(binding),
             None,
+            Some(&occupancy),
         );
     }
     // A provider without legacy numeric leases always records its exact
@@ -182,6 +141,7 @@ pub(super) fn execute_acquire_scoped(
             &repo_path,
             None,
             Some(&scope),
+            Some(&occupancy),
         )
     } else {
         execute_acquire_at(
@@ -190,7 +150,7 @@ pub(super) fn execute_acquire_scoped(
     }
 }
 
-/// The scoped acquire: either a durable task owns the lease, or an explicit
+/// The scoped acquire: either a durable task owns the directory, or an explicit
 /// Forgejo selection does.
 ///
 /// A task scope records the exact task identity, so a same-number task on
@@ -212,6 +172,7 @@ fn execute_acquire_at_scoped(
     repo_path: &std::path::Path,
     task: Option<&crate::task_identity::TaskBinding>,
     scope: Option<&crate::cli::provider_context::ResolvedScope>,
+    foreign_state: Option<&dyn crate::worktree::occupancy::ForeignIssueState>,
 ) -> i32 {
     let _ = format; // only "json" is accepted at the parser layer
     let session = match resolve_session(session) {
@@ -242,7 +203,7 @@ fn execute_acquire_at_scoped(
                     1,
                 );
             }
-            match crate::worktree::LeaseScope::for_task(
+            match crate::worktree::WorktreeScope::for_task(
                 key.provider(),
                 key.project(),
                 issue,
@@ -268,7 +229,7 @@ fn execute_acquire_at_scoped(
                     );
                 }
             };
-            match crate::worktree::LeaseScope::new(
+            match crate::worktree::WorktreeScope::new(
                 resolved.provider.as_str(),
                 &resolved.project,
                 issue,
@@ -284,6 +245,7 @@ fn execute_acquire_at_scoped(
         }
     };
     crate::output::progress::stage("worktree acquire: preparing the scoped worktree");
+    let host_api = crate::worktree::opencode::ProcessOpenCodeApi::new();
     let options = crate::worktree::AcquireOptions {
         cache_base: None,
         isolate,
@@ -293,7 +255,7 @@ fn execute_acquire_at_scoped(
     let outcome = if let Some(setup) = setup
         && let Some(repo_scope) = setup.scopes.first()
     {
-        crate::worktree::acquire_lease_scoped(
+        crate::worktree::acquire_directory_scoped(
             runner,
             &setup.storage,
             &repo_scope.repo_identity,
@@ -301,6 +263,8 @@ fn execute_acquire_at_scoped(
             &session.id,
             options,
             &scope,
+            foreign_state,
+            Some(&host_api),
         )
     } else {
         let storage = match crate::infra::storage::Storage::open() {
@@ -312,7 +276,7 @@ fn execute_acquire_at_scoped(
                 );
             }
         };
-        if let Err(error) = crate::worktree::leases::ensure_schema(&storage) {
+        if let Err(error) = crate::worktree::ensure_schema(&storage) {
             return structured_error(serde_json::json!({"kind": "storage", "message": error}), 1);
         }
         let identity = match crate::worktree::repo_identity(runner, repo_path) {
@@ -324,7 +288,7 @@ fn execute_acquire_at_scoped(
                 );
             }
         };
-        crate::worktree::acquire_lease_scoped(
+        crate::worktree::acquire_directory_scoped(
             runner,
             &storage,
             &identity,
@@ -332,6 +296,8 @@ fn execute_acquire_at_scoped(
             &session.id,
             options,
             &scope,
+            foreign_state,
+            Some(&host_api),
         )
     };
     match outcome {
@@ -380,6 +346,11 @@ pub(crate) fn execute_acquire_at(
         }
     };
     crate::output::progress::stage("worktree acquire: preparing the worktree");
+    let occupancy = crate::cli::issue_closure::ClosureOccupancy::task_aware(
+        crate::policy::Role::Orchestrator,
+        crate::cli::provider_context::ProviderContext::default(),
+    );
+    let host_api = crate::worktree::opencode::ProcessOpenCodeApi::new();
     let options = crate::worktree::AcquireOptions {
         cache_base: None,
         isolate,
@@ -389,13 +360,14 @@ pub(crate) fn execute_acquire_at(
         // dedicated worktree. `--reuse` states that default
         // explicitly at the parser layer (it is mutually exclusive
         // with `--isolate` there) and needs no separate gate here
-        // because the default table never bypasses an active lease.
+        // because the default decision table never bypasses an unresolved
+        // occupation.
         reuse: false,
     };
     let outcome = if let Some(setup) = setup
         && let Some(scope) = setup.scopes.first()
     {
-        crate::worktree::leases::acquire_lease_seeded(
+        crate::worktree::acquire_directory_seeded(
             runner,
             &setup.storage,
             &scope.repo_identity,
@@ -403,9 +375,19 @@ pub(crate) fn execute_acquire_at(
             issue,
             &session.id,
             options,
+            Some(&occupancy),
+            Some(&host_api),
         )
     } else {
-        crate::worktree::acquire_lease_with(runner, repo_path, issue, &session.id, options)
+        crate::worktree::acquire_directory_with_foreign_state(
+            runner,
+            repo_path,
+            issue,
+            &session.id,
+            options,
+            Some(&occupancy),
+            Some(&host_api),
+        )
     };
     match outcome {
         Ok(outcome) => {
@@ -415,83 +397,6 @@ pub(crate) fn execute_acquire_at(
         Err(error) => structured_error(
             serde_json::json!({
                 "kind": error.kind,
-                "message": error.message,
-            }),
-            1,
-        ),
-    }
-}
-
-pub(super) fn execute_release(
-    lease: &str,
-    retain: bool,
-    force: bool,
-    reason: Option<String>,
-) -> i32 {
-    let outcome = if force {
-        // `--reason` is guaranteed non-empty by the parser when
-        // `--force` is set; re-check defensively so a future caller
-        // cannot persist an empty justification.
-        match reason
-            .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-        {
-            Some(justification) => {
-                crate::worktree::release_lease_forced(lease, retain, justification)
-            }
-            None => {
-                return structured_error(
-                    serde_json::json!({
-                        "kind":"argument",
-                        "operation":"worktree release",
-                        "message":"worktree release --force requires a non-empty --reason"
-                    }),
-                    2,
-                );
-            }
-        }
-    } else {
-        crate::worktree::release_lease(lease, retain)
-    };
-    match outcome {
-        Ok(outcome) => {
-            let payload = ReleaseJson::from(outcome);
-            print_json(&payload)
-        }
-        Err(error) => structured_error(
-            serde_json::json!({
-                "kind": error.kind,
-                "message": error.message,
-            }),
-            1,
-        ),
-    }
-}
-
-pub(super) fn execute_heartbeat(lease: &str, session: Option<&str>) -> i32 {
-    // Heartbeat extends a lease the caller owns, so it needs the same
-    // explicit identity as acquire: a missing identity fails fast with
-    // exit 2 instead of refreshing under a fabricated shared owner.
-    let session = match resolve_session(session) {
-        Ok(context) => context,
-        Err(error) => {
-            return structured_error(
-                serde_json::json!({
-                    "kind": error.kind,
-                    "operation": "worktree heartbeat",
-                    "message": error.message,
-                }),
-                2,
-            );
-        }
-    };
-    match heartbeat_lease(lease, &session.id, now_unix_secs()) {
-        Ok(row) => print_json(&HeartbeatJson::from(row)),
-        Err(error) => structured_error(
-            serde_json::json!({
-                "kind": error.kind,
-                "operation": "worktree heartbeat",
                 "message": error.message,
             }),
             1,

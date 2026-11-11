@@ -1,20 +1,19 @@
-//! Shared fixture for the OpenCode-aware cleanup regression suites
-//! (issue 747 P1).
+//! Shared fixture for the OpenCode-aware cleanup regression suites.
 //!
-//! Each fixture builds a real repository with a real linked worktree and
-//! a real lease row, so the production entry point runs against real Git
-//! state. The only double is the host: `FakeOpenCodeApi` reports where
-//! sessions are, so no test reaches a real OpenCode instance and no test
-//! can move a real session.
+//! Each fixture builds a real repository with a real linked worktree and a real
+//! registry directory, so the production entry point runs against real Git
+//! state. The only double is the host: `FakeOpenCodeApi` reports where sessions
+//! are, so no test reaches a real OpenCode instance and no test can move a real
+//! session.
 
 use super::support::*;
 use super::*;
 
 use crate::lifecycle::cleanup::closure::{DenyOtherIssues, DirectoryIssueClosure};
 use crate::lifecycle::{AutoCleanupOutcome, CleanupMode, cleanup_closed_issue_worktrees_with};
-use crate::worktree::leases::{NewLease, ensure_schema, insert_lease};
 use crate::worktree::opencode::OpenCodeApi;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+use crate::worktree::registry::{self, NewAssociation, NewDirectory};
 
 pub(crate) const ISSUE: u64 = 7;
 
@@ -32,7 +31,7 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     /// Build the repository, the linked candidate worktree, and the
-    /// temporary lease store. Returns `None` when the host cannot create
+    /// temporary registry store. Returns `None` when the host cannot create
     /// a Git repository or a linked worktree, which is the project's
     /// established way of skipping rather than failing such a test.
     /// Callers must already hold `lock_workflow_tests()`.
@@ -51,7 +50,7 @@ impl Fixture {
         worktree_add(&runner, &main, &candidate, "feat/7-aaaaaa").ok()?;
         let identity = repo_identity(&runner, &main).expect("repo identity");
         let (db, storage, env) = open_temp_db(label);
-        ensure_schema(&storage).expect("lease schema");
+        registry::ensure_schema(&storage).expect("registry schema");
         Some(Self {
             main,
             candidate,
@@ -62,61 +61,49 @@ impl Fixture {
         })
     }
 
-    /// Record a lease for the candidate, already converged to `retained`
-    /// exactly as the close chain leaves it before the cleanup runs.
-    pub(crate) fn lease(&self, session: &str) {
-        self.lease_at(&self.candidate, session);
+    /// Record the candidate directory and its session.
+    pub(crate) fn associate(&self, session: &str) {
+        self.associate_issue(ISSUE, session);
     }
 
-    /// Record a lease pointing at an arbitrary directory, for the guards
-    /// that are about the path rather than about the session.
-    pub(crate) fn lease_at(&self, worktree_path: &Path, session: &str) {
+    /// Record a directory association for another issue pointing at the
+    /// candidate, so the closure guards can be exercised against a shared
+    /// directory.
+    pub(crate) fn associate_issue(&self, issue: u64, session: &str) {
         let storage = Storage::open().expect("temp storage opens");
-        let lease_id = format!("lease-{}", worktree_path.display());
-        insert_lease(
-            &storage,
-            NewLease {
-                lease_id: lease_id.as_str(),
-                identity: &self.identity,
-                issue: ISSUE,
+        let record = registry::record_for_path(&storage, &self.identity, &self.candidate)
+            .expect("read registry");
+        let association = NewAssociation::Unscoped { issue };
+        match record {
+            Some(record) => registry::attach_association(
+                &storage,
+                &record.directory_id,
+                &self.identity,
+                1,
                 session,
-                checkout_path: &self.main.to_string_lossy(),
-                worktree_path: &worktree_path.to_string_lossy(),
-                branch: "feat/7-aaaaaa",
-                status: LEASE_STATUS_RETAINED,
-                created_at: 1,
-                heartbeat_at: 1,
-            },
-        )
-        .expect("lease row inserts");
-    }
-
-    /// Record a lease for another issue pointing at the candidate, so the
-    /// closure guards can be exercised against a shared directory.
-    pub(crate) fn lease_for_issue(&self, issue: u64, session: &str) {
-        self.lease_for_issue_at(issue, session, LEASE_STATUS_RETAINED);
-    }
-
-    /// Record a lease for another issue with an explicit status.
-    pub(crate) fn lease_for_issue_at(&self, issue: u64, session: &str, status: &str) {
-        let storage = Storage::open().expect("temp storage opens");
-        let lease_id = format!("lease-{issue}-{}", self.candidate.display());
-        insert_lease(
-            &storage,
-            NewLease {
-                lease_id: lease_id.as_str(),
-                identity: &self.identity,
-                issue,
-                session,
-                checkout_path: &self.main.to_string_lossy(),
-                worktree_path: &self.candidate.to_string_lossy(),
-                branch: "feat/7-aaaaaa",
-                status,
-                created_at: 1,
-                heartbeat_at: 1,
-            },
-        )
-        .expect("lease row inserts");
+                &association,
+            )
+            .expect("attach association"),
+            None => {
+                let canonical = crate::worktree::canonical_or_self(&self.candidate);
+                let directory_id =
+                    registry::stable_directory_id(&self.identity, &canonical.to_string_lossy());
+                registry::insert_directory(
+                    &storage,
+                    &NewDirectory {
+                        directory_id: &directory_id,
+                        repo_identity: &self.identity,
+                        checkout_path: &self.main.to_string_lossy(),
+                        worktree_path: &canonical.to_string_lossy(),
+                        branch: "feat/7-aaaaaa",
+                        created_at: 1,
+                        session,
+                        associations: &[association],
+                    },
+                )
+                .expect("insert directory");
+            }
+        }
     }
 
     /// Drive the production cleanup for this fixture's issue.

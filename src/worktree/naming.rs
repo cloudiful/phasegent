@@ -1,5 +1,5 @@
 //! Branch name, fingerprint, slug, and cache-root helpers for the
-//! worktree leasing flow.
+//! worktree directory flow.
 //!
 //! The helpers are kept in a focused module so the main
 //! [`crate::worktree`] surface stays readable. Nothing here touches
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::worktree::{WorktreeError, now_unix_secs};
+use crate::worktree::WorktreeError;
 
 /// Width of the FNV-1a fingerprint used to scope per-repo cache
 /// directories. 12 hex chars (48 bits) is well past the practical
@@ -129,16 +129,6 @@ fn short_hex_suffix() -> String {
 
 static SHORT_SUFFIX_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Generate a unique lease id of the shape `lease-<nanos_hex>-<counter_hex>`.
-/// Combines wall-clock seconds with the same per-process counter
-/// `short_hex_suffix` uses so two leases minted in the same instant
-/// still differ.
-pub(super) fn new_lease_id() -> String {
-    let nanos = now_unix_secs();
-    let counter = SHORT_SUFFIX_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("lease-{nanos:x}-{counter:x}")
-}
-
 /// Compute the per-repo cache root used for worktree directories.
 /// Returns `<cache_dir>/worktrees/<fingerprint>`. Created with
 /// private (0700) permissions on Unix when missing. The
@@ -169,8 +159,7 @@ pub fn cache_root_in(base: &Path, fingerprint: &str) -> Result<PathBuf, Worktree
     Ok(cache)
 }
 
-#[allow(dead_code)]
-fn cache_base_dir() -> Option<PathBuf> {
+pub(super) fn cache_base_dir() -> Option<PathBuf> {
     if let Some(override_path) = std::env::var_os("PHASEGENT_WORKTREE_CACHE_DIR") {
         let path = PathBuf::from(override_path);
         if path.is_absolute() {

@@ -138,6 +138,7 @@ impl FakeOpenCodeApi {
     /// Report `id` as running through `session.active` but have its
     /// `session.get` answer with a different id, modelling a mismatched answer
     /// the guard must reject.
+    #[allow(dead_code)]
     pub(crate) fn with_mismatched_running_id(self, id: &str) -> Self {
         self.active.borrow_mut().push(id.to_owned());
         self.mismatched.borrow_mut().push(id.to_owned());
@@ -233,7 +234,7 @@ impl OpenCodeApi for FakeOpenCodeApi {
             return Err(error("session.get"));
         }
         if self.unknown.borrow().iter().any(|known| known == id) {
-            return Err(ApiError::plain("SessionNotFoundError"));
+            return Err(ApiError::session_not_found("session.get"));
         }
         let reality = self.reality.borrow();
         match reality.get(id) {
@@ -249,7 +250,7 @@ impl OpenCodeApi for FakeOpenCodeApi {
                     parent_id: session.parent_id.clone(),
                 })
             }
-            None => Err(ApiError::plain("SessionNotFoundError")),
+            None => Err(ApiError::session_not_found("session.get")),
         }
     }
 
@@ -319,7 +320,7 @@ impl OpenCodeApi for FakeOpenCodeApi {
     }
 }
 
-/// Reduce a path the way the production comparison does, so a lease row's
+/// Reduce a path the way the production comparison does, so a registry row's
 /// spelling and the host's spelling describe one directory.
 fn normalize(directory: &str) -> String {
     let path = Path::new(directory);

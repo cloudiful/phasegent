@@ -1,8 +1,9 @@
 //! Current-service running occupancy for `worktree prune` (issue 928 P1).
 //!
 //! Prune blocks only on sessions the connected shared OpenCode service reports
-//! as *currently running*. A lease row and a historical session record say where
-//! a session *was*; neither is running-state proof, and a stale historical
+//! as *currently running*. A registry association and a historical session
+//! record say where a session *was*; neither is running-state proof, and a
+//! stale historical
 //! reference to a closed, clean directory must not keep that directory alive.
 //! The service's `session.active` answer is the runtime authority: an id absent
 //! from it is inactive, and an inactive root or child record that still points at

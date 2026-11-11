@@ -22,53 +22,35 @@ fn top_level_help_routes_to_worktree() {
 
 #[test]
 fn subcommand_help_routes_to_command_topic() {
-    let invocation = crate::command::parse_with_role_env(
-        &strings(["worktree", "acquire", "--help"]),
-        Some("orchestrator"),
-    )
-    .unwrap();
-    match invocation.command {
-        Command::Help(crate::command::HelpTopic::WorktreeCommand(command)) => {
-            assert_eq!(command, "acquire");
+    for command in ["acquire", "status", "list", "probe", "prune"] {
+        for args in [
+            vec!["worktree", command, "--help"],
+            vec!["--help", "worktree", command],
+        ] {
+            let argv: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
+            let invocation =
+                crate::command::parse_with_role_env(&argv, Some("orchestrator")).unwrap();
+            match invocation.command {
+                Command::Help(crate::command::HelpTopic::WorktreeCommand(value)) => {
+                    assert_eq!(value, command, "unexpected topic for {args:?}");
+                }
+                other => panic!("unexpected command {other:?} for {args:?}"),
+            }
         }
-        other => panic!("unexpected command {other:?}"),
     }
 }
 
 #[test]
-fn root_help_topic_routes_heartbeat_and_prune() {
-    for command in ["heartbeat", "prune"] {
-        let invocation = crate::command::parse_with_role_env(
-            &strings(["--help", "worktree", command]),
+fn removed_lease_subcommands_are_rejected_without_help() {
+    for command in ["release", "heartbeat", "release-stale"] {
+        let err = crate::command::parse_with_role_env(
+            &strings(["worktree", command]),
             Some("orchestrator"),
         )
-        .unwrap();
-        match invocation.command {
-            Command::Help(crate::command::HelpTopic::WorktreeCommand(value)) => {
-                assert_eq!(value, command);
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Policy gates (command-level role checks)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn heartbeat_and_prune_help_route_to_command_topics() {
-    for command in ["heartbeat", "prune"] {
-        let invocation = crate::command::parse_with_role_env(
-            &strings(["worktree", command, "--help"]),
-            Some("orchestrator"),
-        )
-        .unwrap();
-        match invocation.command {
-            Command::Help(crate::command::HelpTopic::WorktreeCommand(value)) => {
-                assert_eq!(value, command);
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
+        .unwrap_err();
+        assert!(
+            err.contains("unknown worktree command"),
+            "{command} must be removed, got {err}"
+        );
     }
 }

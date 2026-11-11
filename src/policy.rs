@@ -149,7 +149,7 @@ impl FromStr for Role {
 /// `OPENCODE_SESSION_ID` is classification-only: the host shell tool sets it
 /// unconditionally for every managed shell invocation, so its presence proves
 /// the process runs inside a managed shell even when the bridge left no
-/// `PHASEGENT_SESSION_ID`. It is never used to bind, acquire, or release a
+/// `PHASEGENT_SESSION_ID`. It is never used to bind, acquire, or remove a
 /// worktree/session identity — `src/worktree/session.rs` keeps reading only
 /// `PHASEGENT_SESSION_ID`. Ordinary shells without either marker remain
 /// Operator.
@@ -339,7 +339,7 @@ impl CallerContext {
         }
     }
 
-    /// Whether `self` may read worktree leases (orchestrator/executor/
+    /// Whether `self` may read worktree directories (orchestrator/executor/
     /// reviewer surface, plus Operator).
     pub fn is_worktree_read_authorized(self) -> bool {
         match self {

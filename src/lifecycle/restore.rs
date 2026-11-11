@@ -1,11 +1,11 @@
 //! Capture and restore the pre-issue primary-checkout baseline.
 //!
 //! Issue create writes a pending baseline immediately before its safe
-//! automatic checkout. Issue close, after the remote close, lease release and
-//! guarded worktree cleanup succeeded, may return the verified main checkout
+//! automatic checkout. Issue close, after the remote close and guarded
+//! worktree cleanup succeeded, may return the verified main checkout
 //! to that branch and fast-forward only that branch's own configured upstream.
 //! Every step is best-effort and conservative: missing evidence, dirty state,
-//! another active lease, another hosted session or a third-party branch change
+//! another open associated task, another hosted session or a third-party branch change
 //! skips the mutation with a bounded warning and never fails the close.
 
 use std::path::{Path, PathBuf};
@@ -411,14 +411,13 @@ impl RestoreOutcome {
     }
 }
 
-/// Restore the captured baseline after a successful close, lease release and
-/// guarded worktree cleanup. The caller must invoke this only after those
-/// steps; every failure here is a warning, never a close failure.
+/// Restore the captured baseline after a successful close and guarded
+/// worktree cleanup. The caller must invoke this only after those steps; every failure here is a warning, never a close failure.
 pub(crate) fn restore_on_close(params: &CloseRestoreParams<'_>) -> RestoreOutcome {
     if let Err(error) = crate::worktree::ensure_schema(params.storage) {
         return warning(
             params.issue_number,
-            "could not prepare the lease store",
+            "could not prepare the directory registry",
             &error,
         );
     }
@@ -429,6 +428,18 @@ pub(crate) fn restore_on_close(params: &CloseRestoreParams<'_>) -> RestoreOutcom
             &error,
         );
     }
+    // Restoration checks and the checkout run under the same per-repository
+    // operation lock as acquire, switch, cleanup and prune.
+    let _lock = match crate::worktree::operation_lock::acquire(&params.target.identity) {
+        Ok(lock) => lock,
+        Err(error) => {
+            return warning(
+                params.issue_number,
+                "checkout restoration was skipped because another phasegent worktree operation is in progress",
+                &error.message,
+            );
+        }
+    };
     let repo_key = match resolve_repo_key(
         read_origin_url(params.git).as_deref(),
         &params.target.main_checkout,
@@ -860,22 +871,6 @@ fn main_gates(params: &CloseRestoreParams<'_>, expected_branch: &str) -> Result<
     if branch != expected_branch {
         return Err(format!(
             "main checkout is on '{branch}', expected '{expected_branch}'"
-        ));
-    }
-    let rows = crate::worktree::list_all_for_repo(params.storage, &params.target.identity)
-        .map_err(|error| {
-            format!(
-                "could not read worktree leases: {}",
-                bounded(&error.message)
-            )
-        })?;
-    if let Some(row) = rows
-        .iter()
-        .find(|row| row.status == crate::worktree::LEASE_STATUS_ACTIVE)
-    {
-        return Err(format!(
-            "active lease {} for issue {} still references '{}'",
-            row.lease_id, row.issue, row.worktree_path
         ));
     }
     let session = params

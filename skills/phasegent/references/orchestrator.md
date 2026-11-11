@@ -3,7 +3,7 @@
 You own a tracked phase end to end: the plan artifact, the delegation, the
 status flow, and the closure. These are your always-on role rules; the shared
 `references/protocol.md` is the single source for the tracking-mode decision
-tree, the marker and result contracts, and worktree lease detail.
+tree, the marker and result contracts, and worktree directory detail.
 
 This reference is also the single portable authority for Git delivery, PR, and
 issue-closure policy. The shared protocol and the child role references point to
@@ -226,9 +226,9 @@ pending-question request on the human's behalf or fabricate a human response.
   `Resolved`, not `Closed`. Later authorized delivery appends to the same
   original issue without a new issue or reopen. A cross-project close needs the
   project override.
-- A successful close flips this issue's active leases to `retained`, runs the
-  guarded worktree cleanup — returning the idle members of each candidate's lease
-  family to the verified main checkout before anything is removed — and then
+- A successful close runs the guarded worktree cleanup — returning the idle
+  members of each candidate's session family to the verified main checkout before
+  anything is removed when the host can confirm it — and then
   best-effort restores the captured pre-issue branch in the verified main
   checkout plus its own configured upstream when every safety gate holds.
   Restoration skips or warns without changing the close result; repeat close
@@ -299,7 +299,7 @@ push, tag, mutate refs, create or update a PR, or merge.
 - On any failed commit/push/tag, the phase or issue is not complete: report the
   failure and stop.
 
-## Branch binding & lease checklist
+## Branch binding & worktree checklist
 
 - OPEN: check the branch binding status before delegating; bind the branch to
   its issue(s) with `phasegent issue bind N [N...]` (durable
@@ -311,16 +311,15 @@ push, tag, mutate refs, create or update a PR, or merge.
   every link in scope); children never bind, unbind, commit, push, or mutate
   refs — binding and delivery stay orchestrator-owned.
 
-## Worktree leases are yours alone
+## Worktree directories are yours alone
 
-`acquire`, `release`, `heartbeat`, and `prune` are orchestrator-only; children
-inherit your worktree automatically and never hold a lease of their own. A
-dedicated worktree is opt-in — `worktree acquire --isolate`
-is the explicit request, and `issue create`/`bind` never create one silently.
-Never delete a lease row, a branch, or a dirty worktree to force cleanup (the
-shared verified root `.cache`-only exception is the sole dirty allowance), and
-never pass a worktree path between sessions — the lease safety rules live in the
-shared skill.
+`acquire` and `prune` are orchestrator-only; children inherit your worktree
+automatically and never register a directory of their own. A dedicated worktree
+is opt-in — `worktree acquire --isolate` is the explicit request, and
+`issue create`/`bind` never create one silently. Never delete a registry row, a
+branch, or a dirty worktree to force cleanup (the shared verified root
+`.cache`-only exception is the sole dirty allowance), and never pass a worktree
+path between sessions — the worktree safety rules live in the shared skill.
 
 ## Human-only surfaces
 

@@ -5,7 +5,7 @@ selects the capability/routing policy; the tracking provider comes from user
 config and is never assumed.
 
 This reference is the single source of the shared protocol: tracking modes, role
-gates, the record and marker protocol, result contracts, worktree lease safety,
+gates, the record and marker protocol, result contracts, worktree directory safety,
 and the human-operator-only `admin` boundary. The role references
 (`references/orchestrator.md`, `references/executor.md`,
 `references/reviewer.md`, and `references/explore.md`) carry only their
@@ -63,7 +63,7 @@ Load it when one of these is true:
   delta from an `orchestrator`.
 - A tracking issue or plan is the source of truth and you must decide a tracking
   mode, read the artifact, or publish a phase-terminal audit note.
-- You need the marker, note-pointer JSON, VERDICT vocabulary, worktree lease
+- You need the marker, note-pointer JSON, VERDICT vocabulary, worktree directory
   rules, or which primitives a role may call.
 
 ## Tracking modes (decision tree)
@@ -394,7 +394,7 @@ Forgejo phase, and never fabricate a Forgejo state or label. A Forgejo issue is
 reopen moves it back to `Open`.
 
 - Issue body/search/create/close writes, relation and repo writes,
-  `status transition`, every `timer *` command, and `worktree` lease writes are
+  `status transition`, every `timer *` command, and `worktree` registry writes are
   orchestrator-only for agents; the unmanaged human Operator shares that
   authority through the central context, while managed sessions without a role
   fail closed. Children never edit the body, label, search, or close an
@@ -411,7 +411,7 @@ reopen moves it back to `Open`.
 - `issue get` batch-reads up to 20 issues as an `{issues, errors}` envelope.
   `record list` is the bulk record read and `comment list` reads legacy notes;
   both return page 1 with up to 50 entries by default. Request successive pages
-  when a task requires the complete collection. The OpenCode lease readers do
+  when a task requires the complete collection. The OpenCode directory readers do
   this traversal and reject incomplete results.
 - `notify send` runs on explicit invocation; the OpenCode adapter automatically
   invokes it once for a local pending question form still unanswered after five
@@ -440,152 +440,114 @@ and batch
 `issue get` cover bulk reads. Audit notes are append-only, so publish a follow-up
 note instead.
 
-## Worktree leases
+## Worktree directories
 
-Leases are keyed by `(repo, issue, session)` and the adapter installed by
-`phasegent plugin install` (OpenCode >= 2.0, v2 `export default { id, setup }`)
-owns the session identity and the lease side, so no session id, worktree path,
-or lease call travels between sessions. Wiring is automatic: never mint a fresh
-session id per command or per phase, and a child session inherits its parent's
-worktree from the session prompt hook, before the child's runner reaches its
-first tool call. The registry is exact per session (issue 919 P1): a session
-only ever uses the worktree recorded under its own id, a child only inherits its
-parent's directory, and an unknown session, unknown root, or unresolvable parent
-is never moved or redirected into another session's worktree. Placement is
-decided once per session during prompt admission and uses `session.move`: a
-fresh own-session host read — not the plugin's own location or a cached value —
-decides whether a known placement still needs a move, a read that already equals
-the target settles it with no move, and a registered, inherited, or already
-leased worktree is entered there, while a no-worktree session continues normally
-and the placement is never repeated. If the required move is unavailable, the
-host cannot report the session's current directory, or the host rejects the
-move, the prompt hook throws so the turn is not run in an unverified or old
-checkout, and the next prompt retries; only ordinary discovery failures keep the
-original directory. Each placement decision emits one bounded diagnostic line
-(session, parent, from, to, reason, outcome); an accepted move is never reported
-as confirmed. `PHASEGENT_WORKTREE_NO_DISCOVER=1` stays inert: it adds no host
-read and never auto-moves.
+Worktree directories are recorded in a registry keyed by repository identity,
+canonical path, branch, durable task or legacy issue identity, and observed
+sessions. A directory can reference many tasks and sessions. The registry keeps
+no lease status, heartbeat, expiration or release reason: live ownership comes
+from fresh host occupancy and from whether an associated task is still open.
+The adapter installed by `phasegent plugin install` (OpenCode >= 2.0, v2
+`export default { id, setup }`) owns the session identity and the directory
+placement, so no session id, worktree path, or registry call travels between
+sessions. Wiring is automatic: never mint a fresh session id per command or per
+phase, and a child session inherits its parent's directory from the session
+prompt hook, before the child's runner reaches its first tool call.
+
+Placement uses the session's own or inherited host directory together with the
+verified registry mapping. A session only ever uses the directory recorded under
+its own id or inherited from its parent; an unknown session, unknown root, or
+unresolvable parent is never redirected into another session's directory.
+Placement is decided once per session during prompt admission and uses
+`session.move`: a fresh own-session host read — not the plugin's own location or
+a cached value — decides whether a known placement still needs a move, a read
+that already equals the target settles it with no move, and a registered,
+inherited, or already associated directory is entered there, while a no-worktree
+session continues normally and the placement is never repeated. If the required
+move is unavailable, the host cannot report the session's current directory, or
+the host rejects the move, the prompt hook throws so the turn is not run in an
+unverified or old checkout, and the next prompt retries; only ordinary discovery
+failures keep the original directory. Each placement decision emits one bounded
+diagnostic line (session, parent, from, to, reason, outcome); an accepted move is
+never reported as confirmed. `PHASEGENT_WORKTREE_NO_DISCOVER=1` stays inert: it
+adds no host read and never auto-moves.
 
 Creating a worktree is opt-in: `issue create` and the adapter's lazy path reuse
-an existing lease, an inherited worktree, or the current checkout, and a conflict
-surfaces the explicit choice instead of a new directory — `phasegent worktree
-acquire --issue N --isolate` is how a dedicated worktree is requested.
+an existing directory, an inherited directory, or the current checkout, and a
+conflict surfaces the explicit choice instead of a new directory —
+`phasegent worktree acquire --issue N --isolate` is how a dedicated worktree is
+requested.
 
 Boundaries:
 
 - Relative paths and a bare or relative shell `workdir` land in the worktree.
   Absolute paths pass through untouched, so an explicit escape and the
   `external_directory` permission check are never rewritten.
-- Never delete a lease row, a branch, or a dirty or untracked worktree to force
-  cleanup; the only shared dirty exception is a verified root `.cache`-only
-  worktree (a real root `.cache` directory with no tracked paths and only `??`
-  entries under that exact root, cleared only after a bounded inventory of
-  reliable identity/change evidence matches the initial eligibility baseline and
-  every lease/local/closure/host gate is re-checked after clearance, then
-  followed by the normal no-force removal; a platform without reliable identity
-  fails closed for this exception).
+- Never delete a branch, a registry row, or a dirty or untracked worktree to
+  force cleanup; the only shared dirty exception is a verified root `.cache`-only
+  worktree cleared after the bounded inventory and every local/closure/host gate
+  is re-checked, then followed by the normal no-force removal.
 - An acquire against a base ref that does not resolve fails locally before any
-  worktree, branch, or lease is written.
+  worktree, branch, or registry row is written.
+- Reuse is the default. Fresh current occupancy, or an associated task that is
+  still open, protects a different idle task's directory; a confirmed closed
+  historical task does not veto reuse by itself. `--reuse` and `--isolate` are
+  mutually exclusive, and `--reuse` never bypasses an occupied checkout.
 - `phasegent worktree prune` is global and removal-by-default: without `--repo`
-  it enumerates every repository identity the local lease store records, and
-  `--dryrun`/`--dry-run` is the read-only preview that mutates nothing. A
-  directory is removed as soon as every issue associated with it is confirmed
-  closed through its own durable task (a legacy number without a durable task
-  keeps the configured-provider resolution), no active lease references it, and
-  it is Git-clean — with no waiting period, so `--stale-days` only affects the
-  explicit `--release-stale` recovery. It reuses the close/sync *local* guards —
-  never the main checkout, never an active peer's path (including the same
-  owner), never dirty or untracked contents — and adds its own running-session
-  guard: only a session the connected shared foreground-drain service reports as
-  *currently running* in the directory blocks removal, checked read-only, so an
-  inactive historical session record that still points at the directory never
-  keeps it. The read-only scan never enumerates historical sessions and never
-  moves a session; the preview reads each candidate's fresh occupancy and the
-  lineage the host reports, so it reports the same blockers and the same move
-  eligibility the removal would meet, without moving, deleting, or writing
-  anything. The removal stage does move sessions: before it deletes a directory
-  it reads that directory's fresh occupancy and returns every idle member of
-  its lease family — the associated `ses_` sessions and the descendants whose
-  bounded `parentID` chain reaches one of them — to the repository's verified
-  main checkout. It requests every safe family member once before any wait,
-  immediately types each response, and then confirms all still-pending accepted
-  moves round-robin inside one shared short budget without reissuing. Those checks describe the one
-  connected service at that moment, not a guarantee about session changes
-  after them. A session no lease of this repository associates, and no lineage
-  reaches one of them, keeps the
-  directory and is never moved, and an unavailable or incomplete listing, an
-  unresolvable associated session, an answer that names another session or
-  reports an unusable location, an unreadable, mismatched, or cyclic lineage,
-  a rejected, queued, or unconfirmed move, an
-  unverifiable main checkout, and a session that started running in the
-  meantime all keep the directory. Coverage is that one connected service, not
-  a whole-machine multi-service inventory, and the fresh checks cannot promise
-  a globally atomic snapshot of every service. The local guards run before the
-  running-session query, so a main-checkout or dirty directory makes zero host
-  calls; because the runtime-host dependency is explicit, an unsupported,
-  unavailable, malformed, mismatched, or non-absolute running-session answer, or
-  an active id the host will not describe, keeps even a pure-CLI candidate. A
-  historical record that no lease associates is never relocated, so resuming
-  such an old session may require explicitly choosing a current checkout. A
-  missing, unavailable, ambiguous, or mismatched issue is never treated as
-  closed. Default output is concise text with directory-based counts; `--json`
-  selects the machine-readable aggregate.
-- Forced release is the attributed override: it requires a reason and the lease
-  row stays (rows are never deleted).
+  it enumerates every repository identity the registry records, and
+  `--dryrun`/`--dry-run` is the read-only preview that creates no store, schema
+  or operation lock. A directory is removed only when it is a verified non-main,
+  clean directory; every associated task is confirmed closed through its own
+  durable task or a proven legacy route; a fresh host occupancy check reports no
+  running or unassociated session; every present idle session family is safely
+  relocated to the verified main checkout; and the operation lock plus final
+  fresh guards hold. There is no waiting period or age threshold. A confirmed
+  closed historical task never keeps the directory; a still-open associated task
+  does. An unavailable or incomplete listing, an unresolvable or mismatched
+  session, broken lineage, a rejected, queued or unconfirmed move, and an
+  unverifiable main checkout all keep the directory.
+- The local guards run before any host query, so a main-checkout or dirty
+  directory makes zero host calls. Coverage is the one connected OpenCode service
+  at that moment, not a whole-machine or multi-host inventory. The lock protects
+  cooperating phasegent operations only.
+- A missing associated idle session needs no move and is not a permanent keep,
+  unless the host's current active listing still names it, which is
+  contradictory evidence and keeps. Only a typed authoritative
+  `SessionNotFound` is treated as absence; transport, HTTP, auth and malformed
+  errors fail closed.
+- A recorded path that no longer exists is reported as absent; registry evidence
+  is preserved and no provider read or session move is required. Branches and Git
+  history are never deleted.
 - `worktree probe` is read-only: it reports existence,
-  Git-worktree/clean/branch/`HEAD`/main-checkout facts and any matching lease
-  as bounded JSON, and never calls a provider, writes a lease, syncs, deletes,
-  or repairs. No matching lease yields a stable empty result, never a guessed
-  path.
-- A successful `issue close` flips this issue's active leases to `retained` and
-  then removes a worktree directory only when it is clean, no active lease of
-  another session points at it, it is not the repository's main checkout, and —
-  for a directory leased by an OpenCode session (`ses_…`) — the host confirms no
-  session still runs there. Before removing such a directory the close reads its
-  occupancy and the lineage the host reports, and asks the
-  OpenCode API (`opencode api session.move`) to return the idle members of its
-  lease family — the sessions its leases name and the descendants that descend
-  from them — to the
-  repository's verified main checkout: it requests every safe family member once
-  before any wait, observes each response immediately, and keeps without polling
-  if any request remains pending; an unreachable API, an incomplete listing, an unowned
-  session, a session of another family, a running family member other than the
-  closing session the close is finishing, or a move that has not taken effect yet
-  keeps the directory with a warning. The other issues the directory is
-  associated with are each read through their own durable task and must be
-  confirmed closed; a legacy number without a durable task keeps the
-  configured-provider resolution. The close never waits for the moves, and a
-  pure CLI worktree never reaches the API. `issue sync` runs the same guards
-  for issues the provider already closed
-  but never moves a session: it removes a deferred directory once the host
-  reports the sessions elsewhere. Branches and lease rows are never deleted, and
-  cleanup never changes the close exit code or its stdout. After that cleanup,
-  close may restore the captured pre-issue branch in the verified main checkout
-  and fast-forward only that branch's configured upstream when the checkout is
-  clean, no active lease or other hosted session occupies it, and the closing
-  session identity is verifiable. Missing/unsafe/conflicting evidence keeps the
-  checkout untouched with a warning; a deleted captured branch is never
-  recreated from a remote-tracking namesake, and an unresolvable main checkout
-  warns only when recorded baseline evidence exists. The restoration never
-  forces, stashes, resets, cleans, deletes a branch, or creates a merge commit.
-  Repeating close
-  retries only an incomplete upstream update and is a no-op after completion or
-  a terminal no-upstream result; sync and prune never restore branches.
-- The host outranks the adapter's registry: the plugin places a session once per
-  session and then reconciles a settled placement against a fresh host read
-  before reusing a cached target, so an API return is never reversed and a
-  removed worktree is never re-entered by that session or a later child. A
-  session that has not settled keeps its first placement, and an unreadable host
-  is never treated as proof that the cached worktree still exists.
+  Git-worktree/clean/branch/`HEAD`/main-checkout facts and the matching registry
+  directory as bounded JSON, and never calls a provider, writes a registry row,
+  syncs, deletes or repairs. No matching directory yields a stable empty result,
+  never a guessed path.
+- A successful `issue close` removes a directory only when it is clean, it is not
+  the repository's main checkout, and every other associated task is confirmed
+  closed. For an OpenCode-associated directory the host must confirm no running
+  session remains, and the close asks `opencode api session.move` to return the
+  idle session family to the verified main checkout: it requests every safe
+  member once before any wait, observes each response immediately, and keeps
+  without polling if any request remains pending. An unreachable API, incomplete
+  listing, unowned or foreign session, or unconfirmed move keeps the directory
+  with a warning. The close never waits for moves, and a pure CLI worktree never
+  reaches the API. `issue sync` runs the same guards but never moves a session;
+  it removes a deferred directory once the host reports the sessions elsewhere.
+- After that cleanup, close may restore the captured pre-issue branch in the
+  verified main checkout and fast-forward only that branch's configured upstream
+  when the checkout is clean, no other hosted session occupies it, and the
+  closing session identity is verifiable. Missing/unsafe/conflicting evidence
+  keeps the checkout untouched with a warning. Restoration never forces,
+  stashes, resets, cleans, deletes a branch, or creates a merge commit.
 - Environment: `PHASEGENT_SESSION_ID` is the only hard session guarantee on a
   host without the adapter (one value per session, reused for every worktree
-  call), and `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter inert beyond
-  the in-memory registry.
+  call), and `PHASEGENT_WORKTREE_NO_DISCOVER=1` keeps the adapter inert.
 - `phasegent --help worktree` owns the exact flags for these commands.
 
 ## Branch binding lifecycle
 
-Work happens on `<type>/<id>` branches (e.g. `feat/452`) and the durable provider/project-scoped link is the sole branch/issue association; `bind` records one or more links explicitly (`phasegent issue bind N [N...]`), and the branch name is the only fallback when the name carries an id and no link resolves. Commit hooks use the whole active link set: `commit-msg` accepts references to any bound issue and rejects references outside the set, `prepare-commit-msg` adds one `Refs #N` per bound issue, and a number linked under more than one provider/project scope fails closed instead of guessing. `issue unbind [N...]` detaches the named links, or every link in scope when no id is given. A successful `issue create` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming `phasegent worktree acquire --issue N --isolate` instead, so an `already_bound` repeat stays an idempotent no-op (see Worktree leases). `issue status` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (`linked`/`named`/`none`), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), and the reverse branches of the active issue; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
+Work happens on `<type>/<id>` branches (e.g. `feat/452`) and the durable provider/project-scoped link is the sole branch/issue association; `bind` records one or more links explicitly (`phasegent issue bind N [N...]`), and the branch name is the only fallback when the name carries an id and no link resolves. Commit hooks use the whole active link set: `commit-msg` accepts references to any bound issue and rejects references outside the set, `prepare-commit-msg` adds one `Refs #N` per bound issue, and a number linked under more than one provider/project scope fails closed instead of guessing. `issue unbind [N...]` detaches the named links, or every link in scope when no id is given. A successful `issue create` reuses or books the current checkout; it never creates a worktree implicitly, and an occupied checkout path surfaces guidance naming `phasegent worktree acquire --issue N --isolate` instead, so an `already_bound` repeat stays an idempotent no-op (see Worktree directories). `issue status` shows the current branch with its compatible single issue (a durable link, else the branch name; only when unambiguous and not the detected default), how it resolved (`linked`/`named`/`none`), the durable linked issues with last-known local-index state/source/indexed time (`unknown` when missing), and the reverse branches of the active issue; `issue branches N` lists every branch linked to issue N in this repository across all provider/project scopes with the same cached state, where same-number rows from distinct scopes stay distinct and set `ambiguous=true`. Both reads are read-only, never call a provider, and never guess (`phasegent --help issue` owns the exact flags).
 
 ## Records and the audit note
 

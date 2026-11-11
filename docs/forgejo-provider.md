@@ -53,13 +53,13 @@ written, and no label is created, deleted or migrated. Forgejo has no
 
 Issues use the repository-local issue number. Results retain the native global
 Forgejo issue id, but that id is never a CLI issue number. Branch links,
-worktree leases, cleanup, and sync are scoped by `owner/repo` plus the local
+worktree directories, cleanup, and sync are scoped by `owner/repo` plus the local
 number, so a same-number issue in another provider or repository is never
 released or cleaned.
 
 Supported: issue get/search/create/update/close, comments, records, project
 (repository) reads, milestones as versions, the native issue states, and
-scoped branch links, worktree leases, cleanup, and sync.
+scoped branch links, worktree directories, cleanup, and sync.
 
 A Forgejo issue has exactly two native states, `Open` and `Closed`. There is no
 status label, no `Resolved` state and no canonical phase graph: `status list`
@@ -103,13 +103,13 @@ task id. Forgejo's instance is its canonical API base and its project is
   `comment create`, `record create`/`list`/`get` and `status transition`
   dispatch through the resolved task. `worktree acquire` is owned by the
   durable task bound to the issue in this repository when one exists, for every
-  provider and without repeating `--provider` or `--repository`: the lease
+  provider and without repeating `--provider` or `--repository`: the registry
   records that exact task identity, a same-number task on another instance is a
   different scope that is never reused, and an explicit provider, endpoint or
-  project selection that contradicts the task refuses before any lease write or
+  project selection that contradicts the task refuses before any registry write or
   taxi pass. Without a bound task, a resolved Forgejo selection — explicit or
   configured — records the attested `owner/repo` scope, and every other
-  selection keeps its legacy numeric lease. `timer start`,
+  selection keeps its legacy numeric route. `timer start`,
   `timer finish` and `timer recover` apply the timer route described below
   (`timer list`/`get` are local ledger reads). `issue create`, search, project
   and version reads keep the configured path.
@@ -129,8 +129,8 @@ task id. Forgejo's instance is its canonical API base and its project is
 
 ## Task lifecycle and limitations
 
-`issue close` releases only the exact task leases of the closed task for every
-provider and reads every other associated task through its own pinned task; a
+`issue close` removes only the exact task-associated directories of the closed
+task for every provider and reads every other associated task through its own pinned task; a
 directory is kept while any associated task is open, ambiguous or unreadable.
 `issue sync` and `worktree prune` resolve each candidate issue through its
 durable task membership and pin the provider and instance per task, with the
@@ -161,5 +161,5 @@ picking an endpoint. Single-instance Redmine numerics stay compatible, with no
 schema, no task column and no run-to-task mapping.
 
 Enabling Forgejo changes no Redmine or Local default, migrates no old issue, and
-does not reinterpret legacy generic configuration. No legacy branch link or lease
+does not reinterpret legacy generic configuration. No legacy branch link or directory
 row is backfilled with a task identity.

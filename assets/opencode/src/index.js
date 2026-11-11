@@ -55,10 +55,9 @@
 // parent's directory instead of guessing from the most recently remembered
 // worktree (session.js). Degradation is deliberate: no binding or a failed
 // acquire keeps the original directory and warns on the console (v2 has no
-// structured warning channel). A lease row that `issue close` / `issue sync`
-// converged keeps its "issue closed…" release reason, so the lazy path refuses to
-// acquire a fresh worktree for an already closed issue and stays in place (issue
-// #575 P2). The host is also the authority that outranks the registry: `issue
+// structured warning channel). The lazy path reuses only a verified registry
+// mapping for the session, and automatic creation stays opt-in. The host is
+// also the authority that outranks the registry: `issue
 // close` returns the closing session to the main checkout through the OpenCode
 // API before removing its worktree, and a settled placement is reconciled against
 // a fresh host read so that relocation is never reversed and a removed worktree is
@@ -69,11 +68,12 @@
 // and directories are never deleted here; removal is `phasegent worktree prune`.
 import {
   acquireWorktree,
-  issueClosedLocally,
-  pickActiveWorktreePath,
   readBranchBinding,
-  readIssueLeaseHistory,
-  readIssueLeases,
+  readIssueDirectories,
+  readRepositoryDirectories,
+  verifiedIssueDirectory,
+  verifiedBindingDirectory,
+  directoryMatchesBinding,
 } from "./binding.js";
 import { rewritePhasegentCommand } from "./command.js";
 import { createIdentityBroker, BROKER_ADDR_ENV, BROKER_TOKEN_ENV } from "./broker.js";
@@ -282,8 +282,9 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   BROKER_ADDR_ENV,
   BROKER_TOKEN_ENV,
   isShellHookSupported,
-  pickActiveWorktreePath,
-  issueClosedLocally,
+  verifiedIssueDirectory,
+  verifiedBindingDirectory,
+  directoryMatchesBinding,
   discoverWorktreeForSession,
   ensureSessionWorktree,
   moveSessionToWorktree,
@@ -293,8 +294,8 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   reconcileSessionLocation,
   readBranchBinding,
   acquireWorktree,
-  readIssueLeases,
-  readIssueLeaseHistory,
+  readIssueDirectories,
+  readRepositoryDirectories,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   gitWorktreeAdd,

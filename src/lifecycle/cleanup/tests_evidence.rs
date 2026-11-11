@@ -4,7 +4,7 @@
 //! here is about *disagreeing evidence* rather than about a single clean
 //! answer: a host whose listing under-reports a session it will still
 //! describe on request, a directory whose only occupant is the closing
-//! session, a close argument that names a session but no lease, and the
+//! session, a close argument that names a session with no association, and the
 //! re-read that stands between a requested move and a removed directory.
 //!
 //! The shared property is that uncertainty costs a directory. None of
@@ -100,14 +100,11 @@ fn the_occupancy_walk_asks_for_no_directory_filter() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_closing_opencode_argument_does_not_manage_a_pure_cli_candidate() {
-    // `--worktree-session ses_x` names who may move a session. It says
-    // nothing about this directory, so a candidate whose leases are all
-    // plain CLI ids stays unmanaged and never reaches the API.
-    let api = FakeOpenCodeApi::empty()
-        .failing_session()
-        .failing_list()
-        .with_session("ses_x", &candidate());
+fn a_closing_opencode_argument_is_not_an_association_but_the_host_is_still_checked() {
+    // `--worktree-session ses_x` names who may move a session; it does not
+    // associate the directory. The pure CLI candidate is still enumerated
+    // through the host, and the close may return only that named session.
+    let api = FakeOpenCodeApi::empty().with_session("ses_x", &candidate());
     let verdict = evaluate_with(
         &api,
         CleanupMode::Close,
@@ -115,13 +112,15 @@ fn a_closing_opencode_argument_does_not_manage_a_pure_cli_candidate() {
         &["phasegent-cli"],
         Some("ses_x"),
     );
-    assert_eq!(verdict, FamilyOutcome::Unmanaged);
-    assert_eq!(api.list_calls(), 0, "an unmanaged candidate is not probed");
-    assert!(api.moves().is_empty());
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("a closing argument is not an association, got {verdict:?}");
+    };
+    assert!(reason.contains("not associated"), "got: {reason}");
+    assert!(api.list_calls() > 0, "the destructive path is probed");
 }
 
 #[test]
-fn a_candidate_with_no_lease_at_all_is_unmanaged_even_with_a_closing_session() {
+fn a_candidate_with_no_association_at_all_still_checks_the_host_before_moving() {
     let api = FakeOpenCodeApi::empty().with_session("ses_x", &candidate());
     let verdict = evaluate_with(
         &api,
@@ -130,9 +129,11 @@ fn a_candidate_with_no_lease_at_all_is_unmanaged_even_with_a_closing_session() {
         &[],
         Some("ses_x"),
     );
-    assert_eq!(verdict, FamilyOutcome::Unmanaged);
-    assert_eq!(api.list_calls(), 0);
-    assert!(api.moves().is_empty());
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("a foreign occupant must keep the directory, got {verdict:?}");
+    };
+    assert!(reason.contains("not associated"), "got: {reason}");
+    assert!(api.list_calls() > 0);
 }
 
 // ---------------------------------------------------------------------------

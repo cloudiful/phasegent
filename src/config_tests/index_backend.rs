@@ -43,7 +43,8 @@ fn index_backend_alias_and_validation() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let inv = command::parse(&args).expect("index-backend set without role must parse");
+    let inv = command::parse_with_role_env(&args, None)
+        .expect("index-backend set without role must parse");
     match inv.command {
         Command::ConfigSet { setting, .. } => assert_eq!(setting, "PHASEGENT_INDEX_BACKEND"),
         other => panic!("unexpected {other:?}"),
@@ -52,7 +53,8 @@ fn index_backend_alias_and_validation() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let inv = command::parse(&args).expect("index-pg-url --stdin without role must parse");
+    let inv = command::parse_with_role_env(&args, None)
+        .expect("index-pg-url --stdin without role must parse");
     match inv.command {
         Command::ConfigSet { setting, stdin, .. } => {
             assert_eq!(setting, "PHASEGENT_INDEX_PG_URL");
@@ -70,7 +72,8 @@ fn index_backend_alias_and_validation() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let err = command::parse(&args).expect_err("direct secret value must be rejected");
+    let err = command::parse_with_role_env(&args, None)
+        .expect_err("direct secret value must be rejected");
     assert!(err.contains("does not accept a direct value"), "got: {err}");
     assert!(
         !err.contains("postgres://example"),

@@ -138,7 +138,7 @@ fn collision_note(
 
 /// Inputs for [`link_explicit_branch`]: the explicit `--branch` target
 /// needs provisioning and a durable link, but never a checkout switch,
-/// so there is no cleanliness/default/lease gating and no session.
+/// so there is no cleanliness/default/occupancy gating and no session.
 pub struct ExplicitLinkParams<'a> {
     pub issue_id: u64,
     pub branch: &'a str,

@@ -4,8 +4,8 @@
 //! CLI. The parser follows the existing `command/<name>.rs` pattern used
 //! by `comment`, `timer`, `notify`, and others:
 //!
-//! * `args.first()` is the subcommand name (`acquire` / `release` /
-//!   `status` / `list` / `prune` / `heartbeat`); a
+//! * `args.first()` is the subcommand name (`acquire` / `status` /
+//!   `list` / `probe` / `prune`); a
 //!   missing or `--help` first token returns
 //!   `Command::Help(HelpTopic::Worktree)`, and a trailing `--help`
 //!   returns `Command::Help(HelpTopic::WorktreeCommand(name))`.
@@ -38,12 +38,10 @@ pub(crate) fn parse_worktree(args: &[String]) -> Result<Command, String> {
     }
     match name.unwrap() {
         "acquire" => parse_acquire(args),
-        "release" => parse_release(args),
         "status" => parse_status(args),
         "list" => parse_list(args),
         "probe" => parse_probe(args),
         "prune" => parse_prune(args),
-        "heartbeat" => parse_heartbeat(args),
         value => Err(format!("unknown worktree command '{value}'")),
     }
 }
@@ -93,54 +91,6 @@ fn parse_acquire(args: &[String]) -> Result<Command, String> {
         format,
         isolate,
         no_sync: has_flag(args, "--no-sync"),
-    }))
-}
-
-fn parse_release(args: &[String]) -> Result<Command, String> {
-    validate_options(
-        args,
-        0,
-        &["--lease", "--retain", "--reason"],
-        &["--force"],
-        "worktree release",
-    )?;
-    let lease = required_nonempty_option(args, "--lease", "worktree release")?;
-    let retain = match optional_option(args, "--retain") {
-        Some(raw) => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            match normalized.as_str() {
-                "true" | "1" | "yes" | "on" => true,
-                "false" | "0" | "no" | "off" => false,
-                other => {
-                    return Err(format!(
-                        "worktree release --retain must be true or false, got {other:?}"
-                    ));
-                }
-            }
-        }
-        None => true,
-    };
-    let force = has_flag(args, "--force");
-    let reason = optional_option(args, "--reason")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-    if force && reason.is_none() {
-        return Err(
-            "worktree release --force requires a non-empty --reason so the override stays attributable"
-                .to_owned(),
-        );
-    }
-    if !force && reason.is_some() {
-        return Err(
-            "worktree release --reason requires --force; ordinary releases record no reason"
-                .to_owned(),
-        );
-    }
-    Ok(Command::Worktree(WorktreeCommand::Release {
-        lease,
-        retain,
-        force,
-        reason,
     }))
 }
 
@@ -225,9 +175,8 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
     validate_options(
         args,
         0,
-        &["--repo", "--stale-days", "--reason", "--format"],
+        &["--repo", "--format"],
         &[
-            "--release-stale",
             "--remove",
             "--no-sync",
             "--dryrun",
@@ -240,13 +189,6 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
     let repo = optional_option(args, "--repo")
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    let stale_days = match optional_option(args, "--stale-days") {
-        Some(value) => value
-            .parse::<u32>()
-            .map_err(|_| "worktree prune --stale-days must be a non-negative integer".to_owned())?,
-        None => 7,
-    };
-    let release_stale = has_flag(args, "--release-stale");
     // Accepted compatibility no-op: removal is the default now, so `--remove`
     // is recorded but never changes the outcome. `--dryrun`/`--dry-run` is the
     // explicit preview and wins when the two are combined.
@@ -272,49 +214,13 @@ fn parse_prune(args: &[String]) -> Result<Command, String> {
         (None, true) => "json".to_owned(),
         (None, false) => "text".to_owned(),
     };
-    let reason = optional_option(args, "--reason")
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-    // A preview may omit the reason because it records nothing; an applied
-    // recovery must stay attributable.
-    if release_stale && reason.is_none() && !dry_run {
-        return Err("worktree prune --release-stale requires a non-empty --reason".to_owned());
-    }
-    if !release_stale && reason.is_some() {
-        return Err(
-            "worktree prune --reason requires --release-stale; a preview records no reason"
-                .to_owned(),
-        );
-    }
     Ok(Command::Worktree(WorktreeCommand::Prune {
         repo,
-        stale_days,
-        release_stale,
         remove,
-        reason,
         dry_run,
         format,
         verbose: has_flag(args, "--verbose"),
         no_sync: has_flag(args, "--no-sync"),
-    }))
-}
-
-fn parse_heartbeat(args: &[String]) -> Result<Command, String> {
-    validate_options(
-        args,
-        0,
-        &["--lease", "--session"],
-        &[],
-        "worktree heartbeat",
-    )?;
-    let lease = required_nonempty_option(args, "--lease", "worktree heartbeat")?;
-    let session = match optional_option(args, "--session") {
-        Some(raw) => Some(validate_session_id(&raw, "worktree heartbeat")?),
-        None => None,
-    };
-    Ok(Command::Worktree(WorktreeCommand::Heartbeat {
-        lease,
-        session,
     }))
 }
 
@@ -469,116 +375,16 @@ mod tests {
     }
 
     #[test]
-    fn release_defaults_to_retain() {
-        let invocation = command::parse_with_role_env(
-            &strings(["worktree", "release", "--lease", "lease-1"]),
-            Some("orchestrator"),
-        )
-        .unwrap();
-        match invocation.command {
-            Command::Worktree(WorktreeCommand::Release {
-                lease,
-                retain,
-                force,
-                reason,
-            }) => {
-                assert_eq!(lease, "lease-1");
-                assert!(retain);
-                assert!(!force);
-                assert_eq!(reason, None);
-            }
-            other => panic!("unexpected command {other:?}"),
+    fn release_and_heartbeat_are_removed_subcommands() {
+        for command in ["release", "heartbeat"] {
+            let err =
+                command::parse_with_role_env(&strings(["worktree", command]), Some("orchestrator"))
+                    .unwrap_err();
+            assert!(
+                err.contains("unknown worktree command"),
+                "{command} must be removed, got {err}"
+            );
         }
-    }
-
-    #[test]
-    fn release_retain_false_is_recognised() {
-        let invocation = command::parse_with_role_env(
-            &strings([
-                "worktree", "release", "--lease", "lease-1", "--retain", "false",
-            ]),
-            Some("orchestrator"),
-        )
-        .unwrap();
-        match invocation.command {
-            Command::Worktree(WorktreeCommand::Release {
-                lease,
-                retain,
-                force,
-                reason,
-            }) => {
-                assert_eq!(lease, "lease-1");
-                assert!(!retain);
-                assert!(!force);
-                assert_eq!(reason, None);
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
-    }
-
-    #[test]
-    fn release_rejects_invalid_retain_value() {
-        let err = command::parse_with_role_env(
-            &strings([
-                "worktree", "release", "--lease", "lease-1", "--retain", "maybe",
-            ]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(err.contains("--retain"));
-    }
-
-    #[test]
-    fn release_force_requires_non_empty_reason() {
-        let invocation = command::parse_with_role_env(
-            &strings([
-                "worktree",
-                "release",
-                "--lease",
-                "lease-1",
-                "--force",
-                "--reason",
-                "stuck session cleanup",
-            ]),
-            Some("orchestrator"),
-        )
-        .unwrap();
-        match invocation.command {
-            Command::Worktree(WorktreeCommand::Release {
-                lease,
-                retain,
-                force,
-                reason,
-            }) => {
-                assert_eq!(lease, "lease-1");
-                assert!(retain);
-                assert!(force);
-                assert_eq!(reason.as_deref(), Some("stuck session cleanup"));
-            }
-            other => panic!("unexpected command {other:?}"),
-        }
-
-        let missing = command::parse_with_role_env(
-            &strings(["worktree", "release", "--lease", "lease-1", "--force"]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(
-            missing.contains("--force requires a non-empty --reason"),
-            "unexpected error: {missing}"
-        );
-
-        let dangling = command::parse_with_role_env(
-            &strings([
-                "worktree", "release", "--lease", "lease-1", "--reason", "no force",
-            ]),
-            Some("orchestrator"),
-        )
-        .unwrap_err();
-        assert!(
-            dangling.contains("--reason requires --force"),
-            "unexpected error: {dangling}"
-        );
     }
 
     #[test]
@@ -617,25 +423,19 @@ mod tests {
         match invocation.command {
             Command::Worktree(WorktreeCommand::Prune {
                 repo,
-                stale_days,
-                release_stale,
                 remove,
-                reason,
                 dry_run,
                 format,
                 verbose,
                 no_sync,
             }) => {
                 assert_eq!(repo, None);
-                assert_eq!(stale_days, 7);
-                assert!(!release_stale, "--release-stale must default off");
-                assert!(!remove, "--remove must default off");
+                assert!(!remove);
                 assert!(!dry_run, "prune defaults to removal, not preview");
                 assert_eq!(
                     format, "text",
                     "the stored legacy default stays text; the effective format follows the global output mode"
                 );
-                assert_eq!(reason, None);
                 assert!(!verbose, "--verbose must default off");
                 assert!(!no_sync, "--no-sync must default off");
             }
@@ -644,65 +444,33 @@ mod tests {
     }
 
     #[test]
-    fn prune_parses_remove_and_stale_days() {
+    fn prune_parses_remove_and_repo() {
         let invocation = command::parse_with_role_env(
-            &strings([
-                "worktree",
-                "prune",
-                "--stale-days",
-                "30",
-                "--remove",
-                "--repo",
-                "/tmp/repo",
-            ]),
+            &strings(["worktree", "prune", "--remove", "--repo", "/tmp/repo"]),
             Some("orchestrator"),
         )
         .unwrap();
         match invocation.command {
-            Command::Worktree(WorktreeCommand::Prune {
-                repo,
-                stale_days,
-                release_stale,
-                remove,
-                reason,
-                ..
-            }) => {
+            Command::Worktree(WorktreeCommand::Prune { repo, remove, .. }) => {
                 assert_eq!(repo.as_deref(), Some("/tmp/repo"));
-                assert_eq!(stale_days, 30);
-                assert!(!release_stale);
-                assert!(remove);
-                assert_eq!(reason, None);
+                assert!(remove, "--remove stays an accepted no-op");
             }
             other => panic!("unexpected command {other:?}"),
         }
     }
 
     #[test]
-    fn prune_combines_release_stale_and_remove() {
-        let invocation = command::parse_with_role_env(
-            &strings([
-                "worktree",
-                "prune",
-                "--release-stale",
-                "--remove",
-                "--reason",
-                "recover then remove",
-            ]),
-            Some("orchestrator"),
-        )
-        .unwrap();
-        match invocation.command {
-            Command::Worktree(WorktreeCommand::Prune {
-                release_stale,
-                remove,
-                reason,
-                ..
-            }) => {
-                assert!(release_stale);
-                assert!(remove);
-                assert_eq!(reason.as_deref(), Some("recover then remove"));
-            }
-            other => panic!("unexpected command {other:?}"),
+    fn prune_rejects_the_removed_lease_flags() {
+        for flag in ["--release-stale", "--stale-days", "--reason"] {
+            let err = command::parse_with_role_env(
+                &strings(["worktree", "prune", flag]),
+                Some("orchestrator"),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("unknown option"),
+                "{flag} must be rejected, got {err}"
+            );
         }
     }
 
@@ -749,13 +517,9 @@ mod tests {
         .unwrap();
         match invocation.command {
             Command::Worktree(WorktreeCommand::Prune {
-                release_stale,
-                remove,
-                no_sync,
-                ..
+                remove, no_sync, ..
             }) => {
                 assert!(no_sync);
-                assert!(!release_stale, "--no-sync does not imply --release-stale");
                 assert!(!remove, "--no-sync does not imply --remove");
             }
             other => panic!("unexpected command {other:?}"),
@@ -763,23 +527,15 @@ mod tests {
     }
 
     #[test]
-    fn release_and_status_have_no_sync_switch() {
-        // The reconciliation pass only runs for acquire / list / prune, so
-        // every other subcommand reports no target and `--no-sync` removes
-        // a taxable subcommand from the set entirely.
+    fn read_only_subcommands_have_no_sync_switch() {
         for command in [
-            WorktreeCommand::Release {
-                lease: "lease-1".to_owned(),
-                retain: true,
-                force: false,
-                reason: None,
-            },
             WorktreeCommand::Status {
                 issue: 1,
                 page: None,
             },
-            WorktreeCommand::Heartbeat {
-                lease: "lease-1".to_owned(),
+            WorktreeCommand::Probe {
+                path: None,
+                issue: None,
                 session: None,
             },
         ] {
@@ -820,10 +576,7 @@ mod tests {
         assert!(
             WorktreeCommand::Prune {
                 repo: Some("/tmp/repo".to_owned()),
-                stale_days: 7,
-                release_stale: false,
                 remove: true,
-                reason: None,
                 dry_run: false,
                 format: "text".to_owned(),
                 verbose: false,

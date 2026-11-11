@@ -211,7 +211,7 @@ fn configured_state(db: &TempDb, branch: &str, head: &str) -> (SwitchState, Base
     let target =
         BaselineScope::new(&repo_key, "redmine", "tools", 1175, &checkout_path).expect("scope");
     let storage = db.open();
-    crate::worktree::ensure_schema(&storage).expect("lease schema");
+    crate::worktree::ensure_schema(&storage).expect("registry schema");
     let mut state = SwitchState::new(repo_path, branch, head);
     state.db_path = Some(db.path.clone());
     state.scope = Some(target.clone());
@@ -236,6 +236,8 @@ fn switch_once(
             scope_project: Some("tools"),
             explicit_repository: None,
             session: None,
+            foreign_state: None,
+            host_api: None,
         },
     );
     (outcome, shared)
@@ -351,4 +353,75 @@ fn ambiguous_checkout_result_remains_pending() {
         .unwrap()
         .expect("baseline row");
     assert_eq!(row.state, CheckoutState::Pending);
+}
+
+#[test]
+fn a_foreign_host_occupant_blocks_a_switch_with_no_registry_row() {
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+
+    let _lock = lock_workflow_tests();
+    let db = TempDb::new("switch-unregistered-host");
+    let _env = EnvGuard::set("PHASEGENT_DB_PATH", &db.path_text());
+    let (state, _scope) = configured_state(&db, "main", "abc123");
+    let repo_path = state.repo_path.clone();
+    let (git, worktree, _shared) = fake_switch(state);
+    let api = FakeOpenCodeApi::empty().with_session("ses_other", &repo_path);
+    let outcome = create_link_and_switch(
+        &git,
+        &worktree,
+        &IssueSwitchParams {
+            repo_path: &repo_path,
+            issue_id: 1175,
+            branch: "issue/1175",
+            base: None,
+            scope_provider: "redmine",
+            scope_project: Some("tools"),
+            explicit_repository: None,
+            session: Some("ses_switch"),
+            foreign_state: None,
+            host_api: Some(&api),
+        },
+    );
+    let CreateSwitchOutcome::LinkedOnly { reason, .. } = outcome else {
+        panic!("a foreign host occupant must keep the checkout, got {outcome:?}");
+    };
+    assert!(reason.contains("currently occupies"), "got: {reason}");
+    assert!(api.moves().is_empty());
+}
+
+#[test]
+fn the_callers_own_host_session_does_not_block_an_unregistered_switch() {
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+
+    let _lock = lock_workflow_tests();
+    let db = TempDb::new("switch-own-host");
+    let _env = EnvGuard::set("PHASEGENT_DB_PATH", &db.path_text());
+    let (state, _scope) = configured_state(&db, "main", "abc123");
+    let repo_path = state.repo_path.clone();
+    let (git, worktree, _shared) = fake_switch(state);
+    let api = FakeOpenCodeApi::empty().with_session("ses_switch", &repo_path);
+    let outcome = create_link_and_switch(
+        &git,
+        &worktree,
+        &IssueSwitchParams {
+            repo_path: &repo_path,
+            issue_id: 1175,
+            branch: "issue/1175",
+            base: None,
+            scope_provider: "redmine",
+            scope_project: Some("tools"),
+            explicit_repository: None,
+            session: Some("ses_switch"),
+            foreign_state: None,
+            host_api: Some(&api),
+        },
+    );
+    assert_eq!(
+        outcome,
+        CreateSwitchOutcome::Switched {
+            branch: "issue/1175".to_owned(),
+            issue_id: 1175,
+        },
+        "the caller's own verified host identity is not foreign"
+    );
 }

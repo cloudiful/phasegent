@@ -261,6 +261,8 @@ sys.exit(code)
             .env_remove("PHASEGENT_ROLE")
             .env_remove("PHASEGENT_SESSION_ID")
             .env_remove("OPENCODE_SESSION_ID")
+            .env_remove(crate::support::broker::BROKER_ADDR_ENV)
+            .env_remove(crate::support::broker::BROKER_TOKEN_ENV)
             .env_remove("CI")
             .env_remove("CONTINUOUS_INTEGRATION")
             .stdin(Stdio::null())
@@ -270,8 +272,8 @@ sys.exit(code)
             .expect("spawn phasegent")
     }
 
-    /// A task-owned Git repository plus one retained lease, so a prune pass has
-    /// a real candidate. Everything lives inside the scratch root; no operator
+    /// A task-owned Git repository plus one registered directory, so a prune
+    /// pass has a real candidate. Everything lives inside the scratch root; no operator
     /// worktree is ever read, pruned, or moved.
     struct PruneFixture {
         repo: PathBuf,
@@ -319,21 +321,6 @@ sys.exit(code)
                 acquired.status.success(),
                 "fixture acquire failed: {}",
                 String::from_utf8_lossy(&acquired.stderr)
-            );
-            let value: serde_json::Value =
-                serde_json::from_slice(&acquired.stdout).expect("acquire prints one document");
-            let lease = value
-                .get("lease_id")
-                .and_then(serde_json::Value::as_str)
-                .expect("acquire names the lease")
-                .to_owned();
-            // A retained lease keeps the directory a real prune candidate while
-            // no active lease protects it.
-            let released = run_iso(scratch, &repo, &["worktree", "release", "--lease", &lease]);
-            assert!(
-                released.status.success(),
-                "fixture release failed: {}",
-                String::from_utf8_lossy(&released.stderr)
             );
             Self { repo }
         }
@@ -389,6 +376,8 @@ sys.exit(code)
             .env_remove("PHASEGENT_ROLE")
             .env_remove("PHASEGENT_SESSION_ID")
             .env_remove("OPENCODE_SESSION_ID")
+            .env_remove(crate::support::broker::BROKER_ADDR_ENV)
+            .env_remove(crate::support::broker::BROKER_TOKEN_ENV)
             .env_remove("CI")
             .env_remove("CONTINUOUS_INTEGRATION")
             .stdin(Stdio::piped())
@@ -678,12 +667,14 @@ sys.exit(code)
         let concise_text = normalized(&concise.transcript);
         let verbose_text = normalized(&verbose.transcript);
         assert!(
-            !concise_text.contains("branch link store has no branch link table"),
+            !concise_text
+                .contains("issue 7 has no corroborated provider/project/instance provenance"),
             "the concise summary lists no kept reason:\n{}",
             concise_text,
         );
         assert!(
-            verbose_text.contains("branch link store has no branch link table"),
+            verbose_text
+                .contains("issue 7 has no corroborated provider/project/instance provenance"),
             "the verbose rendering lists the kept directory and its reason:\n{}",
             verbose_text,
         );

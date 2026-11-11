@@ -64,7 +64,7 @@ relay it to your parent rather than escalating directly.
   of landing a temporary long file.
 - Worktree wiring is automatic: you inherit your parent's worktree and relative
   paths land there while absolute paths pass through. Never run `worktree
-  acquire`/`release`/`prune`, `issue bind`, or `issue create` — they are refused
+  acquire`/`prune`, `issue bind`, or `issue create` — they are refused
   for a child session.
 - Publish one audit note and return the note-pointer JSON. Your own `notify send`
   calls stay explicit; the adapter separately notifies on a local question form
@@ -100,7 +100,7 @@ relay it to your parent rather than escalating directly.
   by your first call and pass it back as the continuation on later asks; open a
   fresh child only on the shared isolation triggers and record the reason.
 - The explorer is read-only apart from an authorized recon record: it holds no
-  worktree lease and owns no audit note or VERDICT. A tracked recon record is
+  worktree directory and owns no audit note or VERDICT. A tracked recon record is
   referenceable by its native id, so cite the record id instead of transcribing
   raw recon. You remain the only write owner for the phase and the sole publisher
   of its terminal note, and you record any material explorer finding there.

@@ -1,433 +1,424 @@
-use super::cli_support::*;
 use super::support::*;
 use super::*;
 
+struct Fixture {
+    repo: TempRepo,
+    _db: TempDir,
+    _db_env: EnvGuard,
+    cache: TempDir,
+    _cache_env: EnvGuard,
+    identity: String,
+}
+
+fn fixture(label: &str) -> Option<Fixture> {
+    let repo = TempRepo::init(label)?;
+    let (db, db_env) = open_temp_db(label);
+    let cache = temp_cache(label);
+    let cache_env = EnvGuard::set(
+        "PHASEGENT_WORKTREE_CACHE_DIR",
+        cache.path().to_string_lossy().as_ref(),
+    );
+    let identity = repo_identity(&ProcessWorktreeRunner::new(), repo.dir.path()).expect("identity");
+    Some(Fixture {
+        repo,
+        _db: db,
+        _db_env: db_env,
+        cache,
+        _cache_env: cache_env,
+        identity,
+    })
+}
+
 #[test]
-fn cli_surface_acquire_dirty_foreign_bound_reuses_by_default() {
-    // Issue 651 P2 through the CLI surface: dirty + bound-to-241 +
-    // acquiring 245 with no `--isolate` reuses the primary checkout.
-    // The lease row names the current branch (not a generated one)
-    // and no worktree directory is created.
+fn a_free_checkout_is_reused_and_recorded_for_the_session() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-default-isolate") else {
+    let Some(fixture) = fixture("acquire-reuse") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) =
-        open_temp_db_and_cache("p2-cli-default-isolate");
-    let scratch = repo.dir.path().join("scratch.txt");
-    std::fs::write(&scratch, "scratch\n").expect("write scratch");
-    bind_current_branch(&repo, 241);
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit =
-        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
+    let outcome = acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("acquire");
+    assert_eq!(outcome.reason, "no_conflict");
+    assert!(!outcome.created);
     assert_eq!(
-        exit, 0,
-        "the lease-first default acquire through the CLI surface must succeed"
+        outcome.path,
+        fixture.repo.dir.path().to_string_lossy(),
+        "a free checkout is reused in place"
     );
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
+    assert_eq!(outcome.branch, fixture.repo.head_branch);
+    assert!(
+        !fixture
+            .cache
+            .path()
+            .join("worktrees")
+            .join("worktrees")
+            .exists(),
+        "reuse creates no per-worktree directory"
+    );
+    let entries: Vec<_> = std::fs::read_dir(fixture.cache.path().join("worktrees"))
+        .expect("lock directory")
+        .collect();
+    assert!(
+        entries.iter().all(|entry| entry
+            .as_ref()
+            .map(|entry| entry.file_name().to_string_lossy().ends_with(".lock"))
+            .unwrap_or(false)),
+        "reuse leaves only the operation lock, never a worktree directory: {entries:?}"
+    );
+    let records = open_records(&fixture.identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].issue_numbers(), vec![245]);
+    assert_eq!(records[0].sessions, vec!["session-A"]);
+}
+
+#[test]
+fn explicit_isolation_creates_a_registered_worktree_under_the_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-isolate") else {
+        return;
+    };
+    let outcome = acquire(&fixture.repo, &fixture.cache, 245, "session-A", true).expect("acquire");
+    assert!(outcome.created);
+    assert_eq!(outcome.reason, "new_worktree");
+    assert!(
+        outcome.branch.starts_with("phasegent/245-"),
+        "isolation uses the issue branch slug"
+    );
+    assert!(
+        outcome
+            .path
+            .starts_with(&fixture.cache.path().to_string_lossy().to_string()),
+        "the worktree lands under the operation cache"
+    );
+    assert!(std::path::Path::new(&outcome.path).exists());
+    let records = open_records(&fixture.identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].worktree_path, outcome.path);
+    assert_eq!(records[0].issue_numbers(), vec![245]);
+}
+
+#[test]
+fn the_same_session_and_issue_returns_the_registered_directory() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-idempotent") else {
+        return;
+    };
+    let first = acquire(&fixture.repo, &fixture.cache, 245, "session-A", true).expect("first");
+    let second = acquire(&fixture.repo, &fixture.cache, 245, "session-A", true).expect("second");
+    assert_eq!(second.reason, "idempotent");
+    assert_eq!(second.directory_id, first.directory_id);
+    assert_eq!(second.path, first.path);
+    assert!(!second.created);
+    assert_eq!(open_records(&fixture.identity).len(), 1);
+}
+
+#[test]
+fn a_second_session_refuses_the_occupied_checkout_without_explicit_isolation() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-second-session") else {
+        return;
+    };
+    let first = acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let error = acquire(&fixture.repo, &fixture.cache, 246, "session-B", false)
+        .expect_err("an occupied checkout must not be auto-isolated");
+    assert_eq!(error.kind, "isolation");
+    assert!(
+        error.message.contains("--isolate"),
+        "got: {}",
+        error.message
+    );
+    let records = open_records(&fixture.identity);
     assert_eq!(
-        rows.len(),
+        records.len(),
         1,
-        "the default CLI acquire must record one lease"
+        "no worktree was created without the opt-in"
     );
-    assert_eq!(rows[0].issue, 245);
-    assert_eq!(
-        rows[0].worktree_path,
-        repo.dir.path().to_string_lossy().to_string(),
-        "a dirty foreign-bound checkout must reuse the primary without --isolate"
-    );
-    assert_eq!(
-        rows[0].branch, repo.head_branch,
-        "reuse keeps the current branch instead of a generated one"
-    );
-    assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "the default CLI acquire must not create a worktree directory"
-    );
-    let _ = std::fs::remove_file(&scratch);
+    assert_eq!(records[0].worktree_path, first.path);
 }
 
 #[test]
-fn cli_surface_acquire_isolate_flag_creates_new_worktree_in_temp_cache() {
+fn a_blank_session_is_rejected_before_any_registration() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-isolate") else {
+    let Some(fixture) = fixture("acquire-blank") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-isolate");
-    let scratch = repo.dir.path().join("scratch.txt");
-    std::fs::write(&scratch, "scratch\n").expect("write scratch");
-    bind_current_branch(&repo, 241);
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit = run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), true);
-    assert_eq!(exit, 0, "--isolate CLI acquire must succeed");
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1, "--isolate CLI acquire must record one lease");
-    assert_eq!(rows[0].issue, 245);
-    assert!(
-        rows[0].branch.starts_with("phasegent/245-"),
-        "--isolate CLI acquire must use the new-issue branch slug"
-    );
-    assert!(
-        rows[0]
-            .worktree_path
-            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
-        "--isolate CLI acquire must land under the temp cache, not the operator's real cache"
-    );
-    assert!(
-        std::path::Path::new(&rows[0].worktree_path).exists(),
-        "--isolate CLI acquire must create the worktree directory on disk"
-    );
-    let _ = std::fs::remove_file(&scratch);
+    let error = acquire(&fixture.repo, &fixture.cache, 245, "   ", false)
+        .expect_err("blank session must fail");
+    assert_eq!(error.kind, "argument");
+    assert!(open_records(&fixture.identity).is_empty());
+}
+
+struct ClosedIssues(std::collections::BTreeSet<u64>);
+
+impl crate::worktree::occupancy::ForeignIssueState for ClosedIssues {
+    fn task_closed(
+        &self,
+        _repo_path: &std::path::Path,
+        task: &crate::worktree::DirectoryTask,
+    ) -> bool {
+        self.0.contains(&task.issue)
+    }
+
+    fn legacy_closed(
+        &self,
+        _repo_path: &std::path::Path,
+        issue: &crate::worktree::DirectoryLegacyIssue,
+    ) -> bool {
+        self.0.contains(&issue.issue)
+    }
+}
+
+fn acquire_with_closure(
+    fixture: &Fixture,
+    issue: u64,
+    session: &str,
+    closed: &[u64],
+) -> Result<crate::worktree::AcquireOutcome, crate::worktree::WorktreeError> {
+    let state = ClosedIssues(closed.iter().copied().collect());
+    crate::worktree::acquire_directory_with_foreign_state(
+        &ProcessWorktreeRunner::new(),
+        fixture.repo.dir.path(),
+        issue,
+        session,
+        crate::worktree::AcquireOptions {
+            cache_base: Some(fixture.cache.path()),
+            isolate: false,
+            base: None,
+            reuse: false,
+        },
+        Some(&state),
+        None,
+    )
 }
 
 #[test]
-fn cli_surface_acquire_ignores_worktree_auto_env_and_reuses() {
-    // Issue 651 P5: the removed `PHASEGENT_WORKTREE_AUTO` setting is
-    // inert at the CLI surface too. With it set, a dirty foreign-bound
-    // checkout on a free path still reuses: exit 0, one lease on the
-    // primary checkout under the current branch, no worktree directory.
+fn a_confirmed_closed_registration_does_not_veto_reuse() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-env-auto") else {
+    let Some(fixture) = fixture("acquire-closed-reuse") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-env-auto");
-    let _auto_env = EnvGuard::set("PHASEGENT_WORKTREE_AUTO", "true");
-    let scratch = repo.dir.path().join("scratch.txt");
-    std::fs::write(&scratch, "scratch\n").expect("write scratch");
-    bind_current_branch(&repo, 241);
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit =
-        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
-    assert_eq!(exit, 0, "inert-env CLI acquire must succeed");
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1, "inert-env CLI acquire must record one lease");
-    assert_eq!(rows[0].issue, 245);
+    acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let second =
+        acquire_with_closure(&fixture, 246, "session-B", &[245]).expect("closed history reuses");
+    assert!(!second.created);
     assert_eq!(
-        rows[0].worktree_path,
-        repo.dir.path().to_string_lossy().to_string(),
-        "a removed switch must not isolate a free checkout"
+        second.path,
+        fixture.repo.dir.path().to_string_lossy(),
+        "the confirmed closed historical task no longer owns the checkout"
     );
-    assert_eq!(
-        rows[0].branch, repo.head_branch,
-        "reuse keeps the current branch instead of a generated one"
-    );
-    assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "inert-env CLI acquire must not create a worktree directory"
-    );
-    let _ = std::fs::remove_file(&scratch);
+    let records = open_records(&fixture.identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].issue_numbers(), vec![245, 246]);
 }
 
 #[test]
-fn cli_acquire_explicit_session_overrides_environment_and_persists() {
+fn an_open_registration_refuses_with_explicit_isolation_guidance() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-session-explicit") else {
+    let Some(fixture) = fixture("acquire-open-protect") else {
         return;
     };
-    let (db_temp, _cache_temp, _db_env, _cache_env) =
-        open_temp_db_and_cache("p2-cli-session-explicit");
-    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "env-session");
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit = run_cli_acquire_with_session(&repo, false, Some("explicit-session"));
-    assert_eq!(exit, 0, "explicit-session acquire must succeed");
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1);
+    acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let error = acquire_with_closure(&fixture, 246, "session-B", &[])
+        .expect_err("an open foreign task must surface the conflict");
+    assert_eq!(error.kind, "isolation");
+    assert!(
+        error.message.contains("--isolate"),
+        "got: {}",
+        error.message
+    );
     assert_eq!(
-        rows[0].session, "explicit-session",
-        "--session must win over PHASEGENT_SESSION_ID"
+        open_records(&fixture.identity).len(),
+        1,
+        "no directory was created automatically"
     );
 }
 
 #[test]
-fn cli_acquire_uses_environment_session_when_flag_absent() {
+fn a_held_repository_operation_lock_refuses_a_second_acquire() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-session-env") else {
+    let Some(fixture) = fixture("acquire-lock") else {
         return;
     };
-    let (db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-session-env");
-    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "env-session");
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit = run_cli_acquire_with_session(&repo, false, None);
-    assert_eq!(exit, 0, "environment-session acquire must succeed");
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].session, "env-session",
-        "PHASEGENT_SESSION_ID must supply the session when --session is absent"
-    );
+    let held = crate::worktree::operation_lock::acquire(&fixture.identity).expect("lock");
+    let error = acquire(&fixture.repo, &fixture.cache, 245, "session-A", false)
+        .expect_err("a cooperating operation must wait");
+    assert_eq!(error.kind, "busy");
+    drop(held);
+    acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("retry succeeds");
 }
 
 #[test]
-fn cli_acquire_without_identity_fails_clearly() {
-    // Issue 651 P4: with no `--session` and no usable
-    // `PHASEGENT_SESSION_ID`, acquire fails fast with exit 2 instead of
-    // booking the checkout under a fabricated shared owner. A blank
-    // environment value counts as missing, which keeps the test
-    // deterministic however the host environment looks. Nothing is
-    // recorded and no worktree is created.
+fn a_foreign_host_occupant_conflicts_before_the_checkout_is_registered() {
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p4-cli-no-identity") else {
+    let Some(fixture) = fixture("acquire-unregistered-host-occupant") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p4-cli-no-identity");
-    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "");
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit = run_cli_acquire_with_session(&repo, false, None);
-    assert_eq!(
-        exit, 2,
-        "a missing session identity must fail with a usage error"
-    );
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert!(
-        rows.is_empty(),
-        "a refused acquire must not book the checkout: {rows:?}"
-    );
-    assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "a refused acquire must not create a worktree directory"
-    );
+    let api = FakeOpenCodeApi::empty().with_session("ses_live", fixture.repo.dir.path());
+    let error = acquire_custom(&fixture, 246, "session-B", false, None, &[], Some(&api))
+        .expect_err("a foreign host occupant must protect an unregistered checkout");
+    assert_eq!(error.kind, "isolation");
+    assert!(open_records(&fixture.identity).is_empty());
 }
 
 #[test]
-fn cli_acquire_second_session_isolates_and_avoids_the_duplicate_lease() {
-    // Issue 437 surfaced the raw `(repo_identity, worktree_path)` unique
-    // violation when two sessions reused one checkout. The lease-first
-    // table (issue 651 P2) removes the scenario: the second session sees
-    // the active lease on the checkout path and isolates with exit 0, so
-    // the CLI never reports a storage error for a legitimate parallel
-    // acquire. The guidance translation itself stays covered by the
-    // storage-level regression tests.
+fn a_fresh_foreign_host_occupant_conflicts_even_when_the_task_is_closed() {
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p2-cli-dup-reuse") else {
+    let Some(fixture) = fixture("acquire-host-occupant") else {
         return;
     };
-    let (db_temp, _cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("p2-cli-dup-reuse");
-    let first = run_cli_acquire_with_session(&repo, false, Some("session-A"));
-    assert_eq!(first, 0, "the first reuse-current acquire must succeed");
-    let second = run_cli_acquire_with_session(&repo, false, Some("session-B"));
-    assert_eq!(
-        second, 0,
-        "the second session must isolate by default instead of colliding"
+    acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let api = FakeOpenCodeApi::empty().with_session("ses_live", fixture.repo.dir.path());
+    let state = ClosedIssues([245].into_iter().collect());
+    let error = crate::worktree::acquire_directory_with_foreign_state(
+        &ProcessWorktreeRunner::new(),
+        fixture.repo.dir.path(),
+        246,
+        "session-B",
+        crate::worktree::AcquireOptions {
+            cache_base: Some(fixture.cache.path()),
+            isolate: false,
+            base: None,
+            reuse: false,
+        },
+        Some(&state),
+        Some(&api),
+    )
+    .expect_err("a fresh host occupant must keep the checkout");
+    assert_eq!(error.kind, "isolation");
+    assert!(
+        error.message.contains("currently occupies"),
+        "got: {}",
+        error.message
     );
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(
-        rows.len(),
+}
+
+type AcquireResult = Result<crate::worktree::AcquireOutcome, crate::worktree::WorktreeError>;
+
+#[allow(clippy::too_many_arguments)]
+fn acquire_custom(
+    fixture: &Fixture,
+    issue: u64,
+    session: &str,
+    isolate: bool,
+    base: Option<&str>,
+    closed: &[u64],
+    host: Option<&dyn crate::worktree::opencode::OpenCodeApi>,
+) -> AcquireResult {
+    let state = ClosedIssues(closed.iter().copied().collect());
+    crate::worktree::acquire_directory_with_foreign_state(
+        &ProcessWorktreeRunner::new(),
+        fixture.repo.dir.path(),
+        issue,
+        session,
+        crate::worktree::AcquireOptions {
+            cache_base: Some(fixture.cache.path()),
+            isolate,
+            base,
+            reuse: false,
+        },
+        Some(&state),
+        host,
+    )
+}
+
+#[test]
+fn an_idempotent_repeat_checks_a_foreign_association_before_returning() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-idempotent-foreign") else {
+        return;
+    };
+    let first = acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let records = open_records(&fixture.identity);
+    crate::worktree::registry::attach_association(
+        &Storage::open().expect("storage"),
+        &records[0].directory_id,
+        &fixture.identity,
         2,
-        "both sessions must hold their own lease row: {rows:?}"
-    );
-    assert_ne!(
-        rows[0].worktree_path, rows[1].worktree_path,
-        "the two leases must not share one checkout path"
-    );
+        "session-A",
+        &crate::worktree::registry::NewAssociation::Unscoped { issue: 246 },
+    )
+    .expect("foreign association");
+    let error = acquire(&fixture.repo, &fixture.cache, 245, "session-A", false)
+        .expect_err("an exact own association must not hide the rest of the directory");
+    assert_eq!(error.kind, "isolation");
+    assert_eq!(open_records(&fixture.identity)[0].worktree_path, first.path);
 }
 
-// ---------------------------------------------------------------------------
-// Issue 305 Task 4: unknown `git status` through the CLI surface
-// ---------------------------------------------------------------------------
-//
-// A corrupt `.git/index` makes `git status --porcelain` fail while
-// `git rev-parse --git-common-dir` and `git worktree add` keep working,
-// so the real `execute_worktree` path can be driven into the `Unknown`
-// dirty state. Explicit `--isolate` must create an isolated worktree;
-// the default must reuse the current checkout, never silently
-// treating the checkout as clean.
-
 #[test]
-fn cli_surface_acquire_unknown_status_with_isolate_creates_worktree() {
+fn an_idempotent_repeat_checks_fresh_host_occupancy_before_returning() {
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("t4-cli-unknown-auto") else {
+    let Some(fixture) = fixture("acquire-idempotent-host") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("t4-cli-unknown-auto");
-    corrupt_git_index(&repo);
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit = run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), true);
-    assert_eq!(
-        exit, 0,
-        "unknown status + --isolate CLI acquire must succeed"
-    );
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1, "CLI acquire must record one lease");
-    assert_eq!(rows[0].issue, 245);
+    acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let api = FakeOpenCodeApi::empty().with_session("ses_foreign", fixture.repo.dir.path());
+    let error = acquire_custom(&fixture, 245, "session-A", false, None, &[], Some(&api))
+        .expect_err("a fresh host occupant must block even the idempotent path");
+    assert_eq!(error.kind, "isolation");
     assert!(
-        rows[0].branch.starts_with("phasegent/245-"),
-        "unknown status with isolation must create a fresh worktree"
-    );
-    assert!(
-        rows[0]
-            .worktree_path
-            .starts_with(cache_temp.path().to_string_lossy().as_ref()),
-        "isolated worktree must land under the temp cache"
-    );
-    assert!(
-        std::path::Path::new(&rows[0].worktree_path).exists(),
-        "unknown status with isolation must create the worktree directory"
+        error.message.contains("currently occupies"),
+        "got: {}",
+        error.message
     );
 }
 
 #[test]
-fn cli_surface_acquire_unknown_status_default_off_reuses_checkout() {
+fn explicit_isolation_creates_a_separate_tree_from_an_occupied_original() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("t4-cli-unknown-off") else {
+    let Some(fixture) = fixture("acquire-isolate-occupied") else {
         return;
     };
-    let (db_temp, cache_temp, _db_env, _cache_env) = open_temp_db_and_cache("t4-cli-unknown-off");
-    corrupt_git_index(&repo);
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit =
-        run_cli_acquire_in_temp_repo(&repo, &db_temp.path().join("phasegent.sqlite3"), false);
-    assert_eq!(
-        exit, 0,
-        "unknown status + default off CLI acquire must succeed"
-    );
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert_eq!(rows.len(), 1, "CLI acquire must record one lease");
-    assert_eq!(rows[0].issue, 245);
-    assert_eq!(
-        rows[0].worktree_path,
-        repo.dir.path().to_string_lossy().to_string(),
-        "default-off unknown status must reuse the current checkout"
-    );
+    let first = acquire(&fixture.repo, &fixture.cache, 245, "session-A", false).expect("first");
+    let isolated = acquire_custom(&fixture, 246, "session-B", true, None, &[], None)
+        .expect("explicit --isolate must bypass the occupied original checkout");
+    assert!(isolated.created);
+    assert_ne!(isolated.path, first.path);
+    assert_ne!(isolated.path, fixture.repo.dir.path().to_string_lossy());
+    assert!(std::path::Path::new(&isolated.path).exists());
+    assert_eq!(open_records(&fixture.identity).len(), 2);
+}
+
+#[test]
+fn a_base_ref_without_explicit_isolation_never_creates_a_worktree() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-base-alone") else {
+        return;
+    };
+    let error = acquire_custom(&fixture, 245, "session-A", false, Some("HEAD"), &[], None)
+        .expect_err("--base alone must not create");
+    assert_eq!(error.kind, "argument");
     assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "default-off unknown status must not create a worktree directory"
+        error.message.contains("--isolate"),
+        "got: {}",
+        error.message
     );
+    assert!(open_records(&fixture.identity).is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Issue 305 Task 2 / issue 337 Phase 1: heartbeat + prune CLI surface
-// ---------------------------------------------------------------------------
-
-/// P1 Operator: unmanaged Operator shares the orchestrator lifecycle
-/// authority for `worktree acquire`, while a managed session without a
-/// role fails closed before any storage access.
 #[test]
-fn cli_surface_acquire_operator_authorized_and_managed_denied() {
-    use crate::policy::CallerContext;
-
-    assert!(CallerContext::Operator.is_orchestrator_authorized());
-    assert!(CallerContext::Operator.is_worktree_read_authorized());
-    assert!(!CallerContext::ManagedWithoutRole.is_orchestrator_authorized());
-
+fn an_externally_removed_isolated_target_is_never_returned_as_success() {
     let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p1-cli-operator-acquire") else {
+    let Some(fixture) = fixture("acquire-removed-target") else {
         return;
     };
-    let (db_temp, _cache_temp, _db_env, _cache_env) =
-        open_temp_db_and_cache("p1-cli-operator-acquire");
-    let _ = db_temp;
-    // Operator acquire reuses the primary checkout by default.
-    let previous_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    std::env::set_current_dir(repo.dir.path()).expect("set cwd to temp repo");
-    let exit = crate::cli::worktree::execute_worktree_with_caller(
-        CallerContext::Operator,
-        WorktreeCommand::Acquire {
-            issue: 245,
-            session: Some("session-operator".to_owned()),
-            base: None,
-            format: "json".to_owned(),
-            isolate: false,
-            no_sync: true,
-        },
-    );
-    let _ = std::env::set_current_dir(&previous_cwd);
-    assert_eq!(exit, 0, "operator acquire must succeed");
+    let first = acquire(&fixture.repo, &fixture.cache, 245, "session-A", true).expect("isolated");
+    crate::worktree::git::worktree_remove(
+        &ProcessWorktreeRunner::new(),
+        fixture.repo.dir.path(),
+        std::path::Path::new(&first.path),
+    )
+    .expect("external removal");
+    assert!(!std::path::Path::new(&first.path).exists());
 
-    // Managed without a role fails closed with the managed denial.
-    let denied = crate::cli::worktree::execute_worktree_with_caller(
-        CallerContext::ManagedWithoutRole,
-        WorktreeCommand::Acquire {
-            issue: 245,
-            session: Some("session-operator".to_owned()),
-            base: None,
-            format: "json".to_owned(),
-            isolate: false,
-            no_sync: true,
-        },
-    );
-    assert_eq!(denied, 3, "managed acquire without a role must be denied");
-}
-
-/// Issue #859 P1: the host `OPENCODE_SESSION_ID` marker is
-/// classification-only and never supplies a worktree/session identity.
-/// `resolve_session` keeps reading only `PHASEGENT_SESSION_ID` (explicit
-/// flag wins, then that variable); a host-only env leaves the call without
-/// an identity and the acquire fails fast instead of booking under the host
-/// value.
-#[test]
-fn cli_acquire_ignores_host_only_session_marker() {
-    use crate::worktree::resolve_session;
-    let _lock = lock_workflow_tests();
-    let Some(repo) = TempRepo::init("p1-host-marker-ignored") else {
-        return;
-    };
-    let (db_temp, cache_temp, _db_env, _cache_env) =
-        open_temp_db_and_cache("p1-host-marker-ignored");
-    // Isolate both markers, then set only the host one: the resolver must
-    // still report a missing identity.
-    let saved_phasegent = std::env::var_os("PHASEGENT_SESSION_ID");
-    let saved_host = std::env::var_os("OPENCODE_SESSION_ID");
-    // SAFETY: serialised by the workflow lock.
-    unsafe {
-        std::env::remove_var("PHASEGENT_SESSION_ID");
-        std::env::set_var("OPENCODE_SESSION_ID", "ses-host-only");
+    for isolate in [false, true] {
+        let error = acquire_custom(&fixture, 245, "session-A", isolate, None, &[], None)
+            .expect_err("a missing registered worktree is never a successful placement");
+        assert_eq!(error.kind, "state");
+        assert!(error.message.contains("missing"), "got: {}", error.message);
     }
-    let missing = resolve_session(None);
-    assert!(
-        missing.is_err(),
-        "host-only marker must not supply a session identity"
-    );
-    // An explicit flag still wins even with the host marker present.
-    let explicit = resolve_session(Some("explicit-session")).expect("explicit must win");
-    assert_eq!(explicit.id, "explicit-session");
-    // Restore before the acquire so the failure is the resolver's, not the
-    // ambient env.
-    // SAFETY: same lock.
-    unsafe {
-        match saved_phasegent {
-            Some(value) => std::env::set_var("PHASEGENT_SESSION_ID", value),
-            None => std::env::remove_var("PHASEGENT_SESSION_ID"),
-        }
-        match saved_host {
-            Some(value) => std::env::set_var("OPENCODE_SESSION_ID", value),
-            None => std::env::remove_var("OPENCODE_SESSION_ID"),
-        }
-    }
-    // Acquire with no flag and a blank PHASEGENT marker plus a host marker
-    // still fails fast with exit 2 and records nothing.
-    let _host_env = EnvGuard::set("OPENCODE_SESSION_ID", "ses-host-only");
-    let _session_env = EnvGuard::set("PHASEGENT_SESSION_ID", "");
-    let runner = ProcessWorktreeRunner::new();
-    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
-    let exit = run_cli_acquire_with_session(&repo, false, None);
-    assert_eq!(exit, 2, "host-only acquire must fail without an identity");
-    let storage = Storage::open_at(&db_temp.path().join("phasegent.sqlite3")).expect("storage");
-    let rows = list_for_repo(&storage, &identity).expect("list temp db");
-    assert!(
-        rows.is_empty(),
-        "a host-only acquire must book nothing: {rows:?}"
-    );
-    assert!(
-        !cache_temp.path().join("worktrees").exists(),
-        "a host-only acquire must not create a worktree directory"
-    );
+    assert_eq!(open_records(&fixture.identity).len(), 1);
 }

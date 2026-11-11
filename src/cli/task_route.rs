@@ -262,20 +262,6 @@ fn binding_matches_context(
     fields_match_context(key.provider(), key.instance(), key.project(), context)
 }
 
-/// Whether an explicit provider selection matches one durable task scope.
-///
-/// The selection is a filter, never an override: a task it does not match
-/// keeps its own group instead of being redirected to another provider,
-/// project or instance.
-pub(crate) fn selection_matches_scope(
-    context: &ProviderContext,
-    provider: &str,
-    instance: &str,
-    project: &str,
-) -> Result<bool, PhasegentError> {
-    fields_match_context(provider, instance, project, context)
-}
-
 /// Whether the explicit selection matches one canonical task scope.
 fn fields_match_context(
     provider: &str,
@@ -518,19 +504,6 @@ fn provider_for_binding_with(
         )));
     }
     pinned_provider(role, binding, context, local_read_only)
-}
-
-/// The durable tasks of one number inside one physical repository, read on
-/// the caller's own connection.
-///
-/// The membership is the only proof: a number whose task lives in another
-/// repository is never resolved through a global number lookup.
-pub(crate) fn tasks_for_repo_number(
-    connection: &rusqlite::Connection,
-    repo_key: &str,
-    number: u64,
-) -> Result<Vec<TaskBinding>, PhasegentError> {
-    resolve_number_in_repo(connection, repo_key, number)
 }
 
 fn pinned_provider(

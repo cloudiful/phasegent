@@ -179,8 +179,8 @@ pub(crate) fn execute_issue_with_caller(
     };
     let is_routed = routed.is_some();
     let explicit_provider = provider_kind;
-    // The durable identity of the routed task, kept for the lease-scope
-    // decisions below: a routed close releases exactly this task's leases,
+    // The durable identity of the routed task, kept for the directory-scope
+    // decisions below: a routed close releases exactly this task's directories,
     // never another instance's same-number task.
     let routed_task = routed.as_ref().map(|route| {
         let key = route.binding.key();
@@ -420,7 +420,7 @@ pub(crate) fn execute_issue_with_caller(
                     // retained for the create path.
                     super::report_local_warnings("issue create", assignee_warning);
                     // Persist the durable task identity before best-effort
-                    // branch/lease work. A local persistence failure never
+                    // branch/registry work. A local persistence failure never
                     // retries the remote POST and never hides the created
                     // issue; it reports an actionable adoption warning.
                     let mut created_task: Option<crate::task_identity::TaskBinding> = None;
@@ -448,7 +448,7 @@ pub(crate) fn execute_issue_with_caller(
                                 super::report_local_warnings(
                                     "issue create",
                                     Some(format!(
-                                        "created issue {} but no physical repository was identified; the task identity was persisted without repository association and no task lease was acquired",
+                                        "created issue {} but no physical repository was identified; the task identity was persisted without repository association and no task directory was acquired",
                                         summary.number
                                     )),
                                 );
@@ -477,6 +477,7 @@ pub(crate) fn execute_issue_with_caller(
                         base: base.as_deref(),
                         repository,
                         session: session.as_deref(),
+                        context: &route_context,
                     });
                     // Issue 18: after a successful create and its branch
                     // link step, let the shared conflict table decide whether
@@ -489,13 +490,13 @@ pub(crate) fn execute_issue_with_caller(
                     // Issue 1201 P7: every provider's create acquires under the
                     // exact durable task scope just persisted — provider,
                     // project, number, task id and stored instance — and never
-                    // falls back to an unscoped lease. A create whose identity
+                    // falls back to an unscoped association. A create whose identity
                     // could not be persisted or associated with this physical
                     // repository skips the acquisition with its existing
                     // bounded warning instead of inventing an owner.
                     let create_scope = created_task.as_ref().and_then(|binding| {
                         let key = binding.key();
-                        crate::worktree::LeaseScope::for_task(
+                        crate::worktree::WorktreeScope::for_task(
                             key.provider(),
                             key.project(),
                             summary.number,
@@ -508,14 +509,22 @@ pub(crate) fn execute_issue_with_caller(
                         super::report_local_warnings(
                             "issue create",
                             match &create_scope {
-                                Some(scope) => crate::worktree::auto_acquire_after_create_scoped(
-                                    summary.number,
-                                    session.as_deref(),
-                                    Some(scope),
-                                ),
+                                Some(scope) => {
+                                    let occupancy =
+                                        crate::cli::issue_closure::ClosureOccupancy::task_aware(
+                                            role,
+                                            route_context.clone(),
+                                        );
+                                    crate::worktree::auto_acquire_after_create_scoped(
+                                        summary.number,
+                                        session.as_deref(),
+                                        Some(scope),
+                                        Some(&occupancy),
+                                    )
+                                }
                                 None => Some(format!(
                                     "created issue {} but its durable task scope could not be \
-                                     constructed; skipped task lease acquisition",
+                                     constructed; skipped task directory acquisition",
                                     summary.number
                                 )),
                             },
@@ -639,8 +648,8 @@ pub(crate) fn execute_issue_with_caller(
             // issue. The attribution stays intentionally optional
             // (issue 575 Phase 1, issue 651 P4): when neither
             // `--worktree-session` nor `PHASEGENT_SESSION_ID` names a
-            // session, the close still succeeds and the leases flip
-            // with the plain `issue closed` reason — no owner is ever
+            // session, the close still succeeds and the directories are
+            // cleaned without a closing-session move — no owner is ever
             // guessed and the removed literal fallback is gone.
             let session =
                 match crate::worktree::resolve_session_optional(worktree_session.as_deref()) {
@@ -682,16 +691,11 @@ pub(crate) fn execute_issue_with_caller(
                         crate::lifecycle_auto::auto_close_issue_timer(number, provider_kind)
                             .warning(),
                     );
-                    // Release every active worktree lease the closed issue
-                    // holds across all sessions (issue 305 Task 3, widened
-                    // by issue 537 Phase 2, session-independent since issue
-                    // 575 Phase 1). The release needs no session identity:
-                    // an unknown closer flips the leases with the plain
-                    // `issue closed` reason, while a known one only names
-                    // the closer in the release_reason. The hook runs after
-                    // the remote close succeeded, so a failed close never
-                    // mutates local lease state, and warnings stay on
-                    // stderr.
+                    // The close hook runs after the remote close succeeded,
+                    // so a failed close never mutates local registry state,
+                    // and warnings stay on stderr. A known closer session is
+                    // carried into the guarded cleanup; an unknown closer
+                    // still cleans every directory the closed issue proves.
                     let release_session = session.as_ref().map(|context| context.id.as_str());
                     let repo_path =
                         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -723,16 +727,16 @@ pub(crate) fn execute_issue_with_caller(
                     // A routed close owns exactly its durable task's scope —
                     // provider, project, number, task id and stored instance —
                     // so a same-number task on another instance keeps its own
-                    // lease and directory. Without a durable route the exact
+                    // directory. Without a durable route the exact
                     // resolved provider scope owns its scoped rows, and a
                     // legacy-capable provider (Redmine, Local) additionally
                     // keeps its unscoped numeric compatibility pass, whose
                     // selector already excludes every scoped row.
                     let exact_close_scope =
-                        |provider: &crate::providers::ProviderDispatcher| -> Option<crate::worktree::LeaseScope> {
+                        |provider: &crate::providers::ProviderDispatcher| -> Option<crate::worktree::WorktreeScope> {
                             match &routed_task {
                                 Some((task_id, instance, project, source)) => {
-                                    crate::worktree::LeaseScope::for_task(
+                                    crate::worktree::WorktreeScope::for_task(
                                         source,
                                         project,
                                         number,
@@ -744,7 +748,7 @@ pub(crate) fn execute_issue_with_caller(
                                 None => crate::providers::index_store::provider_scope(provider)
                                     .ok()
                                     .and_then(|scope| {
-                                        crate::worktree::LeaseScope::new(
+                                        crate::worktree::WorktreeScope::new(
                                             &scope.source,
                                             &scope.project,
                                             number,
@@ -757,88 +761,23 @@ pub(crate) fn execute_issue_with_caller(
                         crate::providers::IssueProvider::capabilities(&provider)
                             .legacy_numeric_leases;
                     let scoped_release = exact_close_scope(&provider);
-                    match (
-                        scoped_release.as_ref(),
-                        crate::worktree::repo_identity(
-                            &crate::worktree::ProcessWorktreeRunner::new(),
-                            &repo_path,
-                        ),
-                    ) {
-                        (Some(scope), Ok(identity)) => {
-                            // The durable repository key is proven from the
-                            // repository's own checkout, outside every write
-                            // boundary, so the release can prove a task
-                            // lease's membership in this physical repository
-                            // before it flips a row.
-                            let repo_key =
-                                crate::worktree::lease_scope::verified_repo_key_for_identity(
-                                    &identity,
-                                );
-                            match crate::worktree::release_active_leases_for_scope(
-                                &identity,
-                                repo_key.as_deref(),
-                                scope,
-                                "issue closed",
-                            ) {
-                                Ok(_) => {}
-                                Err(error) => super::report_local_warnings(
-                                    "issue close",
-                                    Some(format!(
-                                        "issue {number} closed; scoped worktree lease release failed: {}",
-                                        crate::lifecycle::bounded(&error.message)
-                                    )),
-                                ),
-                            }
-                        }
-                        (Some(_), Err(_)) => super::report_local_warnings(
-                            "issue close",
-                            Some(format!(
-                                "issue {number} closed; scoped worktree lease release skipped because the repository identity could not be resolved"
-                            )),
-                        ),
-                        (None, _) if !legacy_numeric_leases => super::report_local_warnings(
-                            "issue close",
-                            Some(format!(
-                                "issue {number} closed; scoped worktree lease release skipped because the exact provider scope could not be resolved"
-                            )),
-                        ),
-                        (None, _) => {}
-                    }
-                    // The unscoped numeric pass is the compatibility path for a
-                    // legacy (non-routed) close only: a routed task close
-                    // releases exactly its own task scope and never a
-                    // same-number legacy row.
-                    if legacy_numeric_leases && routed_task.is_none() {
-                        super::report_local_warnings(
-                            "issue close",
-                            crate::lifecycle::release_closed_issue_leases(
-                                &crate::worktree::ProcessWorktreeRunner::new(),
-                                &repo_path,
-                                number,
-                                release_session,
-                            )
-                            .warning(),
-                        );
-                    }
-                    // Issue 552 Phase 1: after the close and the lease
-                    // release, delete the closed issue's clean worktree
-                    // directories in this repository. The flip above
-                    // already retained this issue's active rows, so the
-                    // missing session filter never keeps a converged
-                    // directory. The helper reuses the `worktree prune
-                    // --remove` primitives and adds the close-specific
-                    // guards (clean, no foreign active lease, never the
-                    // main checkout); a blocked directory is kept and
-                    // named on stderr, branches are never deleted, and the
-                    // stdout close document stays byte-identical.
+                    // Removing a registered directory is decided by the
+                    // cleanup guards below: registration alone never blocks.
+                    // After the close, delete the closed issue's clean
+                    // worktree directories in this repository. The helper
+                    // reuses the `worktree prune --remove` primitives and
+                    // adds the close-specific guards (clean, no still-open
+                    // foreign association, never the main checkout); a
+                    // blocked directory is kept and named on stderr, branches
+                    // are never deleted, and the stdout close document stays
+                    // byte-identical.
                     //
-                    // Issue 747 P1: this close pass may move a `ses_`
-                    // session (the prune pass may too, through its own
-                    // chain). A candidate whose persisted `ses_` lease
-                    // session is still hosted there first asks the host to
-                    // relocate the idle members of its lease family into the
-                    // repository's verified main checkout, then confirms
-                    // every move with fresh evidence. Anything unproven —
+                    // This close pass may move a `ses_` session (the prune
+                    // pass may too, through its own chain). A candidate whose
+                    // registered `ses_` session is still hosted there first
+                    // asks the host to relocate the idle members of its
+                    // session family into the repository's verified main
+                    // checkout, then confirms every move with fresh evidence. Anything unproven —
                     // unreachable API, incomplete listing, a move that has
                     // not taken effect — keeps the directory and warns.
                     // The other issues the directory is associated with are

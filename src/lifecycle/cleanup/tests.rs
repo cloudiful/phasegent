@@ -3,8 +3,8 @@
 //!
 //! These drive the decision directly, without a Git or storage fixture:
 //! the guard's only inputs are the mode, the candidate directory, the
-//! sessions its persisted leases associate with it, and the answer the
-//! host gives. The full-stack path (real lease rows, real worktree
+//! sessions its registry associations name, and the answer the host gives.
+//! The full-stack path (real registry rows, real worktree
 //! guards, real `git worktree remove`) is covered by
 //! `crate::worktree_tests::opencode_cleanup`.
 
@@ -13,22 +13,36 @@ use std::path::{Path, PathBuf};
 use super::sessions::{FamilyOutcome, finalize_family};
 use super::target::{MoveTarget, TargetResolver};
 use super::{CleanupMode, associated_sessions};
-use crate::worktree::LeaseRow;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+use crate::worktree::{DirectoryLegacyIssue, DirectoryRecord};
 
-fn row(worktree_path: &str, session: &str) -> LeaseRow {
-    LeaseRow {
-        lease_id: format!("lease-{session}"),
+fn record(
+    worktree_path: &str,
+    sessions: &[&str],
+    legacy_issues: Vec<DirectoryLegacyIssue>,
+) -> DirectoryRecord {
+    DirectoryRecord {
+        directory_id: format!("dir-{worktree_path}"),
         repo_identity: "/repo/.git".to_owned(),
-        issue: 7,
-        session: session.to_owned(),
         checkout_path: "/repo".to_owned(),
         worktree_path: worktree_path.to_owned(),
         branch: "feat/7".to_owned(),
-        status: crate::worktree::LEASE_STATUS_RETAINED.to_owned(),
         created_at: 0,
-        heartbeat_at: 0,
-        release_reason: None,
+        tasks: Vec::new(),
+        legacy_issues,
+        sessions: sessions
+            .iter()
+            .map(|session| (*session).to_owned())
+            .collect(),
+    }
+}
+
+fn unscoped(issue: u64) -> DirectoryLegacyIssue {
+    DirectoryLegacyIssue {
+        issue,
+        provider: String::new(),
+        project: String::new(),
+        external_id: 0,
     }
 }
 
@@ -62,18 +76,21 @@ pub(super) fn fixed(target: MoveTarget) -> TargetResolver<'static> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn scope_directory_evidence_includes_mixed_lease_rows() {
-    let legacy = row("/tmp/pg-p1-candidate", "legacy");
-    let scoped = row("/tmp/pg-p1-candidate", "scoped");
-    let mut scopes = std::collections::HashMap::new();
-    scopes.insert(
-        scoped.lease_id.clone(),
-        crate::worktree::LeaseScope::new("forgejo", "owner/repo", 7).unwrap(),
+fn scope_directory_evidence_includes_mixed_legacy_rows() {
+    let legacy = record("/tmp/pg-p1-candidate", &["legacy"], vec![unscoped(7)]);
+    let scoped = record(
+        "/tmp/pg-p1-candidate",
+        &["scoped"],
+        vec![DirectoryLegacyIssue {
+            issue: 7,
+            provider: "forgejo".to_owned(),
+            project: "owner/repo".to_owned(),
+            external_id: 7,
+        }],
     );
     let context = super::CleanupContext {
         identity: "/repo/.git".to_owned(),
-        rows: vec![legacy, scoped],
-        scopes,
+        records: vec![legacy, scoped],
     };
     assert!(context.has_scoped_directory(Path::new("/tmp/pg-p1-candidate")));
     assert!(!context.has_scoped_directory(Path::new("/tmp/pg-p1-other")));
@@ -87,27 +104,52 @@ fn scope_cleanup_keeps_before_bare_provider_or_host_checks() {
             panic!("scoped cleanup queried bare issue")
         }
     }
-    let directory = crate::test_scratch::root();
+    let directory = crate::test_scratch::root().join(format!(
+        "pg-cleanup-scoped-{}",
+        std::process::id() as u64 * 1_000_000 + line!() as u64
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
     let path = directory.to_string_lossy();
-    let legacy = row(&path, "legacy");
-    let scoped = row(&path, "scoped");
-    let mut scopes = std::collections::HashMap::new();
-    scopes.insert(
-        scoped.lease_id.clone(),
-        crate::worktree::LeaseScope::new("forgejo", "owner/repo", 7).unwrap(),
+    let scoped = record(
+        &path,
+        &["scoped"],
+        vec![
+            unscoped(7),
+            DirectoryLegacyIssue {
+                issue: 7,
+                provider: "forgejo".to_owned(),
+                project: "owner/repo".to_owned(),
+                external_id: 7,
+            },
+        ],
     );
     let context = super::CleanupContext {
         identity: "/repo/.git".into(),
-        rows: vec![legacy, scoped],
-        scopes,
+        records: vec![scoped],
     };
     let api = FakeOpenCodeApi::empty();
     let guard = super::candidate::DirectOccupancy(&api);
-    let runner = crate::worktree::ProcessWorktreeRunner::new();
+    struct CleanLinkedRunner;
+    impl crate::worktree::WorktreeRunner for CleanLinkedRunner {
+        fn run(
+            &self,
+            args: &[&str],
+            _: &Path,
+        ) -> Result<crate::worktree::GitOutput, crate::worktree::WorktreeError> {
+            let stdout = if args == ["rev-parse", "--git-dir"] {
+                "/repo/.git/worktrees/wt-7\n".to_owned()
+            } else {
+                String::new()
+            };
+            Ok(crate::worktree::GitOutput { status: 0, stdout })
+        }
+    }
+    let runner = CleanLinkedRunner;
     let result = super::cleanup_closed_issue_worktrees_in_context(
         &runner,
         &guard,
         CleanupMode::Close,
+        None,
         context,
         Path::new("/repo"),
         7,
@@ -120,35 +162,48 @@ fn scope_cleanup_keeps_before_bare_provider_or_host_checks() {
             assert_eq!(removed, 0);
             assert!(
                 kept.iter()
-                    .all(|reason| reason.contains("scoped provider lease"))
+                    .any(|reason| reason.contains("scoped provider association")),
+                "the scoped directory is kept for provider-aware cleanup: {kept:?}"
             );
         }
         _ => panic!("unexpected cleanup outcome"),
     }
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
 fn associated_sessions_keeps_only_opencode_ids_pointing_at_the_directory() {
-    let rows = vec![
-        row("/tmp/pg-p1-candidate", "ses_a"),
-        row("/tmp/pg-p1-candidate", "ses_b"),
-        row("/tmp/pg-p1-candidate", "phasegent-cli"),
-        row("/tmp/pg-p1-other", "ses_c"),
+    let records = vec![
+        record(
+            "/tmp/pg-p1-candidate",
+            &["ses_a", "ses_b"],
+            vec![unscoped(7)],
+        ),
+        record(
+            "/tmp/pg-p1-candidate",
+            &["phasegent-cli"],
+            vec![unscoped(7)],
+        ),
+        record("/tmp/pg-p1-other", &["ses_c"], vec![unscoped(7)]),
     ];
     assert_eq!(
-        associated_sessions(&rows, &candidate()),
+        associated_sessions(&records, &candidate()),
         vec!["ses_a".to_owned(), "ses_b".to_owned()]
     );
 }
 
 #[test]
-fn a_candidate_without_an_opencode_lease_is_never_probed() {
-    // A pure CLI close must keep its previous behaviour: no API traffic
-    // at all, so an installed-but-unreachable OpenCode cannot change it.
+fn a_candidate_without_an_opencode_association_still_requires_complete_host_evidence() {
+    // A pure CLI close is not exempt from the host question: an occupant no
+    // registry row names is somebody else's session. An unusable listing is
+    // uncertainty and keeps the directory.
     let api = FakeOpenCodeApi::empty().failing_session().failing_list();
     let verdict = evaluate_with(&api, CleanupMode::Close, &fixed(main_checkout()), &[], None);
-    assert_eq!(verdict, FamilyOutcome::Unmanaged);
-    assert_eq!(api.list_calls(), 0);
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("an incomplete host answer must keep, got {verdict:?}");
+    };
+    assert!(reason.contains("incomplete"), "got: {reason}");
+    assert!(api.list_calls() > 0, "the host listing must be attempted");
     assert!(api.moves().is_empty());
 }
 
@@ -247,8 +302,8 @@ fn an_unverified_main_checkout_keeps_the_candidate_without_moving() {
 
 #[test]
 fn close_returns_the_whole_idle_family_of_the_candidate() {
-    // Every session the leases associate with the directory is part of its
-    // family, so the close returns all of them — not just its own session.
+    // Every session the registry associates with the directory is part of
+    // its family, so the close returns all of them — not just its own session.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_a", &candidate())
         .with_session("ses_b", &candidate())
@@ -646,9 +701,9 @@ fn an_unavailable_running_answer_between_moves_keeps_the_candidate() {
 
 #[test]
 fn a_foreign_occupant_blocks_removal_without_being_moved() {
-    // `ses_foreign` has no lease of this repository and no lineage to one,
-    // so it is somebody else's session and must never be relocated by this
-    // pass.
+    // `ses_foreign` has no registry association with this repository and no
+    // lineage to one, so it is somebody else's session and must never be
+    // relocated by this pass.
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_a", &candidate())
         .with_session("ses_foreign", &candidate());
@@ -667,12 +722,12 @@ fn a_foreign_occupant_blocks_removal_without_being_moved() {
 }
 
 // ---------------------------------------------------------------------------
-// The lease family and its lineage
+// The session family and its lineage
 // ---------------------------------------------------------------------------
 
 #[test]
 fn a_descendant_of_the_candidate_root_is_returned_with_it() {
-    // The root moved elsewhere, but it is still the session the lease
+    // The root moved elsewhere, but it is still the session the registry
     // names, so the descendant that sits in the candidate is part of the
     // same family and is returned with it.
     let api = FakeOpenCodeApi::empty()
@@ -956,4 +1011,217 @@ fn the_preview_reports_the_family_without_moving_it() {
         api.moves().is_empty(),
         "the preview reports the move eligibility and never performs it"
     );
+}
+
+#[test]
+fn a_same_number_unknown_legacy_association_is_not_the_current_task() {
+    use super::closure::{DirectoryAssociation, DirectoryIssueClosure};
+
+    struct ExactTaskOnly;
+    impl DirectoryIssueClosure for ExactTaskOnly {
+        fn confirm_others_closed(&self, _: u64, _: &[u64]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn confirm_association_closed(
+            &self,
+            current_issue: u64,
+            association: DirectoryAssociation<'_>,
+            _: Option<&crate::worktree::WorktreeScope>,
+        ) -> Result<(), String> {
+            match association {
+                DirectoryAssociation::Task(task) if task.issue == current_issue => Ok(()),
+                DirectoryAssociation::Task(task) => {
+                    Err(format!("task {} is not confirmed closed", task.task_id))
+                }
+                DirectoryAssociation::Legacy(issue) => Err(format!(
+                    "unknown same-number legacy {} is not the current task",
+                    issue.issue
+                )),
+            }
+        }
+    }
+
+    let path = "/tmp/pg-p1-candidate";
+    let record = DirectoryRecord {
+        directory_id: "dir-same-number".to_owned(),
+        repo_identity: "/repo/.git".to_owned(),
+        checkout_path: "/repo".to_owned(),
+        worktree_path: path.to_owned(),
+        branch: "feat/7".to_owned(),
+        created_at: 0,
+        tasks: vec![crate::worktree::DirectoryTask {
+            task_id: 5,
+            issue: 7,
+            provider: Some("forgejo".to_owned()),
+            instance: Some("https://forgejo.test".to_owned()),
+            project: Some("owner/repo".to_owned()),
+            external_id: Some("7".to_owned()),
+        }],
+        legacy_issues: vec![unscoped(7)],
+        sessions: Vec::new(),
+    };
+    let error = super::confirm_directory_associations(
+        &ExactTaskOnly,
+        7,
+        &[record],
+        std::path::Path::new(path),
+        None,
+    )
+    .expect_err("a same-number unknown legacy row must block");
+    assert!(error.contains("unknown same-number legacy"), "got: {error}");
+}
+
+#[test]
+fn the_final_cleanup_rechecks_the_host_for_a_cli_only_candidate() {
+    use std::cell::Cell;
+
+    use crate::infra::storage::test_support::lock_workflow_tests;
+    use crate::worktree::opencode::test_support::FakeOpenCodeApi;
+    use crate::worktree::opencode::{
+        ApiError, ListRequest, LocatedSession, OpenCodeApi, SessionPage,
+    };
+    use crate::worktree::registry::{self, NewAssociation, NewDirectory};
+    use crate::worktree::{ProcessWorktreeRunner, repo_identity, worktree_add};
+
+    struct ForeignOnlyAfterFirstList {
+        inner: FakeOpenCodeApi,
+        directory: PathBuf,
+        calls: Cell<usize>,
+    }
+
+    impl OpenCodeApi for ForeignOnlyAfterFirstList {
+        fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
+            self.inner.session(id)
+        }
+
+        fn list(&self, request: &ListRequest) -> Result<SessionPage, ApiError> {
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            let mut page = self.inner.list(request)?;
+            if call >= 1 {
+                page.sessions.push(LocatedSession {
+                    id: "ses_late".to_owned(),
+                    directory: self.directory.to_string_lossy().into_owned(),
+                    parent_id: None,
+                });
+            }
+            Ok(page)
+        }
+
+        fn move_session(&self, id: &str, directory: &Path) -> Result<(), ApiError> {
+            self.inner.move_session(id, directory)
+        }
+
+        fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+            self.inner.active_sessions()
+        }
+    }
+
+    struct NoClosure;
+    impl super::closure::DirectoryIssueClosure for NoClosure {
+        fn confirm_others_closed(&self, _: u64, _: &[u64]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let _lock = lock_workflow_tests();
+    let Some(repo) = crate::worktree_tests::support::TempRepo::init("cleanup-final-host") else {
+        return;
+    };
+    let (_db, storage, _env) = crate::worktree_tests::support::open_temp_db("cleanup-final-host");
+    registry::ensure_schema(&storage).expect("schema");
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
+    let target = repo.dir.path().join("closed-cli");
+    worktree_add(&runner, repo.dir.path(), &target, "phasegent/closed-cli").expect("worktree");
+    let canonical = crate::worktree::canonical_or_self(&target);
+    let id = registry::stable_directory_id(&identity, &canonical.to_string_lossy());
+    registry::insert_directory(
+        &storage,
+        &NewDirectory {
+            directory_id: &id,
+            repo_identity: &identity,
+            checkout_path: &repo.dir.path().to_string_lossy(),
+            worktree_path: &canonical.to_string_lossy(),
+            branch: "phasegent/closed-cli",
+            created_at: 1,
+            session: "cli-session",
+            associations: &[NewAssociation::Unscoped { issue: 7 }],
+        },
+    )
+    .expect("registry row");
+    let context = super::CleanupContext {
+        identity: identity.clone(),
+        records: registry::load_records(&storage, Some(&identity)).expect("rows"),
+    };
+    let api = ForeignOnlyAfterFirstList {
+        inner: FakeOpenCodeApi::empty(),
+        directory: canonical.clone(),
+        calls: Cell::new(0),
+    };
+    let outcome = super::cleanup_closed_issue_worktrees_in_context(
+        &runner,
+        &super::candidate::DirectOccupancy(&api),
+        CleanupMode::Close,
+        Some(&storage),
+        context,
+        repo.dir.path(),
+        7,
+        None,
+        &NoClosure,
+        None,
+    );
+    let super::AutoCleanupOutcome::Cleaned { removed, kept } = outcome else {
+        panic!("a late foreign occupant must keep the directory, got {outcome:?}");
+    };
+    assert_eq!(removed, 0);
+    assert!(
+        kept.iter().any(|reason| reason.contains("not associated")),
+        "the final post-cache host read must see the late occupant: {kept:?}"
+    );
+    assert_eq!(api.calls.get(), 2, "initial and final host reads both ran");
+    assert!(target.exists());
+}
+
+#[test]
+fn an_unrelated_idle_closing_session_is_never_promoted_into_the_family() {
+    let api = FakeOpenCodeApi::empty()
+        .with_session("ses_root", Path::new("/tmp/pg-p1-main"))
+        .with_session("ses_stranger", &candidate());
+    let verdict = evaluate_with(
+        &api,
+        CleanupMode::Close,
+        &fixed(main_checkout()),
+        &["ses_root"],
+        Some("ses_stranger"),
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("an unrelated closing id must keep, got {verdict:?}");
+    };
+    assert!(reason.contains("ses_stranger"), "got: {reason}");
+    assert!(api.moves().is_empty());
+}
+
+#[test]
+fn an_unrelated_running_closing_session_is_exempt_from_nothing() {
+    let api = FakeOpenCodeApi::empty()
+        .with_session("ses_root", Path::new("/tmp/pg-p1-main"))
+        .with_session("ses_stranger", &candidate())
+        .with_running("ses_stranger");
+    let verdict = evaluate_with(
+        &api,
+        CleanupMode::Close,
+        &fixed(main_checkout()),
+        &["ses_root"],
+        Some("ses_stranger"),
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("an unrelated running closing id must keep, got {verdict:?}");
+    };
+    assert!(
+        reason.contains("currently occupies") || reason.contains("ses_stranger"),
+        "got: {reason}"
+    );
+    assert!(api.moves().is_empty());
 }

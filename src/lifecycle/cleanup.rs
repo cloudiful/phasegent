@@ -4,28 +4,27 @@
 //! keeps the directory with a bounded reason naming itself:
 //!
 //! 1. it is not the repository's main checkout;
-//! 2. no *other* session holds an `active` lease on it;
-//! 3. it is clean — `git status --porcelain` is empty, so untracked
-//!    files count as dirty;
-//! 4. no OpenCode session is still hosted in it (issue 747 P1).
+//! 2. it is clean — `git status --porcelain` is empty, so untracked files
+//!    count as dirty;
+//! 3. no OpenCode session is still hosted in it (issue 747 P1).
 //!
-//! The fourth guard is the one that needs the host. A lease records where
-//! a session *was*; the OpenCode API reports where it *is*, and which
-//! session it descends from. Only persisted `ses_`-prefixed lease sessions
-//! mark a candidate as OpenCode-associated, so a pure CLI close never reaches
-//! the API and keeps its previous behaviour exactly.
+//! The registry records where a session *was*; the OpenCode API reports
+//! where it *is*, and which
+//! session it descends from. Only registry-associated `ses_`-prefixed
+//! sessions mark a candidate as OpenCode-associated, so a pure CLI close never
+//! reaches the API and keeps its previous behaviour exactly.
 //!
 //! Everything is best-effort: the remote close already succeeded, so an
 //! unreachable API, an incomplete listing, an unproven main checkout, or a
 //! move that has not taken effect yet all keep the directory and surface
-//! one stderr warning. Lease rows are never touched and branches are never
+//! one stderr warning. Registry rows are never touched and branches are never
 //! deleted.
 //!
 //! The same evidence backs `worktree prune`, which returns the idle members
-//! of a candidate's lease family to the verified main checkout before it
-//! removes a directory: only a lease-associated `ses_` session — or a
-//! descendant of one — may be moved, and a running or foreign occupant keeps
-//! the directory.
+//! of a candidate's session family to the verified main checkout before it
+//! removes a directory: only an associated `ses_` session — or a descendant
+//! of one — may be moved, and a running or foreign occupant keeps the
+//! directory.
 
 use std::path::{Path, PathBuf};
 
@@ -60,7 +59,7 @@ mod tests_prune_guards;
 pub(crate) use context::CleanupContext;
 pub(crate) use target::TargetResolver;
 
-use crate::worktree::LeaseRow;
+use crate::worktree::DirectoryRecord;
 use crate::worktree::opencode::{OpenCodeApi, ProcessOpenCodeApi};
 use crate::worktree::same_directory;
 
@@ -71,7 +70,7 @@ pub enum AutoCleanupOutcome {
         removed: u64,
         kept: Vec<String>,
     },
-    /// The repository identity or the lease store could not be resolved.
+    /// The repository identity or the registry could not be resolved.
     /// Nothing was deleted; the remote close already succeeded, so this
     /// is a bounded warning only.
     Warning {
@@ -101,10 +100,10 @@ impl AutoCleanupOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CleanupMode {
     /// `issue close`: may request a move for the closing session and for the
-    /// idle members of its lease family.
+    /// idle members of its session family.
     Close,
     /// `worktree prune --remove`: may request a move for the idle members of
-    /// the candidate's lease family. There is no running exemption here.
+    /// the candidate's session family. There is no running exemption here.
     Prune,
     /// `worktree prune --dryrun`: the read-only preview of the removal
     /// stage. It probes the same occupancy and lineage evidence and reports
@@ -125,33 +124,30 @@ pub(crate) enum CleanupMode {
 
 impl CleanupMode {
     /// Whether this pass may relocate an idle member of the candidate's
-    /// lease family out of it. Only the close and prune chains may.
+    /// session family out of it. Only the close and prune chains may.
     pub(crate) fn may_move_sessions(self) -> bool {
         matches!(self, Self::Close | Self::Prune)
     }
 
     /// Whether this pass reads the connected service's running-session set.
-    /// The reconciliation pass does not: it never moves a session, so
-    /// "idle" is not a question it has to answer.
+    /// Every destructive path answers this question, including sync, and a
+    /// host that cannot answer keeps the directory. Only the read-only report
+    /// pass, which probes nothing at all, does not.
     pub(crate) fn reads_running_state(self) -> bool {
-        matches!(
-            self,
-            Self::Close | Self::Prune | Self::Preview | Self::Verify
-        )
+        !matches!(self, Self::Report)
     }
 
-    /// Whether a candidate without a lease-associated OpenCode session is
-    /// still enumerated. The close and reconciliation chains decide such a
-    /// candidate by the local guards alone and never reach the host; the
-    /// prune chain enumerates it, because an occupant no lease associates is
-    /// somebody else's session and keeps the directory.
+    /// Whether a candidate without an associated OpenCode session is
+    /// still enumerated. Every destructive path enumerates it: an occupant no
+    /// association names is somebody else's session and keeps the directory.
+    /// The read-only report pass probes nothing and is decided locally.
     pub(crate) fn enumerates_unmanaged_candidates(self) -> bool {
-        matches!(self, Self::Prune | Self::Preview | Self::Verify)
+        !matches!(self, Self::Report)
     }
 }
 
 /// Delete the closed issue's clean worktree directories in this
-/// repository, after the remote close and the lease release succeeded.
+/// repository, after the remote close succeeded.
 ///
 /// The dirty probe ([`crate::worktree::is_clean`]) and the removal call
 /// ([`crate::worktree::worktree_remove`]) are the same primitives the
@@ -189,14 +185,15 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
     session: Option<&str>,
     closure: &dyn closure::DirectoryIssueClosure,
 ) -> AutoCleanupOutcome {
-    let context = match context::resolve(runner, repo_path, issue) {
-        Ok(context) => context,
+    let (storage, context) = match context::resolve_with_storage(runner, repo_path, issue) {
+        Ok(resolved) => resolved,
         Err(reason) => return AutoCleanupOutcome::Warning { reason },
     };
     cleanup_closed_issue_worktrees_in_context(
         runner,
         &candidate::DirectOccupancy(api),
         mode,
+        Some(&storage),
         context,
         repo_path,
         issue,
@@ -206,9 +203,9 @@ pub(crate) fn cleanup_closed_issue_worktrees_with(
     )
 }
 
-/// Injected core of [`cleanup_closed_issue_worktrees`] for a provider-scoped
+/// Injected core of [`cleanup_closed_issue_worktrees`] for a provider-
 /// close: the exact resolved `(provider, project, external_id)` scope the
-/// closed issue was resolved under. A directory whose scoped leases all
+/// closed issue was resolved under. A directory whose scoped associations all
 /// match it exactly may proceed through the same guards; mixed, foreign,
 /// and unscoped-context directories keep. Every other guard is unchanged.
 #[allow(clippy::too_many_arguments)]
@@ -220,16 +217,17 @@ pub(crate) fn cleanup_closed_issue_worktrees_with_scope(
     issue: u64,
     session: Option<&str>,
     closure: &dyn closure::DirectoryIssueClosure,
-    allowed_scope: &crate::worktree::LeaseScope,
+    allowed_scope: &crate::worktree::WorktreeScope,
 ) -> AutoCleanupOutcome {
-    let context = match context::resolve(runner, repo_path, issue) {
-        Ok(context) => context,
+    let (storage, context) = match context::resolve_with_storage(runner, repo_path, issue) {
+        Ok(resolved) => resolved,
         Err(reason) => return AutoCleanupOutcome::Warning { reason },
     };
     cleanup_closed_issue_worktrees_in_context(
         runner,
         &candidate::DirectOccupancy(api),
         mode,
+        Some(&storage),
         context,
         repo_path,
         issue,
@@ -247,7 +245,7 @@ pub fn cleanup_closed_issue_worktrees_scoped(
     issue: u64,
     session: Option<&str>,
     closure: &dyn closure::DirectoryIssueClosure,
-    allowed_scope: &crate::worktree::LeaseScope,
+    allowed_scope: &crate::worktree::WorktreeScope,
 ) -> AutoCleanupOutcome {
     cleanup_closed_issue_worktrees_with_scope(
         runner,
@@ -269,7 +267,7 @@ pub fn cleanup_closed_issue_worktrees_scoped(
 /// still reaches the exact same predicate through
 /// [`cleanup_closed_issue_worktrees_with`].
 ///
-/// The pass re-reads the complete lease evidence after every family
+/// The pass re-reads the complete registry evidence after every family
 /// movement and immediately before each removal: a new active owner or a
 /// newly associated open issue that appeared during the (possibly slow)
 /// moves keeps the directory. The initial snapshot alone never authorizes
@@ -279,13 +277,52 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
     runner: &dyn crate::worktree::WorktreeRunner,
     guard: &dyn candidate::OccupancyGuard,
     mode: CleanupMode,
+    storage: Option<&crate::infra::storage::Storage>,
     context: CleanupContext,
     repo_path: &Path,
     issue: u64,
     session: Option<&str>,
     closure: &dyn closure::DirectoryIssueClosure,
-    allowed_scope: Option<&crate::worktree::LeaseScope>,
+    allowed_scope: Option<&crate::worktree::WorktreeScope>,
 ) -> AutoCleanupOutcome {
+    if issue == 0 {
+        return AutoCleanupOutcome::Noop;
+    }
+    // The same per-repository lock every cooperating worktree operation uses
+    // spans this pass's fresh checks, session moves, cache clearance and
+    // removal. Read-only report/preview passes create no lock.
+    let _lock = if matches!(mode, CleanupMode::Close | CleanupMode::Sync) {
+        match crate::worktree::operation_lock::acquire(&context.identity) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                return AutoCleanupOutcome::Warning {
+                    reason: format!(
+                        "issue {issue} closed; another phasegent worktree operation is in progress, so cleanup was skipped: {}",
+                        error.message
+                    ),
+                };
+            }
+        }
+    } else {
+        None
+    };
+    // The caller may have loaded the context before this pass acquired the
+    // lock. A snapshot from that window is never an authorization: reload the
+    // complete registry now, under the lock, before any closure read, session
+    // move or removal.
+    let mut context = context;
+    if let Some(storage) = storage {
+        match CleanupContext::load(storage, &context.identity) {
+            Ok(fresh) => context = fresh,
+            Err(reason) => {
+                return AutoCleanupOutcome::Warning {
+                    reason: format!(
+                        "issue {issue} closed; the worktree directory evidence could not be re-read under the operation lock: {reason}"
+                    ),
+                };
+            }
+        }
+    }
     if !context.has_issue(issue) {
         return AutoCleanupOutcome::Noop;
     }
@@ -297,28 +334,23 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
     let target = TargetResolver::new(repo_path, &context.identity);
     let mut removed = 0u64;
     let mut kept: Vec<String> = Vec::new();
-    // A provider-scoped pass only considers the closed issue's own scoped
-    // leases: a same-number legacy row, or a row of another provider scope,
-    // is never a candidate of this pass (it stays untouched).
-    for row in
-        context
-            .rows
-            .iter()
-            .filter(|row| row.issue == issue)
-            .filter(|row| match allowed_scope {
-                Some(scope) => context.scopes.get(&row.lease_id) == Some(scope),
-                None => true,
-            })
+    // A provider-scoped pass only considers the closed issue's own
+    // associations: a same-number legacy row, or a row of another provider
+    // scope, is never a candidate of this pass (it stays untouched).
+    for record in context
+        .records
+        .iter()
+        .filter(|record| record.has_issue(issue))
     {
-        let directory = PathBuf::from(&row.worktree_path);
+        let directory = PathBuf::from(&record.worktree_path);
         if !directory.exists() {
             continue;
         }
         if !context.directory_scope_allowed(&directory, allowed_scope) {
             kept.push(kept_entry(
                 issue,
-                "scoped provider lease requires provider-aware cleanup",
-                &row.worktree_path,
+                "scoped provider association requires provider-aware cleanup",
+                &record.worktree_path,
             ));
             continue;
         }
@@ -327,9 +359,9 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
         // excluded here, so it never reaches the host or the provider. A
         // cache-only verdict carries its initial inventory as the baseline the
         // later removal must still match.
-        let local = candidate::local_guard(runner, &context.identity, &context.rows, session, row);
+        let local = candidate::local_guard(runner, &context.identity, &directory);
         if let Some(reason) = local.protected_reason {
-            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+            kept.push(kept_entry(issue, &reason, &record.worktree_path));
             continue;
         }
         let cache = local.cache;
@@ -337,20 +369,25 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
         // session may be moved: a directory an open issue shares is kept,
         // and moving one of our sessions out of it would be a side effect
         // of a removal that must not happen.
-        let issues = associated_issues(&context.rows, &directory);
-        if let Err(reason) = closure.confirm_others_closed(issue, &issues) {
-            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+        if let Err(reason) = confirm_directory_associations(
+            closure,
+            issue,
+            &context.records,
+            &directory,
+            allowed_scope,
+        ) {
+            kept.push(kept_entry(issue, &reason, &record.worktree_path));
             continue;
         }
         let blocked = guard.keep_reason(
             mode,
             &target,
             &directory,
-            &associated_sessions(&context.rows, &directory),
+            &associated_sessions(&context.records, &directory),
             session,
         );
         if let Some(reason) = blocked {
-            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+            kept.push(kept_entry(issue, &reason, &record.worktree_path));
             continue;
         }
         // The guard moved the family (or found it already gone). Its answers
@@ -367,11 +404,11 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
             issue,
             session,
             &directory,
-            &row.worktree_path,
+            &record.worktree_path,
             cache.as_ref(),
             allowed_scope,
         ) {
-            kept.push(kept_entry(issue, &reason, &row.worktree_path));
+            kept.push(kept_entry(issue, &reason, &record.worktree_path));
             continue;
         }
         // The only mutation allowed before the no-force removal is the shared
@@ -386,7 +423,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
                 kept.push(kept_entry(
                     issue,
                     &format!("cache cleanup could not finish ({reason})"),
-                    &row.worktree_path,
+                    &record.worktree_path,
                 ));
                 continue;
             }
@@ -409,7 +446,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
                 kept.push(kept_entry(
                     issue,
                     &format!("kept after cache cleanup ({reason})"),
-                    &row.worktree_path,
+                    &record.worktree_path,
                 ));
                 continue;
             }
@@ -425,7 +462,7 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
                     "worktree removal failed ({})",
                     super::bounded(&error.message)
                 ),
-                &row.worktree_path,
+                &record.worktree_path,
             )),
         }
     }
@@ -436,9 +473,9 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
 }
 
 /// The post-movement re-verification every removal path shares: reload the
-/// complete lease rows, re-check the candidate's own local guards against
+/// complete registry rows, re-check the candidate's own local guards against
 /// them, and re-validate the directory's other issue closures with the
-/// memo dropped. An unreadable lease store, a vanished candidate row, a new
+/// memo dropped. An unreadable registry, a vanished candidate row, a new
 /// active owner, dirt, or an open neighbour each keep the directory.
 ///
 /// A pass that cannot move anything never changed local or provider state,
@@ -451,11 +488,11 @@ fn reverify_after_movement(
     mode: CleanupMode,
     identity: &str,
     issue: u64,
-    session: Option<&str>,
+    _session: Option<&str>,
     directory: &Path,
     worktree_path: &str,
     expected_cache: Option<&crate::worktree::cache::CacheInventory>,
-    allowed_scope: Option<&crate::worktree::LeaseScope>,
+    allowed_scope: Option<&crate::worktree::WorktreeScope>,
 ) -> Result<(), String> {
     if !mode.may_move_sessions() {
         return Ok(());
@@ -466,40 +503,46 @@ fn reverify_after_movement(
             Ok(context) => context,
             Err(reason) => {
                 return Err(format!(
-                    "the lease evidence could not be re-read after the moves: {reason}"
+                    "the registry evidence could not be re-read after the moves: {reason}"
                 ));
             }
         };
     if !fresh_context.directory_scope_allowed(directory, allowed_scope) {
-        return Err("scoped provider lease requires provider-aware cleanup".to_owned());
+        return Err("scoped provider association requires provider-aware cleanup".to_owned());
     }
-    let fresh = fresh_context.rows;
-    let fresh_row = fresh
+    let fresh_record = fresh_context
+        .records
         .iter()
-        .find(|row| same_directory(Path::new(&row.worktree_path), directory))
+        .find(|record| same_directory(record.canonical_path().as_path(), directory))
         .ok_or_else(|| {
             format!(
-                "the candidate's lease row is gone after the moves ({worktree_path}); the directory survives"
+                "the candidate's directory record is gone after the moves ({worktree_path}); the directory survives"
             )
         })?;
-    let fresh_local = candidate::local_guard(runner, identity, &fresh, session, fresh_row);
+    let fresh_local = candidate::local_guard(runner, identity, directory);
     if let Some(reason) = fresh_local.protected_reason {
         return Err(format!("the directory changed after the moves ({reason})"));
     }
     if fresh_local.cache.as_ref() != expected_cache {
         return Err("the root .cache inventory changed after the moves".to_owned());
     }
-    let fresh_issues = associated_issues(&fresh, directory);
-    if let Err(reason) = closure.confirm_others_closed(issue, &fresh_issues) {
+    if let Err(reason) = confirm_directory_associations(
+        closure,
+        issue,
+        &fresh_context.records,
+        directory,
+        allowed_scope,
+    ) {
         return Err(format!(
-            "the directory's issue closures changed after the moves ({reason})"
+            "the directory's association closures changed after the moves ({reason})"
         ));
     }
+    let _ = fresh_record;
     Ok(())
 }
 
 /// The post-cache re-verification: after the root `.cache` was cleared and
-/// immediately before the no-force removal, reload the complete lease rows,
+/// immediately before the no-force removal, reload the complete registry rows,
 /// re-run the local guards, re-read the directory's issue closures, and ask the
 /// host guard again with a no-move mode. Any new active owner, reopened
 /// association, running or foreign occupant, or reappearing dirty content keeps
@@ -511,42 +554,49 @@ fn recheck_after_cache(
     target: &TargetResolver<'_>,
     identity: &str,
     issue: u64,
-    session: Option<&str>,
+    _session: Option<&str>,
     directory: &Path,
     closure: &dyn closure::DirectoryIssueClosure,
-    allowed_scope: Option<&crate::worktree::LeaseScope>,
+    allowed_scope: Option<&crate::worktree::WorktreeScope>,
 ) -> Result<(), String> {
     closure.refresh();
     let fresh_context =
         match CleanupContext::load(&crate::infra::storage::Storage::open()?, identity) {
             Ok(context) => context,
             Err(reason) => {
-                return Err(format!("the lease evidence could not be re-read: {reason}"));
+                return Err(format!(
+                    "the directory evidence could not be re-read: {reason}"
+                ));
             }
         };
     if !fresh_context.directory_scope_allowed(directory, allowed_scope) {
-        return Err("scoped provider lease requires provider-aware cleanup".to_owned());
+        return Err("scoped provider association requires provider-aware cleanup".to_owned());
     }
-    let fresh = fresh_context.rows;
-    let fresh_row = fresh
+    if !fresh_context
+        .records
         .iter()
-        .find(|row| same_directory(Path::new(&row.worktree_path), directory))
-        .ok_or_else(|| "the candidate's lease row disappeared".to_owned())?;
-    let local = candidate::local_guard(runner, identity, &fresh, session, fresh_row);
+        .any(|record| same_directory(record.canonical_path().as_path(), directory))
+    {
+        return Err("the candidate's directory record disappeared".to_owned());
+    }
+    let local = candidate::local_guard(runner, identity, directory);
     if let Some(reason) = local.protected_reason {
         return Err(reason);
     }
     if local.cache.is_some() {
         return Err("a root .cache reappeared before the worktree removal".to_owned());
     }
-    let issues = associated_issues(&fresh, directory);
-    closure.confirm_others_closed(issue, &issues)?;
-    let associated = associated_sessions(&fresh, directory);
-    if associated.is_empty() {
-        // A pure CLI candidate keeps its historical no-host contract. Prune's
-        // explicit runtime-host dependency is handled by its own pass.
-        return Ok(());
-    }
+    confirm_directory_associations(
+        closure,
+        issue,
+        &fresh_context.records,
+        directory,
+        allowed_scope,
+    )?;
+    let associated = associated_sessions(&fresh_context.records, directory);
+    // The host question is asked for every candidate, including a directory
+    // with no registered `ses_` association: a foreign idle or running session
+    // that entered during cache clearance must still keep the tree.
     let blocked = guard.keep_reason(CleanupMode::Verify, target, directory, &associated, None);
     match blocked {
         Some(reason) => Err(reason),
@@ -554,25 +604,46 @@ fn recheck_after_cache(
     }
 }
 
-/// The distinct issues the persisted leases associate with one directory.
-pub(crate) fn associated_issues(rows: &[LeaseRow], directory: &Path) -> Vec<u64> {
-    let mut issues: Vec<u64> = rows
+/// Confirm every association recorded against one directory on its own
+/// complete identity. A same-number legacy row, a different task id or a
+/// different instance is a separate association, never the current close.
+fn confirm_directory_associations(
+    closure: &dyn closure::DirectoryIssueClosure,
+    current_issue: u64,
+    records: &[DirectoryRecord],
+    directory: &Path,
+    allowed_scope: Option<&crate::worktree::WorktreeScope>,
+) -> Result<(), String> {
+    for record in records
         .iter()
-        .filter(|row| same_directory(Path::new(&row.worktree_path), directory))
-        .map(|row| row.issue)
-        .collect();
-    issues.sort_unstable();
-    issues.dedup();
-    issues
+        .filter(|record| same_directory(record.canonical_path().as_path(), directory))
+    {
+        for task in &record.tasks {
+            closure.confirm_association_closed(
+                current_issue,
+                closure::DirectoryAssociation::Task(task),
+                allowed_scope,
+            )?;
+        }
+        for issue in &record.legacy_issues {
+            closure.confirm_association_closed(
+                current_issue,
+                closure::DirectoryAssociation::Legacy(issue),
+                allowed_scope,
+            )?;
+        }
+    }
+    Ok(())
 }
 
-/// Distinct OpenCode-managed sessions whose persisted lease points at
+/// Distinct OpenCode-managed sessions the registry associates with
 /// `directory`, sorted so one pass reports identically every time.
-pub(crate) fn associated_sessions(rows: &[LeaseRow], directory: &Path) -> Vec<String> {
-    let mut ids: Vec<String> = rows
+pub(crate) fn associated_sessions(records: &[DirectoryRecord], directory: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = records
         .iter()
-        .filter(|row| same_directory(Path::new(&row.worktree_path), directory))
-        .map(|row| row.session.trim().to_owned())
+        .filter(|record| same_directory(record.canonical_path().as_path(), directory))
+        .flat_map(|record| record.sessions.iter())
+        .map(|session| session.trim().to_owned())
         .filter(|session| crate::worktree::opencode::is_opencode_session(session))
         .collect();
     ids.sort();

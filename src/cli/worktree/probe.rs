@@ -2,11 +2,10 @@
 //!
 //! The command answers one question without side effects: given
 //! `--path PATH`, or `--issue N [--session S]`, or neither (the current
-//! checkout), what is on disk? It never calls a provider, never writes a
-//! lease, never syncs, and never repairs anything. A Git or filesystem
+//! checkout), what is on disk? It never calls a provider, never writes the
+//! registry, never syncs, and never repairs anything. A Git or filesystem
 //! failure is reported inside the bounded JSON envelope rather than as a
-//! hard error; only an unusable storage or repo identity is a structured
-//! error.
+//! hard error; only an unusable repo identity is a structured error.
 //!
 //! The role gate lives in the parent module's dispatcher, not here.
 
@@ -15,40 +14,13 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
-use crate::worktree::leases::ensure_schema;
 use crate::worktree::probe::probe_path;
+use crate::worktree::registry::record_for_issue_session;
 use crate::worktree::{
-    LeaseRow, ProbeError, ProbeFacts, ProcessWorktreeRunner, WorktreeError,
-    find_active_lease_for_probe, repo_identity,
+    DirectoryRecord, ProbeError, ProbeFacts, ProcessWorktreeRunner, WorktreeError, repo_identity,
 };
 
-use super::open_storage;
-
-/// Lease summary attached to a probe that resolved `--issue`.
-#[derive(Debug, Serialize)]
-pub(crate) struct ProbeLeaseJson {
-    pub lease_id: String,
-    pub repo_identity: String,
-    pub issue: u64,
-    pub session: String,
-    pub status: String,
-    pub branch: String,
-    pub worktree_path: String,
-}
-
-impl From<LeaseRow> for ProbeLeaseJson {
-    fn from(row: LeaseRow) -> Self {
-        Self {
-            lease_id: row.lease_id,
-            repo_identity: row.repo_identity,
-            issue: row.issue,
-            session: row.session,
-            status: row.status,
-            branch: row.branch,
-            worktree_path: row.worktree_path,
-        }
-    }
-}
+use super::query::DirectoryJson;
 
 /// One bounded probe failure in the JSON envelope.
 #[derive(Debug, Serialize)]
@@ -80,13 +52,13 @@ pub(crate) struct ProbeJson {
     pub branch: Option<String>,
     pub head: Option<String>,
     pub is_main_checkout: Option<bool>,
-    pub lease: Option<ProbeLeaseJson>,
+    pub directory: Option<DirectoryJson>,
     pub errors: Vec<ProbeErrorJson>,
 }
 
 impl ProbeJson {
     /// The stable empty result for an `--issue` selector that matched no
-    /// active lease: no path is guessed.
+    /// registered directory: no path is guessed.
     fn unresolved() -> Self {
         Self {
             resolved: false,
@@ -97,14 +69,14 @@ impl ProbeJson {
             branch: None,
             head: None,
             is_main_checkout: None,
-            lease: None,
+            directory: None,
             errors: Vec::new(),
         }
     }
 
     /// Assemble the envelope for a resolved path plus its read-only
-    /// facts and (optionally) the lease the selector matched.
-    fn resolved_at(path: String, facts: ProbeFacts, lease: Option<LeaseRow>) -> Self {
+    /// facts and (optionally) the directory the selector matched.
+    fn resolved_at(path: String, facts: ProbeFacts, directory: Option<DirectoryRecord>) -> Self {
         Self {
             resolved: true,
             path: Some(path),
@@ -114,7 +86,7 @@ impl ProbeJson {
             branch: facts.branch,
             head: facts.head,
             is_main_checkout: facts.is_main_checkout,
-            lease: lease.map(ProbeLeaseJson::from),
+            directory: directory.map(DirectoryJson::from),
             errors: facts.errors.into_iter().map(ProbeErrorJson::from).collect(),
         }
     }
@@ -140,20 +112,28 @@ pub(crate) fn build_probe(
 ) -> Result<ProbeJson, WorktreeError> {
     let runner = ProcessWorktreeRunner::new();
     if let Some(issue) = issue {
-        let storage = open_storage().map_err(|message| WorktreeError::new("config", message))?;
-        ensure_schema(&storage).map_err(|message| WorktreeError::new("config", message))?;
+        let Some(storage) = crate::infra::storage::Storage::open_existing_read_only()
+            .map_err(|message| WorktreeError::new("config", message))?
+        else {
+            return Ok(ProbeJson::unresolved());
+        };
         let checkout = current_dir();
         let identity = repo_identity(&runner, &checkout)?;
-        return Ok(
-            match find_active_lease_for_probe(&storage, &identity, issue, session)? {
-                Some(row) => {
-                    let target = PathBuf::from(&row.worktree_path);
-                    let facts = probe_path(&runner, &target);
-                    ProbeJson::resolved_at(row.worktree_path.clone(), facts, Some(row))
-                }
-                None => ProbeJson::unresolved(),
-            },
-        );
+        let record = match session {
+            Some(session) => record_for_issue_session(&storage, &identity, issue, session)?,
+            None => crate::worktree::registry::records_for_issue(&storage, Some(&identity), issue)?
+                .into_iter()
+                .last(),
+        };
+        return Ok(match record {
+            Some(record) => {
+                let target = PathBuf::from(&record.worktree_path);
+                let facts = probe_path(&runner, &target);
+                let path = record.worktree_path.clone();
+                ProbeJson::resolved_at(path, facts, Some(record))
+            }
+            None => ProbeJson::unresolved(),
+        });
     }
     let target = match path {
         Some(raw) => PathBuf::from(raw),

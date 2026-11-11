@@ -39,7 +39,7 @@ const placementOrigins = new Map();
 // Targets the host moved a session out of.
 //
 // A relocation the host made is authoritative and stays authoritative for that
-// session, so a later lease rediscovery must not hand the same target back.
+// session, so a later registry rediscovery must not hand the same target back.
 // The record is session-local and target-specific: another target, a new issue
 // or another worktree is never blocked.
 const abandonedTargets = new Map();
@@ -58,7 +58,6 @@ const placedSessions = new Set();
 // that has not landed yet.
 const confirmedSessions = new Set();
 const sessionInfo = new Map();
-const closedIssues = new Set();
 
 // `sessionPlaced` reports a *settled* placement: the session already sat in the
 // worktree, or its move was admitted and the runner applies it at the next step
@@ -102,17 +101,6 @@ function supersedeAttempt(key) {
   if (record) record.attempt = null;
 }
 
-// A refused acquisition is remembered per issue: the session stays in the
-// main checkout, and the next prompt must not repeat the lease probe or
-// the warning.
-export function issueKnownClosed(issueId) {
-  return closedIssues.has(String(issueId));
-}
-
-export function rememberClosedIssue(issueId) {
-  closedIssues.add(String(issueId));
-}
-
 // Exact per-session registration. A miss (unknown or absent session) records
 // nothing and never borrows another session's directory.
 //
@@ -153,7 +141,7 @@ export function placementOrigin(sessionId) {
 }
 
 // Remembers that the host moved this session out of `directory`. The record
-// survives the target it belonged to, so a later lease rediscovery cannot
+// survives the target it belonged to, so a later registry rediscovery cannot
 // resurrect a target the session was relocated away from.
 export function markTargetAbandoned(sessionId, directory) {
   if (sessionId === undefined || sessionId === null) return;
@@ -190,7 +178,6 @@ export function resetWorktrees() {
   placedSessions.clear();
   confirmedSessions.clear();
   sessionInfo.clear();
-  closedIssues.clear();
 }
 
 // `context.session.get` is the host's session lookup: `parentID` names the
@@ -283,7 +270,7 @@ export function forgetSessionWorktree(sessionId, _directory) {
 //     is dropped and the child follows the host.
 //
 // A parent the host cannot describe gives the child nothing at all: no cached
-// directory, no issue-lease discovery, and never a stale target.
+// directory, no issue-directory discovery, and never a stale target.
 export async function inheritedWorktree(context, parentId, readDirectory) {
   if (parentId === undefined || parentId === null) return null;
   const key = String(parentId);

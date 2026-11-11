@@ -1,7 +1,8 @@
 // Reconciling the worktree registry against the host.
 //
-// A lease records where a session *was*, and this registry recorded where the
-// plugin put it. Neither survives an authoritative move: `issue close` returns
+// The directory registry records where a session *was*, and the plugin
+// records where it put the session. Neither survives an authoritative move:
+// `issue close` returns
 // the closing session to the repository's main checkout through the OpenCode
 // API before it removes the worktree, and the directory a cached entry names can
 // be gone by the time the next prompt arrives. A move made out of band — the
@@ -71,7 +72,7 @@ export async function reconcileSessionLocation(context, sessionId, readDirectory
     return true;
   }
   // The session was relocated. Its target is dropped and remembered as
-  // abandoned, so a later lease rediscovery cannot hand it back.
+  // abandoned, so a later registry rediscovery cannot hand it back.
   markTargetAbandoned(sessionId, registered);
   forgetSessionWorktree(sessionId, registered);
   placementDiagnostic("skip", { session: key, reason: "reconciled-elsewhere" });

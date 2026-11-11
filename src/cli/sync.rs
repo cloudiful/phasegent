@@ -1,30 +1,24 @@
 //! `issue sync` — remote/local reconciliation (issue 552 Phase 2).
 //!
-//! The pass answers one question per local worktree lease: the provider's
-//! issue is already closed, so is the local residue still needed? A
-//! remotely closed issue converges exactly the way `issue close` converges
-//! it locally:
+//! The pass answers one question per registered worktree directory: the
+//! provider's issue is already closed, so is the local residue still needed?
+//! Each directory of the closed issue runs the shared
+//! [`crate::lifecycle::cleanup_closed_issue_worktrees`] guards (clean, never
+//! the main checkout, fresh host occupancy), so the deletion rule is never
+//! re-implemented here.
 //!
-//! 1. its `active` leases in the scanned repository flip to `retained`
-//!    through [`crate::worktree::release_active_leases_for_issue`] — the
-//!    same primitive the close chain reaches through
-//!    `lifecycle::release_closed_issue_leases`;
-//! 2. each of its worktree directories then runs the shared
-//!    [`crate::lifecycle::cleanup_closed_issue_worktrees`] guards (clean,
-//!    no foreign `active` lease on the directory, never the main
-//!    checkout), so the deletion rule is never re-implemented here.
-//!
-//! Branches are never deleted, lease rows are never deleted, and the
-//! pass is best-effort per issue: a directory a guard keeps stays on disk
-//! with the guard's reason in the report.
+//! Branches are never deleted, the directory registry keeps its evidence
+//! until a directory is really removed, and the pass is best-effort per
+//! issue: a directory a guard keeps stays on disk with the guard's reason in
+//! the report.
 //!
 //! ## Scope and switches
 //!
 //! * default — the repository of the current working directory;
-//! * `--all` — every repository identity recorded in the lease table,
-//!   resolved through its main checkout;
+//! * `--all` — every repository identity recorded in the directory
+//!   registry, resolved through its main checkout;
 //! * `--no-clean` — report mode: the same candidates and the same guard
-//!   verdicts, but nothing is written (no lease flip, no removal).
+//!   verdicts, but nothing is written (no registry change, no removal).
 //!
 //! ## Failure semantics
 //!
@@ -37,25 +31,17 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::cli::{print_json, structured_error};
+use crate::cli::print_json;
 use crate::policy::Role;
 use crate::providers::ProviderKind;
 use crate::worktree::{ProcessWorktreeRunner, bounded};
 
 #[path = "sync/engine.rs"]
 mod engine;
-#[path = "sync/host_cache.rs"]
-mod host_cache;
 #[path = "sync/scopes.rs"]
 mod scopes;
-#[cfg(test)]
-#[path = "sync/tests_reuse.rs"]
-mod tests_reuse;
 use crate::providers::IssueProvider;
-#[cfg(test)]
-pub(crate) use engine::set_retention_interleave_hook;
 pub(crate) use engine::{SyncSetup, resolve_setup, run_sync_resolved};
-use scopes::open_lease_storage;
 
 /// The production task resolver: a durable task's own stored instance
 /// decides the endpoint, and the current role credential is used only when
@@ -87,13 +73,9 @@ impl engine::TaskProviderResolver for RoleTaskProviderResolver {
     }
 }
 
-/// Lease `release_reason` recorded when the reconciliation converges an
-/// issue the provider already closed.
-const SYNC_RELEASE_REASON: &str = "issue closed on the remote (issue sync)";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SyncMode {
-    /// Flip the closed issue's active leases and run the guarded cleanup.
+    /// Run the guarded cleanup for the closed issue.
     Clean,
     /// Classify the same candidates and write nothing.
     Report,
@@ -123,10 +105,6 @@ pub(crate) struct SyncIssueReport {
     pub repo_identity: String,
     pub issue: u64,
     pub remote_state: String,
-    /// `active` lease rows the clean pass flips to `retained` (the count
-    /// the report mode would flip; report mode writes nothing).
-    pub active_leases: u64,
-    pub released_leases: u64,
     pub cleaned: u64,
     pub directories: Vec<SyncDirectoryReport>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -146,7 +124,6 @@ pub(crate) struct SyncReport {
     pub checked: usize,
     pub not_closed: usize,
     pub not_found: usize,
-    pub released_leases: u64,
     pub cleaned: u64,
     pub kept: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -162,7 +139,6 @@ impl SyncReport {
             checked: 0,
             not_closed: 0,
             not_found: 0,
-            released_leases: 0,
             cleaned: 0,
             kept: 0,
             skipped_repos: Vec::new(),
@@ -177,13 +153,12 @@ impl SyncReport {
     fn taxi_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         for issue in &self.issues {
-            if issue.released_leases == 0 && issue.cleaned == 0 {
+            if issue.cleaned == 0 {
                 continue;
             }
             warnings.push(bounded(&format!(
-                "issue {} closed on the remote; released {} lease(s) and removed {} worktree director{}",
+                "issue {} closed on the remote; removed {} worktree director{}",
                 issue.issue,
-                issue.released_leases,
                 issue.cleaned,
                 if issue.cleaned == 1 { "y" } else { "ies" }
             )));
@@ -221,13 +196,18 @@ pub(crate) fn run_sync(
     let provider_scope = crate::providers::index_store::provider_scope(provider)
         .ok()
         .map(|scope| (scope.source, scope.project));
+    let context = crate::cli::provider_context::ProviderContext::default();
     engine::run_sync_scopes(
         &|issue| provider.get_issue(issue),
         None,
-        provider_scope
-            .as_ref()
-            .map(|(a, b)| (a.as_str(), b.as_str())),
-        provider.capabilities().legacy_numeric_leases,
+        engine::SyncProviderScope {
+            scope: provider_scope
+                .as_ref()
+                .map(|(a, b)| (a.as_str(), b.as_str())),
+            legacy_numeric_leases: provider.capabilities().legacy_numeric_leases,
+            role: Role::Orchestrator,
+            context: &context,
+        },
         runner,
         storage,
         &scopes,
@@ -289,10 +269,21 @@ pub(crate) fn execute_sync_with_caller(
         Ok(provider) => provider,
         Err(error) => return crate::cli::provider_error(error),
     };
-    let storage = match open_lease_storage() {
+    let storage = match crate::infra::storage::Storage::open() {
         Ok(storage) => storage,
-        Err(message) => return storage_error(&message),
+        Err(message) => {
+            return crate::cli::structured_error(
+                serde_json::json!({"kind":"storage","message":message}),
+                1,
+            );
+        }
     };
+    if let Err(message) = crate::worktree::ensure_schema(&storage) {
+        return crate::cli::structured_error(
+            serde_json::json!({"kind":"storage","message":message}),
+            1,
+        );
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mode = if no_clean {
         SyncMode::Report
@@ -304,7 +295,7 @@ pub(crate) fn execute_sync_with_caller(
         Ok(setup) => setup,
         Err(error) => return crate::cli::provider_error(error),
     };
-    crate::output::progress::stage("issue sync: reconciling the worktree leases");
+    crate::output::progress::stage("issue sync: reconciling the worktree directories");
     let provider_scope = crate::providers::index_store::provider_scope(&provider)
         .ok()
         .map(|scope| (scope.source, scope.project));
@@ -320,6 +311,8 @@ pub(crate) fn execute_sync_with_caller(
                 .as_ref()
                 .map(|(a, b)| (a.as_str(), b.as_str())),
             legacy_numeric_leases: provider.capabilities().legacy_numeric_leases,
+            role,
+            context: &context,
         },
         &runner,
         &mut setup,
@@ -363,10 +356,13 @@ pub(crate) fn taxi_sync_scoped(
     repo: Option<&str>,
     runner: &dyn crate::worktree::WorktreeRunner,
 ) -> (Vec<String>, Option<SyncSetup>) {
-    let storage = match open_lease_storage() {
+    let storage = match crate::infra::storage::Storage::open() {
         Ok(storage) => storage,
         Err(message) => return (vec![bounded(&format!("sync skipped: {message}"))], None),
     };
+    if let Err(message) = crate::worktree::ensure_schema(&storage) {
+        return (vec![bounded(&format!("sync skipped: {message}"))], None);
+    }
     let cwd = match repo {
         Some(raw) => PathBuf::from(raw),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -406,7 +402,12 @@ where
             return (vec![bounded(&format!("sync skipped: {message}"))], None);
         }
     };
-    if setup.scopes.iter().all(|scope| scope.candidates.is_empty()) {
+    if setup.scopes.iter().all(|scope| {
+        scope
+            .records
+            .iter()
+            .all(|record| record.issue_numbers().is_empty())
+    }) {
         return (Vec::new(), Some(setup));
     }
     let (provider_scope, legacy_numeric_leases, get_issue) = match resolve_provider() {
@@ -430,6 +431,8 @@ where
                 .as_ref()
                 .map(|(a, b)| (a.as_str(), b.as_str())),
             legacy_numeric_leases,
+            role,
+            context,
         },
         runner,
         &mut setup,
@@ -440,13 +443,6 @@ where
         Err(error) => vec![bounded(&format!("sync skipped: {}", error_json(&error)))],
     };
     (warnings, Some(setup))
-}
-
-fn storage_error(message: &str) -> i32 {
-    structured_error(
-        serde_json::json!({"kind": "storage", "operation": "issue sync", "message": message}),
-        1,
-    )
 }
 
 fn error_json(error: &crate::providers::api::PhasegentError) -> String {

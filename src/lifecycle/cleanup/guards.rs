@@ -1,17 +1,15 @@
-//! The local, Git-only guards a closed issue's candidate must pass.
+//! The local, Git-only guards a registered worktree directory must pass.
 //!
-//! These are the pre-existing removal rules, unchanged: never the main
-//! checkout, never a directory another session holds an `active` lease
-//! on, never dirty. Each returns a bounded reason naming the guard so the
-//! operator can act on it; the caller prefixes it with the issue and
-//! appends the directory verbatim.
+//! These are the pre-existing removal rules: never the main checkout, never
+//! dirty or untracked. Current occupancy is decided by the connected host, not
+//! by registration, so no registration row can veto a removal here. Each
+//! failure returns a bounded reason naming the guard so the operator can act
+//! on it; the caller prefixes it with the issue and appends the directory
+//! verbatim.
 
 use std::path::{Path, PathBuf};
 
-use crate::worktree::{
-    CanonicalPaths, LEASE_STATUS_ACTIVE, LeaseRow, WorktreeError, WorktreeRunner,
-    cache::CacheInventory,
-};
+use crate::worktree::{CanonicalPaths, WorktreeError, WorktreeRunner, cache::CacheInventory};
 
 /// The result of the local Git-only guards for one candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,17 +44,15 @@ impl LocalGuard {
     }
 }
 
-/// Evaluate the local guards for one candidate row. A protected reason means
-/// the directory must be kept; otherwise the carried cache assessment is the
-/// only dirty state the shared removal may clear.
+/// Evaluate the local guards for one candidate directory. A protected reason
+/// means the directory must be kept; otherwise the carried cache assessment is
+/// the only dirty state the shared removal may clear.
 pub(super) fn evaluate(
     runner: &dyn WorktreeRunner,
-    rows: &[LeaseRow],
     identity: &str,
-    session: Option<&str>,
-    row: &LeaseRow,
+    directory: &Path,
 ) -> LocalGuard {
-    CanonicalPaths::default().evaluate_guards(runner, identity, rows, session, row)
+    CanonicalPaths::default().evaluate_guards(runner, identity, directory)
 }
 
 impl CanonicalPaths {
@@ -64,12 +60,9 @@ impl CanonicalPaths {
         &self,
         runner: &dyn WorktreeRunner,
         identity: &str,
-        rows: &[LeaseRow],
-        session: Option<&str>,
-        row: &LeaseRow,
+        directory: &Path,
     ) -> LocalGuard {
-        let directory = PathBuf::from(&row.worktree_path);
-        match is_main_checkout_with_paths(runner, &directory, identity, self) {
+        match is_main_checkout_with_paths(runner, directory, identity, self) {
             Ok(true) => return LocalGuard::protected("main checkout is never removed"),
             Ok(false) => {}
             Err(error) => {
@@ -79,15 +72,9 @@ impl CanonicalPaths {
                 ));
             }
         }
-        if let Some(other) = foreign_active_lease(rows, session, row, self) {
-            return LocalGuard::protected(format!(
-                "session '{}' holds an active lease for issue {}",
-                other.session, other.issue
-            ));
-        }
-        match crate::worktree::is_clean(runner, &directory) {
+        match crate::worktree::is_clean(runner, directory) {
             Ok(true) => LocalGuard::allowed(),
-            Ok(false) => match crate::worktree::cache::inspect(runner, &directory) {
+            Ok(false) => match crate::worktree::cache::inspect(runner, directory) {
                 Ok(crate::worktree::cache::CacheInspection::CacheOnly(cache)) => {
                     LocalGuard::allowed_cache_only(cache)
                 }
@@ -108,35 +95,11 @@ impl CanonicalPaths {
         &self,
         runner: &dyn WorktreeRunner,
         identity: &str,
-        rows: &[LeaseRow],
-        session: Option<&str>,
-        row: &LeaseRow,
+        directory: &Path,
     ) -> Option<String> {
-        self.evaluate_guards(runner, identity, rows, session, row)
+        self.evaluate_guards(runner, identity, directory)
             .protected_reason
     }
-}
-
-/// An `active` row pointing at the same directory from another session.
-/// The close chain flips this issue's `active` leases to `retained`
-/// before the cleanup runs, so an `active` row seen here belongs to
-/// another issue or to another session; the closing session's own row is
-/// exempted for the callers that reach the guard without a preceding
-/// flip, such as the `issue sync` report mode. `session == None` makes
-/// every still-active row foreign, which keeps an unconverged directory
-/// instead of deleting it.
-fn foreign_active_lease<'a>(
-    rows: &'a [LeaseRow],
-    session: Option<&str>,
-    row: &LeaseRow,
-    paths: &CanonicalPaths,
-) -> Option<&'a LeaseRow> {
-    let directory = Path::new(&row.worktree_path);
-    rows.iter().find(|other| {
-        other.status == LEASE_STATUS_ACTIVE
-            && session != Some(other.session.as_str())
-            && paths.same_directory(Path::new(&other.worktree_path), directory)
-    })
 }
 
 /// True when `directory` is the repository's main working tree: the

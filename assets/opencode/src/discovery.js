@@ -3,9 +3,10 @@
 // Placement runs from the session prompt hook (issue 37), once per session and
 // before the runner reaches any tool call, so a move never has to cancel an
 // in-flight invocation. A session with neither a registered nor an inherited
-// worktree probes the checkout's issue binding and the issue's leases, and reuses
-// a path only when one is already recorded. Creating a worktree is opt-in
-// (issue 616): with no reusable lease the session keeps the current checkout and
+// worktree probes the checkout's issue binding and the verified registry
+// mapping, and reuses a path only when exactly one registered directory for the
+// issue is either unowned or already names this session. Creating a worktree is
+// opt-in: with no verified directory the session keeps the current checkout and
 // is pointed at the explicit `phasegent worktree acquire --isolate` command
 // instead. A Task-spawned child follows its parent's directory first and never
 // reaches the probes below, so it can neither acquire nor guess one.
@@ -21,24 +22,20 @@
 // a target it was moved out of is not handed back by a later rediscovery.
 
 import {
-  issueClosedLocally,
-  pickActiveWorktreePath,
   readBranchBinding,
-  readIssueLeaseHistory,
-  readIssueLeases,
+  readRepositoryDirectories,
+  verifiedBindingDirectory,
 } from "./binding.js";
 import { errorText, phasegentCallsDisabled, warn } from "./runtime.js";
 import {
   forgetSessionWorktree,
   inheritedWorktree,
-  issueKnownClosed,
   markConfirmed,
   markPlaced,
   moveSessionToWorktree,
   PLACEMENT_ERROR_PREFIX,
   readAuthoritativeDirectory,
   readSessionInfo,
-  rememberClosedIssue,
   rememberWorktree,
   targetAbandoned,
   worktreeForSession,
@@ -59,11 +56,14 @@ export async function discoverWorktreeForSession(sessionId, cwd) {
     if (!sessionId) return null;
     const known = worktreeForSession(sessionId);
     if (known) return known;
-    const issueId = await readBranchBinding(cwd);
-    if (!issueId) return null;
-    const leases = await readIssueLeases(issueId, cwd);
-    if (!leases) return null;
-    const path = pickActiveWorktreePath(leases);
+    const binding = await readBranchBinding(cwd);
+    if (!binding) return null;
+    // The directory list is scoped to the repository the session is currently
+    // in, and selection requires the complete provider/project/external task
+    // identity from the binding, never a matching number alone.
+    const directories = await readRepositoryDirectories(cwd);
+    if (!directories) return null;
+    const path = verifiedBindingDirectory(directories, binding, sessionId);
     if (!path) return null;
     // A target the host moved this session out of stays abandoned: the
     // relocation is authoritative and rediscovery must not resurrect it. The
@@ -79,8 +79,8 @@ export async function discoverWorktreeForSession(sessionId, cwd) {
 
 // A refused placement is remembered per (session, issue): the session stays in
 // the current checkout, so the next prompt must not repeat the same warning.
-// A fresh session id (or a new issue binding) warns again, and a lease that
-// appears later is still picked up by the reuse probe before this guard.
+// A fresh session id (or a new issue binding) warns again, and a directory
+// that appears later is still picked up by the reuse probe before this guard.
 const refusedPlacements = new Set();
 
 function warnRefusedPlacement(sessionId, issueId) {
@@ -122,7 +122,6 @@ export async function ensureSessionWorktree(context, sessionId, deps) {
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
-  const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   try {
     // A child inherits before its own registration and before the reuse probe:
     // it takes its parent's current directory or nothing at all, never another
@@ -153,34 +152,18 @@ export async function ensureSessionWorktree(context, sessionId, deps) {
       await moveSessionToWorktree(context, sessionId, discovered);
       return discovered;
     }
-    const issueId = await readBinding(cwd);
-    if (!issueId) return null;
-    if (issueKnownClosed(issueId)) return null;
-    if (await issueConverged(issueId, cwd, readLeaseHistory)) {
-      warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
-      return null;
-    }
-    // Automatic creation is opt-in (issue 616): with no reusable lease the
-    // session keeps the current checkout instead of being moved into a freshly
-    // created worktree, and the explicit isolation command is the opt-in.
-    warnRefusedPlacement(sessionId, issueId);
+    const binding = await readBinding(cwd);
+    if (!binding) return null;
+    // Automatic creation is opt-in: with no verified directory the session
+    // keeps the current checkout instead of being moved into a freshly created
+    // worktree, and the explicit isolation command is the opt-in.
+    warnRefusedPlacement(sessionId, binding.issueId);
     return null;
   } catch (error) {
     if (isPlacementFailure(error)) throw error;
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
   }
-}
-
-// The local, offline closed marker: `issue close` and `issue sync` converge a
-// lease row instead of deleting it, so its "issue closed…" release reason is
-// what the adapter reads. Remembering the answer keeps the next prompt off the
-// CLI. A binding that cannot be read leaves the decision to the caller.
-async function issueConverged(issueId, cwd, readLeaseHistory) {
-  if (issueKnownClosed(issueId)) return true;
-  if (!issueClosedLocally(await readLeaseHistory(issueId, cwd))) return false;
-  rememberClosedIssue(issueId);
-  return true;
 }
 
 // The parent's registered target is the destination of a move that may still be

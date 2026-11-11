@@ -116,11 +116,9 @@ fn timer_name(command: &TimerCommand) -> &'static str {
 fn worktree_name(command: &WorktreeCommand) -> &'static str {
     match command {
         WorktreeCommand::Acquire { .. } => "acquire",
-        WorktreeCommand::Release { .. } => "release",
         WorktreeCommand::Status { .. } => "status",
         WorktreeCommand::List { .. } => "list",
         WorktreeCommand::Probe { .. } => "probe",
         WorktreeCommand::Prune { .. } => "prune",
-        WorktreeCommand::Heartbeat { .. } => "heartbeat",
     }
 }

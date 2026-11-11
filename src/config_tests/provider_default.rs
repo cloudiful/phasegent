@@ -104,8 +104,8 @@ fn config_provider_clear_parses_without_role() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation =
-        command::parse(&args).expect("config provider clear without a role must parse");
+    let invocation = command::parse_with_role_env(&args, None)
+        .expect("config provider clear without a role must parse");
     match invocation.command {
         Command::ConfigProviderClear => {}
         other => panic!("expected ConfigProviderClear, got {other:?}"),

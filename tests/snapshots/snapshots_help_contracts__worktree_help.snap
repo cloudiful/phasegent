@@ -1,17 +1,16 @@
 ---
 source: tests/snapshots_help_contracts.rs
+assertion_line: 102
 expression: "help(&scratch, None, &[\"--help\", \"worktree\"])"
 ---
 Worktree commands for all roles:
 
-  acquire        Acquire or reuse a per-(repo, issue, session) lease
-  release        Flip an active lease to retained or released
-  heartbeat      Refresh an active lease heartbeat
-  prune          Prune stale leases and clean worktrees
+  acquire        Acquire or reuse a registered worktree directory
+  prune          Prune registered worktrees and clean directories
 
 Read-only (status/list/probe):
-  status         List active leases for an issue
-  list           List every lease for the resolved repo identity
-  probe          Probe a checkout or lease path read-only
+  status         List registered directories associated with an issue
+  list           List every registered directory for the resolved repo identity
+  probe          Probe a checkout or registered directory read-only
 
 Use 'phasegent --help worktree <command>' for options. acquire and list run their repository's sync pass first; --no-sync skips it.

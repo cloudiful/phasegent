@@ -17,9 +17,7 @@ const EXPECTED_ORCHESTRATOR_ONLY: &[&str] = &[
     "timer recover",
     "timer start",
     "worktree acquire",
-    "worktree heartbeat",
     "worktree prune",
-    "worktree release",
 ];
 
 const EXPECTED_WORKTREE_READ: &[&str] = &["worktree list", "worktree probe", "worktree status"];

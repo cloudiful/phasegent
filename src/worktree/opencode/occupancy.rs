@@ -81,3 +81,126 @@ pub(crate) fn occupants_of_directory(
         .filter(|session| same_directory(Path::new(&session.directory), directory))
         .collect())
 }
+
+/// The bounded reason a directory hosts a session outside `own_sessions`,
+/// or `None` when the complete current evidence places no foreign session in
+/// it. A listing or lookup that cannot be read is uncertainty and therefore a
+/// reason, never a free directory.
+///
+/// `foreign_sessions` are the registry-associated sessions of other tasks;
+/// each is also read authoritatively so a listing that omits one cannot make a
+/// live occupant disappear from the conflict decision.
+pub(crate) fn foreign_occupancy_reason(
+    api: &dyn OpenCodeApi,
+    directory: &Path,
+    own_sessions: &[String],
+    foreign_sessions: &[String],
+) -> Option<String> {
+    let occupants = match occupants_of_directory(api, directory) {
+        Ok(occupants) => occupants,
+        Err(error) => {
+            return Some(format!(
+                "the OpenCode occupancy listing is incomplete: {}",
+                crate::lifecycle::bounded(&error.message)
+            ));
+        }
+    };
+    for occupant in occupants {
+        match belongs_to_own_family(api, &occupant, own_sessions) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Some(format!(
+                    "OpenCode session '{}' currently occupies the directory",
+                    crate::lifecycle::bounded(&occupant.id)
+                ));
+            }
+            Err(reason) => return Some(reason),
+        }
+    }
+    for id in foreign_sessions {
+        let id = id.trim();
+        if id.is_empty()
+            || own_sessions.iter().any(|own| own == id)
+            || !super::is_opencode_session(id)
+        {
+            continue;
+        }
+        match api.session(id) {
+            Ok(located) if located.id != id => {
+                return Some(format!(
+                    "the host answered for OpenCode session '{id}' with a different session '{}'",
+                    crate::lifecycle::bounded(&located.id)
+                ));
+            }
+            Ok(located) if same_directory(Path::new(&located.directory), directory) => {
+                match belongs_to_own_family(api, &located, own_sessions) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Some(format!(
+                            "OpenCode session '{}' currently occupies the directory",
+                            crate::lifecycle::bounded(id)
+                        ));
+                    }
+                    Err(reason) => return Some(reason),
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.is_session_not_found() => {}
+            Err(error) => {
+                return Some(format!(
+                    "OpenCode session '{id}' could not be located: {}",
+                    crate::lifecycle::bounded(&error.message)
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn belongs_to_own_family(
+    api: &dyn OpenCodeApi,
+    occupant: &LocatedSession,
+    own_sessions: &[String],
+) -> Result<bool, String> {
+    if own_sessions.iter().any(|own| own == &occupant.id) {
+        return Ok(true);
+    }
+    let mut current = occupant.parent_id.clone();
+    let mut visited: Vec<String> = vec![occupant.id.clone()];
+    for _ in 0..64 {
+        let Some(parent) = current else {
+            return Ok(false);
+        };
+        if own_sessions.iter().any(|own| own == &parent) {
+            return Ok(true);
+        }
+        if visited.iter().any(|known| known == &parent) {
+            return Err(format!(
+                "the parent lineage of OpenCode session '{}' is cyclic",
+                crate::lifecycle::bounded(&occupant.id)
+            ));
+        }
+        visited.push(parent.clone());
+        match api.session(&parent) {
+            Ok(located) if located.id != parent => {
+                return Err(format!(
+                    "the host answered for parent '{parent}' with a different session '{}'",
+                    crate::lifecycle::bounded(&located.id)
+                ));
+            }
+            Ok(located) => current = located.parent_id,
+            Err(error) if error.is_session_not_found() => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "the parent lineage of OpenCode session '{}' could not be resolved: {}",
+                    crate::lifecycle::bounded(&occupant.id),
+                    crate::lifecycle::bounded(&error.message)
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "the parent lineage of OpenCode session '{}' is too long to prove",
+        crate::lifecycle::bounded(&occupant.id)
+    ))
+}

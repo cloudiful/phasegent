@@ -43,7 +43,7 @@ out-of-range page has empty `items` and `has_more:false`, while retaining the
 requested page and collection metadata. Text output shows the current page,
 total and whether more items remain, together with the entries and scope.
 
-Worktree status counts active leases only. Record filters and decoding run
+Worktree status filters registry directories by associated issue number. Record filters and decoding run
 before counting and slicing; ordinary comments do not count as records. Branch
 ambiguity reflects all matching repository/issue scopes, not only the visible
 page. Separate page requests do not share a snapshot, so concurrent collection
@@ -73,13 +73,13 @@ paginated.
 
 ## Worktree maintenance
 
-Pagination applies only to the lease query. Authorized Operator/orchestrator
+Pagination applies only to the directory query. Authorized Operator/orchestrator
 `worktree list` callers still complete the repository-scoped synchronous
 reconciliation before reading the requested page; `--no-sync` skips it. Read
 roles do not trigger reconciliation. Acquire, sync, prune, and workflow
 maintenance use their complete collections, never the CLI page limit. See
 [worktree maintenance](worktree-maintenance.md).
 
-The OpenCode adapter explicitly follows active-lease and lease-history pages
-when it needs complete collections. It validates every page and returns no
+The OpenCode adapter explicitly follows directory pages when it needs complete
+collections. It validates every page and returns no
 collection if a later read fails or the result is malformed or inconsistent.

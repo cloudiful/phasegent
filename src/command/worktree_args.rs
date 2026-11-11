@@ -1,55 +1,36 @@
-/// Worktree lease management (issue #239 Phase 2).
+/// Worktree directory management.
 ///
-/// * `acquire` returns a `(lease_id, path, branch, repo_identity,
+/// * `acquire` returns a `(directory_id, path, branch, repo_identity,
 ///   created, reason)` envelope (`reason ∈ {idempotent,
 ///   no_conflict, new_worktree}`) on stdout; the same session triple
-///   reuses the prior lease. The envelope is the machine JSON document or
-///   its readable rendering, following the global output mode. An explicit
-///   `--base REF` skips the reuse /
-///   conflict decision table (after the idempotent home-coming) and
-///   creates a fresh worktree/branch from `REF`. Orchestrator-only.
-/// * `release` flips the lease to `retained` (default) or `released`.
-///   Orchestrator-only. Never deletes the directory or the branch in
-///   the current Phase 2 surface; prune is a separate subcommand.
-/// * `status --issue N` lists active leases for the issue. Read-only;
-///   available to orchestrator, executor, and reviewer.
-/// * `list [--repo PATH]` lists every lease (active + terminal) for
-///   the resolved repo identity; `--repo` defaults to the current
-///   working directory. Read-only; available to orchestrator,
-///   executor, and reviewer.
+///   reuses its registered directory. An explicit `--base REF` skips the
+///   reuse/conflict table (after the idempotent home-coming) and creates a
+///   fresh worktree/branch from `REF`. Orchestrator-only.
+/// * `status --issue N` lists the registered directories associated
+///   with the issue. Read-only; available to orchestrator, executor, and
+///   reviewer.
+/// * `list [--repo PATH]` lists every registered directory for the
+///   resolved repo identity; `--repo` defaults to the current working
+///   directory. Read-only; available to orchestrator, executor, and reviewer.
 /// * `probe [--path PATH | --issue N [--session S]]` reports bounded,
-///   read-only filesystem / Git facts about a checkout (or the lease
-///   that matches `--issue`). It never calls a provider, writes a
-///   lease, or syncs. Read-only; available to orchestrator, executor,
-///   and reviewer.
-/// * `prune [--repo PATH] [--stale-days N] [--release-stale --reason
-///   TEXT] [--dryrun] [--json|--format text|json] [--verbose] [--remove]
-///   [--no-sync]` is the single pruning entry point (folds the former
-///   `release-stale`). Removal is the default and covers every repository
-///   identity the local lease store records; `--repo PATH` restricts the pass
-///   to one verified checkout and `--dryrun` (alias `--dry-run`) is the
-///   read-only preview that mutates nothing. `--release-stale` requires
-///   a non-empty `--reason` unless it is a preview and flips exactly the
-///   stale active leases to `retained`; the directory pass then removes
-///   clean + expired + retained worktrees that pass the shared candidate
-///   guards (never the main checkout, never an active peer's path, never
-///   dirty, never a directory the OpenCode host still occupies). The output
-///   format follows the global `--output auto|text|json` selection;
-///   `--json` / `--format json` select the machine-readable aggregate and
-///   `--format text` the concise English text, and an explicit legacy
-///   selection wins over the automatic default. The English text is the
-///   fixed-size summary; `--verbose` adds the bounded per-directory rows and
-///   never changes the machine document. `--remove` is an accepted
-///   compatibility no-op and `--no-sync` is accepted but no longer runs a
-///   sync pass. Branches are never deleted; only `git worktree remove` (no
-///   `--force`) is invoked. Orchestrator-only.
-/// * `heartbeat --lease ID [--session SESSION]` refreshes the heartbeat
-///   of an active lease, but only when the resolved session owns the
-///   row; a foreign session or terminal lease is a structured conflict.
-///   Orchestrator-only.
+///   read-only filesystem / Git facts about a checkout (or the directory
+///   that matches `--issue`). It never calls a provider, writes the
+///   registry, or syncs. Read-only; available to orchestrator, executor, and
+///   reviewer.
+/// * `prune [--repo PATH] [--dryrun] [--json|--format text|json]
+///   [--verbose] [--remove] [--no-sync]` is the single pruning entry point.
+///   Removal is the default and covers every repository identity the
+///   directory registry records; `--repo PATH` restricts the pass to one
+///   verified checkout and `--dryrun` (alias `--dry-run`) is the read-only
+///   preview that mutates nothing. The output format follows the global
+///   `--output auto|text|json` selection; `--verbose` adds the bounded
+///   per-directory rows and never changes the machine document. `--remove`
+///   is an accepted compatibility no-op and `--no-sync` is accepted but no
+///   longer runs a sync pass. Branches are never deleted; only `git worktree
+///   remove` (no `--force`) is invoked. Orchestrator-only.
 ///
-/// `acquire`, `list`, and `prune` also accept `--no-sync` (issue 552
-/// Phase 2): the pre-subcommand reconciliation pass described on
+/// `acquire` and `list` also accept `--no-sync` (issue 552 Phase 2): the
+/// pre-subcommand reconciliation pass described on
 /// [`WorktreeCommand::sync_taxi`] is skipped for that invocation.
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -72,20 +53,12 @@ pub enum WorktreeCommand {
         /// Force a fresh worktree (issue #509): `--isolate` skips every
         /// reuse path and acquires an isolated worktree directly, and an
         /// occupied checkout path isolates by default. The default is
-        /// reuse-current-unless-the-target-path-is-actively-occupied
-        /// (issue 651). `--reuse` states that default explicitly at the
-        /// parser layer and is mutually exclusive with `--isolate`; it
-        /// never bypasses an active lease on the checkout path.
+        /// reuse-current-unless-the-target-path-is-occupied. `--reuse`
+        /// states that default explicitly at the parser layer and is mutually
+        /// exclusive with `--isolate`; it never bypasses an occupied checkout
+        /// path.
         isolate: bool,
         no_sync: bool,
-    },
-    Release {
-        lease: String,
-        retain: bool,
-        /// True when invoked with `--force`: the transition is
-        /// recorded with the operator justification in `reason`.
-        force: bool,
-        reason: Option<String>,
     },
     Status {
         issue: u64,
@@ -106,18 +79,12 @@ pub enum WorktreeCommand {
     },
     Prune {
         repo: Option<String>,
-        stale_days: u32,
-        release_stale: bool,
         /// Accepted compatibility no-op: removal is the default now, so this
         /// flag changes nothing. `--dryrun`/`--dry-run` is the explicit
         /// preview and wins when both are present.
         remove: bool,
-        /// Required (non-empty) when `release_stale` is true on a non-preview
-        /// run so the recovery stays attributable; optional for a preview and
-        /// rejected on its own.
-        reason: Option<String>,
         /// Explicit read-only preview (`--dryrun`/`--dry-run`): classify and
-        /// report without mutating any directory or lease row.
+        /// report without mutating any directory or registry row.
         dry_run: bool,
         /// The legacy output selection of the prune: `"text"` (the parse-time
         /// default) or `"json"` (an explicit `--json` or `--format json`).
@@ -129,13 +96,6 @@ pub enum WorktreeCommand {
         /// machine document, and the JSON output ignores it.
         verbose: bool,
         no_sync: bool,
-    },
-    Heartbeat {
-        lease: String,
-        /// Explicit `--session`; `None` defers to
-        /// `PHASEGENT_SESSION_ID`, and a missing identity fails instead
-        /// of refreshing under a guessed owner (issue 651 P4).
-        session: Option<String>,
     },
 }
 
@@ -158,9 +118,7 @@ impl WorktreeCommand {
             Self::Acquire { .. }
             | Self::List { .. }
             | Self::Prune { .. }
-            | Self::Release { .. }
             | Self::Status { .. }
-            | Self::Heartbeat { .. }
             | Self::Probe { .. } => None,
         }
     }

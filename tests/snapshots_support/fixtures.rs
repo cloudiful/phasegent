@@ -9,7 +9,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
@@ -111,11 +110,8 @@ pub fn add_worktree(repo: &Path, dir: &Path, branch: &str) -> PathBuf {
     dir.to_path_buf()
 }
 
-/// Resolve the repository identity production scopes lease work to, and let
-/// the production code create the lease table: `worktree list` opens the store
-/// through the same `ensure_schema` every lease path uses, so a fixture never
-/// duplicates the production DDL.
-pub fn open_lease_store(scratch: &Scratch, repo: &Path) -> String {
+/// Resolve the repository identity the registry scopes worktree work to.
+pub fn open_registry_store(scratch: &Scratch, repo: &Path) -> String {
     let repo = repo.to_str().expect("utf8 repo path");
     let document = expect_json(
         scratch,
@@ -129,39 +125,92 @@ pub fn open_lease_store(scratch: &Scratch, repo: &Path) -> String {
         .to_owned()
 }
 
-/// Insert one `active` lease row, mirroring the columns `insert_lease` writes.
-pub fn insert_active_lease(
+/// Insert one directory record with one legacy issue association and one
+/// session, creating the registry tables the production reader expects.
+pub fn insert_registry_directory(
     scratch: &Scratch,
     identity: &str,
     issue: u64,
     session: &str,
     checkout: &Path,
     worktree: &Path,
+    branch: &str,
 ) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after the epoch")
-        .as_secs() as i64;
     let connection =
-        Connection::open(scratch.join("phasegent.sqlite3")).expect("open the lease database");
+        Connection::open(scratch.join("phasegent.sqlite3")).expect("open the registry database");
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS worktree_registry_meta (
+                 name TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS worktree_directories (
+                 directory_id TEXT PRIMARY KEY,
+                 repo_identity TEXT NOT NULL,
+                 checkout_path TEXT NOT NULL,
+                 worktree_path TEXT NOT NULL,
+                 branch TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 UNIQUE (repo_identity, worktree_path)
+             );
+             CREATE TABLE IF NOT EXISTS worktree_directory_tasks (
+                 directory_id TEXT NOT NULL,
+                 task_id INTEGER NOT NULL,
+                 issue INTEGER NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY (directory_id, task_id)
+             );
+             CREATE TABLE IF NOT EXISTS worktree_directory_legacy_issues (
+                 directory_id TEXT NOT NULL,
+                 issue INTEGER NOT NULL,
+                 provider TEXT NOT NULL DEFAULT '',
+                 project TEXT NOT NULL DEFAULT '',
+                 external_id INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY (directory_id, issue, provider, project, external_id)
+             );
+             CREATE TABLE IF NOT EXISTS worktree_directory_sessions (
+                 directory_id TEXT NOT NULL,
+                 session TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY (directory_id, session)
+             );",
+        )
+        .expect("create registry tables");
     connection
         .execute(
-            "INSERT INTO worktree_leases \
-             (lease_id, repo_identity, issue, session, checkout_path, worktree_path, branch, \
-              status, created_at, heartbeat_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR IGNORE INTO worktree_registry_meta (name, value) VALUES ('schema_version', '1')",
+            [],
+        )
+        .expect("record registry version");
+    let directory_id = format!("dir-{issue}-{session}");
+    connection
+        .execute(
+            "INSERT INTO worktree_directories \
+             (directory_id, repo_identity, checkout_path, worktree_path, branch, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
             rusqlite::params![
-                format!("snapshots-lease-{issue}-{session}"),
+                directory_id.clone(),
                 identity,
-                issue as i64,
-                session,
                 checkout.to_str().expect("utf8 checkout path"),
                 worktree.to_str().expect("utf8 worktree path"),
-                "main",
-                "active",
-                now,
-                now,
+                branch,
             ],
         )
-        .expect("insert lease row");
+        .expect("insert directory row");
+    connection
+        .execute(
+            "INSERT INTO worktree_directory_legacy_issues \
+             (directory_id, issue, provider, project, external_id, created_at) \
+             VALUES (?1, ?2, '', '', 0, 1)",
+            rusqlite::params![directory_id.clone(), issue as i64],
+        )
+        .expect("insert legacy issue row");
+    connection
+        .execute(
+            "INSERT INTO worktree_directory_sessions (directory_id, session, created_at) \
+             VALUES (?1, ?2, 1)",
+            rusqlite::params![directory_id, session],
+        )
+        .expect("insert session row");
 }

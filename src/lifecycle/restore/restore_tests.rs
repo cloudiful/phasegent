@@ -276,7 +276,7 @@ fn dirty_main_and_third_party_branch_skip_without_mutating() {
 }
 
 #[test]
-fn another_hosted_session_or_active_lease_blocks_restoration() {
+fn another_hosted_session_blocks_restoration() {
     let repo = RealRepo::new("restore-occupancy", false);
     let db = TempDb::new("restore-occupancy-db");
     let baseline_head = repo.head(&repo.work);
@@ -288,21 +288,6 @@ fn another_hosted_session_or_active_lease_blocks_restoration() {
         .with_session(SESSION, &repo.work)
         .with_session("ses_peer", &repo.work);
     let outcome = restore(&repo, &db, &api, Some(SESSION));
-    assert!(matches!(outcome, RestoreOutcome::Warning { .. }));
-    assert_eq!(repo.branch(&repo.work), ISSUE_BRANCH);
-
-    crate::worktree::ensure_schema(&storage).unwrap();
-    storage
-        .connection
-        .execute(
-            "INSERT INTO worktree_leases \
-             (lease_id, repo_identity, issue, session, checkout_path, worktree_path, branch, \
-              status, created_at, heartbeat_at) \
-             VALUES ('lease-peer', ?1, 99, 'ses_peer', ?2, ?2, 'feature/99', 'active', 1, 1)",
-            rusqlite::params![repo.identity(), repo.work.to_string_lossy()],
-        )
-        .unwrap();
-    let outcome = restore(&repo, &db, &FakeOpenCodeApi::empty(), Some(SESSION));
     assert!(matches!(outcome, RestoreOutcome::Warning { .. }));
     assert_eq!(repo.branch(&repo.work), ISSUE_BRANCH);
 }

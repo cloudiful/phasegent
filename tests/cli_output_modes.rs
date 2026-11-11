@@ -319,20 +319,10 @@ fn the_prune_keeps_its_legacy_formats_and_the_default_follows_auto() {
         );
     }
     // A dry-run preview against an absent store creates nothing: no database
-    // file and no schema, whether or not stale recovery was requested.
+    // file and no schema.
     assert!(
         !scratch.path("phasegent.sqlite3").exists(),
-        "a preview must not create the lease store"
-    );
-    let stale_preview = run_cli(
-        &scratch,
-        Some("orchestrator"),
-        &["worktree", "prune", "--dryrun", "--release-stale"],
-    );
-    assert_eq!(stale_preview.code, 0, "stderr: {}", stale_preview.stderr);
-    assert!(
-        !scratch.path("phasegent.sqlite3").exists(),
-        "a stale preview must not create the lease store"
+        "a preview must not create the registry store"
     );
 
     // A contradictory pair is rejected at parse time.
@@ -351,7 +341,7 @@ fn the_prune_keeps_its_legacy_formats_and_the_default_follows_auto() {
     );
     assert!(
         !scratch.path("phasegent.sqlite3").exists(),
-        "even a refused invocation must not create the lease store"
+        "even a refused invocation must not create the registry store"
     );
 }
 
@@ -494,13 +484,17 @@ fn the_curated_views_answer_the_question() {
         config.stdout
     );
 
-    let leases = run_cli(
+    let directories = run_cli(
         &scratch,
         Some("orchestrator"),
         &["--output", "text", "worktree", "list"],
     );
-    assert_eq!(leases.code, 0, "stderr: {}", leases.stderr);
-    assert!(leases.stdout.contains("leases"), "got: {}", leases.stdout);
+    assert_eq!(directories.code, 0, "stderr: {}", directories.stderr);
+    assert!(
+        directories.stdout.contains("directories"),
+        "got: {}",
+        directories.stdout
+    );
 
     let probe = run_cli(
         &scratch,
@@ -529,7 +523,7 @@ fn the_machine_keysets_preserve_utility_output_and_page_collections() {
         "branch",
         "head",
         "is_main_checkout",
-        "lease",
+        "directory",
         "errors",
     ] {
         assert!(
@@ -548,7 +542,10 @@ fn the_machine_keysets_preserve_utility_output_and_page_collections() {
     assert_eq!(value["total_count"], 0);
     assert_eq!(value["has_more"], false);
     assert_eq!(value["items"], serde_json::json!([]));
-    assert!(value.get("leases").is_none(), "got: {value}");
+    assert!(
+        value.get("leases").is_none() && value.get("directories").is_none(),
+        "got: {value}"
+    );
 }
 
 /// The progress surface only exists for a human on an interactive terminal: a

@@ -744,10 +744,16 @@ mod tests {
                  CREATE TABLE worktree_lease_scopes (\
                      lease_id TEXT PRIMARY KEY, provider TEXT NOT NULL, project TEXT NOT NULL, \
                      external_id INTEGER NOT NULL, created_at INTEGER NOT NULL);\
+                 CREATE TABLE worktree_leases (\
+                     lease_id TEXT PRIMARY KEY, repo_identity TEXT NOT NULL, issue INTEGER NOT NULL, \
+                     session TEXT NOT NULL, checkout_path TEXT NOT NULL, worktree_path TEXT NOT NULL, \
+                     branch TEXT NOT NULL, created_at INTEGER NOT NULL);\
                  INSERT INTO branch_issue_links VALUES \
                      ('repo', 'branch', 'forgejo', 'owner/repo', '7', 7, 'linked', 'fixture', 1, 1, NULL, NULL);\
                  INSERT INTO worktree_lease_scopes VALUES \
-                     ('lease', 'forgejo', 'owner/repo', 7, 1);",
+                     ('lease', 'forgejo', 'owner/repo', 7, 1);\
+                 INSERT INTO worktree_leases VALUES \
+                     ('lease', '/repo/.git', 7, 'ses_legacy', '/repo', '/repo/wt-7', 'feat/7', 1);",
             )
             .unwrap();
         drop(connection);
@@ -768,15 +774,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(link, ("forgejo".to_owned(), "owner/repo".to_owned(), None));
-        let scope: (String, Option<i64>) = storage
+        let records = crate::worktree::registry::load_records(&storage, None).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].legacy_issues.len(), 1);
+        assert_eq!(records[0].legacy_issues[0].provider, "forgejo");
+        assert_eq!(records[0].legacy_issues[0].project, "owner/repo");
+        assert_eq!(records[0].legacy_issues[0].external_id, 7);
+        assert!(records[0].tasks.is_empty(), "no task id is backfilled");
+        let scope_table: bool = storage
             .connection
             .query_row(
-                "SELECT provider, task_id FROM worktree_lease_scopes WHERE lease_id = 'lease'",
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'worktree_lease_scopes')",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(scope, ("forgejo".to_owned(), None));
+        assert!(!scope_table, "the upgrade retires the legacy scope table");
         assert_eq!(binding_count(&storage), 0);
         assert_eq!(membership_count(&storage), 0);
     }

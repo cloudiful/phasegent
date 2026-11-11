@@ -7,6 +7,8 @@
 //! the branch is not the detected default, so adapter callers never receive
 //! a guessed active issue.
 
+use std::collections::BTreeMap;
+
 use crate::branch_links::compat::{
     CompatIssue, ScopedIssueRef, named_branch_issue, resolve_scoped_compat_issue,
 };
@@ -46,8 +48,23 @@ fn project_state(state: &Option<StateSnapshot>) -> (String, String, Option<i64>)
     }
 }
 
-fn project_issue(entry: &LinkedIssue) -> serde_json::Value {
+/// The immutable durable task identity attached to one linked issue. The
+/// instance keeps same-number tasks on different deployments apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskIdentity {
+    pub task_id: i64,
+    pub instance: String,
+}
+
+pub(crate) type TaskIdentityMap = BTreeMap<(String, String, String), TaskIdentity>;
+
+fn project_issue(entry: &LinkedIssue, tasks: &TaskIdentityMap) -> serde_json::Value {
     let (state, state_source, indexed_at) = project_state(&entry.state);
+    let task = tasks.get(&(
+        entry.issue.provider.clone(),
+        entry.issue.project.clone(),
+        entry.issue.external_id.clone(),
+    ));
     serde_json::json!({
         "provider": entry.issue.provider,
         "project": entry.issue.project,
@@ -60,6 +77,8 @@ fn project_issue(entry: &LinkedIssue) -> serde_json::Value {
         "state": state,
         "state_source": state_source,
         "indexed_at": indexed_at,
+        "task_id": task.map(|task| task.task_id),
+        "instance": task.map(|task| task.instance.clone()),
     })
 }
 
@@ -119,6 +138,44 @@ fn store_unavailable_view(
     })
 }
 
+fn task_identities(
+    storage: &crate::infra::storage::Storage,
+    repo_key: &str,
+    rows: &[LinkedIssue],
+) -> TaskIdentityMap {
+    let mut identities = TaskIdentityMap::new();
+    for entry in rows {
+        if entry.status != crate::branch_links::store::STATUS_LINKED {
+            continue;
+        }
+        let Ok(bindings) =
+            crate::task_identity::bindings_for_repo_number(storage, repo_key, entry.issue_number)
+        else {
+            continue;
+        };
+        let mut exact = bindings.into_iter().filter(|binding| {
+            let key = binding.key();
+            key.provider() == entry.issue.provider
+                && key.project() == entry.issue.project
+                && key.external_id() == entry.issue.external_id
+        });
+        if let (Some(binding), None) = (exact.next(), exact.next()) {
+            identities.insert(
+                (
+                    entry.issue.provider.clone(),
+                    entry.issue.project.clone(),
+                    entry.issue.external_id.clone(),
+                ),
+                TaskIdentity {
+                    task_id: binding.task_id(),
+                    instance: binding.key().instance().to_owned(),
+                },
+            );
+        }
+    }
+    identities
+}
+
 /// Inputs for [`status_document`], bundled to stay under the
 /// argument-count lint.
 pub(crate) struct StatusView<'a> {
@@ -129,6 +186,7 @@ pub(crate) struct StatusView<'a> {
     pub reverse: &'a [LinkedBranch],
     pub default_branch: Option<&'a str>,
     pub compat: &'a CompatIssue,
+    pub tasks: &'a TaskIdentityMap,
 }
 
 /// Pure status document assembly, separated from git/storage IO so
@@ -149,7 +207,7 @@ pub(crate) fn status_document(view: &StatusView<'_>) -> serde_json::Value {
         "is_default_branch": is_default_branch(view.branch, view.default_branch),
         "ambiguous": view.compat.ambiguous,
         "suppressed_default": view.compat.suppressed_default,
-        "linked_issues": view.rows.iter().filter(|entry| in_scope(entry)).map(project_issue).collect::<Vec<_>>(),
+        "linked_issues": view.rows.iter().filter(|entry| in_scope(entry)).map(|entry| project_issue(entry, view.tasks)).collect::<Vec<_>>(),
         "linked_branches": view.reverse.iter().map(project_branch).collect::<Vec<_>>(),
     });
     match view.repo_key {
@@ -257,6 +315,7 @@ pub(crate) fn execute_status(
         reverse = branches_for_issue(&storage.connection, &resolved.key, &key, true, &lookup)
             .unwrap_or_default();
     }
+    let tasks = task_identities(&storage, &resolved.key, &rows);
     crate::cli::print_json(&status_document(&StatusView {
         branch: &branch,
         repo_key: Some(&resolved),
@@ -265,5 +324,53 @@ pub(crate) fn execute_status(
         reverse: &reverse,
         default_branch: default_branch.as_deref(),
         compat: &compat,
+        tasks: &tasks,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linked() -> LinkedIssue {
+        LinkedIssue {
+            issue: IssueKey::new("forgejo", "owner/repo", "7").unwrap(),
+            issue_number: 7,
+            status: crate::branch_links::store::STATUS_LINKED.to_owned(),
+            source: "test".to_owned(),
+            detached_at: None,
+            detached_reason: None,
+            state: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn linked_issue_json_exposes_the_immutable_task_identity() {
+        let entry = linked();
+        let mut tasks = TaskIdentityMap::new();
+        tasks.insert(
+            (
+                "forgejo".to_owned(),
+                "owner/repo".to_owned(),
+                "7".to_owned(),
+            ),
+            TaskIdentity {
+                task_id: 42,
+                instance: "https://forgejo.test".to_owned(),
+            },
+        );
+        let value = project_issue(&entry, &tasks);
+        assert_eq!(value["task_id"], serde_json::json!(42));
+        assert_eq!(value["instance"], serde_json::json!("https://forgejo.test"));
+    }
+
+    #[test]
+    fn an_unknown_legacy_link_has_no_task_identity() {
+        let entry = linked();
+        let value = project_issue(&entry, &TaskIdentityMap::new());
+        assert!(value["task_id"].is_null());
+        assert!(value["instance"].is_null());
+    }
 }

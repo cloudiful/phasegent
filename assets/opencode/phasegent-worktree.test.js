@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPlugin } from "./src/build.js";
 import PhasegentWorktreePlugin from "./src/index.js";
-import { readIssueLeaseHistory, readIssueLeases } from "./src/binding.js";
+import { readIssueDirectories, readRepositoryDirectories } from "./src/binding.js";
 import { PROTOCOL_AGENTS } from "./src/agents.js";
 import { SKILL_ROUTING_HINT } from "./src/skills.js";
 
@@ -41,8 +41,8 @@ const {
   createShellEnvHook,
   createToolAfterHook,
   isShellHookSupported,
-  pickActiveWorktreePath,
-  issueClosedLocally,
+  verifiedIssueDirectory,
+  verifiedBindingDirectory,
   ensureSessionWorktree,
   readSessionInfo,
   readAuthoritativeDirectory,
@@ -89,8 +89,7 @@ function restoreNoDiscover(saved) {
 // stub.
 const noCliDeps = {
   discover: async () => null,
-  readBinding: async () => 567,
-  readLeaseHistory: async () => [],
+  readBinding: async () => ({ issueId: 567, provider: "forgejo", project: "owner/repo", externalId: "567" }),
 };
 
 function hostContext(sessions, moves) {
@@ -986,14 +985,13 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
   // (issue 616), so there is no acquire seam to stub.
   const noCliDeps = {
     discover: async () => null,
-    readBinding: async () => 567,
-    readLeaseHistory: async () => [],
+    readBinding: async () => ({ issueId: 567, provider: "forgejo", project: "owner/repo", externalId: "567" }),
   };
 
-  test("no session without a reusable lease creates a worktree lazily", async () => {
-    // Issue 616: the lazy path never creates a directory. A session with no
-    // reusable lease stays in the current checkout and gets the explicit
-    // isolation guidance once, and the guidance is not repeated per prompt.
+  test("no session without a reusable directory creates a worktree lazily", async () => {
+    // The lazy path never creates a directory. A session with no verified
+    // directory stays in the current checkout and gets the explicit isolation
+    // guidance once, and the guidance is not repeated per prompt.
     const moves = [];
     const warnings = [];
     const original = console.warn;
@@ -1001,8 +999,7 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
     const deps = {
       readSessionInfo: async () => null,
       discover: async () => null,
-      readBinding: async () => 567,
-      readLeaseHistory: async () => [],
+      readBinding: async () => ({ issueId: 567, provider: "forgejo", project: "owner/repo", externalId: "567" }),
     };
     const context = {
       location: { directory: "/repo" },
@@ -1022,7 +1019,7 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
     expect(warnings[0]).toContain("--isolate");
   });
 
-  test("a discovered lease is reused, and a closed issue is refused", async () => {
+  test("a discovered registered directory is reused", async () => {
     const moves = [];
     // The host reports the session's current directory, so the decided move has
     // a verified source (issue 919 P1: a decided placement never guesses it).
@@ -1040,26 +1037,6 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
       }),
     ).toBe(WORKTREE);
     expect(moves).toEqual([{ sessionID: "orch-1", directory: WORKTREE }]);
-
-    // A lease `issue close` converged keeps its release reason, so the lazy path
-    // refuses to rebuild a worktree for that issue.
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      expect(
-        await ensureSessionWorktree(context, "orch-2", {
-          readSessionInfo: async () => null,
-          discover: async () => null,
-          readBinding: async () => 567,
-          readLeaseHistory: async () => [{ status: "released", release_reason: "issue closed" }],
-        }),
-      ).toBeNull();
-    } finally {
-      console.warn = original;
-    }
-    expect(moves).toHaveLength(1);
-    expect(warnings.join("\n")).toContain("issue 567 is closed");
   });
 
   test("caches the host session lookup and clears it with the registry", async () => {
@@ -1304,9 +1281,8 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
   });
 
   test("never hands another session's worktree to a new sub-agent", async () => {
-    // Issue 919 P1: with no cross-session fallback, a new session with no own
-    // registration and no parent never borrows another session's worktree, no
-    // matter the other session's lease state.
+    // With no cross-session fallback, a new session with no own registration
+    // and no parent never borrows another session's worktree.
     rememberWorktree("other-session", WORKTREE);
     const moves = [];
     const context = {
@@ -1318,16 +1294,13 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
         await ensureSessionWorktree(context, "sub-1", {
           readSessionInfo: async () => null,
           discover: async () => null,
-          readBinding: async () => 747,
-          readLeaseHistory: async () => [
-            { status: "retained", release_reason: "issue closed: ses_a" },
-          ],
+          readBinding: async () => ({ issueId: 747, provider: "forgejo", project: "owner/repo", externalId: "747" }),
         }),
       ).toBeNull();
     });
     expect(moves).toEqual([]);
-    expect(warnings.join("\n")).toContain("issue 747 is closed");
-    expect(warnings.join("\n")).toContain("refusing to acquire a worktree");
+    expect(warnings.join("\n")).toContain("issue 747");
+    expect(warnings.join("\n")).toContain("isolation is opt-in");
   });
 
   test("an open issue still does not borrow another session's worktree", async () => {
@@ -1341,16 +1314,15 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
       await ensureSessionWorktree(context, "sub-2", {
         readSessionInfo: async () => null,
         discover: async () => null,
-        readBinding: async () => 747,
-        readLeaseHistory: async () => [{ status: "active", release_reason: null }],
+        readBinding: async () => ({ issueId: 747, provider: "forgejo", project: "owner/repo", externalId: "747" }),
       }),
     ).toBeNull();
     expect(moves).toEqual([]);
   });
 
-  test("a moved session re-registers cleanly on its next issue's lease", async () => {
+  test("a moved session re-registers cleanly on its next issue's directory", async () => {
     // Reconciliation drops the stale target; the ordinary discovery path is
-    // untouched, so a later, still-open issue re-registers from its own lease.
+    // untouched, so a later issue re-registers from its own verified directory.
     rememberWorktree("session-1", WORKTREE, MAIN);
     let directory = MAIN;
     const context = {
@@ -2038,7 +2010,7 @@ describe("external relocation reconciliation (issue 1154 P1)", () => {
     const context = hostContext({
       "session-1": { parentID: null, location: { directory: RELOCATED } },
     }, moves);
-    const other = "/repo/.worktrees/issue-other-lease";
+    const other = "/repo/.worktrees/issue-other-directory";
     const deps = {
       ...noCliDeps,
       discover: async (sessionId) => {
@@ -3600,132 +3572,112 @@ describe("tool.execute.before session injection without a worktree", () => {
   });
 });
 
-describe("pickActiveWorktreePath (issue #18 Task 2 lazy discovery)", () => {
-  test("picks the active lease with max heartbeat_at", () => {
-    const leases = [
-      { status: "active", session: "old", worktree_path: "/wt/old", heartbeat_at: "2026-01-01T00:00:00Z" },
-      { status: "active", session: "new", worktree_path: "/wt/new", heartbeat_at: "2026-09-17T00:00:00Z" },
-      { status: "retained", session: "x", worktree_path: "/wt/retained", heartbeat_at: "2026-12-01T00:00:00Z" },
-    ];
-    expect(pickActiveWorktreePath(leases)).toBe("/wt/new");
-  });
-
-  test("returns null when no active lease has a path", () => {
-    expect(pickActiveWorktreePath([])).toBeNull();
-    expect(
-      pickActiveWorktreePath([{ status: "retained", worktree_path: "/wt/x" }]),
-    ).toBeNull();
-    expect(pickActiveWorktreePath(null)).toBeNull();
-    expect(
-      pickActiveWorktreePath([{ status: "active", worktree_path: "" }]),
-    ).toBeNull();
-  });
-});
-
-describe("closed issue refusal (issue #575 P2)", () => {
-  // The lazy path must not rebuild what `issue close` converged: a lease row
-  // that keeps the close/sync release reason marks the issue as closed. The
-  // rows come from the lease history (`worktree list --no-sync`), because
-  // `worktree status` selects active rows only.
-  const closedRow = { status: "released", release_reason: "issue closed" };
-
+describe("verified registry directory (lazy discovery)", () => {
   function orchContext(moves) {
     return {
       location: { directory: "/repo" },
-      session: { move: async (input) => moves.push(input) },
+      session: {
+        get: async () => ({ parentID: null, location: { directory: "/repo" } }),
+        move: async (input) => moves.push(input),
+      },
     };
   }
 
-  function capturingDeps(overrides) {
+  function directory(overrides) {
     return {
-      readSessionInfo: async () => null,
-      discover: async () => null,
-      readBinding: async () => 575,
-      readLeaseHistory: async () => [closedRow],
+      directory_id: "dir-1",
+      repo_identity: "/repo/.git",
+      checkout_path: "/repo",
+      worktree_path: WORKTREE,
+      branch: "feat/575",
+      created_at: 1,
+      tasks: [],
+      legacy_issues: [{ issue: 575, provider: "", project: "", external_id: 0 }],
+      sessions: [],
       ...overrides,
     };
   }
 
-  test("issueClosedLocally matches the close and sync release reasons", () => {
-    expect(issueClosedLocally([closedRow])).toBe(true);
+  test("picks the one directory associated with the issue", () => {
+    expect(verifiedIssueDirectory([directory()], 575, "ses_a")).toBe(WORKTREE);
     expect(
-      issueClosedLocally([{ status: "retained", release_reason: "issue closed: session-a" }]),
-    ).toBe(true);
-    expect(
-      issueClosedLocally([
-        { status: "released", release_reason: "issue closed on the remote (issue sync)" },
-      ]),
-    ).toBe(true);
-    expect(issueClosedLocally([{ release_reason: "  issue closed: spaced  " }])).toBe(true);
+      verifiedIssueDirectory([directory({ sessions: ["ses_a"] })], 575, "ses_a"),
+    ).toBe(WORKTREE);
   });
 
-  test("issueClosedLocally ignores live, manual and malformed rows", () => {
-    expect(issueClosedLocally([])).toBe(false);
-    expect(issueClosedLocally(null)).toBe(false);
-    expect(issueClosedLocally([{ status: "active", release_reason: null }])).toBe(false);
-    expect(issueClosedLocally([{ status: "retained", release_reason: null }])).toBe(false);
+  test("rejects ambiguous, foreign-session and unrelated directories", () => {
     expect(
-      issueClosedLocally([{ status: "retained", release_reason: "pruned by hand" }]),
-    ).toBe(false);
-    expect(issueClosedLocally([null, "row", 7, {}])).toBe(false);
+      verifiedIssueDirectory(
+        [directory(), directory({ directory_id: "dir-2", worktree_path: "/wt/other" })],
+        575,
+        "ses_a",
+      ),
+    ).toBeNull();
+    expect(
+      verifiedIssueDirectory([directory({ sessions: ["ses_other"] })], 575, "ses_a"),
+    ).toBeNull();
+    expect(verifiedIssueDirectory([directory()], 576, "ses_a")).toBeNull();
+    expect(verifiedIssueDirectory(null, 575, "ses_a")).toBeNull();
   });
 
-  test("refuses to acquire a worktree for a closed issue and warns", async () => {
-    const moves = [];
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const deps = capturingDeps();
-      expect(await ensureSessionWorktree(orchContext(moves), "orch-1", deps)).toBeNull();
-    } finally {
-      console.warn = original;
-    }
-    expect(moves).toEqual([]);
-    expect(sessionPlaced("orch-1")).toBe(false);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("issue 575 is closed");
-    expect(warnings[0]).toContain("refusing to acquire a worktree");
-  });
-
-  test("probes the leases once and keeps the session in place on the next call", async () => {
-    const moves = [];
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    let reads = 0;
-    try {
-      const deps = capturingDeps({
-        readLeaseHistory: async () => {
-          reads += 1;
-          return [{ status: "released", release_reason: "issue closed: session-a" }];
-        },
-      });
-      const context = orchContext(moves);
-      expect(await ensureSessionWorktree(context, "orch-2", deps)).toBeNull();
-      expect(await ensureSessionWorktree(context, "orch-2", deps)).toBeNull();
-    } finally {
-      console.warn = original;
-    }
-    expect(reads).toBe(1);
-    expect(warnings).toHaveLength(1);
-    expect(moves).toEqual([]);
+  test("requires the complete immutable task id and instance, not the number", () => {
+    const binding = {
+      issueId: 575,
+      provider: "forgejo",
+      project: "owner/repo",
+      externalId: "575",
+      taskId: 42,
+      instance: "https://forgejo.test",
+    };
+    const task = {
+      task_id: 42,
+      issue: 575,
+      provider: "forgejo",
+      instance: "https://forgejo.test",
+      project: "owner/repo",
+      external_id: "575",
+    };
+    const scoped = directory({ tasks: [task], legacy_issues: [] });
+    expect(verifiedBindingDirectory([scoped], binding, "ses_a")).toBe(WORKTREE);
+    expect(
+      verifiedBindingDirectory(
+        [directory({ tasks: [{ ...task, task_id: 41 }], legacy_issues: [] })],
+        binding,
+        "ses_a",
+      ),
+    ).toBeNull();
+    expect(
+      verifiedBindingDirectory(
+        [directory({ tasks: [{ ...task, instance: "https://other.test" }], legacy_issues: [] })],
+        binding,
+        "ses_a",
+      ),
+    ).toBeNull();
+    expect(
+      verifiedBindingDirectory(
+        [directory({ tasks: [], legacy_issues: [{ issue: 575, provider: "forgejo", project: "owner/repo", external_id: 575 }] })],
+        binding,
+        "ses_a",
+      ),
+    ).toBeNull();
+    expect(
+      verifiedBindingDirectory([scoped], { ...binding, project: "other/repo" }, "ses_a"),
+    ).toBeNull();
+    expect(
+      verifiedBindingDirectory([scoped], { ...binding, instance: "" }, "ses_a"),
+    ).toBeNull();
   });
 
   test("keeps the session in the current checkout with isolation guidance", async () => {
-    // Issue 616: no reusable lease and no closed marker means the lazy path
-    // stays put, points at the explicit isolation command, and never moves the
-    // session into a new directory.
     const moves = [];
     const warnings = [];
     const original = console.warn;
     console.warn = (message) => warnings.push(String(message));
-    const deps = capturingDeps({
-      readLeaseHistory: async () => [
-        { status: "retained", release_reason: null },
-        { status: "active", worktree_path: "/wt/live" },
-      ],
-    });
+    const deps = {
+      readSessionInfo: async () => null,
+      discover: async () => null,
+      readBinding: async () => ({ issueId: 575, provider: "forgejo", project: "owner/repo", externalId: "575", taskId: 42, instance: "https://forgejo.test" }),
+    };
     try {
       expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
       expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
@@ -3744,547 +3696,22 @@ describe("closed issue refusal (issue #575 P2)", () => {
     process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
     try {
       let reads = 0;
-      const deps = capturingDeps({
-        readLeaseHistory: async () => {
+      const deps = {
+        readSessionInfo: async () => null,
+        discover: async () => {
           reads += 1;
-          return [closedRow];
+          return null;
         },
-      });
+      };
       expect(await ensureSessionWorktree(orchContext([]), "orch-4", deps)).toBeNull();
       expect(reads).toBe(0);
     } finally {
       restoreNoDiscover(saved);
     }
   });
-
-  test("the prompt hook leaves a closed issue's session in place", async () => {
-    const moves = [];
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const deps = capturingDeps();
-      const prompt = createPromptHook(orchContext(moves), deps);
-      await prompt({ sessionID: "orch-5", messageID: "m1", prompt: { text: "go" } });
-    } finally {
-      console.warn = original;
-    }
-    expect(moves).toEqual([]);
-    expect(warnings.some((line) => line.includes("issue 575 is closed"))).toBe(true);
-  });
 });
 
-describe("v2 worktree strategy registration", () => {
-  test("stays out of the way when the host has no worktree transform", async () => {
-    expect(await registerWorktreeStrategy({}, { readBinding: async () => 532 })).toBeNull();
-  });
-
-  test("keeps the host git strategy when the checkout has no binding", async () => {
-    let transforms = 0;
-    const context = {
-      location: { directory: "/repo" },
-      worktree: {
-        transform: async () => {
-          transforms += 1;
-          return { dispose: async () => {} };
-        },
-      },
-    };
-    const registration = await registerWorktreeStrategy(context, {
-      readBinding: async () => null,
-    });
-    expect(registration).toBeNull();
-    expect(transforms).toBe(0);
-  });
-
-  test("registers the phasegent strategy when the checkout is bound", async () => {
-    const editors = [];
-    const context = {
-      location: { directory: "/repo" },
-      worktree: {
-        transform: async (callback) => {
-          callback({ add: (definition) => editors.push(definition) });
-          return { dispose: async () => {} };
-        },
-      },
-    };
-    const registration = await registerWorktreeStrategy(context, {
-      readBinding: async () => 532,
-    });
-    expect(registration).toBeObject();
-    expect(editors).toHaveLength(1);
-    expect(editors[0].id).toBe("phasegent");
-    expect(typeof editors[0].create).toBe("function");
-    expect(typeof editors[0].remove).toBe("function");
-    expect(typeof editors[0].list).toBe("function");
-  });
-
-  test("create returns the acquired lease path and opts into isolation", async () => {
-    let requested = null;
-    const definition = worktreeStrategyDefinition({
-      issueId: 532,
-      directory: "/repo",
-      acquire: async (issueId, sessionId, cwd, options) => {
-        requested = { issueId, sessionId, cwd, options };
-        return { path: WORKTREE };
-      },
-      gitAdd: async () => {
-        throw new Error("git fallback must not run");
-      },
-      readLeases: async () => [],
-    });
-    expect(await definition.create({ sourceDirectory: "/repo", directory: "/wt/new" })).toEqual({
-      directory: WORKTREE,
-    });
-    // Issue 616: the host create request must really create a dedicated
-    // directory, so the strategy passes the explicit isolation opt-in.
-    expect(requested).toEqual({
-      issueId: 532,
-      sessionId: null,
-      cwd: "/repo",
-      options: { isolate: true },
-    });
-  });
-
-  test("create falls back to a plain git worktree when acquire fails", async () => {
-    const fallbacks = [];
-    const requests = [];
-    const definition = worktreeStrategyDefinition({
-      issueId: 532,
-      directory: "/repo",
-      acquire: async (issueId, sessionId, cwd, options) => {
-        requests.push({ issueId, sessionId, cwd, options });
-        return null;
-      },
-      gitAdd: async (input) => {
-        fallbacks.push(input);
-        return { directory: input.directory };
-      },
-      readLeases: async () => [],
-    });
-    const input = { sourceDirectory: "/repo", directory: "/wt/new", branch: "main" };
-    expect(await definition.create(input)).toEqual({ directory: "/wt/new" });
-    expect(fallbacks).toEqual([input]);
-    expect(requests).toEqual([
-      { issueId: 532, sessionId: null, cwd: "/repo", options: { isolate: true } },
-    ]);
-  });
-
-  test("remove rejects instead of reporting a false success", async () => {
-    const calls = [];
-    const definition = worktreeStrategyDefinition({
-      issueId: 532,
-      directory: "/repo",
-      acquire: async () => {
-        calls.push("acquire");
-        return null;
-      },
-      gitAdd: async () => {
-        calls.push("gitAdd");
-        return { directory: "/wt/new" };
-      },
-      readLeases: async () => {
-        calls.push("readLeases");
-        return [];
-      },
-    });
-    const error = await definition
-      .remove({ directory: WORKTREE, force: false })
-      .then(() => null, (failure) => failure);
-    expect(error).toBeInstanceOf(Error);
-    expect(error.message).toContain("host removal is unsupported");
-    expect(error.message).toContain("phasegent issue close");
-    expect(error.message).not.toContain("prune");
-    expect(calls).toEqual([]);
-  });
-
-  test("a forced remove is refused as well and still touches nothing", async () => {
-    const calls = [];
-    const definition = worktreeStrategyDefinition({
-      issueId: 532,
-      directory: "/repo",
-      acquire: async () => {
-        calls.push("acquire");
-        return null;
-      },
-      gitAdd: async () => {
-        calls.push("gitAdd");
-        return { directory: "/wt/new" };
-      },
-      readLeases: async () => {
-        calls.push("readLeases");
-        return [];
-      },
-    });
-    await expect(definition.remove({ directory: WORKTREE, force: true })).rejects.toThrow(
-      /host removal is unsupported/,
-    );
-    expect(calls).toEqual([]);
-  });
-
-describe("acquireWorktree session guarantee (issue #651 P4)", () => {
-  test("refuses an anonymous acquire without invoking the CLI and warns", async () => {
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      // Null, undefined, and empty session ids all refuse before any
-      // CLI round-trip: the CLI removed its fabricated fallback owner,
-      // so an anonymous acquire would hard-error there instead.
-      expect(await acquireWorktree(532, null, "/repo", { isolate: true })).toBeNull();
-      expect(await acquireWorktree(532, undefined, "/repo", {})).toBeNull();
-      expect(await acquireWorktree(532, "", "/repo", {})).toBeNull();
-    } finally {
-      console.warn = original;
-    }
-    expect(warnings).toHaveLength(3);
-    for (const warning of warnings) {
-      expect(warning).toContain("without a session identity");
-      expect(warning).toContain("--isolate");
-    }
-  });
-
-  test("a host create without a session degrades to the plain git worktree", async () => {
-    // The host create action carries no session, so the refused acquire
-    // resolves to null and the strategy keeps its designed fallback.
-    const fallbacks = [];
-    const definition = worktreeStrategyDefinition({
-      issueId: 532,
-      directory: "/repo",
-      acquire: acquireWorktree,
-      gitAdd: async (input) => {
-        fallbacks.push(input);
-        return { directory: input.directory };
-      },
-      readLeases: async () => [],
-    });
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const input = { sourceDirectory: "/repo", directory: "/wt/new" };
-      expect(await definition.create(input)).toEqual({ directory: "/wt/new" });
-    } finally {
-      console.warn = original;
-    }
-    expect(fallbacks).toHaveLength(1);
-    expect(warnings.join("\n")).toContain("without a session identity");
-  });
-});
-
-  test("list reports the root plus the bound issue's leases", async () => {
-    const definition = worktreeStrategyDefinition({
-      issueId: 532,
-      directory: "/repo",
-      acquire: async () => null,
-      gitAdd: async () => ({ directory: "/wt/new" }),
-      readLeases: async (issueId, cwd) => {
-        expect(issueId).toBe(532);
-        expect(cwd).toBe("/repo");
-        return [
-          { status: "active", worktree_path: WORKTREE },
-          { status: "retained", worktree_path: "/wt/old" },
-          { status: "active", worktree_path: WORKTREE },
-          null,
-        ];
-      },
-    });
-    expect(await definition.list("/repo")).toEqual([
-      { directory: "/repo", type: "root" },
-      { directory: WORKTREE, type: "worktree" },
-      { directory: "/wt/old", type: "worktree" },
-    ]);
-  });
-});
-
-describe("v2 agent.transform routing hint (issue #22 P2)", () => {
-  function agentState() {
-    return [
-      { id: "orchestrator", system: "You own the phase." },
-      { id: "executor", system: "You implement a phase." },
-      { id: "reviewer", system: "You review a phase." },
-      { id: "explore", system: "You recon." },
-    ];
-  }
-
-  function agentContext(state) {
-    return {
-      agent: {
-        transform: async (callback) => {
-          const byId = new Map(state.map((entry) => [entry.id, entry]));
-          await callback({
-            list: () => [...byId.values()],
-            get: (id) => byId.get(id),
-            update: (id, mutate) => {
-              const entry = byId.get(id);
-              if (entry) mutate(entry);
-            },
-          });
-          return { dispose: async () => {} };
-        },
-      },
-    };
-  }
-
-  test("prepends the routing hint to each protocol agent", async () => {
-    const state = agentState();
-    const registration = await registerAgentSkills(agentContext(state));
-    expect(registration).toBeObject();
-    for (const entry of state) {
-      const original = agentState().find((candidate) => candidate.id === entry.id).system;
-      expect(entry.system.startsWith(SKILL_ROUTING_HINT)).toBe(true);
-      expect(entry.system).toContain(original);
-      expect(entry.system.split(SKILL_ROUTING_HINT).length - 1).toBe(1);
-    }
-    const other = { id: "contest-runner", system: "You run contests." };
-    const stateWithOther = [...agentState(), other];
-    await registerAgentSkills(agentContext(stateWithOther));
-    expect(other.system).toBe("You run contests.");
-  });
-
-  test("re-running the transform never stacks the hint", async () => {
-    const state = agentState();
-    await registerAgentSkills(agentContext(state));
-    const once = state.find((entry) => entry.id === "executor").system;
-    await registerAgentSkills(agentContext(state));
-    expect(state.find((entry) => entry.id === "executor").system).toBe(once);
-    expect(withSkillPrefix(once, SKILL_ROUTING_HINT)).toBe(once);
-    expect(withSkillPrefix("", "body")).toBe("body");
-  });
-
-  test("stays inert and warns when the host draft has no update", async () => {
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const context = {
-        agent: {
-          transform: async (callback) => {
-            await callback({ list: () => [] });
-            return { dispose: async () => {} };
-          },
-        },
-      };
-      const registration = await registerAgentSkills(context, { backoff: [0] });
-      expect(registration).toBeObject();
-      expect(warnings.some((line) => line.includes("stays uninjected"))).toBe(true);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test("returns null without agent.transform", async () => {
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      expect(await registerAgentSkills({})).toBeNull();
-      expect(await registerAgentSkills(undefined)).toBeNull();
-      expect(warnings.some((line) => line.includes("no agent.transform"))).toBe(true);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test("retries while the host still loads its agents, replacing the stale callback", async () => {
-    const state = [{ id: "build", system: "" }];
-    const disposals = [];
-    const waits = [];
-    let attempts = 0;
-    const context = {
-      agent: {
-        transform: async (callback) => {
-          attempts += 1;
-          if (attempts >= 2) state.push(...agentState());
-          const byId = new Map(state.map((entry) => [entry.id, entry]));
-          await callback({
-            list: () => [...byId.values()],
-            update: (id, mutate) => {
-              const entry = byId.get(id);
-              if (entry) mutate(entry);
-            },
-          });
-          const attempt = attempts;
-          return { dispose: async () => disposals.push(attempt) };
-        },
-      },
-    };
-    const registration = await registerAgentSkills(context, {
-      backoff: [0, 10, 20],
-      wait: async (ms) => waits.push(ms),
-    });
-    await registration.settle;
-    expect(attempts).toBe(2);
-    expect(waits).toEqual([10]);
-    expect(disposals).toEqual([1]);
-    for (const [id] of PROTOCOL_AGENTS.map((agent) => [agent])) {
-      const entry = state.find((candidate) => candidate.id === id);
-      expect(entry.system.startsWith(SKILL_ROUTING_HINT)).toBe(true);
-    }
-  });
-
-  test("warns when no protocol agent ever appears", async () => {
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const context = {
-        agent: {
-          transform: async (callback) => {
-            await callback({ list: () => [{ id: "build", system: "" }], update: () => {} });
-            return { dispose: async () => {} };
-          },
-        },
-      };
-      const registration = await registerAgentSkills(context, {
-        backoff: [0, 5],
-        wait: async () => {},
-      });
-      await registration.settle;
-      expect(warnings.length).toBeGreaterThan(0);
-    } finally {
-      console.warn = original;
-    }
-  });
-
-  test("matches case-insensitively the exact protocol ids only", () => {
-    expect(isProtocolAgent("orchestrator")).toBe(true);
-    expect(isProtocolAgent("Executor")).toBe(true);
-    expect(isProtocolAgent("build-reviewer-x")).toBe(false);
-    expect(isProtocolAgent("build")).toBe(false);
-  });
-});
-
-describe("invocation boundary tightening (issue #544 P1-a)", () => {
-  test("leaves the incident python path byte-for-byte", () => {
-    const command =
-      'js = pathlib.Path("assets/opencode/phasegent-worktree.js").read_text(encoding="utf-8")';
-    expect(rewritePhasegentCommand(command, "session-1", { agent: "orchestrator" })).toBe(command);
-    expect(rewritePhasegentCommand(command, "session-1", { agent: "executor" })).toBe(command);
-    expect(rewritePhasegentCommand(command, "session-1", undefined)).toBe(command);
-  });
-
-  test("does not rewrite paths, look-alikes or foreign commands", () => {
-    for (const command of [
-      '"assets/opencode/phasegent-worktree.js"',
-      "assets/opencode/phasegent-worktree.js",
-      "`tools/phasegent`",
-      "./phasegent.toml",
-      "phasegent:",
-      "grep -rn phasegent src",
-      "git -C repo phasegent issue status",
-    ]) {
-      expect(rewritePhasegentCommand(command, "s1", { agent: "executor" })).toBe(command);
-    }
-  });
-
-  test("still rewrites real invocations at the boundary", () => {
-    expect(rewritePhasegentCommand("phasegent issue status", "s1", { agent: "executor" })).toBe(
-      "phasegent issue status",
-    );
-    // A bare `phasegent` is a whole word at the segment end.
-    expect(rewritePhasegentCommand("phasegent", "s1", { agent: "executor" })).toBe(
-      "phasegent",
-    );
-    expect(
-      rewritePhasegentCommand("./phasegent issue bind 1", "s1", { agent: "orchestrator" }),
-    ).toBe("./phasegent issue bind 1");
-    expect(
-      rewritePhasegentCommand("/usr/local/bin/phasegent worktree acquire --issue 1", "s1", {
-        agent: "reviewer",
-      }),
-    ).toBe("/usr/local/bin/phasegent worktree acquire --issue 1");
-    expect(
-      rewritePhasegentCommand("PHASEGENT_ROLE=x phasegent issue status", "s1", {
-        agent: "executor",
-      }),
-    ).toContain("refusing this command");
-    expect(
-      rewritePhasegentCommand("(phasegent issue create --title t)", "s1", {
-        agent: "orchestrator",
-      }),
-    ).toBe("(phasegent issue create --title t --session s1)");
-    expect(
-      rewritePhasegentCommand("phasegent issue status && phasegent issue bind 1", "s1", {
-        agent: "orchestrator",
-      }),
-    ).toBe(
-      "phasegent issue status && phasegent issue bind 1",
-    );
-  });
-});
-
-describe("redirection is not a segment boundary (issue #544 P1-b)", () => {
-  test("keeps the incident 2>&1 redirection intact with --session before the pipe", () => {
-    expect(
-      rewritePhasegentCommand(
-        "phasegent issue create --title t --body b --keep-body-file 2>&1 | tail -c 900",
-        "ses_x",
-        { agent: "orchestrator" },
-      ),
-    ).toBe(
-      "phasegent issue create --title t --body b --keep-body-file 2>&1 --session ses_x | tail -c 900",
-    );
-  });
-
-  test("appends --session after a trailing redirection, never inside it", () => {
-    const cases = [
-      [
-        "phasegent issue create --title t --body b > /dev/null 2>&1",
-        "phasegent issue create --title t --body b > /dev/null 2>&1 --session ses_x",
-      ],
-      [
-        "phasegent issue bind 1 >&2",
-        "phasegent issue bind 1 >&2",
-      ],
-      [
-        "phasegent issue create --title t &> log",
-        "phasegent issue create --title t &> log --session ses_x",
-      ],
-      [
-        "phasegent issue create --title t &>> log",
-        "phasegent issue create --title t &>> log --session ses_x",
-      ],
-    ];
-    for (const [command, expected] of cases) {
-      expect(rewritePhasegentCommand(command, "ses_x", { agent: "orchestrator" })).toBe(expected);
-    }
-  });
-
-  test("still splits a standalone & and && around redirections", () => {
-    expect(
-      rewritePhasegentCommand("phasegent issue bind 1 &", "ses_x", { agent: "orchestrator" }),
-    ).toBe("phasegent issue bind 1 &");
-    expect(
-      rewritePhasegentCommand("phasegent issue create --title t 2>&1 && echo done", "ses_x", {
-        agent: "orchestrator",
-      }),
-    ).toBe(
-      "phasegent issue create --title t 2>&1 --session ses_x && echo done",
-    );
-  });
-
-  test("treats |& as a pipe and keeps the injection point before it", () => {
-    expect(
-      rewritePhasegentCommand("phasegent issue create --title t |& tail -c 9", "ses_x", {
-        agent: "orchestrator",
-      }),
-    ).toBe(
-      "phasegent issue create --title t --session ses_x |& tail -c 9",
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Generated dist freshness (issue #576 P1).
-//
-// `phasegent-worktree.js` is a build product: `bun run build:plugin` links the
-// source tree into the single deployable file at build time. These assertions
-// keep the checked-in dist reproducible — a stale or hand-edited file fails
-// here instead of shipping.
-// ---------------------------------------------------------------------------
-
-describe("complete worktree lease page readers", () => {
+describe("complete worktree directory page readers", () => {
   function fakePageRunner(pages, failures = []) {
     const calls = [];
     return {
@@ -4299,18 +3726,17 @@ describe("complete worktree lease page readers", () => {
     };
   }
 
-  function lease(index, issue = 42, status = "active") {
+  function directory(index, issue = 42) {
     return {
-      lease_id: `lease-${index}`,
+      directory_id: `dir-${index}`,
       repo_identity: "/repo/.git",
-      issue,
-      session: `ses-${index}`,
       checkout_path: "/repo",
       worktree_path: `/repo/wt-${index}`,
       branch: `phasegent/${index}`,
-      status,
       created_at: index + 1,
-      heartbeat_at: index + 1,
+      tasks: [],
+      legacy_issues: [{ issue, provider: "", project: "", external_id: 0 }],
+      sessions: [],
     };
   }
 
@@ -4326,10 +3752,10 @@ describe("complete worktree lease page readers", () => {
     };
   }
 
-  test("traverses every page and finds issue history beyond page one", async () => {
-    const active = Array.from({ length: 205 }, (_, index) => lease(index));
+  test("traverses every page of the issue and repository collections", async () => {
+    const active = Array.from({ length: 205 }, (_, index) => directory(index));
     const history = Array.from({ length: 205 }, (_, index) =>
-      lease(index, index >= 200 ? 42 : 99, index >= 200 ? "retained" : "active"),
+      directory(index, index >= 200 ? 42 : 99),
     );
     const pages = {};
     for (let number = 1; number <= 3; number += 1) {
@@ -4348,11 +3774,11 @@ describe("complete worktree lease page readers", () => {
       );
     }
     const fake = fakePageRunner(pages);
-    const activeRows = await readIssueLeases(42, "/repo", fake.execute);
-    const historyRows = await readIssueLeaseHistory(42, "/repo", fake.execute);
+    const activeRows = await readIssueDirectories(42, "/repo", fake.execute);
+    const historyRows = await readRepositoryDirectories("/repo", fake.execute);
     expect(activeRows).toHaveLength(205);
-    expect(historyRows.map((row) => row.lease_id)).toEqual(
-      history.slice(200).map((row) => row.lease_id),
+    expect(historyRows.map((row) => row.directory_id)).toEqual(
+      history.map((row) => row.directory_id),
     );
     expect(fake.calls).toHaveLength(6);
     expect(fake.calls[0].join(" ")).toContain("worktree status --issue 42 --page 1 --limit 100");
@@ -4361,40 +3787,31 @@ describe("complete worktree lease page readers", () => {
     expect(fake.calls[5].join(" ")).toContain("--page 3 --limit 100");
   });
 
-  test("accepts an unpaged legacy shape only as one complete result", async () => {
-    const legacy = [lease(1), lease(2)];
-    const fake = fakePageRunner({ "status-page-1": { issue: 42, leases: legacy } });
-    expect(await readIssueLeases(42, "/repo", fake.execute)).toEqual(legacy);
-    expect(fake.calls).toHaveLength(1);
-  });
-
-  test("rejects a repository identity change during history traversal", async () => {
-    const first = Array.from({ length: 100 }, (_, index) => lease(index));
+  test("rejects a repository identity change during traversal", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => directory(index));
     const fake = fakePageRunner({
       "list-page-1": page(first, 1, 101, { repo_identity: "/repo/.git" }),
-      "list-page-2": page([lease(100)], 2, 101, { repo_identity: "/other/.git" }),
+      "list-page-2": page([directory(100)], 2, 101, { repo_identity: "/other/.git" }),
     });
-    expect(await readIssueLeaseHistory(42, "/repo", fake.execute)).toBeNull();
+    expect(await readRepositoryDirectories("/repo", fake.execute)).toBeNull();
     expect(fake.calls).toHaveLength(2);
   });
 
   test("returns null rather than partial rows after a later page failure", async () => {
-    const first = Array.from({ length: 100 }, (_, index) => lease(index));
+    const first = Array.from({ length: 100 }, (_, index) => directory(index));
     const fake = fakePageRunner(
       { "status-page-1": page(first, 1, 150, { issue: 42 }) },
       ["status-page-2"],
     );
-    expect(await readIssueLeases(42, "/repo", fake.execute)).toBeNull();
+    expect(await readIssueDirectories(42, "/repo", fake.execute)).toBeNull();
     expect(fake.calls).toHaveLength(2);
   });
 
-  test("fails closed on malformed, duplicate, changing or nonprogressing pages", async () => {
-    const first = Array.from({ length: 100 }, (_, index) => lease(index));
-    const next = lease(100);
+  test("fails closed on unpaged, duplicate, changing or nonprogressing pages", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => directory(index));
+    const next = directory(100);
     const cases = [
-      {
-        pages: { "status-page-1": { page: 1, limit: 100, total_count: 0, has_more: false, issue: 42, leases: [] } },
-      },
+      { pages: { "status-page-1": { issue: 42, directories: first } } },
       {
         pages: {
           "status-page-1": page(first, 1, 101, { issue: 42 }),
@@ -4404,13 +3821,13 @@ describe("complete worktree lease page readers", () => {
       {
         pages: {
           "status-page-1": page(first, 1, 101, { issue: 42 }),
-          "status-page-2": page([lease(0)], 2, 101, { issue: 42 }),
+          "status-page-2": page([directory(0)], 2, 101, { issue: 42 }),
         },
       },
       {
         pages: {
           "status-page-1": page(first, 1, 101, { issue: 42 }),
-          "status-page-2": page([next, lease(101)], 2, 102, { issue: 42 }),
+          "status-page-2": page([next, directory(101)], 2, 102, { issue: 42 }),
         },
       },
       {
@@ -4419,18 +3836,12 @@ describe("complete worktree lease page readers", () => {
           "status-page-2": page([next], 2, 101, { issue: 43 }),
         },
       },
-      {
-        pages: { "status-page-1": page(first.slice(0, 99), 1, 101, { issue: 42 }) },
-      },
-      {
-        pages: {
-          "status-page-1": page(first, 1, 1_000_001, { issue: 42 }),
-        },
-      },
+      { pages: { "status-page-1": page(first.slice(0, 99), 1, 101, { issue: 42 }) } },
+      { pages: { "status-page-1": page(first, 1, 1_000_001, { issue: 42 }) } },
     ];
     for (const { pages } of cases) {
       const fake = fakePageRunner(pages);
-      expect(await readIssueLeases(42, "/repo", fake.execute)).toBeNull();
+      expect(await readIssueDirectories(42, "/repo", fake.execute)).toBeNull();
     }
   });
 });

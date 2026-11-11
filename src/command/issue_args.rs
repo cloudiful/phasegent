@@ -37,7 +37,7 @@ pub enum IssueCommand {
         base: Option<String>,
         /// Optional explicit worktree session id (`--session`). `None`
         /// defers to `PHASEGENT_SESSION_ID`; when neither names a session
-        /// the auto-acquire hook stays silent and no lease is booked.
+        /// the auto-acquire hook stays silent and no directory is registered.
         /// After a successful create the shared auto-acquire hook runs
         /// best-effort; stdout JSON is unchanged (issue 18). Boxed so the
         /// `Command` enum stays under the `large_enum_variant` threshold.
@@ -60,9 +60,8 @@ pub enum IssueCommand {
         number: u64,
         /// Optional explicit worktree session id (`--worktree-session`).
         /// `None` defers to `PHASEGENT_SESSION_ID`; without either, the
-        /// close still succeeds and the leases flip with the plain
-        /// `issue closed` reason — no closer is ever guessed
-        /// (issue 575 Phase 1, issue 651 P4).
+        /// close still succeeds and cleanup names no closer — no owner is
+        /// ever guessed.
         worktree_session: Option<String>,
     },
     /// Redmine-only orchestrator attachment upload. Validates the local
@@ -74,14 +73,12 @@ pub enum IssueCommand {
         path: String,
         description: Option<String>,
     },
-    /// `issue sync [--all] [--no-clean]` (issue 552 Phase 2): reconcile
-    /// local worktree leases and worktree directories against the
-    /// provider's issue state. Default scope is the current repository;
-    /// `--all` scans every repository recorded in the lease table.
-    /// Remotely closed issues converge their active leases to `retained`
-    /// and then run the `issue close` guarded cleanup; `--no-clean`
-    /// reports the same verdicts without writing anything.
-    /// Orchestrator-only at execution time.
+    /// `issue sync [--all] [--no-clean]`: reconcile registered worktree
+    /// directories against the provider's issue state. Default scope is the
+    /// current repository; `--all` scans every repository recorded in the
+    /// directory registry. A remotely closed issue runs the `issue close`
+    /// guarded cleanup; `--no-clean` reports the same verdicts without
+    /// writing anything. Orchestrator-only at execution time.
     Sync {
         all: bool,
         no_clean: bool,

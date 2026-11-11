@@ -101,7 +101,7 @@ fn collection_help_advertises_page_contracts_without_changing_role_filters() {
             assert!(text.contains("output-only"));
         }
         if topic[0] == "worktree" {
-            assert!(text.contains("active leases") || text.contains("active and terminal leases"));
+            assert!(text.contains("registered worktree directories"));
             assert!(
                 !text.contains("cap of 256") && !text.contains("warning when rows are omitted")
             );

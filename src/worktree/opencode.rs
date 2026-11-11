@@ -51,10 +51,12 @@ pub(crate) use api::{
     SessionPage,
 };
 #[allow(unused_imports)]
-pub(crate) use occupancy::{MAX_LIST_PAGES, occupants_of_directory};
+pub(crate) use occupancy::{
+    MAX_LIST_PAGES, all_sessions, foreign_occupancy_reason, occupants_of_directory,
+};
 
 /// Prefix every OpenCode session id carries (`GET /api/session/{id}`
-/// validates the same pattern). A lease session that does not start with
+/// validates the same pattern). A registered session that does not start with
 /// it belongs to a plain CLI caller, which keeps the pre-existing cleanup
 /// behaviour and never reaches the API at all.
 pub(crate) const OPENCODE_SESSION_PREFIX: &str = "ses_";

@@ -40,7 +40,7 @@ pub(crate) fn page_summary(value: &Value, context: &OutputContext) -> Option<Str
     if !matches!(
         context.view,
         crate::output::context::HumanView::Generic
-            | crate::output::context::HumanView::WorktreeLeaseList
+            | crate::output::context::HumanView::WorktreeDirectoryList
     ) {
         return None;
     }
