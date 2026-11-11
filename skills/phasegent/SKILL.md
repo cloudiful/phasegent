@@ -12,7 +12,7 @@ this one and load on demand.
 ## Load first
 
 - `references/protocol.md` — shared protocol: tracking modes, role gates, the
-  record and marker contracts, result shapes, worktree lease rules, and the
+  record and marker contracts, result shapes, worktree directory rules, and the
   human-operator-only `admin` boundary.
 - `references/orchestrator.md` — orchestrator ownership, delegation, delivery,
   PR, and issue-closure policy.

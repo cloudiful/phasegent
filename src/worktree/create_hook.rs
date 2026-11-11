@@ -7,8 +7,8 @@
 //! with the reuse preference (issue 651 P3): it never creates a
 //! worktree by itself — an occupied checkout path resolves to an
 //! actionable `isolation` warning naming `phasegent worktree acquire
-//! --issue N --isolate`. It reuses [`resolve_session`] +
-//! [`acquire_lease_with`] unchanged, never fails the caller (a missing
+//! --issue N --isolate`. It reuses [`resolve_session`] and the shared
+//! acquire path unchanged, never fails the caller (a missing
 //! session, unreadable storage, or git error degrades to silence), and
 //! reports a created worktree as a bounded warning string the caller
 //! forwards through `cli::report_local_warnings`. Stdout JSON is never
@@ -16,7 +16,8 @@
 
 use std::path::PathBuf;
 
-use crate::worktree::{AcquireOptions, ProcessWorktreeRunner, acquire_lease_with, resolve_session};
+use crate::worktree::occupancy::ForeignIssueState;
+use crate::worktree::{AcquireOptions, ProcessWorktreeRunner, resolve_session};
 
 use super::acquire::is_isolation_required;
 
@@ -38,17 +39,18 @@ pub(crate) fn auto_acquire_after_create(
     issue: u64,
     explicit_session: Option<&str>,
 ) -> Option<String> {
-    auto_acquire_after_create_scoped(issue, explicit_session, None)
+    auto_acquire_after_create_scoped(issue, explicit_session, None, None)
 }
 
 /// The scoped form of [`auto_acquire_after_create`]. Every routed create
-/// names its exact durable task scope, so the hook writes a sidecar-scoped
-/// lease and never falls back to an unscoped one when the scope, identity, or
-/// store cannot be proven (a best-effort silence).
+/// names its exact durable task scope, so the hook writes a task-scoped
+/// directory association and never falls back to an unscoped one when the
+/// scope, identity, or store cannot be proven (a best-effort silence).
 pub(crate) fn auto_acquire_after_create_scoped(
     issue: u64,
     explicit_session: Option<&str>,
-    scope: Option<&crate::worktree::LeaseScope>,
+    scope: Option<&crate::worktree::WorktreeScope>,
+    foreign_state: Option<&dyn ForeignIssueState>,
 ) -> Option<String> {
     if issue == 0 {
         return None;
@@ -59,6 +61,7 @@ pub(crate) fn auto_acquire_after_create_scoped(
     };
     let repo_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let runner = ProcessWorktreeRunner::new();
+    let host_api = crate::worktree::opencode::ProcessOpenCodeApi::new();
     let options = AcquireOptions {
         cache_base: None,
         isolate: false,
@@ -74,14 +77,14 @@ pub(crate) fn auto_acquire_after_create_scoped(
                 Ok(storage) => storage,
                 Err(_) => return None,
             };
-            if crate::worktree::leases::ensure_schema(&storage).is_err() {
+            if crate::worktree::ensure_schema(&storage).is_err() {
                 return None;
             }
             let identity = match crate::worktree::repo_identity(&runner, &repo_path) {
                 Ok(identity) => identity,
                 Err(_) => return None,
             };
-            crate::worktree::acquire_lease_scoped(
+            crate::worktree::acquire_directory_scoped(
                 &runner,
                 &storage,
                 &identity,
@@ -89,9 +92,19 @@ pub(crate) fn auto_acquire_after_create_scoped(
                 &session.id,
                 options,
                 scope,
+                foreign_state,
+                Some(&host_api),
             )
         }
-        None => acquire_lease_with(&runner, &repo_path, issue, &session.id, options),
+        None => crate::worktree::acquire_directory_with_foreign_state(
+            &runner,
+            &repo_path,
+            issue,
+            &session.id,
+            options,
+            None,
+            Some(&host_api),
+        ),
     };
     match outcome {
         Ok(outcome) => {

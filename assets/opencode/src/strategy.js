@@ -4,14 +4,19 @@
 // keeps its own git implementation. A host "create worktree" action is the
 // explicit isolation opt-in (issue 616), so `create` passes `isolate` and a
 // dedicated directory is really created instead of quietly reusing the current
-// checkout. Host removal is refused: the directory, its branch and its lease
-// belong to the phasegent cleanup lifecycle.
+// checkout. Host removal is refused: the directory, its branch and its registry
+// row belong to the phasegent cleanup lifecycle.
 
-import { acquireWorktree, readBranchBinding, readIssueLeases } from "./binding.js";
+import {
+  acquireWorktree,
+  directoryMatchesBinding,
+  readBranchBinding,
+  readRepositoryDirectories,
+} from "./binding.js";
 import { locationDirectory, phasegentCallsDisabled, safeText, warn } from "./runtime.js";
 
 // Mirrors the host git strategy's command (packages/core/src/git.ts:657) so a
-// failed lease never breaks worktree creation in a phasegent checkout.
+// failed acquire never breaks worktree creation in a phasegent checkout.
 export async function gitWorktreeAdd(input) {
   const directory = input && input.directory;
   const sourceDirectory = input && input.sourceDirectory;
@@ -30,7 +35,8 @@ export async function gitWorktreeAdd(input) {
 }
 
 export function worktreeStrategyDefinition(options) {
-  const issueId = options.issueId;
+  const binding = options.binding;
+  const issueId = binding.issueId;
   const fallbackDirectory = options.directory;
   return {
     id: "phasegent",
@@ -42,8 +48,8 @@ export function worktreeStrategyDefinition(options) {
       // without `--isolate` the acquire may reuse the current checkout, which
       // would not honour the create request. The host action carries no
       // session, and anonymous acquisition is refused since issue 651 P4, so
-      // this always degrades to the plain git worktree below — no lease is
-      // ever booked without an owner.
+      // this always degrades to the plain git worktree below — no directory
+      // association is ever recorded without an owner.
       const acquired = await options.acquire(issueId, null, sourceDirectory, { isolate: true });
       if (acquired && typeof acquired.path === "string" && acquired.path.length > 0) {
         return { directory: acquired.path };
@@ -54,8 +60,8 @@ export function worktreeStrategyDefinition(options) {
     async remove() {
       // The host drops the worktree from its inventory once this resolves, so
       // a silent success would hide a worktree that still exists. The
-      // directory, its branch and its lease belong to the phasegent cleanup
-      // lifecycle, so refuse.
+      // directory, its branch and its registry row belong to the phasegent
+      // cleanup lifecycle, so refuse.
       throw new Error(
         "phasegent: host removal is unsupported for phasegent worktrees; remove them through the phasegent-managed issue cleanup lifecycle (`phasegent issue close`, `phasegent issue sync`)",
       );
@@ -73,10 +79,11 @@ export function worktreeStrategyDefinition(options) {
         entries.push({ directory, type });
       };
       push(root, "root");
-      const leases = await options.readLeases(issueId, root);
-      for (const lease of leases || []) {
-        if (!lease || typeof lease !== "object") continue;
-        push(lease.worktree_path, "worktree");
+      const directories = await options.readDirectories(root);
+      for (const directory of directories || []) {
+        if (!directory || typeof directory !== "object") continue;
+        if (!directoryMatchesBinding(directory, binding)) continue;
+        push(directory.worktree_path, "worktree");
       }
       return entries;
     },
@@ -98,14 +105,14 @@ export async function registerWorktreeStrategy(context, deps) {
   }
   const directory = locationDirectory(context);
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
-  const issueId = await readBinding(directory);
-  if (!issueId) return null;
+  const binding = await readBinding(directory);
+  if (!binding) return null;
   const definition = worktreeStrategyDefinition({
-    issueId,
+    binding,
     directory,
     acquire: (deps && deps.acquire) || acquireWorktree,
     gitAdd: (deps && deps.gitAdd) || gitWorktreeAdd,
-    readLeases: (deps && deps.readLeases) || readIssueLeases,
+    readDirectories: (deps && deps.readDirectories) || readRepositoryDirectories,
   });
   return await transform((editor) => {
     editor.add(definition);

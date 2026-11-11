@@ -15,7 +15,7 @@ use std::fs;
 
 use insta::assert_snapshot;
 use snapshots::fixtures::{
-    add_worktree, create_local_issue, init_repo, insert_active_lease, open_lease_store,
+    add_worktree, create_local_issue, init_repo, insert_registry_directory, open_registry_store,
     set_local_status,
 };
 use snapshots::{Scratch, regex_escape, run, stderr_text, stdout_text};
@@ -72,7 +72,7 @@ fn issue_sync_no_clean_stdout_snapshot() {
     let scratch = Scratch::new("json-sync");
     let repo = init_repo(&scratch.join("repo"));
     let fixture = scratch.dir("fixture");
-    let identity = open_lease_store(&scratch, &repo);
+    let identity = open_registry_store(&scratch, &repo);
 
     let closed = create_local_issue(
         &scratch,
@@ -82,20 +82,37 @@ fn issue_sync_no_clean_stdout_snapshot() {
     );
     set_local_status(&scratch, &fixture, closed, "Closed");
     let clean = add_worktree(&repo, &scratch.join("wt-clean"), "feat/558-clean");
-    insert_active_lease(&scratch, &identity, closed, "session-clean", &repo, &clean);
+    insert_registry_directory(
+        &scratch,
+        &identity,
+        closed,
+        "session-clean",
+        &repo,
+        &clean,
+        "feat/558-clean",
+    );
     let dirty = add_worktree(&repo, &scratch.join("wt-dirty"), "feat/558-dirty");
     fs::write(dirty.join("scratch.txt"), "work in progress\n").expect("write dirty worktree file");
-    insert_active_lease(&scratch, &identity, closed, "session-dirty", &repo, &dirty);
+    insert_registry_directory(
+        &scratch,
+        &identity,
+        closed,
+        "session-dirty",
+        &repo,
+        &dirty,
+        "feat/558-dirty",
+    );
 
     let open = create_local_issue(&scratch, &fixture, "Snapshot sync open", "Still open");
     let open_worktree = add_worktree(&repo, &scratch.join("wt-open"), "feat/558-open");
-    insert_active_lease(
+    insert_registry_directory(
         &scratch,
         &identity,
         open,
         "session-open",
         &repo,
         &open_worktree,
+        "feat/558-open",
     );
 
     let args = ["--provider", "local", "issue", "sync", "--no-clean"];
@@ -129,7 +146,7 @@ fn issue_sync_no_clean_keeps_an_opencode_associated_worktree() {
     let scratch = Scratch::new("json-sync-opencode");
     let repo = init_repo(&scratch.join("repo"));
     let fixture = scratch.dir("fixture");
-    let identity = open_lease_store(&scratch, &repo);
+    let identity = open_registry_store(&scratch, &repo);
 
     let closed = create_local_issue(
         &scratch,
@@ -139,9 +156,25 @@ fn issue_sync_no_clean_keeps_an_opencode_associated_worktree() {
     );
     set_local_status(&scratch, &fixture, closed, "Closed");
     let hosted = add_worktree(&repo, &scratch.join("wt-opencode"), "feat/747-hosted");
-    insert_active_lease(&scratch, &identity, closed, "ses_snapshot", &repo, &hosted);
+    insert_registry_directory(
+        &scratch,
+        &identity,
+        closed,
+        "ses_snapshot",
+        &repo,
+        &hosted,
+        "feat/747-hosted",
+    );
     let plain = add_worktree(&repo, &scratch.join("wt-plain"), "feat/747-plain");
-    insert_active_lease(&scratch, &identity, closed, "session-plain", &repo, &plain);
+    insert_registry_directory(
+        &scratch,
+        &identity,
+        closed,
+        "session-plain",
+        &repo,
+        &plain,
+        "feat/747-plain",
+    );
 
     let args = ["--provider", "local", "issue", "sync", "--no-clean"];
     let run = run(&scratch, &repo, Some("orchestrator"), &args);

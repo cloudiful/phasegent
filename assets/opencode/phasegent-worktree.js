@@ -82,45 +82,70 @@ function locationDirectory(context) {
 
 // assets/opencode/src/binding.js
 // Local, offline probes around the `phasegent` CLI: branch binding, worktree
-// acquire, active lease status, and the full lease history. All calls stay
-// local: no network, no credentials, no .env copies.
+// acquire, and the registered-directory reads. All calls stay local: no
+// network, no credentials, no .env copies.
 //
 // The role a probe needs is scoped to that single call through the
 // `PHASEGENT_ROLE` environment entry, so the host process environment is never
 // mutated (issue #588 phase 2).
 
 
-// `worktree acquire` is orchestrator-only; the lease reads are executor-scoped.
+// `worktree acquire` is orchestrator-only; the directory reads are
+// executor-scoped.
 const ORCHESTRATOR_ENV = { PHASEGENT_ROLE: "orchestrator" };
 const EXECUTOR_ENV = { PHASEGENT_ROLE: "executor" };
-const LEASE_PAGE_LIMIT = 100;
-const MAX_LEASE_PAGES = 10_000;
+const DIRECTORY_PAGE_LIMIT = 100;
+const MAX_DIRECTORY_PAGES = 10_000;
 const PAGING_FIELDS = ["items", "page", "limit", "total_count", "has_more"];
-const LEASE_STATUSES = new Set(["active", "retained", "released"]);
 
 async function readBranchBinding(cwd) {
   const result = await safeText(phasegentCommand(["issue", "status"], cwd));
   if (!result.ok || !result.value) return null;
   try {
     const parsed = JSON.parse(result.value);
-    if (parsed && typeof parsed.issue_id === "number" && parsed.issue_id > 0) {
-      return parsed.issue_id;
+    if (!parsed || !Number.isSafeInteger(parsed.issue_id) || parsed.issue_id <= 0) {
+      return null;
     }
+    // Placement needs the complete immutable durable task identity of a linked
+    // issue in this checkout: task id, instance, provider, project and external
+    // id. A branch-name fallback, an unknown legacy scope or a missing task
+    // identity is not enough to select another task's directory.
+    const linked = Array.isArray(parsed.linked_issues)
+      ? parsed.linked_issues.find(
+          (entry) =>
+            entry &&
+            entry.issue_number === parsed.issue_id &&
+            Number.isSafeInteger(entry.task_id) &&
+            entry.task_id > 0 &&
+            nonEmptyString(entry.instance) &&
+            nonEmptyString(entry.provider) &&
+            nonEmptyString(entry.project) &&
+            nonEmptyString(entry.external_id),
+        )
+      : undefined;
+    if (!linked) return null;
+    return {
+      issueId: parsed.issue_id,
+      provider: linked.provider,
+      project: linked.project,
+      externalId: linked.external_id,
+      taskId: linked.task_id,
+      instance: linked.instance,
+    };
   } catch (_) {
   }
   return null;
 }
 
 async function acquireWorktree(issueId, sessionId, cwd, options) {
-  // Lease-owned operations need an explicit identity (issue 651 P4):
-  // the CLI removed its fabricated fallback owner, so an anonymous
-  // acquire would hard-error. Refuse upfront with an actionable warning
-  // instead of spending a CLI round-trip on a guaranteed failure; the
-  // caller falls back to its ownerless path.
+  // Acquire needs an explicit identity: the CLI removed its fabricated
+  // fallback owner, so an anonymous acquire would hard-error. Refuse upfront
+  // with an actionable warning instead of spending a CLI round-trip on a
+  // guaranteed failure; the caller falls back to its ownerless path.
   if (!sessionId) {
     warn(
       `phasegent: cannot acquire a worktree for issue ${issueId} without a session identity; ` +
-        "the lease must be owned, so pass the host session id or run " +
+        "the directory association must be owned, so pass the host session id or run " +
         `\`phasegent worktree acquire --issue ${issueId} --isolate\` by hand`,
     );
     return null;
@@ -151,47 +176,77 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function validLease(lease) {
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+function validTask(task) {
   return (
-    isObject(lease) &&
-    typeof lease.lease_id === "string" && lease.lease_id.length > 0 &&
-    typeof lease.repo_identity === "string" && lease.repo_identity.length > 0 &&
-    Number.isSafeInteger(lease.issue) && lease.issue > 0 &&
-    typeof lease.session === "string" && lease.session.length > 0 &&
-    typeof lease.checkout_path === "string" && lease.checkout_path.length > 0 &&
-    typeof lease.worktree_path === "string" && lease.worktree_path.length > 0 &&
-    typeof lease.branch === "string" &&
-    LEASE_STATUSES.has(lease.status) &&
-    Number.isSafeInteger(lease.created_at) &&
-    Number.isSafeInteger(lease.heartbeat_at) &&
-    (!Object.hasOwn(lease, "release_reason") || typeof lease.release_reason === "string")
+    isObject(task) &&
+    Number.isSafeInteger(task.task_id) && task.task_id > 0 &&
+    Number.isSafeInteger(task.issue) && task.issue > 0 &&
+    (!Object.hasOwn(task, "provider") || typeof task.provider === "string") &&
+    (!Object.hasOwn(task, "instance") || typeof task.instance === "string") &&
+    (!Object.hasOwn(task, "project") || typeof task.project === "string") &&
+    (!Object.hasOwn(task, "external_id") || typeof task.external_id === "string")
   );
 }
 
-function validUniqueLeases(leases) {
-  if (!Array.isArray(leases)) return false;
+function validLegacyIssue(issue) {
+  return (
+    isObject(issue) &&
+    Number.isSafeInteger(issue.issue) && issue.issue > 0 &&
+    typeof issue.provider === "string" &&
+    typeof issue.project === "string" &&
+    Number.isSafeInteger(issue.external_id) && issue.external_id >= 0
+  );
+}
+
+function validDirectory(directory) {
+  return (
+    isObject(directory) &&
+    nonEmptyString(directory.directory_id) &&
+    nonEmptyString(directory.repo_identity) &&
+    nonEmptyString(directory.checkout_path) &&
+    nonEmptyString(directory.worktree_path) &&
+    typeof directory.branch === "string" &&
+    Number.isSafeInteger(directory.created_at) &&
+    Array.isArray(directory.tasks) && directory.tasks.every(validTask) &&
+    Array.isArray(directory.legacy_issues) && directory.legacy_issues.every(validLegacyIssue) &&
+    Array.isArray(directory.sessions) && directory.sessions.every(nonEmptyString)
+  );
+}
+
+function validUniqueDirectories(directories) {
+  if (!Array.isArray(directories)) return false;
   const ids = new Set();
-  for (const lease of leases) {
-    if (!validLease(lease) || ids.has(lease.lease_id)) return false;
-    ids.add(lease.lease_id);
+  for (const directory of directories) {
+    if (!validDirectory(directory) || ids.has(directory.directory_id)) return false;
+    ids.add(directory.directory_id);
   }
   return true;
 }
 
-function isLegacyLeaseResult(parsed) {
-  return !PAGING_FIELDS.some((field) => Object.hasOwn(parsed, field));
-}
-
-async function readCompleteLeaseCollection(argsForPage, cwd, contextField, expectedIssue, executePage) {
+async function readCompleteDirectoryCollection(
+  argsForPage,
+  cwd,
+  contextField,
+  expectedIssue,
+  executePage,
+) {
   const runPage = executePage || ((args) => safeText(phasegentCommand(args, cwd, EXECUTOR_ENV)));
-  const leases = [];
-  const leaseIds = new Set();
+  const directories = [];
+  const directoryIds = new Set();
   let expectedContext;
   let totalCount;
   let pageCount;
 
-  for (let page = 1; page <= MAX_LEASE_PAGES; page += 1) {
-    const args = [...argsForPage(page), "--page", String(page), "--limit", String(LEASE_PAGE_LIMIT)];
+  for (let page = 1; page <= MAX_DIRECTORY_PAGES; page += 1) {
+    const args = [
+      ...argsForPage(page),
+      "--page", String(page),
+      "--limit", String(DIRECTORY_PAGE_LIMIT),
+    ];
     const result = await runPage(args);
     if (!result.ok || !result.value) return null;
 
@@ -201,30 +256,19 @@ async function readCompleteLeaseCollection(argsForPage, cwd, contextField, expec
     } catch (_) {
       return null;
     }
-    if (!isObject(parsed)) return null;
-
-    if (page === 1 && isLegacyLeaseResult(parsed)) {
-      if (
-        !Array.isArray(parsed.leases) ||
-        !validUniqueLeases(parsed.leases) ||
-        (contextField === "issue" && parsed.issue !== expectedIssue) ||
-        (contextField === "repo_identity" &&
-          (typeof parsed.repo_identity !== "string" || parsed.repo_identity.length === 0))
-      ) {
-        return null;
-      }
-      return parsed.leases;
+    if (!isObject(parsed) || !PAGING_FIELDS.some((field) => Object.hasOwn(parsed, field))) {
+      return null;
     }
 
     if (
       parsed.page !== page ||
-      parsed.limit !== LEASE_PAGE_LIMIT ||
+      parsed.limit !== DIRECTORY_PAGE_LIMIT ||
       !Array.isArray(parsed.items) ||
-      parsed.items.length > LEASE_PAGE_LIMIT ||
+      parsed.items.length > DIRECTORY_PAGE_LIMIT ||
       typeof parsed.has_more !== "boolean" ||
       !Number.isSafeInteger(parsed.total_count) ||
       parsed.total_count < 0 ||
-      parsed.total_count > LEASE_PAGE_LIMIT * MAX_LEASE_PAGES
+      parsed.total_count > DIRECTORY_PAGE_LIMIT * MAX_DIRECTORY_PAGES
     ) {
       return null;
     }
@@ -232,109 +276,123 @@ async function readCompleteLeaseCollection(argsForPage, cwd, contextField, expec
     const context = parsed[contextField];
     if (contextField === "issue") {
       if (!Number.isSafeInteger(context) || context !== expectedIssue) return null;
-    } else if (typeof context !== "string" || context.length === 0) {
+    } else if (!nonEmptyString(context)) {
       return null;
     }
     if (page === 1) {
       expectedContext = context;
       totalCount = parsed.total_count;
-      pageCount = Math.max(1, Math.ceil(totalCount / LEASE_PAGE_LIMIT));
-      if (pageCount > MAX_LEASE_PAGES) return null;
+      pageCount = Math.max(1, Math.ceil(totalCount / DIRECTORY_PAGE_LIMIT));
+      if (pageCount > MAX_DIRECTORY_PAGES) return null;
     } else if (context !== expectedContext || parsed.total_count !== totalCount) {
       return null;
     }
 
     if (page > pageCount) return null;
-    const expectedItems = Math.min(LEASE_PAGE_LIMIT, totalCount - leases.length);
+    const expectedItems = Math.min(DIRECTORY_PAGE_LIMIT, totalCount - directories.length);
     if (parsed.items.length !== expectedItems) return null;
-    const expectedMore = leases.length + parsed.items.length < totalCount;
+    const expectedMore = directories.length + parsed.items.length < totalCount;
     if (parsed.has_more !== expectedMore) return null;
 
-    for (const lease of parsed.items) {
-      if (!validLease(lease) || leaseIds.has(lease.lease_id)) return null;
-      leaseIds.add(lease.lease_id);
-      leases.push(lease);
+    for (const directory of parsed.items) {
+      if (!validDirectory(directory) || directoryIds.has(directory.directory_id)) return null;
+      directoryIds.add(directory.directory_id);
+      directories.push(directory);
     }
 
     if (!parsed.has_more) {
-      return leases.length === totalCount && page === pageCount ? leases : null;
+      return directories.length === totalCount && page === pageCount ? directories : null;
     }
   }
 
   return null;
 }
 
-async function readIssueLeases(issueId, cwd, executePage) {
+async function readIssueDirectories(issueId, cwd, executePage) {
   const issue = Number(issueId);
   if (!Number.isSafeInteger(issue) || issue <= 0) return null;
-  const leases = await readCompleteLeaseCollection(
-    (page) => ["worktree", "status", "--issue", String(issue)],
+  return await readCompleteDirectoryCollection(
+    () => ["worktree", "status", "--issue", String(issue)],
     cwd,
     "issue",
     issue,
     executePage,
   );
-  return leases;
 }
 
-// `worktree status` selects active rows only, so a converged issue looks empty
-// there: its closed marker is read through `worktree list --no-sync`, whose
-// envelope keeps every row (active and terminal) of the resolved repo
-// identity. `--no-sync` keeps the probe local and offline: no provider
-// resolution, no reconciliation pass.
-async function readIssueLeaseHistory(issueId, cwd, executePage) {
-  const issue = Number(issueId);
-  if (!Number.isSafeInteger(issue) || issue <= 0) return null;
-  const leases = await readCompleteLeaseCollection(
+async function readRepositoryDirectories(cwd, executePage) {
+  return await readCompleteDirectoryCollection(
     () => ["worktree", "list", "--no-sync"],
     cwd,
     "repo_identity",
     undefined,
     executePage,
   );
-  return leases === null ? null : leases.filter((lease) => lease.issue === issue);
 }
 
-// `issue close` and `issue sync` converge an issue's lease rows instead of
-// deleting them: the rows keep their status (`retained` / `released`) and carry
-// a release reason of "issue closed" ("issue closed: <session>") or "issue
-// closed on the remote (issue sync)" (src/lifecycle.rs, src/cli/sync.rs). That
-// reason is the adapter's local, offline marker for a closed issue, so the lazy
-// path can refuse a fresh worktree without a provider call. The rows come from
-// the lease history (`worktree list --no-sync`), which keeps terminal rows.
-const ISSUE_CLOSED_REASON = /^issue closed/i;
-
-function issueClosedLocally(leases) {
-  if (!Array.isArray(leases)) return false;
-  return leases.some(
-    (lease) =>
-      Boolean(lease) &&
-      typeof lease === "object" &&
-      typeof lease.release_reason === "string" &&
-      ISSUE_CLOSED_REASON.test(lease.release_reason.trim()),
+function directoryAssociatesIssue(directory, issueId) {
+  if (!isObject(directory) || !Number.isSafeInteger(issueId) || issueId <= 0) return false;
+  return (
+    (Array.isArray(directory.tasks) && directory.tasks.some((task) => task && task.issue === issueId)) ||
+    (Array.isArray(directory.legacy_issues) &&
+      directory.legacy_issues.some((issue) => issue && issue.issue === issueId))
   );
 }
 
-function pickActiveWorktreePath(leases) {
-  if (!Array.isArray(leases)) return null;
-  let best = null;
-  for (const lease of leases) {
-    if (!lease || typeof lease !== "object") continue;
-    if (lease.status !== "active") continue;
-    if (typeof lease.worktree_path !== "string" || lease.worktree_path.length === 0) {
-      continue;
-    }
-    if (!best) {
-      best = lease;
-      continue;
-    }
-    const heartbeat = lease.heartbeat_at ?? "";
-    const bestHeartbeat = best.heartbeat_at ?? "";
-    if (String(heartbeat) > String(bestHeartbeat)) {
-      best = lease;
-    }
-  }
-  return best ? best.worktree_path : null;
+function validBinding(binding) {
+  return (
+    isObject(binding) &&
+    Number.isSafeInteger(binding.issueId) && binding.issueId > 0 &&
+    nonEmptyString(binding.provider) &&
+    nonEmptyString(binding.project) &&
+    nonEmptyString(binding.externalId) &&
+    Number.isSafeInteger(binding.taskId) && binding.taskId > 0 &&
+    nonEmptyString(binding.instance)
+  );
+}
+
+// A directory belongs to this checkout's bound issue only when one durable
+// task association matches the immutable task id, instance, number, provider,
+// project and external id exactly. Unknown legacy evidence is never treated as
+// equivalent to a durable task.
+function directoryMatchesBinding(directory, binding) {
+  if (!isObject(directory) || !validBinding(binding)) return false;
+  const external = String(binding.externalId);
+  return (
+    Array.isArray(directory.tasks) &&
+    directory.tasks.some(
+      (task) =>
+        task &&
+        task.task_id === binding.taskId &&
+        task.instance === binding.instance &&
+        task.issue === binding.issueId &&
+        task.provider === binding.provider &&
+        task.project === binding.project &&
+        task.external_id === external,
+    )
+  );
+}
+
+function verifiedBindingDirectory(directories, binding, sessionId) {
+  if (!Array.isArray(directories) || !validBinding(binding)) return null;
+  const matches = directories.filter((directory) => directoryMatchesBinding(directory, binding));
+  if (matches.length !== 1) return null;
+  const directory = matches[0];
+  const sessions = directory.sessions || [];
+  if (sessions.length > 0 && !sessions.includes(sessionId)) return null;
+  return directory.worktree_path;
+}
+
+// Number-only compatibility helper for callers that already proved the
+// repository. Placement itself uses `verifiedBindingDirectory`.
+function verifiedIssueDirectory(directories, issueId, sessionId) {
+  if (!Array.isArray(directories)) return null;
+  const matches = directories.filter((directory) => directoryAssociatesIssue(directory, issueId));
+  if (matches.length !== 1) return null;
+  const directory = matches[0];
+  const sessions = directory.sessions || [];
+  if (sessions.length > 0 && !sessions.includes(sessionId)) return null;
+  return directory.worktree_path;
 }
 
 // assets/opencode/src/roles.js
@@ -346,7 +404,7 @@ function pickActiveWorktreePath(leases) {
 // downgrade of a claimed elevated role. `explore` maps to its own least-privilege
 // role (issue #754 P3): the CLI grants it issue read plus structured `record`
 // read, and an authorized recon `record create` only — never the reviewer
-// surface, and never ordinary comment/status/admin/lease writes.
+// surface, and never ordinary comment/status/admin/registry writes.
 //
 // Canonical IDs are exact after lowercasing: orchestrator, executor, reviewer,
 // explore only (issue #859 P1). Compound or substring lookalikes
@@ -2457,7 +2515,7 @@ const placementOrigins = new Map();
 // Targets the host moved a session out of.
 //
 // A relocation the host made is authoritative and stays authoritative for that
-// session, so a later lease rediscovery must not hand the same target back.
+// session, so a later registry rediscovery must not hand the same target back.
 // The record is session-local and target-specific: another target, a new issue
 // or another worktree is never blocked.
 const abandonedTargets = new Map();
@@ -2476,7 +2534,6 @@ const placedSessions = new Set();
 // that has not landed yet.
 const confirmedSessions = new Set();
 const sessionInfo = new Map();
-const closedIssues = new Set();
 
 // `sessionPlaced` reports a *settled* placement: the session already sat in the
 // worktree, or its move was admitted and the runner applies it at the next step
@@ -2520,17 +2577,6 @@ function supersedeAttempt(key) {
   if (record) record.attempt = null;
 }
 
-// A refused acquisition is remembered per issue: the session stays in the
-// main checkout, and the next prompt must not repeat the lease probe or
-// the warning.
-function issueKnownClosed(issueId) {
-  return closedIssues.has(String(issueId));
-}
-
-function rememberClosedIssue(issueId) {
-  closedIssues.add(String(issueId));
-}
-
 // Exact per-session registration. A miss (unknown or absent session) records
 // nothing and never borrows another session's directory.
 //
@@ -2571,7 +2617,7 @@ function placementOrigin(sessionId) {
 }
 
 // Remembers that the host moved this session out of `directory`. The record
-// survives the target it belonged to, so a later lease rediscovery cannot
+// survives the target it belonged to, so a later registry rediscovery cannot
 // resurrect a target the session was relocated away from.
 function markTargetAbandoned(sessionId, directory) {
   if (sessionId === undefined || sessionId === null) return;
@@ -2608,7 +2654,6 @@ function resetWorktrees() {
   placedSessions.clear();
   confirmedSessions.clear();
   sessionInfo.clear();
-  closedIssues.clear();
 }
 
 // `context.session.get` is the host's session lookup: `parentID` names the
@@ -2701,7 +2746,7 @@ function forgetSessionWorktree(sessionId, _directory) {
 //     is dropped and the child follows the host.
 //
 // A parent the host cannot describe gives the child nothing at all: no cached
-// directory, no issue-lease discovery, and never a stale target.
+// directory, no issue-directory discovery, and never a stale target.
 async function inheritedWorktree(context, parentId, readDirectory) {
   if (parentId === undefined || parentId === null) return null;
   const key = String(parentId);
@@ -2866,8 +2911,9 @@ async function reuseRememberedWorktree(context, sessionId) {
 // assets/opencode/src/session-reconcile.js
 // Reconciling the worktree registry against the host.
 //
-// A lease records where a session *was*, and this registry recorded where the
-// plugin put it. Neither survives an authoritative move: `issue close` returns
+// The directory registry records where a session *was*, and the plugin
+// records where it put the session. Neither survives an authoritative move:
+// `issue close` returns
 // the closing session to the repository's main checkout through the OpenCode
 // API before it removes the worktree, and the directory a cached entry names can
 // be gone by the time the next prompt arrives. A move made out of band — the
@@ -2926,7 +2972,7 @@ async function reconcileSessionLocation(context, sessionId, readDirectory) {
     return true;
   }
   // The session was relocated. Its target is dropped and remembered as
-  // abandoned, so a later lease rediscovery cannot hand it back.
+  // abandoned, so a later registry rediscovery cannot hand it back.
   markTargetAbandoned(sessionId, registered);
   forgetSessionWorktree(sessionId, registered);
   placementDiagnostic("skip", { session: key, reason: "reconciled-elsewhere" });
@@ -2939,9 +2985,10 @@ async function reconcileSessionLocation(context, sessionId, readDirectory) {
 // Placement runs from the session prompt hook (issue 37), once per session and
 // before the runner reaches any tool call, so a move never has to cancel an
 // in-flight invocation. A session with neither a registered nor an inherited
-// worktree probes the checkout's issue binding and the issue's leases, and reuses
-// a path only when one is already recorded. Creating a worktree is opt-in
-// (issue 616): with no reusable lease the session keeps the current checkout and
+// worktree probes the checkout's issue binding and the verified registry
+// mapping, and reuses a path only when exactly one registered directory for the
+// issue is either unowned or already names this session. Creating a worktree is
+// opt-in: with no verified directory the session keeps the current checkout and
 // is pointed at the explicit `phasegent worktree acquire --isolate` command
 // instead. A Task-spawned child follows its parent's directory first and never
 // reaches the probes below, so it can neither acquire nor guess one.
@@ -2971,11 +3018,14 @@ async function discoverWorktreeForSession(sessionId, cwd) {
     if (!sessionId) return null;
     const known = worktreeForSession(sessionId);
     if (known) return known;
-    const issueId = await readBranchBinding(cwd);
-    if (!issueId) return null;
-    const leases = await readIssueLeases(issueId, cwd);
-    if (!leases) return null;
-    const path = pickActiveWorktreePath(leases);
+    const binding = await readBranchBinding(cwd);
+    if (!binding) return null;
+    // The directory list is scoped to the repository the session is currently
+    // in, and selection requires the complete provider/project/external task
+    // identity from the binding, never a matching number alone.
+    const directories = await readRepositoryDirectories(cwd);
+    if (!directories) return null;
+    const path = verifiedBindingDirectory(directories, binding, sessionId);
     if (!path) return null;
     // A target the host moved this session out of stays abandoned: the
     // relocation is authoritative and rediscovery must not resurrect it. The
@@ -2991,8 +3041,8 @@ async function discoverWorktreeForSession(sessionId, cwd) {
 
 // A refused placement is remembered per (session, issue): the session stays in
 // the current checkout, so the next prompt must not repeat the same warning.
-// A fresh session id (or a new issue binding) warns again, and a lease that
-// appears later is still picked up by the reuse probe before this guard.
+// A fresh session id (or a new issue binding) warns again, and a directory
+// that appears later is still picked up by the reuse probe before this guard.
 const refusedPlacements = new Set();
 
 function warnRefusedPlacement(sessionId, issueId) {
@@ -3034,7 +3084,6 @@ async function ensureSessionWorktree(context, sessionId, deps) {
   const readInfo = (deps && deps.readSessionInfo) || readSessionInfo;
   const discover = (deps && deps.discover) || discoverWorktreeForSession;
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
-  const readLeaseHistory = (deps && deps.readLeaseHistory) || readIssueLeaseHistory;
   try {
     // A child inherits before its own registration and before the reuse probe:
     // it takes its parent's current directory or nothing at all, never another
@@ -3065,34 +3114,18 @@ async function ensureSessionWorktree(context, sessionId, deps) {
       await moveSessionToWorktree(context, sessionId, discovered);
       return discovered;
     }
-    const issueId = await readBinding(cwd);
-    if (!issueId) return null;
-    if (issueKnownClosed(issueId)) return null;
-    if (await issueConverged(issueId, cwd, readLeaseHistory)) {
-      warn(`phasegent: issue ${issueId} is closed; refusing to acquire a worktree (staying put)`);
-      return null;
-    }
-    // Automatic creation is opt-in (issue 616): with no reusable lease the
-    // session keeps the current checkout instead of being moved into a freshly
-    // created worktree, and the explicit isolation command is the opt-in.
-    warnRefusedPlacement(sessionId, issueId);
+    const binding = await readBinding(cwd);
+    if (!binding) return null;
+    // Automatic creation is opt-in: with no verified directory the session
+    // keeps the current checkout instead of being moved into a freshly created
+    // worktree, and the explicit isolation command is the opt-in.
+    warnRefusedPlacement(sessionId, binding.issueId);
     return null;
   } catch (error) {
     if (isPlacementFailure(error)) throw error;
     warn(`phasegent: worktree discovery failed; reusing original directory (${errorText(error)})`);
     return null;
   }
-}
-
-// The local, offline closed marker: `issue close` and `issue sync` converge a
-// lease row instead of deleting it, so its "issue closed…" release reason is
-// what the adapter reads. Remembering the answer keeps the next prompt off the
-// CLI. A binding that cannot be read leaves the decision to the caller.
-async function issueConverged(issueId, cwd, readLeaseHistory) {
-  if (issueKnownClosed(issueId)) return true;
-  if (!issueClosedLocally(await readLeaseHistory(issueId, cwd))) return false;
-  rememberClosedIssue(issueId);
-  return true;
 }
 
 // The parent's registered target is the destination of a move that may still be
@@ -3976,12 +4009,12 @@ async function registerAgentSkills(context, deps) {
 // keeps its own git implementation. A host "create worktree" action is the
 // explicit isolation opt-in (issue 616), so `create` passes `isolate` and a
 // dedicated directory is really created instead of quietly reusing the current
-// checkout. Host removal is refused: the directory, its branch and its lease
-// belong to the phasegent cleanup lifecycle.
+// checkout. Host removal is refused: the directory, its branch and its registry
+// row belong to the phasegent cleanup lifecycle.
 
 
 // Mirrors the host git strategy's command (packages/core/src/git.ts:657) so a
-// failed lease never breaks worktree creation in a phasegent checkout.
+// failed acquire never breaks worktree creation in a phasegent checkout.
 async function gitWorktreeAdd(input) {
   const directory = input && input.directory;
   const sourceDirectory = input && input.sourceDirectory;
@@ -4000,7 +4033,8 @@ async function gitWorktreeAdd(input) {
 }
 
 function worktreeStrategyDefinition(options) {
-  const issueId = options.issueId;
+  const binding = options.binding;
+  const issueId = binding.issueId;
   const fallbackDirectory = options.directory;
   return {
     id: "phasegent",
@@ -4012,8 +4046,8 @@ function worktreeStrategyDefinition(options) {
       // without `--isolate` the acquire may reuse the current checkout, which
       // would not honour the create request. The host action carries no
       // session, and anonymous acquisition is refused since issue 651 P4, so
-      // this always degrades to the plain git worktree below — no lease is
-      // ever booked without an owner.
+      // this always degrades to the plain git worktree below — no directory
+      // association is ever recorded without an owner.
       const acquired = await options.acquire(issueId, null, sourceDirectory, { isolate: true });
       if (acquired && typeof acquired.path === "string" && acquired.path.length > 0) {
         return { directory: acquired.path };
@@ -4024,8 +4058,8 @@ function worktreeStrategyDefinition(options) {
     async remove() {
       // The host drops the worktree from its inventory once this resolves, so
       // a silent success would hide a worktree that still exists. The
-      // directory, its branch and its lease belong to the phasegent cleanup
-      // lifecycle, so refuse.
+      // directory, its branch and its registry row belong to the phasegent
+      // cleanup lifecycle, so refuse.
       throw new Error(
         "phasegent: host removal is unsupported for phasegent worktrees; remove them through the phasegent-managed issue cleanup lifecycle (`phasegent issue close`, `phasegent issue sync`)",
       );
@@ -4043,10 +4077,11 @@ function worktreeStrategyDefinition(options) {
         entries.push({ directory, type });
       };
       push(root, "root");
-      const leases = await options.readLeases(issueId, root);
-      for (const lease of leases || []) {
-        if (!lease || typeof lease !== "object") continue;
-        push(lease.worktree_path, "worktree");
+      const directories = await options.readDirectories(root);
+      for (const directory of directories || []) {
+        if (!directory || typeof directory !== "object") continue;
+        if (!directoryMatchesBinding(directory, binding)) continue;
+        push(directory.worktree_path, "worktree");
       }
       return entries;
     },
@@ -4068,14 +4103,14 @@ async function registerWorktreeStrategy(context, deps) {
   }
   const directory = locationDirectory(context);
   const readBinding = (deps && deps.readBinding) || readBranchBinding;
-  const issueId = await readBinding(directory);
-  if (!issueId) return null;
+  const binding = await readBinding(directory);
+  if (!binding) return null;
   const definition = worktreeStrategyDefinition({
-    issueId,
+    binding,
     directory,
     acquire: (deps && deps.acquire) || acquireWorktree,
     gitAdd: (deps && deps.gitAdd) || gitWorktreeAdd,
-    readLeases: (deps && deps.readLeases) || readIssueLeases,
+    readDirectories: (deps && deps.readDirectories) || readRepositoryDirectories,
   });
   return await transform((editor) => {
     editor.add(definition);
@@ -4140,10 +4175,9 @@ async function registerWorktreeStrategy(context, deps) {
 // parent's directory instead of guessing from the most recently remembered
 // worktree (session.js). Degradation is deliberate: no binding or a failed
 // acquire keeps the original directory and warns on the console (v2 has no
-// structured warning channel). A lease row that `issue close` / `issue sync`
-// converged keeps its "issue closed…" release reason, so the lazy path refuses to
-// acquire a fresh worktree for an already closed issue and stays in place (issue
-// #575 P2). The host is also the authority that outranks the registry: `issue
+// structured warning channel). The lazy path reuses only a verified registry
+// mapping for the session, and automatic creation stays opt-in. The host is
+// also the authority that outranks the registry: `issue
 // close` returns the closing session to the main checkout through the OpenCode
 // API before removing its worktree, and a settled placement is reconciled against
 // a fresh host read so that relocation is never reversed and a removed worktree is
@@ -4320,8 +4354,9 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   BROKER_ADDR_ENV,
   BROKER_TOKEN_ENV,
   isShellHookSupported,
-  pickActiveWorktreePath,
-  issueClosedLocally,
+  verifiedIssueDirectory,
+  verifiedBindingDirectory,
+  directoryMatchesBinding,
   discoverWorktreeForSession,
   ensureSessionWorktree,
   moveSessionToWorktree,
@@ -4331,8 +4366,8 @@ PhasegentWorktreePlugin.redirect = Object.freeze({
   reconcileSessionLocation,
   readBranchBinding,
   acquireWorktree,
-  readIssueLeases,
-  readIssueLeaseHistory,
+  readIssueDirectories,
+  readRepositoryDirectories,
   registerWorktreeStrategy,
   worktreeStrategyDefinition,
   gitWorktreeAdd,

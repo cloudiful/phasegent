@@ -1,10 +1,10 @@
-//! The curated worktree views: the lease list, the probe, the acquire
+//! The curated worktree views: the directory list, the probe, the acquire
 //! outcome, and the prune report.
 //!
-//! Every view renders the lease identities, paths, and outcomes the command
-//! already resolved. A path is shortened relative to the working directory or
-//! the home directory only when the shorter form still names the same path;
-//! otherwise the full path stays, on its own line.
+//! Every view renders the directory identities, associations, paths, and
+//! outcomes the command already resolved. A path is shortened relative to the
+//! working directory or the home directory only when the shorter form still
+//! names the same path; otherwise the full path stays, on its own line.
 
 use serde_json::Value;
 
@@ -12,16 +12,16 @@ use crate::output::context::OutputContext;
 use crate::output::render::Lines;
 
 /// The curated `worktree list` and `worktree status` rendering.
-pub(crate) fn render_lease_list(value: &Value, context: &OutputContext) -> String {
+pub(crate) fn render_directory_list(value: &Value, context: &OutputContext) -> String {
     let paged = value.get("page").is_some();
-    let Some(leases) = value
-        .get(if paged { "items" } else { "leases" })
+    let Some(directories) = value
+        .get(if paged { "items" } else { "directories" })
         .and_then(Value::as_array)
     else {
         return super::generic::render(value, context);
     };
     let mut lines = Lines::new(context);
-    lines.heading(&lease_summary(leases));
+    lines.heading(&directory_summary(directories));
     if paged {
         if let Some(identity) = value.get("repo_identity").and_then(Value::as_str) {
             lines.field(0, "Repository", identity);
@@ -30,7 +30,7 @@ pub(crate) fn render_lease_list(value: &Value, context: &OutputContext) -> Strin
             lines.field(0, "Issue", &format!("#{issue}"));
         }
     }
-    if leases.is_empty() {
+    if directories.is_empty() {
         lines.blank();
         lines.text(
             0,
@@ -40,113 +40,137 @@ pub(crate) fn render_lease_list(value: &Value, context: &OutputContext) -> Strin
                     .and_then(Value::as_u64)
                     .is_some_and(|total| total > 0)
             {
-                "No leases on this page."
+                "No directories on this page."
             } else {
-                "No worktree leases are recorded for this scope."
+                "No worktree directories are recorded for this scope."
             },
         );
         return lines.finish();
     }
     lines.blank();
     // A narrow terminal stacks the entries instead of overflowing a table.
-    let stacked = !entries_fit(leases, context.width);
-    for lease in leases {
-        render_lease(&mut lines, lease, stacked);
+    let stacked = !entries_fit(directories, context.width);
+    for directory in directories {
+        render_directory(&mut lines, directory, stacked);
     }
     lines.finish()
 }
 
-/// The count and state summary of a lease list.
-fn lease_summary(leases: &[Value]) -> String {
-    let total = leases.len();
-    let noun = if total == 1 { "lease" } else { "leases" };
-    let mut counts: Vec<(String, usize)> = Vec::new();
-    for lease in leases {
-        let state = lease
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
-        match counts.iter_mut().find(|(name, _)| *name == state) {
-            Some((_, count)) => *count += 1,
-            None => counts.push((state, 1)),
-        }
-    }
-    // The known states keep their workflow order; the rest follow in
-    // alphabetical order so the summary never changes shape between runs.
-    let mut ordered: Vec<(String, usize)> = Vec::new();
-    for state in ["active", "retained", "released"] {
-        if let Some(entry) = counts.iter().find(|(name, _)| name == state) {
-            ordered.push(entry.clone());
-        }
-    }
-    let mut others: Vec<(String, usize)> = counts
-        .into_iter()
-        .filter(|(name, _)| !["active", "retained", "released"].contains(&name.as_str()))
-        .collect();
-    others.sort_by(|left, right| left.0.cmp(&right.0));
-    ordered.extend(others);
-    if ordered.is_empty() {
-        return format!("{total} {noun}");
-    }
-    let states: Vec<String> = ordered
+/// The count and association summary of a directory list.
+fn directory_summary(directories: &[Value]) -> String {
+    let total = directories.len();
+    let noun = if total == 1 {
+        "directory"
+    } else {
+        "directories"
+    };
+    let tasks: usize = directories
         .iter()
-        .map(|(name, count)| format!("{count} {name}"))
-        .collect();
-    format!("{total} {noun}: {}", states.join(", "))
+        .map(|directory| {
+            directory
+                .get("tasks")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        })
+        .sum();
+    let sessions: usize = directories
+        .iter()
+        .map(|directory| {
+            directory
+                .get("sessions")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        })
+        .sum();
+    format!("{total} {noun}: {tasks} task association(s), {sessions} session(s)")
 }
 
 /// Whether the horizontal entry layout fits the terminal width.
-fn entries_fit(leases: &[Value], width: usize) -> bool {
-    leases.iter().all(|lease| {
-        let line = entry_line(lease);
+fn entries_fit(directories: &[Value], width: usize) -> bool {
+    directories.iter().all(|directory| {
+        let line = entry_line(directory);
         console::measure_text_width(&line) <= width
     })
 }
 
-/// The horizontal entry line of one lease.
-fn entry_line(lease: &Value) -> String {
-    let id = lease.get("lease_id").and_then(Value::as_str).unwrap_or("-");
-    let issue = lease.get("issue").and_then(Value::as_u64);
-    let state = lease
-        .get("status")
+/// The horizontal entry line of one directory.
+fn entry_line(directory: &Value) -> String {
+    let id = directory
+        .get("directory_id")
         .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let branch = lease.get("branch").and_then(Value::as_str).unwrap_or("-");
-    match issue {
-        Some(issue) => format!("{id}  #{issue}  {state}  {branch}"),
-        None => format!("{id}  {state}  {branch}"),
+        .unwrap_or("-");
+    let issues = directory_issues(directory);
+    let branch = directory
+        .get("branch")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    if issues.is_empty() {
+        format!("{id}  {branch}")
+    } else {
+        format!("{id}  {}  {branch}", issue_list(&issues))
     }
 }
 
-/// Render one lease entry.
-fn render_lease(lines: &mut Lines, lease: &Value, stacked: bool) {
-    let id = lease.get("lease_id").and_then(Value::as_str).unwrap_or("-");
-    let issue = lease.get("issue").and_then(Value::as_u64);
-    let state = lease
-        .get("status")
+fn directory_issues(directory: &Value) -> Vec<u64> {
+    let mut issues: Vec<u64> = directory
+        .get("tasks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|task| task.get("issue").and_then(Value::as_u64))
+        .chain(
+            directory
+                .get("legacy_issues")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|issue| issue.get("issue").and_then(Value::as_u64)),
+        )
+        .collect();
+    issues.sort_unstable();
+    issues.dedup();
+    issues
+}
+
+fn issue_list(issues: &[u64]) -> String {
+    issues
+        .iter()
+        .map(|issue| format!("#{issue}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render one directory entry.
+fn render_directory(lines: &mut Lines, directory: &Value, stacked: bool) {
+    let id = directory
+        .get("directory_id")
         .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let branch = lease.get("branch").and_then(Value::as_str).unwrap_or("-");
-    let path = lease.get("worktree_path").and_then(Value::as_str);
+        .unwrap_or("-");
+    let issues = directory_issues(directory);
+    let branch = directory
+        .get("branch")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let path = directory.get("worktree_path").and_then(Value::as_str);
+    let sessions = directory
+        .get("sessions")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     if stacked {
         lines.row(id);
-        if let Some(issue) = issue {
-            lines.field(1, "Issue", &format!("#{issue}"));
+        if !issues.is_empty() {
+            lines.field(1, "Issues", &issue_list(&issues));
         }
-        lines.field(1, "State", state);
         lines.field(1, "Branch", branch);
+        lines.field(1, "Sessions", &sessions.to_string());
         if let Some(path) = path {
             lines.field(1, "Path", &shorten_path(path));
         }
     } else {
-        lines.raw(entry_line(lease));
+        lines.raw(entry_line(directory));
         if let Some(path) = path {
             lines.text(1, &shorten_path(path));
         }
-    }
-    if let Some(reason) = lease.get("release_reason").and_then(Value::as_str) {
-        lines.field(1, "Release reason", reason);
     }
 }
 
@@ -174,18 +198,21 @@ pub(crate) fn render_probe(value: &Value, context: &OutputContext) -> String {
         lines.field(0, "Head", head);
     }
     lines.field(0, "State", &probe_state(value));
-    if let Some(lease) = value.get("lease").filter(|lease| lease.is_object()) {
-        let id = lease.get("lease_id").and_then(Value::as_str).unwrap_or("-");
-        let issue = lease.get("issue").and_then(Value::as_u64);
-        let state = lease
-            .get("status")
+    if let Some(directory) = value
+        .get("directory")
+        .filter(|directory| directory.is_object())
+    {
+        let id = directory
+            .get("directory_id")
             .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let detail = match issue {
-            Some(issue) => format!("{id} (issue #{issue}, {state})"),
-            None => format!("{id} ({state})"),
+            .unwrap_or("-");
+        let issues = directory_issues(directory);
+        let detail = if issues.is_empty() {
+            id.to_owned()
+        } else {
+            format!("{id} ({})", issue_list(&issues))
         };
-        lines.field(0, "Lease", &detail);
+        lines.field(0, "Directory", &detail);
     }
     render_errors(&mut lines, value);
     lines.finish()
@@ -231,10 +258,10 @@ fn render_errors(lines: &mut Lines, value: &Value) {
 /// The curated `worktree acquire` rendering.
 pub(crate) fn render_acquire(value: &Value, context: &OutputContext) -> String {
     let mut lines = Lines::new(context);
-    lines.heading("Worktree lease");
+    lines.heading("Worktree directory");
     lines.blank();
-    if let Some(id) = value.get("lease_id").and_then(Value::as_str) {
-        lines.field(0, "Lease", id);
+    if let Some(id) = value.get("directory_id").and_then(Value::as_str) {
+        lines.field(0, "Directory", id);
     }
     if let Some(path) = value.get("path").and_then(Value::as_str) {
         lines.field(0, "Path", &shorten_path(path));
@@ -277,7 +304,7 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
     lines.heading(&format!("worktree prune ({mode})"));
     let repos = value.get("repos").and_then(Value::as_array);
     if repos.is_some_and(|repos| repos.is_empty()) {
-        lines.text(0, "no repositories with recorded worktree leases");
+        lines.text(0, "no repositories with recorded worktree directories");
     }
     let totals = value.get("totals");
     if let Some(totals) = totals {
@@ -285,10 +312,7 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         let removed = count("removed");
         let eligible = count("eligible");
         let absent = count("absent");
-        let kept = count("kept_active")
-            + count("kept_unknown")
-            + count("kept_protected")
-            + count("kept_issue");
+        let kept = count("kept_protected") + count("kept_issue");
         let failed = count("failed");
         // A preview reports what it would remove; it never claims a removal.
         let counts = if dry_run {
@@ -328,10 +352,8 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         }
         let other = count("kept_protected").saturating_sub(main + waiting);
         lines.row(format!(
-            "kept reasons: active {}, main {main}, waiting-move {waiting}, other-protected {other}, issue-state {}, unknown {}",
-            count("kept_active"),
+            "kept reasons: main {main}, waiting-move {waiting}, other-protected {other}, issue-state {}",
             count("kept_issue"),
-            count("kept_unknown")
         ));
     }
     let verbose = value
@@ -360,29 +382,9 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         let absent = count("absent");
         if absent > 0 {
             lines.row(format!(
-                "absent: {absent} recorded worktree path(s) no longer exist on disk (historical lease evidence, not an OpenCode registration state)"
+                "absent: {absent} recorded worktree path(s) no longer exist on disk (historical directory evidence, not an OpenCode registration state)"
             ));
         }
-    }
-    // The stale-lease recovery stays visible in the aggregate.
-    let (candidates, released) = repos
-        .into_iter()
-        .flatten()
-        .filter_map(|repo| repo.get("leases"))
-        .fold((0u64, 0u64), |(candidates, released), leases| {
-            (
-                candidates
-                    + leases
-                        .get("candidates")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                released + leases.get("released").and_then(Value::as_u64).unwrap_or(0),
-            )
-        });
-    if candidates > 0 || released > 0 {
-        lines.row(format!(
-            "leases: {candidates} stale candidate(s), {released} released"
-        ));
     }
     let skipped = repos
         .into_iter()
@@ -482,14 +484,12 @@ fn render_prune_action(lines: &mut Lines, action: &Value) {
             Some(message) => lines.row(format!("failed {path}: {message}")),
             None => lines.row(format!("failed {path}")),
         },
-        "skipped_active" | "skipped_unknown" | "skipped_protected" | "skipped_issue" => {
-            match message {
-                Some(message) => lines.row(format!("kept {path}: {message}")),
-                None => lines.row(format!("kept {path}")),
-            }
-        }
-        // Historical lease paths that no longer exist are complete detail in
-        // verbose mode; the compact default still reports them by count only.
+        "skipped_protected" | "skipped_issue" => match message {
+            Some(message) => lines.row(format!("kept {path}: {message}")),
+            None => lines.row(format!("kept {path}")),
+        },
+        // Registered directory paths that no longer exist are complete detail
+        // in verbose mode; the compact default still reports them by count only.
         "absent" => match message {
             Some(message) => lines.row(format!("absent {path}: {message}")),
             None => lines.row(format!("absent {path}")),

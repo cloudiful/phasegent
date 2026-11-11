@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -183,41 +185,35 @@ pub(crate) fn bind_current_branch(repo: &TempRepo, issue: u64) {
     .expect("link must insert");
 }
 
-// ---------------------------------------------------------------------------
-// Pure helper tests (no DB, no git).
-// ---------------------------------------------------------------------------
-
-pub(crate) fn insert_lease_row(
+pub(crate) fn insert_directory_record(
     storage: &Storage,
-    lease_id: &str,
     identity: &str,
-    status: &str,
-    heartbeat_at: i64,
-    worktree_path: &str,
-) {
-    insert_lease(
+    path: &Path,
+    issue: u64,
+    session: &str,
+) -> DirectoryRecord {
+    crate::worktree::registry::ensure_schema(storage).expect("registry schema");
+    let canonical = crate::worktree::canonical_or_self(path);
+    let directory_id =
+        crate::worktree::registry::stable_directory_id(identity, &canonical.to_string_lossy());
+    let associations = [crate::worktree::registry::NewAssociation::Unscoped { issue }];
+    crate::worktree::registry::insert_directory(
         storage,
-        NewLease {
-            lease_id,
-            identity,
-            issue: 1,
-            session: "session-A",
-            checkout_path: "/tmp/checkout",
-            worktree_path,
-            branch: "phasegent/1-aaaaaa",
-            status,
-            created_at: heartbeat_at,
-            heartbeat_at,
+        &crate::worktree::registry::NewDirectory {
+            directory_id: &directory_id,
+            repo_identity: identity,
+            checkout_path: identity.trim_end_matches("/.git"),
+            worktree_path: &canonical.to_string_lossy(),
+            branch: "phasegent/test",
+            created_at: now_unix_secs().max(1),
+            session,
+            associations: &associations,
         },
     )
-    .expect("insert lease row");
-}
-
-pub(crate) fn heartbeat_of(identity: &str, lease_id: &str) -> i64 {
-    leases_for_repo(identity)
-        .expect("list leases")
+    .expect("insert directory");
+    crate::worktree::registry::load_records(storage, Some(identity))
+        .expect("load records")
         .into_iter()
-        .find(|row| row.lease_id == lease_id)
-        .expect("lease row")
-        .heartbeat_at
+        .find(|record| record.directory_id == directory_id)
+        .expect("inserted directory")
 }

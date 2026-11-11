@@ -134,7 +134,7 @@ fn located_session(value: &Value) -> Result<LocatedSession, ApiError> {
 /// string at all — is malformed and fails closed: a lineage the host
 /// describes in a shape this crate cannot read is never treated as "this
 /// session has no parent", because that would silently promote an
-/// unrelated session into the lease family.
+/// unrelated session into the directory session family.
 fn parent_id(value: &Value) -> Result<Option<String>, ApiError> {
     match value.get("parentID") {
         None | Some(Value::Null) => Ok(None),

@@ -196,12 +196,10 @@ fn status_parses_without_flags() {
 #[test]
 fn status_parses_explicit_path_without_a_role() {
     let _lock = lock_workflow_tests();
-    let invocation = command::parse(&strings([
-        "plugin",
-        "status",
-        "--path",
-        "/tmp/chezmoi/plugins",
-    ]))
+    let invocation = command::parse_with_role_env(
+        &strings(["plugin", "status", "--path", "/tmp/chezmoi/plugins"]),
+        None,
+    )
     .unwrap();
     assert!(invocation.role.is_none());
     match invocation.command {
@@ -229,7 +227,7 @@ fn uninstall_parses_with_project_flag() {
 #[test]
 fn plugin_install_does_not_require_role() {
     let _lock = lock_workflow_tests();
-    let invocation = command::parse(&strings(["plugin", "install"])).unwrap();
+    let invocation = command::parse_with_role_env(&strings(["plugin", "install"]), None).unwrap();
     assert!(invocation.role.is_none());
     assert!(matches!(
         invocation.command,
@@ -975,7 +973,7 @@ fn adapter_template_reconciles_the_registry_against_the_host() {
     }
     assert!(!source.contains("activeWorktree"));
     assert!(source.contains("reconcileSessionLocation(context, sessionId, readDirectory)"));
-    assert!(source.contains("refusing to acquire a worktree"));
+    assert!(source.contains("cannot acquire a worktree for issue"));
     // The plugin still owns placement and only placement: it never spawns the
     // `opencode` client, and the CLI keeps the close-time move.
     assert!(!source.contains("\"opencode\""));

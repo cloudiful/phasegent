@@ -1,14 +1,15 @@
 //! The shared family assessment: which sessions belong to one candidate
-//! directory's lease family, and which of them may be returned to the
+//! directory's session family, and which of them may be returned to the
 //! repository's verified main checkout.
 //!
-//! A lease row says where a session *was* when the worktree was acquired; the
+//! A registry association says where a session *was* when the worktree was
+//! acquired; the
 //! host says where a session *is* and which session it descends from. The
 //! cleanup therefore never asks "is this session free?" but "does this
-//! session belong to the family this directory's leases describe?".
+//! session belong to the family this directory's associations describe?".
 //!
 //! * The **roots** of a family are the distinct `ses_` sessions the
-//!   persisted leases associate with the candidate directory. Nothing else is
+//!   registry rows associate with the candidate directory. Nothing else is
 //!   ever promoted into a root: an occupant id is evidence about an
 //!   occupant, never about the family.
 //! * A **related** session is a root, or a session whose authoritative
@@ -21,9 +22,10 @@
 //! * An occupant that is not related is somebody else's session. It is never
 //!   moved, and it keeps the directory.
 //! * A related occupant that is *running* keeps the directory, with exactly
-//!   one exception: the close chain must be able to finish its own session,
-//!   so the closing session is exempt in [`CleanupMode::Close`] and nowhere
-//!   else.
+//!   one exception: the close chain may finish its own session, so a closing
+//!   id that is already an exact registered root is exempt in
+//!   [`CleanupMode::Close`] and nowhere else. A supplied closing id is never
+//!   promoted into the family.
 //!
 //! The same assessment powers `issue close`, `worktree prune --remove`, and
 //! the `worktree prune` preview, so a preview reports exactly the blockers
@@ -36,7 +38,8 @@ use super::CleanupMode;
 use super::target::TargetResolver;
 use super::wait::MovePolicy;
 use crate::worktree::opencode::{
-    ApiError, LocatedSession, OpenCodeApi, is_opencode_session, occupants_of_directory,
+    ApiError, LocatedSession, OpenCodeApi, all_sessions, is_opencode_session,
+    occupants_of_directory,
 };
 use crate::worktree::same_directory;
 
@@ -48,8 +51,8 @@ pub(crate) const MAX_PARENT_EDGES: usize = 64;
 /// The outcome of the shared family assessment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FamilyOutcome {
-    /// No persisted lease associates an OpenCode session with the directory:
-    /// a pure CLI candidate, decided exactly as before.
+    /// The read-only report pass sees no registered OpenCode association;
+    /// the directory keeps without a host probe.
     Unmanaged,
     /// No session of the family is hosted in the directory.
     Vacant,
@@ -77,10 +80,12 @@ impl FamilyOutcome {
 /// Assess one candidate directory and, when the mode allows it, return the
 /// family's idle sessions to the verified main checkout.
 ///
-/// `associated` are the `ses_` sessions the persisted leases point at
-/// `directory`; they are the family's roots. `closing` is the close chain's
-/// own session and is a root in [`CleanupMode::Close`] only — it never makes
-/// a pure CLI candidate managed.
+/// `associated` are the `ses_` sessions the registry rows point at
+/// `directory`; they are the family's roots and nothing else is. `closing` is
+/// the close chain's own session; in [`CleanupMode::Close`] it earns the
+/// running exemption only when it is already one of those exact roots. An
+/// unrelated closing id never becomes a root, is never exempt, and is never
+/// moved.
 pub(crate) fn finalize_family(
     api: &dyn OpenCodeApi,
     mode: CleanupMode,
@@ -121,35 +126,55 @@ pub(crate) fn finalize_family_with(
         return match roots.is_empty() {
             true => FamilyOutcome::Unmanaged,
             false => FamilyOutcome::Keep(format!(
-                "an OpenCode session lease points here ({}); occupancy is not probed in report mode",
+                "an OpenCode session association points here ({}); occupancy is not probed in report mode",
                 roots.join(", ")
             )),
         };
     }
-    // A pure CLI candidate is decided by the local guards alone, so it never
-    // reaches the host. The prune pass and its preview still enumerate the
-    // directory: an occupant no lease associates is somebody else's session,
-    // and it keeps the directory.
+    // Only the read-only report pass skips the host. Every destructive mode,
+    // including a candidate with no registered `ses_` association, enumerates
+    // the complete listing: an occupant no registry row names is somebody
+    // else's session and keeps the directory.
     if roots.is_empty() && !mode.enumerates_unmanaged_candidates() {
         return FamilyOutcome::Unmanaged;
     }
-    let mut family = roots;
-    if let Some(close_root) = &close_root
-        && !family.contains(close_root)
-    {
-        family.push(close_root.clone());
-    }
-    // Every root must answer for itself: a session the selected instance does
-    // not own may live in a standalone or private instance, so "not found" is
-    // uncertainty, never absence.
+    // The registry's associated sessions are the family roots and nothing
+    // else. A supplied closing session is never appended: an unrelated id,
+    // idle or running, is an occupant this directory does not own. Only an
+    // exact registered root is exempt from the running check and eligible to
+    // move; every other occupant must prove current lineage.
+    let family = roots;
+    let close_root = close_root.filter(|root| family.iter().any(|known| known == root));
+    // Every root must answer for itself. A transport failure, a mismatched id,
+    // or a relative location is uncertainty and keeps the directory; only the
+    // host's typed "no such session" can become absence, and the complete
+    // unfiltered listing below then tests whether that absence is real.
     let located_roots = match locate_roots(api, &family) {
         Ok(located) => located,
         Err(reason) => return FamilyOutcome::Keep(reason),
     };
-    let occupants = match occupants_of_directory(api, directory) {
-        Ok(occupants) => occupants,
+    // One complete, unfiltered listing answers both questions: it is the
+    // superset a "this directory is free" claim is checked against, and the
+    // same rows are then filtered by candidate path for occupant handling.
+    let listing = match all_sessions(api) {
+        Ok(listing) => listing,
         Err(error) => return FamilyOutcome::Keep(incomplete(&error)),
     };
+    // An authoritative "no such session" is absence only while the complete
+    // current listing agrees. A listing that names the missing id anywhere is
+    // a contradiction and keeps the directory, even when the host reports its
+    // directory as another path.
+    for id in &located_roots.absent {
+        if listing.iter().any(|session| session.id == *id) {
+            return FamilyOutcome::Keep(format!(
+                "OpenCode session '{id}' is listed by the host but reported as non-existent"
+            ));
+        }
+    }
+    let occupants: Vec<LocatedSession> = listing
+        .into_iter()
+        .filter(|session| same_directory(Path::new(&session.directory), directory))
+        .collect();
     // The listing finds occupants this crate never asked about; the roots'
     // own answers keep the ones the listing forgot. Either source alone is
     // an occupant, so a disagreement costs a directory, never a session.
@@ -159,7 +184,7 @@ pub(crate) fn finalize_family_with(
         .iter()
         .map(|occupant| (occupant.id.clone(), occupant.parent_id.clone()))
         .collect();
-    for root in &located_roots {
+    for root in &located_roots.located {
         if same_directory(Path::new(&root.directory), directory) {
             hosted.push((root.id.clone(), None));
         }
@@ -168,7 +193,7 @@ pub(crate) fn finalize_family_with(
     hosted.dedup_by(|left, right| left.0 == right.0);
     // A root the listing places here while its own answer places it
     // elsewhere is a disagreement, and a disagreement costs a directory.
-    for root in &located_roots {
+    for root in &located_roots.located {
         let listed_here = occupants.iter().any(|occupant| occupant.id == root.id);
         if listed_here && !same_directory(Path::new(&root.directory), directory) {
             return FamilyOutcome::Keep(format!(
@@ -250,7 +275,7 @@ pub(crate) fn finalize_family_with(
 /// that the directory is free afterwards.
 ///
 /// Each move is re-verified immediately before it is requested: the exact
-/// session must still be a member of this directory's lease family, must
+/// session must still be a member of this directory's session family, must
 /// still sit in the candidate (or already at the main checkout, in which
 /// case it needs no move), and must not be running — checked together with
 /// every other candidate occupant and with the sessions already returned by
@@ -308,7 +333,7 @@ fn release_family(
                 Ok(true) => {}
                 Ok(false) => {
                     return FamilyOutcome::Keep(format!(
-                        "OpenCode session '{id}' is no longer part of this directory's lease family"
+                        "OpenCode session '{id}' is no longer part of this directory's session family"
                     ));
                 }
                 Err(reason) => return FamilyOutcome::Keep(reason),
@@ -374,6 +399,7 @@ fn release_family(
     match locate_roots(api, family) {
         Ok(located) => {
             if let Some(root) = located
+                .located
                 .iter()
                 .find(|root| same_directory(Path::new(&root.directory), directory))
             {
@@ -432,7 +458,7 @@ fn running_blocker(
     Ok(())
 }
 
-/// The distinct `ses_` sessions the persisted leases associate with one
+/// The distinct `ses_` sessions the registry rows associate with one
 /// directory. They are the family's roots and nothing else is.
 pub(crate) fn root_sessions(associated: &[String]) -> Vec<String> {
     let mut roots: Vec<String> = associated
@@ -523,9 +549,19 @@ fn lineage(
 }
 
 /// The authoritative answers of the family's roots. Every answer must name
-/// the session that was asked for and report a usable absolute location.
-fn locate_roots(api: &dyn OpenCodeApi, roots: &[String]) -> Result<Vec<LocatedSession>, String> {
+/// the session that was asked for and report a usable absolute location. An
+/// exact, authoritative `SessionNotFoundError` is the one absence signal; it
+/// is returned separately so the caller can require the current occupancy
+/// listing to agree before treating the session as gone. Transport,
+/// authentication, malformed, or otherwise uncertain answers keep.
+struct LocatedRoots {
+    located: Vec<LocatedSession>,
+    absent: Vec<String>,
+}
+
+fn locate_roots(api: &dyn OpenCodeApi, roots: &[String]) -> Result<LocatedRoots, String> {
     let mut located = Vec::with_capacity(roots.len());
+    let mut absent = Vec::new();
     for id in roots {
         match api.session(id) {
             Ok(session) if session.id != *id => {
@@ -541,6 +577,7 @@ fn locate_roots(api: &dyn OpenCodeApi, roots: &[String]) -> Result<Vec<LocatedSe
                 ));
             }
             Ok(session) => located.push(session),
+            Err(error) if error.is_session_not_found() => absent.push(id.clone()),
             Err(error) => {
                 return Err(format!(
                     "OpenCode session '{id}' could not be located: {}",
@@ -549,7 +586,7 @@ fn locate_roots(api: &dyn OpenCodeApi, roots: &[String]) -> Result<Vec<LocatedSe
             }
         }
     }
-    Ok(located)
+    Ok(LocatedRoots { located, absent })
 }
 
 /// The connected service's currently running sessions and their reported

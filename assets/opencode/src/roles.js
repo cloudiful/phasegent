@@ -6,7 +6,7 @@
 // downgrade of a claimed elevated role. `explore` maps to its own least-privilege
 // role (issue #754 P3): the CLI grants it issue read plus structured `record`
 // read, and an authorized recon `record create` only — never the reviewer
-// surface, and never ordinary comment/status/admin/lease writes.
+// surface, and never ordinary comment/status/admin/registry writes.
 //
 // Canonical IDs are exact after lowercasing: orchestrator, executor, reviewer,
 // explore only (issue #859 P1). Compound or substring lookalikes

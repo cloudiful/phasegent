@@ -15,11 +15,11 @@ use super::target::TargetResolver;
 use crate::worktree::opencode::OpenCodeApi;
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
 use crate::worktree::{
-    LEASE_STATUS_ACTIVE, LEASE_STATUS_RETAINED, LeaseRow, ProcessWorktreeRunner, WorktreeRunner,
-    repo_identity, worktree_add,
+    DirectoryLegacyIssue, DirectoryRecord, ProcessWorktreeRunner, WorktreeRunner, repo_identity,
+    worktree_add,
 };
 
-/// The complete local + host protection check for one candidate row, the
+/// The complete local + host protection check for one candidate record, the
 /// composition every caller performs.
 #[allow(clippy::too_many_arguments)]
 fn protected_reason(
@@ -28,18 +28,18 @@ fn protected_reason(
     mode: CleanupMode,
     target: &TargetResolver<'_>,
     identity: &str,
-    rows: &[LeaseRow],
+    records: &[DirectoryRecord],
     closing: Option<&str>,
-    row: &LeaseRow,
+    record: &DirectoryRecord,
 ) -> Option<String> {
-    local_protected_reason(runner, identity, rows, closing, row).or_else(|| {
-        let directory = Path::new(&row.worktree_path);
+    let directory = Path::new(&record.worktree_path);
+    local_protected_reason(runner, identity, directory).or_else(|| {
         occupancy_reason(
             api,
             mode,
             target,
             directory,
-            &super::associated_sessions(rows, directory),
+            &super::associated_sessions(records, directory),
             closing,
         )
     })
@@ -85,19 +85,22 @@ fn repo_and_worktree(label: &str) -> Option<(PathBuf, PathBuf)> {
     Some((root, worktree))
 }
 
-fn row(lease_id: &str, worktree_path: &str, session: &str, status: &str) -> LeaseRow {
-    LeaseRow {
-        lease_id: lease_id.to_owned(),
+fn record(worktree_path: &str, session: &str) -> DirectoryRecord {
+    DirectoryRecord {
+        directory_id: format!("dir-{worktree_path}"),
         repo_identity: String::new(),
-        issue: 913,
-        session: session.to_owned(),
         checkout_path: String::new(),
         worktree_path: worktree_path.to_owned(),
         branch: "phasegent/913-guard".to_owned(),
-        status: status.to_owned(),
         created_at: 0,
-        heartbeat_at: 0,
-        release_reason: None,
+        tasks: Vec::new(),
+        legacy_issues: vec![DirectoryLegacyIssue {
+            issue: 913,
+            provider: String::new(),
+            project: String::new(),
+            external_id: 0,
+        }],
+        sessions: vec![session.to_owned()],
     }
 }
 
@@ -110,13 +113,7 @@ fn a_clean_cli_candidate_is_not_protected() {
     let api = FakeOpenCodeApi::empty();
     let identity = repo_identity(&runner, &root).expect("identity");
     let target = TargetResolver::new(&root, &identity);
-    let rows = vec![row(
-        "lease-a",
-        &worktree.to_string_lossy(),
-        "session-A",
-        LEASE_STATUS_RETAINED,
-    )];
-    let candidate = &rows[0];
+    let records = vec![record(&worktree.to_string_lossy(), "session-A")];
     assert_eq!(
         protected_reason(
             &runner,
@@ -124,9 +121,9 @@ fn a_clean_cli_candidate_is_not_protected() {
             CleanupMode::Sync,
             &target,
             &identity,
-            &rows,
+            &records,
             None,
-            candidate,
+            &records[0],
         ),
         None,
         "a clean, unmanaged, non-main candidate must be removable"
@@ -144,64 +141,19 @@ fn the_main_checkout_is_always_protected() {
     let api = FakeOpenCodeApi::empty();
     let identity = repo_identity(&runner, &root).expect("identity");
     let target = TargetResolver::new(&root, &identity);
-    let rows = vec![row(
-        "lease-main",
-        &root.to_string_lossy(),
-        "session-A",
-        LEASE_STATUS_RETAINED,
-    )];
-    let candidate = &rows[0];
+    let records = vec![record(&root.to_string_lossy(), "session-A")];
     let reason = protected_reason(
         &runner,
         &api,
         CleanupMode::Sync,
         &target,
         &identity,
-        &rows,
+        &records,
         None,
-        candidate,
+        &records[0],
     )
     .expect("the main checkout must be kept");
     assert!(reason.contains("main checkout"), "got: {reason}");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-#[test]
-fn an_active_peer_blocks_a_retained_candidate() {
-    let Some((root, worktree)) = repo_and_worktree("peer") else {
-        return;
-    };
-    let runner = ProcessWorktreeRunner::new();
-    let api = FakeOpenCodeApi::empty();
-    let identity = repo_identity(&runner, &root).expect("identity");
-    let target = TargetResolver::new(&root, &identity);
-    let rows = vec![
-        row(
-            "lease-peer",
-            &worktree.to_string_lossy(),
-            "session-peer",
-            LEASE_STATUS_ACTIVE,
-        ),
-        row(
-            "lease-candidate",
-            &worktree.to_string_lossy(),
-            "session-A",
-            LEASE_STATUS_RETAINED,
-        ),
-    ];
-    let candidate = &rows[1];
-    let reason = protected_reason(
-        &runner,
-        &api,
-        CleanupMode::Sync,
-        &target,
-        &identity,
-        &rows,
-        None,
-        candidate,
-    )
-    .expect("an active peer must keep the directory");
-    assert!(reason.contains("active lease"), "got: {reason}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -214,22 +166,16 @@ fn sync_mode_keeps_a_hosted_session_without_moving_it() {
     let api = FakeOpenCodeApi::empty().with_session("ses_a", &worktree);
     let identity = repo_identity(&runner, &root).expect("identity");
     let target = TargetResolver::new(&root, &identity);
-    let rows = vec![row(
-        "lease-a",
-        &worktree.to_string_lossy(),
-        "ses_a",
-        LEASE_STATUS_RETAINED,
-    )];
-    let candidate = &rows[0];
+    let records = vec![record(&worktree.to_string_lossy(), "ses_a")];
     let reason = protected_reason(
         &runner,
         &api,
         CleanupMode::Sync,
         &target,
         &identity,
-        &rows,
+        &records,
         None,
-        candidate,
+        &records[0],
     )
     .expect("a hosted session must keep the directory");
     assert!(reason.contains("still hosted here"), "got: {reason}");
@@ -243,17 +189,10 @@ fn sync_mode_releases_a_vacant_directory() {
         return;
     };
     let runner = ProcessWorktreeRunner::new();
-    // The host reports the session authoritatively elsewhere.
     let api = FakeOpenCodeApi::empty().with_session("ses_a", &root);
     let identity = repo_identity(&runner, &root).expect("identity");
     let target = TargetResolver::new(&root, &identity);
-    let rows = vec![row(
-        "lease-a",
-        &worktree.to_string_lossy(),
-        "ses_a",
-        LEASE_STATUS_RETAINED,
-    )];
-    let candidate = &rows[0];
+    let records = vec![record(&worktree.to_string_lossy(), "ses_a")];
     assert_eq!(
         protected_reason(
             &runner,
@@ -261,9 +200,9 @@ fn sync_mode_releases_a_vacant_directory() {
             CleanupMode::Sync,
             &target,
             &identity,
-            &rows,
+            &records,
             None,
-            candidate,
+            &records[0],
         ),
         None,
         "a session proven elsewhere leaves a removable directory"
@@ -283,22 +222,16 @@ fn an_incomplete_host_listing_keeps_the_candidate() {
         .failing_list();
     let identity = repo_identity(&runner, &root).expect("identity");
     let target = TargetResolver::new(&root, &identity);
-    let rows = vec![row(
-        "lease-a",
-        &worktree.to_string_lossy(),
-        "ses_a",
-        LEASE_STATUS_RETAINED,
-    )];
-    let candidate = &rows[0];
+    let records = vec![record(&worktree.to_string_lossy(), "ses_a")];
     let reason = protected_reason(
         &runner,
         &api,
         CleanupMode::Sync,
         &target,
         &identity,
-        &rows,
+        &records,
         None,
-        candidate,
+        &records[0],
     )
     .expect("an unusable listing must keep the directory");
     assert!(reason.contains("incomplete"), "got: {reason}");
@@ -318,13 +251,7 @@ fn an_unverifiable_directory_is_kept() {
     let identity = repo_identity(&runner, &root).expect("identity");
     let target = TargetResolver::new(&root, &identity);
     let missing = root.join("does-not-exist");
-    let rows = vec![row(
-        "lease-missing",
-        &missing.to_string_lossy(),
-        "session-A",
-        LEASE_STATUS_RETAINED,
-    )];
-    let candidate = &rows[0];
+    let records = vec![record(&missing.to_string_lossy(), "session-A")];
     assert!(
         protected_reason(
             &runner,
@@ -332,9 +259,9 @@ fn an_unverifiable_directory_is_kept() {
             CleanupMode::Sync,
             &target,
             &identity,
-            &rows,
+            &records,
             None,
-            candidate,
+            &records[0],
         )
         .is_some(),
         "a directory whose guards cannot run must be kept"

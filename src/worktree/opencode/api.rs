@@ -8,7 +8,7 @@
 //!   evidence that a directory is free: the selected instance may simply
 //!   not own it. The same answer carries the session's lineage edge
 //!   (`parentID`), which is what proves that a descendant belongs to the
-//!   same lease family as its root.
+//!   same directory session family as its root.
 //! * [`OpenCodeApi::list`] — one page of sessions for a directory. The
 //!   caller must follow `next_cursor` to exhaustion before treating the
 //!   result as occupancy evidence.
@@ -35,7 +35,7 @@ use super::process::run_bounded;
 pub(crate) const MAX_PAGE_SIZE: usize = 200;
 
 /// One session reduced to the fields the occupancy check compares.
-/// `id` identifies the lease association, `directory` is the host's
+/// `id` identifies the registry association, `directory` is the host's
 /// authoritative answer about where the session actually is, and
 /// `parent_id` is the lineage edge the host reports for the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,19 +75,36 @@ pub(crate) struct ListRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApiError {
     pub(crate) message: String,
+    /// The host answered authoritatively that the exact session does not
+    /// exist. This is the only failure a caller may treat as absence; every
+    /// transport, authentication, and malformed answer stays uncertainty.
+    not_found: bool,
 }
 
 impl ApiError {
     pub(crate) fn plain(message: &str) -> Self {
         Self {
             message: crate::worktree::bounded(message),
+            not_found: false,
         }
     }
 
     pub(crate) fn new(kind: &str, detail: &dyn std::fmt::Display) -> Self {
         Self {
             message: crate::worktree::bounded(&format!("{kind}: {detail}")),
+            not_found: false,
         }
+    }
+
+    pub(crate) fn session_not_found(operation: &str) -> Self {
+        Self {
+            message: crate::worktree::bounded(&format!("{operation}: SessionNotFoundError")),
+            not_found: true,
+        }
+    }
+
+    pub(crate) fn is_session_not_found(&self) -> bool {
+        self.not_found
     }
 }
 
@@ -164,6 +181,9 @@ fn check_status(operation: &str, status: i32, body: &str) -> Result<String, ApiE
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| format!("exit status {status}"));
+    if detail == "SessionNotFoundError" {
+        return Err(ApiError::session_not_found(operation));
+    }
     Err(ApiError::new(operation, &detail))
 }
 
@@ -219,4 +239,25 @@ fn request_params(request: &ListRequest) -> Vec<(&'static str, String)> {
         params.push(("cursor", cursor));
     }
     params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_status;
+
+    #[test]
+    fn only_the_exact_session_not_found_tag_is_typed_absence() {
+        let missing = check_status(
+            "session.get",
+            1,
+            r#"{"_tag":"SessionNotFoundError","message":"missing"}"#,
+        )
+        .expect_err("non-2xx");
+        assert!(missing.is_session_not_found());
+        let transport = check_status("session.get", 1, "gateway failed").expect_err("non-2xx");
+        assert!(!transport.is_session_not_found());
+        let malformed =
+            check_status("session.list", 1, r#"{"_tag":"OtherError"}"#).expect_err("non-2xx");
+        assert!(!malformed.is_session_not_found());
+    }
 }

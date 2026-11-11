@@ -1,20 +1,19 @@
 //! The one candidate-protection check every removal path shares.
 //!
 //! `issue close`, `issue sync`, and `worktree prune` all contemplate deleting
-//! a leased worktree directory, and none of them may relax the others' guards.
-//! This module is the single evaluation of those guards, extracted from the
-//! closed-issue cleanup so `worktree prune` reuses the exact same rules instead
-//! of a parallel copy:
+//! a registered worktree directory, and none of them may relax the others'
+//! guards. This module is the single evaluation of those guards, extracted from
+//! the closed-issue cleanup so `worktree prune` reuses the exact same rules
+//! instead of a parallel copy:
 //!
-//! 1. the local Git guards — never the main checkout, never a directory an
-//!    `active` lease points at (including the caller's own active row when no
-//!    closing session is named), never dirty or untracked;
-//! 2. the OpenCode host guard — for a directory a persisted `ses_`-leased
-//!    session still occupies, the host is the authority and an unreadable,
-//!    incomplete, or unresolvable answer keeps the directory.
+//! 1. the local Git guards — never the main checkout, never a directory that
+//!    is dirty or untracked;
+//! 2. the OpenCode host guard — for a directory whose registered session still
+//!    occupies it, the host is the authority and an unreadable, incomplete, or
+//!    unresolvable answer keeps the directory.
 //!
 //! `mode` decides who may act on the host's answer. [`CleanupMode::Close`]
-//! and [`CleanupMode::Prune`] may return the candidate's idle lease family
+//! and [`CleanupMode::Prune`] may return the candidate's idle session family
 //! to the verified main checkout; the reconciliation pass
 //! ([`CleanupMode::Sync`]) never moves a session, so a directory that is
 //! still occupied is kept for a later pass; and [`CleanupMode::Preview`]
@@ -22,7 +21,6 @@
 
 use std::path::Path;
 
-use crate::worktree::LeaseRow;
 use crate::worktree::WorktreeRunner;
 use crate::worktree::opencode::OpenCodeApi;
 
@@ -83,22 +81,16 @@ pub(crate) fn occupancy_reason(
 }
 
 /// The local, Git-only half of the candidate guard: never the main checkout,
-/// never an `active` peer's path, never dirty or untracked. It runs no host or
-/// provider read, so a caller that must decide a directory's fate before
-/// touching the host — `worktree prune` classifies before it plans child
-/// retirement — can use it to exclude a main/dirty path with zero host I/O. It
-/// is the same `guards::evaluate` call the host guard is layered on, not a
-/// parallel copy, so the two can never disagree. `closing` preserves the
-/// close/sync caller's own-session exemption; prune passes `None`.
+/// never dirty or untracked. It runs no host or provider read, so a caller that
+/// must decide a directory's fate before touching the host can use it to
+/// exclude a main/dirty path with zero host I/O.
 #[allow(dead_code)]
 pub(crate) fn local_protected_reason(
     runner: &dyn WorktreeRunner,
     identity: &str,
-    rows: &[LeaseRow],
-    closing: Option<&str>,
-    row: &LeaseRow,
+    directory: &Path,
 ) -> Option<String> {
-    guards::evaluate(runner, rows, identity, closing, row).protected_reason
+    guards::evaluate(runner, identity, directory).protected_reason
 }
 
 /// The full local guard outcome: a protected reason or the exact root `.cache`
@@ -106,9 +98,7 @@ pub(crate) fn local_protected_reason(
 pub(crate) fn local_guard(
     runner: &dyn WorktreeRunner,
     identity: &str,
-    rows: &[LeaseRow],
-    closing: Option<&str>,
-    row: &LeaseRow,
+    directory: &Path,
 ) -> guards::LocalGuard {
-    guards::evaluate(runner, rows, identity, closing, row)
+    guards::evaluate(runner, identity, directory)
 }

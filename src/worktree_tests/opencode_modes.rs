@@ -24,7 +24,7 @@ fn sync_removes_a_candidate_the_close_already_vacated() {
     let Some(fixture) = Fixture::new("p1-sync-clean") else {
         return;
     };
-    fixture.lease("ses_a");
+    fixture.associate("ses_a");
     let api = FakeOpenCodeApi::empty().with_session("ses_a", &fixture.main);
     assert_eq!(
         fixture.clean(&api, CleanupMode::Sync, None),
@@ -43,7 +43,7 @@ fn sync_keeps_a_candidate_whose_session_is_still_hosted() {
     let Some(fixture) = Fixture::new("p1-sync-keep") else {
         return;
     };
-    fixture.lease("ses_a");
+    fixture.associate("ses_a");
     let api = FakeOpenCodeApi::empty().with_session("ses_a", &fixture.candidate);
     let (removed, kept) = classified(fixture.clean(&api, CleanupMode::Sync, None));
     assert_eq!(removed, 0);
@@ -62,7 +62,7 @@ fn report_mode_keeps_an_associated_candidate_without_calling_the_host() {
     let Some(fixture) = Fixture::new("p1-report") else {
         return;
     };
-    fixture.lease("ses_a");
+    fixture.associate("ses_a");
     let api = FakeOpenCodeApi::empty().with_session("ses_a", &fixture.main);
     let (removed, kept) = classified(fixture.clean(&api, CleanupMode::Report, Some("ses_a")));
     assert_eq!(removed, 0);
@@ -81,7 +81,7 @@ fn report_mode_still_classifies_a_pure_cli_candidate_with_the_local_guards() {
     let Some(fixture) = Fixture::new("p1-report-cli") else {
         return;
     };
-    fixture.lease("phasegent-cli");
+    fixture.associate("phasegent-cli");
     let api = FakeOpenCodeApi::empty();
     assert_eq!(
         fixture.clean(&api, CleanupMode::Report, None),

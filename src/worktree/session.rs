@@ -1,21 +1,16 @@
-//! Session identity resolution for worktree leases (issue 305 Task 1,
-//! literal fallback removed by issue 651 P4).
+//! Session identity resolution for worktree registry associations.
 //!
-//! A worktree lease is keyed by `(repo, issue, session)`. Before issue 305
-//! the CLI fabricated the constant `phasegent` whenever a caller omitted
-//! `--session`, so two concurrent AI sessions working on the same issue
-//! collided on the same lease. Issue 651 P4 removes that literal fallback
-//! after every managed call path moved to an explicit identity: a session
-//! id now resolves from an explicit flag, then `PHASEGENT_SESSION_ID`,
-//! and anything else is a structured `argument` failure instead of a
-//! shared fabricated owner. Lease-owned operations (`worktree acquire`,
-//! `worktree heartbeat`) fail clearly without an identity; `issue close`
-//! keeps its intentionally optional `--worktree-session` attribution via
-//! [`resolve_session_optional`] and never guesses a closer.
+//! A registered directory can name the sessions observed in it. A session
+//! id resolves from an explicit flag, then `PHASEGENT_SESSION_ID`; anything
+//! else is a structured `argument` failure instead of a shared fabricated
+//! owner. Session-owned operations such as `worktree acquire` fail clearly
+//! without an identity; `issue close` keeps its intentionally optional
+//! `--worktree-session` attribution via [`resolve_session_optional`] and
+//! never guesses a closer.
 //!
 //! Values are trimmed, rejected when blank, and bounded to
 //! [`MAX_SESSION_CHARS`] so two distinct sessions can never silently
-//! collapse into the same lease key.
+//! collapse into the same association.
 
 use super::WorktreeError;
 
@@ -45,7 +40,7 @@ pub(crate) struct SessionContext {
 ///
 /// A missing identity is a structured `argument` error naming both
 /// spellings — there is no fabricated fallback owner (issue 651 P4).
-/// Lease-owned operations fail fast with this error before any storage
+/// Directory-owned operations fail fast with this error before any storage
 /// or git work.
 pub(crate) fn resolve_session(explicit: Option<&str>) -> Result<SessionContext, WorktreeError> {
     if explicit.is_some() {

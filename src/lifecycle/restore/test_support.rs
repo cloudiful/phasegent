@@ -346,6 +346,7 @@ impl RealRepo {
         BaselineScope::new(&repo_key, "redmine", "tools", issue, &checkout_path).expect("scope")
     }
 
+    #[allow(dead_code)]
     pub(crate) fn identity(&self) -> String {
         crate::worktree::repo_identity(&ProcessWorktreeRunner::new(), &self.work)
             .expect("repo identity")

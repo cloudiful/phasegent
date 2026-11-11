@@ -319,12 +319,13 @@ describe("decorate and consume", () => {
   test("does not mutate global process.env", async () => {
     const { bridge } = deterministicBridge();
     const before = process.env.PHASEGENT_ROLE;
+    const beforeToken = process.env[BROKER_TOKEN_ENV];
     const decorated = bridge.decorate("phasegent issue get 1", "ses-1", "explore", "t1");
     const shellEvent = { command: decorated, env: {} };
     await createShellEnvHook(bridge)(shellEvent);
     expect(process.env.PHASEGENT_ROLE).toBe(before);
     expect(process.env.PHASEGENT_SESSION_ID).not.toBe("ses-1");
-    expect(process.env[BROKER_TOKEN_ENV]).toBeUndefined();
+    expect(process.env[BROKER_TOKEN_ENV]).toBe(beforeToken);
   });
 
   test("missing env object is created without throwing", async () => {

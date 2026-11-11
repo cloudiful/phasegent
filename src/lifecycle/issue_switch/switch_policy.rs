@@ -1,78 +1,118 @@
-//! Repo-wide active-lease conflict policy for safe switching.
+//! Registry occupancy conflict policy for safe switching.
 //!
-//! Split from `issue_switch.rs` so the switch gates live in one cohesive
-//! module. An active lease on this checkout owned by another
-//! `(issue, session)` conflicts, and so does any other live lease in the
-//! repository: switching the primary checkout preserves the repo-wide
-//! active-lease policy, not merely the current path.
+//! Switching the primary checkout preserves the registry ownership policy: a
+//! registered directory on this path that belongs to another *still-open*
+//! task, an exact other legacy scope, or a fresh foreign host occupant
+//! conflicts. A backstop compares the caller's complete task or legacy
+//! identity, never a bare issue number or session. A confirmed closed
+//! historical task does not veto the switch, while an unresolved closure or
+//! host answer keeps the checkout untouched. Our own exact association
+//! re-enters idempotently. Storage or identity failures fail closed.
 
 use crate::infra::storage::Storage;
 use crate::lifecycle::IssueSwitchParams;
-use crate::worktree::{LEASE_STATUS_ACTIVE, WorktreeRunner, list_for_repo, repo_identity};
+use crate::worktree::occupancy;
+use crate::worktree::registry::{self, NewAssociation};
 
-/// An active lease on this checkout owned by another `(issue, session)`
-/// conflicts with switching it, and so does any other live lease in the
-/// repository. Our own triple re-entering is idempotent, and terminal
-/// history never conflicts. Storage or identity failures fail closed:
-/// without verification the checkout stays untouched.
-pub(super) fn lease_conflict(
+/// A registered association on this checkout owned by another complete task
+/// or legacy identity and not confirmed closed conflicts with switching it.
+/// Our own exact association re-entering is idempotent. Storage or identity
+/// failures fail closed.
+pub(super) fn switch_conflict(
     storage: &Storage,
-    wt: &dyn WorktreeRunner,
+    identity: &str,
+    repo_key: &str,
     params: &IssueSwitchParams<'_>,
     issue_id: u64,
     branch: &str,
     current: &str,
 ) -> Option<String> {
-    let identity = match repo_identity(wt, params.repo_path) {
-        Ok(identity) => identity,
+    let record = match registry::record_for_path(storage, identity, params.repo_path) {
+        Ok(record) => record,
         Err(error) => {
             return Some(format!(
-                "linked '{branch}' but could not verify active leases ({}); leaving \
+                "linked '{branch}' but could not read the directory registry ({}); leaving \
                  '{current}' untouched",
                 error.message
             ));
         }
     };
-    let rows = match list_for_repo(storage, &identity) {
-        Ok(rows) => rows,
-        Err(error) => {
+    let Some(record) = record else {
+        // No registry row is not a free checkout: the connected host is asked
+        // about the actual current directory before its branch is switched.
+        let own_sessions: Vec<String> = params.session.map(str::to_owned).into_iter().collect();
+        let protection = occupancy::unregistered_protection_reason(
+            params.host_api,
+            params.repo_path,
+            &own_sessions,
+        )?;
+        return Some(format!(
+            "linked '{branch}' but {protection}; leaving '{current}' untouched — isolate with \
+             `phasegent worktree acquire --issue {issue_id} --isolate`"
+        ));
+    };
+    let own = match own_association(storage, repo_key, params, issue_id) {
+        Ok(own) => own,
+        Err(reason) => {
             return Some(format!(
-                "linked '{branch}' but could not read active leases ({}); leaving \
-                 '{current}' untouched",
-                error.message
+                "linked '{branch}' but could not prove the checkout's task identity ({reason}); \
+                 leaving '{current}' untouched"
             ));
         }
     };
-    // Ours means our exact `(issue, session)` triple; without a
-    // session nothing can prove ownership, so every other live row
-    // counts as foreign. Mirrors the acquire Rule 4 scan.
-    let is_ours = |session: &str, issue: u64| {
-        issue == issue_id && params.session.is_some_and(|ours| ours == session)
-    };
-    let here = params.repo_path.to_string_lossy();
-    if let Some(row) = rows.iter().find(|row| {
-        row.status == LEASE_STATUS_ACTIVE
-            && row.worktree_path == here
-            && !is_ours(&row.session, row.issue)
-    }) {
-        return Some(format!(
-            "linked '{branch}' but session '{}' holds this checkout for issue {} \
-             (lease {}); leaving '{current}' untouched — isolate with \
-             `phasegent worktree acquire --issue {issue_id} --isolate`",
-            row.session, row.issue, row.lease_id
-        ));
+    let protection = occupancy::foreign_protection_reason(
+        params.repo_path,
+        &record,
+        &own,
+        params.foreign_state,
+        params.host_api,
+        &params
+            .session
+            .map(str::to_owned)
+            .into_iter()
+            .collect::<Vec<_>>(),
+    )?;
+    let other_issue = record.issue_numbers().first().copied().unwrap_or_default();
+    let other_session = record.sessions.first().cloned().unwrap_or_default();
+    Some(format!(
+        "linked '{branch}' but the checkout is registered for issue {other_issue} \
+         (session '{other_session}', directory {}; {protection}); leaving '{current}' untouched — \
+         isolate with `phasegent worktree acquire --issue {issue_id} --isolate`",
+        record.directory_id
+    ))
+}
+
+fn own_association(
+    storage: &Storage,
+    repo_key: &str,
+    params: &IssueSwitchParams<'_>,
+    issue_id: u64,
+) -> Result<NewAssociation, String> {
+    let project = params.scope_project.unwrap_or_default();
+    let bindings = crate::task_identity::bindings_for_repo_number(storage, repo_key, issue_id)
+        .map_err(|error| format!("could not read durable task identity: {error}"))?;
+    let mut matching = bindings.into_iter().filter(|binding| {
+        let key = binding.key();
+        key.provider() == params.scope_provider
+            && key.project() == project
+            && key.external_number() == Some(issue_id)
+    });
+    match (matching.next(), matching.next()) {
+        (Some(binding), None) => Ok(NewAssociation::Task {
+            task_id: binding.task_id(),
+            issue: issue_id,
+            provider: params.scope_provider.to_owned(),
+            project: project.to_owned(),
+            external_id: issue_id,
+        }),
+        (None, _) => Ok(NewAssociation::Legacy {
+            issue: issue_id,
+            provider: params.scope_provider.to_owned(),
+            project: project.to_owned(),
+            external_id: issue_id,
+        }),
+        (Some(_), Some(_)) => {
+            Err("more than one durable task matches this number and scope".to_owned())
+        }
     }
-    if let Some(row) = rows
-        .iter()
-        .find(|row| row.status == LEASE_STATUS_ACTIVE && !is_ours(&row.session, row.issue))
-    {
-        return Some(format!(
-            "linked '{branch}' but session '{}' holds an active lease for issue {} on '{}' \
-             (lease {}) in this repository; leaving '{current}' untouched — coordinate with \
-             that session, or isolate with \
-             `phasegent worktree acquire --issue {issue_id} --isolate`",
-            row.session, row.issue, row.worktree_path, row.lease_id
-        ));
-    }
-    None
 }

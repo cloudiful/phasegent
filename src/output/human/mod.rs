@@ -21,7 +21,7 @@ use crate::output::context::{HumanView, OutputContext};
 pub(crate) fn render(view: HumanView, value: &Value, context: &OutputContext) -> String {
     match view {
         HumanView::Generic => generic::render(value, context),
-        HumanView::WorktreeLeaseList => worktree::render_lease_list(value, context),
+        HumanView::WorktreeDirectoryList => worktree::render_directory_list(value, context),
         HumanView::WorktreeProbe => worktree::render_probe(value, context),
         HumanView::WorktreeAcquire => worktree::render_acquire(value, context),
         HumanView::WorktreePrune => worktree::render_prune(value, context),

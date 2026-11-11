@@ -31,7 +31,7 @@ Consult `phasegent --help` only for the command you are about to run.
 - Your CLI surface is least-privilege and yours alone: issue read and structured
   `record` read, plus an authorized recon `record create`. You never
   `comment create`, never `status *` or `timer *`, never relation/repo writes,
-  never `issue update`/`close`/`bind`/`create`, never worktree or lease writes,
+  never `issue update`/`close`/`bind`/`create`, never worktree or registry writes,
   and never the `admin` group — it is human-operator only. Never claim another
   role's credential or run a command under its role.
 - Keep research targeted and concise. Return a compact evidence synthesis, never

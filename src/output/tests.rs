@@ -217,36 +217,35 @@ fn generic_page_summary_does_not_duplicate_metadata_or_change_issue_search() {
 }
 
 #[test]
-fn paged_lease_views_show_entries_and_distinguish_empty_pages_at_40_and_80_columns() {
+fn paged_directory_views_show_entries_and_distinguish_empty_pages_at_40_and_80_columns() {
     for width in [40, 80] {
-        let value = json!({"items": [lease("lease-visible", 42, "active", "fixture-branch", "/repo/worktree")], "page": 2, "limit": 1, "total_count": 3, "has_more": true, "issue": 42});
-        let text = render_view(HumanView::WorktreeLeaseList, &value, width);
-        assert!(text.contains("Page 2") && text.contains("lease-visible") && text.contains("#42"));
+        let value = json!({"items": [directory("dir-visible", 42, "fixture-branch", "/repo/worktree")], "page": 2, "limit": 1, "total_count": 3, "has_more": true, "issue": 42});
+        let text = render_view(HumanView::WorktreeDirectoryList, &value, width);
+        assert!(text.contains("Page 2") && text.contains("dir-visible") && text.contains("#42"));
         assert!(
             text.lines()
                 .all(|line| console::measure_text_width(line) <= width),
             "{text}"
         );
         let empty = json!({"items": [], "page": 9, "limit": 1, "total_count": 3, "has_more": false, "repo_identity": "/repo/.git"});
-        let text = render_view(HumanView::WorktreeLeaseList, &empty, width);
-        assert!(text.contains("No leases on this page."));
-        assert!(!text.contains("No worktree leases are recorded"));
+        let text = render_view(HumanView::WorktreeDirectoryList, &empty, width);
+        assert!(text.contains("No directories on this page."));
+        assert!(!text.contains("No worktree directories are recorded"));
     }
 }
 
-/// One lease of the `worktree list` envelope.
-fn lease(id: &str, issue: u64, state: &str, branch: &str, path: &str) -> serde_json::Value {
+/// One directory of the `worktree list` envelope.
+fn directory(id: &str, issue: u64, branch: &str, path: &str) -> serde_json::Value {
     json!({
-        "lease_id": id,
+        "directory_id": id,
         "repo_identity": "/repo/.git",
-        "issue": issue,
-        "session": "ses_a",
         "checkout_path": "/repo",
         "worktree_path": path,
         "branch": branch,
-        "status": state,
         "created_at": 1_700_000_000,
-        "heartbeat_at": 1_700_000_060,
+        "tasks": [],
+        "legacy_issues": [{"issue": issue, "provider": "", "project": "", "external_id": 0}],
+        "sessions": ["ses_a"],
     })
 }
 
@@ -370,47 +369,45 @@ fn a_diagnostic_does_not_repeat_the_operation() {
     assert_eq!(text, "error: issue create failed");
 }
 
-/// The lease list names every lease, its issue, its state, and its branch.
+/// The directory list names every directory, its issues, and its branch.
 #[test]
-fn the_lease_list_names_every_lease() {
+fn the_directory_list_names_every_directory() {
     let value = json!({
         "repo_identity": "/repo/.git",
-        "leases": [
-            lease("las-aaaa", 1054, "active", "phasegent/1054", "/repo/wt-1054"),
-            lease("las-bbbb", 1056, "retained", "phasegent/1056", "/repo/wt-1056"),
+        "directories": [
+            directory("dir-aaaa", 1054, "phasegent/1054", "/repo/wt-1054"),
+            directory("dir-bbbb", 1056, "phasegent/1056", "/repo/wt-1056"),
         ],
     });
-    let text = render_view(HumanView::WorktreeLeaseList, &value, 80);
+    let text = render_view(HumanView::WorktreeDirectoryList, &value, 80);
     assert!(
-        text.contains("2 leases: 1 active, 1 retained"),
+        text.contains("2 directories: 0 task association(s), 2 session(s)"),
         "got: {text}"
     );
-    assert!(text.contains("las-aaaa"), "got: {text}");
+    assert!(text.contains("dir-aaaa"), "got: {text}");
     assert!(text.contains("#1054"), "got: {text}");
-    assert!(text.contains("active"), "got: {text}");
     assert!(text.contains("phasegent/1054"), "got: {text}");
     assert!(text.contains("/repo/wt-1054"), "got: {text}");
-    assert!(text.contains("las-bbbb"), "got: {text}");
+    assert!(text.contains("dir-bbbb"), "got: {text}");
     assert!(!text.contains('{'), "no JSON dump: {text}");
 }
 
 /// A narrow terminal stacks the entries instead of overflowing a table.
 #[test]
-fn a_narrow_terminal_stacks_the_lease_entries() {
+fn a_narrow_terminal_stacks_the_directory_entries() {
     let value = json!({
         "repo_identity": "/repo/.git",
-        "leases": [lease(
-            "las-aaaa",
+        "directories": [directory(
+            "dir-aaaa",
             1054,
-            "active",
             "phasegent/1054-a-very-long-branch-name",
             "/repo/wt-1054",
         )],
     });
-    let text = render_view(HumanView::WorktreeLeaseList, &value, 40);
-    assert!(text.contains("las-aaaa"), "got: {text}");
-    assert!(text.contains("Issue: #1054"), "got: {text}");
-    assert!(text.contains("State: active"), "got: {text}");
+    let text = render_view(HumanView::WorktreeDirectoryList, &value, 40);
+    assert!(text.contains("dir-aaaa"), "got: {text}");
+    assert!(text.contains("Issues: #1054"), "got: {text}");
+    assert!(text.contains("Sessions: 1"), "got: {text}");
     assert!(
         text.contains("Branch: phasegent/1054-a-very-long-bran"),
         "got: {text}"
@@ -423,40 +420,42 @@ fn a_narrow_terminal_stacks_the_lease_entries() {
     }
 }
 
-/// A large list keeps every distinct lease; nothing is deduplicated or
+/// A large list keeps every distinct directory; nothing is deduplicated or
 /// truncated.
 #[test]
-fn a_large_lease_list_keeps_every_distinct_lease() {
-    let leases: Vec<serde_json::Value> = (0..50)
+fn a_large_directory_list_keeps_every_distinct_directory() {
+    let directories: Vec<serde_json::Value> = (0..50)
         .map(|index| {
-            lease(
-                &format!("las-{index:04}"),
+            directory(
+                &format!("dir-{index:04}"),
                 1000 + index as u64,
-                "active",
                 &format!("phasegent/{index}"),
                 &format!("/repo/wt-{index}"),
             )
         })
         .collect();
-    let value = json!({"repo_identity": "/repo/.git", "leases": leases});
-    let text = render_view(HumanView::WorktreeLeaseList, &value, 80);
-    assert!(text.contains("50 leases: 50 active"), "got: {text}");
+    let value = json!({"repo_identity": "/repo/.git", "directories": directories});
+    let text = render_view(HumanView::WorktreeDirectoryList, &value, 80);
+    assert!(
+        text.contains("50 directories: 0 task association(s), 50 session(s)"),
+        "got: {text}"
+    );
     for index in 0..50 {
         assert!(
-            text.contains(&format!("las-{index:04}")),
-            "lease {index} is missing: {text}"
+            text.contains(&format!("dir-{index:04}")),
+            "directory {index} is missing: {text}"
         );
     }
 }
 
-/// An empty lease list is an explicit empty state.
+/// An empty directory list is an explicit empty state.
 #[test]
-fn an_empty_lease_list_states_that_nothing_is_recorded() {
-    let value = json!({"repo_identity": "/repo/.git", "leases": []});
-    let text = render_view(HumanView::WorktreeLeaseList, &value, 80);
-    assert!(text.contains("0 leases"), "got: {text}");
+fn an_empty_directory_list_states_that_nothing_is_recorded() {
+    let value = json!({"repo_identity": "/repo/.git", "directories": []});
+    let text = render_view(HumanView::WorktreeDirectoryList, &value, 80);
+    assert!(text.contains("0 directories"), "got: {text}");
     assert!(
-        text.contains("No worktree leases are recorded"),
+        text.contains("No worktree directories are recorded"),
         "got: {text}"
     );
 }
@@ -473,14 +472,16 @@ fn the_probe_shows_the_path_branch_state_and_lease() {
         "branch": "phasegent/1054",
         "head": "ff31031",
         "is_main_checkout": false,
-        "lease": {
-            "lease_id": "las-aaaa",
+        "directory": {
+            "directory_id": "dir-aaaa",
             "repo_identity": "/repo/.git",
-            "issue": 1054,
-            "session": "ses_a",
-            "status": "active",
-            "branch": "phasegent/1054",
+            "checkout_path": "/repo",
             "worktree_path": "/repo/wt-1054",
+            "branch": "phasegent/1054",
+            "created_at": 1,
+            "tasks": [],
+            "legacy_issues": [{"issue": 1054, "provider": "", "project": "", "external_id": 0}],
+            "sessions": ["ses_a"],
         },
         "errors": [],
     });
@@ -489,10 +490,7 @@ fn the_probe_shows_the_path_branch_state_and_lease() {
     assert!(text.contains("Branch: phasegent/1054"), "got: {text}");
     assert!(text.contains("Head: ff31031"), "got: {text}");
     assert!(text.contains("State: clean worktree"), "got: {text}");
-    assert!(
-        text.contains("Lease: las-aaaa (issue #1054, active)"),
-        "got: {text}"
-    );
+    assert!(text.contains("Directory: dir-aaaa (#1054)"), "got: {text}");
 }
 
 /// An unresolved probe states that nothing matched and keeps the errors.
@@ -507,8 +505,8 @@ fn an_unresolved_probe_states_that_nothing_matched() {
         "branch": null,
         "head": null,
         "is_main_checkout": null,
-        "lease": null,
-        "errors": [{"kind": "argument", "message": "no active lease matched issue 99"}],
+        "directory": null,
+        "errors": [{"kind": "argument", "message": "no directory matched issue 99"}],
     });
     let text = render_view(HumanView::WorktreeProbe, &value, 80);
     assert!(
@@ -516,17 +514,21 @@ fn an_unresolved_probe_states_that_nothing_matched() {
         "got: {text}"
     );
     assert!(
-        text.contains("error: no active lease matched issue 99"),
+        text.contains("error: no directory matched issue 99"),
         "got: {text}"
     );
-    assert!(!text.contains("Lease:"), "no lease is invented: {text}");
+    assert!(
+        !text.contains("Directory:"),
+        "no directory is invented: {text}"
+    );
 }
 
-/// The acquire result states the lease, the path, the branch, and the outcome.
+/// The acquire result states the directory, the path, the branch, and the
+/// outcome.
 #[test]
 fn the_acquire_result_states_the_outcome() {
     let value = json!({
-        "lease_id": "las-aaaa",
+        "directory_id": "dir-aaaa",
         "path": "/repo/wt-1054",
         "branch": "phasegent/1054",
         "repo_identity": "/repo/.git",
@@ -534,7 +536,7 @@ fn the_acquire_result_states_the_outcome() {
         "reason": "new_worktree",
     });
     let text = render_view(HumanView::WorktreeAcquire, &value, 80);
-    assert!(text.contains("Lease: las-aaaa"), "got: {text}");
+    assert!(text.contains("Directory: dir-aaaa"), "got: {text}");
     assert!(text.contains("Path: /repo/wt-1054"), "got: {text}");
     assert!(text.contains("Branch: phasegent/1054"), "got: {text}");
     assert!(text.contains("Outcome: created"), "got: {text}");
@@ -770,15 +772,14 @@ fn the_doctor_view_separates_healthy_checks_from_warnings() {
 fn unicode_and_long_paths_stay_readable() {
     let value = json!({
         "repo_identity": "/repo/.git",
-        "leases": [lease(
-            "las-aaaa",
+        "directories": [directory(
+            "dir-aaaa",
             1054,
-            "active",
             "phasegent/1054",
             "/repo/作业-目录/very-long-worktree-directory-name-that-keeps-going",
         )],
     });
-    let text = render_view(HumanView::WorktreeLeaseList, &value, 80);
+    let text = render_view(HumanView::WorktreeDirectoryList, &value, 80);
     assert!(text.contains("作业-目录"), "got: {text}");
     for line in text.lines() {
         assert!(
@@ -1343,21 +1344,19 @@ fn prune_kept_reasons_split_main_waiting_and_other_protected() {
         }],
         "totals": {
             "repositories": 1, "removed": 0, "eligible": 0, "absent": 1,
-            "kept_active": 1, "kept_unknown": 1, "kept_protected": 3,
-            "kept_issue": 1, "failed": 0
+            "kept_protected": 3, "kept_issue": 1, "failed": 0
         }
     });
     let text = render_view(HumanView::WorktreePrune, &value, 120);
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        normalized.contains(
-            "kept reasons: active 1, main 1, waiting-move 1, other-protected 1, issue-state 1, unknown 1"
-        ),
+        normalized
+            .contains("kept reasons: main 1, waiting-move 1, other-protected 1, issue-state 1"),
         "got: {text}"
     );
     assert!(
         normalized.contains(
-            "absent: 1 recorded worktree path(s) no longer exist on disk (historical lease evidence, not an OpenCode registration state)"
+            "absent: 1 recorded worktree path(s) no longer exist on disk (historical directory evidence, not an OpenCode registration state)"
         ),
         "got: {text}"
     );

@@ -119,7 +119,7 @@ phasegent --output json issue get 123      # force the machine document
 Supported collection lists return page 1 with up to 50 items in text and JSON.
 Use `--page` and `--limit` to choose another page; JSON results share a page
 envelope, for example `phasegent worktree list --page 2 --limit 50`. The
-OpenCode adapter follows all lease pages when it needs complete collections.
+OpenCode adapter follows all directory pages when it needs complete collections.
 The legacy `--format`/`--json` flags on documented commands still work. See
 [output modes](docs/cli-output.md), [pagination](docs/cli-pagination.md), and
 [worktree maintenance](docs/worktree-maintenance.md).
@@ -148,7 +148,7 @@ different explicit repository never repins it. The operator provisions the
 token only. Forgejo uses repository-local issue numbers
 and keeps the native global id in results; it supports issues, comments,
 records, repository reads, milestones as versions, the native `Open` and
-`Closed` issue states, and scoped branch links, worktree leases, cleanup, and
+`Closed` issue states, and scoped branch links, worktree directories, cleanup, and
 sync. Time tracking, relations, attachments, subtasks/planning, and project
 creation are unsupported. A Forgejo issue has no status label: it is `Open`
 until it is closed, the phase detail lives in the record, close cleanup is
@@ -203,95 +203,93 @@ stable request key, and the Redmine/local boundaries.
 
 ## Worktrees
 
-Leases are keyed by `(repo, issue, session)`. `phasegent worktree acquire
---issue N [--session S] [--base REF]` is orchestrator-only: the same triple
-returns its existing lease first, and an explicit `--base REF` creates a new
-worktree and `phasegent/<issue>-<short6hex>` branch from that ref instead of
-`HEAD` without reusing the current checkout. A ref that does not resolve fails
-locally before any worktree, branch, or lease is written.
+Worktree directories are recorded in a registry keyed by repository identity,
+canonical path, branch, durable task or legacy issue identity, and observed
+sessions. A directory can reference many tasks and sessions. The registry keeps
+no lease status, heartbeat, expiration or release reason: live ownership comes
+from fresh host occupancy and from whether an associated task is still open.
+
+`phasegent worktree acquire --issue N [--session S] [--base REF]` is
+orchestrator-only. The same repository, issue and session return the existing
+`directory_id` idempotently; with explicit `--isolate`, `--base REF` starts the
+new worktree and `phasegent/<issue>-<short6hex>` branch from that ref instead of
+`HEAD` without reusing the current checkout. `--base` without `--isolate` is
+rejected and never creates a worktree. Reuse is the default: the current checkout is
+reused whether it is clean, dirty, unbound or linked to a historical issue.
+Fresh occupancy, or an associated task that is still open, protects a different
+idle task's directory; a confirmed closed historical task does not veto reuse by
+itself. An unresolved occupation of the checkout path is reported as an
+`isolation` error naming the explicit `--isolate` command; a worktree is never
+created without that opt-in, and `--reuse`/`--isolate` are mutually exclusive.
 
 `phasegent worktree probe [--path PATH | --issue N [--session S]]` reports the
 state of a checkout as bounded JSON: whether the path exists, is a Git work
 tree, is clean/dirty/unknown, its branch and `HEAD`, whether it is the main
-checkout, and any matching lease. `--path` and `--issue` are mutually
-exclusive, `--session` narrows `--issue`, and no selector probes the current
-checkout. It is read-only (orchestrator, executor, reviewer): it never calls a
-provider, writes a lease, syncs, deletes, or repairs, and an `--issue` with no
-matching lease returns a stable empty result instead of a guessed path.
+checkout, and the matching registry directory. `--path` and `--issue` are
+mutually exclusive, `--session` narrows `--issue`, and no selector probes the
+current checkout. It is read-only (orchestrator, executor, reviewer): it never
+calls a provider, writes a registry row, syncs, deletes or repairs, and an
+`--issue` with no matching directory returns a stable empty result instead of a
+guessed path.
 
 ```sh
 phasegent worktree acquire --issue 123 --base main
 phasegent worktree probe --issue 123
 ```
 
-A directory leased by an OpenCode session (`ses_…`) is protected until the host
-confirms that session no longer runs there: `issue close` returns the idle
-members of that directory's lease family — the sessions its leases name and the
-descendants that descend from them — to the repository's main checkout through
-the OpenCode API (`opencode api session.move`) before removing anything, keeps
-the directory when that cannot be confirmed, and `issue sync` removes it once
-the sessions have moved.
-After that cleanup, a successful close also restores the captured pre-issue
-branch in the verified main checkout when that checkout is clean and safe, then
-fast-forwards only that branch's own configured upstream. Every unsafe, missing,
-or conflicting state keeps the checkout untouched with a warning; repeat
-`issue close` retries an incomplete upstream update and is a no-op after success
-or when the branch has no configured upstream.
+A directory associated with an OpenCode session (`ses_…`) is protected until the
+host confirms that session no longer runs there. `issue close` returns the idle
+members of that directory's session family — the sessions its registry
+associations name and the descendants that descend from them — to the
+repository's main checkout through the OpenCode API
+(`opencode api session.move`) before removing anything, and keeps the directory
+when that cannot be confirmed. A missing associated idle session is skipped; a
+host list that still names the missing id is contradictory and keeps. Only
+`ApiError::SessionNotFound` is treated as absence; transport, HTTP, auth and
+malformed errors fail closed. After cleanup, a successful close also restores the
+captured pre-issue branch in the verified main checkout when that checkout is
+clean and safe, then fast-forwards only that branch's own configured upstream.
+Every unsafe, missing or conflicting state keeps the checkout untouched with a
+warning; repeat `issue close` retries an incomplete upstream update and is a
+no-op after success or when the branch has no configured upstream.
+
 `phasegent worktree prune` is global and removal-by-default: without `--repo`
-it cleans every repository identity the local lease store records, and
+it cleans every repository identity the directory registry records, and
 `--dryrun` (alias `--dry-run`) is the read-only preview. A directory is removed
-as soon as every issue associated with it is confirmed closed on the configured
-provider, no `active` lease references it, and it is Git-clean — there is no
-waiting period, so `--stale-days` only affects the explicit `--release-stale`
-recovery. It reuses the same local guards as close/sync — never the main
-checkout, never a path an `active` lease points at, never dirty or untracked
-contents except one verified root `.cache`-only worktree (a real root `.cache`
-directory with no tracked paths, only `??` entries under that root, and a
-bounded symlink-free inventory re-read identically immediately before a guarded
-cache removal; the inventory records reliable device/inode and high-resolution
-change evidence, the initial eligibility baseline is carried across session
-movement, and a platform without reliable identity fails closed for this
-exception; the normal no-force `git worktree remove` follows only after every
-applicable lease, local, closure, and fresh host gate is re-checked) — and adds its
-own running-session guard: only a session the connected
-shared foreground-drain service reports as *currently running* in the directory
-blocks removal, checked read-only. An inactive historical session record that
-still points at the directory never keeps it. The read-only scan never
-enumerates historical sessions and never moves a session; the removal stage
-does: before it deletes a directory it reads that directory's fresh occupancy
-and the lineage the host reports, and returns every associated idle `ses_`
-session — the sessions its leases name and the descendants that descend from
-them — to the repository's verified
-main checkout. Every safe family member is requested once before any
-confirmation wait; the first read after each request is immediate and a pending
-sibling never suppresses a later one. Only an actual prune may then poll all
-still-pending accepted moves round-robin inside one invocation-shared 3-second
-budget (100 ms apart, never reset per directory or session, never reissuing the
-move), and the preview and close never wait. A recorded worktree path that no longer exists on disk is counted as
-absent and converges once to `released` without rewriting an already-released
-row. Those
-checks describe the one connected service at that moment, not a guarantee about
-session changes after them. A session no lease of this repository associates,
-and no lineage reaches one of them,
-keeps the directory and is never moved, and an unavailable or incomplete
-listing, an unresolvable associated session, an answer that names another
-session or reports an unusable location, an unreadable, mismatched, or cyclic
-lineage, a rejected, queued, or unconfirmed
-move, an unverifiable main checkout, and a session that started running in the
-meantime all keep the directory. Coverage is that one connected service, not a
-whole-machine multi-service inventory. The local guards are decided before the
-running-session query, so a main-checkout or dirty directory makes zero host
-calls; because prune's runtime-host dependency is explicit, an unavailable,
-malformed, mismatched, or non-absolute running-session answer keeps even a
-pure-CLI candidate, and the human failure count covers only failed
-`git worktree remove` calls rather than host anomalies. Output follows the
-global `--output` selection: the concise text summary with directory-based
-counts on a human terminal, the machine-readable aggregate on a pipe or with
-`--json`. On an interactive terminal a progress spinner shows the scan and the
-per-removal check and is cleared before the result; stdout keeps the final text
-or the single JSON document. Invocations wrapped in a transparent `timeout`,
-`env`, or `command` still receive the managed agent role.
-See [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
+only when it is a verified non-main, clean directory; every associated task is
+confirmed closed through its own durable task or a proven legacy route; a fresh
+host occupancy check reports no running or unassociated session; every present
+idle session family is safely relocated to the verified main checkout; and the
+operation lock plus final fresh guards hold. There is no waiting period or age
+threshold. A confirmed closed historical task never keeps the directory; a
+still-open associated task does. An unavailable or incomplete listing, an
+unresolvable or mismatched session, broken lineage, a rejected, queued or
+unconfirmed move, and an unverifiable main checkout all keep the directory.
+
+The local guards — never the main checkout, never dirty or untracked content —
+run before any host query, so a locally excluded path makes zero host or
+provider calls. One verified root `.cache`-only worktree is the sole dirty
+exception: `.cache` is a real root directory with no tracked paths and only `??`
+entries under it, and a bounded symlink-free inventory of reliable device/inode
+and high-resolution change evidence must re-read identically immediately before
+the guarded cache removal; a platform without reliable identity fails closed.
+The ordinary no-force `git worktree remove` follows after every applicable
+local, closure and fresh host gate is re-checked. A recorded path that no longer
+exists is reported as absent; registry evidence is preserved and no provider
+read or session move is required. Branches and Git history are retained.
+
+The read-only scan never moves a session; the removal stage is the only place
+that may move one. Coverage is the one connected OpenCode service at that moment,
+not a whole-machine or multi-host inventory, and the lock protects cooperating
+phasegent operations only. Output follows the global `--output` selection: the
+compact text summary with directory-based counts on a human terminal, the
+machine aggregate on a pipe or with `--json`; `--verbose` adds bounded
+per-directory rows. On an interactive terminal a progress spinner shows the scan
+and per-removal checks, never a directory path, and is cleared before the result.
+Invocations wrapped in a transparent `timeout`, `env` or `command` still receive
+the managed agent role. See
+[docs/worktree-maintenance.md](docs/worktree-maintenance.md) and
+[docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md).
 
 The OpenCode worktree adapter deployed by `phasegent plugin install` is a
 generated single-file dist. Its only source is `assets/opencode/src/`; rebuild

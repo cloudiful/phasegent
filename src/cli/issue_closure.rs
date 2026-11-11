@@ -1,31 +1,27 @@
 //! Injectable issue-closure evidence for the worktree finalization
 //! (issues 916, 1195).
 //!
-//! Immediate directory cleanup needs one external fact the local lease table
+//! Immediate directory cleanup needs one external fact the local registry
 //! cannot supply: whether every issue a worktree is associated with is
 //! *confirmed closed*. This module is the narrow seam that answers it and
-//! nothing else — it never mutates leases, directories, or provider state,
+//! nothing else — it never mutates registry rows, directories, or provider state,
 //! and it never syncs.
 //!
-//! Two responsibilities are composed:
+//! Evidence is resolved in this order, and nothing weaker is substituted:
 //!
-//! * [`LinkScopeReader`] resolves the durable branch-link scopes for a number
-//!   in one repository (storage plus per-repo Git identity). A number with no
-//!   links has no scope evidence; two distinct scopes make it ambiguous and it
-//!   is kept.
-//! * [`IssueStateReader`] reads one issue's state from the configured
-//!   provider. The production reader resolves the configured provider lazily
-//!   ([`crate::providers::config::resolve_kind`] plus
-//!   [`crate::cli::provider_for`]) so no path that never reaches a closure
-//!   check — active, missing, main-checkout — ever resolves a credential.
+//! * an immutable durable task binding (task id, provider, instance, project,
+//!   external id), read through its own pinned instance;
+//! * an exact non-task sidecar scope recorded on the association
+//!   (provider/project/external id), read through that scope;
+//! * a unique corroborated historical branch-link scope for the number.
 //!
-//! The production composition follows `issue sync`'s current-configured-
-//! provider model: it reads whichever provider the configuration selects, with
-//! no provider override, no multi-instance guessing, and no invented issue
-//! ownership. A linked scope whose provider disagrees with the configured one
-//! is kept, so a known-local issue is never dispatched to Redmine or vice
-//! versa. Any error, not-found, ambiguity, or mismatch is a keep, never a
-//! silent "closed".
+//! A number with no such evidence keeps before any provider read. The
+//! invocation's configured default or explicit provider selection is not
+//! historical ownership: it never fills in an unknown association's
+//! provenance, and a matching issue number alone never proves identity.
+//! Two distinct link scopes, a scope whose external id disagrees with the
+//! number, an unavailable provider, a not-found issue, or a project mismatch
+//! each keep the directory. Any error is a keep, never a silent "closed".
 //!
 //! [`CurrentIssueClosure`] adapts the same resolver to the lifecycle's narrow
 //! closure seam, so `issue close` confirms the *other* issues a directory is
@@ -36,7 +32,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::infra::storage::Storage;
-use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
+use crate::lifecycle::cleanup::closure::{DirectoryAssociation, DirectoryIssueClosure};
 use crate::policy::Role;
 use crate::providers::{IssueProvider, ProviderDispatcher};
 
@@ -68,14 +64,6 @@ pub(crate) trait IssueStateSource {
     /// `repo_path`. Read-only; never mutates provider or local state.
     fn closure(&self, repo_path: &Path, issue: u64) -> IssueClosure;
 
-    /// The invocation's allowed provider/repository context, when the
-    /// source can prove one. A scoped directory group is only classified
-    /// normally when every scoped lease matches this context exactly; the
-    /// default `None` keeps every scoped group.
-    fn provider_scope(&self) -> Option<(String, String)> {
-        None
-    }
-
     /// The explicit provider selection this source was built with, when it
     /// has one.
     ///
@@ -83,6 +71,7 @@ pub(crate) trait IssueStateSource {
     /// or ownership mutation: a task it does not match keeps its directory
     /// instead of being redirected. The default is no selection, and a source
     /// without one never filters a group.
+    #[allow(dead_code)]
     fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
         None
     }
@@ -123,10 +112,10 @@ pub(crate) trait IssueStateSource {
         self.refresh();
     }
 
-    /// Closure evidence for one number whose lease carries a provider
-    /// sidecar.
+    /// Closure evidence for one number whose registry association carries a
+    /// provider scope.
     ///
-    /// The prune pass knows the sidecar its own lease row proved; a source
+    /// The prune pass knows the scope its own association proved; a source
     /// that can dispatch on that scope answers here. The default ignores the
     /// sidecar and answers through [`Self::closure`], so every existing
     /// source is unchanged.
@@ -134,7 +123,7 @@ pub(crate) trait IssueStateSource {
         &self,
         repo_path: &Path,
         issue: u64,
-        scope: Option<&crate::worktree::LeaseScope>,
+        scope: Option<&crate::worktree::WorktreeScope>,
     ) -> IssueClosure {
         let _ = scope;
         self.closure(repo_path, issue)
@@ -205,25 +194,15 @@ pub(crate) struct TaskScopeRef<'a> {
     pub instance: &'a str,
 }
 
-/// Reads one issue's state from the configured provider.
+/// Reads one issue's state through the exact scope its association proves.
 pub(crate) trait IssueStateReader {
-    /// The configured provider literal (`redmine`/`local`).
-    fn provider(&self) -> Result<String, String>;
-    /// The issue's state, or `Ok(None)` when the provider has no such issue.
-    /// An unavailable provider is an `Err`.
-    fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String>;
-    /// The provider's repository/project scope when it can prove one
-    /// (Forgejo reports `owner/repo`); the default has no proof.
-    fn scope(&self) -> Option<(String, String)> {
-        None
-    }
-
     /// Drop any invocation-scoped memo so the next read proves its scope
     /// afresh. The default is a no-op.
     fn refresh(&self) {}
 
     /// The explicit provider selection the reader was built with, when it
     /// has one. The default has no selection.
+    #[allow(dead_code)]
     fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
         None
     }
@@ -232,8 +211,8 @@ pub(crate) trait IssueStateReader {
     ///
     /// The group scope already proved this task belongs to the repository, so
     /// the lookup is by task id, never by number. A reader with no
-    /// task-aware dispatch refuses, so the caller keeps instead of reading
-    /// the task's number from the configured provider.
+    /// task-aware dispatch refuses, so the caller keeps instead of inferring
+    /// a provider from the number or an invocation default.
     fn own_task_state(
         &self,
         _task: TaskScopeRef<'_>,
@@ -259,7 +238,7 @@ pub(crate) trait IssueStateReader {
     /// Read one number through the provider its own scope names.
     ///
     /// The prune pass resolves the provider and project from the candidate's
-    /// own evidence (a durable link scope or a lease sidecar), never from the
+    /// own evidence (a durable link scope or a directory scope), never from the
     /// configured default. The default refuses: a source that cannot prove a
     /// provider scope never answers for one.
     fn scoped_state(
@@ -273,31 +252,6 @@ pub(crate) trait IssueStateReader {
             "issue {issue}: this source cannot prove a provider scope"
         ))
     }
-
-    /// The provider scope an explicit manual selection names, when the
-    /// invocation carries one.
-    ///
-    /// A candidate whose own scope contradicts an explicit selection keeps
-    /// instead of being dispatched somewhere else; a pass without an
-    /// explicit selection has no such scope.
-    fn explicit_scope(&self) -> Option<(String, String)> {
-        None
-    }
-
-    /// Read one number that carries no scope evidence at all.
-    ///
-    /// Only an explicit, trusted manual selection may answer here; the
-    /// default refuses so an unbound number is never dispatched to the
-    /// configured default.
-    fn prune_fallback_state(
-        &self,
-        _repo_path: &Path,
-        issue: u64,
-    ) -> Result<Option<IssueStateFact>, String> {
-        Err(format!(
-            "issue {issue}: no provider scope evidence and no explicit selection"
-        ))
-    }
 }
 
 /// Composes the scope check with the provider read and caches one answer per
@@ -306,32 +260,10 @@ pub(crate) struct ComposedIssueStateSource {
     links: Box<dyn LinkScopeReader>,
     provider: Box<dyn IssueStateReader>,
     cache: RefCell<HashMap<(String, u8, u64), IssueClosure>>,
-    policy: SourcePolicy,
-}
-
-/// Which dispatch policy the composition applies.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SourcePolicy {
-    /// The configured provider answers an unbound number. This is the
-    /// unchanged close and sync behaviour.
-    Legacy,
-    /// Every candidate resolves through its own proven scope: the prune
-    /// pass never answers from the configured default.
-    Prune,
-}
-
-/// Which owner answers one closure question.
-#[derive(Clone, Copy)]
-enum ClosureRoute {
-    /// The configured provider answers an unbound number.
-    Legacy,
-    /// One issue's own durable task answers through its stored instance.
-    Task,
 }
 
 const ROUTE_LEGACY: u8 = 0;
-const ROUTE_OWN: u8 = 1;
-const ROUTE_ASSOCIATED: u8 = 2;
+const ROUTE_ASSOCIATED: u8 = 1;
 
 impl ComposedIssueStateSource {
     pub(crate) fn new(
@@ -342,7 +274,6 @@ impl ComposedIssueStateSource {
             links,
             provider,
             cache: RefCell::new(HashMap::new()),
-            policy: SourcePolicy::Legacy,
         }
     }
 
@@ -356,35 +287,26 @@ impl ComposedIssueStateSource {
             links,
             provider,
             cache: RefCell::new(HashMap::new()),
-            policy: SourcePolicy::Prune,
         }
     }
 
-    /// The legacy verdict: the configured provider answers an unbound number.
+    /// The legacy verdict for a number that has no durable task.
     ///
-    /// The scope checks run before the provider read, so a link that names a
-    /// different provider keeps without a cross-provider request.
+    /// A number is read through a unique corroborated historical link scope
+    /// and nothing else: the invocation's configured or explicitly selected
+    /// provider is not historical ownership. A number with no such scope keeps
+    /// before any provider read.
     fn decide(&self, repo_path: &Path, issue: u64) -> IssueClosure {
-        if self.policy == SourcePolicy::Prune {
-            return self.decide_prune(repo_path, issue);
-        }
-        let configured = match self.provider.provider() {
-            Ok(provider) => provider,
-            Err(reason) => return IssueClosure::Keep(reason),
-        };
-        self.decide_with(
-            ClosureRoute::Legacy,
-            repo_path,
-            issue,
-            &configured,
-            None,
-            || self.provider.state(issue),
-        )
+        self.proven_legacy_verdict(repo_path, issue)
     }
 
-    /// The prune verdict: the reader answers through the scope the
-    /// candidate's own evidence proves.
-    fn decide_prune(&self, repo_path: &Path, issue: u64) -> IssueClosure {
+    /// Read one number through the only scope that can prove it.
+    ///
+    /// Exactly one distinct link scope is required. A conflicting link set,
+    /// a link whose external id disagrees with the number, a malformed scope,
+    /// or no scope at all keeps without a provider read. The provider's own
+    /// project answer must still agree with the proven project.
+    fn proven_legacy_verdict(&self, repo_path: &Path, issue: u64) -> IssueClosure {
         let scopes = match self.links.scopes(repo_path, issue) {
             Ok(scopes) => scopes,
             Err(reason) => return IssueClosure::Keep(reason),
@@ -404,18 +326,15 @@ impl ComposedIssueStateSource {
             .find(|scope| scope.external_id.parse::<u64>().ok() != Some(issue))
         {
             return IssueClosure::Keep(format!(
-                "issue {issue} link external id '{}' does not match the lease number",
+                "issue {issue} link external id '{}' does not match the issue number",
                 scope.external_id
             ));
         }
         let Some((provider, project)) = distinct.into_iter().next() else {
-            return match self.provider.prune_fallback_state(repo_path, issue) {
-                Ok(Some(fact)) => self.prune_verdict(issue, &None, fact),
-                Ok(None) => IssueClosure::Keep(format!(
-                    "issue {issue} was not found on its proven provider"
-                )),
-                Err(reason) => IssueClosure::Keep(reason),
-            };
+            return IssueClosure::Keep(format!(
+                "issue {issue} has no corroborated durable task or historical link scope; \
+                 an invocation default or number alone never proves its provenance"
+            ));
         };
         let fact = match self
             .provider
@@ -459,7 +378,6 @@ impl ComposedIssueStateSource {
     #[allow(clippy::too_many_arguments)]
     fn decide_with(
         &self,
-        route: ClosureRoute,
         repo_path: &Path,
         issue: u64,
         route_provider: &str,
@@ -491,7 +409,7 @@ impl ComposedIssueStateSource {
                  '{route_provider}'; refusing to dispatch across providers"
             ));
         }
-        if let (ClosureRoute::Task, Some((_, scope_project))) = (route, &scope)
+        if let Some((_, scope_project)) = &scope
             && Some(scope_project.as_str()) != route_project
         {
             return IssueClosure::Keep(format!(
@@ -503,7 +421,7 @@ impl ComposedIssueStateSource {
             .find(|scope| scope.external_id.parse::<u64>().ok() != Some(issue))
         {
             return IssueClosure::Keep(format!(
-                "issue {issue} link external id '{}' does not match the lease number",
+                "issue {issue} link external id '{}' does not match the issue number",
                 scope.external_id
             ));
         }
@@ -558,14 +476,7 @@ impl ComposedIssueStateSource {
             }
             Ok(Some(route_fact.into_fact()))
         };
-        self.decide_with(
-            ClosureRoute::Task,
-            repo_path,
-            issue,
-            task.provider,
-            Some(task.project),
-            read,
-        )
+        self.decide_with(repo_path, issue, task.provider, Some(task.project), read)
     }
 
     /// The verdict for one other number the directory is associated with.
@@ -576,20 +487,18 @@ impl ComposedIssueStateSource {
     fn associated_verdict(&self, repo_path: &Path, issue: u64) -> IssueClosure {
         let route_fact = match self.provider.associated_task_state(repo_path, issue) {
             Ok(Some(route_fact)) => route_fact,
-            Ok(None) => return self.decide(repo_path, issue),
+            // No durable task membership: only a unique corroborated
+            // historical link scope may still prove the number. The
+            // invocation default never does.
+            Ok(None) => return self.proven_legacy_verdict(repo_path, issue),
             Err(reason) => return IssueClosure::Keep(reason),
         };
         let provider = route_fact.provider.clone();
         let project = route_fact.project.clone();
         let fact = route_fact.into_fact();
-        self.decide_with(
-            ClosureRoute::Task,
-            repo_path,
-            issue,
-            &provider,
-            Some(&project),
-            || Ok(Some(fact)),
-        )
+        self.decide_with(repo_path, issue, &provider, Some(&project), || {
+            Ok(Some(fact))
+        })
     }
 
     /// One cached answer per route tag, repository and issue.
@@ -648,9 +557,11 @@ impl IssueStateSource for ComposedIssueStateSource {
         task: TaskScopeRef<'_>,
         issue: u64,
     ) -> IssueClosure {
-        self.cached(ROUTE_OWN, repo_path, issue, || {
-            self.own_task_verdict(repo_path, task, issue)
-        })
+        // Never memoized: a repository can hold two tasks with the same issue
+        // number, and a number-keyed memo would answer the second task with the
+        // first task's verdict. The immutable task scope is the evidence; the
+        // read is cheap relative to a wrong removal.
+        self.own_task_verdict(repo_path, task, issue)
     }
 
     fn associated_closure(&self, repo_path: &Path, issue: u64) -> IssueClosure {
@@ -667,26 +578,39 @@ impl IssueStateSource for ComposedIssueStateSource {
         self.links.invalidate(repo_path, issues);
     }
 
-    /// The prune sidecar verdict: the lease sidecar names the provider and
-    /// project, and the reader answers through exactly that scope. The
-    /// sidecar must agree with the durable link scope when one exists.
+    /// The exact-scope verdict: a durable task scope or non-task sidecar
+    /// names the provider and project, and the reader answers through exactly
+    /// that scope. The sidecar must agree with the durable link scope when one
+    /// exists. A scope-less call has no provenance and keeps.
     fn scoped_closure(
         &self,
         repo_path: &Path,
         issue: u64,
-        scope: Option<&crate::worktree::LeaseScope>,
+        scope: Option<&crate::worktree::WorktreeScope>,
     ) -> IssueClosure {
-        if self.policy != SourcePolicy::Prune {
-            return self.closure(repo_path, issue);
-        }
         let Some(scope) = scope else {
-            return self.closure(repo_path, issue);
+            return self.proven_legacy_verdict(repo_path, issue);
         };
         if scope.external_id() != issue {
             return IssueClosure::Keep(format!(
-                "issue {issue} lease sidecar external id '{}' does not match the lease number",
+                "issue {issue} registry scope external id '{}' does not match the issue number",
                 scope.external_id()
             ));
+        }
+        // An exact task-bearing scope is read by its immutable task id and
+        // instance, never by provider/project/number alone. A task reference
+        // that changed after the proof keeps instead of being redirected.
+        if let (Some(task_id), Some(instance)) = (scope.task_id(), scope.instance()) {
+            return self.own_task_closure(
+                repo_path,
+                TaskScopeRef {
+                    task_id,
+                    provider: scope.provider(),
+                    project: scope.project(),
+                    instance,
+                },
+                issue,
+            );
         }
         let scopes = match self.links.scopes(repo_path, issue) {
             Ok(scopes) => scopes,
@@ -700,7 +624,7 @@ impl IssueStateSource for ComposedIssueStateSource {
             .find(|link| link.external_id.parse::<u64>().ok() != Some(issue))
         {
             return IssueClosure::Keep(format!(
-                "issue {issue} link external id '{}' does not match the lease number",
+                "issue {issue} link external id '{}' does not match the issue number",
                 link.external_id
             ));
         }
@@ -718,7 +642,7 @@ impl IssueStateSource for ComposedIssueStateSource {
             && (provider != scope.provider() || project != scope.project())
         {
             return IssueClosure::Keep(format!(
-                "issue {issue} lease sidecar scope '{}/{}' does not match its durable link scope \
+                "issue {issue} registry scope '{}/{}' does not match its durable link scope \
                  '{provider}/{project}'",
                 scope.provider(),
                 scope.project()
@@ -739,20 +663,6 @@ impl IssueStateSource for ComposedIssueStateSource {
             };
         let agrees = project_agrees(scope.project(), &fact);
         self.prune_verdict(issue, &agrees, fact)
-    }
-
-    /// The scope the pass classifies scoped groups against.
-    ///
-    /// The prune pass has no pass-wide default scope, so only an explicit
-    /// manual selection names one.
-    fn provider_scope(&self) -> Option<(String, String)> {
-        if self.policy == SourcePolicy::Prune {
-            return self.provider.explicit_scope();
-        }
-        let provider = self.provider.provider().ok()?;
-        self.provider
-            .scope()
-            .map(|(_, project)| (provider, project))
     }
 
     fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
@@ -966,16 +876,16 @@ impl LinkScopeReader for GitLinkScopeReader {
     }
 }
 
-/// Production provider reader. The dispatcher is resolved on first use so a
-/// pass with no closure-checked candidate never resolves a credential.
+/// Production scoped reader. It builds a provider only for an exact proven
+/// scope; a pass with no closure-checked candidate never resolves a
+/// credential.
 pub(crate) struct ConfiguredIssueStateReader {
     role: Role,
     /// The explicit selection the invocation was resolved under (a close's
     /// `--provider`, `--api-base`, `--repository`, `--project-id`,
-    /// `--close-status-id`). `None` reads the configured default, as the
-    /// prune pass and the legacy close do.
+    /// `--close-status-id`). It constrains a proven scope; it never supplies
+    /// one.
     context: crate::cli::provider_context::ProviderContext,
-    provider: OnceCell<Result<ProviderDispatcher, String>>,
 }
 
 /// The explicit provider selection an invocation parsed, reused to resolve
@@ -995,7 +905,6 @@ impl ConfiguredIssueStateReader {
         Self {
             role,
             context: crate::cli::provider_context::ProviderContext::default(),
-            provider: OnceCell::new(),
         }
     }
 
@@ -1016,56 +925,141 @@ impl ConfiguredIssueStateReader {
         role: Role,
         context: crate::cli::provider_context::ProviderContext,
     ) -> Self {
-        Self {
-            role,
-            context,
-            provider: OnceCell::new(),
-        }
-    }
-
-    fn dispatcher(&self) -> Result<&ProviderDispatcher, String> {
-        match self.provider.get_or_init(|| {
-            self.context
-                .resolve(self.role)
-                .map_err(|error| bounded_error(&error.json()))
-        }) {
-            Ok(dispatcher) => Ok(dispatcher),
-            Err(reason) => Err(reason.clone()),
-        }
+        Self { role, context }
     }
 }
 
 impl IssueStateReader for ConfiguredIssueStateReader {
-    fn provider(&self) -> Result<String, String> {
-        self.dispatcher()
-            .map(|dispatcher| dispatcher.kind().as_str().to_owned())
-    }
-
-    fn scope(&self) -> Option<(String, String)> {
-        let dispatcher = self.dispatcher().ok()?;
-        let scope = crate::providers::index_store::provider_scope(dispatcher).ok()?;
-        Some((scope.source, scope.project))
-    }
-
     fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
         Some(&self.context)
     }
 
-    fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
-        let dispatcher = self.dispatcher()?;
-        match dispatcher.get_issue(issue) {
-            Ok(summary) => Ok(Some(IssueStateFact {
-                state: summary.state,
-                project_id: summary.project.as_ref().map(|project| project.id),
-                project_identifier: summary
-                    .project
-                    .as_ref()
-                    .and_then(|project| project.identifier.clone()),
-            })),
-            // A missing issue is treated exactly like an error: uncertainty
-            // is never closure.
-            Err(error) => Err(bounded_error(&error.json())),
+    fn own_task_state(&self, task: TaskScopeRef<'_>, issue: u64) -> Result<TaskRouteFact, String> {
+        let storage = Storage::open_existing_read_only()
+            .map_err(|error| format!("the local store is not available: {error}"))?
+            .ok_or_else(|| "the local store is not initialized".to_owned())?;
+        let binding =
+            crate::task_identity::binding_for_task_id_on(&storage.connection, task.task_id)
+                .map_err(|reason| format!("issue {issue}: {reason}"))?
+                .ok_or_else(|| {
+                    format!(
+                        "issue {issue}: durable task {} has no binding",
+                        task.task_id
+                    )
+                })?;
+        let key = binding.key();
+        if key.provider() != task.provider
+            || key.project() != task.project
+            || key.instance() != task.instance
+        {
+            return Err(format!(
+                "issue {issue} durable task reference changed after the directory proof; \
+                 refusing to read it"
+            ));
         }
+        let dispatcher = crate::cli::task_route::provider_for_binding_read_only(
+            self.role,
+            &binding,
+            &self.context,
+        )
+        .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+        let summary = dispatcher
+            .get_issue(issue)
+            .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+        Ok(TaskRouteFact {
+            provider: key.provider().to_owned(),
+            project: key.project().to_owned(),
+            instance: key.instance().to_owned(),
+            state: summary.state,
+            project_id: summary.project.as_ref().map(|project| project.id),
+            project_identifier: summary
+                .project
+                .as_ref()
+                .and_then(|project| project.identifier.clone()),
+        })
+    }
+
+    fn scoped_state(
+        &self,
+        repo_path: &Path,
+        issue: u64,
+        provider: &str,
+        project: &str,
+    ) -> Result<Option<IssueStateFact>, String> {
+        // Corroborate a scope-only sidecar with an immutable durable task
+        // before trusting any provider response. Redmine carries no instance
+        // in the sidecar, so its currently configured endpoint is not
+        // historical proof.
+        let storage = Storage::open_existing_read_only()
+            .map_err(|error| format!("the local store is not available: {error}"))?
+            .ok_or_else(|| "the local store is not initialized".to_owned())?;
+        let repo_key = crate::branch_links::resolve_checkout_repo_key(
+            &crate::git_runner::ProcessGitRunner::in_directory(repo_path),
+        )
+        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+        let tasks = crate::task_identity::bindings_for_repo_number_with(
+            &storage.connection,
+            &repo_key,
+            issue,
+        )
+        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+        let mut matching = tasks.into_iter().filter(|binding| {
+            let key = binding.key();
+            key.provider() == provider
+                && key.project() == project
+                && key.external_number() == Some(issue)
+        });
+        match (matching.next(), matching.next()) {
+            (Some(binding), None) => {
+                let dispatcher = crate::cli::task_route::provider_for_binding_read_only(
+                    self.role,
+                    &binding,
+                    &self.context,
+                )
+                .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                let summary = dispatcher
+                    .get_issue(issue)
+                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                return Ok(Some(IssueStateFact {
+                    state: summary.state,
+                    project_id: summary.project.as_ref().map(|project| project.id),
+                    project_identifier: summary
+                        .project
+                        .as_ref()
+                        .and_then(|project| project.identifier.clone()),
+                }));
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "issue {issue} has several durable tasks for scope '{provider}/{project}'; \
+                     refusing to guess an instance"
+                ));
+            }
+            (None, _) => {}
+        }
+        if !matches!(provider, "forgejo" | "local") {
+            // Validate the explicit selection only to surface a conflict; the
+            // configured endpoint is never historical ownership proof.
+            scoped_instance(self.role, repo_path, provider, project, &self.context)
+                .map_err(|reason| format!("issue {issue}: {reason}"))?;
+            return Err(format!(
+                "issue {issue} scope '{provider}/{project}' has no corroborating durable task or \
+                 repository identity; its historical instance cannot be proven"
+            ));
+        }
+        let dispatcher = scoped_provider(self.role, repo_path, provider, project, &self.context)
+            .map_err(|reason| format!("issue {issue}: {reason}"))?;
+        let summary = dispatcher
+            .get_issue(issue)
+            .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+        Ok(Some(IssueStateFact {
+            state: summary.state,
+            project_id: summary.project.as_ref().map(|project| project.id),
+            project_identifier: summary
+                .project
+                .as_ref()
+                .and_then(|project| project.identifier.clone()),
+        }))
     }
 }
 
@@ -1104,10 +1098,10 @@ pub(crate) fn configured_source_context(
     )
 }
 
-/// The task-aware form used by the prune pass: an unbound number still reads
-/// through the configured provider, while a number whose durable task is a
-/// member of this repository reads through that task's own pinned instance,
-/// independently of the configured default.
+/// The task-aware form used by close and sync: a number whose durable task is
+/// a member of this repository reads through that task's own pinned instance,
+/// and a number with no task reads only through a unique corroborated link
+/// scope. The configured default never answers for an unproven number.
 pub(crate) fn configured_source_task_aware(
     role: Role,
     context: crate::cli::provider_context::ProviderContext,
@@ -1130,6 +1124,72 @@ pub(crate) fn configured_source_prune(
         Box::new(GitLinkScopeReader::new_read_only()),
         Box::new(TaskAwareIssueStateReader::new_prune(role, context)),
     )
+}
+
+/// Closure evidence for the worktree occupancy seam.
+///
+/// A durable task is read through its own pinned instance, an exact legacy
+/// sidecar through the provider/project it records, and an unknown legacy
+/// identity never is: provenance that was not recorded is not filled in from
+/// the current default provider or from a matching number.
+pub(crate) struct ClosureOccupancy {
+    source: ComposedIssueStateSource,
+}
+
+impl ClosureOccupancy {
+    pub(crate) fn task_aware(
+        role: Role,
+        context: crate::cli::provider_context::ProviderContext,
+    ) -> Self {
+        Self {
+            source: configured_source_task_aware(role, context),
+        }
+    }
+}
+
+impl crate::worktree::occupancy::ForeignIssueState for ClosureOccupancy {
+    fn task_closed(&self, repo_path: &Path, task: &crate::worktree::DirectoryTask) -> bool {
+        let (Some(provider), Some(project), Some(instance)) = (
+            task.provider.as_deref(),
+            task.project.as_deref(),
+            task.instance.as_deref(),
+        ) else {
+            return false;
+        };
+        if provider.is_empty() || project.is_empty() || instance.is_empty() {
+            return false;
+        }
+        self.source
+            .own_task_closure(
+                repo_path,
+                TaskScopeRef {
+                    task_id: task.task_id,
+                    provider,
+                    project,
+                    instance,
+                },
+                task.issue,
+            )
+            .is_closed()
+    }
+
+    fn legacy_closed(
+        &self,
+        repo_path: &Path,
+        issue: &crate::worktree::DirectoryLegacyIssue,
+    ) -> bool {
+        if issue.provider.is_empty() || issue.project.is_empty() || issue.external_id == 0 {
+            return false;
+        }
+        let Ok(scope) =
+            crate::worktree::WorktreeScope::new(&issue.provider, &issue.project, issue.external_id)
+        else {
+            return false;
+        };
+        self.source
+            .scoped_closure(repo_path, issue.issue, Some(&scope))
+            .is_closed()
+    }
 }
 
 /// The endpoint one scope names, after the caller's explicit selection and
@@ -1291,7 +1351,6 @@ fn scoped_provider(
 /// membership only — there is no global number fallback, and several
 /// same-number tasks keep instead of guessing.
 pub(crate) struct TaskAwareIssueStateReader {
-    configured: ConfiguredIssueStateReader,
     role: Role,
     context: crate::cli::provider_context::ProviderContext,
     store: OnceCell<Result<Storage, String>>,
@@ -1307,7 +1366,6 @@ pub(crate) struct TaskAwareIssueStateReader {
 impl TaskAwareIssueStateReader {
     pub(crate) fn new(role: Role, context: crate::cli::provider_context::ProviderContext) -> Self {
         Self {
-            configured: ConfiguredIssueStateReader::with_context(role, context.clone()),
             role,
             context,
             store: OnceCell::new(),
@@ -1358,26 +1416,6 @@ impl TaskAwareIssueStateReader {
             .borrow_mut()
             .insert(cache_key, resolved.clone());
         resolved
-    }
-
-    /// The repository the candidate's own physical origin names, proven
-    /// against the role's trusted Forgejo instance.
-    fn forgejo_origin_repository(&self, repo_path: &Path) -> Result<String, String> {
-        let storage = Storage::open_existing_read_only()
-            .map_err(|error| format!("the local store is not available: {error}"))?
-            .ok_or_else(|| "the local store is not initialized".to_owned())?;
-        let stored = storage
-            .load_forgejo_config(self.role)
-            .map_err(|error| format!("could not read the Forgejo role instance: {error}"))?
-            .ok_or_else(|| {
-                "the Forgejo role instance is not configured for this role".to_owned()
-            })?;
-        let origin = crate::remote::forgejo_origin_evidence_at(repo_path)?;
-        crate::providers::forgejo::ForgejoConfig::attest_origin_repository(
-            &stored.api_base,
-            &origin,
-        )
-        .map_err(|error| bounded_error(&error.json()))
     }
 
     /// Read one durable task's issue through its pinned instance.
@@ -1442,24 +1480,12 @@ impl TaskAwareIssueStateReader {
 }
 
 impl IssueStateReader for TaskAwareIssueStateReader {
-    fn provider(&self) -> Result<String, String> {
-        self.configured.provider()
-    }
-
     fn refresh(&self) {
         self.scoped_providers.borrow_mut().clear();
     }
 
-    fn scope(&self) -> Option<(String, String)> {
-        self.configured.scope()
-    }
-
     fn selection(&self) -> Option<&crate::cli::provider_context::ProviderContext> {
         Some(&self.context)
-    }
-
-    fn state(&self, issue: u64) -> Result<Option<IssueStateFact>, String> {
-        self.configured.state(issue)
     }
 
     fn own_task_state(&self, task: TaskScopeRef<'_>, issue: u64) -> Result<TaskRouteFact, String> {
@@ -1504,22 +1530,15 @@ impl IssueStateReader for TaskAwareIssueStateReader {
         }
     }
 
-    /// The scope an explicit selection names, when the invocation has one.
-    fn explicit_scope(&self) -> Option<(String, String)> {
-        let kind = self.context.provider?;
-        let project = match kind {
-            crate::providers::ProviderKind::Forgejo => self.context.repository.clone()?,
-            crate::providers::ProviderKind::Redmine => self.context.project_id.clone()?,
-            crate::providers::ProviderKind::Local => "default".to_owned(),
-        };
-        Some((kind.as_str().to_owned(), project))
-    }
-
-    /// Read one number through the provider its own scope names.
+    /// Read one number through the exact scope its association proves.
     ///
-    /// The scope is the only authority: the provider is built read-only for
-    /// exactly that provider and project, and the candidate's own physical
-    /// repository proves a Forgejo instance.
+    /// A unique immutable durable task with the same provider/project/external
+    /// id is the authority, and its own pinned instance answers. Only when no
+    /// task exists does a provider whose physical repository identity (Forgejo)
+    /// or single instance (Local) proves the scope read through that scope. A
+    /// Redmine sidecar carries no instance, so without a corroborating task its
+    /// currently configured endpoint is not historical proof and the caller
+    /// keeps.
     fn scoped_state(
         &self,
         repo_path: &Path,
@@ -1527,115 +1546,77 @@ impl IssueStateReader for TaskAwareIssueStateReader {
         provider: &str,
         project: &str,
     ) -> Result<Option<IssueStateFact>, String> {
-        // The scope proof runs on every read, so a cached dispatcher never
-        // carries a stale origin, endpoint or selection into a verdict.
-        let instance = scoped_instance(self.role, repo_path, provider, project, &self.context)
-            .map_err(|reason| format!("issue {issue}: {reason}"))?;
-        let key = (
-            provider.to_owned(),
-            project.to_owned(),
-            repo_path.to_string_lossy().into_owned(),
-            instance,
-        );
-        if !self.scoped_providers.borrow().contains_key(&key) {
-            let dispatcher =
-                scoped_provider(self.role, repo_path, provider, project, &self.context)
-                    .map_err(|reason| format!("issue {issue}: {reason}"))?;
-            self.scoped_providers
-                .borrow_mut()
-                .insert(key.clone(), dispatcher);
-        }
-        let summary = self
-            .scoped_providers
-            .borrow()
-            .get(&key)
-            .expect("the scoped provider was just cached")
-            .get_issue(issue)
-            .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
-        Ok(Some(IssueStateFact {
-            state: summary.state,
-            project_id: summary.project.as_ref().map(|project| project.id),
-            project_identifier: summary
-                .project
-                .as_ref()
-                .and_then(|project| project.identifier.clone()),
-        }))
-    }
-
-    /// A number without scope evidence is answered only by an explicit,
-    /// trusted manual selection.
-    fn prune_fallback_state(
-        &self,
-        repo_path: &Path,
-        issue: u64,
-    ) -> Result<Option<IssueStateFact>, String> {
-        let Some(kind) = self.context.provider else {
-            return Err(format!(
-                "issue {issue}: no link or sidecar scope proves a provider, and no explicit \
-                 provider was selected"
-            ));
-        };
-        match kind {
-            crate::providers::ProviderKind::Redmine => {
-                let Some(project) = self.context.project_id.clone() else {
-                    return Err(format!(
-                        "issue {issue}: an explicit Redmine selection needs --project-id to prove \
-                         which project owns the legacy number"
-                    ));
-                };
-                let dispatcher =
-                    scoped_provider(self.role, repo_path, "redmine", &project, &self.context)
+        let repo_key = self.repo_key(repo_path)?;
+        let connection = self.connection()?;
+        let tasks = crate::cli::task_route::resolve_number_in_repo(connection, &repo_key, issue)
+            .map_err(|error| {
+                format!(
+                    "issue {issue}: the durable task lookup failed: {}",
+                    bounded_error(&error.json())
+                )
+            })?;
+        let mut matching = tasks.into_iter().filter(|binding| {
+            let key = binding.key();
+            key.provider() == provider
+                && key.project() == project
+                && key.external_number() == Some(issue)
+        });
+        match (matching.next(), matching.next()) {
+            (Some(binding), None) => {
+                let key = binding.key();
+                self.read_task(
+                    connection,
+                    TaskScopeRef {
+                        task_id: binding.task_id(),
+                        provider: key.provider(),
+                        project: key.project(),
+                        instance: key.instance(),
+                    },
+                    issue,
+                )
+                .map(|fact| Some(fact.into_fact()))
+            }
+            (Some(_), Some(_)) => Err(format!(
+                "issue {issue} has several durable tasks for scope '{provider}/{project}'; \
+                 refusing to guess an instance"
+            )),
+            (None, _) => {
+                if !matches!(provider, "forgejo" | "local") {
+                    // A sidecar with no instance cannot prove historical
+                    // ownership through the configured endpoint. Validate the
+                    // explicit selection only to surface a conflict, then keep.
+                    scoped_instance(self.role, repo_path, provider, project, &self.context)
                         .map_err(|reason| format!("issue {issue}: {reason}"))?;
-                let summary = dispatcher
-                    .get_issue(issue)
-                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
-                let fact = IssueStateFact {
-                    state: summary.state,
-                    project_id: summary.project.as_ref().map(|project| project.id),
-                    project_identifier: summary
-                        .project
-                        .as_ref()
-                        .and_then(|project| project.identifier.clone()),
-                };
-                if let Some(false) = project_agrees(&project, &fact) {
                     return Err(format!(
-                        "issue {issue} project does not match the selected Redmine project \
-                         '{project}'"
+                        "issue {issue} scope '{provider}/{project}' has no corroborating durable \
+                         task or repository identity; its historical instance cannot be proven"
                     ));
                 }
-                Ok(Some(fact))
-            }
-            crate::providers::ProviderKind::Local => {
-                let dispatcher =
-                    scoped_provider(self.role, repo_path, "local", "default", &self.context)
+                // The scope proof runs on every read, so a cached dispatcher
+                // never carries a stale origin, endpoint or selection into a
+                // verdict.
+                let instance =
+                    scoped_instance(self.role, repo_path, provider, project, &self.context)
                         .map_err(|reason| format!("issue {issue}: {reason}"))?;
-                let summary = dispatcher
-                    .get_issue(issue)
-                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
-                Ok(Some(IssueStateFact {
-                    state: summary.state,
-                    project_id: summary.project.as_ref().map(|project| project.id),
-                    project_identifier: summary
-                        .project
-                        .as_ref()
-                        .and_then(|project| project.identifier.clone()),
-                }))
-            }
-            crate::providers::ProviderKind::Forgejo => {
-                // A Forgejo legacy number still needs the physical origin proof.
-                let project = self.forgejo_origin_repository(repo_path)?;
-                if let Some(selected) = self.context.repository.as_deref()
-                    && selected != project
-                {
-                    return Err(format!(
-                        "issue {issue}: the selected repository '{selected}' does not match the \
-                         physical origin repository '{project}'"
-                    ));
+                let key = (
+                    provider.to_owned(),
+                    project.to_owned(),
+                    repo_path.to_string_lossy().into_owned(),
+                    instance,
+                );
+                if !self.scoped_providers.borrow().contains_key(&key) {
+                    let dispatcher =
+                        scoped_provider(self.role, repo_path, provider, project, &self.context)
+                            .map_err(|reason| format!("issue {issue}: {reason}"))?;
+                    self.scoped_providers
+                        .borrow_mut()
+                        .insert(key.clone(), dispatcher);
                 }
-                let dispatcher =
-                    scoped_provider(self.role, repo_path, "forgejo", &project, &self.context)
-                        .map_err(|reason| format!("issue {issue}: {reason}"))?;
-                let summary = dispatcher
+                let summary = self
+                    .scoped_providers
+                    .borrow()
+                    .get(&key)
+                    .expect("the scoped provider was just cached")
                     .get_issue(issue)
                     .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
                 Ok(Some(IssueStateFact {
@@ -1654,7 +1635,8 @@ impl IssueStateReader for TaskAwareIssueStateReader {
 /// Which resolver answers the associated numbers of a close.
 #[derive(Clone, Copy)]
 enum CurrentClosureRoute {
-    /// The configured/default provider answers an unbound number.
+    /// Every association needs its own sidecar, task or link evidence; the
+    /// invocation's provider context only constrains that exact scope.
     Configured,
     /// Every other number resolves by durable membership only and reads
     /// through its own pinned task.
@@ -1737,6 +1719,7 @@ impl CurrentIssueClosure {
     /// The adapter over an explicit resolver, for the tests that pin the
     /// adapter's own short-circuit.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn with_source(repo_path: &Path, source: ComposedIssueStateSource) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
@@ -1768,11 +1751,139 @@ impl DirectoryIssueClosure for CurrentIssueClosure {
         Ok(())
     }
 
+    fn confirm_association_closed(
+        &self,
+        current_issue: u64,
+        association: DirectoryAssociation<'_>,
+        current_scope: Option<&crate::worktree::WorktreeScope>,
+    ) -> Result<(), String> {
+        match association {
+            DirectoryAssociation::Task(task) => {
+                if task_matches_current(task, current_issue, current_scope) {
+                    return Ok(());
+                }
+                let Some(provider) = task.provider.as_deref() else {
+                    return Err(format!(
+                        "issue {} durable task {} has no provider identity and cannot be confirmed closed",
+                        task.issue, task.task_id
+                    ));
+                };
+                let Some(project) = task.project.as_deref() else {
+                    return Err(format!(
+                        "issue {} durable task {} has no project identity and cannot be confirmed closed",
+                        task.issue, task.task_id
+                    ));
+                };
+                let Some(instance) = task.instance.as_deref() else {
+                    return Err(format!(
+                        "issue {} durable task {} has no instance identity and cannot be confirmed closed",
+                        task.issue, task.task_id
+                    ));
+                };
+                if task.task_id <= 0 {
+                    return Err(format!(
+                        "issue {} has a non-positive durable task identity and cannot be confirmed closed",
+                        task.issue
+                    ));
+                }
+                let verdict = match self.route {
+                    CurrentClosureRoute::TaskAware => self.source.own_task_closure(
+                        &self.repo_path,
+                        TaskScopeRef {
+                            task_id: task.task_id,
+                            provider,
+                            project,
+                            instance,
+                        },
+                        task.issue,
+                    ),
+                    CurrentClosureRoute::Configured => {
+                        let scope = crate::worktree::WorktreeScope::for_task(
+                            provider,
+                            project,
+                            task.issue,
+                            task.task_id,
+                            instance,
+                        )
+                        .map_err(|error| error.message)?;
+                        self.source
+                            .scoped_closure(&self.repo_path, task.issue, Some(&scope))
+                    }
+                };
+                if !verdict.is_closed() {
+                    return Err(verdict
+                        .keep_reason()
+                        .unwrap_or("the durable task is not confirmed closed")
+                        .to_owned());
+                }
+            }
+            DirectoryAssociation::Legacy(issue) => {
+                if issue.provider.is_empty() || issue.project.is_empty() || issue.external_id == 0 {
+                    // An unscoped row records no provenance. The invocation's
+                    // configured or explicitly selected provider, and the fact
+                    // that the number matches, never fill that in: the row
+                    // keeps before any provider read.
+                    return Err(format!(
+                        "issue {} has no corroborated provider/project/instance provenance and cannot be confirmed closed",
+                        issue.issue
+                    ));
+                }
+                // Every scoped legacy row, including one whose number and
+                // provider/project match the issue just closed, is resolved
+                // through the same corroborated scope proof. A scope-only
+                // current close carries no historical instance, so matching
+                // values are never accepted as identity.
+                let scope = crate::worktree::WorktreeScope::new(
+                    &issue.provider,
+                    &issue.project,
+                    issue.external_id,
+                )
+                .map_err(|error| error.message)?;
+                let verdict =
+                    self.source
+                        .scoped_closure(&self.repo_path, issue.issue, Some(&scope));
+                if !verdict.is_closed() {
+                    return Err(verdict
+                        .keep_reason()
+                        .unwrap_or("the legacy association is not confirmed closed")
+                        .to_owned());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn refresh(&self) {
         // A movement invalidates the memo: the post-move recheck must read
         // provider and scope evidence afresh, never the pre-move answers.
         self.source.refresh();
     }
+}
+
+fn task_matches_current(
+    task: &crate::worktree::DirectoryTask,
+    current_issue: u64,
+    current_scope: Option<&crate::worktree::WorktreeScope>,
+) -> bool {
+    let Some(scope) = current_scope else {
+        return false;
+    };
+    // A durable task is identified by its immutable task id and instance, not
+    // by provider/project/number alone. A current scope that carries no task
+    // identity cannot prove any durable task is the one just closed.
+    let Some(scope_task_id) = scope.task_id() else {
+        return false;
+    };
+    let Some(scope_instance) = scope.instance() else {
+        return false;
+    };
+    let external_id = scope.external_id().to_string();
+    task.issue == current_issue
+        && task.task_id == scope_task_id
+        && task.instance.as_deref() == Some(scope_instance)
+        && task.provider.as_deref() == Some(scope.provider())
+        && task.project.as_deref() == Some(scope.project())
+        && task.external_id.as_deref() == Some(external_id.as_str())
 }
 
 fn bounded_error(value: &serde_json::Value) -> String {
@@ -1869,6 +1980,7 @@ pub(crate) mod test_support {
     /// A source that returns a fixed answer per `(repo_path, issue)` and
     /// records every question, so tests pin both the verdict and the laziness
     /// (which candidates triggered a provider read).
+    #[allow(dead_code)]
     pub(crate) struct ScriptedIssueStateSource {
         responses: RefCell<HashMap<(String, u64), IssueClosure>>,
         default: IssueClosure,
@@ -1876,6 +1988,7 @@ pub(crate) mod test_support {
         scope: Option<(String, String)>,
     }
 
+    #[allow(dead_code)]
     impl ScriptedIssueStateSource {
         /// Every issue defaults to `closed` unless answered otherwise.
         pub(crate) fn closed() -> Self {
@@ -1897,8 +2010,7 @@ pub(crate) mod test_support {
             }
         }
 
-        /// Prove the invocation's provider context, as a configured Forgejo
-        /// dispatcher would.
+        /// Prove the invocation's provider context for a sidecar comparison.
         pub(crate) fn with_provider_scope(self, provider: &str, project: &str) -> Self {
             Self {
                 scope: Some((provider.to_owned(), project.to_owned())),
@@ -1931,23 +2043,19 @@ pub(crate) mod test_support {
             self.default.clone()
         }
 
-        fn provider_scope(&self) -> Option<(String, String)> {
-            self.scope.clone()
-        }
-
         /// A sidecar that names another provider scope keeps without a
         /// provider read.
         fn scoped_closure(
             &self,
             repo_path: &Path,
             issue: u64,
-            scope: Option<&crate::worktree::LeaseScope>,
+            scope: Option<&crate::worktree::WorktreeScope>,
         ) -> IssueClosure {
             if let (Some(scope), Some((provider, project))) = (scope, self.scope.as_ref())
                 && (scope.provider() != provider || scope.project() != project)
             {
                 return IssueClosure::Keep(format!(
-                    "issue {issue} lease sidecar scope '{}/{}' is not the proven scope \
+                    "issue {issue} registry scope scope '{}/{}' is not the proven scope \
                      '{provider}/{project}'",
                     scope.provider(),
                     scope.project()
@@ -1955,5 +2063,164 @@ pub(crate) mod test_support {
             }
             self.closure(repo_path, issue)
         }
+    }
+}
+
+#[cfg(test)]
+mod association_identity_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::{
+        ComposedIssueStateSource, CurrentIssueClosure, DirectoryAssociation, IssueStateFact,
+        IssueStateReader, LinkScope, LinkScopeReader, task_matches_current,
+    };
+    use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
+    use crate::worktree::{DirectoryLegacyIssue, DirectoryTask, WorktreeScope};
+
+    fn task() -> DirectoryTask {
+        DirectoryTask {
+            task_id: 5,
+            issue: 7,
+            provider: Some("forgejo".to_owned()),
+            instance: Some("https://forgejo.test".to_owned()),
+            project: Some("owner/repo".to_owned()),
+            external_id: Some("7".to_owned()),
+        }
+    }
+
+    #[test]
+    fn the_current_task_is_the_exact_task_id_and_instance() {
+        let scope = WorktreeScope::for_task("forgejo", "owner/repo", 7, 5, "https://forgejo.test")
+            .expect("scope");
+        assert!(task_matches_current(&task(), 7, Some(&scope)));
+        assert!(!task_matches_current(&task(), 7, None));
+        let scope_only =
+            WorktreeScope::new("forgejo", "owner/repo", 7).expect("scope-only identity");
+        assert!(
+            !task_matches_current(&task(), 7, Some(&scope_only)),
+            "a scope without a task id and instance never proves a durable task"
+        );
+        assert!(!task_matches_current(
+            &DirectoryTask {
+                task_id: 6,
+                ..task()
+            },
+            7,
+            Some(&scope)
+        ));
+        assert!(!task_matches_current(
+            &DirectoryTask {
+                instance: Some("https://other.test".to_owned()),
+                ..task()
+            },
+            7,
+            Some(&scope)
+        ));
+    }
+
+    struct FixedLinks(Vec<LinkScope>);
+
+    impl LinkScopeReader for FixedLinks {
+        fn scopes(
+            &self,
+            _repo_path: &std::path::Path,
+            _issue: u64,
+        ) -> Result<Vec<LinkScope>, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct RecordedScoped {
+        calls: Rc<RefCell<Vec<(u64, String, String)>>>,
+        verdict: Result<Option<IssueStateFact>, String>,
+    }
+
+    impl IssueStateReader for RecordedScoped {
+        fn scoped_state(
+            &self,
+            _repo_path: &std::path::Path,
+            issue: u64,
+            provider: &str,
+            project: &str,
+        ) -> Result<Option<IssueStateFact>, String> {
+            self.calls
+                .borrow_mut()
+                .push((issue, provider.to_owned(), project.to_owned()));
+            self.verdict.clone()
+        }
+    }
+
+    fn same_scope_legacy() -> DirectoryLegacyIssue {
+        DirectoryLegacyIssue {
+            issue: 7,
+            provider: "redmine".to_owned(),
+            project: "23".to_owned(),
+            external_id: 7,
+        }
+    }
+
+    #[test]
+    fn a_same_number_current_legacy_row_still_goes_through_the_scoped_resolver() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let source = ComposedIssueStateSource::new(
+            Box::new(FixedLinks(vec![LinkScope {
+                provider: "redmine".to_owned(),
+                project: "23".to_owned(),
+                external_id: "7".to_owned(),
+            }])),
+            Box::new(RecordedScoped {
+                calls: Rc::clone(&calls),
+                verdict: Ok(Some(IssueStateFact {
+                    state: "Closed".to_owned(),
+                    project_id: Some(23),
+                    project_identifier: None,
+                })),
+            }),
+        );
+        let closure = CurrentIssueClosure::with_source(std::path::Path::new("/repo"), source);
+        let scope = WorktreeScope::new("redmine", "23", 7).expect("scope");
+        let row = same_scope_legacy();
+        assert!(
+            closure
+                .confirm_association_closed(7, DirectoryAssociation::Legacy(&row), Some(&scope))
+                .is_ok(),
+            "the exact same-number legacy row is confirmed only through its resolver"
+        );
+        assert_eq!(
+            *calls.borrow(),
+            vec![(7, "redmine".to_owned(), "23".to_owned())],
+            "the current legacy row is never accepted without a resolver read"
+        );
+    }
+
+    #[test]
+    fn an_unproven_current_legacy_row_keeps_instead_of_being_accepted() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let source = ComposedIssueStateSource::new(
+            Box::new(FixedLinks(Vec::new())),
+            Box::new(RecordedScoped {
+                calls: Rc::clone(&calls),
+                verdict: Err(
+                    "issue 7 scope 'redmine/23' has no corroborating durable task or repository identity; its historical instance cannot be proven"
+                        .to_owned(),
+                ),
+            }),
+        );
+        let closure = CurrentIssueClosure::with_source(std::path::Path::new("/repo"), source);
+        let scope = WorktreeScope::new("redmine", "23", 7).expect("scope");
+        let row = same_scope_legacy();
+        let error = closure
+            .confirm_association_closed(7, DirectoryAssociation::Legacy(&row), Some(&scope))
+            .expect_err("an unproven current legacy row must keep");
+        assert!(
+            error.contains("historical instance cannot be proven"),
+            "got: {error}"
+        );
+        assert_eq!(
+            calls.borrow().len(),
+            1,
+            "the resolver, not a current-scope shortcut, decided the legacy row"
+        );
     }
 }

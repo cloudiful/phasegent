@@ -72,8 +72,53 @@ impl Fixture {
                 .unwrap()
                 .success()
         );
-        self.json("executor", &["worktree", "status", "--issue", "42"]);
+        self.json("orchestrator", &["timer", "list"]);
         let connection = rusqlite::Connection::open(self.root.join("db.sqlite3")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE worktree_registry_meta (
+                     name TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 );
+                 CREATE TABLE worktree_directories (
+                     directory_id TEXT PRIMARY KEY,
+                     repo_identity TEXT NOT NULL,
+                     checkout_path TEXT NOT NULL,
+                     worktree_path TEXT NOT NULL,
+                     branch TEXT NOT NULL,
+                     created_at INTEGER NOT NULL,
+                     UNIQUE (repo_identity, worktree_path)
+                 );
+                 CREATE TABLE worktree_directory_tasks (
+                     directory_id TEXT NOT NULL,
+                     task_id INTEGER NOT NULL,
+                     issue INTEGER NOT NULL,
+                     created_at INTEGER NOT NULL,
+                     PRIMARY KEY (directory_id, task_id)
+                 );
+                 CREATE TABLE worktree_directory_legacy_issues (
+                     directory_id TEXT NOT NULL,
+                     issue INTEGER NOT NULL,
+                     provider TEXT NOT NULL DEFAULT '',
+                     project TEXT NOT NULL DEFAULT '',
+                     external_id INTEGER NOT NULL DEFAULT 0,
+                     created_at INTEGER NOT NULL,
+                     PRIMARY KEY (directory_id, issue, provider, project, external_id)
+                 );
+                 CREATE TABLE worktree_directory_sessions (
+                     directory_id TEXT NOT NULL,
+                     session TEXT NOT NULL,
+                     created_at INTEGER NOT NULL,
+                     PRIMARY KEY (directory_id, session)
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO worktree_registry_meta (name, value) VALUES ('schema_version', '1')",
+                [],
+            )
+            .unwrap();
         let identity = self
             .root
             .join(".git")
@@ -82,8 +127,24 @@ impl Fixture {
             .display()
             .to_string();
         for n in 0..305 {
-            connection.execute("INSERT INTO worktree_leases (lease_id,repo_identity,issue,session,checkout_path,worktree_path,branch,status,created_at,heartbeat_at) VALUES (?1,?2,?3,'fixture',?4,?5,'fixture-branch',?6,1,1)",
-                rusqlite::params![format!("lease{n:03}"), identity, if n < 300 {42} else {99}, self.root.display().to_string(), self.root.join(format!("wt{n}")).display().to_string(), if n < 300 {"active"} else {"retained"}]).unwrap();
+            let directory_id = format!("directory{n:03}");
+            connection
+                .execute(
+                    "INSERT INTO worktree_directories (directory_id, repo_identity, checkout_path, worktree_path, branch, created_at) VALUES (?1, ?2, ?3, ?4, 'fixture-branch', 1)",
+                    rusqlite::params![
+                        directory_id,
+                        identity,
+                        self.root.display().to_string(),
+                        self.root.join(format!("wt{n:03}")).display().to_string()
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO worktree_directory_legacy_issues (directory_id, issue, provider, project, external_id, created_at) VALUES (?1, ?2, '', '', 0, 1)",
+                    rusqlite::params![directory_id, if n < 300 { 42 } else { 99 }],
+                )
+                .unwrap();
         }
         for n in 0..205 {
             connection.execute("INSERT INTO execution_timer_runs (run_id,issue_id,phase,role,attempt,started_at,status) VALUES (?1,42,'P1','executor',1,1,?2)",
@@ -124,7 +185,7 @@ fn default_native_collection_calls_return_only_the_first_fifty_items() {
         assert_eq!(value["has_more"], true);
         assert!(value.get("leases").is_none() && value.get("runs").is_none());
     }
-    let (empty, warning) = fixture.json("executor", &["worktree", "status", "--issue", "99"]);
+    let (empty, warning) = fixture.json("executor", &["worktree", "status", "--issue", "100"]);
     assert_eq!(empty["items"], serde_json::json!([]));
     assert_eq!(empty["total_count"], 0);
     assert_eq!(empty["has_more"], false);
@@ -143,13 +204,13 @@ fn native_pages_have_complete_metadata_unique_tie_order_and_no_cap() {
             "executor",
             vec!["worktree", "list", "--no-sync"],
             305,
-            "lease_id",
+            "directory_id",
         ),
         (
             "executor",
             vec!["worktree", "status", "--issue", "42"],
             300,
-            "lease_id",
+            "directory_id",
         ),
         ("orchestrator", vec!["timer", "list"], 205, "run_id"),
     ] {
@@ -758,7 +819,7 @@ fn human_pages_render_items_scope_and_correct_out_of_range_state() {
         default_text.contains("Page 1, limit 50, total 300, more"),
         "{default_text}"
     );
-    assert!(default_text.contains("lease049") && !default_text.contains("lease050"));
+    assert!(default_text.contains("directory049") && !default_text.contains("directory050"));
     let output = fixture.run(
         "executor",
         &[
@@ -769,7 +830,7 @@ fn human_pages_render_items_scope_and_correct_out_of_range_state() {
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Page 1, limit 2, total 300, more"), "{text}");
-    assert!(text.contains("lease000") && text.contains("lease001") && text.contains("#42"));
+    assert!(text.contains("directory000") && text.contains("directory001") && text.contains("#42"));
     let output = fixture.run(
         "executor",
         &[
@@ -777,6 +838,6 @@ fn human_pages_render_items_scope_and_correct_out_of_range_state() {
         ],
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("No leases on this page."));
-    assert!(!text.contains("No worktree leases are recorded"));
+    assert!(text.contains("No directories on this page."));
+    assert!(!text.contains("No worktree directories are recorded"));
 }

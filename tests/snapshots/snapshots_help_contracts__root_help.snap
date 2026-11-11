@@ -1,5 +1,6 @@
 ---
 source: tests/snapshots_help_contracts.rs
+assertion_line: 42
 expression: "help(&scratch, None, &[\"--help\"])"
 ---
 phasegent [VERSION]
@@ -29,7 +30,7 @@ Work items:
   record                 Structured agent records: CLI-owned metadata header with a plain note body
 
 Orchestration:
-  worktree               Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)
+  worktree               Registered worktree directories (acquire/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)
 
 Configuration and operations:
   admin                  Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)

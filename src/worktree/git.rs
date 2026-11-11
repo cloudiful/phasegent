@@ -54,7 +54,7 @@ pub fn worktree_add_from(
 /// `git rev-parse --verify --quiet <ref>^{commit}` is a network-free,
 /// read-only probe used before `worktree add` so an explicit `--base`
 /// that does not exist fails without creating a branch, a worktree
-/// directory, or a lease row.
+/// directory, or a registry entry.
 pub fn ref_resolves_to_commit(
     runner: &dyn WorktreeRunner,
     repo_path: &Path,

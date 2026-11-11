@@ -149,11 +149,10 @@ pub enum Command {
     /// Orchestrator-owned local phase timer and Redmine Time Entry
     /// projection. The child executor/reviewer roles do not call this CLI.
     Timer(TimerCommand),
-    /// Local worktree leases (issue #239). Acquires/releases per-(repo,
-    /// issue, session) worktrees backed by the `worktree_leases` table;
-    /// reports status and lists existing leases; prunes clean+expired
-    /// retained worktrees. Mutating subcommands are
-    /// orchestrator-only at execution time.
+    /// Registered local worktree directories. Acquires or reuses a
+    /// per-(repo, issue, session) directory, reports issue associations, lists
+    /// every directory for a repository, and prunes eligible clean worktrees.
+    /// Mutating subcommands are orchestrator-only at execution time.
     Worktree(WorktreeCommand),
     /// Read-only self-check: credential presence (fingerprint, never
     /// values), index backend state, and the masked PostgreSQL URL.

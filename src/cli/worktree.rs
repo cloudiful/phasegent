@@ -1,22 +1,21 @@
 //! Executor for the `worktree` command group (issue #239 Phase 2).
 //!
 //! Subcommand gating lives here (command-level, not capability-level)
-//! so `acquire` / `release` / `heartbeat` / `prune` are
-//! orchestrator-only while `status` / `list` / `probe` mirror the
-//! issue-status read surface (orchestrator, executor, reviewer).
-//! Branch deletion is never invoked; only `git worktree remove` is used
-//! on clean candidates. `.env` and secret material are never read,
+//! so `acquire` / `prune` are orchestrator-only while `status` / `list` /
+//! `probe` mirror the issue-status read surface (orchestrator, executor,
+//! reviewer). Branch deletion is never invoked; only `git worktree remove`
+//! is used on clean candidates. `.env` and secret material are never read,
 //! copied, or written by any code path here (issue #239 Decisions).
 //!
 //! The subcommand executors are split by concern (issue 337 Phase 2):
 //!
-//! * [`acquire`] — `acquire` / `release` / `heartbeat`.
+//! * [`acquire`] — `acquire`.
 //! * [`query`] — read-only `status` / `list`.
 //! * [`probe`] — read-only `probe` diagnostics (issue 595).
 //! * [`prune`] — `prune` and its candidate-scan / action-apply model.
 //!
-//! Mutating subcommands route through `acquire_lease` /
-//! `release_lease` / the `prune` execution model. The lease table is
+//! Mutating subcommands route through the directory registry and the
+//! `prune` execution model. The registry is
 //! created lazily through `ensure_schema` so the executor can run
 //! against a pre-Phase-1 database without a migration step.
 
@@ -27,7 +26,6 @@ use crate::infra::storage::Storage;
 use crate::policy::{CallerContext, Role};
 use crate::worktree::ProcessWorktreeRunner;
 use crate::worktree::WorktreeError;
-use crate::worktree::leases::ensure_schema;
 use crate::worktree::repo_identity;
 
 pub(crate) mod acquire;
@@ -44,15 +42,15 @@ pub(crate) use crate::cli::issue_closure::test_support::ScriptedIssueStateSource
 #[allow(unused_imports)]
 pub(crate) use acquire::AcquireJson;
 #[allow(unused_imports)]
-pub(crate) use probe::{ProbeJson, ProbeLeaseJson, build_probe};
+pub(crate) use probe::{ProbeJson, build_probe};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use prune::scan_worktree_candidates;
 #[allow(unused_imports)]
 pub(crate) use prune::{
     DirectoryCandidate, PruneAction, PruneAggregate, PruneDisposition, PruneMode, PruneRepoOutcome,
-    PruneScope, PruneSummary, PruneTotals, ReleaseStaleAction, ReleaseStaleSummary,
-    execute_prune_with_source, pinned_active_paths, prune_pass, render_text,
+    PruneScope, PruneSummary, PruneTotals, execute_prune_with_source, prune_pass,
+    prune_pass_with_policy, render_text,
 };
 
 #[allow(dead_code)]
@@ -89,7 +87,7 @@ fn validate_context_for_worktree(
 /// selections are resolved by the ordinary numbered route, so a blank one is
 /// rejected there as well. An acquisition resolves only identity, so it
 /// validates the raw values itself: bound and legacy numbers alike refuse
-/// before the taxi pass or any lease write, independent of the resolved
+/// before the taxi pass or any registry write, independent of the resolved
 /// default provider. The Forgejo prohibition on the flag stays with the
 /// provider context and is unchanged.
 fn validate_acquire_flags(
@@ -136,12 +134,10 @@ pub(crate) fn execute_worktree_scoped(
     if caller.is_managed_without_role() {
         let operation = match &command {
             WorktreeCommand::Acquire { .. } => "worktree acquire",
-            WorktreeCommand::Release { .. } => "worktree release",
             WorktreeCommand::Status { .. } => "worktree status",
             WorktreeCommand::List { .. } => "worktree list",
             WorktreeCommand::Probe { .. } => "worktree probe",
             WorktreeCommand::Prune { .. } => "worktree prune",
-            WorktreeCommand::Heartbeat { .. } => "worktree heartbeat",
         };
         return super::managed_denial(operation);
     }
@@ -151,14 +147,14 @@ pub(crate) fn execute_worktree_scoped(
     // never writes stdout and never blocks: a failure is a bounded stderr
     // warning, and `--no-sync` skips it. The pass is orchestrator-authorized
     // (Operator shares it; like `issue sync` and the mutating worktree
-    // subcommands), so a read-only role can never trigger a lease flip or
-    // a removal by inspecting leases.
+    // subcommands), so a read-only role can never trigger a registry write or
+    // a removal by inspecting directories.
     let credential = caller
         .credential_role()
         .expect("authorized caller has a credential");
     // A malformed raw close-status or provider selection is refused for
     // bound and legacy numbers alike, before the task resolution, the
-    // complete raw-context validation, the taxi reconciliation or any lease
+    // complete raw-context validation, the taxi reconciliation or any registry
     // write.
     if matches!(&command, WorktreeCommand::Acquire { .. })
         && let Err(error) = validate_acquire_flags(context)
@@ -168,7 +164,7 @@ pub(crate) fn execute_worktree_scoped(
     // A durable task owns its acquisition. Resolve it strictly read-only with
     // the same branch-reference then unique-membership rules and the same raw
     // explicit filters as the ordinary numbered route, before any
-    // default-provider admission, taxi reconciliation or lease/store write. A
+    // default-provider admission, taxi reconciliation or registry write. A
     // known task is authoritative, so a changed or implicit default never
     // rejects or re-points it; every other command and number keeps the
     // complete raw-context validation below.
@@ -225,17 +221,6 @@ pub(crate) fn execute_worktree_scoped(
                 acquire_task.as_ref(),
             )
         }
-        WorktreeCommand::Release {
-            lease,
-            retain,
-            force,
-            reason,
-        } => {
-            if !caller.is_orchestrator_authorized() {
-                return permission_error(credential, "worktree release");
-            }
-            acquire::execute_release(&lease, retain, force, reason)
-        }
         WorktreeCommand::Status { issue, page } => {
             if !caller.is_worktree_read_authorized() {
                 return permission_error(credential, "worktree status");
@@ -264,12 +249,9 @@ pub(crate) fn execute_worktree_scoped(
         }
         WorktreeCommand::Prune {
             repo,
-            stale_days,
-            release_stale,
             // Accepted compatibility no-op: removal is the default now, driven
             // by `dry_run`.
             remove: _,
-            reason,
             dry_run,
             format,
             verbose,
@@ -280,21 +262,12 @@ pub(crate) fn execute_worktree_scoped(
             }
             prune::execute_prune(
                 repo.as_deref(),
-                stale_days,
-                release_stale,
-                reason,
                 dry_run,
                 &format,
                 verbose,
                 credential,
                 context,
             )
-        }
-        WorktreeCommand::Heartbeat { lease, session } => {
-            if !caller.is_orchestrator_authorized() {
-                return permission_error(credential, "worktree heartbeat");
-            }
-            acquire::execute_heartbeat(&lease, session.as_deref())
         }
     }
 }
@@ -338,7 +311,6 @@ fn storage_error(error: &WorktreeError) -> i32 {
 }
 
 fn resolve_list_identity(
-    storage: &Storage,
     repo: Option<&str>,
     runner: &dyn crate::worktree::WorktreeRunner,
 ) -> Result<String, serde_json::Value> {
@@ -353,12 +325,7 @@ fn resolve_list_identity(
         }));
     }
     match repo_identity(runner, &repo_path) {
-        Ok(identity) => {
-            // Persist the schema if it was not present yet so a
-            // `list` call also works on pre-Phase-1 databases.
-            let _ = ensure_schema(storage);
-            Ok(identity)
-        }
+        Ok(identity) => Ok(identity),
         Err(error) => Err(serde_json::json!({
             "kind": error.kind,
             "message": error.message,

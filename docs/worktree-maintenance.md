@@ -1,163 +1,133 @@
-# Worktree reconciliation and cleanup
+# Worktree registry, reconciliation and cleanup
+
+## Directory registry
+
+`worktree_directories` records each physical worktree directory by repository
+identity, canonical path, main checkout, branch and creation time. Its child
+tables associate a directory with durable tasks, unknown legacy issue identities
+and observed sessions. A directory can reference many tasks and sessions.
+
+The registry carries no lease state: no status, heartbeat, expiration or release
+reason. Live ownership comes from fresh evidence — a task that is still open, or
+a session the connected OpenCode service currently reports in the directory.
+Task and session provenance stays recorded after an issue closes until the
+directory is really removed.
+
+A legacy `worktree_leases`/`worktree_lease_scopes` store is upgraded once, in a
+single immediate transaction, into the registry. Every repository, path, issue,
+session and known scope is preserved; unknown legacy provenance stays unknown.
+The lease tables are dropped only after the rows are represented. A marker
+beside an unconsumed legacy table never lets those rows be dropped unimported:
+the upgrade re-imports idempotently. An unsupported old schema, or any
+contradictory task/scope evidence, refuses the whole transaction and leaves the
+old tables and rows intact. A preview or
+any other pure read never creates, migrates, drops, writes or chmods a store; an
+absent store reads as an empty registry, and a legacy store is projected in
+memory without being modified.
+
+## Operation lock
+
+Cooperating acquire, issue-switch, cleanup, removal and restore operations take
+one advisory lock per canonical repository under the existing worktree cache.
+The lock is a stable `File::try_lock` on a read/write-opened file; dropping the
+handle releases it on success, failure or crash, and the file is never unlinked.
+Contention fails with a bounded, actionable error. The lock is held from the
+fresh occupancy and registry check through the Git mutation and the short
+registry transaction. Provider and host I/O never run inside a SQLite
+transaction. Dry-run, probe, list and status create no lock file.
+
+The lock protects cooperating phasegent operations only. It makes no claim
+about arbitrary Git clients or sessions that start after a check.
+
+## Acquire ownership
+
+`worktree acquire` is owned by the current repository's durable task when one is
+bound, for every provider and without repeating `--provider` or `--repository`.
+A same-number task on another instance is a different scope that is never
+reused, and a contradicting explicit selection refuses before any registry write
+or sync pass. Without a bound task, an explicit `--provider forgejo` keeps the
+explicit `owner/repo` scope, an implicit Forgejo default fails closed, and a
+provider that owns legacy numeric issues keeps the unscoped legacy route.
+
+Reuse is the default. The current checkout is reused whether it is clean, dirty,
+unbound or linked to a historical issue. Fresh current occupancy, or an
+associated task that is still open, protects a different idle task's directory.
+A confirmed closed historical task does not veto reuse by itself. An unresolved
+occupation of the checkout path is reported as an `isolation` error naming
+`phasegent worktree acquire --issue N --isolate`; a worktree is created only
+when `--isolate` is passed explicitly. `--base REF` only chooses the start point
+of that explicit worktree; without `--isolate` it is rejected and never creates
+one. `--reuse` states the preference and never bypasses an occupied checkout. Dirty state is advisory only. An unknown
+`git status` probe is never silently treated as clean.
 
 ## Synchronous reconciliation
 
 Authorized Operator/orchestrator `worktree list` and `worktree acquire` callers
-run a complete repository-scoped sync before their command continues.
-`--no-sync` skips it. Other read roles cannot trigger lease release or removal
-by listing leases. A sync failure is a bounded warning for this implicit pass;
-a direct `issue sync` reports a failure as an error.
+run a complete repository-scoped `issue sync` before their command continues.
+`--no-sync` skips it. A sync failure is a bounded warning for this implicit
+pass; a direct `issue sync` reports a failure as an error.
 
 Page flags affect only the subsequent list query, not reconciliation. Sync and
-prune always consider complete maintenance collections; they do not accept
-user page limits. Prune never runs implicit sync, and its `--no-sync` spelling
-is a compatibility no-op.
+prune always consider complete maintenance collections; they do not accept user
+page limits. Prune never runs implicit sync, and its `--no-sync` spelling is a
+compatibility no-op.
 
-Repository identity, candidate grouping, the lease store and provider setup are
-reused within one invocation. Cleanup reads leases again after release, and
+Repository identity, candidate grouping, registry setup and provider setup are
+reused within one invocation. Removal reads current registry evidence again, and
 list reads its rows after reconciliation finishes. There is no persistent or
 cross-command cache.
 
-## Acquire ownership
+`issue sync --no-clean` writes nothing. It classifies each existing associated
+directory with the shared local guards; an OpenCode-associated directory is
+reported `would_keep` without contacting the host, and a pure CLI directory is
+`would_clean` when locally eligible. Clean mode runs the shared removal guards.
 
-`worktree acquire` is owned by the current repository's durable task when one
-is bound, for every provider and without repeating `--provider` or
-`--repository`: the route matches the branch task reference first, then a
-unique repository membership, filtered by any explicit provider, endpoint or
-project selection, before any default-provider admission or taxi pass. The
-lease records that exact task identity, a same-number task on another instance
-is a different scope that is never reused, and a contradicting explicit
-selection refuses before any lease write, so a changed or implicit default
-never rewrites a task-owned lease. A malformed raw `--close-status-id` value
-and a blank `--project-id`, `--api-base` or `--repository` selection are refused
-before any write, for a bound task and for a legacy number alike. Without a bound task, an explicit
-`--provider forgejo` keeps the explicit `owner/repo` scope, an implicit Forgejo
-default still fails closed, and any other selection keeps the legacy numeric
-lease.
+## Prune removal
 
-## Sync host reads
+Prune's scan is read-only. It groups registry records by canonical directory and
+reuses canonical path answers within that scan. Its host scan reads the connected
+service's occupancy and lineage; it neither enumerates historical sessions nor
+moves them. Unknown or unusable answers keep the directory.
 
-Sync may reuse successful OpenCode session lookups and listing pages within
-its invocation. It never moves a session. Every candidate directory gets a
-separate cache-use window:
+A directory is removed only when all of these hold:
 
-- A keep verdict remains conservative, including uncertainty or host errors.
-- A would-be-free verdict that used any cached answer is checked again through
-  the same occupancy predicate with direct, uncached host reads before removal.
-- A verdict based entirely on fresh reads is not queried a second time.
-- Errors are not cached by the sync memo.
+1. It is a verified non-main, clean directory. The narrow verified root `.cache`
+   exception is preserved.
+2. Every associated task is confirmed closed through its own durable task, or a
+   legacy number through a proven sidecar, link or trusted manual route. A
+   confirmed closed historical task never keeps the directory; a still-open
+   associated task does.
+3. A fresh host occupancy check reports no running or unassociated session.
+4. Every present idle session family the registry associates with the directory
+   is safely relocated to the verified main checkout.
+5. The operation lock is held and the local, closure and fresh host guards are
+   rechecked immediately before removal.
 
-Cached absence or an old lease/session association cannot authorize removal.
-Close and read-only report paths use their direct behavior rather than this
-sync memo. Report mode does not probe associated historical occupancy or move
-sessions.
+An unavailable or incomplete listing, a missing or mismatched session answer, an
+unusable location, broken lineage, a rejected, queued or unconfirmed move, or an
+unverifiable main checkout keeps the directory. A missing associated idle
+session needs no move and is not a permanent keep unless the host's current
+listing still names it, which is contradictory evidence and keeps. Only the
+connected service is covered; no whole-machine inventory is claimed.
 
-## Close branch restoration
+The `--dryrun` preview runs the same occupancy and lineage reads and reports the
+same blockers and move eligibility without moving, deleting or writing anything,
+and without creating a store, schema or operation lock. Local Git guards run
+before host reads, so a main checkout or dirty path is kept without host access.
 
-A successful `issue close` may also return the repository's verified main
-checkout to the branch it was on before the automatic issue-branch switch. The
-baseline is captured before that switch and keyed by repository identity,
-provider/project/issue scope and canonical main-checkout path; an issue without
-a matching baseline is a no-op. The close reads every other issue associated
-with the directory through its own durable task, keeps the directory while any
-associated task is open, ambiguous or unreadable, and restores the main checkout
-only for an unambiguous provider/project/number task set; several same-scope
-tasks skip restoration with a bounded warning.
+After a successful `git worktree remove` (never with `--force`), the registry row
+is deleted. Branches and Git history are retained. A recorded path that no
+longer exists is reported as absent: the fact is independent of task or provider
+identity, registry evidence is preserved, and no provider read or session move
+is required.
 
-Restoration runs only after the remote close, lease release and guarded worktree
-cleanup succeed. It requires the main checkout to be clean (untracked files
-count as dirty), on the captured issue branch or the already-restored baseline,
-with no active repository lease, no other hosted OpenCode session, and a
-verifiable closing session identity. Pending capture rows are recovered only
-from the captured issue branch; an unchanged baseline becomes `aborted` and any
-other state is skipped with a warning. A third-party branch change is never
-overridden, and a captured local branch that no longer exists is skipped with a
-warning rather than recreated from a matching remote-tracking namesake. If the
-verified main checkout cannot be resolved while recorded baseline evidence
-exists for the known repository and provider/project scope, close emits a
-bounded restoration warning; an absent baseline remains a quiet no-op, and an
-unknown scope never searches another scope.
+The default output follows the global `--output auto` selection: the compact
+human summary on an interactive terminal and the machine aggregate envelope on a
+pipe or in CI. `--verbose` adds bounded per-directory rows without changing the
+machine document. The aggregate envelope is the complete-detail inspection
+channel. Progress is a human affordance only: one stderr line is redrawn in
+place, never carries a directory path, counts completed repositories and
+directories, and is cleared before the result.
 
-The captured local branch is restored without force, stash, reset, clean,
-branch deletion or merge commit. When that branch has a configured non-local
-remote upstream, the close fetches only that branch ref without tags, verifies
-that the local head is an ancestor, rechecks the guards, and fast-forwards. A
-missing or unsupported upstream restores only and marks the update skipped;
-local ahead/diverged, unavailable remote/ref, failed fetch or refused
-fast-forward preserves the branch and commits and marks the update failed.
-Branch restoration and upstream update are recorded independently: repeating
-`issue close` retries only an incomplete update, and a completed or
-no-upstream restoration is a no-op without another fetch. This is best-effort
-and deliberately not atomic against arbitrary external Git clients; it does not
-claim a global lock, and restoration problems never reopen or fail a successful
-remote close. `issue sync` and `worktree prune` do not restore branches.
-
-## Prune scan and removal
-
-Prune's scan is read-only. It groups lease rows by canonical directory and
-reuses canonical path answers and issue/link setup within that scan. Its host
-scan reads the connected service's running-session set and session locations;
-it neither enumerates historical sessions nor moves them. Unknown or unusable
-answers keep the directory.
-
-Each actual removal has a new verification window, independent of scan memo:
-
-1. Read current lease rows and rebuild the target's full issue/session set.
-2. Resolve paths again; a recorded alias that now names a different directory
-   keeps the candidate.
-3. Invalidate the target issue closures only. Unrelated issue answers and
-   repository setup remain reusable.
-4. Recheck active leases, main-checkout identity, dirty/untracked files and
-   running sessions with current evidence, then require every target issue to
-   be confirmed closed through fresh branch-link and per-task provider reads;
-   a legacy number without a durable task keeps the configured-provider
-   resolution.
-5. Read fresh complete occupancy and the lineage the host reports. Only the
-   idle members of the directory's lease family — the sessions its leases name
-   and the descendants whose bounded `parentID` chain reaches them — may be
-   returned to the verified main checkout. A foreign occupant is never moved
-   and keeps the directory.
-6. Check running state immediately before every request and again afterwards.
-   Every safe member of the lease family is requested once before any wait; an
-   immediately pending request does not suppress a later sibling. The first read
-   after each request is immediate and typed pending (old location), confirmed
-   (destination), or unsafe (stop new requests and waiting without rollback).
-   Only then does an actual prune start one invocation-shared 3-second wait
-   phase (100 ms round-robin, never reset per directory or session, never
-   reissuing a move), while close uses the same batch requests with no waiting
-   and sync/report/preview never move. After all pending requests confirm, fresh
-   family reads and a complete listing must agree the directory is free before
-   removal proceeds.
-
-An unavailable or incomplete listing, missing/mismatched session answer,
-unusable location, unreadable/mismatched/cyclic lineage,
-rejected/queued/unconfirmed move or unverifiable main
-checkout keeps the directory. The `--dryrun` preview runs the same occupancy
-and lineage reads and reports the same blockers and move eligibility without
-moving, deleting, or writing anything. Local Git guards run before host reads,
-so a
-main checkout or dirty path does not need host access to be kept. One shared
-dirty exception is a verified root `.cache`-only worktree: `.cache` is a real
-root directory (never a file, symlink, `.cache2`, or nested `other/.cache`),
-Git tracks nothing below it, porcelain status names only `??` paths under that
-exact root, and a bounded symlink-free inventory (at most 4096 entries) of
-reliable device/inode and high-resolution change evidence matches the initial
-eligibility baseline across session movement and re-reads identically
-immediately before the guarded cache removal. A platform without reliable
-identity fails closed for this exception, and a same-length replacement or root
-replacement keeps. After that removal Git status is checked again, every
-applicable lease, local, closure, and fresh host gate is re-checked once more,
-and then the ordinary no-force `git worktree remove`
-runs; every other path is preserved. Removal uses `git worktree remove` without
-force. Branches and lease rows are retained as history.
-
-A recorded worktree path that no longer exists on disk is counted as absent; its
-still-open lease rows converge once to `released`, and a repeated run leaves an
-already-released row and its heartbeat untouched. A filesystem error or a
-symlink entry is never read as absence.
-
-These checks cover the one connected OpenCode service at the time of the
-reads, not a whole-machine inventory or a guarantee against later session
-changes. No scan cache replaces the final freshness checks. See
-`phasegent --help worktree prune` for preview and stale-lease recovery options,
-and [explicit pagination](cli-pagination.md) for read collection limits.
+See `phasegent --help worktree prune` for the preview and action flags, and
+[explicit pagination](cli-pagination.md) for read collection limits.

@@ -349,7 +349,8 @@ mod tests {
 
     #[test]
     fn plugin_install_does_not_require_role() {
-        let invocation = command::parse(&strings(["plugin", "install"])).unwrap();
+        let invocation =
+            command::parse_with_role_env(&strings(["plugin", "install"]), None).unwrap();
         match invocation.command {
             Command::Plugin(PluginCommand::Install { .. }) => {}
             other => panic!("unexpected command {other:?}"),

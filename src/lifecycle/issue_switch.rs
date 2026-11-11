@@ -4,9 +4,9 @@
 //! branch when missing, records the durable link, and switches the
 //! existing primary checkout onto it only when every gate holds: the
 //! tree is clean, the current branch is the detected default (or the
-//! explicit base), and no conflicting active lease owns this checkout.
+//! explicit base), and no conflicting open task or fresh host occupancy owns this checkout.
 //! Anything unsafe stays untouched with an actionable warning; dirty,
-//! unknown, detached, and foreign-active states never stash, discard,
+//! unknown, detached, and foreign-occupied states never stash, discard,
 //! delete, or switch. Only local Git commands run here (`show-ref`,
 //! `branch`, `checkout`, plus the read-only probes); default-branch
 //! detection stays cached-only and no command touches the network.
@@ -41,10 +41,18 @@ pub struct IssueSwitchParams<'a> {
     /// Explicit `--repository` scoping: a mismatch skips silently (this
     /// checkout is not the target).
     pub explicit_repository: Option<&'a str>,
-    /// Session booking the switch; an active lease under the same
-    /// `(issue, session)` triple is ours, anything else live in the
-    /// repository conflicts (repo-wide policy, mirroring acquire).
+    /// Session booking the switch; an association under the same
+    /// `(issue, session)` pair is ours, while a still-open foreign task or
+    /// fresh host occupancy of the checkout conflicts (mirroring acquire).
     pub session: Option<&'a str>,
+    /// Closure evidence for the checkout's foreign associations. An absent
+    /// answer keeps the previous conservative conflict; a confirmed closed
+    /// historical task does not veto the switch.
+    pub foreign_state: Option<&'a dyn crate::worktree::occupancy::ForeignIssueState>,
+    /// The connected host whose fresh occupancy decides whether a foreign
+    /// session still owns this checkout. An absent host keeps the switch
+    /// conservative.
+    pub host_api: Option<&'a dyn crate::worktree::opencode::OpenCodeApi>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -128,6 +136,34 @@ pub fn create_link_and_switch(
     if let Err(reason) = super::current_checkout_matches(git, params.explicit_repository) {
         return CreateSwitchOutcome::Skipped { reason };
     }
+    let identity = match crate::worktree::repo_identity(wt, params.repo_path) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return CreateSwitchOutcome::Warning {
+                reason: format!(
+                    "cannot verify directory ownership before switching: {}",
+                    error.message
+                ),
+            };
+        }
+    };
+    // One owner spans every fresh ownership probe and the checkout. The lock
+    // is acquired once and never re-entered by the same call.
+    let _lock = match crate::worktree::operation_lock::acquire(&identity) {
+        Ok(lock) => lock,
+        Err(error) => {
+            return CreateSwitchOutcome::Warning {
+                reason: format!(
+                    "another phasegent worktree operation is in progress; leaving the current checkout untouched: {}",
+                    error.message
+                ),
+            };
+        }
+    };
+    // The current branch and repository scope are decided only after the
+    // operation lock is held: a cooperating switch may have moved the branch
+    // between the early validation and this point, and a stale branch must
+    // never become the baseline or the switch gate.
     let current = match crate::git_runner::current_branch(git) {
         Ok(branch) => branch,
         Err(error) if error.kind == "branch" => {
@@ -261,9 +297,9 @@ pub fn create_link_and_switch(
             },
         };
     }
-    if let Some(reason) =
-        switch_policy::lease_conflict(&storage, wt, params, issue_id, branch, &current)
-    {
+    if let Some(reason) = switch_policy::switch_conflict(
+        &storage, &identity, &repo_key, params, issue_id, branch, &current,
+    ) {
         return CreateSwitchOutcome::LinkedOnly {
             branch: branch.to_owned(),
             issue_id,

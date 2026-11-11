@@ -107,8 +107,7 @@ phasegent --output json issue get 123      # 强制机器文档
 
 支持的 collection list 默认在文本与 JSON 中返回第 1 页、最多 50 项。JSON
 使用统一分页 envelope；使用 `--page` 和 `--limit` 选择其他页面，例如
-`phasegent worktree list --page 2 --limit 50`。OpenCode adapter 需要完整 lease collection
-时会读取全部页面。已文档化命令仍支持旧的 `--format`/`--json` 参数。
+`phasegent worktree list --page 2 --limit 50`。OpenCode adapter 需要完整目录集合时会读取全部页面。已文档化命令仍支持旧的 `--format`/`--json` 参数。
 详见[输出模式](docs/cli-output.md)、[分页](docs/cli-pagination.md)和
 [worktree 维护](docs/worktree-maintenance.md)。
 
@@ -130,7 +129,7 @@ Forgejo 与其他 provider 一样通过统一配置选择：创建 issue、用 `
 与 repository，无需重复这些参数；不同的显式 repository 不会重新绑定该 task。只需操作者准备 token。
 Forgejo 使用仓库内 issue 编号，并在结果中保留原生全局 id；它支持 issue、评论、record、仓库读取、
 milestone（作为 version）、原生 `Open` 与 `Closed` 状态，以及按 `owner/repo` 隔离的分支关联、worktree
-lease、清理与 sync。不支持时间记录、relation、附件、子任务/planning 与 project
+目录、清理与 sync。不支持时间记录、relation、附件、子任务/planning 与 project
 创建。Forgejo issue 没有状态标签：关闭之前一直是 `Open`，阶段细节记录在 record 中，
 close 清理仅限匹配的 `owner/repo` scope；
 Redmine issue 没有自动 PR 关联。详见 [Forgejo provider](docs/forgejo-provider.md)。
@@ -174,68 +173,69 @@ tracking 仅支持 Redmine 或显式的离线 local；不受支持的 provider �
 
 ## Worktree
 
-lease 以 `(repo, issue, session)` 为键。`phasegent worktree acquire --issue N
-[--session S] [--base REF]` 仅限 orchestrator：同一组合优先返回既有 lease；
-显式 `--base REF` 会从该 ref（而非 `HEAD`）新建 worktree 和
-`phasegent/<issue>-<short6hex>` 分支，且不复用当前 checkout。无法解析的 ref
-会在写入任何 worktree、分支或 lease 之前本地失败。
+worktree 目录记录在按 repository identity、规范路径、分支、durable task 或旧 issue
+身份以及观察到的会话建立的 registry 中。一个目录可以关联多个 task 和会话。registry
+不保存 lease 状态、心跳、过期时间或释放原因：实时占用来自最新的 host 证据，以及关联
+task 是否仍然打开。
+
+`phasegent worktree acquire --issue N [--session S] [--base REF]` 仅限
+orchestrator。同一仓库、issue 和会话幂等返回既有 `directory_id`；仅在显式
+`--isolate` 时，`--base REF` 会让新 worktree 和 `phasegent/<issue>-<short6hex>`
+分支从该 ref（而非 `HEAD`）开始，且不复用当前 checkout；缺少 `--isolate` 的
+`--base` 会被拒绝，绝不创建工作树。默认复用当前 checkout：无论它是 clean、dirty、未绑定，还是
+关联了历史 issue。最新占用或仍打开的关联 task 会保护另一个空闲 task 的目录；已确认
+关闭的历史 task 本身不会否决复用。checkout 路径存在未解决的占用时，命令以
+`isolation` 错误提示显式 `--isolate` 命令，且绝不会在该选项之外创建工作树；
+`--reuse` 与 `--isolate` 互斥。
 
 `phasegent worktree probe [--path PATH | --issue N [--session S]]` 以有界 JSON
 报告 checkout 状态：路径是否存在、是否为 Git worktree、clean/dirty/unknown、
-分支与 `HEAD`、是否主 checkout，以及匹配的 lease。`--path` 与 `--issue` 互斥，
-`--session` 用于收窄 `--issue`，两者都不传则探测当前 checkout。它是只读命令
-（orchestrator、executor、reviewer）：不调用 provider、不写 lease、不同步、不
-删除、不修复；`--issue` 无匹配 lease 时返回稳定的空结果，绝不猜测路径。
+分支与 `HEAD`、是否主 checkout，以及匹配的 registry 目录。`--path` 与 `--issue`
+互斥，`--session` 用于收窄 `--issue`，两者都不传则探测当前 checkout。它是只读命令
+（orchestrator、executor、reviewer）：不调用 provider、不写 registry、不同步、不
+删除、不修复；`--issue` 无匹配目录时返回稳定的空结果，绝不猜测路径。
 
 ```sh
 phasegent worktree acquire --issue 123 --base main
 phasegent worktree probe --issue 123
 ```
 
-由 OpenCode 会话（`ses_…`）租用的目录会被保护，直到 host 确认该会话已不在其中：
-`issue close` 会先读取该目录的占用情况与 host 上报的会话谱系，把该目录 lease 家族中的空闲成员——
-lease 指名的会话以及由它们派生的子会话——通过 OpenCode API（`opencode api session.move`）送回
-仓库主 checkout，再移除目录；无法确认时保留目录，待 `issue sync` 确认会话已转移后
-再移除。清理完成后，成功的 close 还会在已核实的主 checkout 干净且安全时恢复
-issue 创建前的分支，并只对配置给该分支的上游执行 fast-forward。任何缺失、不安全或
-冲突状态都会保留 checkout 原状并给出 warning；重复执行 `issue close` 会重试未完成的
-上游更新，成功更新后或分支没有配置上游时则为 no-op。
-`phasegent worktree prune` 是全局、默认执行移除的清理：不传 `--repo` 时清理本地
-lease 存储记录的所有 repository identity，`--dryrun`（别名 `--dry-run`）为只读
-预览。只有当目录关联的每个 issue 都在配置的 provider 上确认已关闭、没有 `active`
-lease 引用该目录、且工作树 Git 干净时才会移除——没有等待期，`--stale-days` 只影响
-显式的 `--release-stale` 恢复。它复用与 close/sync 相同的本地保护——绝不删除主
-checkout、绝不动有 `active` lease 的路径、绝不删除 dirty/untracked 内容，唯一例外是
-经过核实的根 `.cache` 目录：`.cache` 是真实根目录（不是文件、符号链接、`.cache2` 或
-嵌套的 `other/.cache`）、其下没有被 Git 跟踪的路径、porcelain 状态只列出该根下的 `??`
-路径，且清单记录可靠的 device/inode 与高分辨率变更证据，初始资格基线跨会话迁移保留，
-删除前立即重读的清单必须与之一致；无法提供可靠身份的平台上该例外直接 fail closed；随后执行
-普通的不带 `--force` 的 `git worktree remove`——并新增
-自己的运行中会话保护：只有连接的共享前台 drain 服务报告为*当前运行*、且位于该目录
-的会话才会阻止移除（只读检查）。仅指向该目录的、已不活跃的历史会话记录不会保留目录。
-只读扫描绝不枚举历史会话、也绝不迁移会话；移除阶段则相反：删除目录前，它会读取该目录
-的最新占用情况与 host 上报的谱系，并把该目录 lease 家族中的每个空闲 `ses_` 会话——lease
-指名的会话以及由它们派生的子会话——送回仓库已核实的主 checkout。所有安全的家族成员
-都会在开始等待前各请求一次，不会因为前一个立即处于 pending 而跳过后续兄弟；每次请求后
-立即读取一次，只有实际 prune 才会在一次调用共享的 3 秒调度预算内（每 100ms 轮询，
-绝不按目录或会话重置，绝不重复发送迁移请求）对全部仍 pending 的已接受迁移轮询确认，
-预览与 close 从不等待。磁盘上已不存在的记录路径
-计为 absent，其仍未终结的 lease 行只收敛一次为 `released`，重复运行不会改写已 released
-行及其心跳。这些检查描述的是那一刻这一个连接服务的情况，而不是对之后
-会话变化的保证。没有 lease 关联、也没有谱系能关联到 lease 根的会话会保留该目录且绝不被迁移；
-占用列表不可用或不完整、
-关联会话无法定位、返回了另一个会话或无法读取的位置、谱系不可读/不匹配/成环、迁移被拒绝、
-排队或未生效、主
-checkout 无法核实，以及期间开始运行的会话，都会保留目录。覆盖
-范围就是这一个连接的服务，而非整机多服务清单。本地保护先于运行中会话查询判定，因此主
-checkout 或 dirty 目录不会产生任何 host 调用；由于 prune 对运行时 host 的依赖是显式的，
-运行中会话查询不可用、格式错误、ID 不匹配或返回非绝对路径，都会保留目录（即便是纯 CLI
-候选）。人类可读的失败
-计数只统计失败的 `git worktree remove` 调用，而非 host 异常。输出遵循全局
-`--output` 选择：人类终端上为按目录统计的简洁文本，管道或 `--json` 时为机器可读聚合
-结果。交互式终端上进度动画显示扫描与逐个移除检查，并在结果前清除；stdout 仅保留最终
-文本或单个 JSON 文档。被透明 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管
-agent role。详见 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
+与 OpenCode 会话（`ses_…`）关联的目录会被保护，直到 host 确认该会话已不在其中。
+`issue close` 在移除任何内容前，会把该目录会话家族中的空闲成员——registry 关联指出
+的会话以及由它们派生的子会话——通过 OpenCode API（`opencode api session.move`）送回
+仓库主 checkout；无法确认时保留目录。缺失的关联空闲会话会被跳过；如果 host 的当前
+列表仍然指名该缺失 id，则视为矛盾并保留。只有 `ApiError::SessionNotFound` 被视为
+不存在；传输、HTTP、认证和格式错误都 fail closed。清理完成后，成功的 close 还会在
+已核实的主 checkout 干净且安全时恢复 issue 创建前的分支，并只对配置给该分支的上游
+执行 fast-forward。任何缺失、不安全或冲突状态都会保留 checkout 原状并给出 warning；
+重复执行 `issue close` 会重试未完成的上游更新，成功更新后或分支没有配置上游时则为
+no-op。
+
+`phasegent worktree prune` 是全局、默认执行移除的清理：不传 `--repo` 时清理 directory
+registry 记录的所有 repository identity，`--dryrun`（别名 `--dry-run`）为只读预览。
+只有当目录是经过核实、非主且干净的工作树；每个关联 task 都通过自己的 durable task
+或经过证明的 legacy 路由确认关闭；最新 host 占用检查没有运行中或未关联会话；所有存在
+的空闲会话家族都安全迁回已核实主 checkout；并持有 operation lock 且最终保护复查通过
+时，才会移除目录。没有等待期或年龄阈值。已确认关闭的历史 task 不会保留目录；仍打开的
+关联 task 会。占用列表不可用或不完整、关联会话无法定位或不匹配、谱系损坏、迁移被拒绝、
+排队或未确认、主 checkout 无法核实，都会保留目录。
+
+本地保护——绝不删除主 checkout、绝不删除 dirty/untracked 内容——先于任何 host 查询
+执行，因此本地已排除的路径不会产生任何 host 或 provider 调用。唯一例外是经过核实的根
+`.cache` 工作树：`.cache` 是真实根目录，其下没有被 Git 跟踪的路径，porcelain 只列出
+该根下的 `??` 路径，且清单记录可靠的 device/inode 与高分辨率变更证据，删除前立即重读
+必须一致；无法提供可靠身份的平台上该例外直接 fail closed。随后在复查所有适用的本地、
+closure 与最新 host 保护后，执行普通的不带 `--force` 的 `git worktree remove`。磁盘上
+已不存在的记录路径报告为 absent；registry 证据保留，不要求 provider 读取或会话迁移。
+分支与 Git 历史都会保留。
+
+只读扫描绝不迁移会话；只有移除阶段可以迁移。覆盖范围是那一刻这一个连接的 OpenCode
+服务，而非整机或多 host 清单；锁只保护协作的 phasegent 操作。输出遵循全局 `--output`
+选择：人类终端上为简洁的按目录统计文本，管道或 `--json` 时为机器聚合结果；`--verbose`
+增加有界的逐目录行。交互式终端上的进度行不显示目录路径，并在结果前清除。被透明
+`timeout`、`env` 或 `command` 包裹的调用仍会获得受管 agent role。详见
+[docs/worktree-maintenance.md](docs/worktree-maintenance.md) 与
+[docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
 
 `phasegent plugin install` 部署的 OpenCode worktree 适配器是生成的单文件
 dist。唯一真源为 `assets/opencode/src/`；用 `bun run build:plugin` 重建（`bun`

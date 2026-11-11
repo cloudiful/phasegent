@@ -145,7 +145,7 @@ pub enum HumanView {
     /// The curated `worktree prune` rendering.
     WorktreePrune,
     /// The curated `worktree list` and `worktree status` rendering.
-    WorktreeLeaseList,
+    WorktreeDirectoryList,
     /// The curated `worktree probe` rendering.
     WorktreeProbe,
     /// The curated `worktree acquire` rendering.
@@ -398,7 +398,7 @@ pub fn view_for(command: &Command) -> HumanView {
     match command {
         Command::Worktree(WorktreeCommand::Prune { .. }) => HumanView::WorktreePrune,
         Command::Worktree(WorktreeCommand::List { .. })
-        | Command::Worktree(WorktreeCommand::Status { .. }) => HumanView::WorktreeLeaseList,
+        | Command::Worktree(WorktreeCommand::Status { .. }) => HumanView::WorktreeDirectoryList,
         Command::Worktree(WorktreeCommand::Probe { .. }) => HumanView::WorktreeProbe,
         Command::Worktree(WorktreeCommand::Acquire { .. }) => HumanView::WorktreeAcquire,
         Command::Issue(IssueCommand::Get { .. }) => HumanView::IssueDetail,
@@ -432,7 +432,6 @@ pub fn view_for(command: &Command) -> HumanView {
         | Command::Skill(_)
         | Command::Relation(_)
         | Command::Timer(_)
-        | Command::Worktree(_)
         | Command::Notify(_) => HumanView::Generic,
     }
 }
@@ -470,12 +469,10 @@ pub fn label_for(command: &Command) -> &'static str {
         Command::Relation(_) => "relation",
         Command::Timer(_) => "timer",
         Command::Worktree(WorktreeCommand::Acquire { .. }) => "worktree acquire",
-        Command::Worktree(WorktreeCommand::Release { .. }) => "worktree release",
         Command::Worktree(WorktreeCommand::Status { .. }) => "worktree status",
         Command::Worktree(WorktreeCommand::List { .. }) => "worktree list",
         Command::Worktree(WorktreeCommand::Probe { .. }) => "worktree probe",
         Command::Worktree(WorktreeCommand::Prune { .. }) => "worktree prune",
-        Command::Worktree(WorktreeCommand::Heartbeat { .. }) => "worktree heartbeat",
         Command::Help(_) => "help",
         Command::Version => "version",
         Command::AuthSetup { .. } => "admin auth setup",

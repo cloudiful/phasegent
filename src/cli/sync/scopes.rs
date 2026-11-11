@@ -1,35 +1,25 @@
-//! Repository scoping for one reconciliation pass (issue 552 Phase 2).
+//! Repository scoping for one reconciliation pass.
 //!
 //! Without `--all` the pass scans exactly the checkout it runs in. With
-//! `--all` it walks every repository identity the lease table records —
-//! the local checkouts of the operator's mirrors — and resolves each one
-//! through its main checkout (the identity's parent directory), skipping
-//! identities whose checkout can no longer be verified with a reason
-//! instead of guessing.
+//! `--all` it walks every repository identity the directory registry records
+//! and resolves each one through its main checkout, skipping identities whose
+//! checkout can no longer be verified with a reason instead of guessing.
 
 use std::path::{Path, PathBuf};
 
 use crate::infra::storage::Storage;
-use crate::worktree::leases::{ensure_schema, list_all_for_repo, repo_identities};
-use crate::worktree::{LeaseRow, WorktreeError, WorktreeRunner};
+use crate::worktree::registry::{self, DirectoryRecord};
+use crate::worktree::{WorktreeError, WorktreeRunner};
 
 use super::SyncSkippedRepo;
 
 pub(crate) struct RepoScope {
     pub(crate) repo_identity: String,
     pub(crate) repo_path: PathBuf,
-    /// The durable key of the physical repository, proven from its own
-    /// checkout. `None` means it could not be proven, so a task-bearing
-    /// lease row cannot be shown to belong to this repository.
-    pub(crate) repo_key: Option<String>,
-    pub(crate) candidates: Vec<(u64, Vec<LeaseRow>)>,
+    pub(crate) records: Vec<DirectoryRecord>,
 }
 
-/// Resolve the repository scopes of one pass. Without `--all` this is the
-/// current checkout (an unresolvable checkout is a hard error for the
-/// caller); with `--all` it is every identity recorded in the lease table,
-/// resolved through its main checkout and skipped with a reason when that
-/// checkout is gone.
+/// Resolve the repository scopes of one pass.
 pub(super) fn resolve_scopes(
     runner: &dyn WorktreeRunner,
     storage: &Storage,
@@ -38,21 +28,19 @@ pub(super) fn resolve_scopes(
 ) -> Result<(Vec<RepoScope>, Vec<SyncSkippedRepo>), WorktreeError> {
     if !all {
         let identity = crate::worktree::repo_identity(runner, cwd)?;
-        let rows = list_all_for_repo(storage, &identity)?;
-        let (candidates, skipped) = scoped_candidates(storage, &identity, rows)?;
+        let records = registry::load_records(storage, Some(&identity))?;
         return Ok((
             vec![RepoScope {
-                repo_key: crate::worktree::lease_scope::verified_repo_key_for_identity(&identity),
                 repo_identity: identity,
                 repo_path: cwd.to_path_buf(),
-                candidates,
+                records,
             }],
-            skipped,
+            Vec::new(),
         ));
     }
     let mut scopes = Vec::new();
     let mut skipped = Vec::new();
-    for identity in repo_identities(storage)? {
+    for identity in registry::repo_identities(storage)? {
         let Some(repo_path) = Path::new(&identity).parent().map(Path::to_path_buf) else {
             skipped.push(SyncSkippedRepo {
                 repo_identity: identity,
@@ -91,47 +79,25 @@ pub(super) fn resolve_scopes(
                 continue;
             }
         }
-        let rows = list_all_for_repo(storage, &identity)?;
-        let (candidates, mut scope_skipped) = scoped_candidates(storage, &identity, rows)?;
-        skipped.append(&mut scope_skipped);
-        let repo_key = crate::worktree::lease_scope::verified_repo_key_for_identity(&identity);
+        let records = match registry::load_records(storage, Some(&identity)) {
+            Ok(records) => records,
+            Err(error) => {
+                skipped.push(SyncSkippedRepo {
+                    repo_identity: identity,
+                    reason: format!("could not read the directory registry: {}", error.message),
+                });
+                continue;
+            }
+        };
         scopes.push(RepoScope {
-            repo_key,
             repo_identity: identity,
             repo_path,
-            candidates,
+            records,
         });
     }
     Ok((scopes, skipped))
 }
 
-/// Candidates of one repository plus the bounded skip reasons for the
-/// scoped groups the pass conservatively keeps.
-type ScopedCandidates = (Vec<(u64, Vec<LeaseRow>)>, Vec<SyncSkippedRepo>);
-
-fn scoped_candidates(
-    storage: &Storage,
-    identity: &str,
-    rows: Vec<LeaseRow>,
-) -> Result<ScopedCandidates, WorktreeError> {
-    let _ = storage;
-    let _ = identity;
-    // Scoped groups stay in the candidate list and are classified against
-    // the pass's provider context in the engine, where a matching Forgejo
-    // group can be reconciled; the legacy path never dispatches them.
-    Ok((super::engine::candidate_issues(rows), Vec::new()))
-}
-
-/// Open the lease store and make sure the schema exists, so a pass on a
-/// pre-Phase-1 database behaves like every other worktree entry point.
-pub(super) fn open_lease_storage() -> Result<Storage, String> {
-    let storage = Storage::open()?;
-    ensure_schema(&storage)?;
-    Ok(storage)
-}
-
-/// Small adapter so a [`WorktreeError`] can travel through the pass's
-/// single error channel.
 pub(super) trait IntoProviderError {
     fn into_provider_error(self) -> crate::providers::api::PhasegentError;
 }

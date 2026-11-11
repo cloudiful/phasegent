@@ -21,6 +21,7 @@ pub(crate) struct CreateBranchLinks<'a> {
     pub base: Option<&'a str>,
     pub repository: Option<&'a str>,
     pub session: Option<&'a str>,
+    pub context: &'a crate::cli::provider_context::ProviderContext,
 }
 
 /// Durable link for an explicit `--branch` target. The scope is local
@@ -76,13 +77,14 @@ pub(crate) fn report_create_branch_links(params: &CreateBranchLinks<'_>) {
         base,
         repository,
         session,
+        context,
     } = params;
     match branch {
         BranchOption::Unset => {
             // The default path creates and links the provider-scoped
             // issue branch and switches the primary checkout onto it
             // only when safe (clean, on the detected default branch,
-            // no conflicting active lease).
+            // no conflicting open task or fresh host occupancy).
             let name = crate::lifecycle::branch_name_for_issue(*tracker, *issue_number);
             let repo_path =
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -91,24 +93,34 @@ pub(crate) fn report_create_branch_links(params: &CreateBranchLinks<'_>) {
             // cannot be established the link step warns explicitly
             // instead of silently skipping or guessing.
             match crate::providers::index_store::provider_scope(provider) {
-                Ok(scope) => crate::cli::report_local_warnings(
-                    "issue create",
-                    crate::lifecycle::create_link_and_switch(
-                        &ProcessGitRunner::in_directory(repo_path.clone()),
-                        &crate::worktree::ProcessWorktreeRunner::new(),
-                        &crate::lifecycle::IssueSwitchParams {
-                            repo_path: &repo_path,
-                            issue_id: *issue_number,
-                            branch: &name,
-                            base: None,
-                            scope_provider: &scope.source,
-                            scope_project: Some(&scope.project),
-                            explicit_repository: *repository,
-                            session: *session,
-                        },
-                    )
-                    .warning(),
-                ),
+                Ok(scope) => {
+                    let occupancy = crate::cli::issue_closure::ClosureOccupancy::task_aware(
+                        crate::policy::Role::Orchestrator,
+                        (*context).clone(),
+                    );
+                    crate::cli::report_local_warnings(
+                        "issue create",
+                        crate::lifecycle::create_link_and_switch(
+                            &ProcessGitRunner::in_directory(repo_path.clone()),
+                            &crate::worktree::ProcessWorktreeRunner::new(),
+                            &crate::lifecycle::IssueSwitchParams {
+                                repo_path: &repo_path,
+                                issue_id: *issue_number,
+                                branch: &name,
+                                base: None,
+                                scope_provider: &scope.source,
+                                scope_project: Some(&scope.project),
+                                explicit_repository: *repository,
+                                session: *session,
+                                foreign_state: Some(&occupancy),
+                                host_api: Some(
+                                    &crate::worktree::opencode::ProcessOpenCodeApi::new(),
+                                ),
+                            },
+                        )
+                        .warning(),
+                    );
+                }
                 Err(error) => {
                     let body = error.json();
                     let detail = body

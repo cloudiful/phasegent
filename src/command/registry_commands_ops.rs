@@ -11,51 +11,39 @@ use super::super::{
 pub(super) const OPS: &[CommandSpec] = &[
     group(
         "worktree",
-        "Local per-(repo, issue, session) worktree leases (acquire/release/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)",
+        "Registered worktree directories (acquire/prune orchestrator-only; status/list readable by orchestrator, executor, reviewer)",
         RoleAccess::Open,
         ProviderScope::Any,
         &[
             leaf_op(
                 "acquire",
-                "Acquire a worktree lease",
+                "Acquire or reuse a worktree directory",
                 ACCESS_ORCHESTRATOR,
                 "worktree acquire",
             ),
             leaf_op(
-                "release",
-                "Release a worktree lease",
-                ACCESS_ORCHESTRATOR,
-                "worktree release",
-            ),
-            leaf_op(
                 "status",
-                "Show a lease by issue",
+                "Show directories associated with an issue",
                 ACCESS_WORKTREE_READ,
                 "worktree status",
             ),
             leaf_op(
                 "list",
-                "List leases for a repository",
+                "List directories for a repository",
                 ACCESS_WORKTREE_READ,
                 "worktree list",
             ),
             leaf_op(
                 "probe",
-                "Read-only lease diagnostic",
+                "Read-only directory diagnostic",
                 ACCESS_WORKTREE_READ,
                 "worktree probe",
             ),
             leaf_op(
                 "prune",
-                "Prune stale leases",
+                "Prune registered worktrees",
                 ACCESS_ORCHESTRATOR,
                 "worktree prune",
-            ),
-            leaf_op(
-                "heartbeat",
-                "Refresh a lease heartbeat",
-                ACCESS_ORCHESTRATOR,
-                "worktree heartbeat",
             ),
         ],
     ),

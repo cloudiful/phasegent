@@ -1,49 +1,28 @@
-//! Local Git worktree leasing for seamless, repo-isolated execution.
+//! Local Git worktrees over a persistent directory registry.
 //!
-//! Phase 1 of issue #239 (worktree-seamless) provides a Rust core that
-//! hands out an isolated checkout per `(repo, issue, session)` triple
-//! without exposing any new CLI surface, policy change, or plugin JS.
-//! The module owns three responsibilities:
+//! The module hands out an isolated checkout per `(repo, issue, session)`
+//! and records the physical directory, its task or legacy issue
+//! associations, and the sessions observed there. It keeps no occupancy
+//! state of its own: live ownership comes from the connected service and
+//! from whether an associated task is still open.
 //!
 //! * **Repo identity**: resolve the canonical `git-common-dir` of a
 //!   checkout so the same physical repository is recognised whether the
-//!   caller passed the main worktree, a linked worktree, or a path
-//!   inside a worktree whose `.git` is a file pointer.
-//! * **Lease table**: a small `worktree_leases` row that records which
-//!   checkout/dir/branch belongs to a session, with `status` in
-//!   `{active, retained, released}`. Schema is created lazily via
-//!   `CREATE TABLE IF NOT EXISTS` so opening storage is still
-//!   non-destructive against pre-Phase-1 databases.
-//! * **Git wrapper helpers**: thin `git worktree list/add/remove`
-//!   wrappers so the same
-//!   `ProcessWorktreeRunner` / `FakeWorktreeRunner` testability
-//!   pattern covers worktree flows. `add` and `remove` are exercised
-//!   only by tests in Phase 1; the production call site is Phase 2's
-//!   CLI.
-//!
-//! ## Phase boundaries
-//!
-//! * `acquire_lease` may create a fresh worktree under
-//!   `~/.cache/phasegent/worktrees/<fingerprint>/<slug>` (or reuse the
-//!   current checkout when its path carries no conflicting active
-//!   lease). Creation happens on a path conflict or an explicit
-//!   `--isolate`; the default path reuses the current checkout.
-//!   `--reuse` states the reuse preference explicitly and is mutually
-//!   exclusive with `--isolate`. It never deletes a worktree or branch.
-//! * `release_lease` flips the row to `retained` (default) or
-//!   `released`. Directory and branch pruning is a Phase 2 concern and
-//!   is intentionally not implemented here.
-//! * `is_clean` is the worktree-dirty probe Phase 2 will gate prune on.
-//!   Phase 1 ships the helper and a test so the contract is locked
-//!   before prune depends on it.
+//!   caller passed the main worktree, a linked worktree, or a path inside
+//!   a worktree whose `.git` is a file pointer.
+//! * **Directory registry**: `worktree_directories` rows and their task,
+//!   legacy-issue, and session associations. A directory can reference
+//!   many tasks and sessions; a confirmed closed historical task does not
+//!   veto reuse when no fresh occupancy protects the path.
+//! * **Git wrapper helpers**: thin `git worktree list/add/remove` wrappers
+//!   so the same `ProcessWorktreeRunner` / test-runner pattern covers
+//!   worktree flows.
 //!
 //! ## .env / secrets
 //!
 //! The worktree module never reads, copies, or writes `.env` files,
 //! shell history, or credential material; per the issue Decisions, the
-//! AI / user is expected to copy `.env` by hand when needed. This is
-//! documented in [`acquire_lease`] so a future operator searching for
-//! ".env support" lands on the right place.
+//! AI / user is expected to copy `.env` by hand when needed.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -56,14 +35,16 @@ mod acquire;
 pub(crate) mod cache;
 mod create_hook;
 pub(crate) mod git;
-pub(super) mod lease_schema;
-pub(crate) mod lease_scope;
-pub use lease_scope::LeaseScope;
-pub(crate) mod leases;
 mod naming;
+pub(crate) mod occupancy;
 pub(crate) mod opencode;
+pub(crate) mod operation_lock;
 pub mod probe;
 mod raw_output;
+pub(crate) mod registry;
+pub(super) mod registry_schema;
+pub(crate) mod scope;
+pub use scope::WorktreeScope;
 mod session;
 
 // The re-exports below are part of the public surface of the
@@ -72,29 +53,29 @@ mod session;
 // the test target is not being analysed, so silence the false
 // positive here.
 #[allow(unused_imports)]
-pub use acquire::{
-    AcquireOptions, acquire_lease, acquire_lease_with, heartbeat_lease,
-    release_active_leases_for_issue, release_lease, release_lease_forced,
-};
+pub use acquire::{AcquireOptions, acquire_directory, acquire_directory_with};
 #[allow(unused_imports)]
-pub(crate) use acquire::{acquire_lease_scoped, release_active_leases_for_scope};
+pub(crate) use acquire::{
+    acquire_directory_scoped, acquire_directory_seeded, acquire_directory_with_foreign_state,
+};
 #[allow(unused_imports)]
 pub use git::{
     checkout_git_dirs, head_rev, is_clean, is_inside_work_tree, parse_worktree_list,
     ref_resolves_to_commit, worktree_add, worktree_add_from, worktree_remove,
 };
 #[allow(unused_imports)]
-pub use leases::{
-    ensure_schema, find_active_lease_for_probe, list_all_for_repo, list_for_issue, list_for_repo,
-};
-#[allow(unused_imports)]
 pub use naming::{
-    cache_root_in, compute_fingerprint, generate_branch, slug_from_branch, validate_ref_format,
+    cache_root, cache_root_in, compute_fingerprint, generate_branch, slug_from_branch,
+    validate_ref_format,
 };
 #[allow(unused_imports)]
 pub use probe::{MAX_PROBE_ERRORS, ProbeError, ProbeFacts, probe_path};
 #[allow(unused_imports)]
 pub use raw_output::RawOutputRunner;
+#[allow(unused_imports)]
+pub use registry::{DirectoryLegacyIssue, DirectoryRecord, DirectoryTask};
+#[allow(unused_imports)]
+pub use registry::{ensure_schema, record_for_path, records_for_issue, repo_identities};
 #[allow(unused_imports)]
 pub(crate) use session::{
     MAX_SESSION_CHARS, SESSION_ENV, SessionContext, SessionSource, resolve_session,
@@ -106,49 +87,25 @@ pub(crate) use session::{
 #[allow(unused_imports)]
 pub(crate) use create_hook::{auto_acquire_after_create, auto_acquire_after_create_scoped};
 
-/// Status of a single lease row. `active` rows are the ones
-/// `acquire_lease` returns; `retained` / `released` are terminal
-/// states used by `release_lease`.
-pub const LEASE_STATUS_ACTIVE: &str = "active";
-pub const LEASE_STATUS_RETAINED: &str = "retained";
-pub const LEASE_STATUS_RELEASED: &str = "released";
-
 /// Max length of any structured branch / slug string the module echoes
 /// back to callers. Bounded so a misbehaving `git` invocation cannot
 /// flood logs with arbitrary content.
 const MAX_ECHO_CHARS: usize = 200;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaseRow {
-    pub lease_id: String,
-    pub repo_identity: String,
-    pub issue: u64,
-    pub session: String,
-    pub checkout_path: String,
-    pub worktree_path: String,
-    pub branch: String,
-    pub status: String,
-    pub created_at: i64,
-    pub heartbeat_at: i64,
-    /// Operator justification for a forced release; `None` for
-    /// ordinary releases. Lease rows are never deleted.
-    pub release_reason: Option<String>,
-}
-
-/// Outcome of a successful `acquire_lease`. `created == false` means
-/// the caller is reusing the current checkout because no other active
-/// lease occupies its path; `created == true` means a fresh worktree
-/// was added.
+/// Outcome of a successful directory acquisition. `created == false`
+/// means the caller is reusing the current checkout because no other
+/// unfinished task or current session occupies its path; `created ==
+/// true` means a fresh worktree was added.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AcquireOutcome {
-    pub lease_id: String,
+    pub directory_id: String,
     pub path: String,
     pub branch: String,
     pub repo_identity: String,
     pub created: bool,
     /// `no_conflict` when reusing the current checkout; `new_worktree`
     /// when a fresh dir / branch was created; `idempotent` when a
-    /// pre-existing `(repo, issue, session)` lease was reused.
+    /// pre-existing `(repo, issue, session)` directory was reused.
     pub reason: String,
     /// Best-effort, stderr-bound warnings collected while deciding the
     /// outcome (e.g. an advisory dirty checkout that was reused, or the
@@ -156,17 +113,6 @@ pub struct AcquireOutcome {
     /// `created` / `reason`; the CLI JSON envelope deliberately does not
     /// carry this field, so consumers that key on `created` need no changes.
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct ReleaseOutcome {
-    pub lease_id: String,
-    pub status: String,
-    /// True when the transition went through the forced path with a
-    /// recorded reason. A no-op on an already-terminal lease reports
-    /// `forced: false` because nothing was overridden.
-    pub forced: bool,
-    pub reason: Option<String>,
 }
 
 /// One parsed entry from `git worktree list --porcelain`. The
@@ -264,7 +210,7 @@ impl WorktreeRunner for ProcessWorktreeRunner {
 
 /// Canonicalise `path`, falling back to the path itself when it no
 /// longer exists so a just-removed directory still compares equal to its
-/// recorded lease path.
+/// recorded directory path.
 pub(crate) fn canonical_or_self(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -292,12 +238,13 @@ impl CanonicalPaths {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn resolutions(&self) -> usize {
         self.paths.borrow().len()
     }
 }
 
-/// True when both paths name the same directory. A lease row's recorded
+/// True when both paths name the same directory. A registry row's recorded
 /// path and a host-reported location can spell one directory differently,
 /// so every such comparison in the crate goes through here.
 pub(crate) fn same_directory(left: &Path, right: &Path) -> bool {
@@ -316,8 +263,8 @@ fn sanitized_git_output(raw: &[u8]) -> String {
 }
 
 /// Wall-clock seconds since UNIX_EPOCH, with a defensive `0` fallback
-/// for the unlikely case where the system clock predates 1970. Used
-/// for `created_at` / `heartbeat_at`.
+/// for the unlikely case where the system clock predates 1970. Used for
+/// `created_at`.
 pub fn now_unix_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -370,15 +317,13 @@ pub fn repo_identity(
 }
 
 #[allow(dead_code)]
-pub fn leases_for_issue(issue: u64) -> Result<Vec<LeaseRow>, WorktreeError> {
+pub fn directories_for_issue(issue: u64) -> Result<Vec<DirectoryRecord>, WorktreeError> {
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
-    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
-    list_for_issue(&storage, issue)
+    registry::records_for_issue(&storage, None, issue)
 }
 
 #[allow(dead_code)]
-pub fn leases_for_repo(repo_identity: &str) -> Result<Vec<LeaseRow>, WorktreeError> {
+pub fn directories_for_repo(repo_identity: &str) -> Result<Vec<DirectoryRecord>, WorktreeError> {
     let storage = Storage::open().map_err(|error| WorktreeError::new("storage", error))?;
-    ensure_schema(&storage).map_err(|error| WorktreeError::new("storage", error))?;
-    list_for_repo(&storage, repo_identity)
+    registry::load_records(&storage, Some(repo_identity))
 }

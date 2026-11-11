@@ -1,7 +1,7 @@
 //! Read-only worktree probe (issue 595 Phase 1/2).
 //!
 //! [`probe_path`] answers "what is at this path?" without mutating
-//! anything: it never creates or removes a lease, never synchronises a
+//! anything: it never creates or removes a registry row, never synchronises a
 //! provider, never switches a checkout, and never repairs a branch or a
 //! directory. Every failure is captured as a bounded [`ProbeError`] so a
 //! non-Git directory, a missing path, or a failing `git` invocation
@@ -10,7 +10,7 @@
 //! The probed facts are deliberately small and fixed: existence, whether
 //! the path is inside a Git work tree, clean / dirty / unknown, the
 //! current branch, `HEAD`, and whether the path is the main checkout.
-//! The lease summary is attached by the CLI layer when the selector
+//! The directory record is attached by the CLI layer when the selector
 //! resolved one; the domain here stays storage-free.
 
 use std::path::Path;
@@ -59,7 +59,7 @@ pub struct ProbeFacts {
 
 impl ProbeFacts {
     /// The stable empty result used when an `--issue` selector matches no
-    /// lease: no path is guessed, so every fact is absent.
+    /// registry directory: no path is guessed, so every fact is absent.
     pub fn empty() -> Self {
         Self {
             exists: false,
