@@ -87,12 +87,16 @@ CREATE TABLE IF NOT EXISTS role_redmine_config (
 -- because GitLab identifiers are numeric project ids, unlike Redmine's
 -- free-text identifier slug. `project_id` is legacy in both
 -- role_redmine_config and role_gitlab_config: new code never reads or
--- writes the column and Storage::open clears legacy values, but the
--- column remains for non-destructive compatibility.
+-- writes the column. Storage::open clears the Redmine legacy value but
+-- preserves the GitLab one, and both columns remain for non-destructive
+-- compatibility.
 CREATE TABLE IF NOT EXISTS role_gitlab_config (
     role TEXT PRIMARY KEY,
     api_base TEXT,
-    project_id INTEGER
+    project_id INTEGER,
+    repository TEXT,
+    source TEXT,
+    updated_at INTEGER
 );
 
 -- `fingerprint` (last 4 characters, NULL for short secrets) and
@@ -230,6 +234,9 @@ pub(crate) const MIGRATIONS: &[(&str, &str, &str)] = &[
     ("execution_timer_runs", "owner_call_id", "TEXT"),
     ("execution_timer_runs", "projection_token", "TEXT"),
     ("execution_timer_runs", "projection_claimed_at", "INTEGER"),
+    ("role_gitlab_config", "repository", "TEXT"),
+    ("role_gitlab_config", "source", "TEXT"),
+    ("role_gitlab_config", "updated_at", "INTEGER"),
 ];
 
 /// Names of the deployment-level settings stored in `global_setting`.

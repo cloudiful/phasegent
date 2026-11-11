@@ -219,7 +219,7 @@ pub fn auto_transition_timer(
     provider_kind: ProviderKind,
     status_name: &str,
 ) -> AutoTimerOutcome {
-    if provider_kind == ProviderKind::Forgejo {
+    if provider_kind == ProviderKind::Forgejo || provider_kind == ProviderKind::Gitlab {
         return AutoTimerOutcome::Skipped;
     }
     let (role, fallback) = status_to_agent_role(status_name);
@@ -290,6 +290,11 @@ pub fn auto_close_issue_timer(issue: u64, provider_kind: ProviderKind) -> AutoCl
     if provider_kind == ProviderKind::Forgejo {
         return AutoCloseOutcome::Noop {
             reason: "Forgejo time tracking is unsupported".to_owned(),
+        };
+    }
+    if provider_kind == ProviderKind::Gitlab {
+        return AutoCloseOutcome::Noop {
+            reason: "GitLab time tracking is unsupported".to_owned(),
         };
     }
     // Admission before any ledger write: a task whose provider has no time
@@ -457,6 +462,9 @@ pub fn auto_create_parent_child_relation(
         }
         ProviderDispatcher::Forgejo(_) => AutoRelationOutcome::Skipped {
             reason: "forgejo has no automatic parent relation surface".to_owned(),
+        },
+        ProviderDispatcher::Gitlab(_) => AutoRelationOutcome::Skipped {
+            reason: "gitlab has no automatic parent relation surface".to_owned(),
         },
     }
 }

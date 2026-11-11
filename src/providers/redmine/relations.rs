@@ -38,6 +38,9 @@ pub(crate) fn execute(
         ProviderDispatcher::Forgejo(_) => {
             Err(PhasegentError::not_supported("forgejo", "issue relations"))
         }
+        ProviderDispatcher::Gitlab(_) => {
+            Err(PhasegentError::not_supported("gitlab", "issue relations"))
+        }
     }
 }
 

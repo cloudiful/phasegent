@@ -124,10 +124,11 @@ The legacy `--format`/`--json` flags on documented commands still work. See
 [output modes](docs/cli-output.md), [pagination](docs/cli-pagination.md), and
 [worktree maintenance](docs/worktree-maintenance.md).
 
-Use `--provider redmine` or `--provider local` on a command when the selected
-provider is not the default. Use `--project-id ID` to override project
-discovery when required; `--repository OWNER/REPOSITORY` names the Git host
-repository for `workflow bootstrap` and project discovery.
+Use `--provider redmine`, `--provider local`, `--provider forgejo`, or
+`--provider gitlab` on a command when the selected provider is not the default.
+Use `--project-id ID` to override project discovery when required;
+`--repository OWNER/REPOSITORY` names the Git host repository for `workflow
+bootstrap` and project discovery.
 
 Forgejo is configured like any other provider: use
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT` to create
@@ -154,6 +155,28 @@ creation are unsupported. A Forgejo issue has no status label: it is `Open`
 until it is closed, the phase detail lives in the record, close cleanup is
 limited to the matching `owner/repo` scope, and a Redmine issue has no automatic
 PR bridge. See [Forgejo provider](docs/forgejo-provider.md).
+
+GitLab is configured the same way: use
+`--provider gitlab --repository namespace[/subgroup]/project --api-base
+INSTANCE_ROOT` to create an issue, to adopt an existing number with `issue
+bind`, or for any number without a durable task, and store the role token with
+`admin auth setup --provider gitlab --repository namespace[/subgroup]/project
+--api-base INSTANCE_ROOT --target-role <role>`. `INSTANCE_ROOT` is the
+instance address without a `/api/v4` suffix; the client appends that prefix
+itself, and an explicit `--api-base` must normalize exactly to the role's
+trusted instance. The repository is the full project path, which may include
+subgroups. A durable GitLab task keeps its instance and project without
+repeating the flags, and a different explicit selection never repins it. GitLab
+uses project-local iids as CLI issue numbers and keeps the native global id in
+results; it supports issues, comments, records, project reads, milestones as
+versions, the native `Open` and `Closed` issue states, and scoped branch links,
+worktree directories, cleanup, and sync. Time tracking, relations, attachments,
+subtasks/planning, and project creation are unsupported. A GitLab issue has no
+status label: it is `Open` until it is closed, and the phase detail lives in the
+record. GitLab search is live-only and does not warm or fall back to the shared
+local index; cached issue/branch state is `unknown` because the index key lacks
+the trusted instance. Legacy GitLab `project_id` values are preserved but never
+read. See [GitLab provider](docs/gitlab-provider.md).
 
 Ordinary human CLI needs no agent role: with no verified host broker context and
 no managed marker it runs as Operator with the admin credential resolved
@@ -196,8 +219,9 @@ transcribing the note. The kind is bound to the session role: `executor` and
 `reviewer` notes keep their status/verdict semantics, and the read-only
 `explore` role may publish only an authorized recon record.
 
-Tracking is Redmine or explicit offline local; an unsupported provider name is
-rejected with an actionable config error before any network call. See
+Tracking is Redmine, Forgejo, GitLab, or explicit offline local; an unsupported
+provider name is rejected with an actionable config error before any network
+call. See
 [docs/agent-records.md](docs/agent-records.md) for the reference protocol, the
 stable request key, and the Redmine/local boundaries.
 

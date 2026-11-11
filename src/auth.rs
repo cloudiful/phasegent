@@ -105,6 +105,30 @@ pub fn setup_provider(
             serde_json::json!({"configured": true, "role": role.as_str(), "provider": provider}),
         );
     }
+    if provider == crate::infra::storage::PROVIDER_GITLAB {
+        let base = api_base
+            .as_deref()
+            .ok_or_else(|| "GitLab --api-base is required".to_owned())?;
+        let repo = repository
+            .as_deref()
+            .ok_or_else(|| "GitLab --repository is required".to_owned())?;
+        let config = crate::providers::gitlab::GitlabConfig::new(base, repo)
+            .map_err(|error| error.to_string())?;
+        let credential = read_credential("GitLab token", read_stdin)?;
+        if credential.trim().is_empty() {
+            return Err("GitLab token cannot be empty".to_owned());
+        }
+        let storage = Storage::open()?;
+        storage.save_gitlab_auth(
+            role,
+            config.api_base(),
+            config.repository(),
+            credential.trim(),
+        )?;
+        return Ok(
+            serde_json::json!({"configured": true, "role": role.as_str(), "provider": provider}),
+        );
+    }
     if provider != PROVIDER_REDMINE {
         return Err(format!("unsupported provider '{provider}'"));
     }
@@ -140,7 +164,9 @@ fn validate_provider_options(
     if provider == PROVIDER_LOCAL && repository.is_some() {
         return Err("--repository is not a local option".to_owned());
     }
-    if (provider == PROVIDER_LOCAL || provider == crate::infra::storage::PROVIDER_FORGEJO)
+    if (provider == PROVIDER_LOCAL
+        || provider == crate::infra::storage::PROVIDER_FORGEJO
+        || provider == crate::infra::storage::PROVIDER_GITLAB)
         && close_status_id.is_some()
     {
         return Err("--close-status-id requires the redmine provider".to_owned());

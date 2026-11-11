@@ -365,7 +365,7 @@ while the configured endpoint still attests that instance, and a changed
 default never repins it. An explicit `--provider`/`--api-base`/`--repository`/
 `--project-id` selects and disambiguates among several memberships but never
 remaps a bound task to another provider, project or instance; several matching
-memberships refuse as ambiguous. A configured Forgejo default is selected
+memberships refuse as ambiguous. A configured Forgejo or GitLab default is selected
 through the same precedence chain as any other provider and needs no explicit
 `--provider`; without a durable task it names the repository by explicit
 `--repository`, else the checkout's origin when that host and deployment prefix
@@ -384,14 +384,14 @@ verified terminal state whose guarded cleanup may remove worktrees. A bare
 `In Review → Resolved → Closed` chain; resuming implementation after a reviewed
 phase is an explicit transition back to `In Progress`.
 
-That canonical graph is the Redmine and local contract. A Forgejo issue has
-exactly two native states, `Open` and `Closed`: it has no status label and no
-phase state, so it stays `Open` through planning, implementation, review,
-blocking and an open PR, and the phase outcome lives in the phasegent record
-instead of a status or a label. Never use a status transition to express a
-Forgejo phase, and never fabricate a Forgejo state or label. A Forgejo issue is
-`Closed` only after an accepted completion or an explicit cancellation; a
-reopen moves it back to `Open`.
+That canonical graph is the Redmine and local contract. A Forgejo or GitLab
+issue has exactly two native states, `Open` and `Closed`: it has no status
+label and no phase state, so it stays `Open` through planning, implementation,
+review, blocking and an open PR, and the phase outcome lives in the phasegent
+record instead of a status or a label. Never use a status transition to express
+a Forgejo or GitLab phase, and never fabricate a state or label. A Forgejo or
+GitLab issue is `Closed` only after an accepted completion or an explicit
+cancellation; a reopen moves it back to `Open`.
 
 - Issue body/search/create/close writes, relation and repo writes,
   `status transition`, every `timer *` command, and `worktree` registry writes are

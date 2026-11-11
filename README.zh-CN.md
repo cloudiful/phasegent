@@ -111,10 +111,10 @@ phasegent --output json issue get 123      # 强制机器文档
 详见[输出模式](docs/cli-output.md)、[分页](docs/cli-pagination.md)和
 [worktree 维护](docs/worktree-maintenance.md)。
 
-选择的 provider 不是默认值时，在命令上添加 `--provider redmine` 或
-`--provider local`。可以使用 `--project-id ID` 覆盖 project 的自动发现；
-`--repository OWNER/REPOSITORY` 指定 Git 主机上的仓库，用于
-`workflow bootstrap` 与 project 发现。
+选择的 provider 不是默认值时，在命令上添加 `--provider redmine`、
+`--provider local`、`--provider forgejo` 或 `--provider gitlab`。可以使用
+`--project-id ID` 覆盖 project 的自动发现；`--repository OWNER/REPOSITORY`
+指定 Git 主机上的仓库，用于 `workflow bootstrap` 与 project 发现。
 
 Forgejo 与其他 provider 一样通过统一配置选择：创建 issue、用 `issue bind` 接管已有编号，
 或操作任何没有持久 task 的编号时，使用
@@ -133,6 +133,24 @@ milestone（作为 version）、原生 `Open` 与 `Closed` 状态，以及按 `o
 创建。Forgejo issue 没有状态标签：关闭之前一直是 `Open`，阶段细节记录在 record 中，
 close 清理仅限匹配的 `owner/repo` scope；
 Redmine issue 没有自动 PR 关联。详见 [Forgejo provider](docs/forgejo-provider.md)。
+
+GitLab 也通过同一套配置选择：创建 issue、用 `issue bind` 接管已有编号，或操作任何
+没有持久 task 的编号时，使用
+`--provider gitlab --repository namespace[/subgroup]/project --api-base INSTANCE_ROOT`，
+并通过
+`admin auth setup --provider gitlab --repository namespace[/subgroup]/project --api-base INSTANCE_ROOT --target-role <role>`
+保存该 role 的 token。`INSTANCE_ROOT` 是不带 `/api/v4` 后缀的受信实例地址，客户端
+会自行追加该前缀；显式 `--api-base` 必须与 role 的受信实例规范化后完全一致。
+repository 是完整 project 路径，可以包含 subgroup。已带持久 GitLab task 的编号会
+自动路由到该 task 保存的 instance 与 project，无需重复这些参数；不同的显式选择不会
+重新绑定该 task。GitLab 使用 project 内 iid 作为 CLI issue 编号，并在结果中保留原生
+全局 id；它支持 issue、评论、record、project 读取、milestone（作为 version）、原生
+`Open` 与 `Closed` 状态，以及按 project 隔离的分支关联、worktree 目录、清理与 sync。
+不支持时间记录、relation、附件、子任务/planning 与 project 创建。GitLab issue 没有
+状态标签：关闭之前一直是 `Open`，阶段细节记录在 record 中。GitLab 搜索只使用实时
+provider 结果，不会预热或回退到共享本地索引；由于索引 key 不含受信 instance，缓存的
+issue/branch 状态显示为 `unknown`。旧 GitLab `project_id` 会保留但绝不被读取。详见
+[GitLab provider](docs/gitlab-provider.md)。
 
 普通人类 CLI 不需要 agent role：没有经过验证的 host broker 上下文、也没有受管标记时，
 即以 Operator 运行并集中使用 admin credential。agent role 由本地 host broker 验证，
@@ -167,8 +185,8 @@ header。record 的 id 即其原生引用（Redmine 为 `#change-<id>`，本地�
 `reviewer` 记录保留各自的 status/verdict 语义，只读的 `explore` role 只能发布
 经授权的 recon record。
 
-tracking 仅支持 Redmine 或显式的离线 local；不受支持的 provider 名称会在任何网络
-调用前以可操作的 config 错误被拒绝。引用协议、稳定请求键与 Redmine/local 边界
+tracking 支持 Redmine、Forgejo、GitLab 或显式的离线 local；不受支持的 provider
+名称会在任何网络调用前以可操作的 config 错误被拒绝。引用协议、稳定请求键与 Redmine/local 边界
 详见 [docs/agent-records.md](docs/agent-records.md)。
 
 ## Worktree

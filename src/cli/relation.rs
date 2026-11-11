@@ -72,6 +72,12 @@ pub(crate) fn execute_relation_with_caller(
                 capability.operation(),
             ));
         }
+        Ok(ProviderKind::Gitlab) => {
+            return super::provider_error(PhasegentError::not_supported(
+                "gitlab",
+                capability.operation(),
+            ));
+        }
         Err(error) => return super::provider_error(error),
     }
     let provider = match super::provider_for(

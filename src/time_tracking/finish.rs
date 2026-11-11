@@ -114,14 +114,14 @@ pub(crate) fn execute_finish_with_caller(
         None => None,
     };
     // An unbound legacy operation still follows the selected provider, so
-    // the Forgejo time-tracking refusal applies there. A durable task pins
+    // the Forgejo or GitLab time-tracking refusal applies there. A durable task pins
     // its own provider and is never blocked by a changed default.
     if !matches!(
         route,
         Some(crate::cli::task_route::TimerTaskRoute::Redmine { .. })
             | Some(crate::cli::task_route::TimerTaskRoute::Local)
     ) {
-        super::dispatch::reject_forgejo_timer(credential, provider_kind)?;
+        super::dispatch::reject_unsupported_timer(credential, provider_kind)?;
     }
 
     // This local transition precedes credential lookup and network requests.
@@ -268,6 +268,7 @@ pub(crate) fn project_run_with_credential(
         // result, 'pending' otherwise) and nothing is POSTed anywhere.
         ProviderKind::Local => Ok(()),
         ProviderKind::Forgejo => Err(PhasegentError::not_supported("forgejo", "time tracking")),
+        ProviderKind::Gitlab => Err(PhasegentError::not_supported("gitlab", "time tracking")),
     }
 }
 

@@ -1,10 +1,10 @@
 use super::support::*;
 use super::*;
 
-/// A retired provider key. Historical `role_credential` rows can still
-/// carry a retired provider literal, and the composite `(role, provider)`
+/// A legacy provider key. Historical `role_credential` rows can still
+/// carry an unknown provider literal, and the composite `(role, provider)`
 /// primary key must still isolate them from the live `redmine` rows.
-const LEGACY_PROVIDER: &str = "forgejo";
+const LEGACY_PROVIDER: &str = "svn";
 
 #[test]
 fn credentials_for_different_providers_are_stored_separately() {
@@ -106,7 +106,7 @@ fn mirror_environment_variables_are_never_persisted() {
 fn credentials_for_distinct_provider_keys_are_isolated_per_role() {
     // The role_credential table uses (role, provider) as a composite
     // primary key so the same role can keep independent credentials. A
-    // historical retired-provider row must coexist with the live redmine
+    // historical unknown-provider row must coexist with the live redmine
     // value without any cross-write or leak, and overwriting one
     // credential never touches another.
     let (temp_dir, storage) = open_at_temp("credential-coexistence");

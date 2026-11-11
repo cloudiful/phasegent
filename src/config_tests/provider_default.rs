@@ -34,6 +34,7 @@ fn config_provider_set_parses_valid_values() {
         ("redmine", crate::providers::ProviderKind::Redmine),
         ("local", crate::providers::ProviderKind::Local),
         ("forgejo", crate::providers::ProviderKind::Forgejo),
+        ("gitlab", crate::providers::ProviderKind::Gitlab),
     ] {
         let args = ["admin", "config", "provider", "set", raw]
             .into_iter()
@@ -49,16 +50,19 @@ fn config_provider_set_parses_valid_values() {
 }
 
 #[test]
-fn config_provider_set_rejects_a_retired_provider_name() {
+fn config_provider_set_accepts_gitlab_as_the_fourth_provider() {
     let args = ["admin", "config", "provider", "set", "gitlab"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let error = command::parse(&args).expect_err("retired provider must be rejected");
-    assert!(
-        error.contains("no longer supported"),
-        "error must name the retirement: {error}"
-    );
+    let invocation = command::parse_with_role_env(&args, Some("admin"))
+        .expect("gitlab provider must be accepted");
+    match invocation.command {
+        Command::ConfigProviderSet { value } => {
+            assert_eq!(value, crate::providers::ProviderKind::Gitlab)
+        }
+        other => panic!("expected ConfigProviderSet, got {other:?}"),
+    }
 }
 
 #[test]

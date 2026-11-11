@@ -184,7 +184,7 @@ fn project_creation_is_admin_only_and_status_catalogue_is_available() {
     );
     assert_eq!(
         crate::cli::run_with_role(
-            strings(["--provider", "gitlab", "project", "list"]),
+            strings(["--provider", "wrong", "project", "list"]),
             Some("orchestrator")
         ),
         2
@@ -252,31 +252,34 @@ fn status_set_and_tracker_selection_enforce_role_and_provider_boundaries() {
     }
 
     // status set is Redmine-only: local has its own status surface, and
-    // Forgejo fails on its missing owned configuration before any network
-    // access.
-    assert_eq!(
-        crate::cli::run_with_role(
-            strings([
-                "--provider",
-                "forgejo",
-                "status",
-                "set",
-                "3",
-                "--status",
-                "New",
-            ]),
-            Some("orchestrator")
-        ),
-        1
-    );
+    // Forgejo and GitLab fail on their missing owned configuration before
+    // any network access.
+    for provider in ["forgejo", "gitlab"] {
+        assert_eq!(
+            crate::cli::run_with_role(
+                strings([
+                    "--provider",
+                    provider,
+                    "status",
+                    "set",
+                    "3",
+                    "--status",
+                    "New",
+                ]),
+                Some("orchestrator")
+            ),
+            1,
+            "expected exit 1 for {provider} status set"
+        );
+    }
 
-    // A retired provider name on a tracker create is rejected at argument
+    // An unknown provider name on a tracker create is rejected at argument
     // parsing before tracker resolution or any provider build.
     assert_eq!(
         crate::cli::run_with_role(
             strings([
                 "--provider",
-                "gitlab",
+                "wrong",
                 "issue",
                 "create",
                 "--title",

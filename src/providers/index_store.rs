@@ -120,6 +120,10 @@ pub fn provider_scope(
             IssueIndexScope::new("forgejo", provider.repository_scope())
                 .map_err(PhasegentError::config)
         }
+        crate::providers::ProviderDispatcher::Gitlab(provider) => {
+            IssueIndexScope::new("gitlab", provider.repository_scope())
+                .map_err(PhasegentError::config)
+        }
         // Local backend warms under a stable local scope.
         crate::providers::ProviderDispatcher::Local(_) => Ok(IssueIndexScope {
             source: "local".to_owned(),
@@ -132,8 +136,9 @@ pub fn provider_scope(
 /// credential/config/network lookup. Used only for transparent-fallback
 /// scoping when the dispatcher is unavailable (resolution/auth failed).
 /// Returns `None` when the explicit args do not determine a scope, in
-/// which case global fallback (clearly marked stale) is allowed.
-/// Never reads Storage, env provider defaults, or the network.
+/// which case callers must keep the original provider error instead of
+/// querying an unattributable index. Never reads Storage, env provider
+/// defaults, or the network.
 pub fn explicit_scope(
     provider_kind: Option<crate::providers::ProviderKind>,
     repository: Option<&str>,
@@ -148,12 +153,18 @@ pub fn explicit_scope(
             }
             IssueIndexScope::new("redmine", pid).ok()
         }
-        // Local yields no narrow scope from an explicit kind; callers
-        // fall back to the global scope.
+        // Local yields no narrow scope from an explicit kind; callers keep
+        // the original provider error rather than querying an unscoped index.
         crate::providers::ProviderKind::Local => None,
         crate::providers::ProviderKind::Forgejo => {
             let repository = crate::providers::forgejo::validate_repository(repository?).ok()?;
             IssueIndexScope::new("forgejo", &repository).ok()
+        }
+        crate::providers::ProviderKind::Gitlab => {
+            // The index key has no trusted-instance component, so GitLab never
+            // derives a lexical scope; search stays live-only.
+            let _ = repository?;
+            None
         }
     }
 }

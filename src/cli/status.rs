@@ -167,7 +167,12 @@ pub(crate) fn execute_status_with_caller(
         Some(route) => route.provider,
         None => {
             match resolve_kind(role, provider_kind) {
-                Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
+                Ok(
+                    ProviderKind::Redmine
+                    | ProviderKind::Local
+                    | ProviderKind::Forgejo
+                    | ProviderKind::Gitlab,
+                ) => {}
                 Err(error) => return super::provider_error(error),
             }
             match super::provider_for(
@@ -228,6 +233,7 @@ pub(crate) fn execute_status_with_caller(
             ProviderDispatcher::Forgejo(forgejo) => {
                 super::print_result(forgejo.status_next(number))
             }
+            ProviderDispatcher::Gitlab(gitlab) => super::print_result(gitlab.status_next(number)),
         },
         StatusCommand::Advance { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
@@ -354,6 +360,26 @@ pub(crate) fn execute_status_with_caller(
                 };
                 print_advance_result(forgejo.transition_status(number, target))
             }
+            ProviderDispatcher::Gitlab(gitlab) => {
+                let effective = if status.is_empty() {
+                    match gitlab.status_next(number) {
+                        Ok(report) => match auto_target_from_report(&report) {
+                            Ok(target) => target,
+                            Err(()) => {
+                                return super::structured_error(auto_no_route_error(&report), 1);
+                            }
+                        },
+                        Err(error) => return super::provider_error(error),
+                    }
+                } else {
+                    status.clone()
+                };
+                let target = match gitlab.select_native_target(&effective) {
+                    Ok(target) => target,
+                    Err(error) => return super::provider_error(error),
+                };
+                print_advance_result(gitlab.transition_status(number, target))
+            }
         },
         StatusCommand::Set { number, status } => match &provider {
             ProviderDispatcher::Redmine(redmine) => {
@@ -438,6 +464,13 @@ pub(crate) fn execute_status_with_caller(
                     Err(error) => return super::provider_error(error),
                 };
                 super::print_result(forgejo.transition_status(number, target))
+            }
+            ProviderDispatcher::Gitlab(gitlab) => {
+                let target = match gitlab.select_native_target(&status) {
+                    Ok(target) => target,
+                    Err(error) => return super::provider_error(error),
+                };
+                super::print_result(gitlab.transition_status(number, target))
             }
         },
     }

@@ -61,6 +61,9 @@ pub(crate) fn warm_single_summary(
     summary: &IssueSummary,
     operation: &str,
 ) {
+    if matches!(provider, ProviderDispatcher::Gitlab(_)) {
+        return;
+    }
     let scope = match provider_scope(provider) {
         Ok(scope) => scope,
         Err(reason) => {
@@ -105,6 +108,9 @@ pub(crate) fn warm_search_page(
     summaries: &[IssueSummary],
     operation: &str,
 ) {
+    if matches!(provider, ProviderDispatcher::Gitlab(_)) {
+        return;
+    }
     if summaries.is_empty() {
         return;
     }
@@ -185,6 +191,7 @@ pub(crate) fn execute_search_transparent(
                 &error,
                 &options,
                 None,
+                None,
                 explicit_kind,
                 repository,
                 project_id,
@@ -215,6 +222,7 @@ pub(crate) fn execute_search_transparent(
                     &error,
                     &options,
                     None,
+                    Some(resolved_kind),
                     explicit_kind,
                     repository,
                     project_id,
@@ -236,6 +244,7 @@ pub(crate) fn execute_search_transparent(
                 &error,
                 &options,
                 None,
+                Some(resolved_kind),
                 explicit_kind,
                 repository,
                 project_id,
@@ -273,6 +282,7 @@ pub(crate) fn execute_search_transparent(
             &error,
             &options,
             Some(&provider),
+            Some(resolved_kind),
             explicit_kind,
             repository,
             project_id,
@@ -281,12 +291,15 @@ pub(crate) fn execute_search_transparent(
 }
 
 /// Stale local fallback, else the original provider error. Never calls
-/// `resolve_kind`/provider construction again; scope prefers the live
-/// dispatcher, then explicit CLI args, then global stale.
+/// `resolve_kind`/provider construction again. A fallback requires a known,
+/// non-GitLab provider and a proven source/project scope from the live
+/// dispatcher or explicit CLI args; otherwise the original error wins so an
+/// unknown default or unresolved selection can never leak global stale rows.
 pub(crate) fn fallback_or_provider_error(
     original: &PhasegentError,
     options: &crate::providers::IssueSearchOptions,
     provider: Option<&ProviderDispatcher>,
+    resolved_kind: Option<ProviderKind>,
     explicit_kind: Option<ProviderKind>,
     repository: Option<&str>,
     project_id: Option<&str>,
@@ -299,11 +312,19 @@ pub(crate) fn fallback_or_provider_error(
         // Queryless `--all` has no lexical fallback.
         None => return crate::cli::provider_error(original.clone()),
     };
-    // Scope: live dispatcher wins (filtered to provider/project), else
-    // explicit CLI args without provider lookup, else global stale.
+    // Scope: the live dispatcher wins (filtered to provider/project), else
+    // explicit CLI args without provider lookup. There is no global scope:
+    // an unattributable row stays unread and the live error is preserved.
     let dispatcher_scope = provider.and_then(|dispatcher| provider_scope(dispatcher).ok());
     let explicit = explicit_scope(explicit_kind, repository, project_id);
     let scope_opt = dispatcher_scope.as_ref().or(explicit.as_ref());
+    // The shared lexical index has no instance component. GitLab task identity
+    // is instance + project + iid, so a cached row cannot be attributed safely;
+    // keep the live error instead of falling back to local rows. An unknown
+    // kind has no proven scope either, so a hidden default is never guessed.
+    if !fallback_allowed(provider, resolved_kind, explicit_kind, scope_opt.is_some()) {
+        return crate::cli::provider_error(original.clone());
+    }
     let lex_scope = lexical_scope_for_state(scope_opt, &options.state);
     let offset = options.page.saturating_sub(1).saturating_mul(options.limit);
     let limit = options.limit;
@@ -354,4 +375,60 @@ pub(crate) fn fallback_or_provider_error(
         )),
     );
     crate::cli::print_json(&envelope)
+}
+
+fn fallback_allowed(
+    provider: Option<&ProviderDispatcher>,
+    resolved_kind: Option<ProviderKind>,
+    explicit_kind: Option<ProviderKind>,
+    has_scope: bool,
+) -> bool {
+    let Some(resolved_kind) = resolved_kind else {
+        return false;
+    };
+    has_scope
+        && resolved_kind != ProviderKind::Gitlab
+        && explicit_kind != Some(ProviderKind::Gitlab)
+        && !provider.is_some_and(|provider| matches!(provider, ProviderDispatcher::Gitlab(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fallback_allowed;
+    use crate::providers::ProviderKind;
+
+    #[test]
+    fn fallback_requires_a_known_non_gitlab_provider_and_a_proven_scope() {
+        assert!(!fallback_allowed(
+            None,
+            Some(ProviderKind::Gitlab),
+            None,
+            true
+        ));
+        assert!(!fallback_allowed(
+            None,
+            None,
+            Some(ProviderKind::Gitlab),
+            true
+        ));
+        assert!(!fallback_allowed(None, None, None, true));
+        assert!(!fallback_allowed(
+            None,
+            Some(ProviderKind::Forgejo),
+            None,
+            false
+        ));
+        assert!(fallback_allowed(
+            None,
+            Some(ProviderKind::Forgejo),
+            None,
+            true
+        ));
+        assert!(fallback_allowed(
+            None,
+            Some(ProviderKind::Redmine),
+            None,
+            true
+        ));
+    }
 }

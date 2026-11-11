@@ -64,6 +64,13 @@ impl ProviderContext {
                 "Forgejo does not support --project-id or --close-status-id",
             ));
         }
+        if kind == ProviderKind::Gitlab
+            && (self.project_id.is_some() || self.close_status_id.is_some())
+        {
+            return Err(PhasegentError::config(
+                "GitLab does not support --project-id or --close-status-id",
+            ));
+        }
         Ok(())
     }
 
@@ -93,6 +100,17 @@ impl ProviderContext {
         match kind {
             ProviderKind::Forgejo => {
                 let config = crate::providers::forgejo::ForgejoConfig::resolve(
+                    role,
+                    self.api_base.as_deref(),
+                    self.repository.as_deref(),
+                )?;
+                Ok(Some(ResolvedScope {
+                    provider: kind,
+                    project: config.repository().to_owned(),
+                }))
+            }
+            ProviderKind::Gitlab => {
+                let config = crate::providers::gitlab::GitlabConfig::resolve(
                     role,
                     self.api_base.as_deref(),
                     self.repository.as_deref(),
@@ -136,6 +154,7 @@ pub(crate) fn capabilities_for(kind: ProviderKind) -> ProviderCapabilities {
         ProviderKind::Redmine => crate::providers::RedmineProvider::CAPABILITIES,
         ProviderKind::Local => crate::providers::local::LocalProvider::CAPABILITIES,
         ProviderKind::Forgejo => crate::providers::forgejo::ForgejoProvider::CAPABILITIES,
+        ProviderKind::Gitlab => crate::providers::gitlab::GitlabProvider::CAPABILITIES,
     }
 }
 

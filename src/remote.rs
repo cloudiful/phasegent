@@ -102,6 +102,121 @@ fn parse_origin_evidence(remote: &str) -> Result<OriginRepositoryEvidence, Strin
     })
 }
 
+/// The origin's host and full path as evidence for a trusted GitLab instance.
+/// The deployment prefix is not split off here because only the trusted
+/// instance root can say where a prefix ends and a subgroup begins.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitlabOriginEvidence {
+    pub host: String,
+    pub path: String,
+}
+
+pub(crate) fn gitlab_origin_evidence() -> Result<GitlabOriginEvidence, String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    gitlab_origin_evidence_at(&cwd)
+}
+
+pub(crate) fn gitlab_origin_evidence_at(
+    path: &std::path::Path,
+) -> Result<GitlabOriginEvidence, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["remote", "get-url", "--all", "origin"])
+        .output()
+        .map_err(|error| format!("could not inspect git remote: {error}"))?;
+    if !output.status.success() {
+        return Err("origin git remote is not configured".to_owned());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let urls: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    match urls.as_slice() {
+        [] => Err("origin git remote has no URL".to_owned()),
+        [remote] => parse_gitlab_origin(remote),
+        _ => Err(format!(
+            "origin git remote has {} URLs; provide --repository to name a project path on the \
+             trusted instance",
+            urls.len()
+        )),
+    }
+}
+
+fn parse_gitlab_origin(remote: &str) -> Result<GitlabOriginEvidence, String> {
+    let (host, path) = if let Some(value) = remote.strip_prefix("git@") {
+        let (host, path) = value
+            .split_once(':')
+            .ok_or_else(|| "invalid scp-style git remote".to_owned())?;
+        require_ssh_user("git")?;
+        (host.to_ascii_lowercase(), path.to_owned())
+    } else {
+        let url = Url::parse(remote).map_err(|error| format!("invalid git remote: {error}"))?;
+        let scheme = url.scheme();
+        if !matches!(scheme, "http" | "https" | "ssh" | "git+ssh" | "ssh+git") {
+            return Err(format!("unsupported git remote scheme '{scheme}'"));
+        }
+        if is_ssh_like_scheme(scheme) {
+            require_ssh_user(url.username())?;
+        } else if !url.username().is_empty() || url.password().is_some() {
+            return Err("GitLab HTTPS git remote must not contain credentials".to_owned());
+        }
+        if url.password().is_some() {
+            return Err("GitLab git remote must not contain a password".to_owned());
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err("GitLab git remote must not contain a query or fragment".to_owned());
+        }
+        let host = host_authority(&url)?;
+        (host.to_ascii_lowercase(), url.path().to_owned())
+    };
+    let path = normalize_gitlab_origin_path(&path)?;
+    if path.split('/').count() < 2 {
+        return Err("git remote must identify a namespace and project".to_owned());
+    }
+    Ok(GitlabOriginEvidence { host, path })
+}
+
+fn require_ssh_user(user: &str) -> Result<(), String> {
+    if user.is_empty() || user.eq_ignore_ascii_case("git") {
+        Ok(())
+    } else {
+        Err("GitLab SSH git remote user must be 'git'".to_owned())
+    }
+}
+
+fn normalize_gitlab_origin_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim_matches('/');
+    let without_git = if trimmed
+        .as_bytes()
+        .get(trimmed.len().saturating_sub(4)..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b".git"))
+    {
+        &trimmed[..trimmed.len() - 4]
+    } else {
+        trimmed
+    };
+    let without_git = without_git.trim_matches('/');
+    let parts: Vec<&str> = without_git.split('/').collect();
+    if parts.is_empty()
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || part.starts_with('.')
+                || part.ends_with('.')
+                || !part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+        })
+    {
+        return Err("git remote path is not a canonical project path".to_owned());
+    }
+    Ok(parts.join("/"))
+}
+
 pub fn parse_remote(remote: &str) -> Result<RemoteRepository, String> {
     let (host, path): (String, String) = if let Some(value) = remote.strip_prefix("git@") {
         value
@@ -381,4 +496,61 @@ fn normalize_git_path(raw: &str) -> Result<String, String> {
         return Err("git remote path is empty".to_owned());
     }
     Ok(parts.join("/"))
+}
+
+#[cfg(test)]
+mod gitlab_origin_tests {
+    use super::parse_gitlab_origin;
+
+    #[test]
+    fn gitlab_origin_invalid_unicode_path_returns_error_without_panicking() {
+        assert!(
+            std::panic::catch_unwind(|| parse_gitlab_origin("git@gitlab.example.com:a/中中"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn gitlab_origin_accepts_safe_transports_and_refuses_credentials() {
+        for (remote, host, path) in [
+            (
+                "git@GitLab.Example.com:group/sub/project.git",
+                "gitlab.example.com",
+                "group/sub/project",
+            ),
+            (
+                "https://gitlab.example.com/group/sub/project.git",
+                "gitlab.example.com",
+                "group/sub/project",
+            ),
+            (
+                "ssh://git@gitlab.example.com:2222/group/project.git",
+                "gitlab.example.com",
+                "group/project",
+            ),
+            (
+                "https://gitlab.example.com/deploy/group/project",
+                "gitlab.example.com",
+                "deploy/group/project",
+            ),
+        ] {
+            let evidence = parse_gitlab_origin(remote).unwrap();
+            assert_eq!(evidence.host, host, "{remote}");
+            assert_eq!(evidence.path, path, "{remote}");
+        }
+
+        for remote in [
+            "https://user:secret@gitlab.example.com/group/project.git",
+            "https://user@gitlab.example.com/group/project.git",
+            "ssh://deploy@gitlab.example.com/group/project.git",
+            "https://gitlab.example.com/group/project?private=1",
+            "https://gitlab.example.com/group/project#fragment",
+            "https://gitlab.example.com/project.git",
+            "https://gitlab.example.com/group/../project.git",
+            "ftp://gitlab.example.com/group/project.git",
+            "git@gitlab.example.com:project.git",
+        ] {
+            assert!(parse_gitlab_origin(remote).is_err(), "{remote}");
+        }
+    }
 }

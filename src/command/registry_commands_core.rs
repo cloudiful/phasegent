@@ -188,7 +188,7 @@ pub(super) const CORE: &[CommandSpec] = &[
     ),
     group(
         "project",
-        "Redmine or Forgejo project operations",
+        "Redmine, Forgejo, or GitLab project operations",
         RoleAccess::Open,
         ProviderScope::RedmineOrForgejo,
         &[
@@ -198,7 +198,7 @@ pub(super) const CORE: &[CommandSpec] = &[
     ),
     group(
         "status",
-        "Redmine, local, or Forgejo issue status operations",
+        "Redmine, local, Forgejo, or GitLab issue status operations",
         RoleAccess::Open,
         ProviderScope::RedmineOrForgejo,
         &[
@@ -226,7 +226,7 @@ pub(super) const CORE: &[CommandSpec] = &[
     ),
     group(
         "version",
-        "Redmine or Forgejo project version operations",
+        "Redmine, Forgejo, or GitLab project version operations",
         RoleAccess::Open,
         ProviderScope::RedmineOrForgejo,
         &[leaf("list", "List project versions", ACCESS_VERSION_READ)],

@@ -31,7 +31,7 @@ use serde::Serialize;
 /// so `config show` and the resolver can share the same literals.
 /// `PHASEGENT_REDMINE_API_BASE` is the canonical global Redmine REST
 /// address (a global setting, not role-scoped). Project-id aliases,
-/// the retired-provider aliases, and the ambiguous
+/// the legacy provider-specific aliases, and the ambiguous
 /// `PHASEGENT_PROJECT_ID` are intentionally absent and rejected as
 /// unknown settings. `PHASEGENT_INDEX_BACKEND` remains only
 /// for compatibility: backend selection is URL-driven

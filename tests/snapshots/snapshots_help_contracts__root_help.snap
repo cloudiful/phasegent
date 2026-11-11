@@ -14,9 +14,9 @@ Caller context:
   No role and no session runs as Operator (ordinary human CLI, no --authorized needed except records); a managed shell's agent role is verified against the local host broker, never selected by an environment variable; managed sessions without a verified role fail closed. PHASEGENT_ROLE is a legacy marker only and grants no identity. See 'phasegent --help admin' and docs/cli-caller-context.md.
 
 Options:
-  --provider <NAME>      redmine, local, or forgejo (default: configured selection, else redmine)
+  --provider <NAME>      redmine, local, forgejo, or gitlab (default: configured selection, else redmine)
   --api-base <URL>       Override the provider API base
-  --repository <O/R>     Override the Git host repository for bootstrap/discovery or Forgejo
+  --repository <O/R>     Override the Git host repository for bootstrap/discovery, Forgejo, or GitLab
   --project-id <ID>      Override the Redmine project id
   --close-status-id <ID> Override the Redmine closed status
   --output <MODE>        Output mode: auto (default), text, or json

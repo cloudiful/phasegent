@@ -143,15 +143,15 @@ impl Storage {
                     }
                 }
             }
-            // Clear legacy project_id values from both Redmine and GitLab
-            // tables. The columns remain for non-destructive,
-            // compatibility-safe migration, but values must be inert. The
-            // updates are idempotent and run inside the same IMMEDIATE
-            // transaction that protects the column migrations.
-            for (table, column) in [
-                ("role_redmine_config", "project_id"),
-                ("role_gitlab_config", "project_id"),
-            ] {
+            // Clear the legacy Redmine project_id value. The column remains
+            // for non-destructive, compatibility-safe migration, but the value
+            // must be inert. The update is idempotent and runs inside the same
+            // IMMEDIATE transaction that protects the column migrations.
+            //
+            // The GitLab project_id is deliberately left untouched: it belongs
+            // to a legacy role row that the new provider must preserve without
+            // rewriting, and no current GitLab path infers a project from it.
+            for (table, column) in [("role_redmine_config", "project_id")] {
                 if column_exists(connection, table, column)? {
                     let statement =
                         format!("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL");

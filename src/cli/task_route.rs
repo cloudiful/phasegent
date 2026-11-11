@@ -17,6 +17,7 @@ use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 use crate::providers::config::RedmineConfig;
 use crate::providers::forgejo::ForgejoConfig;
+use crate::providers::gitlab::GitlabConfig;
 use crate::providers::{IssueProvider, ProviderDispatcher, ProviderKind};
 use crate::task_identity::{
     TaskBinding, TaskKey, add_repo_membership, add_repo_membership_with, binding_for_task_id,
@@ -175,6 +176,7 @@ pub(crate) fn resolve_timer_route(issue: u64) -> Result<TimerTaskRoute, Phasegen
     let key = binding.key();
     match key.provider() {
         "forgejo" => Err(PhasegentError::not_supported("forgejo", "time tracking")),
+        "gitlab" => Err(PhasegentError::not_supported("gitlab", "time tracking")),
         "local" => Ok(TimerTaskRoute::Local),
         "redmine" => {
             if let Some(trusted) =
@@ -288,6 +290,24 @@ fn fields_match_context(
             }
             if let Some(base) = context.api_base.as_deref() {
                 let normalized = normalize_instance(ProviderKind::Forgejo, base, project)?;
+                if normalized != instance {
+                    return Ok(false);
+                }
+            }
+        }
+        "gitlab" => {
+            if context.project_id.is_some() || context.close_status_id.is_some() {
+                return Err(config_error(
+                    "GitLab does not support --project-id or --close-status-id",
+                ));
+            }
+            if let Some(repository) = context.repository.as_deref()
+                && repository != project
+            {
+                return Ok(false);
+            }
+            if let Some(base) = context.api_base.as_deref() {
+                let normalized = normalize_instance(ProviderKind::Gitlab, base, project)?;
                 if normalized != instance {
                     return Ok(false);
                 }
@@ -547,6 +567,43 @@ fn pinned_provider(
             crate::providers::forgejo::ForgejoProvider::new(config, &token)
                 .map(ProviderDispatcher::Forgejo)
         }
+        "gitlab" => {
+            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
+            let storage = storage
+                .as_ref()
+                .ok_or_else(|| config_error("GitLab role configuration is not present"))?;
+            let stored = storage
+                .load_gitlab_config(role)
+                .map_err(PhasegentError::config)?
+                .ok_or_else(|| {
+                    config_error(
+                        "GitLab role credential provenance is not configured for this role",
+                    )
+                })?;
+            let stored_repository = stored.repository.as_deref().ok_or_else(|| {
+                config_error(
+                    "GitLab role configuration is incomplete: the stored project path is missing",
+                )
+            })?;
+            let stored_instance =
+                normalize_instance(ProviderKind::Gitlab, &stored.api_base, stored_repository)?;
+            if stored_instance != key.instance() {
+                return Err(config_error(format!(
+                    "configured GitLab endpoint does not match the stored task instance; \
+                     refusing to send the role credential (task {}:{})",
+                    key.instance(),
+                    key.project()
+                )));
+            }
+            let token = storage
+                .load_credential(role, "gitlab")
+                .map_err(PhasegentError::auth)?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| PhasegentError::auth("GitLab role credential is not configured"))?;
+            let config = GitlabConfig::new(key.instance(), key.project())?;
+            crate::providers::gitlab::GitlabProvider::new(config, &token)
+                .map(ProviderDispatcher::Gitlab)
+        }
         "redmine" => {
             let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
             let storage = storage
@@ -614,6 +671,16 @@ fn key_from_provider(
                 "forgejo",
                 forgejo.api_base(),
                 forgejo.repository_scope(),
+                &number.to_string(),
+            )
+            .map_err(PhasegentError::config)?;
+            Ok(key)
+        }
+        ProviderDispatcher::Gitlab(gitlab) => {
+            let key = TaskKey::new(
+                "gitlab",
+                gitlab.api_base(),
+                gitlab.repository_scope(),
                 &number.to_string(),
             )
             .map_err(PhasegentError::config)?;
@@ -718,6 +785,47 @@ pub(crate) fn preflight_explicit_issue(
                 .ok_or_else(|| PhasegentError::auth("Forgejo role credential is not configured"))?;
             crate::providers::forgejo::ForgejoProvider::new(config, &token)
                 .map(ProviderDispatcher::Forgejo)?
+        }
+        ProviderKind::Gitlab => {
+            let config = GitlabConfig::resolve(
+                role,
+                context.api_base.as_deref(),
+                context.repository.as_deref(),
+            )?;
+            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
+            let storage = storage
+                .as_ref()
+                .ok_or_else(|| config_error("GitLab role configuration is not present"))?;
+            let stored = storage
+                .load_gitlab_config(role)
+                .map_err(PhasegentError::config)?
+                .ok_or_else(|| {
+                    config_error(
+                        "GitLab role credential provenance is not configured for this role",
+                    )
+                })?;
+            let stored_repository = stored.repository.as_deref().ok_or_else(|| {
+                config_error(
+                    "GitLab role configuration is incomplete: the stored project path is missing",
+                )
+            })?;
+            let selected_instance =
+                normalize_instance(ProviderKind::Gitlab, config.api_base(), config.repository())?;
+            let stored_instance =
+                normalize_instance(ProviderKind::Gitlab, &stored.api_base, stored_repository)?;
+            if selected_instance != stored_instance {
+                return Err(config_error(
+                    "explicit GitLab endpoint does not match the configured role instance; \
+                     refusing to send it",
+                ));
+            }
+            let token = storage
+                .load_credential(role, "gitlab")
+                .map_err(PhasegentError::auth)?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| PhasegentError::auth("GitLab role credential is not configured"))?;
+            crate::providers::gitlab::GitlabProvider::new(config, &token)
+                .map(ProviderDispatcher::Gitlab)?
         }
         ProviderKind::Redmine => {
             let project = context.project_id.as_deref().ok_or_else(|| {
