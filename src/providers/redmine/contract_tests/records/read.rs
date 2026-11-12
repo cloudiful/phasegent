@@ -24,7 +24,8 @@ fn get_returns_plain_body_and_structured_fields() {
     ))]);
     let redmine = provider(base);
 
-    let output = record::get(&redmine, 21, 501).expect("the record is readable by native id");
+    let entry = record::get(&redmine, 21, 501).expect("the record is readable by native id");
+    let output = entry.record().expect("the stored header is a valid record");
     server.join().unwrap();
     requests.recv().unwrap();
 
@@ -91,8 +92,9 @@ fn an_ordinary_journal_is_not_decoded_as_a_record() {
     requests.recv().unwrap();
 
     assert_eq!(records.len(), 1, "only the real envelope is a record");
-    assert_eq!(records[0].id, 502);
-    assert_eq!(records[0].body, "real record");
+    let record = records[0].record().expect("the real envelope is a record");
+    assert_eq!(record.id, 502);
+    assert_eq!(record.body, "real record");
 }
 
 /// `list` filters locally and exactly over the decoded records.
@@ -125,7 +127,10 @@ fn list_filters_locally_and_exactly() {
     requests.recv().unwrap();
 
     assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].id, 502);
-    assert_eq!(filtered[0].kind, "recon");
-    assert_eq!(filtered[0].recon.as_deref(), Some("scan"));
+    let record = filtered[0]
+        .record()
+        .expect("the recon envelope is a record");
+    assert_eq!(record.id, 502);
+    assert_eq!(record.kind, "recon");
+    assert_eq!(record.recon.as_deref(), Some("scan"));
 }
