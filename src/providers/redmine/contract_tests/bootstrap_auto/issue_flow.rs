@@ -6,7 +6,8 @@ use crate::auth;
 use crate::infra::storage::test_support::lock_workflow_tests;
 use crate::policy::Role;
 use crate::providers::redmine::contract_tests::support::{
-    MockResponse, assert_request_with_key, issue_collection, issue_response, sequence, strings,
+    MockResponse, assert_request_with_key, issue_collection, issue_response,
+    sequence_with_optional, strings,
 };
 use std::fs;
 
@@ -27,7 +28,14 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     // Admin-only provisioning: only the admin credential is seeded. Missing
     // role credentials no longer block provisioning; the admin API
     // provisions every deterministic service user.
-    let (base, requests, server) = sequence(bootstrap_sequence());
+    let open_80 = issue_response(80, "Created", "Body", false, &[]);
+    let (base, requests, optional_requests, server) = sequence_with_optional(
+        bootstrap_sequence(&open_80),
+        Some((
+            "GET /issues/80.json?include=journals",
+            MockResponse::ok(open_80),
+        )),
+    );
     // Seed only admin: proves admin credential is sufficient.
     seed_admin_only(&storage, &base);
     // Also seed orchestrator config row so the CLI resolver has a base
@@ -101,6 +109,20 @@ fn issue_create_automatically_bootstraps_once_before_returning_issue() {
     );
 
     assert_bootstrap_requests(&requests.recv().unwrap());
+    let optional = optional_requests.recv().unwrap();
+    assert!(
+        optional.len() <= 1,
+        "unexpected optional request count: {optional:?}"
+    );
+    if let Some(request) = optional.first() {
+        assert_request_with_key(
+            request,
+            "GET",
+            "/issues/80.json?include=journals",
+            None,
+            "orchestrator-provisioned-key",
+        );
+    }
     assert_provisioned_identities(&storage);
     let stored = auth::load_redmine_config(Role::Orchestrator, &storage)
         .unwrap()
@@ -129,8 +151,9 @@ fn issue_create_args(base: &str, title: &str) -> Vec<String> {
 }
 
 /// Project bootstrap, four-role provisioning, four memberships, mirror
-/// registration, then the issue traffic of this test.
-fn bootstrap_sequence() -> Vec<MockResponse> {
+/// registration, then the issue traffic of this test. The optional read of
+/// issue 80 reuses the exact open response the first create received.
+fn bootstrap_sequence(open_80: &str) -> Vec<MockResponse> {
     let mut responses = vec![
         MockResponse::error(404, r#"{"errors":["not found"]}"#),
         MockResponse::ok(closed_status()),
@@ -149,7 +172,7 @@ fn bootstrap_sequence() -> Vec<MockResponse> {
     responses.extend(mirror_registration());
     responses.extend([
         // First issue create (orchestrator key provisioned above).
-        MockResponse::ok(issue_response(80, "Created", "Body", false, &[])),
+        MockResponse::ok(open_80),
         // Second issue create (bootstrap result reused via cache).
         MockResponse::ok(issue_response(81, "Created again", "Body", false, &[])),
         // Issue search.

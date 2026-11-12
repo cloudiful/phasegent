@@ -59,20 +59,63 @@ pub(crate) fn one<T>(
 pub(crate) fn sequence(
     responses: Vec<MockResponse>,
 ) -> (String, Receiver<Vec<String>>, JoinHandle<()>) {
+    let (base, requests, _optional, server) = sequence_with_optional(responses, None);
+    (base, requests, server)
+}
+
+pub(crate) type OptionalSequence = (
+    String,
+    Receiver<Vec<String>>,
+    Receiver<Vec<String>>,
+    JoinHandle<()>,
+);
+
+/// Serve the required responses in order while recognising at most one exact
+/// optional request before each required one. The optional request is
+/// recorded on its own channel and never consumes a required response.
+pub(crate) fn sequence_with_optional(
+    responses: Vec<MockResponse>,
+    optional: Option<(&'static str, MockResponse)>,
+) -> OptionalSequence {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (sender, receiver) = mpsc::channel();
+    let (optional_sender, optional_receiver) = mpsc::channel();
     let server = thread::spawn(move || {
+        let mut optional = optional;
         let mut requests = Vec::new();
+        let mut optional_requests = Vec::new();
         for response in responses {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_request(&mut stream);
-            requests.push(request);
-            write_response(&mut stream, response);
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                let is_optional = optional.as_ref().is_some_and(|(method_path, _)| {
+                    request
+                        .strip_prefix(*method_path)
+                        .is_some_and(|rest| rest.starts_with(" HTTP/1.1\r\n"))
+                });
+                if is_optional {
+                    let (_, optional_response) = optional.take().unwrap();
+                    optional_requests.push(request);
+                    write_response(&mut stream, optional_response);
+                    continue;
+                }
+                requests.push(request);
+                write_response(&mut stream, response);
+                break;
+            }
         }
         sender.send(requests).unwrap();
+        // The plain `sequence` wrapper drops this optional channel; the
+        // server must still exit cleanly when no optional request occurred.
+        let _ = optional_sender.send(optional_requests);
     });
-    (format!("http://{address}"), receiver, server)
+    (
+        format!("http://{address}"),
+        receiver,
+        optional_receiver,
+        server,
+    )
 }
 
 pub(crate) fn sequence_raw(
