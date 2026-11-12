@@ -17,6 +17,7 @@ pub enum ProviderDispatcher {
     /// Local backend (SQLite-first, PG reserved).
     Local(LocalProvider),
     Forgejo(crate::providers::forgejo::ForgejoProvider),
+    Gitlab(crate::providers::gitlab::GitlabProvider),
 }
 
 impl ProviderDispatcher {
@@ -36,6 +37,15 @@ impl ProviderDispatcher {
         ))
     }
 
+    pub fn gitlab(
+        role: crate::policy::Role,
+        config: crate::providers::gitlab::GitlabConfig,
+    ) -> Result<Self, PhasegentError> {
+        Ok(Self::Gitlab(
+            crate::providers::gitlab::GitlabProvider::for_role(config, role)?,
+        ))
+    }
+
     /// Local backend. SQLite opens synchronously with no credentials;
     /// the PostgreSQL variant stays reserved in `PgLocalProvider`.
     pub fn local(provider: LocalProvider) -> Self {
@@ -47,6 +57,7 @@ impl ProviderDispatcher {
             Self::Redmine(_) => ProviderKind::Redmine,
             Self::Local(_) => ProviderKind::Local,
             Self::Forgejo(_) => ProviderKind::Forgejo,
+            Self::Gitlab(_) => ProviderKind::Gitlab,
         }
     }
 }

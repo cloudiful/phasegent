@@ -72,6 +72,22 @@ pub fn resolve_link_scope(
                 project: config.repository().to_owned(),
             }))
         }
+        "gitlab" => {
+            let config =
+                crate::providers::gitlab::GitlabConfig::resolve(effective, None, repository)
+                    .map_err(|error| {
+                        let body = error.json();
+                        let detail = body
+                            .get("message")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("GitLab project path is unresolved");
+                        format!("cannot scope branch link: {detail}")
+                    })?;
+            Ok(Some(LinkScope {
+                provider: "gitlab".to_owned(),
+                project: config.repository().to_owned(),
+            }))
+        }
         other => Err(format!(
             "cannot scope branch link: unknown provider '{other}'"
         )),

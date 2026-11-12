@@ -203,7 +203,7 @@ fn upload_output_never_contains_token_or_file_content() {
     let _ = fs::remove_dir_all(dir);
 }
 #[test]
-fn retired_provider_upload_is_rejected_before_file_access() {
+fn unsupported_provider_upload_is_rejected_before_file_access() {
     // An unknown provider name is rejected at argument parsing, and the
     // now-supported Forgejo provider rejects the unsupported capability
     // before any file access: the same invocation with a missing file
@@ -216,7 +216,7 @@ fn retired_provider_upload_is_rejected_before_file_access() {
             .unwrap()
             .as_nanos()
     ));
-    for (prov, expected_exit) in [("forgejo", 1), ("gitlab", 2)] {
+    for prov in ["forgejo", "gitlab"] {
         let _lock = lock_workflow_tests();
         let tmp = crate::test_scratch::root().join(format!(
             "phasegent-not-supported-{prov}-{}",
@@ -230,9 +230,9 @@ fn retired_provider_upload_is_rejected_before_file_access() {
         let st = Storage::open_at(&db).unwrap();
         st.save_credential(Role::Orchestrator, prov, "dummy-token-for-test")
             .unwrap();
-        // The unknown provider is an argument-level rejection (exit 2) and
-        // the unsupported Forgejo capability a provider-level rejection
-        // (exit 1); the missing `--path` is never opened.
+        // Both are supported providers with no upload capability, so the
+        // provider-level rejection (exit 1) fires before the missing `--path`
+        // is ever opened.
         let exit = crate::cli::run_with_role(
             strings([
                 "--provider",
@@ -249,7 +249,7 @@ fn retired_provider_upload_is_rejected_before_file_access() {
             ]),
             Some("orchestrator"),
         );
-        assert_eq!(exit, expected_exit, "{prov}");
+        assert_eq!(exit, 1, "{prov}");
         let _ = fs::remove_dir_all(tmp);
     }
 }

@@ -173,7 +173,7 @@ fn provider_scopes_match_the_root_help_conditions() {
         assert_eq!(
             find(&[name]).unwrap().provider_scope,
             ProviderScope::RedmineOrForgejo,
-            "{name} must be visible for Redmine and Forgejo"
+            "{name} must be visible for Redmine, Forgejo, and GitLab"
         );
     }
     for name in ["relation", "timer"] {
@@ -188,6 +188,7 @@ fn provider_scopes_match_the_root_help_conditions() {
     assert!(!ProviderScope::Redmine.visible(Some(ProviderKind::Local)));
     assert!(ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Redmine)));
     assert!(ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Forgejo)));
+    assert!(ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Gitlab)));
     assert!(!ProviderScope::RedmineOrForgejo.visible(Some(ProviderKind::Local)));
     assert!(!ProviderScope::RedmineOrForgejo.visible(None));
     assert!(ProviderScope::Any.visible(Some(ProviderKind::Redmine)));

@@ -101,7 +101,7 @@ impl TaskBinding {
 
 /// Normalize a non-secret instance endpoint into its canonical identity.
 ///
-/// Local is the credential-free sentinel `local`; Redmine and Forgejo keep
+/// Local is the credential-free sentinel `local`; Redmine, Forgejo, and GitLab keep
 /// their validated http(s) base, including any significant port and subpath,
 /// with a trailing slash removed. Credentials, query strings and fragments
 /// are never accepted or stored.
@@ -124,6 +124,23 @@ pub(crate) fn canonical_instance(
                 |error| {
                     format!(
                         "invalid Forgejo task instance: {}",
+                        error
+                            .json()
+                            .get("message")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("invalid endpoint or project")
+                    )
+                },
+            )?;
+            Ok(config.api_base().to_owned())
+        }
+        ProviderKind::Gitlab => {
+            let endpoint = endpoint
+                .ok_or_else(|| "GitLab task identity requires an instance endpoint".to_owned())?;
+            let config = crate::providers::gitlab::GitlabConfig::new(endpoint, project).map_err(
+                |error| {
+                    format!(
+                        "invalid GitLab task instance: {}",
                         error
                             .json()
                             .get("message")
@@ -652,7 +669,7 @@ mod tests {
         let db = TempDb::new("reject");
         let storage = storage(&db);
         let cases = [
-            TaskKey::new("gitlab", "https://forgejo.test", "owner/repo", "7").err(),
+            TaskKey::new("svn", "https://forgejo.test", "owner/repo", "7").err(),
             TaskKey::new("forgejo", "ftp://forgejo.test", "owner/repo", "7").err(),
             TaskKey::new(
                 "forgejo",

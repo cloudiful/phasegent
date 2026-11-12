@@ -85,6 +85,14 @@ impl WorktreeScope {
                 "Forgejo worktree project must be canonical owner/repo",
             ));
         }
+        if provider == "gitlab"
+            && crate::providers::gitlab::GitlabConfig::new("http://localhost", project).is_err()
+        {
+            return Err(WorktreeError::new(
+                "argument",
+                "GitLab worktree project must be a canonical namespace/project path",
+            ));
+        }
         Ok(Self {
             provider: provider.to_owned(),
             project: project.to_owned(),

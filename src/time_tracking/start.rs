@@ -60,16 +60,16 @@ pub(crate) fn execute_start_with_caller(
         .expect("authorized timer caller has a credential");
     let effective_role = normalise_agent_role(&agent_role)?;
     // The durable task of the current repository owns the timer identity: a
-    // Forgejo task has no time tracking, an ambiguous number cannot be
+    // Forgejo or GitLab task has no time tracking, an ambiguous number cannot be
     // attributed to one task, and a Local task never reaches a remote
     // projection, because the ledger stores no task id. All of them refuse
     // before the ledger row is written.
     let route = crate::cli::task_route::resolve_timer_route(issue)?;
     // An unbound legacy operation still follows the selected provider, so
-    // the Forgejo time-tracking refusal applies there. A durable task pins
+    // the Forgejo or GitLab time-tracking refusal applies there. A durable task pins
     // its own provider and is never blocked by a changed default.
     if matches!(route, crate::cli::task_route::TimerTaskRoute::Legacy) {
-        super::dispatch::reject_forgejo_timer(credential, provider_kind)?;
+        super::dispatch::reject_unsupported_timer(credential, provider_kind)?;
     }
     let run_id = run_id.map(str::to_owned).unwrap_or_else(generate_run_id);
     let storage = Storage::open().map_err(timer_storage_error("timer start"))?;

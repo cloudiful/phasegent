@@ -6,11 +6,11 @@ use crate::providers::redmine::http::RedmineHttp;
 use crate::remote;
 use std::str::FromStr;
 
-/// The two tracking providers phasegent supports.
+/// The tracking providers phasegent supports.
 ///
-/// `Redmine` is the configured default; `Local` is the credential-free
-/// SQLite store. Any other name is rejected before a provider is
-/// resolved, so a retired value can never fall back silently.
+/// `Redmine` is the fallback; `Local` is the credential-free SQLite store;
+/// `Forgejo` and `GitLab` are self-hosted HTTP instances. Any other name is
+/// rejected before a provider is resolved.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ProviderKind {
     #[default]
@@ -19,6 +19,7 @@ pub enum ProviderKind {
     /// parsing, and the config snapshot via `as_str`/`from_str`.
     Local,
     Forgejo,
+    Gitlab,
 }
 
 impl ProviderKind {
@@ -27,17 +28,8 @@ impl ProviderKind {
             Self::Redmine => "redmine",
             Self::Local => "local",
             Self::Forgejo => "forgejo",
+            Self::Gitlab => "gitlab",
         }
-    }
-
-    /// Whether `value` names a provider this build still recognises,
-    /// including the retired names, so callers can produce a value-aware
-    /// diagnostic instead of a generic parse error. The literals come
-    /// from the storage layer so the rejection and the persisted legacy
-    /// rows can never drift apart.
-    fn is_retired(value: &str) -> bool {
-        use crate::infra::storage::PROVIDER_GITLAB;
-        value == PROVIDER_GITLAB
     }
 }
 
@@ -55,12 +47,9 @@ impl FromStr for ProviderKind {
             "redmine" => Ok(Self::Redmine),
             "local" => Ok(Self::Local),
             "forgejo" => Ok(Self::Forgejo),
-            retired if Self::is_retired(retired) => Err(format!(
-                "tracking provider '{retired}' is no longer supported; \
-                 phasegent tracks only 'redmine', 'local', and 'forgejo'"
-            )),
+            "gitlab" => Ok(Self::Gitlab),
             _ => Err(format!(
-                "invalid provider '{value}'; expected redmine, local, or forgejo"
+                "invalid provider '{value}'; expected redmine, local, forgejo, or gitlab"
             )),
         }
     }
@@ -81,7 +70,7 @@ impl FromStr for ProviderKind {
 ///      `auth::load_config` (effective TOML-over-SQLite per role).
 ///   7. Redmine fallback.
 ///
-/// A retired explicit or configured name errors here, before any network
+/// An unknown explicit or configured name errors here, before any network
 /// access, instead of falling back. The resolver is read-only: it never
 /// persists anything and never writes TOML.
 pub fn resolve_kind(
@@ -350,39 +339,20 @@ impl RedmineProvider {
 #[cfg(test)]
 mod tests {
     use super::ProviderKind;
-    use std::str::FromStr;
 
     #[test]
-    fn provider_kind_round_trips_only_the_two_supported_names() {
-        assert_eq!(ProviderKind::Redmine.as_str(), "redmine");
-        assert_eq!(ProviderKind::Local.as_str(), "local");
+    fn provider_kind_round_trips_all_supported_names() {
+        for (literal, kind) in [
+            ("redmine", ProviderKind::Redmine),
+            ("local", ProviderKind::Local),
+            ("forgejo", ProviderKind::Forgejo),
+            ("gitlab", ProviderKind::Gitlab),
+        ] {
+            assert_eq!(kind.as_str(), literal);
+            assert_eq!(literal.parse::<ProviderKind>().unwrap(), kind);
+            assert_eq!(format!("{kind}"), literal);
+        }
         assert_eq!(ProviderKind::default(), ProviderKind::Redmine);
-        assert_eq!(
-            "redmine".parse::<ProviderKind>().unwrap(),
-            ProviderKind::Redmine
-        );
-        assert_eq!(
-            "local".parse::<ProviderKind>().unwrap(),
-            ProviderKind::Local
-        );
-        assert_eq!(
-            ProviderKind::from_str(ProviderKind::Local.as_str()).unwrap(),
-            ProviderKind::Local
-        );
-        assert_eq!(format!("{}", ProviderKind::Local), "local");
-    }
-
-    #[test]
-    fn a_retired_provider_name_is_rejected_with_an_actionable_error() {
-        let error = "gitlab".parse::<ProviderKind>().unwrap_err();
-        assert!(error.contains("gitlab"), "{error}");
-        assert!(error.contains("redmine"), "{error}");
-        assert!(error.contains("local"), "{error}");
-        assert!(error.contains("forgejo"), "{error}");
-        assert_eq!(
-            "forgejo".parse::<ProviderKind>().unwrap(),
-            ProviderKind::Forgejo
-        );
     }
 
     #[test]
@@ -390,7 +360,7 @@ mod tests {
         let error = "wrong".parse::<ProviderKind>().unwrap_err();
         assert_eq!(
             error,
-            "invalid provider 'wrong'; expected redmine, local, or forgejo"
+            "invalid provider 'wrong'; expected redmine, local, forgejo, or gitlab"
         );
     }
 }

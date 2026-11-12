@@ -50,7 +50,12 @@ pub(crate) fn execute_version_with_caller(
         .credential_role()
         .expect("authorized caller has a credential");
     match resolve_kind(role, provider_kind) {
-        Ok(ProviderKind::Redmine | ProviderKind::Local | ProviderKind::Forgejo) => {}
+        Ok(
+            ProviderKind::Redmine
+            | ProviderKind::Local
+            | ProviderKind::Forgejo
+            | ProviderKind::Gitlab,
+        ) => {}
         Err(error) => return super::provider_error(error),
     }
     // Repository-aware resolution for project-scoped reads.

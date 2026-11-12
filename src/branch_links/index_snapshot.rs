@@ -26,6 +26,12 @@ pub fn read_snapshot(source: &str, project: &str, external_id: &str) -> Option<I
     if source.trim().is_empty() || project.trim().is_empty() || external_id.trim().is_empty() {
         return None;
     }
+    // The shared index key has no instance. GitLab identities are immutable by
+    // trusted instance + project path + iid, so an instance-free row cannot be
+    // attributed safely and is reported as unknown instead of reused.
+    if source.trim().eq_ignore_ascii_case("gitlab") {
+        return None;
+    }
     // PostgreSQL-backed deployments have no local snapshot to read;
     // honest unknown beats a networked point-read on a local path.
     if let Ok(raw) = std::env::var("PHASEGENT_INDEX_PG_URL")
@@ -66,4 +72,15 @@ fn index_path() -> Option<std::path::PathBuf> {
         return None;
     }
     crate::infra::issue_index::project_dirs_index_path().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_snapshot;
+
+    #[test]
+    fn gitlab_snapshot_without_an_instance_is_unknown() {
+        assert!(read_snapshot("gitlab", "group/sub/project", "7").is_none());
+        assert!(read_snapshot("  GitLab  ", "group/project", "7").is_none());
+    }
 }

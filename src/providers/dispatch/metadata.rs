@@ -58,6 +58,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Redmine(provider) => provider.list_projects_page(page),
             Self::Local(provider) => provider.list_projects_page(page),
             Self::Forgejo(provider) => provider.list_projects_page(page),
+            Self::Gitlab(provider) => provider.list_projects_page(page),
         }
     }
     fn list_versions_page(
@@ -68,6 +69,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Redmine(provider) => provider.list_versions_page(page),
             Self::Local(provider) => provider.list_versions_page(page),
             Self::Forgejo(provider) => provider.list_versions_page(page),
+            Self::Gitlab(provider) => provider.list_versions_page(page),
         }
     }
 
@@ -76,6 +78,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Redmine(provider) => provider.list_projects(),
             Self::Local(provider) => provider.list_projects(),
             Self::Forgejo(provider) => provider.list_projects(),
+            Self::Gitlab(provider) => provider.list_projects(),
         }
     }
 
@@ -89,6 +92,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Redmine(provider) => provider.create_project(name, identifier, description),
             Self::Local(provider) => provider.create_project(name, identifier, description),
             Self::Forgejo(provider) => provider.create_project(name, identifier, description),
+            Self::Gitlab(provider) => provider.create_project(name, identifier, description),
         }
     }
 
@@ -97,6 +101,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Redmine(provider) => provider.list_issue_statuses(),
             Self::Local(provider) => provider.list_issue_statuses(),
             Self::Forgejo(provider) => provider.list_issue_statuses(),
+            Self::Gitlab(provider) => provider.list_issue_statuses(),
         }
     }
 
@@ -105,6 +110,7 @@ impl RedmineMetadataProvider for ProviderDispatcher {
             Self::Redmine(provider) => provider.list_project_versions(),
             Self::Local(provider) => provider.list_project_versions(),
             Self::Forgejo(provider) => provider.list_project_versions(),
+            Self::Gitlab(provider) => provider.list_project_versions(),
         }
     }
 }

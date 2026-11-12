@@ -449,7 +449,7 @@ pub(crate) fn provider_for(
     project_id: Option<&str>,
     close_status_id: Option<&str>,
 ) -> Result<ProviderDispatcher, PhasegentError> {
-    // A retired provider name errors here, before any provider is built.
+    // An unknown provider name errors here, before any provider is built.
     match resolve_kind(role, provider_kind)? {
         ProviderKind::Redmine => {
             let config = RedmineConfig::resolve(role, api_base, project_id, close_status_id)?;
@@ -464,6 +464,16 @@ pub(crate) fn provider_for(
             let config =
                 crate::providers::forgejo::ForgejoConfig::resolve(role, api_base, repository)?;
             ProviderDispatcher::forgejo(role, config)
+        }
+        ProviderKind::Gitlab => {
+            if project_id.is_some() || close_status_id.is_some() {
+                return Err(PhasegentError::config(
+                    "GitLab does not support --project-id or --close-status-id",
+                ));
+            }
+            let config =
+                crate::providers::gitlab::GitlabConfig::resolve(role, api_base, repository)?;
+            ProviderDispatcher::gitlab(role, config)
         }
         // Local needs no credentials or remote config: open the
         // independent SQLite store directly. Auth stays passwordless.

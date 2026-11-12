@@ -1037,7 +1037,7 @@ impl IssueStateReader for ConfiguredIssueStateReader {
             }
             (None, _) => {}
         }
-        if !matches!(provider, "forgejo" | "local") {
+        if !matches!(provider, "forgejo" | "gitlab" | "local") {
             // Validate the explicit selection only to surface a conflict; the
             // configured endpoint is never historical ownership proof.
             scoped_instance(self.role, repo_path, provider, project, &self.context)
@@ -1276,6 +1276,42 @@ fn scoped_instance(
             }
             Ok(trusted.api_base().to_owned())
         }
+        "gitlab" => {
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("the local store is not available: {error}"))?
+                .ok_or_else(|| "the local store is not initialized".to_owned())?;
+            let stored = storage
+                .load_gitlab_config(role)
+                .map_err(|error| format!("could not read the GitLab role instance: {error}"))?
+                .ok_or_else(|| {
+                    "the GitLab role instance is not configured for this role".to_owned()
+                })?;
+            let trusted = crate::providers::gitlab::GitlabConfig::new(&stored.api_base, project)
+                .map_err(|error| bounded_error(&error.json()))?;
+            if let Some(explicit) = context.api_base.as_deref() {
+                let selected = crate::providers::gitlab::GitlabConfig::new(explicit, project)
+                    .map_err(|error| bounded_error(&error.json()))?;
+                if selected.api_base() != trusted.api_base() {
+                    return Err(
+                        "the selected GitLab endpoint does not match the role's trusted instance"
+                            .to_owned(),
+                    );
+                }
+            }
+            let origin = crate::remote::gitlab_origin_evidence_at(repo_path)?;
+            let attested = crate::providers::gitlab::GitlabConfig::attest_origin_repository(
+                trusted.api_base(),
+                &origin,
+            )
+            .map_err(|error| bounded_error(&error.json()))?;
+            if attested != project {
+                return Err(format!(
+                    "the physical origin project '{attested}' does not attest the scoped project \
+                     '{project}'"
+                ));
+            }
+            Ok(trusted.api_base().to_owned())
+        }
         "local" => {
             if project != "default" {
                 return Err(format!(
@@ -1332,6 +1368,21 @@ fn scoped_provider(
                 .map_err(|error| bounded_error(&error.json()))?;
             crate::providers::forgejo::ForgejoProvider::new(config, &token)
                 .map(ProviderDispatcher::Forgejo)
+                .map_err(|error| bounded_error(&error.json()))
+        }
+        "gitlab" => {
+            let storage = Storage::open_existing_read_only()
+                .map_err(|error| format!("the local store is not available: {error}"))?
+                .ok_or_else(|| "the local store is not initialized".to_owned())?;
+            let token = storage
+                .load_credential(role, "gitlab")
+                .map_err(|error| format!("could not read the GitLab role credential: {error}"))?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "the GitLab role credential is not configured".to_owned())?;
+            let config = crate::providers::gitlab::GitlabConfig::new(&instance, project)
+                .map_err(|error| bounded_error(&error.json()))?;
+            crate::providers::gitlab::GitlabProvider::new(config, &token)
+                .map(ProviderDispatcher::Gitlab)
                 .map_err(|error| bounded_error(&error.json()))
         }
         "local" => crate::providers::local::LocalProvider::open_read_only()
@@ -1581,7 +1632,7 @@ impl IssueStateReader for TaskAwareIssueStateReader {
                  refusing to guess an instance"
             )),
             (None, _) => {
-                if !matches!(provider, "forgejo" | "local") {
+                if !matches!(provider, "forgejo" | "gitlab" | "local") {
                     // A sidecar with no instance cannot prove historical
                     // ownership through the configured endpoint. Validate the
                     // explicit selection only to surface a conflict, then keep.

@@ -143,16 +143,16 @@ fn role_redmine_user_round_trips_per_role_and_validates() {
 #[test]
 fn legacy_provider_literals_remain_inert_in_role_config() {
     // Historical provider rows can still exist in an operator database. The
-    // storage layer keeps them decodable and inert: the resolver rejects a
-    // retired literal before any network access, and nothing here rewrites
+    // storage layer keeps them decodable and inert: the resolver rejects an
+    // unknown literal before any network access, and nothing here rewrites
     // or deletes the row.
     let (temp_dir, storage) = open_at_temp("legacy-provider");
     let config = StoredConfig {
-        provider: Some("forgejo".to_owned()),
+        provider: Some("svn".to_owned()),
         ..Default::default()
     };
     storage.save_role_config(Role::Executor, &config).unwrap();
     let loaded = storage.load_role_config(Role::Executor).unwrap().unwrap();
-    assert_eq!(loaded.provider.as_deref(), Some("forgejo"));
+    assert_eq!(loaded.provider.as_deref(), Some("svn"));
     let _ = fs::remove_dir_all(temp_dir);
 }

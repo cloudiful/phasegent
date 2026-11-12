@@ -5,7 +5,7 @@ use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::ProviderDispatcher;
 use crate::providers::api::PhasegentError;
-use crate::providers::{ProviderKind, forgejo::ForgejoConfig};
+use crate::providers::{ProviderKind, forgejo::ForgejoConfig, gitlab::GitlabConfig};
 
 pub(crate) fn verify_status_scope(
     provider: &ProviderDispatcher,
@@ -141,6 +141,14 @@ pub(crate) fn resolved_scope_read_only(
             )?;
             Ok(Some(("forgejo", config.repository().to_owned())))
         }
+        ProviderKind::Gitlab => {
+            let config = GitlabConfig::resolve(
+                role,
+                context.api_base.as_deref(),
+                context.repository.as_deref(),
+            )?;
+            Ok(Some(("gitlab", config.repository().to_owned())))
+        }
         ProviderKind::Redmine => Ok(context
             .project_id
             .as_deref()
@@ -155,6 +163,7 @@ pub(crate) fn resolved_scope_read_only(
 fn resolved_scope(provider: &ProviderDispatcher) -> Option<(&'static str, &str)> {
     match provider {
         ProviderDispatcher::Forgejo(forgejo) => Some(("forgejo", forgejo.repository_scope())),
+        ProviderDispatcher::Gitlab(gitlab) => Some(("gitlab", gitlab.repository_scope())),
         ProviderDispatcher::Redmine(redmine) => redmine
             .config
             .project_id

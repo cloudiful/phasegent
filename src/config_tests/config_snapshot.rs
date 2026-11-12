@@ -1,15 +1,15 @@
 use super::support::*;
 use super::*;
 
-/// The `config show` snapshot contract after provider removal: the
+/// The `config show` snapshot contract after provider consolidation: the
 /// snapshot reports the role provider, the role-scoped Redmine
 /// close-status id, and credential presence/length only (never a
-/// secret), and no retired-provider field may come back. Legacy persisted
+/// secret), and no legacy provider-specific field may come back. Legacy persisted
 /// project ids stay inert in storage, and Redmine provider resolution
 /// ignores the legacy project-id environment variables while an explicit
 /// project id keeps winning.
 #[test]
-fn config_snapshot_omits_retired_provider_surface_and_legacy_values_stay_inert() {
+fn config_snapshot_omits_provider_specific_surface_and_legacy_values_stay_inert() {
     with_isolated_storage("show-provider-contract", |db_path, storage| {
         // Fresh storage: unset fields stay absent and no credential slot is
         // rendered with a length.
@@ -53,8 +53,9 @@ fn config_snapshot_omits_retired_provider_surface_and_legacy_values_stay_inert()
             "snapshot must name redmine_close_status_id: {empty_text}"
         );
 
-        // A retired-provider credential row may still exist in an operator
-        // database; it must never surface as a field or leak its value.
+        // Legacy provider-specific credential rows may still exist in an
+        // operator database; they must never surface as a field or leak their
+        // value.
         storage
             .save_credential(Role::Executor, "gitlab", "gitlab-private-token-shhh")
             .unwrap();

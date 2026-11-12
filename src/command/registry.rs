@@ -81,7 +81,8 @@ pub(crate) enum ProviderScope {
     Any,
     /// Listed only when the resolved provider is Redmine.
     Redmine,
-    /// Listed for Redmine and Forgejo, the providers that expose the route.
+    /// Listed for Redmine, Forgejo, and GitLab, the providers that expose the
+    /// route.
     RedmineOrForgejo,
 }
 
@@ -92,7 +93,7 @@ impl ProviderScope {
             Self::Redmine => matches!(provider, Some(ProviderKind::Redmine)),
             Self::RedmineOrForgejo => matches!(
                 provider,
-                Some(ProviderKind::Redmine | ProviderKind::Forgejo)
+                Some(ProviderKind::Redmine | ProviderKind::Forgejo | ProviderKind::Gitlab)
             ),
         }
     }

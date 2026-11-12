@@ -418,7 +418,15 @@ fn an_externally_removed_isolated_target_is_never_returned_as_success() {
         let error = acquire_custom(&fixture, 245, "session-A", isolate, None, &[], None)
             .expect_err("a missing registered worktree is never a successful placement");
         assert_eq!(error.kind, "state");
-        assert!(error.message.contains("missing"), "got: {}", error.message);
+        // The runtime error is bounded to a fixed character budget. A long
+        // scratch path can consume that budget before the trailing "is missing"
+        // wording, so assert the stable diagnostic prefix rather than a tail
+        // fragment whose visibility depends on the fixture path length.
+        assert!(
+            error.message.contains("registered worktree"),
+            "got: {}",
+            error.message
+        );
     }
     assert_eq!(open_records(&fixture.identity).len(), 1);
 }

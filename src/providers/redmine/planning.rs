@@ -40,6 +40,12 @@ pub(crate) fn resolve_planning(
                 "issue planning fields",
             ));
         }
+        ProviderDispatcher::Gitlab(_) => {
+            return Err(PhasegentError::not_supported(
+                "gitlab",
+                "issue planning fields",
+            ));
+        }
     }
     let parent_issue_id = match &options.parent_issue {
         None => None,
@@ -133,6 +139,16 @@ pub(crate) fn create_issue(
             }
             Ok((provider.create_issue(title, body)?, None))
         }
+        ProviderDispatcher::Gitlab(_) => {
+            reject_explicit_assignee(provider, assignee)?;
+            if needs_provider_specific {
+                return Err(PhasegentError::not_supported(
+                    "gitlab",
+                    "issue tracker or planning fields",
+                ));
+            }
+            Ok((provider.create_issue(title, body)?, None))
+        }
         // Local ignores tracker/planning/assignee and uses the plain path.
         ProviderDispatcher::Local(_) => {
             reject_explicit_assignee(provider, assignee)?;
@@ -194,6 +210,10 @@ pub(crate) fn update_body(
         ProviderDispatcher::Local(_) => provider.update_body(number, body),
         ProviderDispatcher::Forgejo(_) => Err(PhasegentError::not_supported(
             "forgejo",
+            "issue tracker or planning fields",
+        )),
+        ProviderDispatcher::Gitlab(_) => Err(PhasegentError::not_supported(
+            "gitlab",
             "issue tracker or planning fields",
         )),
     }

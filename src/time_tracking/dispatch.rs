@@ -185,13 +185,13 @@ pub(crate) fn execute_recovery_with_caller(
         TimerCommand::Recover { run_id } => {
             // The current-repository task route is decided strictly
             // read-only before the ledger is opened, migrated or mutated, so
-            // a bound Forgejo task never reaches the transition or the
+            // a bound Forgejo or GitLab task never reaches the transition or the
             // projection even when the configured default is Redmine or
             // Local. Only a legacy operation keeps the selected-provider
-            // Forgejo refusal.
+            // unsupported-provider refusal.
             let route = super::recover::admit_recovery(&run_id)?;
             if route.as_ref().is_none_or(|route| route.is_legacy()) {
-                reject_forgejo_timer(_role, provider_kind)?;
+                reject_unsupported_timer(_role, provider_kind)?;
             }
             let storage = Storage::open().map_err(timer_storage_error("timer recover"))?;
             super::recover::handle_recover_with_caller(
@@ -213,14 +213,15 @@ pub(crate) fn execute_recovery_with_caller(
     }
 }
 
-pub(crate) fn reject_forgejo_timer(
+pub(crate) fn reject_unsupported_timer(
     role: Role,
     provider_kind: Option<ProviderKind>,
 ) -> Result<(), PhasegentError> {
-    if crate::providers::config::resolve_kind(role, provider_kind)? == ProviderKind::Forgejo {
-        return Err(PhasegentError::not_supported("forgejo", "time tracking"));
+    match crate::providers::config::resolve_kind(role, provider_kind)? {
+        ProviderKind::Forgejo => Err(PhasegentError::not_supported("forgejo", "time tracking")),
+        ProviderKind::Gitlab => Err(PhasegentError::not_supported("gitlab", "time tracking")),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 pub(crate) fn timer_orchestrator_caller(
