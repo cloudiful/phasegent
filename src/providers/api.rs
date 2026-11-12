@@ -237,6 +237,34 @@ pub struct RecordOutput {
     pub body: String,
 }
 
+/// The decode failure of a reserved-header comment that is not a valid
+/// record.
+///
+/// The failure is reported, never repaired: an invalid entry carries no
+/// trusted record metadata.
+#[derive(Debug, Serialize, Clone)]
+pub struct RecordErrorOutput {
+    pub kind: &'static str,
+    pub operation: &'static str,
+    pub message: String,
+}
+
+/// One reserved-header comment that is not a valid record.
+///
+/// The stored body is returned verbatim as `raw` so an operator can see
+/// what is actually stored, and the entry carries no kind, actor, key,
+/// phase, attempt, review, recon, or body: invalid content is never
+/// presented as audit metadata.
+#[derive(Debug, Serialize, Clone)]
+pub struct InvalidRecordOutput {
+    pub status: &'static str,
+    pub id: u64,
+    pub html_url: Option<String>,
+    pub issue: u64,
+    pub raw: String,
+    pub error: RecordErrorOutput,
+}
+
 #[derive(Debug, Clone)]
 pub enum PhasegentError {
     Config(String),

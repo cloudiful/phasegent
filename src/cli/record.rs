@@ -256,7 +256,18 @@ pub(crate) fn execute_record_with_caller(
             ) {
                 return super::provider_error(error);
             }
-            let exit = super::print_result(record::create(&provider, issue, &spec, text.as_str()));
+            let exit = match record::create(&provider, issue, &spec, text.as_str()) {
+                Ok(created) => {
+                    if !created.invalid.is_empty() {
+                        super::report_local_warnings(
+                            "record create",
+                            Some(created.invalid.message()),
+                        );
+                    }
+                    super::print_json(&created.output)
+                }
+                Err(error) => super::provider_error(error),
+            };
             if exit == 0
                 && let Some(body_file) = body_file.as_ref()
                 && let Some(warning) = body_file.cleanup_after_success()
@@ -308,12 +319,27 @@ pub(crate) fn execute_record_with_caller(
                 return super::provider_error(error);
             }
             if let Some(page) = page {
+                let outcome = match record::list_page(
+                    &provider,
+                    issue,
+                    RecordFilter { kind, phase, recon },
+                    page,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => return super::provider_error(error),
+                };
+                if !outcome.invalid.is_empty() {
+                    super::report_local_warnings("record list", Some(outcome.invalid.message()));
+                }
+                let invalid_count = outcome.invalid.count();
                 return super::print_result(
-                    record::list_page(&provider, issue, RecordFilter { kind, phase, recon }, page)
-                        .and_then(|page| {
-                            page.with_context(serde_json::json!({"issue": issue}))
-                                .map_err(PhasegentError::config)
-                        }),
+                    outcome
+                        .page
+                        .with_context(serde_json::json!({
+                            "issue": issue,
+                            "invalid_count": invalid_count
+                        }))
+                        .map_err(PhasegentError::config),
                 );
             }
             match record::list(&provider, issue, RecordFilter { kind, phase, recon }) {

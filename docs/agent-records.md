@@ -18,6 +18,37 @@ is rejected rather than decoded.
 `record get` and `record list` return the plain body plus the structured fields;
 the generated header is never shown.
 
+## Tolerant reads, strict writes
+
+A comment that opens with the reserved header but is not a valid record is
+never read as a record and never fails the whole read. It is listed and
+readable as an **invalid entry**:
+
+- `record list` shows every invalid entry with `status=invalid`, its id,
+  its link, the issue, the stored body as `raw`, and the decode failure as
+  `error` (`kind=decode`). It carries no kind, actor, key, phase, attempt,
+  review, recon, or body: invalid content is never audit metadata.
+- A valid list item keeps every record field and adds `status=record`.
+- `record get` on an invalid comment returns the same explicit invalid
+  object and succeeds; an ordinary comment stays a not-found result.
+- Invalid entries are listed whatever `--kind`, `--phase`, or `--recon`
+  ask for, because their metadata is not filterable; valid entries obey the
+  filters. `invalid_count` counts the invalid entries of the whole
+  filtered collection, and a short warning on stderr names them.
+
+A write stays strict. The pre-write scan of the existing comments tolerates
+an invalid entry only when its own request key is a different, established
+one. An invalid entry that claims the requested key, or whose key cannot be
+established at all, refuses the write before anything is written, and the
+confirmation read repeats the same check.
+
+The key of an invalid entry is recovered conservatively: exactly one
+top-level `key` string that is a valid request token is trusted. A
+duplicate key, a non-string value, a missing key, an unterminated header,
+or a body that is not a JSON object leaves the key unknown, and an unknown
+key is never guessed from prose. No other header field is recovered, and
+no invalid header is ever repaired or inferred.
+
 ## Stable request key
 
 `--key` is a stable request token: 1..128 characters from `[A-Za-z0-9._:-]`. Reuse
@@ -73,7 +104,8 @@ A recon record is evidence for the parent, not an audit note or a VERDICT.
   (`GET .../issues/:id.json?include=journals`) and locating the exact owned
   record. There is no journal-metadata write endpoint, and no server-side journal
   filtering is promised: `record list` filters locally over the decoded journals
-  and ignores ordinary comments (a malformed reserved header errors).
+  and ignores ordinary comments. A comment whose reserved header is not a valid
+  record is listed as an invalid entry instead of failing the read.
 - **Local** uses the same comment primitive with the existing `#note-<id>` id and
   the derived `role`/`phase`/`attempt` columns.
 - No new tables or migrations are involved: records are rows in the existing

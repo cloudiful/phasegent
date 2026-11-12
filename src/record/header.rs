@@ -9,6 +9,8 @@
 use crate::policy::Role;
 use crate::record::kind::RecordKind;
 use crate::record::spec::RecordSpec;
+use crate::record::token;
+use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 /// The literal every generated envelope starts with. A user body that
@@ -157,6 +159,77 @@ pub(crate) fn decode_body(stored: &str) -> Result<Option<DecodedRecord>, String>
     }))
 }
 
+/// Recover the request key from a reserved header that is not a valid
+/// record envelope.
+///
+/// Only exactly one top-level `key` member whose value is a string that
+/// passes the token rule is trusted. A duplicate key, a non-string value,
+/// a missing key, an unterminated header, or a body that is not a JSON
+/// object leaves the key unknown: an unknown key is never guessed from
+/// prose, and no other header field is recovered from it.
+pub(crate) fn recover_key(stored: &str) -> Option<String> {
+    if !has_reserved_prefix(stored) {
+        return None;
+    }
+    let payload = &stored[HEADER_PREFIX.len()..];
+    let end = payload.find("-->")?;
+    let json = payload[..end].trim_end_matches(' ');
+    let probe = serde_json::from_str::<KeyProbe>(json).ok()?;
+    probe.into_key()
+}
+
+/// The top-level `key` members of one header object.
+#[derive(Debug, Default)]
+struct KeyProbe {
+    key: Option<String>,
+    occurrences: usize,
+    unusable: bool,
+}
+
+impl KeyProbe {
+    /// The recovered key, or `None` when the object does not carry
+    /// exactly one usable top-level key.
+    fn into_key(self) -> Option<String> {
+        if self.occurrences != 1 || self.unusable {
+            return None;
+        }
+        self.key
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyProbe {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(KeyProbeVisitor)
+    }
+}
+
+/// Reads the top-level `key` members of a header object without ever
+/// collapsing duplicates into one value.
+struct KeyProbeVisitor;
+
+impl<'de> Visitor<'de> for KeyProbeVisitor {
+    type Value = KeyProbe;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a record header object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<KeyProbe, A::Error> {
+        let mut probe = KeyProbe::default();
+        while let Some((name, value)) = map.next_entry::<String, serde_json::Value>()? {
+            if name != "key" {
+                continue;
+            }
+            probe.occurrences += 1;
+            match value {
+                serde_json::Value::String(key) if token::is_token(&key) => probe.key = Some(key),
+                _ => probe.unusable = true,
+            }
+        }
+        Ok(probe)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +362,48 @@ mod tests {
         );
         let error = decode_body(&stored).unwrap_err();
         assert!(error.contains("requires --review"), "{error}");
+    }
+
+    #[test]
+    fn recovers_exactly_one_top_level_key_from_a_malformed_header() {
+        let stored = format!(
+            "{HEADER_PREFIX}{}{HEADER_SUFFIX}\nbody",
+            r#"{"v":1,"kind":"recon","actor":"explore","key":"issue147-P1-a1"}"#
+        );
+        // The header is not a valid record (a recon record requires its
+        // label), yet its single usable key is recoverable.
+        assert!(decode_body(&stored).is_err());
+        assert_eq!(
+            recover_key(&stored).as_deref(),
+            Some("issue147-P1-a1"),
+            "{stored:?}"
+        );
+    }
+
+    #[test]
+    fn an_unusable_or_ambiguous_key_is_never_recovered() {
+        let cases = [
+            // No key at all.
+            r#"{"v":1,"kind":"recon","actor":"explore"}"#,
+            // A key that is not a token.
+            r#"{"v":1,"kind":"recon","actor":"explore","key":"a b"}"#,
+            // A key that is not a string.
+            r#"{"v":1,"kind":"recon","actor":"explore","key":7}"#,
+            // The same key twice: the ownership stays unknown.
+            r#"{"v":1,"kind":"recon","actor":"explore","key":"k1","key":"k2"}"#,
+            // Not an object at all.
+            r#"["k1"]"#,
+        ];
+        for case in cases {
+            let stored = format!("{HEADER_PREFIX}{case}{HEADER_SUFFIX}\nbody");
+            assert_eq!(recover_key(&stored), None, "{case}");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_or_unreserved_body_has_no_recoverable_key() {
+        assert_eq!(recover_key("<!-- phasegent-record {\"key\":\"k1\"}"), None);
+        assert_eq!(recover_key("just prose"), None);
+        assert_eq!(recover_key(""), None);
     }
 }

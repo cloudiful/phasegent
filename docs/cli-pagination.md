@@ -33,7 +33,8 @@ Command-specific scope fields remain alongside it:
 | `worktree list` | `repo_identity` |
 | `worktree status` | `issue` |
 | `timer list`, `project list`, `version list` | none |
-| `comment list`, `record list`, `relation list` | `issue` |
+| `comment list`, `relation list` | `issue` |
+| `record list` | `issue`, `invalid_count` |
 | `issue branches` | `issue`, `repo_key`, `local_only`, `ambiguous` |
 
 `total_count` is exact after filtering when known. It is `null` only when a
@@ -44,7 +45,9 @@ requested page and collection metadata. Text output shows the current page,
 total and whether more items remain, together with the entries and scope.
 
 Worktree status filters registry directories by associated issue number. Record filters and decoding run
-before counting and slicing; ordinary comments do not count as records. Branch
+before counting and slicing; ordinary comments do not count as records, and a stored
+comment whose reserved header is not a valid record is always counted and listed as
+an invalid entry. Branch
 ambiguity reflects all matching repository/issue scopes, not only the visible
 page. Separate page requests do not share a snapshot, so concurrent collection
 changes can shift offsets.

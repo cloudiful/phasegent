@@ -56,9 +56,15 @@ fn journal_pages_filter_records_before_count_and_slice_without_offset_requests()
             crate::pagination::PageRequest::new(2, 1).unwrap(),
         )
     });
-    let page = result.unwrap();
+    let page = result.unwrap().page;
     assert_eq!(page.total_count, Some(2));
-    assert_eq!(page.items[0].id, 504);
+    assert_eq!(
+        page.items[0]
+            .record()
+            .expect("the stored header is a valid record")
+            .id,
+        504
+    );
     assert!(!page.has_more);
     assert!(request.contains("include=journals"));
     assert!(!request.contains("offset="));

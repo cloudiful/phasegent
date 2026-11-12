@@ -74,14 +74,21 @@ fn create_get_and_list_round_trip_a_local_record() {
         created.html_url
     );
 
-    let fetched = record::get(&provider, issue.number, created.id).unwrap();
+    let entry = record::get(&provider, issue.number, created.id).unwrap();
+    let fetched = entry.record().expect("the stored header is a valid record");
     assert_eq!(fetched.id, created.id);
     assert_eq!(fetched.body, "plain note body");
     assert_eq!(fetched.phase.as_deref(), Some("P1"));
 
     let listed = record::list(&provider, issue.number, RecordFilter::default()).unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].id, created.id);
+    assert_eq!(
+        listed[0]
+            .record()
+            .expect("the stored header is a valid record")
+            .id,
+        created.id
+    );
 
     let filtered = record::list(
         &provider,
@@ -141,7 +148,13 @@ fn an_ordinary_local_comment_is_not_a_record() {
 
     let listed = record::list(&provider, issue.number, RecordFilter::default()).unwrap();
     assert_eq!(listed.len(), 1, "only the envelope body is a record");
-    assert_eq!(listed[0].body, "real");
+    assert_eq!(
+        listed[0]
+            .record()
+            .expect("the stored header is a valid record")
+            .body,
+        "real"
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -198,7 +211,8 @@ fn a_reviewer_record_round_trips_and_a_missing_scope_is_rejected() {
     assert_eq!(created.kind, "reviewer");
     assert_eq!(created.actor, "reviewer");
     assert_eq!(created.review.as_deref(), Some("checkpoint"));
-    let fetched = record::get(&provider, issue.number, created.id).unwrap();
+    let entry = record::get(&provider, issue.number, created.id).unwrap();
+    let fetched = entry.record().expect("the stored header is a valid record");
     assert_eq!(fetched.review.as_deref(), Some("checkpoint"));
 
     let _ = std::fs::remove_dir_all(dir);

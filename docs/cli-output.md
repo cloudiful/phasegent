@@ -125,6 +125,12 @@ collection. The CLI does not automatically traverse all pages. See
 [collection pagination](cli-pagination.md) for limits, context fields and native
 versus output-only capabilities.
 
+`record list` adds the `invalid_count` context field: the number of stored
+comments whose reserved header is not a valid record. Its items carry a
+`status` discriminator, `record` for a valid record and `invalid` for such a
+comment; an invalid item shows only its identity, the stored body as `raw`, and
+the decode failure as `error`. See [agent records](agent-records.md).
+
 ## Errors and exit codes
 
 A failure keeps the same information in both formats:
