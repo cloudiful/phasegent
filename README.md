@@ -302,10 +302,18 @@ local, closure and fresh host gate is re-checked. A recorded path that no longer
 is proven absent has its directory registration and its owned associations reclaimed
 under the operation lock; dry-run reports what would be reclaimed. An inaccessible
 path or symbolic link is retained. No provider read or session move is required.
-Main checkouts are excluded from candidate totals; task, branch-link and Git history
-are retained. The scan reuses one running-session snapshot and deletion rechecks
-fresh occupancy. Kept reason codes distinguish issue state, lookup failure, legacy
-provenance, local probes and running sessions.
+An absent main registration is a stale row like any other and is reclaimed the
+same way; an existing main checkout stays excluded from candidate totals; task,
+branch-link and Git history are retained. The scan reuses one running-session
+snapshot and deletion rechecks fresh occupancy. A cache-bearing candidate keeps
+two fresh checks around the destructive cache deletion: one after the family
+relocation and before the `.cache` is deleted, and one after the deletion and
+before the worktree removal. A candidate without a root `.cache` runs the
+non-mutating cleanliness probe and one final fresh check instead. In both flows
+no external Git process sits between the final fresh check and the removal.
+Kept reason codes distinguish issue state, lookup failure, legacy provenance,
+local probes and running sessions, and name the session-family, cache, path and
+registry failures a fresh re-check found.
 
 The read-only scan never moves a session; the removal stage is the only place
 that may move one. Coverage is the one connected OpenCode service at that moment,
@@ -313,7 +321,10 @@ not a whole-machine or multi-host inventory, and the lock protects cooperating
 phasegent operations only. Output follows the global `--output` selection: the
 compact text summary with directory-based counts on a human terminal, the
 machine aggregate on a pipe or with `--json`; `--verbose` adds bounded
-per-directory rows. On an interactive terminal a progress spinner shows the scan
+per-directory rows. The machine aggregate also carries the measured timings of
+the pass — the wall clock, the pipeline stages and the nested closure and host
+calls — which overlap instead of adding up; the compact text keeps the elapsed
+line only. On an interactive terminal a progress spinner shows the scan
 and per-removal checks, never a directory path, and is cleared before the result.
 Invocations wrapped in a transparent `timeout`, `env` or `command` still receive
 the managed agent role. See

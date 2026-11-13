@@ -80,6 +80,11 @@ kept reasons: main 0, waiting-move 0, other-protected 0, issue-state 0
 elapsed 0.001s
 ```
 
+The compact prune summary keeps the elapsed line only. `--verbose` adds the
+bounded timing breakdown — the wall clock, the fixed stage list and the fixed
+operation list — and a note that the two families overlap instead of adding up.
+It changes nothing in the machine document.
+
 Text is width-aware and indented for a terminal, and long values wrap instead
 of being truncated silently. A kept or failed prune directory names its reason,
 so the summary stays actionable. The preview reads each candidate's occupancy
@@ -106,8 +111,23 @@ $ phasegent --output json doctor
 
 ```console
 $ phasegent --output json worktree prune --dryrun
-{"dry_run":true,"remove":false,"repos":[],"totals":{"repositories":0,"removed":0,"eligible":0,"absent":0,"kept_protected":0,"kept_issue":0,"failed":0}}
+{"dry_run":true,"remove":false,"repos":[],"totals":{"repositories":0,"removed":0,"eligible":0,"absent":0,"kept_protected":0,"kept_issue":0,"failed":0},"timings":{"total_ms":0.42,"stages":{"cache_delete_reclaim":{"calls":0,"duration_ms":0.0},"family_move":{"calls":0,"duration_ms":0.0},"scan":{"calls":1,"duration_ms":0.31},"scope_registry":{"calls":1,"duration_ms":0.06},"verification":{"calls":0,"duration_ms":0.0}},"operations":{"closure":{"calls":1,"duration_ms":0.05},"host_active":{"calls":1,"duration_ms":0.2},"host_get":{"calls":0,"duration_ms":0.0},"host_list":{"calls":0,"duration_ms":0.0},"host_move":{"calls":0,"duration_ms":0.0}}}}
 ```
+
+The prune envelope carries the measured timings of the pass: `total_ms` is the
+wall clock, `stages` counts and times the pipeline steps, and `operations`
+counts and times the nested boundary calls. The `cache_delete_reclaim` stage
+covers the reclamation work of the removal stage: the root `.cache` clearance
+— or the cleanliness probe that replaces it when the tree has no root
+`.cache` — the `git worktree remove`, the directory registry row removal, and
+the reclamation of an absent registration. Its failing calls are counted and
+timed as well. The `verification` stage holds the fresh checks: a cache-bearing
+candidate is checked on both sides of its `.cache` deletion, a candidate without
+a root `.cache` is checked once after the cleanliness probe. The two families
+can overlap; operations can also run outside a measured stage, such as during
+dry-run preview. The durations are observations, not an additive total. A closure measurement counts closure evaluations, not network
+requests. Every known stage and operation is present, so a pass that never
+reached one reports a valid zero.
 
 In `json` mode stderr carries only the structured diagnostics that already
 existed. The transient progress line never appears, and no cursor control or

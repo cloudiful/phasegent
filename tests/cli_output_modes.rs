@@ -346,7 +346,9 @@ fn the_prune_keeps_its_legacy_formats_and_the_default_follows_auto() {
 }
 
 /// The verbose selection changes the human text only: the machine document
-/// stays exactly the aggregate, and a pipe never carries a control sequence.
+/// keeps exactly the aggregate, and a pipe never carries a control sequence.
+/// The measured timings are the one part of the document that differs between
+/// two runs, because they are measurements.
 #[test]
 fn the_verbose_prune_selection_never_changes_the_machine_document() {
     let scratch = Scratch::new("prune-verbose");
@@ -362,12 +364,39 @@ fn the_verbose_prune_selection_never_changes_the_machine_document() {
         &["worktree", "prune", "--dryrun", "--json", "--verbose"],
     );
     assert_eq!(verbose.code, 0, "stderr: {}", verbose.stderr);
-    assert_eq!(
-        concise.stdout, verbose.stdout,
-        "the verbose selection leaves the machine document unchanged"
-    );
+    let concise_value: serde_json::Value =
+        serde_json::from_str(concise.stdout.trim()).expect("one JSON document");
     let value: serde_json::Value =
         serde_json::from_str(verbose.stdout.trim()).expect("one JSON document");
+    let mut concise_measured = concise_value.clone();
+    let mut measured = value.clone();
+    concise_measured.as_object_mut().unwrap().remove("timings");
+    measured.as_object_mut().unwrap().remove("timings");
+    assert_eq!(
+        concise_measured, measured,
+        "the verbose selection leaves the machine document unchanged"
+    );
+    for document in [&concise_value, &value] {
+        let timings = document.get("timings").expect("the measured timings");
+        assert!(
+            timings.get("total_ms").is_some(),
+            "the timings carry the wall clock: {document}"
+        );
+        assert!(
+            timings
+                .get("stages")
+                .and_then(|stages| stages.get("scan"))
+                .is_some(),
+            "the timings carry the stage breakdown: {document}"
+        );
+        assert!(
+            timings
+                .get("operations")
+                .and_then(|operations| operations.get("closure"))
+                .is_some(),
+            "the timings carry the nested operation counts: {document}"
+        );
+    }
     assert!(
         value.get("__verbose").is_none(),
         "the verbose marker never reaches the machine document: {value}"
@@ -388,6 +417,11 @@ fn the_verbose_prune_selection_never_changes_the_machine_document() {
     assert!(
         text.stdout.starts_with("worktree prune ("),
         "the verbose text keeps the summary: {}",
+        text.stdout
+    );
+    assert!(
+        text.stdout.contains("timing stages:"),
+        "the verbose text adds the bounded timing breakdown: {}",
         text.stdout
     );
     assert!(

@@ -38,6 +38,7 @@ use crate::worktree::{ProcessWorktreeRunner, WorktreeError};
 use super::{config_error, open_storage, storage_error};
 
 mod active_guard;
+mod timing;
 mod worktrees;
 
 #[allow(unused_imports)]
@@ -52,6 +53,9 @@ pub(crate) use worktrees::{
     DirectoryCandidate, PruneAction, PruneDisposition, PruneMode, PruneOutcome, PruneScope,
     PruneStage, PruneSummary, prune_pass, prune_pass_with_policy,
 };
+
+use self::timing::{TimedIssueStateSource, TimedOpenCodeApi};
+pub(crate) use self::timing::{TimingReport, TimingStats};
 
 fn stderr_note(message: &str) {
     crate::output::progress::stage(message);
@@ -185,6 +189,10 @@ pub(crate) struct PruneAggregate {
     pub remove: bool,
     pub repos: Vec<PruneRepoOutcome>,
     pub totals: PruneTotals,
+    /// The measured timings of this invocation. The stages overlap with the
+    /// nested operations, so the durations are observations and never an
+    /// additive total.
+    pub timings: TimingReport,
 }
 
 enum Scope {
@@ -233,6 +241,9 @@ pub(crate) fn execute_prune_with_source_verbose(
 ) -> i32 {
     let started = Instant::now();
     let move_budget = MoveBudget::new();
+    // The timing sink belongs to this invocation alone: no global, no shared
+    // state, and nothing that outlives the pass.
+    let timing = TimingStats::new();
 
     // An explicit `--repo` is validated as usable before the store is opened.
     let runner = ProcessWorktreeRunner::new();
@@ -247,7 +258,7 @@ pub(crate) fn execute_prune_with_source_verbose(
     let storage = match open_pass_storage(dry_run) {
         Ok(Some(storage)) => storage,
         Ok(None) => {
-            return emit_prune(&empty_aggregate(dry_run), format, verbose, started);
+            return emit_prune(&empty_aggregate(dry_run, &timing), format, verbose, started);
         }
         Err(message) => return config_error(&message),
     };
@@ -267,6 +278,14 @@ pub(crate) fn execute_prune_with_source_verbose(
     };
     let tally = ProgressTally::new(scopes.len());
     progress(&tally.render(mode));
+
+    // The boundary decorators forward every call unchanged and only measure
+    // them; the pass below reads the decorated boundary exactly as it read
+    // the plain one.
+    let timed_source = TimedIssueStateSource::new(source, &timing);
+    let timed_api = TimedOpenCodeApi::new(api, &timing);
+    let measured_source: &dyn IssueStateSource = &timed_source;
+    let measured_api: &dyn crate::worktree::opencode::OpenCodeApi = &timed_api;
 
     let mut outcomes: Vec<PruneRepoOutcome> = Vec::new();
     let mut totals = PruneTotals {
@@ -290,7 +309,9 @@ pub(crate) fn execute_prune_with_source_verbose(
             }
             Scope::Resolved { identity, path } => (identity, path, None),
         };
-        let records = match registry::load_records(&storage, Some(&identity)) {
+        let records = match timing.measure_stage(timing::SCOPE_REGISTRY, || {
+            registry::load_records(&storage, Some(&identity))
+        }) {
             Ok(records) => records,
             Err(error) => {
                 outcomes.push(PruneRepoOutcome {
@@ -336,18 +357,19 @@ pub(crate) fn execute_prune_with_source_verbose(
                 }
                 progress(&tally.render(mode));
             };
-            worktrees::prune_pass_with_snapshot(
+            worktrees::prune_pass_with_snapshot_timed(
                 &storage,
                 &runner,
-                api,
-                api,
+                measured_api,
+                measured_api,
                 &scope,
-                source,
+                measured_source,
                 mode,
                 confirmation,
                 &stages,
                 &scan_snapshot,
                 skipped_reason.is_some(),
+                &timing,
             )
         };
         tally.finish_repository(skipped_reason.is_some());
@@ -374,6 +396,7 @@ pub(crate) fn execute_prune_with_source_verbose(
             remove: !dry_run,
             repos: outcomes,
             totals,
+            timings: timing.report(),
         },
         format,
         verbose,
@@ -381,7 +404,7 @@ pub(crate) fn execute_prune_with_source_verbose(
     )
 }
 
-fn empty_aggregate(dry_run: bool) -> PruneAggregate {
+fn empty_aggregate(dry_run: bool, timing: &TimingStats) -> PruneAggregate {
     PruneAggregate {
         dry_run,
         remove: !dry_run,
@@ -395,6 +418,7 @@ fn empty_aggregate(dry_run: bool) -> PruneAggregate {
             kept_issue: 0,
             failed: 0,
         },
+        timings: timing.report(),
     }
 }
 

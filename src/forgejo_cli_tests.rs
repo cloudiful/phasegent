@@ -909,11 +909,13 @@ fn global_prune_reports_all_skipped_repository_paths() {
     let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
     assert_eq!(exit, 0, "{stderr}");
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(value["totals"]["absent"], 1);
+    // The absent main registration is a stale row like any other: it is
+    // reclaimed, while the existing and the symlinked path stay protected.
+    assert_eq!(value["totals"]["absent"], 2);
     assert_eq!(value["totals"]["kept_protected"], 2);
     let repo = &value["repos"][0];
     assert!(repo["skipped_reason"].is_string());
-    assert_eq!(repo["worktrees"]["scanned"], 3);
+    assert_eq!(repo["worktrees"]["scanned"], 4);
     let actions = repo["worktrees"]["actions"].as_array().unwrap();
     for (id, code) in [
         ("existing", "repository_unavailable"),
@@ -926,8 +928,15 @@ fn global_prune_reports_all_skipped_repository_paths() {
         assert_eq!(action["result"], "skipped_protected");
         assert_eq!(action["reason_code"], code);
     }
+    for id in ["absent", "main"] {
+        let action = actions
+            .iter()
+            .find(|action| action["directory_id"] == id)
+            .unwrap();
+        assert_eq!(action["result"], "absent");
+    }
     let remaining = registry::load_records(&storage, Some(&identity)).unwrap();
-    assert_eq!(remaining.len(), 3);
+    assert_eq!(remaining.len(), 2);
     assert!(existing.exists());
     assert!(std::fs::symlink_metadata(&symlink).is_ok());
 }

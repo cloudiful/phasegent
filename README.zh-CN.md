@@ -246,14 +246,20 @@ registry 记录的所有 repository identity，`--dryrun`（别名 `--dry-run`�
 closure 与最新 host 保护后，执行普通的不带 `--force` 的 `git worktree remove`。磁盘上
 确认不存在的记录路径会在 operation lock 下回收目录注册及其所属关联；dry-run 只报告
 将要回收的记录。无法访问的路径和符号链接会保留，不要求 provider 读取或会话迁移。
-主 checkout 不计入候选统计；task、分支关联和 Git 历史保留。扫描复用一次运行中会话
-快照，删除前重新检查实时占用。保留原因代码区分 issue 状态、查询失败、legacy 来源、
-本地探测及运行中会话。
+主 checkout 已存在时不计入候选统计；缺失的主 checkout 注册与其它陈旧记录一样被回收；
+task、分支关联和 Git 历史保留。扫描复用一次运行中会话快照，删除前重新检查实时占用。
+根 `.cache` 的清理是不可逆的，因此带缓存的候选在删除两侧各保留一次新鲜复查：家族迁移
+之后、删除之前一次，实际删除之后、移除之前再一次。没有根 `.cache` 的候选没有需要授权
+的破坏性操作，清洁度探测不是变更，只在其后执行一次最终新鲜复查。两种流程中，最终新鲜
+复查与移除之间都不会夹着任何外部 Git 进程。保留原因代码区分 issue 状态、查询失败、legacy 来源、
+本地探测及运行中会话，并给出最新复查发现的会话家族、缓存、路径与注册表失败。
 
 只读扫描绝不迁移会话；只有移除阶段可以迁移。覆盖范围是那一刻这一个连接的 OpenCode
 服务，而非整机或多 host 清单；锁只保护协作的 phasegent 操作。输出遵循全局 `--output`
 选择：人类终端上为简洁的按目录统计文本，管道或 `--json` 时为机器聚合结果；`--verbose`
-增加有界的逐目录行。交互式终端上的进度行不显示目录路径，并在结果前清除。被透明
+增加有界的逐目录行。机器聚合结果还带有本次调用的计时：整体墙钟时间、各流水线阶段，
+以及嵌套的 closure 与 host 调用；两族计时相互重叠，不应相加，简洁文本只保留 elapsed
+一行。交互式终端上的进度行不显示目录路径，并在结果前清除。被透明
 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管 agent role。详见
 [docs/worktree-maintenance.md](docs/worktree-maintenance.md) 与
 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。
