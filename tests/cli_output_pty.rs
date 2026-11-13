@@ -683,6 +683,11 @@ sys.exit(code)
             "the verbose rendering keeps the same aggregate:\n{}",
             verbose_text,
         );
+        assert!(
+            verbose_text.contains("timing stages:"),
+            "the verbose rendering adds the bounded timing breakdown:\n{}",
+            verbose_text,
+        );
 
         // The machine document is the same aggregate either way.
         let machine = run_pty(
@@ -706,6 +711,13 @@ sys.exit(code)
                 .and_then(serde_json::Value::as_u64),
             Some(1),
             "the machine document keeps the aggregate: {value}"
+        );
+        assert!(
+            value
+                .get("timings")
+                .and_then(|timings| timings.get("total_ms"))
+                .is_some(),
+            "the machine document carries the measured timings: {value}"
         );
     }
 

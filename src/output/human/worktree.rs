@@ -412,7 +412,54 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
     if skipped > 0 {
         lines.row(format!("skipped repositories: {skipped}"));
     }
+    if verbose {
+        render_prune_timings(&mut lines, value.get("timings"));
+    }
     lines.finish()
+}
+
+/// The bounded timing breakdown of the verbose rendering: the wall clock of
+/// the pass, the fixed stage list, the fixed operation list, and the note
+/// that the two families overlap instead of adding up.
+fn render_prune_timings(lines: &mut Lines, timings: Option<&Value>) {
+    let Some(timings) = timings else {
+        return;
+    };
+    let total = timings
+        .get("total_ms")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    lines.row(format!("timing: total {total:.3}ms"));
+    lines.row(format!(
+        "timing stages: {}",
+        timing_entries(timings.get("stages"))
+    ));
+    lines.row(format!(
+        "timing operations: {}",
+        timing_entries(timings.get("operations"))
+    ));
+    lines
+        .row("timing: stages and operations overlap, so their durations are not an additive total");
+}
+
+/// The measured entries of one timing family, in the fixed order the report
+/// lists them.
+fn timing_entries(entries: Option<&Value>) -> String {
+    let Some(entries) = entries.and_then(Value::as_object) else {
+        return "none".to_owned();
+    };
+    entries
+        .iter()
+        .map(|(name, entry)| {
+            let calls = entry.get("calls").and_then(Value::as_u64).unwrap_or(0);
+            let duration = entry
+                .get("duration_ms")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            format!("{name} {calls} call(s) {duration:.3}ms")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The marker the verbose prune rendering is selected with. The prune command

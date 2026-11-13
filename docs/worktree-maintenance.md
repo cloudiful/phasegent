@@ -117,6 +117,11 @@ before host reads, so a main checkout or dirty path requires no host access. Mai
 checkouts are excluded from candidate and kept totals. One lazy running-session
 snapshot is reused across the scan; destructive boundaries use fresh checks.
 
+An absent main registration is a stale row like any other: it is reclaimed
+through the same path, while an existing main checkout stays excluded from the
+candidate and kept totals. A registration whose path cannot be inspected — a
+symbolic link or an inaccessible directory — is never counted as absent.
+
 After a successful `git worktree remove` (never with `--force`), the registry row
 is deleted. Branches and Git history are retained. A recorded path that no
 is proven absent has its registration and directory-owned associations reclaimed
@@ -127,6 +132,19 @@ in those repositories remain protected. Inaccessible paths and symbolic links
 are retained. Independent task, branch-link, baseline and issue histories remain;
 no provider read or session move is required for an absent path.
 
+A cache-bearing candidate keeps two fresh checks around the destructive cache
+deletion: one after the family relocation and before the `.cache` is deleted,
+and one after the deletion and before the worktree removal. The deletion is
+irreversible, so its authorization evidence must be fresh before it, and the
+removal still needs fresh evidence after it. A candidate without a root
+`.cache` has nothing destructive to authorize: the cleanliness probe is not a
+mutation, so it runs before one final fresh check. In both flows no external
+Git process sits between the final fresh check and the removal. The fresh check
+of the registry, the closure evidence, the local guards and the host occupancy
+therefore always follows the last mutation, and it follows the cache mutation
+when there was one. A cache-bearing candidate costs two check rounds, a
+candidate without a root `.cache` one.
+
 The default output follows the global `--output auto` selection: the compact
 human summary on an interactive terminal and the machine aggregate envelope on a
 pipe or in CI. `--verbose` adds bounded per-directory rows without changing the
@@ -136,7 +154,25 @@ lookup failures, unattributed legacy associations, local probes and running
 occupancy. Lookup failures distinguish missing role configuration, denied access,
 scope mismatch and provider unavailability with bounded hints in the default
 human summary; provider response bodies are not displayed. The aggregate envelope is the complete-detail inspection
-channel. Progress is a human affordance only: one stderr line is redrawn in
+channel, and it also carries the measured timings of the pass: the wall clock,
+the pipeline stages and the nested boundary calls (closure evaluations and
+the host's `active`, `get`, `list` and `move` calls). The stages are
+`scope_registry` (the per-scope registry read), `scan` (the candidate scan),
+`family_move` (the session-family relocation), `verification` (the fresh
+re-checks) and `cache_delete_reclaim`, which covers the reclamation work of the
+removal stage: the root `.cache` clearance — or the cleanliness probe that
+replaces it when the tree has no root `.cache` — the `git worktree remove`, the
+directory registry row removal, and the reclamation of an absent registration.
+Every call of a stage is counted and timed, including the ones that fail. The
+two families overlap, because every nested call is measured inside the stage
+that made it, so the durations are observations and never an additive total. A
+closure measurement counts closure evaluations, not network requests: one
+evaluation may read one provider answer, several, or none. The compact human
+summary keeps the elapsed line only; `--verbose` adds the bounded stage and
+operation breakdown. The measurements are never a performance guarantee and
+never decide a removal.
+
+Progress is a human affordance only: one stderr line is redrawn in
 place, never carries a directory path, counts completed repositories and
 directories, and is cleared before the result.
 

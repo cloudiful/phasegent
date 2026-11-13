@@ -37,6 +37,7 @@ use crate::worktree::registry::{self, DirectoryRecord};
 use crate::worktree::{WorktreeRunner, canonical_or_self};
 
 use super::active_guard;
+use super::timing::{self, TimingStats};
 use crate::cli::issue_closure::{IssueClosure, IssueStateSource, TaskScopeRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +65,23 @@ pub(crate) enum PruneDisposition {
     SkippedProtected(String),
     SkippedIssue(String),
     Removable,
+}
+
+/// A rejection that keeps a directory, together with the fixed reason code
+/// the output carries. Every rejection path names one of these codes, so a
+/// kept directory never falls back to an unnamed protected state.
+pub(crate) struct Rejection {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+}
+
+impl Rejection {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -169,32 +187,55 @@ fn scan_with_paths(
     let mut candidates: Vec<DirectoryCandidate> = scope
         .records
         .iter()
-        .filter(|record| !same_path(Path::new(&record.worktree_path), scope.repo_path))
-        .map(|record| {
-            if absent_only {
-                let mut candidate = classify_absent_only(record);
-                match path_absent(Path::new(&record.worktree_path)) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        candidate.reason_code = Some("repository_unavailable");
-                        candidate.disposition = PruneDisposition::SkippedProtected(
-                            "repository checkout is unavailable; existing directory retained"
-                                .to_owned(),
-                        );
-                    }
-                    Err(reason) => {
-                        candidate.reason_code = Some("path_probe_error");
-                        candidate.disposition = PruneDisposition::SkippedProtected(reason);
+        .filter_map(|record| {
+            let path = Path::new(&record.worktree_path);
+            // The main checkout is excluded only after the absence probe: a
+            // proven absent main registration is a stale row that may be
+            // reclaimed, while a main checkout that exists — or whose state
+            // cannot be proven — is never a candidate.
+            match path_absent(path) {
+                Ok(true) => Some(classify_absent_only(record)),
+                Ok(false) => {
+                    if same_path(path, scope.repo_path) {
+                        None
+                    } else if absent_only {
+                        Some(unavailable_repository_candidate(record))
+                    } else {
+                        Some(classify(runner, api, scope, source, record, snapshot))
                     }
                 }
-                candidate
-            } else {
-                classify(runner, api, scope, source, record, snapshot)
+                Err(reason) => {
+                    if same_path(path, scope.repo_path) {
+                        None
+                    } else {
+                        Some(probe_error_candidate(record, reason))
+                    }
+                }
             }
         })
         .collect();
     candidates.sort_by(|a, b| a.canonical_path.cmp(&b.canonical_path));
     candidates
+}
+
+/// A registration whose directory exists while the repository root is
+/// unavailable: the directory stays, and the reason says why.
+fn unavailable_repository_candidate(record: &DirectoryRecord) -> DirectoryCandidate {
+    let mut candidate = classify_absent_only(record);
+    candidate.reason_code = Some("repository_unavailable");
+    candidate.disposition = PruneDisposition::SkippedProtected(
+        "repository checkout is unavailable; existing directory retained".to_owned(),
+    );
+    candidate
+}
+
+/// A registration whose path could not be inspected. It is never absent and
+/// never removed.
+fn probe_error_candidate(record: &DirectoryRecord, reason: String) -> DirectoryCandidate {
+    let mut candidate = classify_absent_only(record);
+    candidate.reason_code = Some("path_probe_error");
+    candidate.disposition = PruneDisposition::SkippedProtected(reason);
+    candidate
 }
 
 fn classify_absent_only(record: &DirectoryRecord) -> DirectoryCandidate {
@@ -246,6 +287,7 @@ fn classify(
         }
     }
     if same_path(&canonical, scope.repo_path) {
+        candidate.reason_code = Some("main_checkout");
         candidate.disposition =
             PruneDisposition::SkippedProtected("the main checkout is never removed".to_owned());
         return candidate;
@@ -479,6 +521,38 @@ pub(super) fn prune_pass_with_snapshot(
     snapshot: &std::cell::OnceCell<Result<active_guard::RunningSnapshot, String>>,
     absent_only: bool,
 ) -> PruneSummary {
+    prune_pass_with_snapshot_timed(
+        storage,
+        runner,
+        scan_api,
+        fresh_api,
+        scope,
+        source,
+        mode,
+        confirmation,
+        stages,
+        snapshot,
+        absent_only,
+        &TimingStats::new(),
+    )
+}
+
+/// The prune pass with the invocation's own timing sink.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prune_pass_with_snapshot_timed(
+    storage: &Storage,
+    runner: &dyn WorktreeRunner,
+    scan_api: &dyn OpenCodeApi,
+    fresh_api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    source: &dyn IssueStateSource,
+    mode: PruneMode,
+    confirmation: MovePolicy<'_>,
+    stages: &dyn Fn(PruneStage),
+    snapshot: &std::cell::OnceCell<Result<active_guard::RunningSnapshot, String>>,
+    absent_only: bool,
+    timing: &TimingStats,
+) -> PruneSummary {
     // One per-repository operation lock covers the whole removal pass: fresh
     // checks, Git mutation, and the short registry transactions share it.
     // A preview and every other read path create no lock file.
@@ -488,10 +562,16 @@ pub(super) fn prune_pass_with_snapshot(
         match crate::worktree::operation_lock::acquire(scope.identity) {
             Ok(lock) => Some(lock),
             Err(error) => {
+                // The lock refused every reclamation in this pass, so an
+                // absent main registration is reported as kept with the lock
+                // reason instead of as a reclaimed absence.
                 let actions = scope
                     .records
                     .iter()
-                    .filter(|record| !same_path(Path::new(&record.worktree_path), scope.repo_path))
+                    .filter(|record| {
+                        !same_path(Path::new(&record.worktree_path), scope.repo_path)
+                            || path_absent(Path::new(&record.worktree_path)).unwrap_or(false)
+                    })
                     .map(|record| PruneAction {
                         worktree_path: record.worktree_path.clone(),
                         branch: record.branch.clone(),
@@ -510,7 +590,9 @@ pub(super) fn prune_pass_with_snapshot(
             }
         }
     };
-    let candidates = scan_with_paths(runner, scan_api, scope, source, snapshot, absent_only);
+    let candidates = timing.measure_stage(timing::SCAN, || {
+        scan_with_paths(runner, scan_api, scope, source, snapshot, absent_only)
+    });
     let total = candidates.len();
     let mut actions: Vec<PruneAction> = Vec::with_capacity(total);
     for (index, candidate) in candidates.iter().enumerate() {
@@ -528,6 +610,7 @@ pub(super) fn prune_pass_with_snapshot(
             confirmation,
             stages,
             index + 1,
+            timing,
         );
         stages(PruneStage::Applied {
             outcome: classify_outcome(&action),
@@ -549,6 +632,7 @@ fn apply_candidate(
     confirmation: MovePolicy<'_>,
     stages: &dyn Fn(PruneStage),
     candidate_index: usize,
+    timing: &TimingStats,
 ) -> PruneAction {
     let mut action = PruneAction {
         worktree_path: candidate.worktree_path.clone(),
@@ -577,32 +661,60 @@ fn apply_candidate(
                 action.message =
                     Some("dry-run: would reclaim absent directory registration".to_owned());
             } else {
-                let check = registry::load_records(storage, Some(scope.identity))
-                    .map_err(|_| "could not re-read the directory registry".to_owned())
-                    .and_then(|records| {
-                        if !records.iter().any(|record| record == &candidate.expected) {
-                            return Err("directory registration changed after the scan".to_owned());
-                        }
-                        if !path_absent(Path::new(&candidate.worktree_path))? {
-                            return Err("directory path reappeared after the scan".to_owned());
-                        }
-                        registry::remove_directory(storage, scope.identity, &candidate.directory_id)
-                            .map_err(|_| "directory registration cleanup failed".to_owned())
+                let check = timing.measure_stage(timing::CACHE_DELETE_RECLAIM, || {
+                    registry::load_records(storage, Some(scope.identity))
+                        .map_err(|_| {
+                            Rejection::new(
+                                "registry_read_failed",
+                                "could not re-read the directory registry",
+                            )
+                        })
+                        .and_then(|records| {
+                            if !records.iter().any(|record| record == &candidate.expected) {
+                                return Err(Rejection::new(
+                                    "registration_changed",
+                                    "directory registration changed after the scan",
+                                ));
+                            }
+                            if !path_absent(Path::new(&candidate.worktree_path))
+                                .map_err(|reason| Rejection::new("path_probe_error", reason))?
+                            {
+                                return Err(Rejection::new(
+                                    "path_reappeared",
+                                    "directory path reappeared after the scan",
+                                ));
+                            }
+                            registry::remove_directory(
+                                storage,
+                                scope.identity,
+                                &candidate.directory_id,
+                            )
+                            .map_err(|_| {
+                                Rejection::new(
+                                    "registry_cleanup_failed",
+                                    "directory registration cleanup failed",
+                                )
+                            })
                             .and_then(|removed| {
                                 if removed == 1 {
                                     Ok(())
                                 } else {
-                                    Err("directory registration disappeared".to_owned())
+                                    Err(Rejection::new(
+                                        "registry_record_missing",
+                                        "directory registration disappeared",
+                                    ))
                                 }
                             })
-                    });
+                        })
+                });
                 match check {
                     Ok(()) => {
                         action.message = Some("absent directory registration reclaimed".to_owned())
                     }
-                    Err(reason) => {
+                    Err(rejection) => {
                         action.result = "skipped_protected".to_owned();
-                        action.message = Some(reason);
+                        action.reason_code = Some(rejection.code);
+                        action.message = Some(rejection.message);
                     }
                 }
             }
@@ -612,6 +724,7 @@ fn apply_candidate(
                 match preview_family(api, scope, candidate) {
                     FamilyOutcome::Keep(reason) => {
                         action.result = "skipped_protected".to_owned();
+                        action.reason_code = Some("session_family");
                         action.message = Some(reason);
                     }
                     FamilyOutcome::Releasable { sessions } => {
@@ -626,55 +739,220 @@ fn apply_candidate(
                     }
                 }
             } else {
-                match recheck(storage, runner, api, scope, source, candidate) {
-                    Err(reason) => {
+                match timing.measure_stage(timing::VERIFICATION, || {
+                    recheck(storage, runner, api, scope, source, candidate)
+                }) {
+                    Err(rejection) => {
                         action.result = "skipped_protected".to_owned();
-                        action.message = Some(format!("kept on re-check: {reason}"));
+                        action.reason_code = Some(rejection.code);
+                        action.message = Some(format!("kept on re-check: {}", rejection.message));
                     }
                     Ok((associated, fresh_cache)) => {
                         if fresh_cache != candidate.cache {
                             action.result = "skipped_protected".to_owned();
+                            action.reason_code = Some("cache_changed");
                             action.message = Some(
                                 "kept on re-check: the root .cache inventory changed before the moves"
                                     .to_owned(),
                             );
                         } else {
-                            match sessions::finalize_family_with(
-                                api,
-                                CleanupMode::Prune,
-                                scope.target,
-                                &candidate.canonical_path,
-                                &associated,
-                                None,
-                                confirmation,
-                            ) {
+                            let family = timing.measure_stage(timing::FAMILY_MOVE, || {
+                                sessions::finalize_family_with(
+                                    api,
+                                    CleanupMode::Prune,
+                                    scope.target,
+                                    &candidate.canonical_path,
+                                    &associated,
+                                    None,
+                                    confirmation,
+                                )
+                            });
+                            match family {
                                 FamilyOutcome::Keep(reason) => {
                                     action.result = "skipped_protected".to_owned();
+                                    action.reason_code = Some("session_family");
                                     action.message = Some(format!("kept on re-check: {reason}"));
                                 }
-                                _ => match post_move_recheck(
-                                    storage, runner, api, scope, source, candidate,
-                                ) {
-                                    Err(reason) => {
-                                        action.result = "skipped_protected".to_owned();
-                                        action.message =
-                                            Some(format!("kept on re-check: {reason}"));
-                                    }
-                                    Ok(_) => {
-                                        stages(PruneStage::Deleting {
-                                            candidate: candidate_index,
-                                        });
-                                        apply_removal(
-                                            storage,
-                                            runner,
-                                            api,
-                                            scope,
-                                            source,
-                                            candidate,
-                                            &mut action,
+                                _ => {
+                                    if candidate.cache.is_some() {
+                                        // A cache-bearing candidate keeps two
+                                        // fresh mutation boundaries. The first
+                                        // one runs after the family move and
+                                        // before the cache is deleted: the
+                                        // deletion is destructive and cannot be
+                                        // undone, so the evidence must be fresh
+                                        // before it. The second one runs after
+                                        // the actual clearance and before the
+                                        // removal.
+                                        let pre_clearance =
+                                            timing.measure_stage(timing::VERIFICATION, || {
+                                                post_move_recheck(
+                                                    storage, runner, api, scope, source, candidate,
+                                                )
+                                            });
+                                        match pre_clearance {
+                                            Err(rejection) => {
+                                                action.result = "skipped_protected".to_owned();
+                                                action.reason_code = Some(rejection.code);
+                                                action.message = Some(format!(
+                                                    "kept on re-check: {}",
+                                                    rejection.message
+                                                ));
+                                            }
+                                            Ok(fresh) if fresh != candidate.cache => {
+                                                action.result = "skipped_protected".to_owned();
+                                                action.reason_code = Some("cache_changed");
+                                                action.message = Some(
+                                                    "kept on re-check: the root .cache inventory                                                      changed before the cleanup"
+                                                        .to_owned(),
+                                                );
+                                            }
+                                            Ok(_) => {
+                                                let cleared = timing.measure_stage(
+                                                    timing::CACHE_DELETE_RECLAIM,
+                                                    || {
+                                                        crate::worktree::cache::clear_cache_only(
+                                                            runner,
+                                                            Path::new(&candidate.worktree_path),
+                                                            candidate.cache.as_ref(),
+                                                        )
+                                                    },
+                                                );
+                                                match cleared {
+                                                    Err(reason) => {
+                                                        action.result =
+                                                            "skipped_protected".to_owned();
+                                                        action.reason_code =
+                                                            Some("cache_cleanup_failed");
+                                                        action.message = Some(format!(
+                                                            "kept on re-check: {reason}"
+                                                        ));
+                                                    }
+                                                    Ok(removed_cache) => {
+                                                        let post_clearance = timing.measure_stage(
+                                                            timing::VERIFICATION,
+                                                            || {
+                                                                post_move_recheck(
+                                                                    storage, runner, api, scope,
+                                                                    source, candidate,
+                                                                )
+                                                            },
+                                                        );
+                                                        match post_clearance {
+                                                            Err(rejection) => {
+                                                                action.result =
+                                                                    "skipped_protected".to_owned();
+                                                                action.reason_code =
+                                                                    Some(rejection.code);
+                                                                action.message = Some(format!(
+                                                                    "kept after cache cleanup: {}",
+                                                                    rejection.message
+                                                                ));
+                                                            }
+                                                            Ok(Some(_)) => {
+                                                                action.result =
+                                                                    "skipped_protected".to_owned();
+                                                                action.reason_code =
+                                                                    Some("cache_reappeared");
+                                                                action.message = Some(
+                                                                    "kept after cache cleanup: a root                                                                      .cache reappeared before the                                                                      worktree removal"
+                                                                        .to_owned(),
+                                                                );
+                                                            }
+                                                            Ok(None) => {
+                                                                stages(PruneStage::Deleting {
+                                                                    candidate: candidate_index,
+                                                                });
+                                                                apply_removal(
+                                                                    storage,
+                                                                    runner,
+                                                                    scope,
+                                                                    candidate,
+                                                                    &mut action,
+                                                                    timing,
+                                                                    removed_cache,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // A candidate without a root .cache has
+                                        // nothing destructive to authorize: the
+                                        // cleanliness probe is not a mutation,
+                                        // so it runs before the one final fresh
+                                        // check, and no external Git process
+                                        // sits between that check and the
+                                        // removal.
+                                        let probe = timing.measure_stage(
+                                            timing::CACHE_DELETE_RECLAIM,
+                                            || {
+                                                crate::worktree::cache::clear_cache_only(
+                                                    runner,
+                                                    Path::new(&candidate.worktree_path),
+                                                    None,
+                                                )
+                                            },
                                         );
+                                        match probe {
+                                            Err(reason) => {
+                                                action.result = "skipped_protected".to_owned();
+                                                action.reason_code =
+                                                    Some("cleanliness_probe_failed");
+                                                action.message =
+                                                    Some(format!("kept on re-check: {reason}"));
+                                            }
+                                            Ok(_) => {
+                                                let final_check = timing.measure_stage(
+                                                    timing::VERIFICATION,
+                                                    || {
+                                                        post_move_recheck(
+                                                            storage, runner, api, scope, source,
+                                                            candidate,
+                                                        )
+                                                    },
+                                                );
+                                                match final_check {
+                                                    Err(rejection) => {
+                                                        action.result =
+                                                            "skipped_protected".to_owned();
+                                                        action.reason_code = Some(rejection.code);
+                                                        action.message = Some(format!(
+                                                            "kept on re-check: {}",
+                                                            rejection.message
+                                                        ));
+                                                    }
+                                                    Ok(Some(_)) => {
+                                                        action.result =
+                                                            "skipped_protected".to_owned();
+                                                        action.reason_code =
+                                                            Some("cache_reappeared");
+                                                        action.message = Some(
+                                                            "kept on re-check: a root .cache                                                              appeared before the worktree removal"
+                                                                .to_owned(),
+                                                        );
+                                                    }
+                                                    Ok(None) => {
+                                                        stages(PruneStage::Deleting {
+                                                            candidate: candidate_index,
+                                                        });
+                                                        apply_removal(
+                                                            storage,
+                                                            runner,
+                                                            scope,
+                                                            candidate,
+                                                            &mut action,
+                                                            timing,
+                                                            None,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
-                                },
+                                }
                             }
                         }
                     }
@@ -729,15 +1007,21 @@ fn recheck(
     scope: &PruneScope<'_>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
-) -> Result<(Vec<String>, Option<crate::worktree::cache::CacheInventory>), String> {
+) -> Result<(Vec<String>, Option<crate::worktree::cache::CacheInventory>), Rejection> {
     let fresh = registry::load_records(storage, Some(scope.identity)).map_err(|error| {
-        format!(
-            "could not re-read the directory registry: {}",
-            error.message
+        Rejection::new(
+            "registry_read_failed",
+            format!(
+                "could not re-read the directory registry: {}",
+                error.message
+            ),
         )
     })?;
     if canonical_or_self(Path::new(&candidate.worktree_path)) != candidate.canonical_path {
-        return Err("the directory path changed its target".to_owned());
+        return Err(Rejection::new(
+            "path_changed",
+            "the directory path changed its target",
+        ));
     }
     let fresh_scope = PruneScope {
         identity: scope.identity,
@@ -748,7 +1032,12 @@ fn recheck(
     let fresh_record = fresh
         .iter()
         .find(|record| record.directory_id == candidate.directory_id)
-        .ok_or_else(|| "the candidate's registry record is gone".to_owned())?;
+        .ok_or_else(|| {
+            Rejection::new(
+                "registry_record_missing",
+                "the candidate's registry record is gone",
+            )
+        })?;
     source.invalidate(scope.repo_path, &fresh_record.issue_numbers());
     let classified = classify(
         runner,
@@ -761,15 +1050,28 @@ fn recheck(
     if let PruneDisposition::Removable = classified.disposition {
         Ok((associated_sessions(&classified), classified.cache))
     } else {
-        Err(recheck_reason(classified.disposition))
+        Err(classification_rejection(&classified))
     }
 }
 
-fn recheck_reason(disposition: PruneDisposition) -> String {
+/// The rejection a classification carries: its own reason code, or the
+/// unnamed protected state when it has none.
+fn classification_rejection(classified: &DirectoryCandidate) -> Rejection {
+    let code = match classified.reason_code {
+        Some(code) => code,
+        None => match classified.disposition {
+            PruneDisposition::MissingDirectory => "directory_vanished",
+            _ => "other_protected",
+        },
+    };
+    Rejection::new(code, recheck_reason(&classified.disposition))
+}
+
+fn recheck_reason(disposition: &PruneDisposition) -> String {
     match disposition {
         PruneDisposition::Removable => String::new(),
         PruneDisposition::SkippedProtected(reason) | PruneDisposition::SkippedIssue(reason) => {
-            reason
+            reason.clone()
         }
         PruneDisposition::MissingDirectory => "the directory vanished".to_owned(),
     }
@@ -782,11 +1084,14 @@ fn post_move_recheck(
     scope: &PruneScope<'_>,
     source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
-) -> Result<Option<crate::worktree::cache::CacheInventory>, String> {
+) -> Result<Option<crate::worktree::cache::CacheInventory>, Rejection> {
     let fresh = registry::load_records(storage, Some(scope.identity)).map_err(|error| {
-        format!(
-            "could not re-read the directory registry: {}",
-            error.message
+        Rejection::new(
+            "registry_read_failed",
+            format!(
+                "could not re-read the directory registry: {}",
+                error.message
+            ),
         )
     })?;
     let fresh_scope = PruneScope {
@@ -798,7 +1103,12 @@ fn post_move_recheck(
     let fresh_record = fresh
         .iter()
         .find(|record| record.directory_id == candidate.directory_id)
-        .ok_or_else(|| "the candidate's registry record is gone after the moves".to_owned())?;
+        .ok_or_else(|| {
+            Rejection::new(
+                "registry_record_missing",
+                "the candidate's registry record is gone after the moves",
+            )
+        })?;
     source.invalidate(scope.repo_path, &fresh_record.issue_numbers());
     let classified = classify(
         runner,
@@ -808,9 +1118,9 @@ fn post_move_recheck(
         fresh_record,
         &std::cell::OnceCell::new(),
     );
-    match classified.disposition {
+    match &classified.disposition {
         PruneDisposition::Removable => {}
-        other => return Err(recheck_reason(other)),
+        _ => return Err(classification_rejection(&classified)),
     }
     let associated = associated_sessions(&classified);
     if let FamilyOutcome::Keep(reason) = sessions::finalize_family(
@@ -821,56 +1131,34 @@ fn post_move_recheck(
         &associated,
         None,
     ) {
-        return Err(reason);
+        return Err(Rejection::new("session_family", reason));
     }
     Ok(classified.cache)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_removal(
     storage: &Storage,
     runner: &dyn WorktreeRunner,
-    api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
-    source: &dyn IssueStateSource,
     candidate: &DirectoryCandidate,
     action: &mut PruneAction,
+    timing: &TimingStats,
+    removed_cache: Option<usize>,
 ) {
     let worktree_path = PathBuf::from(&candidate.worktree_path);
-    let removed_cache = match crate::worktree::cache::clear_cache_only(
-        runner,
-        &worktree_path,
-        candidate.cache.as_ref(),
-    ) {
-        Ok(count) => count,
-        Err(reason) => {
-            action.result = "skipped_protected".to_owned();
-            action.message = Some(format!("kept on re-check: {reason}"));
-            return;
-        }
-    };
-    // Clearing the cache is a bounded mutation window. Re-read the registry,
-    // closure evidence, local guards and fresh host occupancy before the Git
-    // removal; a directory that gained an owner, reopened, became dirty, or
-    // regained a root .cache keeps the tree.
-    match post_move_recheck(storage, runner, api, scope, source, candidate) {
-        Err(reason) => {
-            action.result = "skipped_protected".to_owned();
-            action.message = Some(format!("kept after cache cleanup: {reason}"));
-            return;
-        }
-        Ok(Some(_)) => {
-            action.result = "skipped_protected".to_owned();
-            action.message = Some(
-                "kept after cache cleanup: a root .cache reappeared before the worktree removal"
-                    .to_owned(),
-            );
-            return;
-        }
-        Ok(None) => {}
-    }
-    match worktree_remove(runner, scope.repo_path, &worktree_path) {
+    // The removal belongs to the reclamation stage: the Git worktree removal
+    // and the registry row removal are measured with the cache clearance,
+    // including the calls that fail.
+    let removal = timing.measure_stage(timing::CACHE_DELETE_RECLAIM, || {
+        worktree_remove(runner, scope.repo_path, &worktree_path)
+    });
+    match removal {
         Ok(()) => {
-            match registry::remove_directory(storage, scope.identity, &candidate.directory_id) {
+            let cleanup = timing.measure_stage(timing::CACHE_DELETE_RECLAIM, || {
+                registry::remove_directory(storage, scope.identity, &candidate.directory_id)
+            });
+            match cleanup {
                 Ok(_) => {
                     action.prunable = true;
                     action.result = "pruned".to_owned();
@@ -884,6 +1172,7 @@ fn apply_removal(
                 Err(error) => {
                     action.prunable = true;
                     action.result = "failed".to_owned();
+                    action.reason_code = Some("registry_cleanup_failed");
                     action.message = Some(format!(
                         "worktree removed but registry cleanup failed: {}",
                         error.message
@@ -901,6 +1190,7 @@ fn apply_removal(
                 )),
             );
             action.result = "failed".to_owned();
+            action.reason_code = Some("worktree_remove_failed");
             action.message = Some(format!("worktree_remove error: {}", error.message));
         }
     }

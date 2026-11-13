@@ -1154,6 +1154,60 @@ fn the_verbose_prune_rows_fit_the_width_without_truncation() {
     );
 }
 
+/// The verbose prune rendering adds the bounded timing breakdown, and the
+/// default summary keeps only the elapsed line.
+#[test]
+fn the_verbose_prune_rendering_adds_the_bounded_timing_breakdown() {
+    let mut prune = json!({
+        "dry_run": false,
+        "repos": [],
+        "totals": {
+            "removed": 0, "eligible": 0, "absent": 0, "kept_active": 0,
+            "kept_unknown": 0, "kept_protected": 0, "kept_issue": 0, "failed": 0,
+        },
+        "timings": {
+            "total_ms": 12.5,
+            "stages": {
+                "scan": {"calls": 1, "duration_ms": 1.5},
+                "verification": {"calls": 2, "duration_ms": 4.25},
+            },
+            "operations": {
+                "closure": {"calls": 3, "duration_ms": 2.0},
+                "host_active": {"calls": 1, "duration_ms": 0.5},
+            },
+        },
+    });
+    let concise = render_view(HumanView::WorktreePrune, &prune, 120);
+    assert!(
+        !concise.contains("timing"),
+        "the default summary stays compact:\n{concise}"
+    );
+    prune["__verbose"] = json!(true);
+    let verbose = render_view(HumanView::WorktreePrune, &prune, 120);
+    assert!(
+        verbose.contains("timing: total 12.500ms"),
+        "the verbose rendering names the wall clock:\n{verbose}"
+    );
+    assert!(
+        verbose.contains("scan 1 call(s) 1.500ms"),
+        "the verbose rendering names the stage calls:\n{verbose}"
+    );
+    assert!(
+        verbose.contains("closure 3 call(s) 2.000ms"),
+        "the verbose rendering names the nested operation calls:\n{verbose}"
+    );
+    assert!(
+        verbose.contains("not an additive total"),
+        "the verbose rendering says the durations overlap:\n{verbose}"
+    );
+    for line in verbose.lines() {
+        assert!(
+            console::measure_text_width(line) <= 120,
+            "the timing rows fit the width: {line:?}\n{verbose}"
+        );
+    }
+}
+
 /// The default prune summary caps the failure examples and names the omitted
 /// count, so a failing pass stays bounded and actionable.
 #[test]
