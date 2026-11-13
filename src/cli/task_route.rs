@@ -354,7 +354,8 @@ pub(crate) fn resolve_single_number(
     let Some(binding) = resolve_number_binding(context, number)? else {
         return Ok(None);
     };
-    let provider = pinned_provider(role, &binding, context, false)?;
+    let provider = pinned_provider(role, &binding, context, false)
+        .map_err(BindingProviderError::into_error)?;
     Ok(Some(ResolvedTaskRoute { binding, provider }))
 }
 
@@ -482,6 +483,29 @@ pub(crate) fn pinned_provider_for_task(
     Ok(Some((binding, provider)))
 }
 
+#[derive(Debug)]
+pub(crate) enum BindingProviderError {
+    MissingConfiguration(PhasegentError),
+    ScopeMismatch(PhasegentError),
+    Other(PhasegentError),
+}
+
+impl BindingProviderError {
+    pub(crate) fn into_error(self) -> PhasegentError {
+        match self {
+            Self::MissingConfiguration(error) | Self::ScopeMismatch(error) | Self::Other(error) => {
+                error
+            }
+        }
+    }
+}
+
+impl From<PhasegentError> for BindingProviderError {
+    fn from(error: PhasegentError) -> Self {
+        Self::Other(error)
+    }
+}
+
 /// The pinned provider of one already-resolved durable task.
 ///
 /// The context check is the same one [`pinned_provider_for_task`] applies, so
@@ -493,6 +517,7 @@ pub(crate) fn provider_for_binding(
     context: &ProviderContext,
 ) -> Result<ProviderDispatcher, PhasegentError> {
     provider_for_binding_with(role, binding, context, false)
+        .map_err(BindingProviderError::into_error)
 }
 
 /// The read-only form of [`provider_for_binding`]: the same binding, context
@@ -506,7 +531,7 @@ pub(crate) fn provider_for_binding_read_only(
     role: Role,
     binding: &TaskBinding,
     context: &ProviderContext,
-) -> Result<ProviderDispatcher, PhasegentError> {
+) -> Result<ProviderDispatcher, BindingProviderError> {
     provider_for_binding_with(role, binding, context, true)
 }
 
@@ -515,13 +540,13 @@ fn provider_for_binding_with(
     binding: &TaskBinding,
     context: &ProviderContext,
     local_read_only: bool,
-) -> Result<ProviderDispatcher, PhasegentError> {
+) -> Result<ProviderDispatcher, BindingProviderError> {
     if !binding_matches_context(binding, context)? {
-        return Err(config_error(format!(
+        return Err(BindingProviderError::ScopeMismatch(config_error(format!(
             "explicit provider/endpoint/project does not match durable task {}; \
              refusing to redirect the bound task",
             binding.key().external_id()
-        )));
+        ))));
     }
     pinned_provider(role, binding, context, local_read_only)
 }
@@ -531,30 +556,34 @@ fn pinned_provider(
     binding: &TaskBinding,
     context: &ProviderContext,
     local_read_only: bool,
-) -> Result<ProviderDispatcher, PhasegentError> {
+) -> Result<ProviderDispatcher, BindingProviderError> {
     let key = binding.key();
     match key.provider() {
         "forgejo" => {
             let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
             let stored = storage
                 .as_ref()
-                .ok_or_else(|| config_error("Forgejo role configuration is not present"))?
+                .ok_or_else(|| {
+                    BindingProviderError::MissingConfiguration(config_error(
+                        "Forgejo role configuration is not present",
+                    ))
+                })?
                 .load_forgejo_config(role)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
-                    config_error(
+                    BindingProviderError::MissingConfiguration(config_error(
                         "Forgejo role credential provenance is not configured for this role",
-                    )
+                    ))
                 })?;
             let stored_instance =
                 normalize_instance(ProviderKind::Forgejo, &stored.api_base, &stored.repository)?;
             if stored_instance != key.instance() {
-                return Err(config_error(format!(
+                return Err(BindingProviderError::ScopeMismatch(config_error(format!(
                     "configured Forgejo endpoint does not match the stored task instance; \
                      refusing to send the role credential (task {}:{})",
                     key.instance(),
                     key.project()
-                )));
+                ))));
             }
             let token = storage
                 .as_ref()
@@ -562,65 +591,86 @@ fn pinned_provider(
                 .load_credential(role, "forgejo")
                 .map_err(PhasegentError::auth)?
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| PhasegentError::auth("Forgejo role credential is not configured"))?;
+                .ok_or_else(|| {
+                    BindingProviderError::MissingConfiguration(PhasegentError::auth(
+                        "Forgejo role credential is not configured",
+                    ))
+                })?;
             let config = ForgejoConfig::new(key.instance(), key.project())?;
             crate::providers::forgejo::ForgejoProvider::new(config, &token)
                 .map(ProviderDispatcher::Forgejo)
+                .map_err(Into::into)
         }
         "gitlab" => {
             let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let storage = storage
-                .as_ref()
-                .ok_or_else(|| config_error("GitLab role configuration is not present"))?;
+            let storage = storage.as_ref().ok_or_else(|| {
+                BindingProviderError::MissingConfiguration(config_error(
+                    "GitLab role configuration is not present",
+                ))
+            })?;
             let stored = storage
                 .load_gitlab_config(role)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
-                    config_error(
+                    BindingProviderError::MissingConfiguration(config_error(
                         "GitLab role credential provenance is not configured for this role",
-                    )
+                    ))
                 })?;
-            let stored_repository = stored.repository.as_deref().ok_or_else(|| {
-                config_error(
+            let stored_repository = stored.repository.as_deref().filter(|value| !value.trim().is_empty()).ok_or_else(|| {
+                BindingProviderError::MissingConfiguration(config_error(
                     "GitLab role configuration is incomplete: the stored project path is missing",
-                )
+                ))
             })?;
+            if stored.api_base.trim().is_empty() {
+                return Err(BindingProviderError::MissingConfiguration(config_error(
+                    "GitLab role configuration is incomplete: the stored API base is missing",
+                )));
+            }
             let stored_instance =
                 normalize_instance(ProviderKind::Gitlab, &stored.api_base, stored_repository)?;
             if stored_instance != key.instance() {
-                return Err(config_error(format!(
+                return Err(BindingProviderError::ScopeMismatch(config_error(format!(
                     "configured GitLab endpoint does not match the stored task instance; \
                      refusing to send the role credential (task {}:{})",
                     key.instance(),
                     key.project()
-                )));
+                ))));
             }
             let token = storage
                 .load_credential(role, "gitlab")
                 .map_err(PhasegentError::auth)?
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| PhasegentError::auth("GitLab role credential is not configured"))?;
+                .ok_or_else(|| {
+                    BindingProviderError::MissingConfiguration(PhasegentError::auth(
+                        "GitLab role credential is not configured",
+                    ))
+                })?;
             let config = GitlabConfig::new(key.instance(), key.project())?;
             crate::providers::gitlab::GitlabProvider::new(config, &token)
                 .map(ProviderDispatcher::Gitlab)
+                .map_err(Into::into)
         }
         "redmine" => {
             let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let storage = storage
-                .as_ref()
-                .ok_or_else(|| config_error("Redmine role configuration is not present"))?;
+            let storage = storage.as_ref().ok_or_else(|| {
+                BindingProviderError::MissingConfiguration(config_error(
+                    "Redmine role configuration is not present",
+                ))
+            })?;
             let trusted = crate::auth::redmine_api_base_read_only(storage)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
-                    config_error("Redmine API base is not configured for credential provenance")
+                    BindingProviderError::MissingConfiguration(config_error(
+                        "Redmine API base is not configured for credential provenance",
+                    ))
                 })?;
             let normalized = normalize_instance(ProviderKind::Redmine, &trusted, key.project())?;
             if normalized != key.instance() {
-                return Err(config_error(format!(
+                return Err(BindingProviderError::ScopeMismatch(config_error(format!(
                     "configured Redmine endpoint does not match the stored task instance; \
                      refusing to send the role credential (task {})",
                     key.instance()
-                )));
+                ))));
             }
             let close_status_id = match context.close_status_id.as_deref() {
                 Some(value) => Some(
@@ -633,12 +683,23 @@ fn pinned_provider(
                     .and_then(|config| config.close_status_id),
             };
             if close_status_id == Some(0) {
-                return Err(config_error(
-                    "Redmine close status id must be greater than zero",
-                ));
+                return Err(
+                    config_error("Redmine close status id must be greater than zero").into(),
+                );
             }
             let api_key =
-                crate::auth::redmine_api_key(role, storage).map_err(PhasegentError::auth)?;
+                crate::auth::redmine_api_key_checked(role, storage).map_err(
+                    |error| match error {
+                        crate::auth::RedmineKeyError::Missing(message) => {
+                            BindingProviderError::MissingConfiguration(PhasegentError::auth(
+                                message,
+                            ))
+                        }
+                        crate::auth::RedmineKeyError::Storage(message) => {
+                            BindingProviderError::Other(PhasegentError::auth(message))
+                        }
+                    },
+                )?;
             let config = RedmineConfig {
                 api_base: key.instance().to_owned(),
                 project_id: Some(key.project().to_owned()),
@@ -646,6 +707,7 @@ fn pinned_provider(
             };
             crate::providers::config::RedmineProvider::new(config, api_key)
                 .map(ProviderDispatcher::Redmine)
+                .map_err(Into::into)
         }
         "local" => {
             let open = if local_read_only {
@@ -653,11 +715,11 @@ fn pinned_provider(
             } else {
                 crate::providers::local::LocalProvider::open
             };
-            open().map(ProviderDispatcher::local)
+            open().map(ProviderDispatcher::local).map_err(Into::into)
         }
-        other => Err(config_error(format!(
-            "durable task has unsupported provider '{other}'"
-        ))),
+        other => {
+            Err(config_error(format!("durable task has unsupported provider '{other}'")).into())
+        }
     }
 }
 

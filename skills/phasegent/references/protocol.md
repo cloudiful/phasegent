@@ -515,9 +515,13 @@ Boundaries:
   contradictory evidence and keeps. Only a typed authoritative
   `SessionNotFound` is treated as absence; transport, HTTP, auth and malformed
   errors fail closed.
-- A recorded path that no longer exists is reported as absent; registry evidence
-  is preserved and no provider read or session move is required. Branches and Git
-  history are never deleted.
+- A path proven absent has its directory registration and owned associations
+  reclaimed under the operation lock after a fresh row and path check; dry-run
+  reports would-reclaim without writing. Inaccessible paths and symlinks stay.
+  Existing directories in unverifiable repositories remain protected. No provider
+  read or session move is required for absence; independent histories stay. Main
+  checkouts are excluded from cleanup totals. The scan reuses one running-session
+  snapshot and destructive boundaries recheck fresh occupancy.
 - `worktree probe` is read-only: it reports existence,
   Git-worktree/clean/branch/`HEAD`/main-checkout facts and the matching registry
   directory as bounded JSON, and never calls a provider, writes a registry row,

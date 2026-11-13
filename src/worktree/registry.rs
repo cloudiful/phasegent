@@ -847,7 +847,7 @@ pub fn attach_association(
 }
 
 /// Delete one directory's registry evidence after its physical directory was
-/// removed. Associations and sessions cascade.
+/// removed. Directory-owned associations and sessions are removed transactionally.
 pub fn remove_directory(
     storage: &Storage,
     repo_identity: &str,
@@ -858,6 +858,16 @@ pub fn remove_directory(
         rusqlite::TransactionBehavior::Immediate,
     )
     .map_err(|error| WorktreeError::new("storage", format!("begin directory removal: {error}")))?;
+    for table in [
+        "worktree_directory_tasks",
+        "worktree_directory_legacy_issues",
+        "worktree_directory_sessions",
+    ] {
+        transaction.execute(
+            &format!("DELETE FROM {table} WHERE directory_id IN (SELECT directory_id FROM worktree_directories WHERE repo_identity = ?1 AND directory_id = ?2)"),
+            rusqlite::params![repo_identity, directory_id],
+        ).map_err(|error| WorktreeError::new("storage", format!("delete directory associations: {error}")))?;
+    }
     let removed = transaction
         .execute(
             "DELETE FROM worktree_directories WHERE repo_identity = ?1 AND directory_id = ?2",

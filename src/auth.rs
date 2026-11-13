@@ -407,14 +407,38 @@ pub fn save_redmine_user(
     storage.save_redmine_user(role, user_id, login)
 }
 
-pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> {
+pub(crate) enum RedmineKeyError {
+    Missing(&'static str),
+    Storage(String),
+}
+
+impl RedmineKeyError {
+    fn message(self) -> String {
+        match self {
+            Self::Missing(message) => message.to_owned(),
+            Self::Storage(message) => message,
+        }
+    }
+}
+
+pub(crate) fn redmine_api_key_checked(
+    role: Role,
+    storage: &Storage,
+) -> Result<String, RedmineKeyError> {
     let value = storage
-        .load_credential(role, PROVIDER_REDMINE)?
-        .ok_or_else(|| "could not read Redmine API key: missing".to_owned())?;
+        .load_credential(role, PROVIDER_REDMINE)
+        .map_err(RedmineKeyError::Storage)?
+        .ok_or(RedmineKeyError::Missing(
+            "could not read Redmine API key: missing",
+        ))?;
     if value.is_empty() {
-        return Err("Redmine API key is empty".to_owned());
+        return Err(RedmineKeyError::Missing("Redmine API key is empty"));
     }
     Ok(value)
+}
+
+pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> {
+    redmine_api_key_checked(role, storage).map_err(RedmineKeyError::message)
 }
 
 /// Resolve the `redmine_git_mirror` plugin bearer key at use time.

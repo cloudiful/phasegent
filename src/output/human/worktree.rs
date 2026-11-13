@@ -326,8 +326,7 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
             )
         };
         lines.row(counts);
-        let mut main = 0u64;
-        let mut waiting = 0u64;
+        let mut reasons = std::collections::BTreeMap::<&str, usize>::new();
         for repo in repos.into_iter().flatten() {
             let Some(actions) = repo
                 .get("worktrees")
@@ -337,24 +336,38 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
                 continue;
             };
             for action in actions {
-                if action.get("result").and_then(Value::as_str) != Some("skipped_protected") {
-                    continue;
-                }
-                let Some(message) = action.get("message").and_then(Value::as_str) else {
-                    continue;
-                };
-                match protected_reason_category(message) {
-                    ProtectedCategory::Main => main += 1,
-                    ProtectedCategory::WaitingMove => waiting += 1,
-                    ProtectedCategory::Other => {}
+                if matches!(
+                    action.get("result").and_then(Value::as_str),
+                    Some("skipped_protected" | "skipped_issue")
+                ) {
+                    let code = action
+                        .get("reason_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("other_protected");
+                    *reasons.entry(code).or_default() += 1;
                 }
             }
         }
-        let other = count("kept_protected").saturating_sub(main + waiting);
-        lines.row(format!(
-            "kept reasons: main {main}, waiting-move {waiting}, other-protected {other}, issue-state {}",
-            count("kept_issue"),
-        ));
+        if !reasons.is_empty() {
+            lines.row(format!(
+                "kept reasons: {}",
+                reasons
+                    .iter()
+                    .map(|(code, count)| format!("{code} {count}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            for category in [
+                crate::cli::issue_closure::LookupFailure::MissingConfiguration,
+                crate::cli::issue_closure::LookupFailure::AuthenticationDenied,
+                crate::cli::issue_closure::LookupFailure::ScopeMismatch,
+                crate::cli::issue_closure::LookupFailure::ProviderUnavailable,
+            ] {
+                if reasons.contains_key(category.code()) {
+                    lines.row(format!("hint: {}", category.hint()));
+                }
+            }
+        }
     }
     let verbose = value
         .get(VERBOSE_MARKER)
@@ -382,7 +395,12 @@ pub(crate) fn render_prune(value: &Value, context: &OutputContext) -> String {
         let absent = count("absent");
         if absent > 0 {
             lines.row(format!(
-                "absent: {absent} recorded worktree path(s) no longer exist on disk (historical directory evidence, not an OpenCode registration state)"
+                "absent: {absent} registration(s) {}",
+                if dry_run {
+                    "would be reclaimed"
+                } else {
+                    "reclaimed"
+                }
             ));
         }
     }
@@ -440,27 +458,6 @@ fn render_prune_failures<'a>(lines: &mut Lines, repos: impl Iterator<Item = &'a 
             "{omitted} further removal failure(s) not shown; run with --verbose for every one"
         ));
     }
-}
-
-/// The stable classification of one kept-protected message for the human
-/// summary. It matches the canonical reason prefixes the shared guards emit,
-/// never a caller-specific substring, so the arithmetic keeps matching the
-/// aggregate kept total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProtectedCategory {
-    Main,
-    WaitingMove,
-    Other,
-}
-
-fn protected_reason_category(message: &str) -> ProtectedCategory {
-    if message.starts_with("main checkout is never removed") {
-        return ProtectedCategory::Main;
-    }
-    if message.contains("has not left the directory yet") {
-        return ProtectedCategory::WaitingMove;
-    }
-    ProtectedCategory::Other
 }
 
 /// Render one prune action. The removals, the failures, and the kept

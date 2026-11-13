@@ -43,9 +43,51 @@ pub(crate) enum IssueClosure {
     Closed,
     /// Not provably closed, with the bounded operator-facing reason.
     Keep(String),
+    Open(String),
+    Unattributed(String),
+    LookupFailure(LookupFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LookupFailure {
+    MissingConfiguration,
+    AuthenticationDenied,
+    ScopeMismatch,
+    ProviderUnavailable,
+}
+
+impl LookupFailure {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::MissingConfiguration => "closure_missing_configuration",
+            Self::AuthenticationDenied => "closure_authentication_denied",
+            Self::ScopeMismatch => "closure_scope_mismatch",
+            Self::ProviderUnavailable => "closure_provider_unavailable",
+        }
+    }
+
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Self::MissingConfiguration => {
+                "Configure the tracking provider and credential for this role."
+            }
+            Self::AuthenticationDenied => "Check this role's provider credential and access.",
+            Self::ScopeMismatch => "Check the recorded task scope and trusted provider instance.",
+            Self::ProviderUnavailable => {
+                "Check provider availability and retry the closure lookup."
+            }
+        }
+    }
 }
 
 impl IssueClosure {
+    pub(crate) fn safe_lookup_failure(self) -> Self {
+        match self {
+            Self::Keep(_) => Self::LookupFailure(LookupFailure::ProviderUnavailable),
+            other => other,
+        }
+    }
+
     pub(crate) fn is_closed(&self) -> bool {
         matches!(self, Self::Closed)
     }
@@ -53,7 +95,10 @@ impl IssueClosure {
     pub(crate) fn keep_reason(&self) -> Option<&str> {
         match self {
             Self::Closed => None,
-            Self::Keep(reason) => Some(reason.as_str()),
+            Self::Keep(reason) | Self::Open(reason) | Self::Unattributed(reason) => {
+                Some(reason.as_str())
+            }
+            Self::LookupFailure(category) => Some(category.hint()),
         }
     }
 }
@@ -152,6 +197,51 @@ pub(crate) trait LinkScopeReader {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LookupError {
+    category: LookupFailure,
+    message: String,
+}
+
+impl LookupError {
+    fn new(category: LookupFailure, message: impl Into<String>) -> Self {
+        Self {
+            category,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for LookupError {
+    fn from(message: String) -> Self {
+        Self::new(LookupFailure::ProviderUnavailable, message)
+    }
+}
+
+impl From<crate::cli::task_route::BindingProviderError> for LookupError {
+    fn from(error: crate::cli::task_route::BindingProviderError) -> Self {
+        use crate::cli::task_route::BindingProviderError;
+        let (category, error) = match error {
+            BindingProviderError::MissingConfiguration(error) => {
+                (LookupFailure::MissingConfiguration, error)
+            }
+            BindingProviderError::ScopeMismatch(error) => (LookupFailure::ScopeMismatch, error),
+            BindingProviderError::Other(error) => (LookupFailure::ProviderUnavailable, error),
+        };
+        Self::new(category, bounded_error(&error.json()))
+    }
+}
+
+fn provider_lookup_error(error: crate::providers::api::PhasegentError) -> LookupError {
+    let category = match &error {
+        crate::providers::api::PhasegentError::Http {
+            status: 401 | 403, ..
+        } => LookupFailure::AuthenticationDenied,
+        _ => LookupFailure::ProviderUnavailable,
+    };
+    LookupError::new(category, bounded_error(&error.json()))
+}
+
 /// The provider's answer for one issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IssueStateFact {
@@ -217,8 +307,10 @@ pub(crate) trait IssueStateReader {
         &self,
         _task: TaskScopeRef<'_>,
         _issue: u64,
-    ) -> Result<TaskRouteFact, String> {
-        Err("this source has no task-aware closure dispatch".to_owned())
+    ) -> Result<TaskRouteFact, LookupError> {
+        Err("this source has no task-aware closure dispatch"
+            .to_owned()
+            .into())
     }
 
     /// Read one other associated number through its own durable task in this
@@ -231,7 +323,7 @@ pub(crate) trait IssueStateReader {
         &self,
         _repo_path: &Path,
         _issue: u64,
-    ) -> Result<Option<TaskRouteFact>, String> {
+    ) -> Result<Option<TaskRouteFact>, LookupError> {
         Ok(None)
     }
 
@@ -247,9 +339,10 @@ pub(crate) trait IssueStateReader {
         issue: u64,
         _provider: &str,
         _project: &str,
-    ) -> Result<Option<IssueStateFact>, String> {
-        Err(format!(
-            "issue {issue}: this source cannot prove a provider scope"
+    ) -> Result<Option<IssueStateFact>, LookupError> {
+        Err(LookupError::new(
+            LookupFailure::ScopeMismatch,
+            format!("issue {issue}: this source cannot prove a provider scope"),
         ))
     }
 }
@@ -260,6 +353,7 @@ pub(crate) struct ComposedIssueStateSource {
     links: Box<dyn LinkScopeReader>,
     provider: Box<dyn IssueStateReader>,
     cache: RefCell<HashMap<(String, u8, u64), IssueClosure>>,
+    prune: bool,
 }
 
 const ROUTE_LEGACY: u8 = 0;
@@ -274,6 +368,7 @@ impl ComposedIssueStateSource {
             links,
             provider,
             cache: RefCell::new(HashMap::new()),
+            prune: false,
         }
     }
 
@@ -287,7 +382,20 @@ impl ComposedIssueStateSource {
             links,
             provider,
             cache: RefCell::new(HashMap::new()),
+            prune: true,
         }
+    }
+
+    fn lookup_error(&self, error: LookupError) -> IssueClosure {
+        if self.prune {
+            IssueClosure::LookupFailure(error.category)
+        } else {
+            IssueClosure::Keep(error.message)
+        }
+    }
+
+    fn scope_failure(&self, message: String) -> IssueClosure {
+        self.lookup_error(LookupError::new(LookupFailure::ScopeMismatch, message))
     }
 
     /// The legacy verdict for a number that has no durable task.
@@ -316,7 +424,7 @@ impl ComposedIssueStateSource {
             .map(|scope| (scope.provider.clone(), scope.project.clone()))
             .collect();
         if distinct.len() > 1 {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} has conflicting link scopes ({}); refusing to guess a provider",
                 format_scopes(&distinct)
             ));
@@ -325,7 +433,7 @@ impl ComposedIssueStateSource {
             .iter()
             .find(|scope| scope.external_id.parse::<u64>().ok() != Some(issue))
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} link external id '{}' does not match the issue number",
                 scope.external_id
             ));
@@ -346,7 +454,7 @@ impl ComposedIssueStateSource {
                     "issue {issue} was not found on its proven provider"
                 ));
             }
-            Err(reason) => return IssueClosure::Keep(reason),
+            Err(reason) => return self.lookup_error(reason),
         };
         let agrees = project_agrees(&project, &fact);
         self.prune_verdict(issue, &agrees, fact)
@@ -361,17 +469,14 @@ impl ComposedIssueStateSource {
         fact: IssueStateFact,
     ) -> IssueClosure {
         if let Some(false) = agrees {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} project does not match its proven scope"
             ));
         }
         if fact.state.eq_ignore_ascii_case("closed") {
             IssueClosure::Closed
         } else {
-            IssueClosure::Keep(format!(
-                "issue {issue} state '{}' is not closed",
-                fact.state
-            ))
+            IssueClosure::Open(format!("issue {issue} is not closed"))
         }
     }
 
@@ -382,7 +487,7 @@ impl ComposedIssueStateSource {
         issue: u64,
         route_provider: &str,
         route_project: Option<&str>,
-        read: impl FnOnce() -> Result<Option<IssueStateFact>, String>,
+        read: impl FnOnce() -> Result<Option<IssueStateFact>, LookupError>,
     ) -> IssueClosure {
         let scopes = match self.links.scopes(repo_path, issue) {
             Ok(scopes) => scopes,
@@ -395,7 +500,7 @@ impl ComposedIssueStateSource {
             .map(|scope| (scope.provider.clone(), scope.project.clone()))
             .collect();
         if distinct.len() > 1 {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} has conflicting link scopes ({}); refusing to guess a provider",
                 format_scopes(&distinct)
             ));
@@ -404,7 +509,7 @@ impl ComposedIssueStateSource {
         if let Some((provider, _)) = &scope
             && provider != route_provider
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} is linked to provider '{provider}' but its resolved route is \
                  '{route_provider}'; refusing to dispatch across providers"
             ));
@@ -412,7 +517,7 @@ impl ComposedIssueStateSource {
         if let Some((_, scope_project)) = &scope
             && Some(scope_project.as_str()) != route_project
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} link scope '{scope_project}' does not match its durable task project"
             ));
         }
@@ -420,7 +525,7 @@ impl ComposedIssueStateSource {
             .iter()
             .find(|scope| scope.external_id.parse::<u64>().ok() != Some(issue))
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} link external id '{}' does not match the issue number",
                 scope.external_id
             ));
@@ -432,23 +537,20 @@ impl ComposedIssueStateSource {
                     "issue {issue} was not found on the resolved provider"
                 ));
             }
-            Err(reason) => return IssueClosure::Keep(reason),
+            Err(reason) => return self.lookup_error(reason),
         };
         if let Some((_, project)) = &scope
             && let Some(agrees) = project_agrees(project, &fact)
             && !agrees
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} project does not match its link scope '{project}'"
             ));
         }
         if fact.state.eq_ignore_ascii_case("closed") {
             IssueClosure::Closed
         } else {
-            IssueClosure::Keep(format!(
-                "issue {issue} state '{}' is not closed",
-                fact.state
-            ))
+            IssueClosure::Open(format!("issue {issue} is not closed"))
         }
     }
 
@@ -463,15 +565,18 @@ impl ComposedIssueStateSource {
         task: TaskScopeRef<'_>,
         issue: u64,
     ) -> IssueClosure {
-        let read = || -> Result<Option<IssueStateFact>, String> {
+        let read = || -> Result<Option<IssueStateFact>, LookupError> {
             let route_fact = self.provider.own_task_state(task, issue)?;
             if route_fact.provider != task.provider
                 || route_fact.project != task.project
                 || route_fact.instance != task.instance
             {
-                return Err(format!(
-                    "issue {issue} durable task reference changed after the directory proof; \
+                return Err(LookupError::new(
+                    LookupFailure::ScopeMismatch,
+                    format!(
+                        "issue {issue} durable task reference changed after the directory proof; \
                      refusing to read it"
+                    ),
                 ));
             }
             Ok(Some(route_fact.into_fact()))
@@ -491,7 +596,7 @@ impl ComposedIssueStateSource {
             // historical link scope may still prove the number. The
             // invocation default never does.
             Ok(None) => return self.proven_legacy_verdict(repo_path, issue),
-            Err(reason) => return IssueClosure::Keep(reason),
+            Err(reason) => return self.lookup_error(reason),
         };
         let provider = route_fact.provider.clone();
         let project = route_fact.project.clone();
@@ -592,7 +697,7 @@ impl IssueStateSource for ComposedIssueStateSource {
             return self.proven_legacy_verdict(repo_path, issue);
         };
         if scope.external_id() != issue {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} registry scope external id '{}' does not match the issue number",
                 scope.external_id()
             ));
@@ -623,7 +728,7 @@ impl IssueStateSource for ComposedIssueStateSource {
             .iter()
             .find(|link| link.external_id.parse::<u64>().ok() != Some(issue))
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} link external id '{}' does not match the issue number",
                 link.external_id
             ));
@@ -633,7 +738,7 @@ impl IssueStateSource for ComposedIssueStateSource {
             .map(|link| (link.provider.clone(), link.project.clone()))
             .collect();
         if distinct.len() > 1 {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} has conflicting link scopes ({}); refusing to guess a provider",
                 format_scopes(&distinct)
             ));
@@ -641,7 +746,7 @@ impl IssueStateSource for ComposedIssueStateSource {
         if let Some((provider, project)) = distinct.into_iter().next()
             && (provider != scope.provider() || project != scope.project())
         {
-            return IssueClosure::Keep(format!(
+            return self.scope_failure(format!(
                 "issue {issue} registry scope '{}/{}' does not match its durable link scope \
                  '{provider}/{project}'",
                 scope.provider(),
@@ -659,7 +764,7 @@ impl IssueStateSource for ComposedIssueStateSource {
                         "issue {issue} was not found on its proven provider"
                     ));
                 }
-                Err(reason) => return IssueClosure::Keep(reason),
+                Err(reason) => return self.lookup_error(reason),
             };
         let agrees = project_agrees(scope.project(), &fact);
         self.prune_verdict(issue, &agrees, fact)
@@ -934,7 +1039,11 @@ impl IssueStateReader for ConfiguredIssueStateReader {
         Some(&self.context)
     }
 
-    fn own_task_state(&self, task: TaskScopeRef<'_>, issue: u64) -> Result<TaskRouteFact, String> {
+    fn own_task_state(
+        &self,
+        task: TaskScopeRef<'_>,
+        issue: u64,
+    ) -> Result<TaskRouteFact, LookupError> {
         let storage = Storage::open_existing_read_only()
             .map_err(|error| format!("the local store is not available: {error}"))?
             .ok_or_else(|| "the local store is not initialized".to_owned())?;
@@ -952,9 +1061,12 @@ impl IssueStateReader for ConfiguredIssueStateReader {
             || key.project() != task.project
             || key.instance() != task.instance
         {
-            return Err(format!(
-                "issue {issue} durable task reference changed after the directory proof; \
+            return Err(LookupError::new(
+                LookupFailure::ScopeMismatch,
+                format!(
+                    "issue {issue} durable task reference changed after the directory proof; \
                  refusing to read it"
+                ),
             ));
         }
         let dispatcher = crate::cli::task_route::provider_for_binding_read_only(
@@ -962,10 +1074,8 @@ impl IssueStateReader for ConfiguredIssueStateReader {
             &binding,
             &self.context,
         )
-        .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
-        let summary = dispatcher
-            .get_issue(issue)
-            .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+        .map_err(LookupError::from)?;
+        let summary = dispatcher.get_issue(issue).map_err(provider_lookup_error)?;
         Ok(TaskRouteFact {
             provider: key.provider().to_owned(),
             project: key.project().to_owned(),
@@ -985,7 +1095,7 @@ impl IssueStateReader for ConfiguredIssueStateReader {
         issue: u64,
         provider: &str,
         project: &str,
-    ) -> Result<Option<IssueStateFact>, String> {
+    ) -> Result<Option<IssueStateFact>, LookupError> {
         // Corroborate a scope-only sidecar with an immutable durable task
         // before trusting any provider response. Redmine carries no instance
         // in the sidecar, so its currently configured endpoint is not
@@ -995,14 +1105,12 @@ impl IssueStateReader for ConfiguredIssueStateReader {
             .ok_or_else(|| "the local store is not initialized".to_owned())?;
         let repo_key = crate::branch_links::resolve_checkout_repo_key(
             &crate::git_runner::ProcessGitRunner::in_directory(repo_path),
-        )
-        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+        )?;
         let tasks = crate::task_identity::bindings_for_repo_number_with(
             &storage.connection,
             &repo_key,
             issue,
-        )
-        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+        )?;
         let mut matching = tasks.into_iter().filter(|binding| {
             let key = binding.key();
             key.provider() == provider
@@ -1016,10 +1124,8 @@ impl IssueStateReader for ConfiguredIssueStateReader {
                     &binding,
                     &self.context,
                 )
-                .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
-                let summary = dispatcher
-                    .get_issue(issue)
-                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                .map_err(LookupError::from)?;
+                let summary = dispatcher.get_issue(issue).map_err(provider_lookup_error)?;
                 return Ok(Some(IssueStateFact {
                     state: summary.state,
                     project_id: summary.project.as_ref().map(|project| project.id),
@@ -1030,9 +1136,12 @@ impl IssueStateReader for ConfiguredIssueStateReader {
                 }));
             }
             (Some(_), Some(_)) => {
-                return Err(format!(
-                    "issue {issue} has several durable tasks for scope '{provider}/{project}'; \
+                return Err(LookupError::new(
+                    LookupFailure::ScopeMismatch,
+                    format!(
+                        "issue {issue} has several durable tasks for scope '{provider}/{project}'; \
                      refusing to guess an instance"
+                    ),
                 ));
             }
             (None, _) => {}
@@ -1040,18 +1149,17 @@ impl IssueStateReader for ConfiguredIssueStateReader {
         if !matches!(provider, "forgejo" | "gitlab" | "local") {
             // Validate the explicit selection only to surface a conflict; the
             // configured endpoint is never historical ownership proof.
-            scoped_instance(self.role, repo_path, provider, project, &self.context)
-                .map_err(|reason| format!("issue {issue}: {reason}"))?;
-            return Err(format!(
-                "issue {issue} scope '{provider}/{project}' has no corroborating durable task or \
+            scoped_instance(self.role, repo_path, provider, project, &self.context)?;
+            return Err(LookupError::new(
+                LookupFailure::ScopeMismatch,
+                format!(
+                    "issue {issue} scope '{provider}/{project}' has no corroborating durable task or \
                  repository identity; its historical instance cannot be proven"
+                ),
             ));
         }
-        let dispatcher = scoped_provider(self.role, repo_path, provider, project, &self.context)
-            .map_err(|reason| format!("issue {issue}: {reason}"))?;
-        let summary = dispatcher
-            .get_issue(issue)
-            .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+        let dispatcher = scoped_provider(self.role, repo_path, provider, project, &self.context)?;
+        let summary = dispatcher.get_issue(issue).map_err(provider_lookup_error)?;
         Ok(Some(IssueStateFact {
             state: summary.state,
             project_id: summary.project.as_ref().map(|project| project.id),
@@ -1206,15 +1314,18 @@ fn scoped_instance(
     provider: &str,
     project: &str,
     context: &crate::cli::provider_context::ProviderContext,
-) -> Result<String, String> {
+) -> Result<String, LookupError> {
     match provider {
         "redmine" => {
             if context.provider == Some(crate::providers::ProviderKind::Redmine)
                 && let Some(selected) = context.project_id.as_deref()
                 && selected != project
             {
-                return Err(format!(
-                    "the explicit Redmine selection names project '{selected}', not '{project}'"
+                return Err(LookupError::new(
+                    LookupFailure::ScopeMismatch,
+                    format!(
+                        "the explicit Redmine selection names project '{selected}', not '{project}'"
+                    ),
                 ));
             }
             let storage = Storage::open_existing_read_only()
@@ -1232,10 +1343,10 @@ fn scoped_instance(
                 let selected = crate::remote::normalize_redmine_api_base(explicit)
                     .map_err(|error| crate::worktree::bounded(&error))?;
                 if selected != trusted.api_base {
-                    return Err(
-                        "the selected Redmine endpoint does not match the role's trusted instance"
-                            .to_owned(),
-                    );
+                    return Err(LookupError::new(
+                        LookupFailure::ScopeMismatch,
+                        "the selected Redmine endpoint does not match the role's trusted instance",
+                    ));
                 }
             }
             Ok(trusted.api_base)
@@ -1248,7 +1359,10 @@ fn scoped_instance(
                 .load_forgejo_config(role)
                 .map_err(|error| format!("could not read the Forgejo role instance: {error}"))?
                 .ok_or_else(|| {
-                    "the Forgejo role instance is not configured for this role".to_owned()
+                    LookupError::new(
+                        LookupFailure::MissingConfiguration,
+                        "the Forgejo role instance is not configured for this role",
+                    )
                 })?;
             let trusted = crate::providers::forgejo::ForgejoConfig::new(&stored.api_base, project)
                 .map_err(|error| bounded_error(&error.json()))?;
@@ -1256,10 +1370,10 @@ fn scoped_instance(
                 let selected = crate::providers::forgejo::ForgejoConfig::new(explicit, project)
                     .map_err(|error| bounded_error(&error.json()))?;
                 if selected.api_base() != trusted.api_base() {
-                    return Err(
-                        "the selected Forgejo endpoint does not match the role's trusted instance"
-                            .to_owned(),
-                    );
+                    return Err(LookupError::new(
+                        LookupFailure::ScopeMismatch,
+                        "the selected Forgejo endpoint does not match the role's trusted instance",
+                    ));
                 }
             }
             let origin = crate::remote::forgejo_origin_evidence_at(repo_path)?;
@@ -1269,9 +1383,12 @@ fn scoped_instance(
             )
             .map_err(|error| bounded_error(&error.json()))?;
             if attested != project {
-                return Err(format!(
-                    "the physical origin repository '{attested}' does not attest the scoped \
+                return Err(LookupError::new(
+                    LookupFailure::ScopeMismatch,
+                    format!(
+                        "the physical origin repository '{attested}' does not attest the scoped \
                      repository '{project}'"
+                    ),
                 ));
             }
             Ok(trusted.api_base().to_owned())
@@ -1284,7 +1401,10 @@ fn scoped_instance(
                 .load_gitlab_config(role)
                 .map_err(|error| format!("could not read the GitLab role instance: {error}"))?
                 .ok_or_else(|| {
-                    "the GitLab role instance is not configured for this role".to_owned()
+                    LookupError::new(
+                        LookupFailure::MissingConfiguration,
+                        "the GitLab role instance is not configured for this role",
+                    )
                 })?;
             let trusted = crate::providers::gitlab::GitlabConfig::new(&stored.api_base, project)
                 .map_err(|error| bounded_error(&error.json()))?;
@@ -1292,10 +1412,10 @@ fn scoped_instance(
                 let selected = crate::providers::gitlab::GitlabConfig::new(explicit, project)
                     .map_err(|error| bounded_error(&error.json()))?;
                 if selected.api_base() != trusted.api_base() {
-                    return Err(
-                        "the selected GitLab endpoint does not match the role's trusted instance"
-                            .to_owned(),
-                    );
+                    return Err(LookupError::new(
+                        LookupFailure::ScopeMismatch,
+                        "the selected GitLab endpoint does not match the role's trusted instance",
+                    ));
                 }
             }
             let origin = crate::remote::gitlab_origin_evidence_at(repo_path)?;
@@ -1305,22 +1425,29 @@ fn scoped_instance(
             )
             .map_err(|error| bounded_error(&error.json()))?;
             if attested != project {
-                return Err(format!(
-                    "the physical origin project '{attested}' does not attest the scoped project \
+                return Err(LookupError::new(
+                    LookupFailure::ScopeMismatch,
+                    format!(
+                        "the physical origin project '{attested}' does not attest the scoped project \
                      '{project}'"
+                    ),
                 ));
             }
             Ok(trusted.api_base().to_owned())
         }
         "local" => {
             if project != "default" {
-                return Err(format!(
-                    "the local provider owns the 'default' project, not '{project}'"
+                return Err(LookupError::new(
+                    LookupFailure::ScopeMismatch,
+                    format!("the local provider owns the 'default' project, not '{project}'"),
                 ));
             }
             Ok("default".to_owned())
         }
-        other => Err(format!("unsupported provider scope '{other}'")),
+        other => Err(LookupError::new(
+            LookupFailure::ScopeMismatch,
+            format!("unsupported provider scope '{other}'"),
+        )),
     }
 }
 
@@ -1335,7 +1462,7 @@ fn scoped_provider(
     provider: &str,
     project: &str,
     context: &crate::cli::provider_context::ProviderContext,
-) -> Result<ProviderDispatcher, String> {
+) -> Result<ProviderDispatcher, LookupError> {
     let instance = scoped_instance(role, repo_path, provider, project, context)?;
     match provider {
         "redmine" => {
@@ -1350,10 +1477,17 @@ fn scoped_provider(
                 None,
             )
             .map_err(|error| bounded_error(&error.json()))?;
-            let api_key = crate::auth::redmine_api_key(role, &storage)?;
+            let api_key = crate::auth::redmine_api_key_checked(role, &storage).map_err(
+                |error| match error {
+                    crate::auth::RedmineKeyError::Missing(message) => {
+                        LookupError::new(LookupFailure::MissingConfiguration, message)
+                    }
+                    crate::auth::RedmineKeyError::Storage(message) => LookupError::from(message),
+                },
+            )?;
             crate::providers::config::RedmineProvider::new(config, api_key)
                 .map(ProviderDispatcher::Redmine)
-                .map_err(|error| bounded_error(&error.json()))
+                .map_err(provider_lookup_error)
         }
         "forgejo" => {
             let storage = Storage::open_existing_read_only()
@@ -1363,12 +1497,17 @@ fn scoped_provider(
                 .load_credential(role, "forgejo")
                 .map_err(|error| format!("could not read the Forgejo role credential: {error}"))?
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "the Forgejo role credential is not configured".to_owned())?;
+                .ok_or_else(|| {
+                    LookupError::new(
+                        LookupFailure::MissingConfiguration,
+                        "the Forgejo role credential is not configured",
+                    )
+                })?;
             let config = crate::providers::forgejo::ForgejoConfig::new(&instance, project)
                 .map_err(|error| bounded_error(&error.json()))?;
             crate::providers::forgejo::ForgejoProvider::new(config, &token)
                 .map(ProviderDispatcher::Forgejo)
-                .map_err(|error| bounded_error(&error.json()))
+                .map_err(provider_lookup_error)
         }
         "gitlab" => {
             let storage = Storage::open_existing_read_only()
@@ -1378,17 +1517,25 @@ fn scoped_provider(
                 .load_credential(role, "gitlab")
                 .map_err(|error| format!("could not read the GitLab role credential: {error}"))?
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "the GitLab role credential is not configured".to_owned())?;
+                .ok_or_else(|| {
+                    LookupError::new(
+                        LookupFailure::MissingConfiguration,
+                        "the GitLab role credential is not configured",
+                    )
+                })?;
             let config = crate::providers::gitlab::GitlabConfig::new(&instance, project)
                 .map_err(|error| bounded_error(&error.json()))?;
             crate::providers::gitlab::GitlabProvider::new(config, &token)
                 .map(ProviderDispatcher::Gitlab)
-                .map_err(|error| bounded_error(&error.json()))
+                .map_err(provider_lookup_error)
         }
         "local" => crate::providers::local::LocalProvider::open_read_only()
             .map(ProviderDispatcher::local)
-            .map_err(|error| bounded_error(&error.json())),
-        other => Err(format!("unsupported provider scope '{other}'")),
+            .map_err(provider_lookup_error),
+        other => Err(LookupError::new(
+            LookupFailure::ScopeMismatch,
+            format!("unsupported provider scope '{other}'"),
+        )),
     }
 }
 
@@ -1479,7 +1626,7 @@ impl TaskAwareIssueStateReader {
         connection: &rusqlite::Connection,
         task: TaskScopeRef<'_>,
         issue: u64,
-    ) -> Result<TaskRouteFact, String> {
+    ) -> Result<TaskRouteFact, LookupError> {
         let binding = crate::task_identity::binding_for_task_id_on(connection, task.task_id)
             .map_err(|reason| format!("issue {issue}: {reason}"))?
             .ok_or_else(|| {
@@ -1493,9 +1640,12 @@ impl TaskAwareIssueStateReader {
             || key.project() != task.project
             || key.instance() != task.instance
         {
-            return Err(format!(
-                "issue {issue} durable task reference changed after the directory proof; \
+            return Err(LookupError::new(
+                LookupFailure::ScopeMismatch,
+                format!(
+                    "issue {issue} durable task reference changed after the directory proof; \
                  refusing to read it"
+                ),
             ));
         }
         let provider = if self.local_read_only {
@@ -1504,18 +1654,12 @@ impl TaskAwareIssueStateReader {
                 &binding,
                 &self.context,
             )
+            .map_err(LookupError::from)
         } else {
             crate::cli::task_route::provider_for_binding(self.role, &binding, &self.context)
-        }
-        .map_err(|error| {
-            format!(
-                "issue {issue}: the durable task provider is unavailable: {}",
-                bounded_error(&error.json())
-            )
-        })?;
-        let summary = provider
-            .get_issue(issue)
-            .map_err(|error| bounded_error(&error.json()))?;
+                .map_err(provider_lookup_error)
+        }?;
+        let summary = provider.get_issue(issue).map_err(provider_lookup_error)?;
         Ok(TaskRouteFact {
             provider: key.provider().to_owned(),
             project: key.project().to_owned(),
@@ -1539,7 +1683,11 @@ impl IssueStateReader for TaskAwareIssueStateReader {
         Some(&self.context)
     }
 
-    fn own_task_state(&self, task: TaskScopeRef<'_>, issue: u64) -> Result<TaskRouteFact, String> {
+    fn own_task_state(
+        &self,
+        task: TaskScopeRef<'_>,
+        issue: u64,
+    ) -> Result<TaskRouteFact, LookupError> {
         let connection = self.connection()?;
         self.read_task(connection, task, issue)
     }
@@ -1548,7 +1696,7 @@ impl IssueStateReader for TaskAwareIssueStateReader {
         &self,
         repo_path: &Path,
         issue: u64,
-    ) -> Result<Option<TaskRouteFact>, String> {
+    ) -> Result<Option<TaskRouteFact>, LookupError> {
         let repo_key = self.repo_key(repo_path)?;
         let connection = self.connection()?;
         let tasks = crate::cli::task_route::resolve_number_in_repo(connection, &repo_key, issue)
@@ -1574,9 +1722,12 @@ impl IssueStateReader for TaskAwareIssueStateReader {
                 )
                 .map(Some)
             }
-            _ => Err(format!(
-                "issue {issue} has several durable tasks in this repository; refusing to guess \
+            _ => Err(LookupError::new(
+                LookupFailure::ScopeMismatch,
+                format!(
+                    "issue {issue} has several durable tasks in this repository; refusing to guess \
                  a provider"
+                ),
             )),
         }
     }
@@ -1596,7 +1747,7 @@ impl IssueStateReader for TaskAwareIssueStateReader {
         issue: u64,
         provider: &str,
         project: &str,
-    ) -> Result<Option<IssueStateFact>, String> {
+    ) -> Result<Option<IssueStateFact>, LookupError> {
         let repo_key = self.repo_key(repo_path)?;
         let connection = self.connection()?;
         let tasks = crate::cli::task_route::resolve_number_in_repo(connection, &repo_key, issue)
@@ -1627,28 +1778,32 @@ impl IssueStateReader for TaskAwareIssueStateReader {
                 )
                 .map(|fact| Some(fact.into_fact()))
             }
-            (Some(_), Some(_)) => Err(format!(
-                "issue {issue} has several durable tasks for scope '{provider}/{project}'; \
+            (Some(_), Some(_)) => Err(LookupError::new(
+                LookupFailure::ScopeMismatch,
+                format!(
+                    "issue {issue} has several durable tasks for scope '{provider}/{project}'; \
                  refusing to guess an instance"
+                ),
             )),
             (None, _) => {
                 if !matches!(provider, "forgejo" | "gitlab" | "local") {
                     // A sidecar with no instance cannot prove historical
                     // ownership through the configured endpoint. Validate the
                     // explicit selection only to surface a conflict, then keep.
-                    scoped_instance(self.role, repo_path, provider, project, &self.context)
-                        .map_err(|reason| format!("issue {issue}: {reason}"))?;
-                    return Err(format!(
-                        "issue {issue} scope '{provider}/{project}' has no corroborating durable \
+                    scoped_instance(self.role, repo_path, provider, project, &self.context)?;
+                    return Err(LookupError::new(
+                        LookupFailure::ScopeMismatch,
+                        format!(
+                            "issue {issue} scope '{provider}/{project}' has no corroborating durable \
                          task or repository identity; its historical instance cannot be proven"
+                        ),
                     ));
                 }
                 // The scope proof runs on every read, so a cached dispatcher
                 // never carries a stale origin, endpoint or selection into a
                 // verdict.
                 let instance =
-                    scoped_instance(self.role, repo_path, provider, project, &self.context)
-                        .map_err(|reason| format!("issue {issue}: {reason}"))?;
+                    scoped_instance(self.role, repo_path, provider, project, &self.context)?;
                 let key = (
                     provider.to_owned(),
                     project.to_owned(),
@@ -1657,8 +1812,7 @@ impl IssueStateReader for TaskAwareIssueStateReader {
                 );
                 if !self.scoped_providers.borrow().contains_key(&key) {
                     let dispatcher =
-                        scoped_provider(self.role, repo_path, provider, project, &self.context)
-                            .map_err(|reason| format!("issue {issue}: {reason}"))?;
+                        scoped_provider(self.role, repo_path, provider, project, &self.context)?;
                     self.scoped_providers
                         .borrow_mut()
                         .insert(key.clone(), dispatcher);
@@ -1669,7 +1823,7 @@ impl IssueStateReader for TaskAwareIssueStateReader {
                     .get(&key)
                     .expect("the scoped provider was just cached")
                     .get_issue(issue)
-                    .map_err(|error| format!("issue {issue}: {}", bounded_error(&error.json())))?;
+                    .map_err(provider_lookup_error)?;
                 Ok(Some(IssueStateFact {
                     state: summary.state,
                     project_id: summary.project.as_ref().map(|project| project.id),
@@ -1950,6 +2104,45 @@ mod reuse_tests {
     use super::*;
 
     #[test]
+    fn provider_failures_keep_typed_safe_categories_without_exposing_bodies() {
+        use crate::providers::api::PhasegentError;
+        for (error, expected) in [
+            (
+                PhasegentError::Auth("local credential failure".to_owned()),
+                LookupFailure::ProviderUnavailable,
+            ),
+            (
+                PhasegentError::Http {
+                    operation: "get".to_owned(),
+                    status: 401,
+                    message: "secret provider body".to_owned(),
+                },
+                LookupFailure::AuthenticationDenied,
+            ),
+            (
+                PhasegentError::Http {
+                    operation: "get".to_owned(),
+                    status: 403,
+                    message: "secret provider body".to_owned(),
+                },
+                LookupFailure::AuthenticationDenied,
+            ),
+            (
+                PhasegentError::Request {
+                    operation: "get".to_owned(),
+                    message: "secret provider body".to_owned(),
+                },
+                LookupFailure::ProviderUnavailable,
+            ),
+        ] {
+            let error = provider_lookup_error(error);
+            assert_eq!(error.category, expected);
+            let result = IssueClosure::LookupFailure(error.category);
+            assert!(!result.keep_reason().unwrap().contains("secret"));
+        }
+    }
+
+    #[test]
     fn targeted_link_refresh_keeps_setup_but_reads_current_rows() {
         let root = crate::test_scratch::root().join(format!(
             "prune-links-{}-{}",
@@ -2124,7 +2317,7 @@ mod association_identity_tests {
 
     use super::{
         ComposedIssueStateSource, CurrentIssueClosure, DirectoryAssociation, IssueStateFact,
-        IssueStateReader, LinkScope, LinkScopeReader, task_matches_current,
+        IssueStateReader, LinkScope, LinkScopeReader, LookupError, task_matches_current,
     };
     use crate::lifecycle::cleanup::closure::DirectoryIssueClosure;
     use crate::worktree::{DirectoryLegacyIssue, DirectoryTask, WorktreeScope};
@@ -2184,7 +2377,7 @@ mod association_identity_tests {
 
     struct RecordedScoped {
         calls: Rc<RefCell<Vec<(u64, String, String)>>>,
-        verdict: Result<Option<IssueStateFact>, String>,
+        verdict: Result<Option<IssueStateFact>, LookupError>,
     }
 
     impl IssueStateReader for RecordedScoped {
@@ -2194,7 +2387,7 @@ mod association_identity_tests {
             issue: u64,
             provider: &str,
             project: &str,
-        ) -> Result<Option<IssueStateFact>, String> {
+        ) -> Result<Option<IssueStateFact>, LookupError> {
             self.calls
                 .borrow_mut()
                 .push((issue, provider.to_owned(), project.to_owned()));
@@ -2254,7 +2447,7 @@ mod association_identity_tests {
                 calls: Rc::clone(&calls),
                 verdict: Err(
                     "issue 7 scope 'redmine/23' has no corroborating durable task or repository identity; its historical instance cannot be proven"
-                        .to_owned(),
+                        .to_owned().into(),
                 ),
             }),
         );
