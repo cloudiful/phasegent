@@ -299,8 +299,13 @@ and high-resolution change evidence must re-read identically immediately before
 the guarded cache removal; a platform without reliable identity fails closed.
 The ordinary no-force `git worktree remove` follows after every applicable
 local, closure and fresh host gate is re-checked. A recorded path that no longer
-exists is reported as absent; registry evidence is preserved and no provider
-read or session move is required. Branches and Git history are retained.
+is proven absent has its directory registration and its owned associations reclaimed
+under the operation lock; dry-run reports what would be reclaimed. An inaccessible
+path or symbolic link is retained. No provider read or session move is required.
+Main checkouts are excluded from candidate totals; task, branch-link and Git history
+are retained. The scan reuses one running-session snapshot and deletion rechecks
+fresh occupancy. Kept reason codes distinguish issue state, lookup failure, legacy
+provenance, local probes and running sessions.
 
 The read-only scan never moves a session; the removal stage is the only place
 that may move one. Coverage is the one connected OpenCode service at that moment,

@@ -40,7 +40,7 @@ fn config_provider_set_parses_valid_values() {
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        let invocation = command::parse(&args)
+        let invocation = command::parse_with_role_env(&args, None)
             .unwrap_or_else(|error| panic!("config provider set {raw} must parse: {error}"));
         match invocation.command {
             Command::ConfigProviderSet { value } => assert_eq!(value, expected),

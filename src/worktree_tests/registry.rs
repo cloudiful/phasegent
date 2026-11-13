@@ -243,6 +243,15 @@ fn removing_a_directory_deletes_its_associations_and_keeps_others() {
         )
         .expect("insert");
     }
+    let key =
+        crate::task_identity::TaskKey::new("forgejo", "https://forgejo.test", "owner/repo", "7")
+            .unwrap();
+    let binding = crate::task_identity::ensure_binding(&storage, &key, 10).unwrap();
+    storage.connection.execute("INSERT INTO worktree_directory_tasks (directory_id, task_id, issue, created_at) VALUES ('dir-a', ?1, 7, 1)", [binding.task_id()]).unwrap();
+    storage
+        .connection
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .unwrap();
     assert_eq!(
         registry::remove_directory(&storage, "/tmp/repo/.git", "dir-a").unwrap(),
         1
@@ -258,7 +267,33 @@ fn removing_a_directory_deletes_its_associations_and_keeps_others() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(orphans, 0, "cascade removes the association rows");
+    assert_eq!(
+        orphans, 0,
+        "explicit cleanup removes association rows without FK enforcement"
+    );
+    let sessions: i64 = storage
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM worktree_directory_sessions WHERE directory_id = 'dir-a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sessions, 0);
+    let tasks: i64 = storage
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM worktree_directory_tasks WHERE directory_id = 'dir-a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tasks, 0);
+    assert!(
+        crate::task_identity::binding_for_task_id_on(&storage.connection, binding.task_id())
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

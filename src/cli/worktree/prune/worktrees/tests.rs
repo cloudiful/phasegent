@@ -98,6 +98,136 @@ fn run(fixture: &Fixture, api: &dyn OpenCodeApi, source: &dyn IssueStateSource) 
     )
 }
 
+struct CountingApi {
+    inner: FakeOpenCodeApi,
+    active_calls: Cell<usize>,
+}
+
+impl OpenCodeApi for CountingApi {
+    fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
+        self.inner.session(id)
+    }
+    fn list(&self, request: &ListRequest) -> Result<SessionPage, ApiError> {
+        self.inner.list(request)
+    }
+    fn move_session(&self, id: &str, directory: &Path) -> Result<(), ApiError> {
+        self.inner.move_session(id, directory)
+    }
+    fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
+        self.active_calls.set(self.active_calls.get() + 1);
+        self.inner.active_sessions()
+    }
+}
+
+#[test]
+fn scan_reuses_snapshot_across_scopes_and_excludes_main() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("prune-shared-snapshot") else {
+        return;
+    };
+    register(&fixture, "cli-session");
+    let mut records = registry::load_records(&fixture.storage, Some(&fixture.identity)).unwrap();
+    let mut main = records[0].clone();
+    main.worktree_path = fixture.repo.dir.path().to_string_lossy().into_owned();
+    records.push(main);
+    let target = TargetResolver::new(fixture.repo.dir.path(), &fixture.identity);
+    let scope = PruneScope {
+        identity: &fixture.identity,
+        repo_path: fixture.repo.dir.path(),
+        records: &records,
+        target: &target,
+    };
+    let api = CountingApi {
+        inner: FakeOpenCodeApi::empty(),
+        active_calls: Cell::new(0),
+    };
+    let snapshot = std::cell::OnceCell::new();
+    let runner = ProcessWorktreeRunner::new();
+    let source = ScriptedIssueStateSource::closed();
+    for _ in 0..2 {
+        let candidates = scan_with_paths(&runner, &api, &scope, &source, &snapshot, false);
+        assert_eq!(candidates.len(), 1);
+    }
+    assert_eq!(api.active_calls.get(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn absent_probe_rejects_dangling_symlinks() {
+    let dir = TempDir::new("prune-dangling-link");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+    assert!(path_absent(&link).is_err());
+    assert!(path_absent(&link.join("child")).is_err());
+    assert_eq!(path_absent(&dir.path().join("absent")), Ok(true));
+}
+
+#[test]
+fn unavailable_repository_reclaims_only_absent_registrations() {
+    let _lock = lock_workflow_tests();
+    let (_db, storage, _env) = open_temp_db("prune-missing-root");
+    let cache = crate::worktree_tests::support::unique_cache("prune-missing-root");
+    let _cache_env = crate::infra::storage::test_support::EnvGuard::set(
+        "PHASEGENT_WORKTREE_CACHE_DIR",
+        cache.path().to_string_lossy().as_ref(),
+    );
+    registry::ensure_schema(&storage).unwrap();
+    let paths = TempDir::new("prune-missing-root-paths");
+    let root = paths.path().join("missing-main");
+    let identity = root.join(".git").to_string_lossy().into_owned();
+    let absent = paths.path().join("missing-worktree");
+    let existing = paths.path().join("existing-worktree");
+    std::fs::create_dir(&existing).unwrap();
+    for (id, path) in [("absent", &absent), ("existing", &existing)] {
+        registry::insert_directory(
+            &storage,
+            &NewDirectory {
+                directory_id: id,
+                repo_identity: &identity,
+                checkout_path: &root.to_string_lossy(),
+                worktree_path: &path.to_string_lossy(),
+                branch: "fixture",
+                created_at: 1,
+                session: "cli-session",
+                associations: &[NewAssociation::Unscoped { issue: 1 }],
+            },
+        )
+        .unwrap();
+    }
+    let records = registry::load_records(&storage, Some(&identity)).unwrap();
+    let target = TargetResolver::new(&root, &identity);
+    let scope = PruneScope {
+        identity: &identity,
+        repo_path: &root,
+        records: &records,
+        target: &target,
+    };
+    let api = CountingApi {
+        inner: FakeOpenCodeApi::empty(),
+        active_calls: Cell::new(0),
+    };
+    let result = prune_pass_with_snapshot(
+        &storage,
+        &ProcessWorktreeRunner::new(),
+        &api,
+        &api,
+        &scope,
+        &ScriptedIssueStateSource::closed(),
+        PruneMode::Remove,
+        MovePolicy::NoWait,
+        &|_| {},
+        &std::cell::OnceCell::new(),
+        true,
+    );
+    assert_eq!(result.absent, 1);
+    assert_eq!(result.kept_protected, 1);
+    assert_eq!(api.active_calls.get(), 0);
+    let remaining = registry::load_records(&storage, Some(&identity)).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].directory_id, "existing");
+    assert!(existing.exists());
+}
+
 struct ReopensWhenCacheGone {
     worktree: PathBuf,
 }
@@ -246,6 +376,41 @@ fn prune_checks_a_reappearing_absent_path_instead_of_caching_absence() {
         records: &records,
         target: &target,
     };
+    let preview = prune_pass(
+        &storage,
+        &runner,
+        &api,
+        &api,
+        &first_scope,
+        &source,
+        PruneMode::Report,
+        &|_| {},
+    );
+    assert_eq!(preview.absent, 1);
+    assert_eq!(
+        registry::load_records(&storage, Some(&identity)).unwrap(),
+        records
+    );
+    let raced = prune_pass(
+        &storage,
+        &runner,
+        &api,
+        &api,
+        &first_scope,
+        &source,
+        PruneMode::Remove,
+        &|stage| {
+            if matches!(stage, PruneStage::Verifying { .. }) {
+                std::fs::create_dir_all(&path).unwrap();
+            }
+        },
+    );
+    assert_eq!(raced.kept_protected, 1);
+    assert_eq!(
+        registry::load_records(&storage, Some(&identity)).unwrap(),
+        records
+    );
+    std::fs::remove_dir(&path).unwrap();
     let first = prune_pass(
         &storage,
         &runner,
@@ -257,6 +422,11 @@ fn prune_checks_a_reappearing_absent_path_instead_of_caching_absence() {
         &|_| {},
     );
     assert_eq!(first.absent, 1);
+    assert!(
+        registry::load_records(&storage, Some(&identity))
+            .unwrap()
+            .is_empty()
+    );
     std::fs::create_dir_all(&path).expect("reappearing directory");
     let second_scope = PruneScope {
         identity: &identity,
@@ -335,7 +505,7 @@ fn prune_keeps_the_open_scope_of_a_same_number_multi_provider_record() {
             scope: Option<&crate::worktree::WorktreeScope>,
         ) -> IssueClosure {
             match scope.map(|scope| scope.provider()) {
-                Some("redmine") => IssueClosure::Keep("the redmine scope is still open".to_owned()),
+                Some("redmine") => IssueClosure::Open("the redmine scope is still open".to_owned()),
                 _ => IssueClosure::Closed,
             }
         }
@@ -361,6 +531,7 @@ fn prune_keeps_the_open_scope_of_a_same_number_multi_provider_record() {
     );
     assert_eq!(summary.removed, 0, "the open same-number scope keeps it");
     assert_eq!(summary.kept_issue, 1);
+    assert_eq!(summary.actions[0].reason_code, Some("issue_open"));
     assert!(path.exists());
 }
 

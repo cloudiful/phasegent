@@ -278,21 +278,17 @@ pub(crate) fn execute_prune_with_source_verbose(
         kept_issue: 0,
         failed: 0,
     };
+    let scan_snapshot = std::cell::OnceCell::new();
     for scope in scopes {
-        let (identity, path) = match scope {
+        let (identity, path, skipped_reason) = match scope {
             Scope::Skipped { identity, reason } => {
-                outcomes.push(PruneRepoOutcome {
-                    repo_identity: identity,
-                    repo_path: None,
-                    skipped_reason: Some(reason),
-                    worktrees: None,
-                });
-                tally.finish_repository(true);
-                tally.set_stage(TallyStage::Complete);
-                progress(&tally.render(mode));
-                continue;
+                let path = Path::new(&identity)
+                    .parent()
+                    .unwrap_or(Path::new("/"))
+                    .to_path_buf();
+                (identity, path, Some(reason))
             }
-            Scope::Resolved { identity, path } => (identity, path),
+            Scope::Resolved { identity, path } => (identity, path, None),
         };
         let records = match registry::load_records(&storage, Some(&identity)) {
             Ok(records) => records,
@@ -340,7 +336,7 @@ pub(crate) fn execute_prune_with_source_verbose(
                 }
                 progress(&tally.render(mode));
             };
-            prune_pass_with_policy(
+            worktrees::prune_pass_with_snapshot(
                 &storage,
                 &runner,
                 api,
@@ -350,9 +346,11 @@ pub(crate) fn execute_prune_with_source_verbose(
                 mode,
                 confirmation,
                 &stages,
+                &scan_snapshot,
+                skipped_reason.is_some(),
             )
         };
-        tally.finish_repository(false);
+        tally.finish_repository(skipped_reason.is_some());
         tally.set_stage(TallyStage::Complete);
         progress(&tally.render(mode));
         totals.repositories += 1;
@@ -365,7 +363,7 @@ pub(crate) fn execute_prune_with_source_verbose(
         outcomes.push(PruneRepoOutcome {
             repo_identity: identity,
             repo_path: Some(path.display().to_string()),
-            skipped_reason: None,
+            skipped_reason,
             worktrees: Some(worktree_summary),
         });
     }
@@ -440,7 +438,13 @@ fn resolve_explicit_scope(raw: &str, runner: &ProcessWorktreeRunner) -> Result<S
         ));
     }
     match crate::worktree::repo_identity(runner, &path) {
-        Ok(identity) => Ok(Scope::Resolved { identity, path }),
+        Ok(identity) => match resolve_known_identity(runner, identity) {
+            resolved @ Scope::Resolved { .. } => Ok(resolved),
+            Scope::Skipped { reason, .. } => Err(structured_error(
+                serde_json::json!({ "kind": "repository", "message": reason }),
+                1,
+            )),
+        },
         Err(error) => Err(structured_error(
             serde_json::json!({
                 "kind": error.kind,

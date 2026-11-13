@@ -113,18 +113,29 @@ connected service is covered; no whole-machine inventory is claimed.
 The `--dryrun` preview runs the same occupancy and lineage reads and reports the
 same blockers and move eligibility without moving, deleting or writing anything,
 and without creating a store, schema or operation lock. Local Git guards run
-before host reads, so a main checkout or dirty path is kept without host access.
+before host reads, so a main checkout or dirty path requires no host access. Main
+checkouts are excluded from candidate and kept totals. One lazy running-session
+snapshot is reused across the scan; destructive boundaries use fresh checks.
 
 After a successful `git worktree remove` (never with `--force`), the registry row
 is deleted. Branches and Git history are retained. A recorded path that no
-longer exists is reported as absent: the fact is independent of task or provider
-identity, registry evidence is preserved, and no provider read or session move
-is required.
+is proven absent has its registration and directory-owned associations reclaimed
+under the operation lock after a fresh row and path check. Dry-run reports the
+registration that would be reclaimed without writing. Unavailable repository
+roots do not prevent absent registration reclamation, but existing directories
+in those repositories remain protected. Inaccessible paths and symbolic links
+are retained. Independent task, branch-link, baseline and issue histories remain;
+no provider read or session move is required for an absent path.
 
 The default output follows the global `--output auto` selection: the compact
 human summary on an interactive terminal and the machine aggregate envelope on a
 pipe or in CI. `--verbose` adds bounded per-directory rows without changing the
-machine document. The aggregate envelope is the complete-detail inspection
+machine document. The absent count means would-reclaim in preview and reclaimed
+in removal mode. Kept actions expose reason codes for known-open issues, closure
+lookup failures, unattributed legacy associations, local probes and running
+occupancy. Lookup failures distinguish missing role configuration, denied access,
+scope mismatch and provider unavailability with bounded hints in the default
+human summary; provider response bodies are not displayed. The aggregate envelope is the complete-detail inspection
 channel. Progress is a human affordance only: one stderr line is redrawn in
 place, never carries a directory path, counts completed repositories and
 directories, and is cleared before the result.

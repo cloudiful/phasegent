@@ -244,8 +244,11 @@ registry 记录的所有 repository identity，`--dryrun`（别名 `--dry-run`�
 该根下的 `??` 路径，且清单记录可靠的 device/inode 与高分辨率变更证据，删除前立即重读
 必须一致；无法提供可靠身份的平台上该例外直接 fail closed。随后在复查所有适用的本地、
 closure 与最新 host 保护后，执行普通的不带 `--force` 的 `git worktree remove`。磁盘上
-已不存在的记录路径报告为 absent；registry 证据保留，不要求 provider 读取或会话迁移。
-分支与 Git 历史都会保留。
+确认不存在的记录路径会在 operation lock 下回收目录注册及其所属关联；dry-run 只报告
+将要回收的记录。无法访问的路径和符号链接会保留，不要求 provider 读取或会话迁移。
+主 checkout 不计入候选统计；task、分支关联和 Git 历史保留。扫描复用一次运行中会话
+快照，删除前重新检查实时占用。保留原因代码区分 issue 状态、查询失败、legacy 来源、
+本地探测及运行中会话。
 
 只读扫描绝不迁移会话；只有移除阶段可以迁移。覆盖范围是那一刻这一个连接的 OpenCode
 服务，而非整机或多 host 清单；锁只保护协作的 phasegent 操作。输出遵循全局 `--output`

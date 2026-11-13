@@ -867,7 +867,74 @@ fn forgejo_close_override_is_rejected_before_existing_taxi_candidate() {
 
 #[cfg(unix)]
 #[test]
-fn forgejo_prune_keeps_absent_unscoped_history() {
+fn global_prune_reports_all_skipped_repository_paths() {
+    let fixture = Fixture::new("prune-skipped-mixed");
+    let storage = fixture.storage();
+    let _cache = EnvGuard::set(
+        "PHASEGENT_WORKTREE_CACHE_DIR",
+        fixture.db.path().join("cache").to_str().unwrap(),
+    );
+    let root = fixture.db.path().join("missing-main");
+    let identity = root.join(".git").to_string_lossy().into_owned();
+    let absent = fixture.db.path().join("absent");
+    let existing = fixture.db.path().join("existing");
+    let symlink = fixture.db.path().join("dangling");
+    std::fs::create_dir(&existing).unwrap();
+    std::os::unix::fs::symlink(fixture.db.path().join("missing-target"), &symlink).unwrap();
+    for (id, path) in [
+        ("absent", &absent),
+        ("existing", &existing),
+        ("symlink", &symlink),
+        ("main", &root),
+    ] {
+        registry::insert_directory(
+            &storage,
+            &NewDirectory {
+                directory_id: id,
+                repo_identity: &identity,
+                checkout_path: root.to_str().unwrap(),
+                worktree_path: path.to_str().unwrap(),
+                branch: "fixture",
+                created_at: 1,
+                session: "cli-fixture",
+                associations: &[NewAssociation::Unscoped { issue: 7 }],
+            },
+        )
+        .unwrap();
+    }
+    let args: Vec<String> = ["--output", "json", "worktree", "prune"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    assert_eq!(exit, 0, "{stderr}");
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["totals"]["absent"], 1);
+    assert_eq!(value["totals"]["kept_protected"], 2);
+    let repo = &value["repos"][0];
+    assert!(repo["skipped_reason"].is_string());
+    assert_eq!(repo["worktrees"]["scanned"], 3);
+    let actions = repo["worktrees"]["actions"].as_array().unwrap();
+    for (id, code) in [
+        ("existing", "repository_unavailable"),
+        ("symlink", "path_probe_error"),
+    ] {
+        let action = actions
+            .iter()
+            .find(|action| action["directory_id"] == id)
+            .unwrap();
+        assert_eq!(action["result"], "skipped_protected");
+        assert_eq!(action["reason_code"], code);
+    }
+    let remaining = registry::load_records(&storage, Some(&identity)).unwrap();
+    assert_eq!(remaining.len(), 3);
+    assert!(existing.exists());
+    assert!(std::fs::symlink_metadata(&symlink).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn forgejo_prune_reclaims_absent_unscoped_registration() {
     let fixture = Fixture::new("absent-unscoped-review");
     let storage = fixture.attested_storage();
     let directory = fixture.repo.path().join("missing-worktree");
@@ -904,7 +971,7 @@ fn forgejo_prune_keeps_absent_unscoped_history() {
     let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
     assert_eq!(exit, 0);
     assert!(requests.is_empty());
-    assert_eq!(rows[0].issue_numbers(), vec![7]);
+    assert!(rows.is_empty());
     // The absence is a fact of the disk: the report names the absent result
     // and never attributes the recorded history to the selected provider.
     assert!(
@@ -923,14 +990,11 @@ fn forgejo_prune_keeps_absent_unscoped_history() {
         !stdout.contains("\"result\":\"skipped_protected\""),
         "the absence is not an occupancy keep: {stdout}"
     );
-    let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
-    assert_eq!(
-        rows.len(),
-        1,
-        "an absent directory preserves its registry evidence"
+    assert!(
+        list_all_for_repo(&storage, &fixture.identity())
+            .unwrap()
+            .is_empty()
     );
-    assert_eq!(rows[0].legacy_issues[0].provider, "");
-    assert_eq!(rows[0].legacy_issues[0].project, "");
 }
 
 #[test]
@@ -1167,7 +1231,7 @@ fn stored_forgejo_default_is_admitted_without_writing_a_lease() {
 
 #[cfg(unix)]
 #[test]
-fn forgejo_prune_without_credential_keeps_absent_legacy_history() {
+fn forgejo_prune_without_credential_reclaims_absent_legacy_registration() {
     let fixture = Fixture::new("absent-no-credential-review");
     let storage = Storage::open_at(&fixture.db.path().join("leases.sqlite3")).unwrap();
     registry::ensure_schema(&storage).unwrap();
@@ -1204,13 +1268,7 @@ fn forgejo_prune_without_credential_keeps_absent_legacy_history() {
     let requests = mock.finish();
     let rows = list_all_for_repo(&storage, &fixture.identity()).unwrap();
     assert!(requests.is_empty());
-    assert_eq!(
-        rows.len(),
-        1,
-        "missing credentials keep the registry evidence"
-    );
-    assert_eq!(rows[0].issue_numbers(), vec![7]);
-    assert_eq!(rows[0].legacy_issues[0].provider, "");
+    assert!(rows.is_empty(), "absence requires no provider credential");
 }
 
 #[cfg(unix)]
@@ -2203,6 +2261,188 @@ fn production_prune_with_explicit_forgejo_context_cleans_the_scoped_worktree() {
 
 #[cfg(unix)]
 #[test]
+fn production_prune_reports_missing_role_configuration_with_a_safe_hint() {
+    let fixture = Fixture::new("prune-missing-config-hint");
+    let storage = fixture.storage();
+    fixture.link(7, "owner/repo");
+    let directory = scoped_lease(&fixture, &storage, 7, "retained");
+    let (_stub, _path) = opencode_stub();
+    let repo = fixture.repo.path().to_string_lossy().to_string();
+    let args: Vec<String> = [
+        "--output", "json", "worktree", "prune", "--repo", &repo, "--dryrun",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    assert_eq!(exit, 0, "{stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let action = &result["repos"][0]["worktrees"]["actions"][0];
+    assert_eq!(
+        action["reason_code"], "closure_missing_configuration",
+        "{stdout}"
+    );
+    assert!(
+        action["message"]
+            .as_str()
+            .unwrap()
+            .contains("Configure the tracking provider")
+    );
+    let mut text_args = args.clone();
+    text_args[1] = "text".to_owned();
+    let (exit, text, stderr) = run_captured(fixture.repo.path(), &text_args);
+    assert_eq!(exit, 0, "{stderr}");
+    assert!(
+        text.contains("hint: Configure the tracking provider and credential for this role."),
+        "{text}"
+    );
+    assert!(!text.contains("fixture-token"));
+    assert!(directory.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn production_prune_classifies_bound_incomplete_configuration_before_provider_reads() {
+    for case in [
+        "redmine-missing",
+        "redmine-empty",
+        "gitlab-incomplete",
+        "gitlab-empty-project",
+        "gitlab-empty-base",
+    ] {
+        let fixture = Fixture::new(&format!("prune-{case}"));
+        let storage = fixture.storage();
+        crate::branch_links::ensure_schema(&storage.connection).unwrap();
+        let mock = ZeroMock::start();
+        let (provider, project) = if case.starts_with("redmine") {
+            ("redmine", "23")
+        } else {
+            ("gitlab", "owner/repo")
+        };
+        let key = crate::task_identity::TaskKey::new(provider, &mock.base, project, "7").unwrap();
+        let binding = crate::task_identity::ensure_binding(&storage, &key, 1).unwrap();
+        crate::task_identity::add_repo_membership(
+            &storage,
+            &repo_key_at(fixture.repo.path()),
+            binding.task_id(),
+            1,
+        )
+        .unwrap();
+        if provider == "redmine" {
+            storage
+                .save_global_setting("PHASEGENT_REDMINE_API_BASE", &mock.base)
+                .unwrap();
+            if case == "redmine-empty" {
+                storage.connection.execute("INSERT INTO role_credential (role, provider, credential) VALUES ('orchestrator', 'redmine', '')", []).unwrap();
+            }
+        } else {
+            storage
+                .save_gitlab_auth(Role::Orchestrator, &mock.base, project, "fixture-secret")
+                .unwrap();
+            let update = match case {
+                "gitlab-empty-project" => {
+                    "UPDATE role_gitlab_config SET repository = '' WHERE role = 'orchestrator'"
+                }
+                "gitlab-empty-base" => {
+                    "UPDATE role_gitlab_config SET api_base = '' WHERE role = 'orchestrator'"
+                }
+                _ => "UPDATE role_gitlab_config SET repository = NULL WHERE role = 'orchestrator'",
+            };
+            storage.connection.execute(update, []).unwrap();
+        }
+        let directory = fixture.worktree("phasegent/bound-config");
+        task_directory_at(
+            &fixture,
+            &storage,
+            TaskDirectorySpec {
+                issue: 7,
+                provider,
+                project,
+                binding: &binding,
+                path: &directory,
+                branch: "phasegent/bound-config",
+            },
+        );
+        let (_stub, _path) = opencode_stub();
+        let _unset = UnsetEnv::apply(&[
+            "PHASEGENT_REDMINE_API_BASE",
+            "PHASEGENT_PROVIDER",
+            "PHASEGENT_DEFAULT_PROVIDER",
+        ]);
+        let repo = fixture.repo.path().to_string_lossy().to_string();
+        let args: Vec<String> = [
+            "--output", "json", "worktree", "prune", "--repo", &repo, "--dryrun",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+        assert_eq!(exit, 0, "{case}: {stderr}");
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            result["repos"][0]["worktrees"]["actions"][0]["reason_code"],
+            "closure_missing_configuration",
+            "{case}: {stdout}"
+        );
+        assert!(!stdout.contains("fixture-secret"));
+        assert!(directory.exists());
+        assert!(
+            mock.finish().is_empty(),
+            "{case}: unexpected remote request"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn production_prune_reports_denied_provider_access_without_response_body() {
+    let fixture = Fixture::new("prune-denied-hint");
+    let storage = fixture.attested_storage();
+    fixture.link(7, "owner/repo");
+    let directory = scoped_lease(&fixture, &storage, 7, "retained");
+    let (_stub, _path) = opencode_stub();
+    let mock = Mock::start_status(vec![
+        (200, REPO_JSON.to_owned()),
+        (403, "secret-provider-body".to_owned()),
+    ]);
+    let base = mock.base.clone();
+    fixture.attest_endpoint(&base);
+    fixture.set_origin(&base, "owner/repo");
+    let repo = fixture.repo.path().to_string_lossy().to_string();
+    let args: Vec<String> = [
+        "--output",
+        "json",
+        "--provider",
+        "forgejo",
+        "--api-base",
+        &base,
+        "--repository",
+        "owner/repo",
+        "worktree",
+        "prune",
+        "--repo",
+        &repo,
+        "--dryrun",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let (exit, stdout, stderr) = run_captured(fixture.repo.path(), &args);
+    assert_eq!(exit, 0, "{stderr}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        result["repos"][0]["worktrees"]["actions"][0]["reason_code"],
+        "closure_authentication_denied",
+        "{stdout}"
+    );
+    assert!(!stdout.contains("secret-provider-body"));
+    assert!(!stdout.contains("fixture-token"));
+    assert!(directory.exists());
+    assert!(!mock.finish().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
 fn production_prune_foreign_and_default_contexts_keep_the_scoped_worktree() {
     for (label, extra) in [
         (
@@ -2429,7 +2669,10 @@ fn production_prune_explicit_redmine_never_uses_forgejo_default() {
     assert_eq!(exit, 0, "preview: {stderr}");
     let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(result["totals"]["kept_issue"], 1, "{result}");
-    assert!(stdout.contains("does not match"), "{stdout}");
+    assert_eq!(
+        result["repos"][0]["worktrees"]["actions"][0]["reason_code"], "closure_scope_mismatch",
+        "{stdout}"
+    );
     assert!(directory.exists());
     assert!(
         trusted.finish().is_empty(),
