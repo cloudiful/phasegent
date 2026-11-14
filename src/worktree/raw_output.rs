@@ -25,22 +25,34 @@ const MAX_PORCELAIN_BYTES: usize = 64 * 1024;
 
 pub struct RawOutputRunner;
 
+fn output(args: &[&str], workdir: &Path) -> Result<std::process::Output, WorktreeError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(workdir)
+        .output()
+        .map_err(|error| WorktreeError::new("git", format!("could not run git: {error}")))?;
+    if output.stdout.len() > MAX_PORCELAIN_BYTES {
+        return Err(WorktreeError::new("git", "git output exceeded its bound"));
+    }
+    Ok(output)
+}
+
 impl WorktreeRunner for RawOutputRunner {
     fn run(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(workdir)
-            .output()
-            .map_err(|error| WorktreeError::new("git", format!("could not run git: {error}")))?;
-        if output.stdout.len() > MAX_PORCELAIN_BYTES {
-            return Err(WorktreeError::new(
-                "git",
-                "git worktree list output exceeded its bound",
-            ));
-        }
+        let output = output(args, workdir)?;
         Ok(GitOutput {
             status: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        })
+    }
+
+    fn run_path(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError> {
+        let output = output(args, workdir)?;
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|_| WorktreeError::new("git", "git path output was not valid UTF-8"))?;
+        Ok(GitOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout,
         })
     }
 }

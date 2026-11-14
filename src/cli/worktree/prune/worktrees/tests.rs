@@ -78,6 +78,30 @@ fn register(fixture: &Fixture, session: &str) {
     .expect("registry row");
 }
 
+fn register_path(fixture: &Fixture, path: &Path, issue: u64) {
+    let canonical = crate::worktree::canonical_or_self(path);
+    let id = registry::stable_directory_id(&fixture.identity, &canonical.to_string_lossy());
+    registry::insert_directory(
+        &fixture.storage,
+        &NewDirectory {
+            directory_id: &id,
+            repo_identity: &fixture.identity,
+            checkout_path: &fixture.repo.dir.path().to_string_lossy(),
+            worktree_path: &canonical.to_string_lossy(),
+            branch: "phasegent/nested",
+            created_at: 1,
+            session: "cli-session",
+            associations: &[NewAssociation::Legacy {
+                issue,
+                provider: "local".to_owned(),
+                project: "default".to_owned(),
+                external_id: issue,
+            }],
+        },
+    )
+    .expect("registry row");
+}
+
 fn run(fixture: &Fixture, api: &dyn OpenCodeApi, source: &dyn IssueStateSource) -> PruneSummary {
     let runner = ProcessWorktreeRunner::new();
     let records = registry::load_records(&fixture.storage, Some(&fixture.identity)).expect("rows");
@@ -159,6 +183,65 @@ fn scan_reuses_snapshot_across_scopes_and_excludes_main() {
         );
     }
     assert_eq!(api.active_calls.get(), 1);
+}
+
+#[test]
+fn a_main_checkout_subdirectory_is_never_a_remove_candidate() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("prune-main-nested") else {
+        return;
+    };
+    let nested = fixture.repo.dir.path().join("nested/homelab");
+    std::fs::create_dir_all(nested.join(".cache/ai")).expect("cache dir");
+    std::fs::write(nested.join(".cache/ai/sentinel.txt"), "scratch").expect("cache file");
+    register_path(&fixture, &nested, 1196);
+    let api = CountingApi {
+        inner: FakeOpenCodeApi::empty(),
+        active_calls: Cell::new(0),
+        list_calls: Cell::new(0),
+    };
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run(&fixture, &api, &source);
+    assert_eq!(
+        summary.scanned, 0,
+        "the nested main path is not a candidate"
+    );
+    assert_eq!(summary.removed, 0);
+    assert_eq!(summary.kept_protected, 0);
+    assert!(nested.join(".cache/ai/sentinel.txt").exists());
+    assert_eq!(api.active_calls.get(), 0, "no host lookup");
+    assert_eq!(api.list_calls.get(), 0, "no host lookup");
+    assert!(source.asked().is_empty(), "no provider lookup");
+}
+
+#[test]
+fn a_linked_worktree_subdirectory_keeps_its_nested_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("prune-linked-nested") else {
+        return;
+    };
+    let nested = fixture.target.join("nested");
+    std::fs::create_dir_all(nested.join(".cache/ai")).expect("cache dir");
+    std::fs::write(nested.join(".cache/ai/sentinel.txt"), "scratch").expect("cache file");
+    register_path(&fixture, &nested, 1196);
+    let api = CountingApi {
+        inner: FakeOpenCodeApi::empty(),
+        active_calls: Cell::new(0),
+        list_calls: Cell::new(0),
+    };
+    let source = ScriptedIssueStateSource::closed();
+    let summary = run(&fixture, &api, &source);
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.removed, 0);
+    assert_eq!(summary.kept_protected, 1);
+    assert_eq!(
+        summary.actions[0].reason_code,
+        Some("checkout_subdirectory")
+    );
+    assert!(nested.join(".cache/ai/sentinel.txt").exists());
+    assert_eq!(api.active_calls.get(), 0, "no host lookup");
+    assert_eq!(api.list_calls.get(), 0, "no host lookup");
+    assert!(source.asked().is_empty(), "no provider lookup");
 }
 
 #[cfg(unix)]
@@ -482,7 +565,8 @@ fn prune_keeps_the_open_scope_of_a_same_number_multi_provider_record() {
     let runner = ProcessWorktreeRunner::new();
     let identity = repo_identity(&runner, repo.dir.path()).expect("identity");
     let path = repo.dir.path().join("multi-provider");
-    std::fs::create_dir_all(&path).expect("path");
+    worktree_add(&runner, repo.dir.path(), &path, "phasegent/multi-provider")
+        .expect("real worktree");
     let id = registry::stable_directory_id(
         &identity,
         &crate::worktree::canonical_or_self(&path).to_string_lossy(),

@@ -5,10 +5,11 @@
 //! start the conversation, so both directions are pinned here together
 //! with the resolution of the one directory a move is allowed to name.
 
-use super::opencode_fixture::{Fixture, classified};
+use super::opencode_fixture::{Fixture, ISSUE, classified};
 use super::support::*;
 use super::*;
 
+use crate::lifecycle::cleanup::closure::DenyOtherIssues;
 use crate::lifecycle::cleanup::target::{MoveTarget, resolve_main_checkout};
 use crate::lifecycle::{AutoCleanupOutcome, CleanupMode};
 use crate::worktree::opencode::test_support::FakeOpenCodeApi;
@@ -50,6 +51,66 @@ fn sync_keeps_a_candidate_whose_session_is_still_hosted() {
     assert!(kept[0].contains("still hosted here"), "got: {}", kept[0]);
     assert!(api.moves().is_empty(), "sync must never move a session");
     assert!(fixture.candidate.exists(), "a later pass retries");
+}
+
+#[test]
+fn sync_reattests_the_local_guard_before_clearing_a_cache() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = Fixture::new("p1-sync-preclear") else {
+        return;
+    };
+    fixture.associate("phasegent-cli");
+    let cache = fixture.candidate.join(".cache/ai");
+    std::fs::create_dir_all(&cache).expect("cache dir");
+    std::fs::write(cache.join("sentinel.txt"), "scratch").expect("cache file");
+    let candidate = crate::worktree::canonical_or_self(&fixture.candidate);
+
+    struct DirtiesBeforeSecondTopLevel {
+        inner: ProcessWorktreeRunner,
+        directory: PathBuf,
+        top_levels: std::cell::Cell<usize>,
+    }
+
+    impl WorktreeRunner for DirtiesBeforeSecondTopLevel {
+        fn run(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError> {
+            if args == ["rev-parse", "--show-toplevel"] && workdir == self.directory.as_path() {
+                let seen = self.top_levels.get() + 1;
+                self.top_levels.set(seen);
+                if seen == 2 {
+                    std::fs::write(self.directory.join("dirty.txt"), "dirty")
+                        .expect("dirty marker");
+                }
+            }
+            self.inner.run(args, workdir)
+        }
+    }
+
+    let runner = DirtiesBeforeSecondTopLevel {
+        inner: ProcessWorktreeRunner::new(),
+        directory: candidate,
+        top_levels: std::cell::Cell::new(0),
+    };
+    let api = FakeOpenCodeApi::empty();
+    let outcome = crate::lifecycle::cleanup::cleanup_closed_issue_worktrees_with(
+        &runner,
+        &api,
+        CleanupMode::Sync,
+        &fixture.main,
+        ISSUE,
+        None,
+        &DenyOtherIssues,
+    );
+    let (removed, kept) = classified(outcome);
+    assert_eq!(removed, 0);
+    assert!(
+        kept.iter()
+            .any(|reason| reason.contains("before the cache cleanup")),
+        "sync must re-attest before the destructive clearance: {kept:?}"
+    );
+    assert!(
+        cache.join("sentinel.txt").exists(),
+        "the cache was not cleared after the topology changed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +171,24 @@ fn a_real_repository_resolves_its_main_checkout_through_the_porcelain_listing() 
             .resolve()
             .expect("a linked worktree yields a main checkout"),
         fixture.main.as_path()
+    );
+}
+
+#[test]
+fn a_replaced_foreign_main_checkout_is_never_a_move_target() {
+    let _lock = lock_workflow_tests();
+    let Some(main) = TempRepo::init("p1-target-original") else {
+        return;
+    };
+    let Some(foreign) = TempRepo::init("p1-target-foreign") else {
+        return;
+    };
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, main.dir.path()).expect("original identity");
+    assert_eq!(
+        resolve_main_checkout(&RawOutputRunner, foreign.dir.path(), &identity),
+        MoveTarget::Unavailable("no main checkout could be verified".to_owned()),
+        "a foreign main checkout at the registered path is not a move target"
     );
 }
 

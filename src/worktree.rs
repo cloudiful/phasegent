@@ -165,6 +165,11 @@ pub struct GitOutput {
     pub stdout: String,
 }
 
+/// Ceiling on a machine path answer handed back by the production runner's
+/// `run_path`. Well above any supported checkout path, and a hard stop so the
+/// read cannot grow without bound.
+const MAX_PATH_OUTPUT_BYTES: usize = 64 * 1024;
+
 /// Abstraction over Git invocation so acquire / is_clean can be
 /// tested without spawning processes. Takes the working directory per
 /// call because the worktree flow runs `git` in the user's repo, in
@@ -172,6 +177,15 @@ pub struct GitOutput {
 /// share a single workdir.
 pub trait WorktreeRunner {
     fn run(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError>;
+
+    /// Run one Git command whose stdout is a machine path answer, preserving
+    /// the exact bytes apart from the line ending. The default reuses [`run`]
+    /// so existing test runners keep working; the production runner overrides
+    /// it with a bounded byte-faithful channel. Callers must still reject an
+    /// empty, multi-line, relative, or unresolvable answer.
+    fn run_path(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError> {
+        self.run(args, workdir)
+    }
 }
 
 /// Production implementation. Builds a fresh `git` process each call
@@ -193,18 +207,36 @@ impl Default for ProcessWorktreeRunner {
     }
 }
 
+fn git_output(args: &[&str], workdir: &Path) -> Result<std::process::Output, WorktreeError> {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(workdir);
+    command
+        .output()
+        .map_err(|error| WorktreeError::new("git", format!("could not run git: {error}")))
+}
+
 impl WorktreeRunner for ProcessWorktreeRunner {
     fn run(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError> {
-        let mut command = Command::new("git");
-        command.args(args).current_dir(workdir);
-        let output = command
-            .output()
-            .map_err(|error| WorktreeError::new("git", format!("could not run git: {error}")))?;
+        let output = git_output(args, workdir)?;
         let status = output.status.code().unwrap_or(-1);
         Ok(GitOutput {
             status,
             stdout: sanitized_git_output(&output.stdout),
         })
+    }
+
+    fn run_path(&self, args: &[&str], workdir: &Path) -> Result<GitOutput, WorktreeError> {
+        let output = git_output(args, workdir)?;
+        let status = output.status.code().unwrap_or(-1);
+        if output.stdout.len() > MAX_PATH_OUTPUT_BYTES {
+            return Err(WorktreeError::new(
+                "git",
+                "git path output exceeded its bound",
+            ));
+        }
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|_| WorktreeError::new("git", "git path output was not valid UTF-8"))?;
+        Ok(GitOutput { status, stdout })
     }
 }
 
@@ -282,20 +314,14 @@ pub fn repo_identity(
     runner: &dyn WorktreeRunner,
     repo_path: &Path,
 ) -> Result<String, WorktreeError> {
-    let output = runner.run(&["rev-parse", "--git-common-dir"], repo_path)?;
+    let output = runner.run_path(&["rev-parse", "--git-common-dir"], repo_path)?;
     if output.status != 0 {
         return Err(WorktreeError::new(
             "git",
             format!("git rev-parse failed with exit status {}", output.status),
         ));
     }
-    let raw = output.stdout.trim();
-    if raw.is_empty() {
-        return Err(WorktreeError::new(
-            "git",
-            "git rev-parse returned an empty common dir",
-        ));
-    }
+    let raw = git::path_line(&output.stdout)?;
     // Common-dir may be a relative path (e.g. when run from the repo
     // root it prints `.`); resolve it against the working directory
     // we asked git about, then canonicalise so `.` and the absolute
@@ -305,7 +331,12 @@ pub fn repo_identity(
     } else {
         repo_path.join(raw)
     };
-    let canonical = resolved.canonicalize().unwrap_or(resolved);
+    let canonical = resolved.canonicalize().map_err(|error| {
+        WorktreeError::new(
+            "git",
+            format!("could not resolve canonical repository identity: {error}"),
+        )
+    })?;
     let identity = canonical.to_string_lossy().to_string();
     if identity.is_empty() {
         return Err(WorktreeError::new(
@@ -313,7 +344,7 @@ pub fn repo_identity(
             "could not resolve canonical repository identity",
         ));
     }
-    Ok(bounded(&identity))
+    Ok(identity)
 }
 
 #[allow(dead_code)]

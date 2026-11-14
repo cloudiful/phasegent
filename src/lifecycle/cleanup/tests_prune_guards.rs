@@ -85,6 +85,29 @@ fn repo_and_worktree(label: &str) -> Option<(PathBuf, PathBuf)> {
     Some((root, worktree))
 }
 
+fn init_repo(label: &str) -> Option<PathBuf> {
+    let runner = ProcessWorktreeRunner::new();
+    let root = scratch(label);
+    if runner.run(&["init", "-q", "-b", "main"], &root).is_err() {
+        return None;
+    }
+    let _ = runner.run(
+        &[
+            "-c",
+            "user.name=phasegent-test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ],
+        &root,
+    );
+    Some(root)
+}
+
 fn record(worktree_path: &str, session: &str) -> DirectoryRecord {
     DirectoryRecord {
         directory_id: format!("dir-{worktree_path}"),
@@ -154,6 +177,141 @@ fn the_main_checkout_is_always_protected() {
     )
     .expect("the main checkout must be kept");
     assert!(reason.contains("main checkout"), "got: {reason}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn checkout_subdirectories_are_protected_for_every_caller() {
+    let Some((root, worktree)) = repo_and_worktree("subdirectory") else {
+        return;
+    };
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, &root).expect("identity");
+    let main_nested = root.join("nested/homelab");
+    let linked_nested = worktree.join("nested");
+    std::fs::create_dir_all(&main_nested).expect("main nested");
+    std::fs::create_dir_all(&linked_nested).expect("linked nested");
+    for directory in [&main_nested, &linked_nested] {
+        let reason = local_protected_reason(&runner, &identity, directory)
+            .expect("a nested path is never a removable root");
+        assert!(
+            reason.contains("inside a checkout") || reason.contains("inside the main checkout"),
+            "got: {reason}"
+        );
+    }
+    assert_eq!(
+        local_protected_reason(&runner, &identity, &worktree),
+        None,
+        "a genuine linked root stays removable"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn foreign_checkouts_never_pass_the_local_guard() {
+    let Some(main) = init_repo("foreign-main") else {
+        return;
+    };
+    let Some(foreign) = init_repo("foreign-source") else {
+        return;
+    };
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, &main).expect("main identity");
+
+    let foreign_reason = local_protected_reason(&runner, &identity, &foreign)
+        .expect("a foreign main checkout is never a removable root");
+    assert!(
+        foreign_reason.contains("expected repository"),
+        "got: {foreign_reason}"
+    );
+
+    let nested_foreign = main.join("nested-foreign");
+    std::fs::create_dir_all(&nested_foreign).expect("nested foreign directory");
+    assert!(
+        runner
+            .run(&["init", "-q", "-b", "main"], &nested_foreign)
+            .map(|output| output.status == 0)
+            .unwrap_or(false)
+    );
+    let nested_reason = local_protected_reason(&runner, &identity, &nested_foreign)
+        .expect("a foreign checkout nested in the main root fails closed");
+    assert!(
+        nested_reason.contains("expected repository"),
+        "got: {nested_reason}"
+    );
+
+    #[cfg(unix)]
+    {
+        let link = main.join("link-foreign");
+        std::os::unix::fs::symlink(&foreign, &link).expect("foreign symlink");
+        let link_reason = local_protected_reason(&runner, &identity, &link)
+            .expect("a symlink to a foreign checkout fails closed");
+        assert!(
+            link_reason.contains("expected repository"),
+            "got: {link_reason}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&main);
+    let _ = std::fs::remove_dir_all(&foreign);
+}
+
+#[test]
+fn unresolved_git_metadata_cannot_imply_a_linked_root() {
+    struct ScriptedMetadata {
+        inner: ProcessWorktreeRunner,
+        git_dir: String,
+        common: String,
+    }
+
+    impl WorktreeRunner for ScriptedMetadata {
+        fn run(
+            &self,
+            args: &[&str],
+            workdir: &Path,
+        ) -> Result<crate::worktree::GitOutput, crate::worktree::WorktreeError> {
+            if args == ["rev-parse", "--git-dir"] {
+                return Ok(crate::worktree::GitOutput {
+                    status: 0,
+                    stdout: format!("{}\n", self.git_dir),
+                });
+            }
+            if args == ["rev-parse", "--git-common-dir"] {
+                return Ok(crate::worktree::GitOutput {
+                    status: 0,
+                    stdout: format!("{}\n", self.common),
+                });
+            }
+            self.inner.run(args, workdir)
+        }
+    }
+
+    let Some(root) = init_repo("strict-metadata") else {
+        return;
+    };
+    let runner = ProcessWorktreeRunner::new();
+    let identity = repo_identity(&runner, &root).expect("identity");
+    let common = PathBuf::from(&identity);
+    let work_dir = common.join("worktrees/scripted");
+    std::fs::create_dir_all(&work_dir).expect("scripted worktree dir");
+    let missing = root.join(".git/missing-worktree");
+    let cases = [
+        ("git-dir", &missing, &common),
+        ("common-dir", &work_dir, &missing),
+    ];
+    for (label, git_dir, common_dir) in cases {
+        let scripted = ScriptedMetadata {
+            inner: ProcessWorktreeRunner::new(),
+            git_dir: git_dir.to_string_lossy().into_owned(),
+            common: common_dir.to_string_lossy().into_owned(),
+        };
+        let reason = local_protected_reason(&scripted, &identity, &root)
+            .unwrap_or_else(|| panic!("{label}: unresolved metadata must protect"));
+        assert!(
+            reason.contains("could not verify the checkout guard"),
+            "{label}: got {reason}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

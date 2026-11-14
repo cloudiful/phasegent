@@ -244,6 +244,11 @@ fn acquire_directory_inner(
         foreign_state,
         host_api,
     } = request;
+    // Every path-keyed read and write below names the actual checkout root, so
+    // acquiring from a subdirectory reuses that checkout's record instead of
+    // registering the nested path as a separate directory.
+    let root = crate::worktree::git::checkout_root(runner, repo_path)?;
+    let repo_path = root.as_path();
     let association = association_for(issue, association.as_ref());
     let lock = operation_lock::acquire(identity)?;
     let _ = lock;
