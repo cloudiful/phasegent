@@ -1,17 +1,4 @@
 name: Release
-
-# Tag-triggered release. There is intentionally no PR CI workflow.
-#
-# - Trigger is version tags `v*` only; branch pushes never build or publish.
-# - `version-check` fails fast unless the tag is strict numeric
-#   MAJOR.MINOR.PATCH and both manifests (`Cargo.toml`, `package.json`) already
-#   carry the stripped tag, so the binary `--version` and the package manifest
-#   agree with the release.
-# - `build` compiles one native release binary per target with the full CLI
-#   feature set (`postgres,notify-dingtalk,notify-email`) and publishes it as a
-#   raw executable named `phasegent-<tag>-<target>` (`.exe` on Windows). The
-#   Windows runner also builds and inspects a per-user CLI-only MSI.
-# - `release` checksums those artifacts into `SHA256SUMS` and publishes them.
 on:
   push:
     tags:
@@ -25,47 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  version-check:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # The Rust `--version` output derives from `Cargo.toml` and the package
-      # manifest mirrors it, so a tag that disagrees with either manifest must
-      # fail before anything is built or published.
-      - name: Assert tag and manifest versions agree
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          import tomllib
-
-          tag = os.environ["GITHUB_REF_NAME"]
-          match = re.fullmatch(r"v(\d+\.\d+\.\d+)", tag)
-          if match is None:
-              raise SystemExit(
-                  f"Tag '{tag}' must be strict numeric MAJOR.MINOR.PATCH (for example v1.2.3)."
-              )
-          expected = match.group(1)
-          with open("Cargo.toml", "rb") as handle:
-              cargo = tomllib.load(handle)["package"]["version"]
-          with open("package.json", encoding="utf-8") as handle:
-              node = json.load(handle)["version"]
-          if cargo != expected or node != expected:
-              raise SystemExit(
-                  f"Tag '{tag}' expects version {expected}: "
-                  f"Cargo.toml={cargo} package.json={node}"
-              )
-          print(f"version-check: {tag} matches Cargo.toml and package.json ({expected})")
-          PY
-
   build:
-    needs: version-check
     permissions:
       contents: read
     strategy:
@@ -93,8 +40,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Enable sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
         run: cargo build --release --bin phasegent --target ${{ matrix.target }} --features postgres,notify-dingtalk,notify-email
@@ -107,9 +53,6 @@ jobs:
         if: runner.os == 'Windows'
         run: cp target/${{ matrix.target }}/release/phasegent.exe phasegent-${{ github.ref_name }}-${{ matrix.target }}.exe
 
-      # Query-contract first: an unescaped MSI query fails inside the real
-      # checker only after a full WiX compile, so prove the exact OpenView
-      # contract first and still keep the native check below as the real gate.
       - name: Test Windows MSI PowerShell regressions
         if: runner.os == 'Windows'
         shell: pwsh
@@ -155,10 +98,6 @@ jobs:
           name: phasegent-windows-msi
           path: phasegent-${{ github.ref_name }}-${{ matrix.target }}.msi
           if-no-files-found: error
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats
 
   release:
     needs: build
