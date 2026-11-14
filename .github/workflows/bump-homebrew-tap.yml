@@ -1,15 +1,5 @@
 name: Bump homebrew tap
 
-# Keeps cloudiful/homebrew-tap/Formula/phasegent.rb in sync with GitHub
-# releases. Fires when a release is published (or on manual dispatch with
-# an explicit tag), reads the release SHA256SUMS, rewrites the three download
-# URLs and hashes in the tap formula, and pushes to the tap repo main branch.
-#
-# Required secret (create manually in the phasegent repo settings):
-# HOMEBREW_TAP_TOKEN — a fine-grained PAT with contents:write on
-# cloudiful/homebrew-tap. The workflow fails fast with a clear error when
-# the secret is missing instead of silently skipping the bump.
-
 on:
   release:
     types: [published]
@@ -29,7 +19,7 @@ concurrency:
 jobs:
   bump:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
