@@ -1635,29 +1635,30 @@ fn cli_binary() -> PathBuf {
             if let Some(path) = option_env!("CARGO_BIN_EXE_phasegent") {
                 return PathBuf::from(path);
             }
-            let exe = std::env::current_exe().unwrap();
-            let candidate = exe
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("phasegent{}", std::env::consts::EXE_SUFFIX));
-            // `cargo test --bin` builds the unit-test harness but not the
-            // plain binary, so a clean tree has none for the subprocess
-            // assertions and a stale one would run outdated code. Build it
-            // once here; cargo keeps the step incremental.
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-            let status = std::process::Command::new(cargo)
-                .args(["build", "--bin", "phasegent"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
+            let output = std::process::Command::new(cargo)
+                .args(["build", "--bin", "phasegent", "--message-format=json"])
+                .output()
                 .expect("cargo build --bin phasegent");
             assert!(
-                status.success(),
-                "cargo build --bin phasegent must produce the CLI binary"
+                output.status.success(),
+                "cargo build --bin phasegent must produce the CLI binary: {}",
+                String::from_utf8_lossy(&output.stderr)
             );
-            candidate
+            String::from_utf8(output.stdout)
+                .expect("Cargo messages must be UTF-8")
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find_map(|message| {
+                    (message["reason"] == "compiler-artifact"
+                        && message["target"]["name"] == "phasegent"
+                        && message["target"]["kind"]
+                            .as_array()
+                            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin")))
+                    .then(|| message["executable"].as_str().map(PathBuf::from))
+                    .flatten()
+                })
+                .expect("Cargo must report the phasegent executable artifact")
         })
         .clone()
 }

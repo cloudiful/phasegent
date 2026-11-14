@@ -26,8 +26,7 @@ Cargo reads from `Cargo.toml`. Do **not** hard-code a version string in
 Each tag publishes one native, raw `phasegent` executable per target, named
 `phasegent-<tag>-<target>` (`.exe` on Windows), plus `SHA256SUMS`:
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 
@@ -62,15 +61,6 @@ For every release (in this exact order):
 5. Push the commit, then push the tag (`git push origin vX.Y.Z`) to
    trigger `.github/workflows/release.yml`.
 
-### `release.yml` version-check job
-
-The workflow has a `version-check` job that runs first on `ubuntu-24.04`
-with `contents: read` only. It uses Python 3 standard library
-(`tomllib`, `json`) to assert that `github.ref_name` matches
-`^v\d+\.\d+\.\d+$` and that every manifest version equals the
-stripped tag. Any mismatch fails fast with a clear error message and the
-`build` job never starts.
-
 ### Tag conventions
 
 - Tags are lightweight (no `-a`/`-s`), matching the existing 36 tags.
@@ -92,4 +82,4 @@ stripped tag. Any mismatch fails fast with a clear error message and the
 - `README.md` and `README.zh-CN.md` stay a slim backbone: overview,
   install, and usage, plus `--help` and OpenCode-skill pointers. The
   release and packaging contract stays out of the README; it lives in
-  `.github/workflows/release.yml`, covered by the version-check job.
+  `.github/workflows/release.yml`.

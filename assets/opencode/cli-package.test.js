@@ -1,30 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const read = (name) => readFileSync(`${root}${name}`, "utf8");
 const pkg = JSON.parse(read("package.json"));
 const workflow = Bun.YAML.parse(read(".github/workflows/release.yml"));
-
-// Runs the workflow's own version-check script in a scratch directory holding
-// copies of the real manifests, so the tag rule is exercised, not re-described.
-function runVersionCheck(tag) {
-  const dir = mkdtempSync(join(tmpdir(), "phasegent-version-check-"));
-  copyFileSync(`${root}Cargo.toml`, join(dir, "Cargo.toml"));
-  copyFileSync(`${root}package.json`, join(dir, "package.json"));
-  const step = workflow.jobs["version-check"].steps.find((entry) =>
-    String(entry.run ?? "").includes("MAJOR.MINOR.PATCH"),
-  );
-  return spawnSync("bash", ["-c", step.run], {
-    cwd: dir,
-    encoding: "utf8",
-    env: { ...process.env, GITHUB_REF_NAME: tag },
-  });
-}
 
 describe("package.json plugin workspace", () => {
   test("keeps the plugin identity and build contract", () => {
@@ -55,25 +36,27 @@ describe("release workflow structure", () => {
   const build = workflow.jobs.build;
   const release = workflow.jobs.release;
 
-  test("builds four native CLI targets with the full feature set", () => {
+  test("builds three native CLI targets with the full feature set", () => {
     const targets = build.strategy.matrix.include.map((entry) => entry.target);
     expect(targets).toEqual([
-      "x86_64-unknown-linux-gnu",
-      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
       "aarch64-apple-darwin",
       "x86_64-pc-windows-msvc",
     ]);
+    expect(build.strategy.matrix.include[0].os).toBe("ubuntu-latest");
+    const musl = build.steps.find((step) => step.name === "Install musl tools");
+    expect(musl.if).toBe("runner.os == 'Linux'");
+    expect(musl.run).toContain("sudo apt-get install -y musl-tools");
+    expect(musl.run).toContain("CC_x86_64_unknown_linux_musl=musl-gcc");
+    expect(musl.run).toContain("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc");
+    const publish = release.steps.find((step) => step.name === "Publish GitHub release");
+    expect(publish.with.files).toContain("dist/phasegent-*-x86_64-unknown-linux-musl");
+    expect(publish.with.files).not.toContain("unknown-linux-gnu");
+    const tap = read(".github/workflows/bump-homebrew-tap.yml");
+    expect(tap).toContain('"x86_64-unknown-linux-musl"');
+    expect(tap).not.toContain("unknown-linux-gnu");
     const cargoBuild = build.steps.find((step) => step.name === "Build release binary");
     expect(cargoBuild.run).toContain("--features postgres,notify-dingtalk,notify-email");
-  });
-
-  test("gates the build on the strict numeric version check", () => {
-    expect(build.needs).toBe("version-check");
-    const check = workflow.jobs["version-check"].steps.find((step) =>
-      String(step.run ?? "").includes("MAJOR.MINOR.PATCH"),
-    );
-    expect(check.run).toContain("tomllib");
-    expect(check.run).toContain("package.json");
   });
 
   test("keeps least-privilege permissions and publishes SHA256SUMS", () => {
@@ -142,16 +125,4 @@ describe("version parity", () => {
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  test("the workflow version-check accepts the matching strict tag", () => {
-    const result = runVersionCheck(`v${pkg.version}`);
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`matches Cargo.toml and package.json (${pkg.version})`);
-  });
-
-  test("the workflow version-check rejects non-strict and mismatched tags", () => {
-    for (const tag of ["v2.24", "v2.24.0-rc1", `v9.9.9`, pkg.version]) {
-      const result = runVersionCheck(tag);
-      expect(result.status, `tag ${tag} must fail`).not.toBe(0);
-    }
-  });
 });

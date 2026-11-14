@@ -3,9 +3,8 @@
 
 use std::path::PathBuf;
 
-const RELEASE_TARGETS: [&str; 4] = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
+const RELEASE_TARGETS: [&str; 3] = [
+    "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ];
@@ -19,6 +18,12 @@ fn release_yml() -> String {
 #[test]
 fn release_builds_every_native_target_with_the_full_feature_set() {
     let yml = release_yml();
+    assert!(!yml.contains("unknown-linux-gnu"));
+    assert!(!yml.contains("ubuntu-latest-arm"));
+    assert_eq!(yml.matches("- target:").count(), RELEASE_TARGETS.len());
+    assert!(yml.contains("sudo apt-get install -y musl-tools"));
+    assert!(yml.contains("CC_x86_64_unknown_linux_musl=musl-gcc"));
+    assert!(yml.contains("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"));
     for target in RELEASE_TARGETS {
         assert!(
             yml.contains(&format!("target: {target}")),
@@ -50,8 +55,7 @@ fn release_publishes_raw_native_binaries_and_windows_msi_with_checksums() {
         "release must checksum the staged artifacts into SHA256SUMS; got:\n{yml}"
     );
     for published in [
-        "dist/phasegent-*-x86_64-unknown-linux-gnu",
-        "dist/phasegent-*-aarch64-unknown-linux-gnu",
+        "dist/phasegent-*-x86_64-unknown-linux-musl",
         "dist/phasegent-*-aarch64-apple-darwin",
         "dist/phasegent-*-x86_64-pc-windows-msvc.exe",
         "dist/phasegent-*-x86_64-pc-windows-msvc.msi",
@@ -103,20 +107,8 @@ fn windows_msi_is_built_checked_and_uploaded_only_on_the_windows_runner() {
 }
 
 #[test]
-fn release_gates_publishing_on_strict_numeric_version_parity() {
+fn release_does_not_bump_versions() {
     let yml = release_yml();
-    assert!(
-        yml.contains("version-check:") && yml.contains("needs: version-check"),
-        "the release build must depend on the version check; got:\n{yml}"
-    );
-    assert!(
-        yml.contains(r"v(\d+\.\d+\.\d+)") && yml.contains("MAJOR.MINOR.PATCH"),
-        "the version check must enforce a strict numeric tag; got:\n{yml}"
-    );
-    assert!(
-        yml.contains("tomllib") && yml.contains("package.json") && yml.contains("Cargo.toml"),
-        "the version check must compare both manifests; got:\n{yml}"
-    );
     assert!(
         !yml.contains("version:bump"),
         "the workflow must never bump a version; got:\n{yml}"

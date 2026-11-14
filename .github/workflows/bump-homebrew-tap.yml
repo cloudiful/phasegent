@@ -93,8 +93,7 @@ jobs:
           formula_path = f"{tap_dir}/Formula/phasegent.rb"
           targets = [
               "aarch64-apple-darwin",
-              "aarch64-unknown-linux-gnu",
-              "x86_64-unknown-linux-gnu",
+              "x86_64-unknown-linux-musl",
           ]
 
           sums = {}
@@ -117,7 +116,7 @@ jobs:
           urls = {}
           for i, line in enumerate(lines):
               m = re.search(
-                  r'url\s+"(.*phasegent-.*-(aarch64-apple-darwin|aarch64-unknown-linux-gnu|x86_64-unknown-linux-gnu))"',
+                  r'url\s+"(.*phasegent-.*-(aarch64-apple-darwin|x86_64-unknown-linux-musl))"',
                   line,
               )
               if m:
