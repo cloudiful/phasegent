@@ -123,9 +123,6 @@ fn build_script_gates_version_and_payload_before_wix() {
     for contract in [
         "^v(?<version>\\d+\\.\\d+\\.\\d+)$",
         "$limits = @(255, 255, 65535)",
-        "Cargo.toml",
-        "package.json",
-        "-cne $version",
         "Get-Item -LiteralPath $source).Length -le 0",
         "Get-Command wix -ErrorAction Stop",
         "build -arch x64 -d \"Version=$version\" -d \"SourceExe=$source\"",

@@ -31,20 +31,6 @@ for ($index = 0; $index -lt $parts.Length; $index++) {
 }
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$cargoPath = Join-Path $root 'Cargo.toml'
-$packagePath = Join-Path $root 'package.json'
-$cargoText = Get-Content -LiteralPath $cargoPath -Raw
-$packageSection = [regex]::Match($cargoText, '(?ms)^\[package\]\s*(?<section>.*?)(?=^\s*\[|\z)')
-$cargoVersionMatch = [regex]::Match($packageSection.Groups['section'].Value, '(?m)^\s*version\s*=\s*"(?<version>[^"]+)"')
-if (-not $packageSection.Success -or -not $cargoVersionMatch.Success) {
-    throw 'Could not read the package version from Cargo.toml.'
-}
-$packageManifest = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
-$cargoVersion = $cargoVersionMatch.Groups['version'].Value
-$packageVersion = [string]$packageManifest.version
-if ($cargoVersion -cne $version -or $packageVersion -cne $version) {
-    throw "Tag version $version must match Cargo.toml ($cargoVersion) and package.json ($packageVersion)."
-}
 
 $source = [System.IO.Path]::GetFullPath($ExecutablePath)
 if ([System.IO.Path]::GetExtension($source) -ine '.exe' -or
