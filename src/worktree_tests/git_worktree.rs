@@ -50,6 +50,182 @@ fn is_clean_reports_structured_error_for_git_failure() {
 }
 
 #[test]
+fn checkout_root_fails_closed_on_invalid_git_output() {
+    let _lock = lock_workflow_tests();
+    for (label, status, stdout) in [
+        ("nonzero", 128, "fatal: not a git repository"),
+        ("empty", 0, "   "),
+        ("relative", 0, "relative/checkout"),
+        ("unresolvable", 0, "/phasegent-missing-checkout-root"),
+        ("multiline", 0, "/tmp/one\n/tmp/two\n"),
+    ] {
+        let runner = FakeWorktreeRunner::new(vec![FakeResponse {
+            args: vec!["rev-parse".to_string(), "--show-toplevel".to_string()],
+            status,
+            stdout: stdout.to_string(),
+        }]);
+        let error = crate::worktree::git::checkout_root(&runner, Path::new("/tmp")).unwrap_err();
+        assert_eq!(error.kind, "git", "{label}: {}", error.message);
+    }
+}
+
+#[test]
+fn checkout_git_dirs_rejects_unresolvable_gitdir_or_common_dir() {
+    let _lock = lock_workflow_tests();
+    let base = TempDir::new("git-dirs-invalid");
+    let repo = base.path().join("repo");
+    let common = repo.join(".git");
+    std::fs::create_dir_all(&common).expect("common dir");
+    let canonical_common = common.canonicalize().expect("canonical common");
+    let missing = repo.join(".git/missing-worktree");
+    for (label, git_dir, common_dir) in [
+        (
+            "git-dir",
+            missing.to_string_lossy().into_owned(),
+            canonical_common.to_string_lossy().into_owned(),
+        ),
+        (
+            "common-dir",
+            canonical_common.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+        ),
+        (
+            "relative-git-dir",
+            "missing/.git".to_owned(),
+            canonical_common.to_string_lossy().into_owned(),
+        ),
+    ] {
+        let runner = FakeWorktreeRunner::new(vec![
+            FakeResponse {
+                args: vec!["rev-parse".to_string(), "--git-dir".to_string()],
+                status: 0,
+                stdout: format!("{git_dir}\n"),
+            },
+            FakeResponse {
+                args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
+                status: 0,
+                stdout: format!("{common_dir}\n"),
+            },
+        ]);
+        let error = crate::worktree::checkout_git_dirs(&runner, &repo)
+            .expect_err("an unresolvable metadata path is never a linked root");
+        assert_eq!(error.kind, "git", "{label}: {}", error.message);
+    }
+}
+
+#[test]
+fn checkout_root_preserves_trailing_space_and_overlong_paths_exactly() {
+    let _lock = lock_workflow_tests();
+    let base = TempDir::new("path-fidelity");
+    let runner = ProcessWorktreeRunner::new();
+    let init = |root: &Path| {
+        std::fs::create_dir_all(root).expect("root directory");
+        assert!(
+            runner
+                .run(&["init", "-q", "-b", "main"], root)
+                .map(|output| output.status == 0)
+                .unwrap_or(false),
+            "git init at {}",
+            root.display()
+        );
+        let _ = runner.run(
+            &[
+                "-c",
+                "user.name=phasegent-test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "init",
+            ],
+            root,
+        );
+    };
+
+    let spaced_root = base.path().join("repo ");
+    let sibling = base.path().join("repo");
+    init(&spaced_root);
+    init(&sibling);
+    let nested = spaced_root.join("sub");
+    std::fs::create_dir_all(&nested).expect("nested");
+    let expected = spaced_root.canonicalize().expect("canonical spaced root");
+    assert_eq!(
+        crate::worktree::git::checkout_root(&runner, &nested).expect("spaced root"),
+        expected,
+        "a trailing space is part of the path, not trimming noise"
+    );
+    let identity = repo_identity(&runner, &nested).expect("spaced identity");
+    assert_eq!(
+        identity,
+        expected.join(".git").to_string_lossy(),
+        "the identity read preserves the same path"
+    );
+    let (_, common) = crate::worktree::checkout_git_dirs(&runner, &nested).expect("git dirs");
+    assert_eq!(Path::new(&common), expected.join(".git"));
+
+    let long_root = base.path().join("a".repeat(120)).join("b".repeat(120));
+    init(&long_root);
+    let long_nested = long_root.join("sub");
+    std::fs::create_dir_all(&long_nested).expect("long nested");
+    let long_expected = long_root.canonicalize().expect("canonical long root");
+    assert!(long_expected.to_string_lossy().len() > 200);
+    assert_eq!(
+        crate::worktree::git::checkout_root(&runner, &long_nested).expect("long root"),
+        long_expected,
+        "a valid path over the display bound is returned exactly"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn checkout_root_preserves_a_trailing_cr_instead_of_the_trimmed_sibling() {
+    let _lock = lock_workflow_tests();
+    let base = TempDir::new("path-cr");
+    let runner = ProcessWorktreeRunner::new();
+    let init = |root: &Path| {
+        std::fs::create_dir_all(root).expect("root directory");
+        assert!(
+            runner
+                .run(&["init", "-q", "-b", "main"], root)
+                .map(|output| output.status == 0)
+                .unwrap_or(false)
+        );
+        let _ = runner.run(
+            &[
+                "-c",
+                "user.name=phasegent-test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "init",
+            ],
+            root,
+        );
+    };
+    let cr_root = base.path().join("repo\r");
+    let sibling = base.path().join("repo");
+    init(&cr_root);
+    init(&sibling);
+    let nested = cr_root.join("sub");
+    std::fs::create_dir_all(&nested).expect("nested");
+    let expected = cr_root.canonicalize().expect("canonical CR root");
+    assert_eq!(
+        crate::worktree::git::checkout_root(&runner, &nested).expect("CR root"),
+        expected,
+        "a trailing CR is filename content on Unix"
+    );
+    let identity = repo_identity(&runner, &nested).expect("CR identity");
+    assert_eq!(identity, expected.join(".git").to_string_lossy());
+    let (_, common) = crate::worktree::checkout_git_dirs(&runner, &nested).expect("git dirs");
+    assert_eq!(Path::new(&common), expected.join(".git"));
+}
+
+#[test]
 fn worktree_add_surfaces_git_failure_as_structured_error() {
     let _lock = lock_workflow_tests();
     let runner = FakeWorktreeRunner::new(vec![FakeResponse {

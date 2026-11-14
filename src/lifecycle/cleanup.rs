@@ -478,9 +478,10 @@ pub(crate) fn cleanup_closed_issue_worktrees_in_context(
 /// memo dropped. An unreadable registry, a vanished candidate row, a new
 /// active owner, dirt, or an open neighbour each keep the directory.
 ///
-/// A pass that cannot move anything never changed local or provider state,
-/// so re-reading it would answer the same question twice; the movement
-/// window is what makes the re-read necessary.
+/// A no-move destructive pass still re-attests its local guard and cache
+/// inventory here, because its provider and occupancy reads form a window
+/// before the destructive cache clearance; the read-only report pass changes
+/// and clears nothing.
 #[allow(clippy::too_many_arguments)]
 fn reverify_after_movement(
     runner: &dyn crate::worktree::WorktreeRunner,
@@ -495,6 +496,22 @@ fn reverify_after_movement(
     allowed_scope: Option<&crate::worktree::WorktreeScope>,
 ) -> Result<(), String> {
     if !mode.may_move_sessions() {
+        if mode == CleanupMode::Report {
+            return Ok(());
+        }
+        // A no-move destructive pass (sync) can still clear a root `.cache`
+        // after its provider and occupancy reads. Re-attest the current
+        // checkout placement, repository identity and cache inventory
+        // immediately before that clearance.
+        let local = candidate::local_guard(runner, identity, directory);
+        if let Some(reason) = local.protected_reason {
+            return Err(format!(
+                "the directory changed before the cache cleanup ({reason})"
+            ));
+        }
+        if local.cache.as_ref() != expected_cache {
+            return Err("the root .cache inventory changed before the cache cleanup".to_owned());
+        }
         return Ok(());
     }
     closure.refresh();

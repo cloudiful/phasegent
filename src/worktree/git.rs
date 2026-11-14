@@ -5,7 +5,7 @@
 //! `worktree_add` / `worktree_remove` from tests with temp repos; the
 //! production call site for prune is Phase 2.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::worktree::{WorktreeError, WorktreeListEntry, WorktreeRunner, bounded};
 
@@ -65,6 +65,62 @@ pub fn ref_resolves_to_commit(
     Ok(output.status == 0)
 }
 
+/// Parse one machine path answer: strip at most one trailing line ending and
+/// preserve every other byte, including leading or trailing spaces. An empty or
+/// multi-line answer is malformed and fails closed.
+pub(crate) fn path_line(raw: &str) -> Result<&str, WorktreeError> {
+    let line = raw.strip_suffix('\n').unwrap_or(raw);
+    // On Windows the text line ending is CRLF. On Unix a trailing CR is a
+    // legal final filename byte and must stay part of the path.
+    #[cfg(windows)]
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.is_empty() {
+        return Err(WorktreeError::new("git", "git returned an empty path"));
+    }
+    if line.contains('\n') {
+        return Err(WorktreeError::new(
+            "git",
+            "git returned a malformed multi-line path",
+        ));
+    }
+    #[cfg(windows)]
+    if line.contains('\r') {
+        return Err(WorktreeError::new("git", "git returned a malformed path"));
+    }
+    Ok(line)
+}
+
+/// Resolve the root of the work tree that contains `path` through
+/// `git rev-parse --show-toplevel`. A failing, empty, relative, or
+/// unresolvable answer is an error: callers that key a registry row or a
+/// safety decision on the path must fail closed rather than guess a directory.
+pub fn checkout_root(runner: &dyn WorktreeRunner, path: &Path) -> Result<PathBuf, WorktreeError> {
+    let output = runner.run_path(&["rev-parse", "--show-toplevel"], path)?;
+    if output.status != 0 {
+        return Err(WorktreeError::new(
+            "git",
+            format!(
+                "git rev-parse --show-toplevel failed with exit status {}",
+                output.status
+            ),
+        ));
+    }
+    let raw = path_line(&output.stdout)?;
+    let root = PathBuf::from(raw);
+    if !root.is_absolute() {
+        return Err(WorktreeError::new(
+            "git",
+            "git rev-parse --show-toplevel returned a relative path",
+        ));
+    }
+    root.canonicalize().map_err(|error| {
+        WorktreeError::new(
+            "git",
+            format!("git rev-parse --show-toplevel returned an unresolvable path: {error}"),
+        )
+    })
+}
+
 /// True when `path` is inside a Git work tree. A non-repository or an
 /// unreadable path is `Ok(false)` rather than an error so a read-only
 /// probe can report "not a Git worktree" structurally.
@@ -102,8 +158,8 @@ pub fn checkout_git_dirs(
     runner: &dyn WorktreeRunner,
     path: &Path,
 ) -> Result<(String, String), WorktreeError> {
-    let git_dir = runner.run(&["rev-parse", "--git-dir"], path)?;
-    let common = runner.run(&["rev-parse", "--git-common-dir"], path)?;
+    let git_dir = runner.run_path(&["rev-parse", "--git-dir"], path)?;
+    let common = runner.run_path(&["rev-parse", "--git-common-dir"], path)?;
     if git_dir.status != 0 || common.status != 0 {
         return Err(WorktreeError::new(
             "git",
@@ -111,16 +167,18 @@ pub fn checkout_git_dirs(
         ));
     }
     Ok((
-        absolute_git_dir(path, git_dir.stdout.trim()),
-        absolute_git_dir(path, common.stdout.trim()),
+        absolute_git_dir(path, path_line(&git_dir.stdout)?)?,
+        absolute_git_dir(path, path_line(&common.stdout)?)?,
     ))
 }
 
 /// Resolve a `git rev-parse --git-dir` style value against `base` and
-/// canonicalise it so `.` and its absolute form compare equal.
-fn absolute_git_dir(base: &Path, raw: &str) -> String {
+/// canonicalise it so `.` and its absolute form compare equal. A failed
+/// canonicalisation is an error: these paths decide safety, so a missing or
+/// unresolvable answer must never be treated as a linked worktree.
+fn absolute_git_dir(base: &Path, raw: &str) -> Result<String, WorktreeError> {
     if raw.is_empty() {
-        return String::new();
+        return Err(WorktreeError::new("git", "git returned an empty path"));
     }
     let candidate = Path::new(raw);
     let resolved = if candidate.is_absolute() {
@@ -128,8 +186,13 @@ fn absolute_git_dir(base: &Path, raw: &str) -> String {
     } else {
         base.join(candidate)
     };
-    let canonical = resolved.canonicalize().unwrap_or(resolved);
-    bounded(&canonical.to_string_lossy())
+    let canonical = resolved.canonicalize().map_err(|error| {
+        WorktreeError::new(
+            "git",
+            format!("could not canonicalise a Git metadata path: {error}"),
+        )
+    })?;
+    Ok(canonical.to_string_lossy().into_owned())
 }
 
 /// `git worktree remove <path>` wrapper. The `git` invocation is run
@@ -208,7 +271,10 @@ pub fn current_branch_for(
 pub fn parse_worktree_list(raw: &str) -> Vec<WorktreeListEntry> {
     let mut entries: Vec<WorktreeListEntry> = Vec::new();
     let mut current: Option<WorktreeListEntry> = None;
-    for line in raw.lines() {
+    for raw_line in raw.split('\n') {
+        #[cfg(windows)]
+        let raw_line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let line = raw_line;
         if line.is_empty() {
             if let Some(entry) = current.take() {
                 entries.push(entry);

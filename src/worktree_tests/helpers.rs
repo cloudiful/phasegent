@@ -121,6 +121,14 @@ detached
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn parse_worktree_list_preserves_a_trailing_cr_path_on_unix() {
+    let entries = parse_worktree_list("worktree /tmp/repo\r\nHEAD abc\n\n");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].worktree, "/tmp/repo\r");
+}
+
 #[test]
 fn parse_worktree_list_returns_empty_for_empty_input() {
     assert!(parse_worktree_list("").is_empty());
@@ -133,18 +141,35 @@ fn parse_worktree_list_returns_empty_for_empty_input() {
 
 #[test]
 fn repo_identity_canonicalises_relative_and_absolute_common_dirs() {
-    let repo_path = PathBuf::from("/tmp/some/repo");
+    let repo = TempDir::new("identity-relative");
+    let common = repo.path().join(".git");
+    std::fs::create_dir_all(&common).expect("common dir");
     let runner = FakeWorktreeRunner::new(vec![FakeResponse {
         args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
         status: 0,
         stdout: ".git".to_string(),
     }]);
-    let identity = repo_identity(&runner, &repo_path).expect("identity");
-    assert!(identity.ends_with("/repo/.git") || identity.ends_with("/repo"));
+    let identity = repo_identity(&runner, repo.path()).expect("identity");
+    assert_eq!(
+        Path::new(&identity),
+        common.canonicalize().expect("canonical common")
+    );
     let recorded = runner.recorded();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].0, vec!["rev-parse", "--git-common-dir"]);
-    assert_eq!(recorded[0].1, repo_path);
+    assert_eq!(recorded[0].1, repo.path());
+}
+
+#[test]
+fn repo_identity_rejects_an_unresolvable_common_dir() {
+    let repo = TempDir::new("identity-unresolvable");
+    let runner = FakeWorktreeRunner::new(vec![FakeResponse {
+        args: vec!["rev-parse".to_string(), "--git-common-dir".to_string()],
+        status: 0,
+        stdout: "missing/.git".to_string(),
+    }]);
+    let error = repo_identity(&runner, repo.path()).unwrap_err();
+    assert_eq!(error.kind, "git");
 }
 
 #[test]

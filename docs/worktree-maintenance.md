@@ -49,6 +49,15 @@ or sync pass. Without a bound task, an explicit `--provider forgejo` keeps the
 explicit `owner/repo` scope, an implicit Forgejo default fails closed, and a
 provider that owns legacy numeric issues keeps the unscoped legacy route.
 
+Acquisition resolves the actual Git checkout root of the calling path before any
+registry lookup or write, so acquiring from a subdirectory of the main checkout
+or of a linked worktree reuses and registers that root instead of the nested
+path. Machine path answers from `show-toplevel`, `git-dir` and `git-common-dir`
+keep their exact bytes apart from the line ending — including trailing spaces
+and paths longer than the display echo bound — while display and log output stay
+sanitized. Empty, multi-line, relative, unresolvable, oversized or non-UTF-8
+path answers fail closed before any path-keyed registry or host operation.
+
 Reuse is the default. The current checkout is reused whether it is clean, dirty,
 unbound or linked to a historical issue. Fresh current occupancy, or an
 associated task that is still open, protects a different idle task's directory.
@@ -80,7 +89,10 @@ cross-command cache.
 `issue sync --no-clean` writes nothing. It classifies each existing associated
 directory with the shared local guards; an OpenCode-associated directory is
 reported `would_keep` without contacting the host, and a pure CLI directory is
-`would_clean` when locally eligible. Clean mode runs the shared removal guards.
+`would_clean` when locally eligible. Clean mode runs the shared removal guards
+and re-attests the checkout placement, repository identity and cache inventory
+immediately before clearing a root `.cache`, even though it never moves a
+session.
 
 ## Prune removal
 
@@ -91,8 +103,11 @@ moves them. Unknown or unusable answers keep the directory.
 
 A directory is removed only when all of these hold:
 
-1. It is a verified non-main, clean directory. The narrow verified root `.cache`
-   exception is preserved.
+1. It is a verified checkout root whose canonical Git common dir matches the
+   recorded repository identity, never the main checkout and never a directory
+   nested inside any checkout, and it is clean. A foreign or replacement
+   checkout at a registered path fails closed, as does an unverifiable one. The
+   narrow verified root `.cache` exception is preserved.
 2. Every associated task is confirmed closed through its own durable task, or a
    legacy number through a proven sidecar, link or trusted manual route. A
    confirmed closed historical task never keeps the directory; a still-open
@@ -113,8 +128,11 @@ connected service is covered; no whole-machine inventory is claimed.
 The `--dryrun` preview runs the same occupancy and lineage reads and reports the
 same blockers and move eligibility without moving, deleting or writing anything,
 and without creating a store, schema or operation lock. Local Git guards run
-before host reads, so a main checkout or dirty path requires no host access. Main
-checkouts are excluded from candidate and kept totals. One lazy running-session
+before host reads, so a main checkout, a directory nested in the main checkout,
+or a dirty path requires no host access. Main checkout paths and their
+subdirectories are excluded from candidate and kept totals. A subdirectory of a
+linked worktree is kept as a protected directory through the same guard, so
+close, sync and prune never clear a nested `.cache`. One lazy running-session
 snapshot is reused across the scan; destructive boundaries use fresh checks.
 
 An absent main registration is a stale row like any other: it is reclaimed

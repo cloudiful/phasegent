@@ -29,6 +29,7 @@ use crate::cli::report_local_warnings;
 use crate::infra::storage::Storage;
 use crate::lifecycle::cleanup::CleanupMode;
 use crate::lifecycle::cleanup::TargetResolver;
+use crate::lifecycle::cleanup::candidate;
 use crate::lifecycle::cleanup::sessions::{self, FamilyOutcome};
 use crate::lifecycle::cleanup::wait::MovePolicy;
 use crate::worktree::git::worktree_remove;
@@ -214,6 +215,15 @@ fn scan_with_paths(
             }
         })
         .collect();
+    // A path inside the main checkout is not a removal candidate at all: it is
+    // excluded from the candidate and kept totals exactly like the main
+    // checkout root itself.
+    candidates.retain(|candidate| {
+        !matches!(
+            candidate.reason_code,
+            Some("main_checkout") | Some("main_subdirectory")
+        )
+    });
     candidates.sort_by(|a, b| a.canonical_path.cmp(&b.canonical_path));
     candidates
 }
@@ -292,7 +302,7 @@ fn classify(
             PruneDisposition::SkippedProtected("the main checkout is never removed".to_owned());
         return candidate;
     }
-    match local_guard(runner, &canonical) {
+    match local_guard(runner, scope.identity, &canonical) {
         Err((code, reason)) => {
             candidate.reason_code = Some(code);
             candidate.disposition = PruneDisposition::SkippedProtected(reason);
@@ -361,32 +371,18 @@ fn same_path(left: &Path, right: &Path) -> bool {
     canonical_or_self(left) == canonical_or_self(right)
 }
 
-/// The local Git guards: existing, not the main checkout, and clean. The
-/// narrow root `.cache` exception is carried forward as the inventory the
-/// removal stage must still match.
+/// The shared local Git guards: a checkout root, never the main checkout or a
+/// path nested in any checkout, and clean. The narrow root `.cache` exception
+/// is carried forward as the inventory the removal stage must still match.
 fn local_guard(
     runner: &dyn WorktreeRunner,
+    identity: &str,
     directory: &Path,
 ) -> Result<Option<crate::worktree::cache::CacheInventory>, (&'static str, String)> {
-    match crate::worktree::is_clean(runner, directory) {
-        Ok(true) => Ok(None),
-        Ok(false) => match crate::worktree::cache::inspect(runner, directory) {
-            Ok(crate::worktree::cache::CacheInspection::CacheOnly(inventory)) => {
-                Ok(Some(inventory))
-            }
-            Ok(crate::worktree::cache::CacheInspection::NotCacheOnly) => Err((
-                "dirty",
-                "the worktree is dirty or has untracked files".to_owned(),
-            )),
-            Err(reason) => Err(("probe_error", reason)),
-        },
-        Err(error) => Err((
-            "probe_error",
-            format!(
-                "the cleanliness probe failed: {}",
-                crate::worktree::bounded(&error.message)
-            ),
-        )),
+    let guard = candidate::local_guard(runner, identity, directory);
+    match guard.protected_reason {
+        Some(reason) => Err((guard.protected_code.unwrap_or("probe_error"), reason)),
+        None => Ok(guard.cache),
     }
 }
 

@@ -69,6 +69,227 @@ fn a_free_checkout_is_reused_and_recorded_for_the_session() {
     assert_eq!(records[0].sessions, vec!["session-A"]);
 }
 
+fn acquire_at(
+    fixture: &Fixture,
+    path: &std::path::Path,
+    issue: u64,
+    session: &str,
+) -> Result<crate::worktree::AcquireOutcome, crate::worktree::WorktreeError> {
+    crate::worktree::acquire_directory_with_foreign_state(
+        &ProcessWorktreeRunner::new(),
+        path,
+        issue,
+        session,
+        crate::worktree::AcquireOptions {
+            cache_base: Some(fixture.cache.path()),
+            isolate: false,
+            base: None,
+            reuse: false,
+        },
+        None,
+        None,
+    )
+}
+
+#[test]
+fn acquiring_from_a_main_subdirectory_registers_the_checkout_root() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-main-nested") else {
+        return;
+    };
+    let nested = fixture.repo.dir.path().join("nested/homelab");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    let outcome = acquire_at(&fixture, &nested, 245, "session-A").expect("acquire from nested");
+    let root = crate::worktree::canonical_or_self(fixture.repo.dir.path());
+    assert_eq!(outcome.path, root.to_string_lossy());
+    let records = open_records(&fixture.identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].worktree_path, root.to_string_lossy());
+
+    let repeat = acquire_at(&fixture, fixture.repo.dir.path(), 245, "session-A")
+        .expect("acquire from the root");
+    assert_eq!(repeat.reason, "idempotent");
+    assert_eq!(repeat.directory_id, outcome.directory_id);
+    assert_eq!(
+        open_records(&fixture.identity).len(),
+        1,
+        "the nested acquisition must not add a second registration"
+    );
+}
+
+#[test]
+fn acquiring_from_a_trailing_space_checkout_registers_the_exact_root() {
+    let _lock = lock_workflow_tests();
+    let base = TempDir::new("acquire-spaced");
+    let runner = ProcessWorktreeRunner::new();
+    let root = base.path().join("repo ");
+    let sibling = base.path().join("repo");
+    for path in [&root, &sibling] {
+        std::fs::create_dir_all(path).expect("repository directory");
+        assert!(
+            runner
+                .run(&["init", "-q", "-b", "main"], path)
+                .map(|output| output.status == 0)
+                .unwrap_or(false)
+        );
+        let _ = runner.run(
+            &[
+                "-c",
+                "user.name=phasegent-test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "init",
+            ],
+            path,
+        );
+    }
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    let (_db, _db_env) = open_temp_db("acquire-spaced");
+    let cache = temp_cache("acquire-spaced");
+    let _cache_env = EnvGuard::set(
+        "PHASEGENT_WORKTREE_CACHE_DIR",
+        cache.path().to_string_lossy().as_ref(),
+    );
+    let identity = repo_identity(&runner, &root).expect("spaced identity");
+    let outcome = crate::worktree::acquire_directory_with_foreign_state(
+        &runner,
+        &nested,
+        245,
+        "session-A",
+        crate::worktree::AcquireOptions {
+            cache_base: Some(cache.path()),
+            isolate: false,
+            base: None,
+            reuse: false,
+        },
+        None,
+        None,
+    )
+    .expect("acquire from the spaced checkout");
+    let expected = root.canonicalize().expect("canonical spaced root");
+    assert_eq!(outcome.path, expected.to_string_lossy());
+    let records = open_records(&identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].worktree_path, expected.to_string_lossy());
+}
+
+#[cfg(unix)]
+#[test]
+fn acquiring_from_a_trailing_cr_checkout_registers_the_exact_root() {
+    let _lock = lock_workflow_tests();
+    let base = TempDir::new("acquire-cr");
+    let runner = ProcessWorktreeRunner::new();
+    let root = base.path().join("repo\r");
+    let sibling = base.path().join("repo");
+    for path in [&root, &sibling] {
+        std::fs::create_dir_all(path).expect("repository directory");
+        assert!(
+            runner
+                .run(&["init", "-q", "-b", "main"], path)
+                .map(|output| output.status == 0)
+                .unwrap_or(false)
+        );
+        let _ = runner.run(
+            &[
+                "-c",
+                "user.name=phasegent-test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "init",
+            ],
+            path,
+        );
+    }
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    let (_db, _db_env) = open_temp_db("acquire-cr");
+    let cache = temp_cache("acquire-cr");
+    let _cache_env = EnvGuard::set(
+        "PHASEGENT_WORKTREE_CACHE_DIR",
+        cache.path().to_string_lossy().as_ref(),
+    );
+    let identity = repo_identity(&runner, &root).expect("CR identity");
+    let outcome = crate::worktree::acquire_directory_with_foreign_state(
+        &runner,
+        &nested,
+        245,
+        "session-A",
+        crate::worktree::AcquireOptions {
+            cache_base: Some(cache.path()),
+            isolate: false,
+            base: None,
+            reuse: false,
+        },
+        None,
+        None,
+    )
+    .expect("acquire from the CR checkout");
+    let expected = root.canonicalize().expect("canonical CR root");
+    assert_eq!(outcome.path, expected.to_string_lossy());
+    let records = open_records(&identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].worktree_path, expected.to_string_lossy());
+}
+
+#[test]
+fn acquiring_root_first_then_from_a_subdirectory_is_idempotent() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-root-first") else {
+        return;
+    };
+    let first = acquire_at(&fixture, fixture.repo.dir.path(), 245, "session-A")
+        .expect("acquire from the root");
+    let nested = fixture.repo.dir.path().join("nested");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    let second =
+        acquire_at(&fixture, &nested, 245, "session-A").expect("acquire from the nested path");
+    let root = crate::worktree::canonical_or_self(fixture.repo.dir.path());
+    assert_eq!(second.reason, "idempotent");
+    assert_eq!(second.directory_id, first.directory_id);
+    assert_eq!(second.path, root.to_string_lossy());
+    let records = open_records(&fixture.identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].worktree_path, root.to_string_lossy());
+}
+
+#[test]
+fn acquiring_from_a_linked_subdirectory_registers_the_linked_root() {
+    let _lock = lock_workflow_tests();
+    let Some(fixture) = fixture("acquire-linked-nested") else {
+        return;
+    };
+    let linked = fixture.repo.dir.path().join("linked");
+    crate::worktree::worktree_add(
+        &ProcessWorktreeRunner::new(),
+        fixture.repo.dir.path(),
+        &linked,
+        "phasegent/issue37-linked",
+    )
+    .expect("linked worktree");
+    let nested = linked.join("nested");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    let outcome = acquire_at(&fixture, &nested, 245, "session-A").expect("acquire from nested");
+    let root = crate::worktree::canonical_or_self(&linked);
+    assert_eq!(outcome.path, root.to_string_lossy());
+    let records = open_records(&fixture.identity);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].worktree_path, root.to_string_lossy());
+
+    let repeat = acquire_at(&fixture, &linked, 245, "session-A").expect("acquire from the root");
+    assert_eq!(repeat.reason, "idempotent");
+    assert_eq!(repeat.directory_id, outcome.directory_id);
+    assert_eq!(open_records(&fixture.identity).len(), 1);
+}
+
 #[test]
 fn explicit_isolation_creates_a_registered_worktree_under_the_cache() {
     let _lock = lock_workflow_tests();
