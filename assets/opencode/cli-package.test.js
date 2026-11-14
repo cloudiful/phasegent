@@ -43,7 +43,7 @@ describe("release workflow structure", () => {
       "aarch64-apple-darwin",
       "x86_64-pc-windows-msvc",
     ]);
-    expect(build.strategy.matrix.include[0].os).toBe("ubuntu-latest");
+    expect(build.strategy.matrix.include[0].os).toBe("ubuntu-22.04");
     const musl = build.steps.find((step) => step.name === "Install musl tools");
     expect(musl.if).toBe("runner.os == 'Linux'");
     expect(musl.run).toContain("sudo apt-get install -y musl-tools");
