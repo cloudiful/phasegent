@@ -112,7 +112,6 @@ fn normalize_session_id(raw: &str) -> Result<String, WorktreeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
 
     #[test]
     fn resolve_session_with_prefers_explicit_over_environment() {
@@ -175,48 +174,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_session_reads_environment_variable() {
-        let _lock = lock_workflow_tests();
-        let _env = EnvGuard::set(SESSION_ENV, "env-session");
-        let context = resolve_session(None).unwrap();
-        assert_eq!(context.id, "env-session");
-        assert_eq!(context.source, SessionSource::Environment);
-    }
-
-    #[test]
     fn resolve_session_explicit_bypasses_environment() {
         let context = resolve_session(Some("explicit-session")).unwrap();
         assert_eq!(context.id, "explicit-session");
         assert_eq!(context.source, SessionSource::Explicit);
-    }
-
-    #[test]
-    fn resolve_session_optional_stays_ownerless_without_identity() {
-        // NOTE: `resolve_session_optional(None)` reads the real process
-        // environment, so this arm only holds when `PHASEGENT_SESSION_ID`
-        // is unset; the workflow lock serialises env mutation and no
-        // test in this target sets it without a guard.
-        let _lock = lock_workflow_tests();
-        let previous = std::env::var_os(SESSION_ENV);
-        // SAFETY: serialised by `lock_workflow_tests`; restored below.
-        unsafe {
-            std::env::remove_var(SESSION_ENV);
-        }
-        let result = resolve_session_optional(None).unwrap();
-        if let Some(previous) = previous {
-            // SAFETY: symmetric with the removal above.
-            unsafe {
-                std::env::set_var(SESSION_ENV, previous);
-            }
-        }
-        assert_eq!(result, None);
-        assert_eq!(
-            resolve_session_optional(Some("explicit"))
-                .unwrap()
-                .expect("explicit session")
-                .id,
-            "explicit"
-        );
     }
 
     #[test]

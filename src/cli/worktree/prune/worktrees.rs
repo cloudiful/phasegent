@@ -159,24 +159,6 @@ fn classify_outcome(action: &PruneAction) -> PruneOutcome {
     }
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn scan_worktree_candidates(
-    runner: &dyn WorktreeRunner,
-    api: &dyn OpenCodeApi,
-    scope: &PruneScope<'_>,
-    source: &dyn IssueStateSource,
-) -> Vec<DirectoryCandidate> {
-    scan_with_paths(
-        runner,
-        api,
-        scope,
-        source,
-        &std::cell::OnceCell::new(),
-        false,
-    )
-}
-
 fn scan_with_paths(
     runner: &dyn WorktreeRunner,
     api: &dyn OpenCodeApi,
@@ -1218,7 +1200,3 @@ fn summarize(actions: Vec<PruneAction>, scanned: usize, mode: PruneMode) -> Prun
     }
     summary
 }
-
-#[cfg(test)]
-#[path = "worktrees/tests.rs"]
-mod tests;

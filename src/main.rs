@@ -39,13 +39,7 @@ mod worktree_tests;
 mod worktree_cli_tests;
 
 #[cfg(test)]
-mod forgejo_cli_tests;
-
-#[cfg(test)]
 mod plugin_tests;
-
-#[cfg(test)]
-mod test_scratch;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

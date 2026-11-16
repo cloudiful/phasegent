@@ -12,13 +12,3 @@ pub(crate) mod storage_schema;
 pub mod timer_ledger;
 pub mod timer_projection;
 pub mod timer_store;
-
-#[cfg(test)]
-mod http_client_tests;
-
-#[cfg(test)]
-#[rustfmt::skip]
-mod issue_index_tests;
-
-#[cfg(test)]
-mod storage_tests;

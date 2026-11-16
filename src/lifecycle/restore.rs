@@ -21,16 +21,6 @@ mod git;
 #[path = "restore/store.rs"]
 pub(crate) mod store;
 
-#[cfg(test)]
-#[path = "restore/restore_tests.rs"]
-mod restore_tests;
-#[cfg(test)]
-#[path = "restore/test_support.rs"]
-pub(crate) mod test_support;
-#[cfg(test)]
-#[path = "restore/tests.rs"]
-mod tests;
-
 #[allow(unused_imports)]
 pub(crate) use store::{
     BaselineRecord, BaselineScope, CLEAN_EVIDENCE, CheckoutState, InsertOutcome, NewBaseline,

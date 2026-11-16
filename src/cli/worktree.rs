@@ -33,19 +33,12 @@ mod probe;
 mod prune;
 pub(crate) mod query;
 
-// The focused integration tests drive these types and functions
-// directly instead of a full CLI round-trip, so the bin target may see
-// the re-exports as unused.
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::issue_closure::test_support::ScriptedIssueStateSource;
+// The focused tests drive these types and functions directly instead of a
+// full CLI round-trip.
 #[allow(unused_imports)]
 pub(crate) use acquire::AcquireJson;
 #[allow(unused_imports)]
 pub(crate) use probe::{ProbeJson, build_probe};
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use prune::scan_worktree_candidates;
 #[allow(unused_imports)]
 pub(crate) use prune::{
     DirectoryCandidate, PruneAction, PruneAggregate, PruneDisposition, PruneMode, PruneRepoOutcome,

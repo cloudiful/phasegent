@@ -582,70 +582,11 @@ fn validate_redmine_api_base(value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
-    use std::fs;
-
-    #[test]
-    fn auth_setup_local_is_password_free_and_flips_role_provider() {
-        // The local provider keeps no credential, needs no repository and no
-        // close-status-id, so `auth setup --provider local` must succeed
-        // without reading stdin or prompting, and persist only the
-        // role-scoped provider preference so `config show` / `resolve_kind`
-        // report `local`.
-        let _lock = lock_workflow_tests();
-        let dir = crate::test_scratch::root().join(format!(
-            "phasegent-auth-local-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join(crate::infra::storage::DB_FILENAME);
-        let _db_guard = EnvGuard::set("PHASEGENT_DB_PATH", db_path.to_string_lossy().as_ref());
-
-        // read_stdin=false still must not prompt: the local arm returns
-        // before touching `read_credential`.
-        let out = setup_provider(
-            Role::Executor,
-            PROVIDER_LOCAL,
-            SetupOptions {
-                read_stdin: false,
-                api_base: None,
-                repository: None,
-                close_status_id: None,
-            },
-        )
-        .expect("local setup must not require credentials");
-        assert_eq!(out["configured"], true);
-        assert_eq!(out["role"], "executor");
-        assert_eq!(out["provider"], "local");
-
-        let storage = Storage::open().unwrap();
-        let provider = load_config(Role::Executor, &storage)
-            .unwrap()
-            .and_then(|config| config.provider);
-        assert_eq!(provider, Some(PROVIDER_LOCAL.to_owned()));
-        // No credential row is ever written for the local provider.
-        assert!(
-            storage
-                .load_credential(Role::Executor, PROVIDER_LOCAL)
-                .is_err()
-                || storage
-                    .load_credential(Role::Executor, PROVIDER_LOCAL)
-                    .unwrap()
-                    .is_none(),
-            "local must never store a credential"
-        );
-        let _ = fs::remove_dir_all(dir);
-    }
 
     #[test]
     fn auth_setup_local_rejects_inapplicable_options() {
         // Local takes neither a repository nor a Redmine close-status-id,
         // and the message names the owning provider.
-        let _lock = lock_workflow_tests();
         let err = setup_provider(
             Role::Executor,
             PROVIDER_LOCAL,

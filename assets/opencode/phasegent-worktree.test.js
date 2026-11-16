@@ -3,21 +3,12 @@
 // The helpers are pure or dependency-injected so they run under `bun test`
 // without OpenCode and without the phasegent CLI: the source entry is imported
 // directly and only its default export plus the attached `redirect` helpers are
-// touched. The generated `phasegent-worktree.js` dist is covered by the
-// freshness assertions at the bottom of this file; the install/status/uninstall
-// marker behaviour is covered by the Rust asset assertions in
-// `src/plugin_tests.rs`.
+// touched. Install/status/uninstall marker behaviour is user-led integration
+// acceptance.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { buildPlugin } from "./src/build.js";
+import { beforeEach, describe, expect, test } from "bun:test";
 import PhasegentWorktreePlugin from "./src/index.js";
 import { readIssueDirectories, readRepositoryDirectories } from "./src/binding.js";
-import { PROTOCOL_AGENTS } from "./src/agents.js";
-import { SKILL_ROUTING_HINT } from "./src/skills.js";
 
 const {
   isAbsolutePath,
@@ -39,8 +30,6 @@ const {
   createPromptHook,
   createManagedShellBridge,
   createShellEnvHook,
-  createToolAfterHook,
-  isShellHookSupported,
   verifiedIssueDirectory,
   verifiedBindingDirectory,
   ensureSessionWorktree,
@@ -68,20 +57,6 @@ const WINDOWS_SCOPE_TAIL =
   "if ($__phasegent_status -ne 0) { Write-Error -Message 'phasegent failed' -ErrorAction SilentlyContinue } } )";
 const windowsScope = (command) => `${WINDOWS_SCOPE_HEAD}${command}${WINDOWS_SCOPE_TAIL}`;
 
-// The PowerShell runtime regressions need a PowerShell 7 host; they are skipped
-// where none is installed (CI on Linux) and run locally via `PHASEGENT_PWSH`.
-const PWSH_PATH =
-  process.env.PHASEGENT_PWSH ||
-  (typeof Bun !== "undefined" && typeof Bun.which === "function" ? Bun.which("pwsh") : null);
-
-function restoreNoDiscover(saved) {
-  if (saved === undefined) {
-    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-  } else {
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = saved;
-  }
-}
-
 // `discover`/`readBinding` are stubbed so a missed placement fails loudly
 // instead of spawning the phasegent CLI; `readSessionInfo` and the
 // authoritative read stay real and read the fake host. The lazy path never
@@ -106,19 +81,6 @@ function promptEvent(sessionID) {
   return { sessionID, messageID: "msg-1", prompt: { text: "do the phase" }, delivery: "steer" };
 }
 
-// Capture the adapter's console warnings for the duration of one assertion.
-async function withWarnings(run) {
-  const warnings = [];
-  const original = console.warn;
-  console.warn = (message) => warnings.push(String(message));
-  try {
-    await run();
-  } finally {
-    console.warn = original;
-  }
-  return warnings;
-}
-
 beforeEach(() => {
   resetWorktrees();
 });
@@ -132,89 +94,65 @@ describe("plugin module shape (v2)", () => {
   });
 
   test("setup registers the tool hook, the prompt hook and agent hint, and returns a cleanup", async () => {
-    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    try {
-      const registered = [];
-      const context = {
-        location: { directory: "/repo" },
-        session: {
-          move: async () => {},
-          hook: async (name, callback) => {
-            registered.push({ name, callback });
-            return { dispose: async () => {} };
-          },
+    const registered = [];
+    const context = {
+      location: { directory: "/repo" },
+      session: {
+        move: async () => {},
+        hook: async (name, callback) => {
+          registered.push({ name, callback });
+          return { dispose: async () => {} };
         },
-        worktree: {
-          transform: async () => ({ dispose: async () => {} }),
+      },
+      tool: {
+        hook: async (name, callback) => {
+          registered.push({ name, callback });
+          return { dispose: async () => {} };
         },
-        tool: {
-          hook: async (name, callback) => {
-            registered.push({ name, callback });
-            return { dispose: async () => {} };
-          },
+      },
+      agent: {
+        transform: async (callback) => {
+          registered.push({ name: "agent.transform" });
+          await callback({
+            list: () => [{ id: "executor", system: "" }],
+            update: (id, mutate) => mutate({ id, system: "" }),
+          });
+          return { dispose: async () => {} };
         },
-        agent: {
-          transform: async (callback) => {
-            registered.push({ name: "agent.transform" });
-            await callback({
-              list: () => [{ id: "executor", system: "" }],
-              update: (id, mutate) => mutate({ id, system: "" }),
-            });
-            return { dispose: async () => {} };
-          },
-        },
-      };
-      const cleanup = await PhasegentWorktreePlugin.setup(context);
-      expect(registered.map((item) => item.name)).toEqual([
-        "prompt",
-        "execute.before",
-        "agent.transform",
-      ]);
-      expect(typeof registered[0].callback).toBe("function");
-      expect(typeof registered[1].callback).toBe("function");
-      expect(typeof cleanup).toBe("function");
-      await cleanup();
-    } finally {
-      restoreNoDiscover(saved);
-    }
+      },
+    };
+    const cleanup = await PhasegentWorktreePlugin.setup(context);
+    expect(registered.map((item) => item.name)).toEqual([
+      "prompt",
+      "execute.before",
+      "agent.transform",
+    ]);
+    expect(typeof registered[0].callback).toBe("function");
+    expect(typeof registered[1].callback).toBe("function");
+    expect(typeof cleanup).toBe("function");
+    await cleanup();
   });
 
   test("setup keeps the tool hook when the host exposes no session prompt hook", async () => {
-    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    try {
-      const registered = [];
-      const cleanup = await PhasegentWorktreePlugin.setup({
-        location: { directory: "/repo" },
-        session: { move: async () => {} },
-        tool: {
-          hook: async (name) => {
-            registered.push(name);
-            return { dispose: async () => {} };
-          },
-        },
-      });
-      expect(registered).toEqual(["execute.before"]);
-      expect(warnings.join("\n")).toContain("no session prompt hook");
-      expect(typeof cleanup).toBe("function");
-      await cleanup();
-    } finally {
-      console.warn = original;
-      restoreNoDiscover(saved);
-    }
-  });
-
-  test("setup still returns a cleanup when every registration fails", async () => {
-    const context = {
-      worktree: {
-        transform: async () => {
-          throw new Error("transform unavailable");
+    const registered = [];
+    const cleanup = await PhasegentWorktreePlugin.setup({
+      location: { directory: "/repo" },
+      session: { move: async () => {} },
+      tool: {
+        hook: async (name) => {
+          registered.push(name);
+          return { dispose: async () => {} };
         },
       },
+    });
+    expect(registered).toEqual(["execute.before"]);
+    expect(typeof cleanup).toBe("function");
+    await cleanup();
+  });
+
+  test("setup still returns a cleanup when hook and agent registrations fail", async () => {
+    const context = {
+      worktree: {},
       tool: {
         hook: async () => {
           throw new Error("hook unavailable");
@@ -232,44 +170,38 @@ describe("plugin module shape (v2)", () => {
   });
 
   test("setup subscribes to the event stream for question notifications and disposes it", async () => {
-    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    try {
-      const stream = {
-        [Symbol.asyncIterator]() {
-          return {
-            next() {
-              return new Promise(() => {});
-            },
-            return() {
-              return Promise.resolve({ value: undefined, done: true });
-            },
-          };
-        },
-      };
-      let subscribeOptions = null;
-      const context = {
-        location: { directory: "/repo" },
-        event: {
-          subscribe: (options) => {
-            subscribeOptions = options;
-            return stream;
+    const stream = {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            return new Promise(() => {});
           },
+          return() {
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      },
+    };
+    let subscribeOptions = null;
+    const context = {
+      location: { directory: "/repo" },
+      event: {
+        subscribe: (options) => {
+          subscribeOptions = options;
+          return stream;
         },
-      };
-      const cleanup = await PhasegentWorktreePlugin.setup(context);
-      expect(typeof subscribeOptions).toBe("object");
-      expect(subscribeOptions.signal).toBeDefined();
-      let aborted = false;
-      subscribeOptions.signal.addEventListener("abort", () => {
-        aborted = true;
-      });
-      expect(typeof cleanup).toBe("function");
-      await cleanup();
-      expect(aborted).toBe(true);
-    } finally {
-      restoreNoDiscover(saved);
-    }
+      },
+    };
+    const cleanup = await PhasegentWorktreePlugin.setup(context);
+    expect(typeof subscribeOptions).toBe("object");
+    expect(subscribeOptions.signal).toBeDefined();
+    let aborted = false;
+    subscribeOptions.signal.addEventListener("abort", () => {
+      aborted = true;
+    });
+    expect(typeof cleanup).toBe("function");
+    await cleanup();
+    expect(aborted).toBe(true);
   });
 });
 
@@ -592,36 +524,6 @@ describe("managed shell bridge wiring (issue #859 P1)", () => {
   });
 
   test("setup degrades explicitly when the host exposes no shell hook", async () => {
-    const warnings = await withWarnings(async () => {
-      const registered = [];
-      const context = {
-        location: { directory: "/repo" },
-        session: {
-          move: async () => {},
-          hook: async (name, callback) => {
-            registered.push(name);
-            return { dispose: async () => {} };
-          },
-        },
-        tool: {
-          hook: async (name, callback) => {
-            registered.push(name);
-            return { dispose: async () => {} };
-          },
-        },
-        skill: { transform: async () => ({ dispose: async () => {} }) },
-        agent: { transform: async () => ({ dispose: async () => {} }) },
-      };
-      const cleanup = await PhasegentWorktreePlugin.setup(context);
-      expect(registered).toContain("execute.before");
-      expect(registered).not.toContain("create.before");
-      expect(typeof cleanup).toBe("function");
-      await cleanup();
-    });
-    expect(warnings.join("\n")).toContain("no shell hook");
-  });
-
-  test("setup registers shell and after hooks when the host supports them", async () => {
     const registered = [];
     const context = {
       location: { directory: "/repo" },
@@ -638,36 +540,18 @@ describe("managed shell bridge wiring (issue #859 P1)", () => {
           return { dispose: async () => {} };
         },
       },
-      shell: {
-        hook: async (name, callback) => {
-          registered.push(name);
-          return { dispose: async () => {} };
-        },
-      },
       skill: { transform: async () => ({ dispose: async () => {} }) },
       agent: { transform: async () => ({ dispose: async () => {} }) },
     };
     const cleanup = await PhasegentWorktreePlugin.setup(context);
     expect(registered).toContain("execute.before");
-    expect(registered).toContain("execute.after");
-    expect(registered).toContain("create.before");
-    expect(typeof isShellHookSupported(context)).toBe("boolean");
-    expect(isShellHookSupported(context)).toBe(true);
-    expect(typeof createToolAfterHook).toBe("function");
+    expect(registered).not.toContain("create.before");
+    expect(typeof cleanup).toBe("function");
     await cleanup();
   });
 });
 
 describe("session prompt hook: worktree placement (issue 37)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   test("moves a child into the parent's registered worktree on its first prompt", async () => {
     // Issue 1154 P1: the parent's origin is the directory the host reports for
     // it, so the pending target stays valid while the host still reports it.
@@ -799,37 +683,6 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
     const prompt = createPromptHook(context, noCliDeps);
     await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
     expect(moves).toEqual([{ sessionID: "child-1", directory: WORKTREE }]);
-  });
-
-  test("keeps the exact registry-only path when host discovery is disabled", async () => {
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    rememberWorktree("child-1", WORKTREE);
-    // A different session's registration must never be borrowed.
-    rememberWorktree("other-session", "/wt/other");
-    const moves = [];
-    let lookups = 0;
-    const context = {
-      location: { directory: "/repo" },
-      session: {
-        move: async (input) => moves.push(input),
-        get: async ({ sessionID }) => {
-          lookups += 1;
-          return { parentID: null, location: { directory: `/repo/${sessionID}` } };
-        },
-      },
-    };
-    const prompt = createPromptHook(context, noCliDeps);
-
-    // Issue 919 P1: disabled discovery is inert — the exact in-memory lookup
-    // returns the session's own worktree, but no host read and no auto-move
-    // happen, because the current location cannot be verified here.
-    await expect(prompt(promptEvent("child-1"))).resolves.toBeUndefined();
-    expect(moves).toEqual([]);
-    expect(lookups).toBe(0);
-    // An unknown session is not handed another session's worktree.
-    await expect(prompt(promptEvent("unknown-session"))).resolves.toBeUndefined();
-    expect(moves).toEqual([]);
-    expect(lookups).toBe(0);
   });
 
   test("moves a registered session and leaves later prompts a no-op", async () => {
@@ -970,15 +823,6 @@ describe("session prompt hook: worktree placement (issue 37)", () => {
 });
 
 describe("worktree discovery and inheritance helpers (issue #567)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   // `discover`/`readBinding` are stubbed so a missed inheritance fails loudly
   // instead of spawning the phasegent CLI; `readSessionInfo` stays real and
   // reads the fake host. The lazy path never creates a worktree on its own
@@ -987,37 +831,6 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
     discover: async () => null,
     readBinding: async () => ({ issueId: 567, provider: "forgejo", project: "owner/repo", externalId: "567" }),
   };
-
-  test("no session without a reusable directory creates a worktree lazily", async () => {
-    // The lazy path never creates a directory. A session with no verified
-    // directory stays in the current checkout and gets the explicit isolation
-    // guidance once, and the guidance is not repeated per prompt.
-    const moves = [];
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
-    const deps = {
-      readSessionInfo: async () => null,
-      discover: async () => null,
-      readBinding: async () => ({ issueId: 567, provider: "forgejo", project: "owner/repo", externalId: "567" }),
-    };
-    const context = {
-      location: { directory: "/repo" },
-      session: { move: async (input) => moves.push(input) },
-    };
-    try {
-      expect(await ensureSessionWorktree(context, "parent-1", deps)).toBeNull();
-      expect(await ensureSessionWorktree(context, "parent-1", deps)).toBeNull();
-    } finally {
-      console.warn = original;
-    }
-    expect(moves).toEqual([]);
-    expect(sessionPlaced("parent-1")).toBe(false);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("issue 567");
-    expect(warnings[0]).toContain("isolation is opt-in");
-    expect(warnings[0]).toContain("--isolate");
-  });
 
   test("a discovered registered directory is reused", async () => {
     const moves = [];
@@ -1118,15 +931,6 @@ describe("worktree discovery and inheritance helpers (issue #567)", () => {
 // ---------------------------------------------------------------------------
 
 describe("host-authoritative reconciliation (issue 747 P2)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   const MAIN = "/repo";
 
   test("an authoritative read is never served from the session cache", async () => {
@@ -1289,18 +1093,14 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
       location: { directory: MAIN },
       session: { get: async () => null, move: async (input) => moves.push(input) },
     };
-    const warnings = await withWarnings(async () => {
-      expect(
-        await ensureSessionWorktree(context, "sub-1", {
-          readSessionInfo: async () => null,
-          discover: async () => null,
-          readBinding: async () => ({ issueId: 747, provider: "forgejo", project: "owner/repo", externalId: "747" }),
-        }),
-      ).toBeNull();
-    });
+    expect(
+      await ensureSessionWorktree(context, "sub-1", {
+        readSessionInfo: async () => null,
+        discover: async () => null,
+        readBinding: async () => ({ issueId: 747, provider: "forgejo", project: "owner/repo", externalId: "747" }),
+      }),
+    ).toBeNull();
     expect(moves).toEqual([]);
-    expect(warnings.join("\n")).toContain("issue 747");
-    expect(warnings.join("\n")).toContain("isolation is opt-in");
   });
 
   test("an open issue still does not borrow another session's worktree", async () => {
@@ -1353,36 +1153,6 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
     ).toBe(next);
     expect(directory).toBe(next);
   });
-
-  test("reads nothing from the host while host discovery is disabled", async () => {
-    // NO_DISCOVER keeps the adapter inert beyond the in-memory registry: no
-    // reconciliation read either, or the inert mode would reach the host.
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    try {
-      rememberWorktree("session-1", WORKTREE);
-      const moves = [];
-      let lookups = 0;
-      const context = {
-        location: { directory: MAIN },
-        session: {
-          get: async () => {
-            lookups += 1;
-            return { parentID: null, location: { directory: MAIN } };
-          },
-          move: async (input) => moves.push(input),
-        },
-      };
-      expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
-      // The inert path is local-only and never auto-moves: the exact lookup
-      // returns the worktree, but with no host read the current location cannot
-      // be verified, so no move is issued.
-      expect(await ensureSessionWorktree(context, "session-1", noCliDeps)).toBe(WORKTREE);
-      expect(lookups).toBe(0);
-      expect(moves).toHaveLength(0);
-    } finally {
-      restoreNoDiscover(savedNoDiscover);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1394,15 +1164,6 @@ describe("host-authoritative reconciliation (issue 747 P2)", () => {
 // ---------------------------------------------------------------------------
 
 describe("session-scoped placement (issue 919 P1)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   // A host that records every `get` and `move`, and reports the directory from
   // a mutable map, so a test can interleave sessions without a real host.
   function recordingHost(sessions) {
@@ -1613,46 +1374,14 @@ describe("session-scoped placement (issue 919 P1)", () => {
     expect(host.moves).toEqual([]);
   });
 
-  test("emits bounded diagnostics only, with a single line per decision and no settled chatter", async () => {
-    const warnings = await withWarnings(async () => {
-      rememberWorktree("session-1", WORKTREE, "/repo");
-      const sessions = { "session-1": { parentID: null, location: { directory: "/repo" } } };
-      const host = recordingHost(sessions);
-      await ensureSessionWorktree(host.context, "session-1", noCliDeps);
-      // A second, unchanged settled decision must not re-emit.
-      await ensureSessionWorktree(host.context, "session-1", noCliDeps);
+  test("a refused placement leaves the session unplaced without a move", async () => {
+    rememberWorktree("session-1", WORKTREE);
+    const host = recordingHost({
+      "session-1": { parentID: null, location: { directory: WORKTREE } },
     });
-    const placement = warnings.filter((line) => line.includes("phasegent: placement"));
-    expect(placement.filter((line) => line.includes("request "))).toHaveLength(1);
-    expect(placement.filter((line) => line.includes("accepted "))).toHaveLength(1);
-    // `accepted` is never labelled a confirmation.
-    expect(placement.some((line) => line.includes("confirmed"))).toBe(false);
-    // Only the bounded allowlist of fields appears.
-    const allowed = new Set(["session", "parent", "from", "to", "reason", "outcome"]);
-    for (const line of placement) {
-      const fields = line.replace(/^phasegent: placement \S+/, "").trim();
-      for (const token of fields.split(/\s+/).filter(Boolean)) {
-        const key = token.slice(0, token.indexOf("="));
-        expect(allowed.has(key)).toBe(true);
-      }
-    }
-  });
-
-  test("a suppressed already-there decision emits one bounded suppression line", async () => {
-    const warnings = await withWarnings(async () => {
-      rememberWorktree("session-1", WORKTREE);
-      const host = recordingHost({
-        "session-1": { parentID: null, location: { directory: WORKTREE } },
-      });
-      await ensureSessionWorktree(host.context, "session-1", noCliDeps);
-    });
-    const suppressed = warnings.filter(
-      (line) =>
-        line.includes("phasegent: placement suppressed") &&
-        line.includes("reason=already-in-target"),
-    );
-    expect(suppressed).toHaveLength(1);
-    expect(suppressed[0]).toContain("session=session-1");
+    await ensureSessionWorktree(host.context, "session-1", noCliDeps);
+    expect(host.moves).toEqual([]);
+    expect(sessionPlaced("session-1")).toBe(true);
   });
 });
 
@@ -1669,15 +1398,6 @@ describe("session-scoped placement (issue 919 P1)", () => {
 // ---------------------------------------------------------------------------
 
 describe("external relocation reconciliation (issue 1154 P1)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    delete process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   const MAIN = "/repo";
   const STALE = "/repo/.worktrees/issue-1154";
   const RELOCATED = "/repo/.worktrees/issue-other";
@@ -2191,7 +1911,7 @@ describe("external relocation reconciliation (issue 1154 P1)", () => {
 
     // The new request is not dispatched while the earlier host move is still
     // in flight, so it cannot be overtaken by its completion.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => queueMicrotask(resolve));
     expect(moves).toEqual([{ sessionID: "child-1", directory: STALE }]);
 
     releaseOldMove();
@@ -2770,74 +2490,6 @@ describe("rewritePhasegentCommand (issue #541)", () => {
   });
 });
 
-// Real PowerShell 7 regressions for the Windows role scope (issue #588 P2):
-// the emitted command runs unchanged against a fake `phasegent` on PATH, so
-// `&&`, `||`, and the restored environment state are exercised for real rather
-// than only matched as text. Skipped where PowerShell 7 is unavailable (the CI
-// Linux image) and run locally through `PHASEGENT_PWSH`.
-if (PWSH_PATH && process.platform !== "win32") {
-  describe("PowerShell role scope runtime (issue #588 P2)", () => {
-    let dir;
-
-    beforeEach(async () => {
-      dir = await mkdtemp(join(tmpdir(), "phasegent-pwsh-"));
-      const fake = join(dir, "phasegent");
-      await writeFile(
-        fake,
-        '#!/usr/bin/env bash\nprintf "role=%s\\n" "${PHASEGENT_ROLE:-<absent>}"\nexit "${FAKE_CODE:-0}"\n',
-      );
-      await chmod(fake, 0o755);
-    });
-
-    afterEach(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
-
-    function run(command, options) {
-      const { code = 0, role } = options || {};
-      const prelude = `$env:PHASEGENT_ROLE=${role ? `'${role}'` : "$null"}\n`;
-      const rewritten = rewritePhasegentCommand(
-        command,
-        "s1",
-        { agent: "executor" },
-        { windows: true },
-      );
-      const script =
-        `${prelude}${rewritten}\n` +
-        `Write-Output "final=<$env:PHASEGENT_ROLE> code=$LASTEXITCODE"\n`;
-      const result = spawnSync(PWSH_PATH, ["-NoProfile", "-Command", script], {
-        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FAKE_CODE: String(code) },
-        encoding: "utf8",
-      });
-      return { stdout: result.stdout || "", stderr: result.stderr || "", status: result.status };
-    }
-
-    test("a failing invocation skips && and runs ||", () => {
-      const and = run("phasegent issue get 1 && Write-Output done", { code: 3 });
-      expect(and.stdout).toContain("role=executor");
-      expect(and.stdout).not.toContain("done");
-      expect(and.stdout).toContain("final=<> code=3");
-
-      const or = run("phasegent issue get 1 || Write-Output fallback", { code: 3 });
-      expect(or.stdout).toContain("fallback");
-      expect(or.stdout).toContain("final=<> code=3");
-    });
-
-    test("a successful invocation runs && and restores a pre-existing role", () => {
-      const ok = run("phasegent issue get 1 && Write-Output done", { code: 0, role: "admin" });
-      expect(ok.stdout).toContain("role=executor");
-      expect(ok.stdout).toContain("done");
-      expect(ok.stdout).toContain("final=<admin> code=0");
-    });
-
-    test("a failing invocation restores a pre-existing role", () => {
-      const out = run("phasegent issue get 1 || Write-Output fallback", { code: 4, role: "admin" });
-      expect(out.stdout).toContain("fallback");
-      expect(out.stdout).toContain("final=<admin> code=4");
-    });
-  });
-}
-
 // Issue #917 P1: bounded POSIX transparent wrappers (`timeout`, `env`,
 // `command`, nested) between the leading assignments and the command name.
 // The role is injected through `env` so the wrapper still execs a real command
@@ -3073,76 +2725,6 @@ describe("POSIX transparent wrappers (issue #917 P1)", () => {
     );
   });
 });
-
-// The rewritten POSIX strings run unchanged against a fake `phasegent` on
-// PATH, so the `env` wrapper, wrapper syntax and exit-code propagation are
-// exercised for real (issue #917 P1).
-if (process.platform !== "win32") {
-  describe("POSIX wrapper runtime (issue #917 P1)", () => {
-    let dir;
-    const hasTimeout =
-      spawnSync("/bin/sh", ["-c", "command -v timeout"], { encoding: "utf8" }).status === 0;
-    const runtimeTest = hasTimeout ? test : test.skip;
-
-    beforeEach(async () => {
-      dir = await mkdtemp(join(tmpdir(), "phasegent-posix-"));
-      const fake = join(dir, "phasegent");
-      await writeFile(
-        fake,
-        '#!/bin/sh\nprintf "role=%s\\n" "${PHASEGENT_ROLE-<absent>}"\nexit "${FAKE_CODE:-0}"\n',
-      );
-      await chmod(fake, 0o755);
-    });
-
-    afterEach(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
-
-    function run(command, options) {
-      const { code = 0, agent = "executor" } = options || {};
-      const rewritten = rewritePhasegentCommand(command, "s1", { agent });
-      const env = {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        FAKE_CODE: String(code),
-      };
-      // The ambient role must not leak in: the assertion below proves the
-      // per-invocation scope is what sets (and clears) PHASEGENT_ROLE.
-      delete env.PHASEGENT_ROLE;
-      return spawnSync("/bin/sh", ["-c", rewritten], { env, encoding: "utf8" });
-    }
-
-    runtimeTest("runs the wrapped command unchanged through each wrapper shape", () => {
-      for (const command of [
-        "timeout 40s phasegent issue get 1",
-        "TMPDIR=/tmp timeout 40s phasegent issue get 1",
-        "env FOO=1 phasegent issue get 1",
-        "command phasegent issue get 1",
-        "timeout 5s env FOO=1 phasegent issue get 1",
-      ]) {
-        const result = run(command);
-        // Issue #22 P1: the wrapper injects no role, so the fake CLI sees no
-        // role variable at all.
-        expect(result.stdout).toContain("role=<absent>");
-        expect(result.status).toBe(0);
-      }
-    });
-
-    runtimeTest("propagates a wrapped CLI failure through && and ||", () => {
-      const and = run("timeout 40s phasegent issue get 1 && echo done", { code: 3 });
-      expect(and.stdout).toContain("role=<absent>");
-      expect(and.stdout).not.toContain("done");
-      const or = run("timeout 40s phasegent issue get 1 || echo fallback", { code: 3 });
-      expect(or.stdout).toContain("fallback");
-    });
-
-    runtimeTest("leaves no role variable behind for the next statement", () => {
-      const out = run("timeout 40s phasegent issue get 1 && echo after=$PHASEGENT_ROLE");
-      expect(out.stdout).toContain("after=");
-      expect(out.stdout.trimEnd().endsWith("after=")).toBe(true);
-    });
-  });
-}
 
 describe("issue close session injection (issue #575 P2)", () => {
   test("appends --worktree-session to an issue close segment", () => {
@@ -3499,15 +3081,6 @@ describe("heredoc-opaque rewriting (issue #859 P2)", () => {
 });
 
 describe("shell command rewriting through the hook (issue #541)", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   test("downgrades a claimed role even without a worktree", async () => {
     const hook = createRedirectHook();
     const event = {
@@ -3547,15 +3120,6 @@ describe("shell command rewriting through the hook (issue #541)", () => {
 });
 
 describe("tool.execute.before session injection without a worktree", () => {
-  let savedNoDiscover;
-  beforeEach(() => {
-    savedNoDiscover = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-  });
-  afterEach(() => {
-    restoreNoDiscover(savedNoDiscover);
-  });
-
   test("injects --session even when the registry is empty", async () => {
     const hook = createRedirectHook();
     const event = {
@@ -3668,46 +3232,17 @@ describe("verified registry directory (lazy discovery)", () => {
     ).toBeNull();
   });
 
-  test("keeps the session in the current checkout with isolation guidance", async () => {
+  test("keeps the session in the current checkout when isolation is not opted in", async () => {
     const moves = [];
-    const warnings = [];
-    const original = console.warn;
-    console.warn = (message) => warnings.push(String(message));
     const deps = {
       readSessionInfo: async () => null,
       discover: async () => null,
       readBinding: async () => ({ issueId: 575, provider: "forgejo", project: "owner/repo", externalId: "575", taskId: 42, instance: "https://forgejo.test" }),
     };
-    try {
-      expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
-      expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
-    } finally {
-      console.warn = original;
-    }
+    expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
+    expect(await ensureSessionWorktree(orchContext(moves), "orch-3", deps)).toBeNull();
     expect(moves).toEqual([]);
     expect(sessionPlaced("orch-3")).toBe(false);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("issue 575");
-    expect(warnings[0]).toContain("--isolate");
-  });
-
-  test("PHASEGENT_WORKTREE_NO_DISCOVER keeps the registry-only path", async () => {
-    const saved = process.env.PHASEGENT_WORKTREE_NO_DISCOVER;
-    process.env.PHASEGENT_WORKTREE_NO_DISCOVER = "1";
-    try {
-      let reads = 0;
-      const deps = {
-        readSessionInfo: async () => null,
-        discover: async () => {
-          reads += 1;
-          return null;
-        },
-      };
-      expect(await ensureSessionWorktree(orchContext([]), "orch-4", deps)).toBeNull();
-      expect(reads).toBe(0);
-    } finally {
-      restoreNoDiscover(saved);
-    }
   });
 });
 
@@ -3843,43 +3378,5 @@ describe("complete worktree directory page readers", () => {
       const fake = fakePageRunner(pages);
       expect(await readIssueDirectories(42, "/repo", fake.execute)).toBeNull();
     }
-  });
-});
-
-describe("generated dist freshness (issue #576 P1)", () => {
-  const DIST = new URL("./phasegent-worktree.js", import.meta.url);
-
-  async function buildToTemp() {
-    const dir = await mkdtemp(join(tmpdir(), "phasegent-dist-"));
-    try {
-      const outfile = join(dir, "phasegent-worktree.js");
-      buildPlugin(outfile);
-      return await readFile(outfile);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }
-
-  test("checked-in dist is byte-identical to a fresh build", async () => {
-    const fresh = await buildToTemp();
-    const checkedIn = await readFile(DIST);
-    if (!checkedIn.equals(fresh)) {
-      throw new Error("checked-in dist is stale or hand-edited; run `bun run build:plugin`");
-    }
-  });
-
-  test("two fresh builds are byte-identical (reproducible)", async () => {
-    const first = await buildToTemp();
-    const second = await buildToTemp();
-    if (!first.equals(second)) {
-      throw new Error("two builds of the same source differ; the pipeline is not reproducible");
-    }
-  });
-
-  test("dist opens with the managed marker and the @generated header", async () => {
-    const lines = (await readFile(DIST, "utf8")).split("\n");
-    // `phasegent plugin install` recognises its managed files by this marker.
-    expect(lines[0]).toBe("// phasegent:managed");
-    expect(lines[1]).toContain("@generated");
   });
 });

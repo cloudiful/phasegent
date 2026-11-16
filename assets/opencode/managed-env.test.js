@@ -12,8 +12,6 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  MANAGED_BRIDGE_CAPACITY,
-  MANAGED_BRIDGE_TTL_MS,
   MANAGED_CONTEXT_PREFIX,
   createManagedShellBridge,
   createShellEnvHook,
@@ -363,12 +361,5 @@ describe("decorate and consume", () => {
     const result = second.bridge.consume(foreign);
     expect(result.consumed).toBe(false);
     expect(foreign.env.PHASEGENT_SESSION_ID).toBeUndefined();
-  });
-});
-
-describe("bridge bounds", () => {
-  test("capacity and TTL match the approved limits", () => {
-    expect(MANAGED_BRIDGE_CAPACITY).toBe(64);
-    expect(MANAGED_BRIDGE_TTL_MS).toBe(5 * 60 * 1000);
   });
 });

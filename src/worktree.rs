@@ -48,10 +48,9 @@ pub use scope::WorktreeScope;
 mod session;
 
 // The re-exports below are part of the public surface of the
-// `worktree` module and are consumed by the integration tests
-// (and the future Phase 2 CLI). They look unused to clippy when
-// the test target is not being analysed, so silence the false
-// positive here.
+// `worktree` module (and the future Phase 2 CLI). They look unused
+// to clippy when no external caller is analysed, so silence the
+// false positive here.
 #[allow(unused_imports)]
 pub use acquire::{AcquireOptions, acquire_directory, acquire_directory_with};
 #[allow(unused_imports)]

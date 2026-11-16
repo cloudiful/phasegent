@@ -98,17 +98,6 @@ pub(crate) enum RecordEntry {
     Invalid(InvalidRecordOutput),
 }
 
-impl RecordEntry {
-    /// The decoded record, when the entry is a valid record.
-    #[cfg(test)]
-    pub(crate) fn record(&self) -> Option<&RecordOutput> {
-        match self {
-            Self::Record(record) => Some(record),
-            Self::Invalid(_) => None,
-        }
-    }
-}
-
 /// One item of a `record list` collection.
 ///
 /// A valid record keeps every record field and adds the `status`
@@ -125,17 +114,6 @@ pub(crate) enum RecordListEntry {
     },
     /// A reserved-header comment that is not a valid record.
     Invalid(InvalidRecordOutput),
-}
-
-impl RecordListEntry {
-    /// The decoded record, when the item is a valid record.
-    #[cfg(test)]
-    pub(crate) fn record(&self) -> Option<&RecordOutput> {
-        match self {
-            Self::Record { record, .. } => Some(record),
-            Self::Invalid(_) => None,
-        }
-    }
 }
 
 /// The invalid entries of one collection, summarized for a bounded

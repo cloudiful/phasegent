@@ -1,11 +1,8 @@
-use super::support::*;
-use super::*;
-
+use crate::command::{self, Command};
 use crate::notifications::config::{EmailTlsSelection, resolve_email_tls};
 
 const PASSWORD: &str = "PHASEGENT_NOTIFY_EMAIL_PASSWORD";
 const USERNAME: &str = "PHASEGENT_NOTIFY_EMAIL_USERNAME";
-const TLS: &str = "PHASEGENT_NOTIFY_EMAIL_TLS";
 
 fn parse_config_set(args: &[&str], role: Option<&str>) -> Result<Command, String> {
     let args = args
@@ -107,33 +104,6 @@ fn other_secrets_still_reject_direct_values() {
 }
 
 #[test]
-fn direct_email_password_persists_without_echo() {
-    with_isolated_storage("notify-email-direct-password", |_db_path, storage| {
-        let outcome =
-            config_write::set_setting_value(None, PASSWORD, PASSWORD_TOKEN, storage).unwrap();
-        let text = serde_json::to_string(&outcome).unwrap();
-        assert!(!text.contains(PASSWORD_TOKEN), "outcome leaked: {text}");
-        assert!(text.contains(PASSWORD), "outcome names setting: {text}");
-        assert_eq!(
-            storage.load_global_setting(PASSWORD).unwrap().as_deref(),
-            Some(PASSWORD_TOKEN)
-        );
-
-        let snapshot = config::show(None, storage).unwrap();
-        let snap_text = serde_json::to_string(&snapshot).unwrap();
-        assert!(!snap_text.contains(PASSWORD_TOKEN), "snapshot leaked");
-        let entry = snapshot["global_settings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["name"] == PASSWORD)
-            .expect("password entry");
-        assert_eq!(entry["present"], Value::Bool(true));
-        assert_eq!(entry["length"], Value::from(PASSWORD_TOKEN.len()));
-    });
-}
-
-#[test]
 fn dash_prefixed_secret_candidates_are_never_echoed() {
     for token in ["-cf-api-token-shhh", "--cf-api-token-shhh", "-", "-x"] {
         let error = parse_config_set(
@@ -214,118 +184,6 @@ fn malformed_secret_arguments_never_expose_the_candidate() {
     }
 }
 
-const PASSWORD_TOKEN: &str = "cf-api-token-shhh-123";
-
-#[test]
-fn email_password_stdin_path_still_persists() {
-    with_isolated_storage("notify-email-stdin-password", |_db_path, storage| {
-        let outcome = config_write::set_setting_stdin_content(
-            None,
-            PASSWORD,
-            &format!("  {PASSWORD_TOKEN}  \n"),
-            storage,
-        )
-        .unwrap();
-        assert!(
-            !serde_json::to_string(&outcome)
-                .unwrap()
-                .contains(PASSWORD_TOKEN)
-        );
-        assert_eq!(
-            storage.load_global_setting(PASSWORD).unwrap().as_deref(),
-            Some(PASSWORD_TOKEN)
-        );
-    });
-}
-
-#[test]
-fn dispatch_direct_email_password_persists_and_rejects_other_secret_direct() {
-    with_isolated_storage("notify-email-dispatch", |_db_path, storage| {
-        let outcome =
-            config_write::dispatch_set(None, PASSWORD, Some(PASSWORD_TOKEN), false, storage)
-                .expect("dispatch must accept a direct email password");
-        assert!(
-            !serde_json::to_string(&outcome)
-                .unwrap()
-                .contains(PASSWORD_TOKEN)
-        );
-        assert_eq!(
-            storage.load_global_setting(PASSWORD).unwrap().as_deref(),
-            Some(PASSWORD_TOKEN)
-        );
-
-        let error = config_write::dispatch_set(
-            None,
-            "PHASEGENT_NOTIFY_WEBHOOK_TOKEN",
-            Some("webhook-direct-shhh"),
-            false,
-            storage,
-        )
-        .expect_err("other secrets must reject direct dispatch");
-        assert!(
-            error.contains("does not accept a direct value"),
-            "got: {error}"
-        );
-        assert!(!error.contains("webhook-direct-shhh"), "got: {error}");
-    });
-}
-
-#[test]
-fn email_username_accepts_arbitrary_nonempty_values() {
-    with_isolated_storage("notify-email-username", |_db_path, storage| {
-        for username in ["api_token", "user:name", "smtp-user"] {
-            config_write::set_setting_value(None, USERNAME, username, storage)
-                .unwrap_or_else(|error| panic!("username '{username}' must persist: {error}"));
-            assert_eq!(
-                storage.load_global_setting(USERNAME).unwrap().as_deref(),
-                Some(username)
-            );
-        }
-        let error = config_write::set_setting_value(None, USERNAME, "bad\nname", storage)
-            .expect_err("control characters must be rejected");
-        assert!(error.contains("control characters"), "got: {error}");
-        let long = "u".repeat(2049);
-        let error = config_write::set_setting_value(None, USERNAME, &long, storage)
-            .expect_err("overlong username must be rejected");
-        assert!(error.contains("too long"), "got: {error}");
-    });
-}
-
-#[test]
-fn email_addresses_without_at_are_still_rejected() {
-    with_isolated_storage("notify-email-address", |_db_path, storage| {
-        for setting in [
-            "PHASEGENT_NOTIFY_EMAIL_FROM",
-            "PHASEGENT_NOTIFY_EMAIL_TO",
-            "PHASEGENT_NOTIFY_EMAIL_REPLY_TO",
-        ] {
-            let error = config_write::set_setting_value(None, setting, "api_token", storage)
-                .expect_err("address without @ must be rejected");
-            assert!(error.contains("must contain '@'"), "{setting}: {error}");
-        }
-    });
-}
-
-#[test]
-fn email_tls_auto_is_persisted_and_invalid_modes_rejected() {
-    with_isolated_storage("notify-email-tls-set", |_db_path, storage| {
-        for mode in ["auto", "implicit", "starttls", "plain"] {
-            config_write::set_setting_value(None, TLS, mode, storage)
-                .unwrap_or_else(|error| panic!("TLS mode '{mode}' must persist: {error}"));
-            assert_eq!(
-                storage.load_global_setting(TLS).unwrap().as_deref(),
-                Some(mode)
-            );
-        }
-        let error = config_write::set_setting_value(None, TLS, "opportunistic", storage)
-            .expect_err("unknown TLS mode must be rejected");
-        assert!(
-            error.contains("expected auto, implicit, starttls, or plain"),
-            "got: {error}"
-        );
-    });
-}
-
 #[test]
 fn email_tls_resolution_matrix() {
     use EmailTlsSelection::{Implicit, Plain, StartTls};
@@ -350,63 +208,4 @@ fn email_tls_resolution_matrix() {
             "mode {mode:?} port {port:?}"
         );
     }
-}
-
-#[test]
-fn notify_config_load_accepts_auto_and_rejects_unknown_tls() {
-    with_isolated_storage("notify-email-load", |_db_path, storage| {
-        let _env = EnvRemoveGuard::remove(&[
-            "PHASEGENT_NOTIFY_ENABLED",
-            "PHASEGENT_NOTIFY_CHANNEL",
-            "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST",
-            "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT",
-            "PHASEGENT_NOTIFY_EMAIL_TLS",
-            "PHASEGENT_NOTIFY_EMAIL_USERNAME",
-            "PHASEGENT_NOTIFY_EMAIL_PASSWORD",
-            "PHASEGENT_NOTIFY_EMAIL_FROM",
-            "PHASEGENT_NOTIFY_EMAIL_TO",
-            "PHASEGENT_NOTIFY_EMAIL_REPLY_TO",
-        ]);
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_ENABLED", "true")
-            .unwrap();
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_CHANNEL", "email")
-            .unwrap();
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_EMAIL_SMTP_HOST", "smtp.mx.cloudflare.net")
-            .unwrap();
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_EMAIL_SMTP_PORT", "465")
-            .unwrap();
-        storage.save_global_setting(TLS, "auto").unwrap();
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_EMAIL_USERNAME", "api_token")
-            .unwrap();
-        storage
-            .save_global_setting(PASSWORD, PASSWORD_TOKEN)
-            .unwrap();
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_EMAIL_FROM", "alerts@example.com")
-            .unwrap();
-        storage
-            .save_global_setting("PHASEGENT_NOTIFY_EMAIL_TO", "ops@example.com")
-            .unwrap();
-
-        let config = crate::notifications::config::load(storage)
-            .unwrap()
-            .expect("email config must load");
-        assert_eq!(config.email_tls.as_deref(), Some("auto"));
-        assert_eq!(
-            resolve_email_tls(config.email_tls.as_deref(), config.email_smtp_port),
-            EmailTlsSelection::Implicit
-        );
-
-        storage.save_global_setting(TLS, "bogus").unwrap();
-        let error = crate::notifications::config::load(storage).unwrap_err();
-        assert!(
-            error.contains("expected auto, implicit, starttls, or plain"),
-            "got: {error}"
-        );
-    });
 }

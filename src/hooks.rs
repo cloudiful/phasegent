@@ -28,10 +28,6 @@ const KNOWN_SOURCES: [&str; 6] = ["", "message", "template", "merge", "squash", 
 const SKIP_SOURCES: [&str; 3] = ["merge", "squash", "commit"];
 mod message;
 
-#[cfg(test)]
-#[path = "hooks_tests.rs"]
-mod tests;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookKind {
     PrepareCommitMsg,

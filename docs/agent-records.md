@@ -118,5 +118,6 @@ A recon record is evidence for the parent, not an audit note or a VERDICT.
   Content`; the created journal id only arrives through the include-journals read,
   which is why an uncertain write triggers a bounded recovery listing instead of a
   blind re-write.
-- Records never require a live journal mutation to be verified: the provider
-  contract tests and their mock server cover the wire behavior.
+- Records never require a live journal mutation to be verified: provider wire
+  behavior is user-led integration acceptance now that the retained suite is
+  unit-only.

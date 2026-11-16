@@ -78,7 +78,7 @@ impl RedmineProvider {
     /// `/users/current.json`. Bootstrap uses this to map a role-scoped
     /// credential to a concrete Redmine user without a separate login flow.
     ///
-    /// Retained for contract tests.
+    /// Reserved for future provisioning scans.
     #[allow(dead_code)]
     pub fn current_user(&self) -> Result<RedmineCurrentUser, PhasegentError> {
         self.http.current_user()

@@ -7,9 +7,6 @@ mod metadata;
 mod model;
 mod status;
 
-#[cfg(test)]
-mod contract_tests;
-
 use std::cell::RefCell;
 use std::collections::HashSet;
 

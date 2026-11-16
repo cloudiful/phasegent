@@ -21,17 +21,10 @@ mod forgejo_config;
 mod gitlab_config;
 mod global_settings;
 
-#[cfg(test)]
-pub(crate) mod test_support;
-
 pub use connection::Storage;
 pub use credentials::CredentialIdentity;
-#[cfg(test)]
-pub use credentials::credential_fingerprint;
 pub use global_settings::{GlobalSettingSummary, NotificationRecord};
 
-#[cfg(test)]
-pub(crate) use crate::infra::storage_schema::DB_FILENAME;
 pub(crate) use crate::infra::storage_schema::{
     PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE,
 };

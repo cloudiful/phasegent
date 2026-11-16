@@ -6,7 +6,8 @@ fn config_show_command_parses_without_role() {
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let invocation = command::parse(&args).expect("config show without a role must parse");
+    let invocation =
+        command::parse_with_role_env(&args, None).expect("config show without a role must parse");
     match invocation.command {
         Command::ConfigShow => {}
         other => panic!("expected ConfigShow, got {other:?}"),
