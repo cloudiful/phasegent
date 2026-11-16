@@ -7059,7 +7059,7 @@ fn bound_forgejo_task_routes_update_and_comment_methods() {
         ),
     ];
     for (label, number, args) in cases {
-        let reply = if label == "create" {
+        let reply = if label == "create" || label == "get" {
             format!(
                 r#"{{"id":1,"body":"note fixture-marker","issue_url":"{{base}}/api/v1/repos/owner/repo/issues/{number}","html_url":null}}"#
             )
@@ -7068,14 +7068,11 @@ fn bound_forgejo_task_routes_update_and_comment_methods() {
                 r#"[{{"id":1,"body":"note fixture-marker","issue_url":"{{base}}/api/v1/repos/owner/repo/issues/{number}","html_url":null}}]"#
             )
         };
-        let mut bodies = vec![
+        let bodies = vec![
             REPO_JSON.to_owned(),
             issue_json(number, "open", "[]"),
             reply,
         ];
-        if label != "create" {
-            bodies.push("[]".to_owned());
-        }
         let (base, responder) = spawn_sequence_responder(bodies);
         storage
             .save_forgejo_auth(Role::Orchestrator, &base, "owner/repo", "fixture-token")
@@ -7093,7 +7090,11 @@ fn bound_forgejo_task_routes_update_and_comment_methods() {
         } else {
             assert!(
                 requests.iter().any(|request| request.starts_with("GET ")
-                    && request.contains(&format!("/issues/{number}/comments"))),
+                    && request.contains(&if label == "get" {
+                        "/issues/comments/1".to_owned()
+                    } else {
+                        format!("/issues/{number}/comments")
+                    })),
                 "comment {label} GET path: {requests:?}"
             );
         }
@@ -7129,6 +7130,7 @@ struct PathRule {
     method: String,
     path: String,
     responder: PathResponder,
+    extra_headers: &'static str,
 }
 
 fn path_rule(method: &str, path: &str, body: &str) -> PathRule {
@@ -7137,6 +7139,7 @@ fn path_rule(method: &str, path: &str, body: &str) -> PathRule {
         method: method.to_owned(),
         path: path.to_owned(),
         responder: std::sync::Arc::new(move |_, _, _| (200, body.clone())),
+        extra_headers: "",
     }
 }
 
@@ -7149,6 +7152,7 @@ fn path_rule_fn(
         method: method.to_owned(),
         path: path.to_owned(),
         responder: std::sync::Arc::new(responder),
+        extra_headers: "",
     }
 }
 
@@ -7220,9 +7224,13 @@ impl PathMock {
                             .unwrap_or_else(|| {
                                 (404, r#"{"errors":["no fixture route"]}"#.to_owned())
                             });
+                        let extra_headers = rules
+                            .iter()
+                            .find(|rule| rule.method == method && rule.path == path)
+                            .map_or("", |rule| rule.extra_headers);
                         let reason = if status == 200 { "OK" } else { "Error" };
                         let response = format!(
-                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
                             response_body.len()
                         );
                         let _ = stream.write_all(response.as_bytes());
@@ -7533,24 +7541,15 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
     rules.push(path_rule_fn(
         "GET",
         "/api/v1/repos/owner/repo/issues/51/comments",
-        move |target, _, base| {
-            if target.contains("page=2") {
-                return (200, "[]".to_owned());
+        move |_, _, base| {
+            let issue_url = format!("{base}/api/v1/repos/owner/repo/issues/51");
+            let mut comments: Vec<_> = (100..201)
+                .map(|id| forgejo_comment_json(id, "ordinary", &issue_url))
+                .collect();
+            if let Some(body) = read_record.lock().unwrap().clone() {
+                comments.push(forgejo_comment_json(1, &body, &issue_url));
             }
-            match read_record.lock().unwrap().clone() {
-                Some(body) => (
-                    200,
-                    format!(
-                        "[{}]",
-                        forgejo_comment_json(
-                            1,
-                            &body,
-                            &format!("{base}/api/v1/repos/owner/repo/issues/51")
-                        )
-                    ),
-                ),
-                None => (200, "[]".to_owned()),
-            }
+            (200, format!("[{}]", comments.join(",")))
         },
     ));
     let write_record = std::sync::Arc::clone(&written_record);
@@ -7584,6 +7583,28 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
                         "repeat",
                         &format!("{base}/api/v1/repos/owner/repo/issues/52")
                     )
+                ),
+            )
+        },
+    ));
+    rules.last_mut().unwrap().extra_headers = "X-Total-Count: 2\r\n";
+    let direct_comment = std::sync::Arc::clone(&written_comment);
+    let direct_record = std::sync::Arc::clone(&written_record);
+    rules.push(path_rule_fn(
+        "GET",
+        "/api/v1/repos/owner/repo/issues/comments/1",
+        move |_, _, base| {
+            let record = direct_record.lock().unwrap().clone();
+            let (body, issue) = match record {
+                Some(body) => (body, 51),
+                None => (direct_comment.lock().unwrap().clone().unwrap(), 47),
+            };
+            (
+                200,
+                forgejo_comment_json(
+                    1,
+                    &body,
+                    &format!("{base}/api/v1/repos/owner/repo/issues/{issue}"),
                 ),
             )
         },
@@ -7671,7 +7692,7 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
             "comment-get",
             args_of(&["comment", "get", "47", "1"]),
             "GET",
-            "/api/v1/repos/owner/repo/issues/47/comments",
+            "/api/v1/repos/owner/repo/issues/comments/1",
         ),
         (
             "comment-list",
@@ -7740,7 +7761,7 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
     assert_ne!(
         run_as(fixture.repo.path(), "executor", &repeated),
         0,
-        "a repeated pagination page must fail the pre-read before writing"
+        "an incomplete advertised collection must fail the pre-read before writing"
     );
     assert_eq!(
         run_as(
@@ -7811,7 +7832,7 @@ fn bound_forgejo_task_routes_each_single_number_command_before_the_default() {
             "POST",
             "/api/v1/repos/owner/repo/issues/52/comments"
         ),
-        "a repeated pre-read page must fail before any write: {requests:?}"
+        "an incomplete pre-read must fail before any write: {requests:?}"
     );
     assert_eq!(
         counter.finish(),

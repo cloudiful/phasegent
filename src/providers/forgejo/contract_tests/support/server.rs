@@ -72,12 +72,17 @@ fn sequence_inner(
             }
             requests.push(String::from_utf8(data).unwrap());
             let body = body.replace("{BASE}", &base);
+            let status = headers
+                .iter()
+                .find(|(name, _)| name == ":status")
+                .map_or("200 OK", |(_, value)| value.as_str());
             let extra: String = headers
                 .iter()
+                .filter(|(name, _)| name != ":status")
                 .map(|(name, value)| format!("{name}: {}\r\n", value.replace("{BASE}", &base)))
                 .collect();
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).unwrap();
