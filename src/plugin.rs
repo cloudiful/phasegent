@@ -325,13 +325,6 @@ pub fn uninstall_at(dir: &Path) -> Result<UninstallOutcome, PluginError> {
     }
 }
 
-/// Embedded adapter source. `pub(crate)` so the focused test module
-/// can assert against the exact bytes that ship with the binary.
-#[cfg(test)]
-pub(crate) fn adapter_source() -> &'static str {
-    ADAPTER_JS
-}
-
 fn ensure_dir(dir: &Path) -> Result<(), PluginError> {
     let existed = match std::fs::symlink_metadata(dir) {
         Ok(meta) if meta.is_dir() => true,

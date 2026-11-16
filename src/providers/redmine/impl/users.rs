@@ -13,7 +13,7 @@ impl RedmineProvider {
     /// creation response rarely carries the new user's API key; call
     /// [`Self::get_user_api_key`] after creation to retrieve it.
     ///
-    /// Used by contract tests and admin provisioning.
+    /// Used by admin provisioning.
     #[allow(dead_code)]
     pub fn create_user(
         &self,
@@ -53,7 +53,7 @@ impl RedmineProvider {
     /// the response exposes that user's `api_key` on
     /// [`RedmineUser::api_key`].
     ///
-    /// Used by contract tests and admin provisioning.
+    /// Used by admin provisioning.
     #[allow(dead_code)]
     pub fn get_user(&self, id: u64) -> Result<RedmineUser, PhasegentError> {
         if id == 0 {
@@ -69,7 +69,7 @@ impl RedmineProvider {
     /// surfaces as a `decode` error that never echoes the raw payload so
     /// no key material can leak into the message.
     ///
-    /// Used by contract tests and admin provisioning.
+    /// Used by admin provisioning.
     #[allow(dead_code)]
     pub fn get_user_api_key(&self, id: u64) -> Result<String, PhasegentError> {
         let user = self.get_user(id)?;
@@ -132,7 +132,7 @@ impl RedmineProvider {
     /// List every visible user via the admin REST API.
     ///
     /// Thin wrapper over the paginated `GET /users.json` helper; kept
-    /// for contract tests and for future provisioning scans that need
+    /// for future provisioning scans that need
     /// more than a single-login lookup.
     #[allow(dead_code)]
     pub fn list_users(&self) -> Result<Vec<RedmineUser>, PhasegentError> {

@@ -148,10 +148,3 @@ fn completed_bootstraps() -> &'static Mutex<HashMap<String, WorkflowState>> {
     static COMPLETED: OnceLock<Mutex<HashMap<String, WorkflowState>>> = OnceLock::new();
     COMPLETED.get_or_init(|| Mutex::new(HashMap::new()))
 }
-
-#[cfg(test)]
-pub(crate) fn clear_completed_bootstraps_for_tests() {
-    if let Ok(mut map) = completed_bootstraps().lock() {
-        map.clear();
-    }
-}

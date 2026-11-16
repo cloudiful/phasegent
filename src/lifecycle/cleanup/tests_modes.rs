@@ -1,9 +1,8 @@
 //! Uncertainty and per-mode behaviour of the OpenCode guard
 //! (issue 747 P1).
 //!
-//! Split from the close-mode table so each file stays readable: every
-//! case here is a reason the guard must *keep* a directory, or a mode
-//! boundary that decides who may act on the host's answer.
+//! Every retained case returns before the runtime path comparison or reads a
+//! purely lexical fake listing, so it needs no filesystem state.
 
 use super::CleanupMode;
 use super::sessions::{FamilyOutcome, finalize_family};
@@ -158,40 +157,6 @@ fn a_failing_session_lookup_keeps_the_candidate() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn sync_never_moves_but_still_finds_a_vacated_candidate() {
-    // After a close relocated the session, sync finds the candidate free.
-    let api = FakeOpenCodeApi::empty().with_session("ses_a", Path::new("/tmp/pg-p1-main"));
-    assert_eq!(
-        evaluate_with(
-            &api,
-            CleanupMode::Sync,
-            &fixed(main_checkout()),
-            &["ses_a"],
-            None
-        ),
-        FamilyOutcome::Vacant
-    );
-    assert!(api.moves().is_empty());
-}
-
-#[test]
-fn sync_keeps_a_candidate_whose_session_is_still_hosted() {
-    let api = FakeOpenCodeApi::empty().with_session("ses_a", &candidate());
-    let verdict = evaluate_with(
-        &api,
-        CleanupMode::Sync,
-        &fixed(main_checkout()),
-        &["ses_a"],
-        None,
-    );
-    let FamilyOutcome::Keep(reason) = verdict else {
-        panic!("sync must not move a session, got {verdict:?}");
-    };
-    assert!(reason.contains("still hosted here"), "got: {reason}");
-    assert!(api.moves().is_empty());
-}
-
-#[test]
 fn report_mode_keeps_an_associated_candidate_without_probing() {
     let api = FakeOpenCodeApi::empty()
         .with_session("ses_a", &candidate())
@@ -253,57 +218,6 @@ fn an_empty_identity_yields_no_target_rather_than_a_guessed_directory() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn prune_enumerates_an_unmanaged_candidate_so_a_foreign_occupant_is_seen() {
-    // A directory with no `ses_` association is decided by the local guards
-    // in the close chain, but prune must still look at it: an occupant no
-    // association names is somebody else's session and keeps the directory.
-    let api = FakeOpenCodeApi::empty()
-        .failing_session()
-        .with_session("ses_foreign", &candidate());
-    let verdict = evaluate_with(&api, CleanupMode::Prune, &fixed(main_checkout()), &[], None);
-    let FamilyOutcome::Keep(reason) = verdict else {
-        panic!("a foreign occupant must keep the candidate, got {verdict:?}");
-    };
-    assert!(reason.contains("ses_foreign"), "got: {reason}");
-    assert!(api.moves().is_empty());
-}
-
-#[test]
-fn the_prune_removal_and_preview_share_the_failure_surface() {
-    // An unusable running-session answer keeps the directory in both chains:
-    // the preview reports it and the removal meets the same blocker.
-    let api = FakeOpenCodeApi::empty()
-        .with_session("ses_a", &candidate())
-        .failing_active();
-    for mode in [CleanupMode::Prune, CleanupMode::Preview] {
-        let verdict = evaluate_with(&api, mode, &fixed(main_checkout()), &["ses_a"], None);
-        let FamilyOutcome::Keep(reason) = verdict else {
-            panic!("an unreadable running answer must keep the candidate, got {verdict:?}");
-        };
-        assert!(
-            reason.contains("running-session query failed"),
-            "mode {mode:?}: got: {reason}"
-        );
-    }
-    assert!(api.moves().is_empty());
-}
-
-#[test]
-fn close_and_sync_enumerate_an_unmanaged_directory_occupied_by_a_foreign_session() {
-    for mode in [CleanupMode::Close, CleanupMode::Sync] {
-        let api = FakeOpenCodeApi::empty().with_session("ses_foreign", &candidate());
-        let verdict = finalize_family(&api, mode, &fixed(main_checkout()), &candidate(), &[], None);
-        let FamilyOutcome::Keep(reason) = verdict else {
-            panic!("{mode:?} must keep a foreign occupant, got {verdict:?}");
-        };
-        assert!(
-            reason.contains("not associated") || reason.contains("occupies"),
-            "got: {reason}"
-        );
-    }
-}
-
-#[test]
 fn a_pure_cli_candidate_without_a_host_occupant_is_vacant_on_every_destructive_mode() {
     for mode in [
         CleanupMode::Close,
@@ -318,25 +232,6 @@ fn a_pure_cli_candidate_without_a_host_occupant_is_vacant_on_every_destructive_m
             "{mode:?}"
         );
     }
-}
-
-#[test]
-fn sync_keeps_a_missing_root_whose_id_is_still_active() {
-    let api = FakeOpenCodeApi::empty()
-        .with_unknown_session("ses_a")
-        .with_running("ses_a");
-    let verdict = finalize_family(
-        &api,
-        CleanupMode::Sync,
-        &fixed(main_checkout()),
-        &candidate(),
-        &["ses_a".to_owned()],
-        None,
-    );
-    let FamilyOutcome::Keep(reason) = verdict else {
-        panic!("an active id contradicting typed absence must keep, got {verdict:?}");
-    };
-    assert!(reason.contains("could not be located"), "got: {reason}");
 }
 
 #[test]

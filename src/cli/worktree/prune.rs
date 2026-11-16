@@ -46,9 +46,6 @@ pub(crate) use crate::cli::issue_closure::{
     ExplicitSelection, IssueStateSource, configured_source, configured_source_context,
     configured_source_prune, configured_source_scoped, configured_source_task_aware,
 };
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use worktrees::scan_worktree_candidates;
 pub(crate) use worktrees::{
     DirectoryCandidate, PruneAction, PruneDisposition, PruneMode, PruneOutcome, PruneScope,
     PruneStage, PruneSummary, prune_pass, prune_pass_with_policy,

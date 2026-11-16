@@ -27,14 +27,6 @@ impl CleanupContext {
         self.records.iter().any(|record| record.has_issue(issue))
     }
 
-    #[cfg(test)]
-    pub(super) fn has_scoped_directory(&self, directory: &Path) -> bool {
-        self.records
-            .iter()
-            .filter(|record| super::same_directory(record.canonical_path().as_path(), directory))
-            .any(|record| record.is_scoped())
-    }
-
     /// Whether the directory may be treated by a provider-scoped cleanup
     /// pass. An unscoped legacy directory is always allowed. A directory with
     /// any scoped association is allowed only when the pass names its allowed

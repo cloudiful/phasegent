@@ -39,13 +39,9 @@ mod workflow;
 mod worktree;
 mod worktree_args;
 
-#[cfg(test)]
-pub(crate) use argv::caller_from;
 pub(crate) use argv::caller_from_env;
 #[allow(unused_imports)] // public parser entry used by the fuzz harness
 pub use argv::parse;
-#[cfg(test)]
-pub(crate) use argv::parse_outcome_with_role_env;
 #[cfg(test)]
 pub(crate) use argv::parse_with_role_env;
 pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};

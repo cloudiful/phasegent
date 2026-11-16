@@ -190,8 +190,8 @@ impl RedmineHttp {
     /// `/users/current.json`. Used to bind a role-scoped credential to a
     /// concrete Redmine user without logging in.
     ///
-    /// Retained for contract tests (production bootstrap no longer calls
-    /// it); allowed dead in non-test builds.
+    /// Reserved for future credential binding (production bootstrap no
+    /// longer calls it); allowed dead in non-test builds.
     #[allow(dead_code)]
     pub(crate) fn current_user(
         &self,
@@ -208,7 +208,7 @@ impl RedmineHttp {
     /// the same `http_error` path as every other Redmine call so the
     /// admin key never appears in the surfaced message.
     ///
-    /// Used by contract tests and admin provisioning.
+    /// Used by admin provisioning.
     #[allow(dead_code)]
     pub(crate) fn create_user(
         &self,
@@ -224,7 +224,7 @@ impl RedmineHttp {
     /// omit it. A missing user surfaces as an `Http` 404 through the
     /// shared `http_error` path.
     ///
-    /// Used by contract tests and admin provisioning.
+    /// Used by admin provisioning.
     #[allow(dead_code)]
     pub(crate) fn get_user(&self, id: u64) -> Result<RedmineUser, PhasegentError> {
         let response: RedmineUserResponse =

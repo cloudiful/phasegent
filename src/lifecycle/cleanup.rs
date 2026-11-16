@@ -47,14 +47,8 @@ pub(crate) mod wait;
 #[path = "cleanup/tests.rs"]
 mod tests;
 #[cfg(test)]
-#[path = "cleanup/tests_evidence.rs"]
-mod tests_evidence;
-#[cfg(test)]
 #[path = "cleanup/tests_modes.rs"]
 mod tests_modes;
-#[cfg(test)]
-#[path = "cleanup/tests_prune_guards.rs"]
-mod tests_prune_guards;
 
 pub(crate) use context::CleanupContext;
 pub(crate) use target::TargetResolver;

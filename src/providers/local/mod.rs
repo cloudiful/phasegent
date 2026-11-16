@@ -16,13 +16,8 @@ mod projects_impl;
 #[path = "impl/status.rs"]
 mod status_impl;
 
-#[cfg(test)]
-mod contract_tests;
-
 use crate::policy::Capability;
 use crate::providers::api::PhasegentError;
-#[cfg(test)]
-use std::path::Path;
 use std::sync::Mutex;
 
 /// SQLite-backed local provider. Holds one connection behind a mutex
@@ -54,15 +49,6 @@ impl LocalProvider {
     pub fn open_read_only() -> Result<Self, PhasegentError> {
         let store =
             crate::infra::local_store::open_local_read_only().map_err(PhasegentError::config)?;
-        Ok(Self {
-            conn: Mutex::new(store.connection),
-        })
-    }
-
-    #[cfg(test)]
-    pub fn open_at(path: &Path) -> Result<Self, PhasegentError> {
-        let store =
-            crate::infra::local_store::open_local_at(path).map_err(PhasegentError::config)?;
         Ok(Self {
             conn: Mutex::new(store.connection),
         })

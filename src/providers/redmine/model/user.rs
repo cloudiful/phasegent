@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// custom `Debug` impl redacts the key so panic messages and debug logs
 /// never expose it.
 ///
-/// Used by contract tests and bootstrap provisioning.
+/// Used by bootstrap provisioning.
 #[derive(Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct RedmineUser {

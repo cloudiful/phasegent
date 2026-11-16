@@ -1133,32 +1133,3 @@ fn execute_issue_batch(
         0
     }
 }
-
-/// Fetch several issues for `issue get` batches. Successes and
-/// failures are collected side by side so one missing issue never
-/// discards the rest; the caller renders the `{issues, errors}`
-/// envelope. Generic over the provider so tests can drive it
-/// against a mock server without a full CLI invocation.
-/// Fetch several issues from one provider into the batch envelope.
-///
-/// The production batch resolves every number on its own, so a bound item
-/// is served by its own pinned provider; this shared helper stays for the
-/// Redmine provider contract coverage of the per-item error envelope.
-#[cfg(test)]
-pub(crate) fn batch_fetch_issues<P>(
-    provider: &P,
-    numbers: &[u64],
-) -> (Vec<IssueSummary>, Vec<serde_json::Value>)
-where
-    P: IssueProvider<Error = PhasegentError>,
-{
-    let mut issues = Vec::with_capacity(numbers.len());
-    let mut errors = Vec::new();
-    for number in numbers {
-        match provider.get_issue(*number) {
-            Ok(summary) => issues.push(summary),
-            Err(error) => errors.push(serde_json::json!({"number": number, "error": error.json()})),
-        }
-    }
-    (issues, errors)
-}

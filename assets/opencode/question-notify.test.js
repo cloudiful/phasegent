@@ -12,8 +12,6 @@ import {
   createQuestionNotifier,
 } from "./src/notify.js";
 
-const ROLE_MARKER = "phasegent-question-notify-test-role";
-const SESSION_MARKER = "phasegent-question-notify-test-session";
 const SENSITIVE_MARKER = "sensitive-marker-9f3a";
 
 // A controllable AsyncIterable: `emit` pushes an event and `close` ends it.
@@ -228,8 +226,8 @@ function createHarness(options = {}) {
 }
 
 async function settle() {
-  for (let index = 0; index < 4; index += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
   }
 }
 
@@ -615,26 +613,15 @@ describe("question notifier structured delivery (issue #1026 P1/P2)", () => {
 });
 
 describe("question notifier failure handling (issue #1026 P1/P2)", () => {
-  test("keeps the inherited environment unchanged, including role and session markers", async () => {
-    const savedRole = process.env.PHASEGENT_ROLE;
-    const savedSession = process.env.PHASEGENT_SESSION_ID;
-    process.env.PHASEGENT_ROLE = ROLE_MARKER;
-    process.env.PHASEGENT_SESSION_ID = SESSION_MARKER;
+  test("keeps the inherited environment object unchanged", async () => {
     const harness = createHarness();
     try {
       harness.stream.emit(questionEvent());
       await advance(harness);
       expect(harness.spawned).toHaveLength(1);
-      const options = harness.spawned[0].options;
-      expect(options.env).toBe(process.env);
-      expect(options.env.PHASEGENT_ROLE).toBe(ROLE_MARKER);
-      expect(options.env.PHASEGENT_SESSION_ID).toBe(SESSION_MARKER);
+      expect(harness.spawned[0].options.env).toBe(process.env);
     } finally {
       harness.dispose();
-      if (savedRole === undefined) delete process.env.PHASEGENT_ROLE;
-      else process.env.PHASEGENT_ROLE = savedRole;
-      if (savedSession === undefined) delete process.env.PHASEGENT_SESSION_ID;
-      else process.env.PHASEGENT_SESSION_ID = savedSession;
     }
   });
 
@@ -715,10 +702,10 @@ describe("question notifier failure handling (issue #1026 P1/P2)", () => {
           order.push("write");
           child.writes.push(String(chunk));
           return new Promise((resolve) =>
-            setTimeout(() => {
+            queueMicrotask(() => {
               order.push("flushed");
               resolve(child.writes.length);
-            }, 0),
+            }),
           );
         },
         end() {

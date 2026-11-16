@@ -46,7 +46,3 @@ pub(crate) const STATUS_TRANSITION_SEED: &[(&str, &str)] = &[
     ("Resolved", "Closed"),
     ("Resolved", "In Progress"),
 ];
-
-/// Expected seed row count (16 edges; Closed/Cancelled are terminal).
-#[cfg(test)]
-pub(crate) const STATUS_TRANSITION_SEED_LEN: usize = 16;

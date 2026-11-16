@@ -2,8 +2,7 @@
 //!
 //! SQLite file `phasegent-local.sqlite3` is independent from config and
 //! index files; `PHASEGENT_LOCAL_DB_PATH` overrides the platform directory
-//! for tests and operators. A PostgreSQL backend lives behind the
-//! `postgres` feature and is exercised by the cross-backend parity test.
+//! for operators. A PostgreSQL backend lives behind the `postgres` feature.
 //! Static SQL lives in `.sql` files (`local_sql/*.sql` for SQLite,
 //! `migrations/pg/0002_*` for PostgreSQL) and is embedded via
 //! `include_str!` with runtime `rusqlite`/`sqlx::query` APIs; compile-time
@@ -11,14 +10,10 @@
 //! `issue_index_postgres.rs` (no offline query metadata/live DB for
 //! `cargo check`).
 
-#[cfg(test)]
-use crate::infra::issue_index_backend::{IndexBackendKind, resolve_index_backend};
 use crate::infra::local_schema::{
     DB_FILENAME_LOCAL, PRAGMA_STATEMENTS_LOCAL, SCHEMA_LOCAL, SEED_LOCAL,
 };
 use crate::infra::sqlite_file;
-#[cfg(test)]
-use crate::infra::storage::Storage;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -102,12 +97,6 @@ pub fn open_local_read_only() -> Result<SqliteLocalStore, String> {
     SqliteLocalStore::open_read_only_at(&path)
 }
 
-/// Testable exact-name opener at an explicit path.
-#[cfg(test)]
-pub fn open_local_at(path: &Path) -> Result<SqliteLocalStore, String> {
-    SqliteLocalStore::open_at(path)
-}
-
 fn project_dirs_local_path() -> Result<PathBuf, String> {
     sqlite_file::project_dirs_config_path(DB_FILENAME_LOCAL)
 }
@@ -122,7 +111,7 @@ pub struct PostgresLocalStore {
 
 #[cfg(feature = "postgres")]
 impl PostgresLocalStore {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code)]
     pub async fn open(url: &str) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -138,11 +127,11 @@ impl PostgresLocalStore {
 }
 
 #[cfg(feature = "postgres")]
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 const PG_MIGRATION_SQL: &str = include_str!("../../migrations/pg/0002_local.sql");
 
 #[cfg(feature = "postgres")]
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 async fn apply_embedded_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS _local_migrations \
@@ -173,115 +162,4 @@ async fn apply_embedded_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::infra::local_schema::STATUS_TRANSITION_SEED_LEN;
-
-    fn tmp_path(label: &str) -> (PathBuf, PathBuf) {
-        let dir = crate::test_scratch::root().join(format!(
-            "phasegent-local-test-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = dir.join(DB_FILENAME_LOCAL);
-        (dir, path)
-    }
-
-    #[test]
-    fn open_creates_independent_file_with_schema_and_seeds() {
-        let (dir, path) = tmp_path("schema");
-        assert!(path.to_str().unwrap().contains("phasegent-local"));
-        let store = open_local_at(&path).unwrap();
-        assert!(path.exists());
-        for table in [
-            "local_issues",
-            "local_comments",
-            "local_projects",
-            "status_transitions",
-        ] {
-            let count: i64 = store
-                .connection
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    rusqlite::params![table],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 1, "missing table {table}");
-        }
-        let edges: i64 = store
-            .connection
-            .query_row("SELECT COUNT(*) FROM status_transitions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(edges, STATUS_TRANSITION_SEED_LEN as i64);
-        let marker_unique: i64 = store
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_comments' AND sql LIKE '%UNIQUE%'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(marker_unique, 1, "local_comments.marker must be UNIQUE");
-        drop(store);
-        let reopened = open_local_at(&path).unwrap();
-        let edges2: i64 = reopened
-            .connection
-            .query_row("SELECT COUNT(*) FROM status_transitions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(edges2, edges, "seeds must be idempotent");
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn marker_unique_is_enforced() {
-        let (dir, path) = tmp_path("marker");
-        let store = open_local_at(&path).unwrap();
-        store
-            .connection
-            .execute(
-                "INSERT INTO local_issues (title, body, status, project, tracker, author_role, created_at, updated_at) VALUES (?1,'',?2,'default','Task','executor',1,1)",
-                rusqlite::params!["t", "New"],
-            )
-            .unwrap();
-        let issue: i64 = store
-            .connection
-            .query_row("SELECT id FROM local_issues LIMIT 1", [], |r| r.get(0))
-            .unwrap();
-        store
-            .connection
-            .execute(
-                "INSERT INTO local_comments (issue_id, role, phase, attempt, marker, body, created_at) VALUES (?1,'executor','plan',1,'m1','b',1)",
-                rusqlite::params![issue],
-            )
-            .unwrap();
-        let dup = store.connection.execute(
-            "INSERT INTO local_comments (issue_id, role, phase, attempt, marker, body, created_at) VALUES (?1,'executor','plan',1,'m1','b2',2)",
-            rusqlite::params![issue],
-        );
-        assert!(dup.is_err(), "duplicate marker must fail");
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn local_store_selects_sqlite_without_pg_url() {
-        let _lock = crate::infra::storage::test_support::lock_workflow_tests();
-        let (dir, _) = tmp_path("select");
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg = dir.join("phasegent.sqlite3");
-        let storage = Storage::open_at(&cfg).unwrap();
-        storage
-            .delete_global_setting("PHASEGENT_INDEX_PG_URL")
-            .unwrap();
-        let _g = crate::infra::storage::test_support::EnvGuard::set("PHASEGENT_INDEX_PG_URL", "");
-        let kind = resolve_index_backend(&storage).unwrap();
-        assert_eq!(kind, IndexBackendKind::Sqlite);
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }

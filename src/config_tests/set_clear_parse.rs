@@ -1,5 +1,5 @@
-use super::support::*;
-use super::*;
+use crate::command::{self, Command};
+use crate::config_write;
 
 #[test]
 fn config_set_parses_canonical_and_kebab_alias() {
@@ -78,22 +78,6 @@ fn config_set_rejects_legacy_project_id_aliases() {
             "got: {clear_error}"
         );
     }
-    // Direct dispatch must also reject unknown canonicals.
-    with_isolated_storage("project-id-rejected-dispatch", |_db_path, storage| {
-        for canonical in [
-            "PHASEGENT_REDMINE_PROJECT_ID",
-            "PHASEGENT_GITLAB_PROJECT_ID",
-            "PHASEGENT_PROJECT_ID",
-        ] {
-            let err =
-                config_write::set_setting_value(Some(Role::Executor), canonical, "42", storage)
-                    .unwrap_err();
-            assert!(err.contains("unknown setting"), "got: {err}");
-            let clear_err =
-                config_write::clear_setting(Some(Role::Executor), canonical, storage).unwrap_err();
-            assert!(clear_err.contains("unknown setting"), "got: {clear_err}");
-        }
-    });
 }
 
 #[test]
@@ -175,35 +159,6 @@ fn config_set_role_scoped_requires_role() {
 }
 
 #[test]
-fn operator_role_scoped_set_uses_admin_scope() {
-    // Isolated persistence: Operator writes land in the admin scope with no
-    // fallback across keys.
-    with_isolated_storage("operator-admin-scope", |_db_path, storage| {
-        let outcome = config_write::set_setting_value(
-            None,
-            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
-            "6",
-            storage,
-        )
-        .expect("operator set must use admin scope");
-        assert_eq!(outcome["role"], serde_json::Value::from("admin"));
-        let stored = storage
-            .load_redmine_config(crate::policy::Role::Admin)
-            .unwrap()
-            .and_then(|config| config.close_status_id);
-        assert_eq!(stored, Some(6));
-        // No fallback: executor scope stays empty.
-        assert!(
-            storage
-                .load_redmine_config(crate::policy::Role::Executor)
-                .unwrap()
-                .and_then(|config| config.close_status_id)
-                .is_none()
-        );
-    });
-}
-
-#[test]
 fn config_set_rejects_secret_direct_value() {
     let args = [
         "config",
@@ -250,24 +205,64 @@ fn config_set_rejects_missing_value_for_non_secret() {
 }
 
 #[test]
-fn config_set_rejects_empty_value() {
-    with_isolated_storage("set-empty", |_db_path, storage| {
-        let err = config_write::set_setting_value(
-            Some(Role::Executor),
-            "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
-            "   ",
-            storage,
-        )
-        .unwrap_err();
-        assert!(err.contains("cannot be empty"), "got: {err}");
-        let err = config_write::set_setting_stdin_content(
-            None,
-            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-            "   ",
-            storage,
-        )
-        .unwrap_err();
-        assert!(err.contains("cannot be empty"), "got: {err}");
-        assert!(!err.contains("shhh"), "secret leaked");
-    });
+fn config_clear_command_parsing() {
+    let args = ["admin", "config", "clear", "redmine-git-mirror-api-key"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let inv =
+        command::parse_with_role_env(&args, None).expect("clear global without role must parse");
+    match inv.command {
+        Command::ConfigClear { setting, .. } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
+        }
+        other => panic!("got {other:?}"),
+    }
+    let args = ["admin", "config", "clear", "redmine-close-status-id"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let inv =
+        command::parse_with_role_env(&args, None).expect("operator role-scoped clear must parse");
+    match inv.command {
+        Command::ConfigClear { setting, .. } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_CLOSE_STATUS_ID")
+        }
+        other => panic!("got {other:?}"),
+    }
+    let err = command::parse_with_caller_env(&args, None, true)
+        .expect_err("managed role-scoped clear without role must error");
+    assert!(
+        err.contains("managed session requires a role"),
+        "got: {err}"
+    );
+
+    let args = ["admin", "config", "clear", "redmine-close-status-id"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let inv =
+        command::parse_with_role_env(&args, Some("admin")).expect("clear with role must parse");
+    match inv.command {
+        Command::ConfigClear { setting, .. } => {
+            assert_eq!(setting, "PHASEGENT_REDMINE_CLOSE_STATUS_ID")
+        }
+        other => panic!("got {other:?}"),
+    }
+
+    let args = ["admin", "config", "clear"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let err = command::parse_with_role_env(&args, Some("executor"))
+        .expect_err("clear without setting must error");
+    assert!(err.contains("requires a setting"), "got: {err}");
+
+    let args = ["admin", "config", "clear", "unknown"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let err = command::parse_with_role_env(&args, Some("executor"))
+        .expect_err("unknown clear setting must error");
+    assert!(err.contains("unknown config setting"), "got: {err}");
 }

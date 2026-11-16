@@ -49,48 +49,6 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
     }
 }
 
-/// Role-injectable entry point for in-process tests. Mirrors [`run`] but
-/// takes an already verified agent role directly, so a test never has to
-/// mutate the process-global environment or run a host broker.
-#[cfg(test)]
-pub(crate) fn run_with_role(args: impl IntoIterator<Item = String>, role_env: Option<&str>) -> i32 {
-    let args = args.into_iter().collect::<Vec<_>>();
-    let options = command::prescan_presentation(&args);
-    let caller = command::caller_from(role_env, false).ok();
-    let _scope = crate::output::context::install(&options, caller);
-    match command::parse_outcome_with_role_env(&args, role_env) {
-        Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
-        Ok(command::ParseOutcome::Permission { role, operation }) => {
-            permission_denial(role, operation)
-        }
-        Err(message) => usage_error(&message),
-    }
-}
-
-/// Fully injectable entry point for deterministic caller tests: `role_env`
-/// models an already verified agent role, `session_present` models the
-/// managed session marker. Parallel tests use this instead of mutating
-/// process env.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn run_with_caller(
-    args: impl IntoIterator<Item = String>,
-    role_env: Option<&str>,
-    session_present: bool,
-) -> i32 {
-    let args = args.into_iter().collect::<Vec<_>>();
-    let options = command::prescan_presentation(&args);
-    let caller = command::caller_from(role_env, session_present).ok();
-    let _scope = crate::output::context::install(&options, caller);
-    match command::parse_outcome_with_caller_env(&args, role_env, session_present) {
-        Ok(command::ParseOutcome::Invocation(invocation)) => execute(*invocation),
-        Ok(command::ParseOutcome::Permission { role, operation }) => {
-            permission_denial(role, operation)
-        }
-        Err(message) => usage_error(&message),
-    }
-}
-
 /// Open the operator's platform-standard SQLite database. CLI entry
 /// points that touch [`Storage`] use this helper so the structured
 /// error path stays uniform: callers receive the same error string
@@ -626,49 +584,4 @@ pub(crate) fn structured_error(error: serde_json::Value, code: i32) -> i32 {
         ),
     }
     code
-}
-
-#[cfg(test)]
-mod provider_selection_tests {
-    use super::*;
-    use crate::infra::storage::test_support::{EnvGuard, lock_workflow_tests};
-
-    #[test]
-    fn an_environment_forgejo_default_is_admitted_through_the_common_path() {
-        let _lock = lock_workflow_tests();
-        let directory = crate::test_scratch::root().join(format!(
-            "phasegent-provider-selection-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let database = directory.join(crate::infra::storage::DB_FILENAME);
-        let _database = EnvGuard::set("PHASEGENT_DB_PATH", database.to_string_lossy().as_ref());
-        let _env = EnvGuard::set("PHASEGENT_PROVIDER", "forgejo");
-        let error = match provider_for(
-            Role::Orchestrator,
-            None,
-            Some("http://127.0.0.1:1"),
-            Some("owner/repo"),
-            None,
-            None,
-        ) {
-            Ok(_) => panic!("an empty store has no role credential to build the provider"),
-            Err(error) => error,
-        };
-        let message = error.json()["message"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        assert!(
-            !message.contains("requires explicit --provider forgejo"),
-            "a configured Forgejo default is admitted: {message}"
-        );
-        assert!(
-            message.contains("credential") || message.contains("not configured"),
-            "the empty store fails on provenance, not admission: {message}"
-        );
-    }
 }

@@ -208,21 +208,13 @@ describe("property: scanner invariants over generated commands (issue #558 Phase
   });
 
   test("subagent rewriting inserts its own role or refuses the command", () => {
-    // The refusal warning is asserted by the explicit regression tests; the
-    // property only pins the rewritten command.
-    const originalWarn = console.warn;
-    console.warn = () => {};
-    try {
-      for (const seed of SEEDS) {
-        const rng = mulberry32(seed);
-        for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
-          const command =
-            iteration < SEED_COMMANDS.length ? SEED_COMMANDS[iteration] : generateCommand(rng);
-          checkCase(command, SUBAGENT, "executor");
-        }
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed);
+      for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
+        const command =
+          iteration < SEED_COMMANDS.length ? SEED_COMMANDS[iteration] : generateCommand(rng);
+        checkCase(command, SUBAGENT, "executor");
       }
-    } finally {
-      console.warn = originalWarn;
     }
   });
 
@@ -232,33 +224,27 @@ describe("property: scanner invariants over generated commands (issue #558 Phase
     // injected role therefore sits in a `$( … )` scope whose `finally` restores
     // the previous value, captures the CLI status, and re-asserts a failure.
     // Nothing may use `& { … }`, which resets `$?` on its own.
-    const originalWarn = console.warn;
-    console.warn = () => {};
-    try {
-      for (const seed of SEEDS) {
-        const rng = mulberry32(seed);
-        for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
-          const command =
-            iteration < SEED_COMMANDS.length ? SEED_COMMANDS[iteration] : generateCommand(rng);
-          const out = rewritePhasegentCommand(command, SESSION, ORCHESTRATOR, { windows: true });
-          const context = `command=${JSON.stringify(command)} out=${JSON.stringify(out)}`;
-          const injected = out.split("try { $env:PHASEGENT_ROLE='orchestrator'").length - 1;
-          const opens = out.split("$( $__phasegent_role=$env:PHASEGENT_ROLE;").length - 1;
-          const restores = out.split("finally { $__phasegent_status=$LASTEXITCODE;").length - 1;
-          expect(opens, context).toBe(injected);
-          expect(restores, context).toBe(injected);
-          expect(out.includes("& { "), context).toBe(false);
-          // A re-run must not nest a second scope around an already-scoped call.
-          expect(
-            rewritePhasegentCommand(out, SESSION, ORCHESTRATOR, { windows: true }),
-            context,
-          ).toBe(out);
-          // Quoted data stays byte-for-byte, as on POSIX.
-          expect(quotedRuns(command).filter((run) => !out.includes(run)), context).toEqual([]);
-        }
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed);
+      for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
+        const command =
+          iteration < SEED_COMMANDS.length ? SEED_COMMANDS[iteration] : generateCommand(rng);
+        const out = rewritePhasegentCommand(command, SESSION, ORCHESTRATOR, { windows: true });
+        const context = `command=${JSON.stringify(command)} out=${JSON.stringify(out)}`;
+        const injected = out.split("try { $env:PHASEGENT_ROLE='orchestrator'").length - 1;
+        const opens = out.split("$( $__phasegent_role=$env:PHASEGENT_ROLE;").length - 1;
+        const restores = out.split("finally { $__phasegent_status=$LASTEXITCODE;").length - 1;
+        expect(opens, context).toBe(injected);
+        expect(restores, context).toBe(injected);
+        expect(out.includes("& { "), context).toBe(false);
+        // A re-run must not nest a second scope around an already-scoped call.
+        expect(
+          rewritePhasegentCommand(out, SESSION, ORCHESTRATOR, { windows: true }),
+          context,
+        ).toBe(out);
+        // Quoted data stays byte-for-byte, as on POSIX.
+        expect(quotedRuns(command).filter((run) => !out.includes(run)), context).toEqual([]);
       }
-    } finally {
-      console.warn = originalWarn;
     }
   });
 

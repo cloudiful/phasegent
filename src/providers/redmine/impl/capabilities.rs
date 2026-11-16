@@ -24,11 +24,10 @@ impl RedmineProvider {
         // sourced; Phase 4 sinks the value here so the dispatcher arm
         // can forward to the provider directly. The underlying
         // `upload_attachment` method stays compiled for callers that
-        // reach the inherent surface (e.g. the legacy
-        // `contract_tests/attachments.rs` wire-shape tests), but no
-        // command path reaches it because every CLI entry point
-        // is gated by `provider.supports(...)` and now rejects the
-        // capability uniformly.
+        // reach the inherent surface, but no command path reaches it
+        // because every CLI entry point is gated by
+        // `provider.supports(...)` and now rejects the capability
+        // uniformly.
         match capability {
             Capability::IssueRead
             | Capability::IssueSearch

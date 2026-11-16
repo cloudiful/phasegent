@@ -16,11 +16,9 @@ impl Storage {
     ///
     /// When the `PHASEGENT_DB_PATH` environment variable is set to an
     /// absolute path, that path is used verbatim instead of the
-    /// platform-standard config directory. The override exists so
-    /// integration tests that drive commands through the CLI layer
-    /// can point `Storage::open()` at a temp database without
-    /// needing a `--storage-path` flag; production code never sets
-    /// this variable.
+    /// platform-standard config directory. The override lets automation
+    /// point `Storage::open()` at an explicit database without needing a
+    /// `--storage-path` flag; production code never sets this variable.
     pub fn open() -> Result<Self, String> {
         if let Some(override_path) = std::env::var_os("PHASEGENT_DB_PATH") {
             let path = PathBuf::from(override_path);
