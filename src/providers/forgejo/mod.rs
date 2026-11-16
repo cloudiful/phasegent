@@ -226,7 +226,7 @@ struct PageMetadata {
 
 const TOTAL_COUNT: HeaderName = HeaderName::from_static("x-total-count");
 
-fn page_metadata(headers: &HeaderMap, operation: &str) -> Result<PageMetadata, PhasegentError> {
+fn total_count(headers: &HeaderMap, operation: &str) -> Result<Option<u64>, PhasegentError> {
     let mut total = None;
     for value in headers.get_all(TOTAL_COUNT) {
         let text = value
@@ -243,6 +243,11 @@ fn page_metadata(headers: &HeaderMap, operation: &str) -> Result<PageMetadata, P
         }
         total = Some(parsed);
     }
+    Ok(total)
+}
+
+fn page_metadata(headers: &HeaderMap, operation: &str) -> Result<PageMetadata, PhasegentError> {
+    let total = total_count(headers, operation)?;
     let linked_next = parse_link_next(headers, operation)?;
     Ok(PageMetadata { total, linked_next })
 }

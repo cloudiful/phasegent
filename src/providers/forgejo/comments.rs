@@ -73,8 +73,20 @@ impl ForgejoProvider {
     pub(super) fn issue_comments(&self, issue: u64) -> Result<Vec<CommentOutput>, PhasegentError> {
         self.load_issue(issue, &self.repository()?)?;
         let index = issue.to_string();
-        let comments: Vec<Comment> =
-            self.collect(&["issues", &index, "comments"], &[], "comment list")?;
+        let request = self
+            .http
+            .request(Method::GET, &["issues", &index, "comments"])?;
+        let (comments, headers, _) = self
+            .http
+            .get_page::<Vec<Comment>>(request, "comment list")?;
+        if super::total_count(&headers, "comment list")?
+            .is_some_and(|total| total != comments.len() as u64)
+        {
+            return Err(PhasegentError::pagination(
+                "comment list",
+                "collection does not match reported total",
+            ));
+        }
         comments
             .into_iter()
             .map(|comment| self.comment_output(issue, comment, None, true))
@@ -86,14 +98,32 @@ impl ForgejoProvider {
         issue: u64,
         comment: u64,
     ) -> Result<CommentOutput, PhasegentError> {
-        self.issue_comments(issue)?
-            .into_iter()
-            .find(|item| item.id == comment)
-            .ok_or_else(|| {
-                PhasegentError::not_found(
-                    "comment get",
-                    "comment was not found in the specified issue",
-                )
+        self.load_issue(issue, &self.repository()?)?;
+        let not_found = || {
+            PhasegentError::not_found(
+                "comment get",
+                "comment was not found in the specified issue",
+            )
+        };
+        if comment == 0 {
+            return Err(not_found());
+        }
+        let id = comment.to_string();
+        let request = self
+            .http
+            .request(Method::GET, &["issues", "comments", &id])?;
+        let found: Option<Comment> = match self.http.get_optional(request, "comment get") {
+            Err(PhasegentError::Http { status: 404, .. }) => return Err(not_found()),
+            other => other?,
+        };
+        let found = found.ok_or_else(not_found)?;
+        if found.id != comment {
+            return Err(not_found());
+        }
+        self.comment_output(issue, found, None, true)
+            .map_err(|error| match error {
+                PhasegentError::Config(_) => not_found(),
+                other => other,
             })
     }
 

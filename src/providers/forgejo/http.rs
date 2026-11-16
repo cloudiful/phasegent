@@ -64,6 +64,19 @@ impl ForgejoHttp {
         self.get_page(request, operation).map(|(value, _, _)| value)
     }
 
+    pub fn get_optional<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+    ) -> Result<Option<T>, PhasegentError> {
+        let (status, _, text) =
+            fetch_with_retry(request, operation, |_| "Forgejo request failed".to_owned())?;
+        if status == reqwest::StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        Self::decode(status, &text, operation).map(Some)
+    }
+
     /// Read one GET response together with its headers and raw body, reusing
     /// the existing retry, timeout and redaction path. Pagination needs the
     /// response metadata without a second request.
