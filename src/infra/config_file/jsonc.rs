@@ -1,6 +1,6 @@
 use super::model::{
     ConfigFile, ForgejoRoleConfig, GitlabRoleConfig, RedmineRoleConfig, RedmineUser,
-    RoleLegacyConfig,
+    RoleLegacyConfig, SettingValue,
 };
 use crate::policy::Role;
 use jsonc_parser::ParseOptions;
@@ -37,7 +37,7 @@ impl ConfigDocument {
     pub fn new() -> Self {
         Self {
             text: format!(
-                "{{\n  \"version\": {},\n  \"settings\": {{}},\n  \"roles\": {{}}\n}}\n",
+                "{{\n  \"version\": {},\n  \"roles\": {{}}\n}}\n",
                 crate::infra::config_file::SCHEMA_VERSION
             ),
             model: ConfigFile::new(),
@@ -60,24 +60,34 @@ impl ConfigDocument {
         &self.text
     }
 
-    pub fn set_setting(&mut self, name: &str, value: &str) -> Result<(), String> {
+    /// Store one machine-wide setting. The value is written with its JSON
+    /// type, so a boolean stays a boolean, a port stays a number, and a
+    /// list stays an array.
+    pub fn set_setting(&mut self, path: &str, value: &SettingValue) -> Result<(), String> {
         let mut model = self.model.clone();
-        model.set_setting(name, value)?;
+        model.set_setting(path, value.clone())?;
         let text = set_setting_text(
             &self.text,
-            name,
-            model.get_setting(name).unwrap_or_default(),
+            crate::infra::config_file::setting_path::setting_segments(path)
+                .ok_or_else(|| "unknown configuration setting".to_owned())?,
+            value,
         )?;
         self.replace(text, model)
     }
 
-    pub fn clear_setting(&mut self, name: &str) -> Result<bool, String> {
+    /// Remove one machine-wide setting. Only the addressed leaf is
+    /// removed: sibling values and the comments around them survive.
+    pub fn clear_setting(&mut self, path: &str) -> Result<bool, String> {
         let mut model = self.model.clone();
-        let removed = model.clear_setting(name);
+        let removed = model.clear_setting(path);
         if !removed {
             return Ok(false);
         }
-        let text = clear_setting_text(&self.text, name)?;
+        let text = clear_setting_text(
+            &self.text,
+            crate::infra::config_file::setting_path::setting_segments(path)
+                .ok_or_else(|| "unknown configuration setting".to_owned())?,
+        )?;
         self.replace(text, model)?;
         Ok(true)
     }
@@ -192,13 +202,48 @@ pub fn parse_model(text: &str) -> Result<ConfigFile, String> {
     let value = root
         .to_serde_value()
         .ok_or_else(|| "could not convert JSONC configuration".to_owned())?;
+    // The version decides how the document is read. A version-1 file is
+    // refused with an actionable upgrade instruction before any other
+    // field is interpreted, so the operator never sees a confusing
+    // "unknown field" error for the flat settings map.
+    check_version(&value)?;
     let model: ConfigFile =
         serde_json::from_value(value).map_err(|error| safe_deserialize_error(&error))?;
     model.validate()?;
     Ok(model)
 }
 
-fn parse_root(text: &str) -> Result<CstRootNode, String> {
+/// The marker that introduces the refusal of a configuration file this
+/// build cannot read. A file that uses another schema version needs an
+/// operator upgrade; the marker lets the resolution paths recognise that
+/// one refusal without matching on its wording.
+pub const UPGRADE_REQUIRED_MARKER: &str = "configuration upgrade required: ";
+
+/// Refuse a document whose version this build cannot read.
+fn check_version(value: &serde_json::Value) -> Result<(), String> {
+    let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) else {
+        return Ok(());
+    };
+    if version == u64::from(crate::infra::config_file::SCHEMA_VERSION) {
+        return Ok(());
+    }
+    if version == 1 {
+        return Err(format!(
+            "{UPGRADE_REQUIRED_MARKER}the configuration file uses schema version 1; \
+             a human operator must upgrade it with `phasegent admin config upgrade` \
+             before phasegent reads or writes it"
+        ));
+    }
+    Err(format!(
+        "unsupported configuration version {version}; expected {}",
+        crate::infra::config_file::SCHEMA_VERSION
+    ))
+}
+
+/// Parse a configuration document into its CST. The strict profile is the
+/// same one the runtime uses, so the explicit upgrader reads a version-1
+/// file with exactly the rules a version-2 file is read with.
+pub(crate) fn parse_root(text: &str) -> Result<CstRootNode, String> {
     CstRootNode::parse(text, &parse_options()).map_err(|error| {
         format!(
             "could not parse JSONC configuration at line {} column {}: {}",
@@ -223,7 +268,9 @@ fn safe_deserialize_error(error: &serde_json::Error) -> String {
     )
 }
 
-fn check_duplicate_keys(node: &jsonc_parser::cst::CstNode) -> Result<(), String> {
+/// Refuse a document that repeats an object key. The check runs over the
+/// whole tree, so a duplicate key inside a nested section is refused too.
+pub(crate) fn check_duplicate_keys(node: &jsonc_parser::cst::CstNode) -> Result<(), String> {
     if let Some(object) = node.as_object() {
         check_object_duplicates(&object)?;
     } else if let Some(array) = node.as_array() {
@@ -250,20 +297,58 @@ fn check_object_duplicates(object: &CstObject) -> Result<(), String> {
     Ok(())
 }
 
-fn set_setting_text(text: &str, name: &str, value: &str) -> Result<String, String> {
+/// Write a typed value at `segments`, creating the missing intermediate
+/// objects.
+fn set_setting_text(text: &str, segments: &[&str], value: &SettingValue) -> Result<String, String> {
     let root = parse_root(text)?;
-    let root_object = root.object_value_or_set();
-    let settings = root_object.object_value_or_set("settings");
-    set_string_property(&settings, name, value);
+    let mut object = root.object_value_or_set();
+    let Some((last, parents)) = segments.split_last() else {
+        return Err("the configuration path is empty".to_owned());
+    };
+    for segment in parents {
+        object = object.object_value_or_set(segment);
+    }
+    set_property(&object, last, value);
     Ok(root.to_string())
 }
 
-fn clear_setting_text(text: &str, name: &str) -> Result<String, String> {
+/// Remove the value at `segments`. Only the addressed leaf is removed, so
+/// sibling values and their comments survive.
+fn clear_setting_text(text: &str, segments: &[&str]) -> Result<String, String> {
     let root = parse_root(text)?;
-    let root_object = root.object_value_or_set();
-    let settings = root_object.object_value_or_set("settings");
-    remove_property(&settings, name);
+    let mut object = root.object_value_or_set();
+    let Some((last, parents)) = segments.split_last() else {
+        return Err("the configuration path is empty".to_owned());
+    };
+    for segment in parents {
+        let Some(child) = object.object_value(segment) else {
+            return Ok(root.to_string());
+        };
+        object = child;
+    }
+    remove_property(&object, last);
     Ok(root.to_string())
+}
+
+/// Write one property with the JSON type of the value.
+fn set_property(object: &CstObject, name: &str, value: &SettingValue) {
+    let input = match value {
+        SettingValue::Text(text) => CstInputValue::String(text.clone()),
+        SettingValue::Bool(flag) => CstInputValue::Bool(*flag),
+        SettingValue::Port(port) => CstInputValue::Number(port.to_string()),
+        SettingValue::List(values) => CstInputValue::Array(
+            values
+                .iter()
+                .map(|value| CstInputValue::String(value.clone()))
+                .collect(),
+        ),
+    };
+    match object.get(name) {
+        Some(property) => property.set_value(input),
+        None => {
+            object.append(name, input);
+        }
+    }
 }
 
 fn set_role_provider_text(
@@ -425,9 +510,10 @@ mod tests {
 
     const BASE: &str = r#"{
   // machine-wide settings
-  "version": 1,
-  "settings": {
-    "PHASEGENT_DEFAULT_PROVIDER": "redmine", // keep this comment
+  "version": 2,
+  "provider": "redmine", // keep this comment
+  "redmine": {
+    "apiBase": "https://redmine-global.example"
   },
   "roles": {
     "executor": {
@@ -436,12 +522,16 @@ mod tests {
   }
 }"#;
 
+    fn text_value(value: &str) -> SettingValue {
+        SettingValue::Text(value.to_owned())
+    }
+
     #[test]
     fn strict_profile_accepts_comments_and_trailing_commas() {
         let document = ConfigDocument::parse(BASE).expect("comments and trailing commas are JSONC");
         assert_eq!(
-            document.model().get_setting("PHASEGENT_DEFAULT_PROVIDER"),
-            Some("redmine")
+            document.model().setting("provider"),
+            Some(text_value("redmine"))
         );
         assert_eq!(document.model().provider(Role::Executor), Some("redmine"));
     }
@@ -449,15 +539,15 @@ mod tests {
     #[test]
     fn strict_profile_rejects_other_json5_extensions() {
         for (label, text) in [
-            ("single quotes", r#"{'version': 1}"#),
-            ("unquoted key", r#"{version: 1}"#),
-            ("missing comma", r#"{"version": 1 "settings": {}}"#),
-            ("hex number", r#"{"version": 0x1}"#),
-            ("unary plus", r#"{"version": +1}"#),
+            ("single quotes", r#"{'version': 2}"#),
+            ("unquoted key", r#"{version: 2}"#),
+            ("missing comma", r#"{"version": 2 "roles": {}}"#),
+            ("hex number", r#"{"version": 0x2}"#),
+            ("unary plus", r#"{"version": +2}"#),
             ("bare decimal", r#"{"version": .5}"#),
             (
                 "extended escape",
-                r#"{"version": 1, "settings": {"PHASEGENT_NOTIFY_NTFY_TOPIC": "\x41"}}"#,
+                r#"{"version": 2, "notifications": {"ntfy": {"topic": "\x41"}}}"#,
             ),
         ] {
             assert!(
@@ -470,10 +560,9 @@ mod tests {
     #[test]
     fn duplicate_keys_are_rejected_without_echoing_values() {
         let text = r#"{
-  "version": 1,
-  "settings": {
-    "PHASEGENT_NOTIFY_NTFY_TOKEN": "first-secret",
-    "PHASEGENT_NOTIFY_NTFY_TOKEN": "second-secret"
+  "version": 2,
+  "notifications": {
+    "ntfy": { "token": "first-secret", "token": "second-secret" }
   }
 }"#;
         let error = ConfigDocument::parse(text).unwrap_err();
@@ -485,36 +574,49 @@ mod tests {
     #[test]
     fn unknown_fields_roles_and_settings_are_rejected() {
         for text in [
-            r#"{"version": 1, "surprise": true}"#,
-            r#"{"version": 1, "settings": {"PHASEGENT_UNKNOWN": "x"}}"#,
-            r#"{"version": 1, "roles": {"intruder": {}}}"#,
-            r#"{"version": 1, "roles": {"executor": {"provider": "redmine", "surprise": true}}}"#,
-            r#"{"version": 1, "roles": {"executor": {"credentials": {"bitbucket": {"value": "x"}}}}}"#,
+            r#"{"version": 2, "surprise": true}"#,
+            r#"{"version": 2, "settings": {"PHASEGENT_UNKNOWN": "x"}}"#,
+            r#"{"version": 2, "roles": {"intruder": {}}}"#,
+            r#"{"version": 2, "roles": {"executor": {"provider": "redmine", "surprise": true}}}"#,
+            r#"{"version": 2, "roles": {"executor": {"credentials": {"bitbucket": {"value": "x"}}}}}"#,
+            r#"{"version": 2, "notifications": {"surprise": true}}"#,
+            r#"{"version": 2, "redmine": {"surprise": true}}"#,
         ] {
             assert!(ConfigDocument::parse(text).is_err(), "must reject: {text}");
         }
     }
 
     #[test]
+    fn a_version_one_file_is_refused_with_an_upgrade_instruction() {
+        let error = ConfigDocument::parse(
+            r#"{"version": 1, "settings": {"PHASEGENT_DEFAULT_PROVIDER": "redmine"}}"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("schema version 1"), "got: {error}");
+        assert!(error.contains("admin config upgrade"), "got: {error}");
+    }
+
+    #[test]
     fn unsupported_version_is_rejected() {
-        let error = ConfigDocument::parse(r#"{"version": 2}"#).unwrap_err();
-        assert!(error.contains("unsupported configuration version 2"));
+        let error = ConfigDocument::parse(r#"{"version": 3}"#).unwrap_err();
+        assert!(error.contains("unsupported configuration version 3"));
     }
 
     #[test]
     fn malformed_text_and_type_errors_never_echo_secrets() {
         let malformed = r#"{
-  "version": 1,
-  "settings": {
-    "PHASEGENT_NOTIFY_NTFY_TOKEN": "super-secret-token"
+  "version": 2,
+  "notifications": {
+    "ntfy": { "token": "super-secret-token" }
 "#;
         let error = ConfigDocument::parse(malformed).unwrap_err();
         assert!(!error.contains("super-secret-token"));
 
         let wrong_type = r#"{
-  "version": 1,
-  "settings": {
-    "PHASEGENT_NOTIFY_NTFY_TOKEN": "super-secret-token"
+  "version": 2,
+  "notifications": {
+    "ntfy": { "token": "super-secret-token" },
+    "enabled": "super-secret-token"
   },
   "roles": {
     "executor": {
@@ -530,23 +632,19 @@ mod tests {
     fn setting_mutations_preserve_comments_and_unrelated_fields() {
         let mut document = ConfigDocument::parse(BASE).unwrap();
         document
-            .set_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
+            .set_setting("provider", &text_value("forgejo"))
             .unwrap();
         let text = document.as_str();
         assert!(text.contains("// machine-wide settings"));
         assert!(text.contains("// keep this comment"));
-        assert!(text.contains(r#""PHASEGENT_DEFAULT_PROVIDER": "forgejo""#));
+        assert!(text.contains(r#""provider": "forgejo""#));
         assert_eq!(
-            document.model().get_setting("PHASEGENT_DEFAULT_PROVIDER"),
-            Some("forgejo")
+            document.model().setting("provider"),
+            Some(text_value("forgejo"))
         );
 
-        assert!(
-            document
-                .clear_setting("PHASEGENT_DEFAULT_PROVIDER")
-                .unwrap()
-        );
-        assert!(!document.as_str().contains("PHASEGENT_DEFAULT_PROVIDER"));
+        assert!(document.clear_setting("provider").unwrap());
+        assert!(!document.as_str().contains(r#""provider": "forgejo""#));
         assert!(document.as_str().contains("// machine-wide settings"));
         // A comment attached to the removed property belongs to that key and
         // is removed with it; comments elsewhere stay untouched.
@@ -557,6 +655,61 @@ mod tests {
                 .role(Role::Executor)
                 .and_then(|entry| entry.provider.as_deref()),
             Some("redmine")
+        );
+    }
+
+    #[test]
+    fn typed_values_are_written_with_their_json_type() {
+        let mut document = ConfigDocument::parse(BASE).unwrap();
+        document
+            .set_setting("notifications.enabled", &SettingValue::Bool(true))
+            .unwrap();
+        document
+            .set_setting("notifications.email.smtp.port", &SettingValue::Port(587))
+            .unwrap();
+        document
+            .set_setting(
+                "notifications.email.to",
+                &SettingValue::List(vec!["ops@example.com".to_owned()]),
+            )
+            .unwrap();
+        let text = document.as_str();
+        assert!(text.contains(r#""enabled": true"#), "got: {text}");
+        assert!(text.contains(r#""port": 587"#), "got: {text}");
+        assert!(text.contains(r#""to": ["ops@example.com"]"#), "got: {text}");
+        assert_eq!(
+            document.model().setting("notifications.enabled"),
+            Some(SettingValue::Bool(true))
+        );
+        assert_eq!(
+            document.model().setting("notifications.email.smtp.port"),
+            Some(SettingValue::Port(587))
+        );
+        assert_eq!(
+            document.model().setting("notifications.email.to"),
+            Some(SettingValue::List(vec!["ops@example.com".to_owned()]))
+        );
+        // The nested hierarchy was created on the way.
+        assert!(text.contains(r#""smtp": {"#), "got: {text}");
+    }
+
+    #[test]
+    fn clearing_a_leaf_keeps_its_siblings_and_their_comments() {
+        let mut document = ConfigDocument::parse(BASE).unwrap();
+        document
+            .set_setting("notifications.ntfy.token", &text_value("super-secret"))
+            .unwrap();
+        document
+            .set_setting("notifications.ntfy.topic", &text_value("phasegent"))
+            .unwrap();
+        assert!(document.clear_setting("notifications.ntfy.token").unwrap());
+        let text = document.as_str();
+        assert!(!text.contains("super-secret"), "got: {text}");
+        assert!(text.contains(r#""topic": "phasegent""#), "got: {text}");
+        assert_eq!(document.model().setting("notifications.ntfy.token"), None);
+        assert_eq!(
+            document.model().setting("notifications.ntfy.topic"),
+            Some(text_value("phasegent"))
         );
     }
 
@@ -586,10 +739,11 @@ mod tests {
     }
 
     #[test]
-    fn new_document_is_an_empty_version_one_document() {
+    fn new_document_is_an_empty_version_two_document() {
         let document = ConfigDocument::new();
         let reparsed = ConfigDocument::parse(document.as_str()).unwrap();
         assert_eq!(reparsed.model(), &ConfigFile::new());
+        assert!(document.as_str().contains(r#""version": 2"#));
     }
 
     #[test]
@@ -688,8 +842,13 @@ mod tests {
             )
             .unwrap();
         assert!(
-            !document.as_str().contains("apiBase"),
+            !document.as_str().contains("https://redmine.example"),
             "the cleared field must be gone: {}",
+            document.as_str()
+        );
+        assert!(
+            document.as_str().contains("https://redmine-global.example"),
+            "the machine-wide address must survive: {}",
             document.as_str()
         );
         assert!(document.model().redmine(Role::Executor).is_some());

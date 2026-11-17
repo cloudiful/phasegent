@@ -10,3 +10,4 @@ mod project_list;
 mod provider_default;
 mod redaction;
 mod set_clear_parse;
+mod typed_settings;

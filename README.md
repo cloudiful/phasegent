@@ -54,10 +54,10 @@ phasegent --provider redmine admin workflow bootstrap \
 ```
 
 The Redmine REST address is machine-wide: `auth setup --api-base` and
-`admin config set redmine-api-base <URL>` store the one address every role
-shares, and `config show` reports it once under `global_settings`. Credentials,
-provisioned identities, provider selection, and the Redmine close-status id
-stay role-scoped.
+`admin config set redmine.apiBase <URL>` store the one address every role
+shares, and `config show` reports it once under the `redmine` section.
+Credentials, provisioned identities, provider selection, and the Redmine
+close-status id stay role-scoped.
 
 `workflow bootstrap` provisions one Redmine service user per agent role —
 orchestrator, executor, reviewer, and explore — reads each one's API key
@@ -96,6 +96,10 @@ ACL. SQLite keeps business state only. See
 An installation that still keeps its configuration in SQLite migrates once, by
 hand, with `phasegent admin config migrate`; the operator runbook is in
 [config migration](docs/config-migration.md).
+
+A configuration file that still uses the previous schema version is refused by
+the runtime and is upgraded once, by hand, with
+`phasegent admin config upgrade`; the same runbook describes it.
 
 ## Common Commands
 

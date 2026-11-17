@@ -85,6 +85,25 @@ fn admin_config_command_forms_resolve_to_admin_topics() {
 }
 
 #[test]
+fn the_schema_upgrade_is_an_admin_only_command() {
+    // The upgrade parses only under the admin origin and takes no options.
+    assert!(matches!(
+        parse_config_admin(&strings(&["upgrade"])).unwrap(),
+        Command::ConfigUpgrade
+    ));
+    assert!(matches!(
+        expect_help(parse_config_admin(&strings(&["upgrade", "--help"])).unwrap()),
+        HelpTopic::AdminConfigCommand(command) if command == "upgrade"
+    ));
+    // The read-only top-level group refuses it with the admin pointer.
+    let error = parse_config(&strings(&["upgrade"])).unwrap_err();
+    assert!(error.contains("admin config upgrade"), "got: {error}");
+    // An unknown option is refused instead of being ignored.
+    let error = parse_config_admin(&strings(&["upgrade", "--force"])).unwrap_err();
+    assert!(error.contains("--force"), "got: {error}");
+}
+
+#[test]
 fn non_help_invocations_keep_their_parse_and_error_behavior() {
     assert!(matches!(
         parse_config(&strings(&["show"])).unwrap(),

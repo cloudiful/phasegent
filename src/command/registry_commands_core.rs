@@ -64,6 +64,12 @@ pub(super) const CORE: &[CommandSpec] = &[
                         RoleAccess::AdminOnly,
                         "admin config migrate",
                     ),
+                    leaf_op(
+                        "upgrade",
+                        "Upgrade a version-1 configuration file to the typed schema version 2",
+                        RoleAccess::AdminOnly,
+                        "admin config upgrade",
+                    ),
                     group(
                         "provider",
                         "Machine-wide default provider",

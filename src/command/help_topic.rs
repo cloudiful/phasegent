@@ -88,7 +88,9 @@ pub(crate) fn help_topic(
             // gets its own topics so a role-denied request cannot fall back to
             // the read-only top-level `config` page and leak write flags.
             (Some("config"), None) => Ok(HelpTopic::AdminConfig),
-            (Some("config"), Some(value)) if ["set", "clear", "migrate"].contains(&value) => {
+            (Some("config"), Some(value))
+                if ["set", "clear", "migrate", "upgrade"].contains(&value) =>
+            {
                 Ok(HelpTopic::AdminConfigCommand(value.to_owned()))
             }
             (Some("config"), Some("provider")) => Ok(HelpTopic::AdminConfigProvider),
@@ -111,6 +113,8 @@ pub(crate) fn help_topic(
             // The migration itself is human-operator only; its page lives
             // under the admin group.
             Some("migrate") => Ok(HelpTopic::AdminConfigCommand("migrate".to_owned())),
+            // The schema upgrade is human-operator only as well.
+            Some("upgrade") => Ok(HelpTopic::AdminConfigCommand("upgrade".to_owned())),
             Some("provider") => match nested_subcommand {
                 None => Ok(HelpTopic::ConfigProvider),
                 Some("get") => Ok(HelpTopic::ConfigProviderCommand("get".to_owned())),

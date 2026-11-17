@@ -7,6 +7,7 @@ mod command;
 mod config;
 mod config_migrate;
 mod config_snapshot;
+mod config_upgrade;
 mod config_write;
 mod git_runner;
 mod hooks;

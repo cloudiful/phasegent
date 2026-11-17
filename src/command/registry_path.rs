@@ -26,6 +26,7 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::ConfigProviderSet { .. } => &["admin", "config", "provider", "set"],
         Command::ConfigProviderClear => &["admin", "config", "provider", "clear"],
         Command::ConfigMigrate { .. } => &["admin", "config", "migrate"],
+        Command::ConfigUpgrade => &["admin", "config", "upgrade"],
         Command::Issue(command) => &["issue", issue_name(command)],
         Command::Comment(command) => &["comment", comment_name(command)],
         Command::Record(command) => &["record", record_name(command)],

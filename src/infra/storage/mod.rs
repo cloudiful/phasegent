@@ -28,6 +28,7 @@ pub(crate) use crate::infra::storage_schema::{
 
 /// Re-export the canonical global setting names so callers do not
 /// need to depend on `storage_schema` directly.
+#[allow(unused_imports)]
 pub(crate) use crate::infra::storage_schema::{
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL,
 };

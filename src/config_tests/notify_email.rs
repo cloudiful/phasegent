@@ -1,8 +1,8 @@
 use crate::command::{self, Command};
 use crate::notifications::config::{EmailTlsSelection, resolve_email_tls};
 
-const PASSWORD: &str = "PHASEGENT_NOTIFY_EMAIL_PASSWORD";
-const USERNAME: &str = "PHASEGENT_NOTIFY_EMAIL_USERNAME";
+const PASSWORD: &str = "notifications.email.password";
+const USERNAME: &str = "notifications.email.username";
 
 fn parse_config_set(args: &[&str], role: Option<&str>) -> Result<Command, String> {
     let args = args

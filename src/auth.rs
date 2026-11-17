@@ -1,13 +1,8 @@
 use crate::infra::config_file::runtime;
-use crate::infra::storage::{
-    GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_REDMINE,
-};
+use crate::infra::storage::PROVIDER_REDMINE;
 // `PROVIDER_LOCAL` is imported from `storage_schema` directly because the
 // `storage` aggregator re-export lists only the non-local provider constants.
 use crate::infra::storage_schema::PROVIDER_LOCAL;
-// `GLOBAL_REDMINE_API_BASE` is imported from `storage_schema` directly so the
-// canonical global key does not require widening the `storage` aggregator.
-use crate::infra::storage_schema::GLOBAL_REDMINE_API_BASE;
 use crate::policy::Role;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -250,7 +245,9 @@ fn redmine_api_base_with_legacy(persist_legacy: bool) -> Result<Option<String>, 
     if let Some(value) = read_env_trimmed("PHASEGENT_API_BASE")? {
         return Ok(Some(value));
     }
-    if let Some(value) = runtime::load_global_setting(GLOBAL_REDMINE_API_BASE)? {
+    if let Some(value) =
+        runtime::load_global_setting(crate::infra::config_file::setting_path::REDMINE_API_BASE)?
+    {
         return Ok(Some(value));
     }
     legacy_redmine_api_base(persist_legacy)
@@ -300,7 +297,10 @@ fn legacy_redmine_api_base(persist: bool) -> Result<Option<String>, String> {
         1 => {
             let value = distinct.pop().expect("one distinct legacy address");
             if persist {
-                runtime::save_global_setting(GLOBAL_REDMINE_API_BASE, &value)?;
+                runtime::save_global_setting(
+                    crate::infra::config_file::setting_path::REDMINE_API_BASE,
+                    &value,
+                )?;
             }
             Ok(Some(value))
         }
@@ -381,7 +381,10 @@ pub fn redmine_git_mirror_api_key() -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")? {
         return Ok(Some(value));
     }
-    runtime::load_global_setting(GLOBAL_REDMINE_GIT_MIRROR_API_KEY).map_err(|error| {
+    runtime::load_global_setting(
+        crate::infra::config_file::setting_path::REDMINE_GIT_MIRROR_API_KEY,
+    )
+    .map_err(|error| {
         format!(
             "could not read the persisted Redmine git mirror key from the configuration file: {error}; \
              set PHASEGENT_REDMINE_GIT_MIRROR_API_KEY in the environment"
@@ -402,11 +405,12 @@ pub fn redmine_repository_url_override() -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_REPOSITORY_URL")? {
         return Ok(Some(value));
     }
-    runtime::load_global_setting(GLOBAL_REDMINE_REPOSITORY_URL).map_err(|error| {
-        format!(
-            "could not read the persisted Redmine repository URL from the configuration file: {error}"
-        )
-    })
+    runtime::load_global_setting(crate::infra::config_file::setting_path::REDMINE_REPOSITORY_URL)
+        .map_err(|error| {
+            format!(
+                "could not read the persisted Redmine repository URL from the configuration file: {error}"
+            )
+        })
 }
 
 /// Read an environment variable and return its non-empty trimmed value
@@ -443,7 +447,10 @@ pub(crate) fn save_redmine_config(
             return Err("Redmine API base cannot be empty".to_owned());
         }
         validate_redmine_api_base(trimmed)?;
-        runtime::save_global_setting(GLOBAL_REDMINE_API_BASE, trimmed)?;
+        runtime::save_global_setting(
+            crate::infra::config_file::setting_path::REDMINE_API_BASE,
+            trimmed,
+        )?;
     }
     if let Some(value) = close_status_id {
         // Only the role-scoped close-status id is written here. A

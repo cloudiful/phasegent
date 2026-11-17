@@ -1,5 +1,100 @@
 # Migrating a legacy configuration (operator runbook)
 
+Two migrations exist, and both are run by a human operator, by hand, once:
+
+| Installation state | Command |
+| --- | --- |
+| A JSONC configuration file that still uses schema version 1 | `phasegent admin config upgrade` |
+| Configuration and credentials in the legacy SQLite database (and optionally a `phasegent.toml` overlay) | `phasegent admin config migrate --from-sqlite <ABSOLUTE PATH>` |
+
+Neither migration ever runs on its own: the CLI never migrates a
+configuration at startup, never imports one in the background, and never
+reads a legacy SQLite or TOML source at runtime.
+
+## Upgrading a version-1 configuration file
+
+A configuration file that still uses schema version 1 is refused by the
+runtime. Every read and every write reports that a human operator must
+upgrade it first; nothing interprets the file, and nothing writes to it.
+
+```sh
+phasegent admin config upgrade
+```
+
+The command upgrades the resolved configuration file: the absolute
+`PHASEGENT_CONFIG_PATH` when it is set, otherwise `phasegent.jsonc` in the OS
+configuration directory. The current schema is described in
+[config-file.md](config-file.md).
+
+Before you start:
+
+- Stop every phasegent client. The command holds the configuration lock for
+  the whole run, but a stopped client is what makes that guarantee meaningful.
+- Note that the backup contains the credentials in plaintext. Protect it like
+  the configuration file.
+- Take your own copy if you want an independent one. The command makes its own
+  backup (see below).
+
+What it does, in order:
+
+1. Claims the configuration sidecar lock, so the file cannot be changed by
+   another phasegent process while the upgrade runs.
+2. Reads the file as a version-1 document under the strict rules: an unknown
+   field, a duplicate key, an unknown setting, an empty value, and a value
+   the version-1 validators rejected are all refusals. The file is never
+   adapted and never written when it is refused.
+3. Maps every machine-wide setting onto its typed destination in the
+   version-2 tree. A boolean stays a boolean, a port stays a number, and a
+   list stays an array; a text value keeps its bytes. The deprecated
+   `PHASEGENT_INDEX_BACKEND` selector was always inert and is dropped on
+   purpose - the presence of the PostgreSQL URL selects the backend.
+4. Renders the version-2 document from the original text, so every comment
+   the operator wrote survives and moves with the value it belonged to. The
+   role subtree is copied verbatim, so a role entry keeps its exact text, its
+   credentials, and its timestamps.
+5. Parses the rendered document again and compares it with the values the
+   migration produced. A difference is a refusal, not a write.
+6. Creates a private backup of the exact version-1 bytes next to the
+   configuration file - exclusively, so an existing file with the same name is
+   never overwritten, and owner-only (`0600`) on Unix. The name carries
+   nanosecond resolution, the process id, and a counter
+   (`phasegent.jsonc.v1-backup-<nanoseconds>-<pid>-<counter>.jsonc`). The
+   backup is never removed again, not even when a later step fails.
+7. Replaces the file atomically with owner-only permissions, and only when it
+   still holds exactly the bytes that were read. A concurrent edit is refused
+   instead of overwritten.
+
+The report carries paths and counts only:
+
+```json
+{
+  "config_path": "/home/operator/.config/phasegent/phasegent.jsonc",
+  "upgraded": true,
+  "backup_path": "/home/operator/.config/phasegent/phasegent.jsonc.v1-backup-1700000000000000000-4711-0.jsonc",
+  "settings_migrated": 12,
+  "roles_preserved": 5,
+  "credentials_preserved": 7,
+  "removed_settings": ["PHASEGENT_INDEX_BACKEND"]
+}
+```
+
+No configuration value and no credential is ever printed.
+
+| Situation | Behaviour |
+| --- | --- |
+| The file already uses schema version 2 | The explicit no-op: nothing is written, no backup is created, and the report has `"upgraded": false`. |
+| The file uses another version | The upgrade is refused; the file keeps its bytes. |
+| The file holds an unknown field, an unknown setting, a duplicate key, or an empty value | The upgrade is refused; the file keeps its bytes. |
+| The file holds a role this build does not know | The upgrade is refused; no role is resurrected and no role is dropped. |
+| The configuration file changed while the upgrade ran | The replacement is refused; the file keeps its bytes. |
+| Another phasegent process holds the configuration lock | The command waits for it by refusing with "another phasegent configuration write is in progress". |
+
+`admin config upgrade` is a human-operator command. The command registry
+denies every AI role before the arguments are parsed, and a managed session
+without a verified role fails closed.
+
+## Migrating a legacy SQLite configuration
+
 Older phasegent installations kept their configuration and credentials in the
 SQLite database `phasegent.sqlite3` and optionally in a `phasegent.toml`
 overlay. Both are read by exactly one command, which a human operator runs
@@ -20,7 +115,9 @@ phasegent admin config migrate \
 Both paths must be absolute; a relative path is rejected. The destination is
 the JSONC configuration file described in
 [config-file.md](config-file.md): the absolute `PHASEGENT_CONFIG_PATH` when it
-is set, otherwise `phasegent.jsonc` in the OS configuration directory.
+is set, otherwise `phasegent.jsonc` in the OS configuration directory. The
+destination is written in the current schema (version 2), so a fresh import
+needs no upgrade afterwards.
 
 There is no automatic import. The CLI never migrates a configuration on its
 own, never imports one at startup, and never reads a legacy SQLite or TOML
