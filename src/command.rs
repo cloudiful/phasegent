@@ -44,7 +44,9 @@ pub(crate) use argv::caller_from_env;
 pub use argv::parse;
 #[cfg(test)]
 pub(crate) use argv::parse_with_role_env;
-pub(crate) use argv::{ParseOutcome, parse_outcome, permission_message};
+pub(crate) use argv::{
+    ParseOutcome, is_managed_without_role_denial, parse_outcome, permission_message,
+};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use argv::{parse_outcome_with_caller_env, parse_with_caller_env};

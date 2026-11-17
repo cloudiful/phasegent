@@ -47,6 +47,17 @@ pub(crate) fn permission_message(role: Role, operation: &str) -> String {
     format!("role '{role}' is not allowed to perform {operation}")
 }
 
+/// The stable denial a managed session without a verified role receives for a
+/// business command, named so a caller can recognise this one denial without
+/// matching free-form message text.
+pub(crate) const MANAGED_WITHOUT_ROLE_ERROR: &str =
+    "managed session requires a role for operations; the host did not verify this session";
+
+/// Whether the parser rejection is the managed-without-role business denial.
+pub(crate) fn is_managed_without_role_denial(message: &str) -> bool {
+    message == MANAGED_WITHOUT_ROLE_ERROR
+}
+
 /// Parse the process argv with the process role environment.
 pub(crate) fn parse_outcome(args: &[String]) -> Result<ParseOutcome, String> {
     // Unix raw-value handling before any permissioned side effect:
@@ -370,10 +381,7 @@ pub(crate) fn parse_outcome_for_caller(
         CallerContext::Operator => {}
         CallerContext::ManagedWithoutRole => {
             if !no_role_allowed {
-                return Err(
-                    "managed session requires a role for operations; the host did not verify this session"
-                        .to_owned(),
-                );
+                return Err(MANAGED_WITHOUT_ROLE_ERROR.to_owned());
             }
         }
     }

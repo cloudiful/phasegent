@@ -80,6 +80,12 @@ pub const FOREIGN_BACKUP_SUFFIX: &str = ".phasegent-orig";
 /// bytes that ship with the binary.
 const ADAPTER_JS: &str = include_str!("../assets/opencode/phasegent-worktree.js");
 
+/// The embedded adapter bytes, compared with an installed copy by the
+/// freshness check.
+pub(crate) fn embedded_adapter_bytes() -> &'static [u8] {
+    ADAPTER_JS.as_bytes()
+}
+
 /// Outcome of a single-scope install. The CLI executor merges the
 /// global + project outcomes into one JSON envelope so the operator
 /// sees the full picture even when both scopes install at once.
@@ -460,6 +466,11 @@ pub(crate) fn inspect_target(dir: &Path) -> PluginTargetStatus {
             mtime: None,
         },
     }
+}
+
+/// The marker bytes at the head of a managed plugin file.
+pub(crate) fn managed_marker_bytes() -> &'static [u8] {
+    MANAGED_MARKER.as_bytes()
 }
 
 fn contains_marker(bytes: &[u8]) -> bool {
