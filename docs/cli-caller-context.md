@@ -129,3 +129,21 @@ Managed orchestrator may reach this internal path through authorized `issue
 create`; restricted roles fail before discovery. Credentials are still
 required with no cross-key fallback. Direct `admin` commands stay forbidden to
 AI by host policy and skills.
+
+## Automatic configuration preparation
+
+An admitted config-dependent command may prepare a supported version-1
+configuration file before its first configuration read: one schema-only
+conversion with one unique private backup, then the ordinary strict read. This
+is system preparation of the already-authorized operation, not an `admin`
+command: it grants no role, resolves no new credential, and bypasses no gate.
+
+The preparation follows the same admission boundary as the command. A denied
+command writes nothing; the deferred record/comment, worktree, workflow, and
+config-write paths prepare only after their existing authorization checks; and
+`ManagedWithoutRole` never prepares. The roleless utility allowlist stays
+available, so a utility read such as `doctor` or `config show` reports the
+version-1 refusal instead of upgrading. Help, `--version`, configuration-independent
+operations, and explicit `admin config upgrade`/`admin config migrate` never
+trigger it. Local-provider issue operations can read the configured index backend
+and therefore prepare when admitted. See [configuration file](config-file.md).

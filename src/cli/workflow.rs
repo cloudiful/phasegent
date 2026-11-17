@@ -62,6 +62,9 @@ pub(crate) fn execute_workflow_with_caller(
     let role = caller
         .credential_role()
         .expect("authorized caller has a credential");
+    if let Err(code) = super::prepare_config() {
+        return code;
+    }
     let provider = match resolve_kind(role, provider_kind) {
         Ok(provider) => provider,
         Err(error) => return super::provider_error(error),

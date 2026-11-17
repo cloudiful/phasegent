@@ -81,6 +81,11 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         None
     };
     let provider_invocation = provider_context::ProviderContext::from_invocation(&invocation);
+    if command::prepare_at_admission(&invocation)
+        && let Err(code) = prepare_config()
+    {
+        return code;
+    }
     match invocation.command {
         Command::Help(topic) => {
             help::print_help(invocation.role, invocation.provider, topic);
@@ -106,6 +111,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                     Ok(target) => target.unwrap_or(Role::Admin),
                     Err(code) => return code,
                 };
+            if let Err(code) = prepare_config() {
+                return code;
+            }
             let requested_provider = auth_provider.or(invocation.provider);
             let provider = match resolve_kind(role, requested_provider) {
                 Ok(provider) => provider,
@@ -152,6 +160,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                     Ok(role) => role,
                     Err(code) => return code,
                 };
+            if let Err(code) = prepare_config() {
+                return code;
+            }
             let result = crate::config::set_json(write_role, &setting, value.as_deref(), stdin);
             match result {
                 Ok(outcome) => print_json(&outcome),
@@ -169,6 +180,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                     Ok(role) => role,
                     Err(code) => return code,
                 };
+            if let Err(code) = prepare_config() {
+                return code;
+            }
             let result = crate::config::clear_json(write_role, &setting);
             match result {
                 Ok(outcome) => print_json(&outcome),
@@ -187,6 +201,14 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
         }
         Command::ConfigProviderSet { value } => {
+            if let Err(code) =
+                operator_supply_scope(invocation.caller, None, "admin config provider set")
+            {
+                return code;
+            }
+            if let Err(code) = prepare_config() {
+                return code;
+            }
             let result = crate::config::provider_set(value.as_str());
             match result {
                 Ok(outcome) => print_json(&outcome),
@@ -196,6 +218,14 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
         }
         Command::ConfigProviderClear => {
+            if let Err(code) =
+                operator_supply_scope(invocation.caller, None, "admin config provider clear")
+            {
+                return code;
+            }
+            if let Err(code) = prepare_config() {
+                return code;
+            }
             let result = crate::config::provider_clear();
             match result {
                 Ok(value) => print_json(&value),
@@ -328,6 +358,27 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         Command::Worktree(command) => {
             worktree::execute_worktree_scoped(invocation.caller, &provider_invocation, command)
         }
+    }
+}
+
+pub(crate) fn prepare_config() -> Result<(), i32> {
+    match crate::config_upgrade::prepare() {
+        Ok(crate::config_upgrade::Preparation::Upgraded(path)) => {
+            crate::output::progress::clear();
+            eprintln!(
+                "configuration upgraded; backup: {}",
+                serde_json::to_string(&path).unwrap_or_default()
+            );
+            Ok(())
+        }
+        Ok(
+            crate::config_upgrade::Preparation::Missing
+            | crate::config_upgrade::Preparation::Current,
+        ) => Ok(()),
+        Err(message) => Err(structured_error(
+            serde_json::json!({"kind":"config", "message":message}),
+            1,
+        )),
     }
 }
 

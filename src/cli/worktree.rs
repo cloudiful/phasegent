@@ -147,6 +147,15 @@ pub(crate) fn execute_worktree_scoped(
     {
         return permission_error(credential, operation);
     }
+    if matches!(
+        &command,
+        WorktreeCommand::Acquire { .. }
+            | WorktreeCommand::List { .. }
+            | WorktreeCommand::Prune { .. }
+    ) && let Err(code) = super::prepare_config()
+    {
+        return code;
+    }
     // Issue 552 Phase 2: `acquire` / `list` / `prune` run one
     // reconciliation pass for the repository they operate on (`--repo`
     // when supplied, otherwise the current directory) first. The pass

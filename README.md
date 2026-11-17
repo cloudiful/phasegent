@@ -97,9 +97,10 @@ An installation that still keeps its configuration in SQLite migrates once, by
 hand, with `phasegent admin config migrate`; the operator runbook is in
 [config migration](docs/config-migration.md).
 
-A configuration file that still uses the previous schema version is refused by
-the runtime and is upgraded once, by hand, with
-`phasegent admin config upgrade`; the same runbook describes it.
+A configuration file that still uses the previous schema version is converted
+automatically, with one unique private backup of the original bytes, by the
+first admitted command that needs it; `phasegent admin config upgrade` remains
+the explicit report and retry entry. The same runbook describes both paths.
 
 ## Common Commands
 

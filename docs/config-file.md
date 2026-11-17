@@ -235,16 +235,56 @@ file. The replacement renames the prepared file over the live one on every
 platform, so the live configuration is never removed before its replacement
 exists. A concurrent external edit detected before the rename is refused
 rather than overwritten. `admin config set`, `admin config
-clear`, `admin config provider set|clear`, `admin config upgrade`, and
-`admin auth setup` all write this file and nothing else.
+clear`, `admin config provider set|clear`, `admin auth setup`, and the
+automatic schema preparation described below write this configuration file
+(and, for a conversion, its private backup) and nothing else.
 
 The lock is the sidecar file `phasegent.jsonc.lock` next to the configuration
 file; it is created with mode `0600` on Unix.
 
 `config show` reports credential presence and length only, never a value.
 
-A read never creates the file: a missing configuration resolves to an empty
-document, so `config show` and `doctor` stay read-only on a fresh install.
+A read never creates a missing file: an absent configuration resolves to an
+empty document, so `config show` and `doctor` stay read-only on a fresh
+install. An existing supported older file is the one exception described under
+automatic schema preparation.
+
+## Automatic schema preparation
+
+The current schema is version 2. The first admitted command that actually
+needs the configuration file prepares a supported version-1 file
+automatically: it converts the document with the same comment-preserving
+transformation as the explicit upgrade, creates one unique owner-only plaintext
+backup of the exact original bytes next to the file, and only then lets the
+ordinary strict parser read the result. Later commands see version 2 and only
+read it. The backup is never overwritten or swept.
+
+Preparation is a system-maintenance step of an already authorized operation,
+not an `admin` command and not a credential bootstrap: it grants no role and
+changes no role, provider, credential, business database, or legacy SQLite
+source. A command the caller may not run writes nothing. A managed session
+without a verified role never prepares, even when the roleless utility
+allowlist lets it read: a utility command such as `config show` or `doctor`
+reports the version-1 refusal instead. Help, `--version`, configuration-independent
+operations, and the explicit `admin config upgrade` or `admin config migrate`
+flows never trigger the automatic step. Local-provider issue operations can read
+the configured index backend and therefore prepare when admitted.
+
+After a real conversion the CLI writes one stderr line naming the success and
+the private backup path. Stdout keeps the command's ordinary result, including
+the single JSON document under `--output json`. A version-2 or missing file
+produces no notice and no backup. An unknown or invalid version, a failed
+conversion, a permission problem, or a competing writer fails closed with the
+original file and its values unchanged.
+
+Preparation takes the configuration lock once. If another phasegent process
+holds it, the CLI re-reads the file once and continues only when that writer
+already installed a strictly valid version 2; otherwise it reports the
+contention and leaves the retry to the operator, with no polling loop. The
+automatic step never runs before the command's own authorization checks, so
+record and comment `--authorized`, worktree and workflow role gates, and the
+human-operator checks on the config writes keep their existing order. See
+[configuration migration](config-migration.md).
 
 A configuration-only command such as `config show` never opens or creates the
 business SQLite database.
@@ -261,17 +301,22 @@ written to SQLite.
 ## Role gates
 
 Reading the configuration (`config show`, `config provider get`, `doctor`) is
-open to every role. Writing it (`admin config set`, `admin config clear`,
-`admin config provider set|clear`, `admin config upgrade`, `admin auth
-setup`, `admin workflow bootstrap`, `admin config migrate`) is a
-human-operator surface: a verified agent role is denied before the command
-runs, and a managed session without a verified role fails closed. See
-[cli-caller-context.md](cli-caller-context.md).
+open to every role. The explicit configuration writes (`admin config set`,
+`admin config clear`, `admin config provider set|clear`, `admin config
+upgrade`, `admin auth setup`, `admin workflow bootstrap`, `admin config
+migrate`) are a human-operator surface: a verified agent role is denied before
+the command runs, and a managed session without a verified role fails closed.
+The automatic schema preparation is not one of these writes: it is a
+schema-only system step of an already admitted command, it never grants or
+changes a role, and it is skipped for a denied command or a managed session
+without a verified role. See [cli-caller-context.md](cli-caller-context.md).
 
 ## Migrating an older installation
 
-A file that still uses schema version 1 is refused by the runtime: no read and
-no write adapts it silently. The operator upgrades it once, by hand, with
-`phasegent admin config upgrade`. An installation that still stores its
-configuration in SQLite migrates once, with `phasegent admin config migrate`.
-Both runbooks are in [config-migration.md](config-migration.md).
+A file that still uses schema version 1 is converted automatically with a
+private backup by the first admitted command that needs the configuration, as
+described above. `phasegent admin config upgrade` remains the explicit
+report/retry entry for that conversion. An installation that still stores its
+configuration in SQLite migrates once, by hand, with `phasegent admin config
+migrate`: that import is never automatic. Both runbooks are in
+[config-migration.md](config-migration.md).

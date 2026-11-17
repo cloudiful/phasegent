@@ -222,7 +222,12 @@ Legend: `✓` allowed, `—` denied.
   authorized `issue create` with zero discovery matches runs `ensure_issue_workflow`
   as system preparation with the admin credential (one match or explicit
   `--project-id` skips it; multiple matches fail before writes; no fallback, no
-  caller role mutation, no caller admin authority).
+  caller role mutation, no caller admin authority). Automatic configuration schema
+  preparation follows the same system-preparation shape inside an admitted
+  config-dependent command: a supported version-1 file becomes version 2 with one
+  private backup before that command's first read. It grants no admin authority,
+  writes nothing before a denial, and never runs for a managed session without a
+  role.
 - **executor** and **reviewer** share the read/comment/project/status/version/
   relation-read surface and `notify send`; both are barred from issue
   write/close/search, relation write, status, and timer.
@@ -426,15 +431,22 @@ cancellation; a reopen moves it back to `Open`.
 ### Admin group (never AI roles)
 
 The entire explicit `admin` group (`admin auth setup`, `admin config set/clear`,
-`admin config provider set/clear`, `admin workflow bootstrap`) is
+`admin config provider set/clear`, `admin config upgrade`, `admin config migrate`,
+`admin workflow bootstrap`) is
 human-operator only — for every AI role, orchestrator included. It is distinct
 from internal auto-bootstrap, which is a permission-free caller step of an
-already-authorized operation (admin credential still required, no fallback). Agent permission
+already-authorized operation (admin credential still required, no fallback). The
+automatic schema preparation of a supported version-1 configuration file is the
+same kind of system step: it is not an admin command, grants no authority, and is
+skipped for a denied command or a managed session without a role. Agent permission
 rules deny the prefix, no role ever delegates it, and provisioning, credentials,
 and settings stay with the operator: a missing one goes back to the primary for
 a question, and credentials never travel as CLI values. Only when a configuration or provider
-problem actually blocks the task do the read-only self-checks come in — `doctor`,
-`config show`, and `config provider get` carry no role gate. Never read the local
+problem actually blocks the task do the self-checks come in — `doctor`,
+`config show`, and `config provider get` carry no role gate. An admitted self-check
+may first convert a supported version-1 file and create its private backup; after
+that the read is ordinary, and a roleless managed session reports the version-1
+refusal instead of writing. Never read the local
 SQLite files or call provider REST directly, since `record list`, `comment list`,
 and batch
 `issue get` cover bulk reads. Audit notes are append-only, so publish a follow-up

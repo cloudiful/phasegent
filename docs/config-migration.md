@@ -1,32 +1,46 @@
 # Migrating a legacy configuration (operator runbook)
 
-Two migrations exist, and both are run by a human operator, by hand, once:
+Two configuration migrations exist:
 
 | Installation state | Command |
 | --- | --- |
-| A JSONC configuration file that still uses schema version 1 | `phasegent admin config upgrade` |
+| A JSONC configuration file that still uses schema version 1 | Prepared by the first admitted config-dependent command, or explicitly with `phasegent admin config upgrade` |
 | Configuration and credentials in the legacy SQLite database (and optionally a `phasegent.toml` overlay) | `phasegent admin config migrate --from-sqlite <ABSOLUTE PATH>` |
 
-Neither migration ever runs on its own: the CLI never migrates a
-configuration at startup, never imports one in the background, and never
-reads a legacy SQLite or TOML source at runtime.
+The version-1 conversion runs automatically, with its private backup, as a
+system-maintenance step of the first already-authorized command that needs the
+configuration file. The SQLite/TOML import is always an explicit human
+operator action: the CLI never imports one at startup, never imports one in
+the background, and never reads a legacy SQLite or TOML source at runtime.
 
 ## Upgrading a version-1 configuration file
 
-A configuration file that still uses schema version 1 is refused by the
-runtime. Every read and every write reports that a human operator must
-upgrade it first; nothing interprets the file, and nothing writes to it.
+An admitted command that actually needs the configuration file converts a
+version-1 file to the current schema before its first configuration read. The
+explicit command is still available for a report, or to retry after a failure:
 
 ```sh
 phasegent admin config upgrade
 ```
 
-The command upgrades the resolved configuration file: the absolute
-`PHASEGENT_CONFIG_PATH` when it is set, otherwise `phasegent.jsonc` in the OS
-configuration directory. The current schema is described in
-[config-file.md](config-file.md).
+Both paths use the same conversion and safety rules. The command resolves the
+configuration file: the absolute `PHASEGENT_CONFIG_PATH` when it is set,
+otherwise `phasegent.jsonc` in the OS configuration directory. The current
+schema is described in [config-file.md](config-file.md).
 
-Before you start:
+An automatic conversion writes one line to stderr naming the success and the
+private backup path; stdout keeps the command's normal result. A missing or
+version-2 file produces no write, backup, or notice.
+
+Both paths create the same unique backup: the exact original bytes, exclusive so
+an existing file is never overwritten, owner-only (`0600`) on Unix, and never
+removed or swept afterwards. The backup holds credentials in plaintext, so
+protect it like the configuration file and delete it yourself when it is no
+longer needed. A symlink, a non-regular file, a file accessible by group or
+others, an unknown version, an invalid document, or a failed verification is
+refused before the original is replaced.
+
+Before you run the explicit command:
 
 - Stop every phasegent client. The command holds the configuration lock for
   the whole run, but a stopped client is what makes that guarantee meaningful.
@@ -87,11 +101,19 @@ No configuration value and no credential is ever printed.
 | The file holds an unknown field, an unknown setting, a duplicate key, or an empty value | The upgrade is refused; the file keeps its bytes. |
 | The file holds a role this build does not know | The upgrade is refused; no role is resurrected and no role is dropped. |
 | The configuration file changed while the upgrade ran | The replacement is refused; the file keeps its bytes. |
-| Another phasegent process holds the configuration lock | The command waits for it by refusing with "another phasegent configuration write is in progress". |
+| Another phasegent process holds the configuration lock | The explicit command refuses with "another phasegent configuration write is in progress". Automatic preparation re-reads once and continues only when the other writer already installed a strictly valid version 2; otherwise the operator retries. |
 
 `admin config upgrade` is a human-operator command. The command registry
 denies every AI role before the arguments are parsed, and a managed session
 without a verified role fails closed.
+
+The automatic path is narrower. It runs only for an already admitted
+config-dependent command: a denied command, help or `--version`, a
+configuration-independent path, the explicit `admin config upgrade`/`admin config
+migrate` flow, and a managed session without a verified role never convert the
+file. Local-provider issue operations can read the configured index backend and
+therefore prepare when admitted. A roleless utility read reports the version-1
+refusal instead of writing.
 
 ## Migrating a legacy SQLite configuration
 
@@ -119,9 +141,10 @@ is set, otherwise `phasegent.jsonc` in the OS configuration directory. The
 destination is written in the current schema (version 2), so a fresh import
 needs no upgrade afterwards.
 
-There is no automatic import. The CLI never migrates a configuration on its
-own, never imports one at startup, and never reads a legacy SQLite or TOML
-source at runtime.
+There is no automatic import. The CLI never imports a configuration itself,
+never imports one at startup, and never reads a legacy SQLite or TOML source at
+runtime. This is separate from the automatic version-1 to version-2 conversion
+above, which only rewrites the JSONC file.
 
 ## Who may run it
 
@@ -354,7 +377,15 @@ or rewriting them would lose data the operator may still need.
 
 ## Limitations
 
-- The end-to-end behaviour of this path (file creation, backup, purge,
+- The end-to-end automatic conversion (detection, lock, unique backup,
+  replacement, stderr notice) has no permanent automated test, because the
+  permanent test suite is unit-only and never touches a filesystem or a
+  database. Run the command yourself on a copy of the file before relying on a
+  real installation, and keep the backup until the result is confirmed.
+- When the configuration lock is held elsewhere, the automatic path performs
+  its single re-read and gives up; there is no retry loop or wait. The operator
+  must retry the command.
+- The end-to-end behaviour of the SQLite import (file creation, backup, purge,
   resume) has no permanent automated test, because the permanent test suite
   is unit-only and never touches a filesystem or a database. Run the command
   yourself on a copy of the database before migrating a real installation.
