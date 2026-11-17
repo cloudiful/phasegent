@@ -134,9 +134,7 @@ pub enum Command {
         /// Absolute path of an explicit legacy TOML overlay.
         from_toml: Option<String>,
     },
-    /// Human-operator upgrade of a version-1 configuration file to the
-    /// typed schema version 2. The runtime never upgrades a file on its
-    /// own: it refuses a version-1 file with this instruction.
+    /// Human-operator report and explicit upgrade of a version-1 file.
     ConfigUpgrade,
     Issue(IssueCommand),
     Comment(CommentCommand),
@@ -222,6 +220,34 @@ pub enum HelpTopic {
     WorktreeCommand(String),
 }
 
+pub(crate) fn prepare_at_admission(invocation: &Invocation) -> bool {
+    if invocation.caller.is_managed_without_role() {
+        return false;
+    }
+    match &invocation.command {
+        Command::Doctor | Command::ConfigShow | Command::ConfigProviderGet => true,
+        Command::Issue(IssueCommand::Branches { .. } | IssueCommand::StatusBranch) => false,
+        Command::Issue(IssueCommand::UploadAttachment { .. }) => false,
+        Command::Issue(IssueCommand::Bind { .. } | IssueCommand::Unbind { .. }) => {
+            invocation.provider != Some(ProviderKind::Local)
+        }
+        Command::Timer(TimerCommand::List { .. } | TimerCommand::Get { .. }) => false,
+        Command::Timer(TimerCommand::Finish { .. } | TimerCommand::Recover { .. }) => true,
+        Command::Issue(_) => true,
+        Command::Comment(CommentCommand::Create { .. })
+        | Command::Record(RecordCommand::Create { .. }) => false,
+        Command::Comment(_)
+        | Command::Record(_)
+        | Command::Project(_)
+        | Command::Status(_)
+        | Command::VersionCommand(_)
+        | Command::Relation(_)
+        | Command::Timer(_) => invocation.provider != Some(ProviderKind::Local),
+        Command::Notify(_) => true,
+        _ => false,
+    }
+}
+
 /// Whether `role` may run the command at a registry `path`. Shared by the
 /// parser role gate and the help surface so visibility and acceptance can
 /// never drift apart. A node whose compile-time feature is absent is denied.
@@ -289,4 +315,102 @@ pub(crate) fn top_level_names() -> Vec<&'static str> {
 /// Registry path for one parsed command, or `None` for `Help`/`Version`.
 pub(crate) fn command_registry_path(command: &Command) -> Option<Vec<&'static str>> {
     registry_path::command_path(command)
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    fn admission(caller: CallerContext, command: Command, provider: Option<ProviderKind>) -> bool {
+        prepare_at_admission(&Invocation {
+            role: caller.role(),
+            caller,
+            provider,
+            api_base: None,
+            repository: None,
+            project_id: None,
+            close_status_id: None,
+            close_status_name: None,
+            output: Default::default(),
+            command,
+        })
+    }
+    #[test]
+    fn admitted_config_reads_and_exclusions() {
+        assert!(admission(
+            CallerContext::Agent(Role::Executor),
+            Command::ConfigShow,
+            None
+        ));
+        assert!(admission(CallerContext::Operator, Command::Doctor, None));
+        assert!(!admission(
+            CallerContext::ManagedWithoutRole,
+            Command::ConfigShow,
+            None
+        ));
+        assert!(!admission(CallerContext::Operator, Command::Version, None));
+        assert!(!admission(
+            CallerContext::Operator,
+            Command::Timer(TimerCommand::Get {
+                run_id: "run".into()
+            }),
+            None
+        ));
+        assert!(admission(
+            CallerContext::Operator,
+            Command::Timer(TimerCommand::Recover {
+                run_id: "run".into()
+            }),
+            Some(ProviderKind::Local)
+        ));
+        assert!(!admission(
+            CallerContext::Operator,
+            Command::ConfigUpgrade,
+            None
+        ));
+        assert!(!admission(
+            CallerContext::Operator,
+            Command::Issue(IssueCommand::StatusBranch),
+            None
+        ));
+        assert!(admission(
+            CallerContext::Operator,
+            Command::Issue(IssueCommand::Get { number: 1 }),
+            Some(ProviderKind::Local)
+        ));
+        assert!(admission(
+            CallerContext::Agent(Role::Orchestrator),
+            Command::Issue(IssueCommand::Search {
+                query: None,
+                state: "open".into(),
+                page: 1,
+                limit: 20,
+                all: false,
+                include_body: false
+            }),
+            Some(ProviderKind::Local)
+        ));
+        assert!(!admission(
+            CallerContext::ManagedWithoutRole,
+            Command::Issue(IssueCommand::Get { number: 1 }),
+            Some(ProviderKind::Local)
+        ));
+        assert!(!admission(
+            CallerContext::Operator,
+            Command::Issue(IssueCommand::Branches {
+                number: 1,
+                page: None
+            }),
+            Some(ProviderKind::Local)
+        ));
+        assert!(!admission(
+            CallerContext::Operator,
+            Command::Issue(IssueCommand::Bind { issue_ids: vec![1] }),
+            Some(ProviderKind::Local)
+        ));
+        assert!(admission(
+            CallerContext::Agent(Role::Executor),
+            Command::Issue(IssueCommand::Get { number: 1 }),
+            None
+        ));
+    }
 }

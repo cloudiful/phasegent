@@ -1,8 +1,6 @@
-//! The explicit, human-operated upgrade of a version-1 configuration file.
-//!
-//! The runtime never reads or adapts a version-1 document: it refuses one
-//! with the instruction to run this command. The upgrade is therefore an
-//! operator action with an explicit contract:
+//! Shared configuration schema upgrade for admitted CLI operations and the
+//! explicit human-operated upgrade command. The strict runtime parser does not
+//! adapt version-1 documents. The upgrade has the following contract:
 //!
 //!   1. The configuration lock is held for the whole operation, so no normal
 //!      configuration writer can change the file while it runs.
@@ -82,20 +80,89 @@ pub fn upgrade() -> Result<UpgradeReport, String> {
     // The lock is held for the whole operation: no normal configuration
     // writer can change the file between the read and the replacement.
     let _lock = store.lock()?;
+    upgrade_locked(&store, None)
+}
+
+fn upgrade_locked(
+    store: &crate::infra::config_file::ConfigFileStore,
+    expected: Option<&[u8]>,
+) -> Result<UpgradeReport, String> {
+    let path = store.path();
     let bytes = store
         .read_bytes()?
         .ok_or_else(|| "the configuration file disappeared".to_owned())?;
+    if expected.is_some_and(|expected| expected != bytes) {
+        return Err("configuration file changed during preparation; retry".to_owned());
+    }
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| "the configuration file is not valid UTF-8".to_owned())?;
     let root = parse_root(text)?;
     let version = detect_version(&root)?;
     match version {
-        2 => no_op(&path, text),
-        1 => upgrade_v1(&store, &path, &bytes, text, &root),
+        2 => no_op(path, text),
+        1 => upgrade_v1(store, path, &bytes, text, &root),
         other => Err(format!(
             "unsupported configuration version {other}; the upgrader reads version 1 and \
              recognises version 2"
         )),
+    }
+}
+
+pub(crate) enum Preparation {
+    Missing,
+    Current,
+    Upgraded(String),
+}
+
+pub(crate) fn prepare() -> Result<Preparation, String> {
+    let store = runtime::store()?;
+    let Some(original) = store.read_bytes()? else {
+        return Ok(Preparation::Missing);
+    };
+    if current_version(&original, store.path())? {
+        return Ok(Preparation::Current);
+    }
+    let _lock = match store.lock() {
+        Ok(lock) => lock,
+        Err(error) => {
+            let current = store.read_bytes()?;
+            if let Some(bytes) = current
+                && current_version(&bytes, store.path()).unwrap_or(false)
+            {
+                return Ok(Preparation::Current);
+            }
+            return Err(error);
+        }
+    };
+    let current = store
+        .read_bytes()?
+        .ok_or_else(|| "configuration file disappeared during preparation".to_owned())?;
+    if current != original {
+        if current_version(&current, store.path())? {
+            return Ok(Preparation::Current);
+        }
+        return Err("configuration file changed during preparation; retry".to_owned());
+    }
+    match upgrade_locked(&store, Some(&current))?.backup_path {
+        Some(path) => Ok(Preparation::Upgraded(path)),
+        None => Ok(Preparation::Current),
+    }
+}
+
+fn current_version(bytes: &[u8], path: &Path) -> Result<bool, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| "the configuration file is not valid UTF-8".to_owned())?;
+    let root = parse_root(text)?;
+    match detect_version(&root)? {
+        1 => {
+            v1::parse_document(text)?;
+            Ok(false)
+        }
+        2 => {
+            no_op(path, text)?;
+            Ok(true)
+        }
+        other => Err(format!("unsupported configuration version {other}")),
     }
 }
 
@@ -176,7 +243,9 @@ fn upgrade_v1(
 
     // The replacement is atomic and private, and it only happens when the
     // file still holds exactly the bytes that were read.
-    store.replace_locked(bytes, &rendered)?;
+    store
+        .replace_locked(bytes, &rendered)
+        .map_err(|error| format!("{error}; recovery backup retained at {}", backup.display()))?;
 
     Ok(UpgradeReport {
         config_path: path.display().to_string(),
@@ -652,6 +721,16 @@ mod tests {
         let text = r#"{"version": 1, "settings": {"PHASEGENT_DEFAULT_PROVIDER": "redmine", "PHASEGENT_DEFAULT_PROVIDER": "local"}}"#;
         let error = v1::parse_document(text).expect_err("a duplicate key must be refused");
         assert!(error.contains("duplicate"), "got: {error}");
+    }
+
+    #[test]
+    fn preparation_probe_requires_valid_supported_versions() {
+        let path = Path::new("/synthetic/phasegent.jsonc");
+        assert!(!current_version(V1.as_bytes(), path).unwrap());
+        assert!(current_version(br#"{"version":2,"roles":{}}"#, path).unwrap());
+        assert!(current_version(br#"{"version":3}"#, path).is_err());
+        assert!(current_version(br#"{"version":2,"unexpected":true}"#, path).is_err());
+        assert!(current_version(&[0xff], path).is_err());
     }
 
     #[test]

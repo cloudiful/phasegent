@@ -85,8 +85,9 @@ credential，由文件系统保护：Unix 下目录为 `0700`、文件为 `0600`
 `phasegent admin config migrate` 完成迁移，操作手册见
 [配置迁移](docs/config-migration.md)。
 
-仍使用上一个 schema 版本的配置文件会被运行时拒绝，需要由人工执行一次
-`phasegent admin config upgrade` 完成升级，同一本手册有说明。
+仍使用上一个 schema 版本的配置文件，会在首个需要它的已授权命令中自动转换，
+并在原文件旁生成一份唯一、仅 owner 可读的原始字节备份；
+`phasegent admin config upgrade` 仍是显式报告与重试入口。两条路径见同一本手册。
 
 ## 常用命令
 

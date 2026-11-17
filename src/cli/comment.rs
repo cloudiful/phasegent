@@ -68,6 +68,12 @@ pub(crate) fn execute_comment_with_caller(
             2,
         );
     }
+    if matches!(&command, CommentCommand::Create { .. })
+        && provider_kind != Some(ProviderKind::Local)
+        && let Err(code) = super::prepare_config()
+    {
+        return code;
+    }
     // One-shot `--body-file` input (issue 298): after the permission
     // and authorization gates, read and validate the local file before
     // any provider resolution or network access. A read/validation

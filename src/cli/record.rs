@@ -204,6 +204,11 @@ pub(crate) fn execute_record_with_caller(
                     );
                 }
             };
+            if provider_kind != Some(ProviderKind::Local)
+                && let Err(code) = super::prepare_config()
+            {
+                return code;
+            }
             // Reuse the ordinary one-shot body helpers so the file
             // lifecycle is byte-for-byte the comment flow's: validated
             // before any provider access, deleted only after a confirmed

@@ -151,6 +151,15 @@ comments whose reserved header is not a valid record. Its items carry a
 comment; an invalid item shows only its identity, the stored body as `raw`, and
 the decode failure as `error`. See [agent records](agent-records.md).
 
+## Configuration preparation notice
+
+An admitted config-dependent command may convert a supported older
+configuration file before its first read. A real conversion prints one line on
+stderr naming the success and the private backup path. Stdout keeps the
+command's normal result, including exactly one JSON document under
+`--output json`; a missing or current file prints nothing and writes nothing.
+See [configuration file](config-file.md).
+
 ## Errors and exit codes
 
 A failure keeps the same information in both formats:
