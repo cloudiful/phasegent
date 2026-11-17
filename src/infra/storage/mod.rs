@@ -1,29 +1,26 @@
-//! SQLite-backed persistence for phasegent role configuration and credentials.
+//! SQLite-backed persistence for phasegent business state.
 //!
-//! The storage module keeps role/provider configuration, per-role
-//! credentials, and the small set of machine-wide settings in a single
-//! SQLite database. The database lives at the OS-standard config
-//! location returned by [`directories::ProjectDirs`]: `~/.config/phasegent`
+//! The storage module keeps the execution ledger, the agent notification
+//! outbox, and the canonical task identity tables in a single SQLite
+//! database. The database lives at the OS-standard config location
+//! returned by [`directories::ProjectDirs`]: `~/.config/phasegent`
 //! on Linux, `~/Library/Application Support/com.Cloud1ful.phasegent` on
-//! macOS, and `%APPDATA%\Cloud1ful\phasegent\config` on Windows. The
-//! schema splits role-scoped provider configuration from role/provider
-//! credentials so `config show` can mask secrets without leaking their
-//! content.
+//! macOS, and `%APPDATA%\Cloud1ful\phasegent\config` on Windows.
+//!
+//! Configuration and credentials are not stored here. They live in the
+//! JSONC configuration file next to this database, resolved through
+//! [`crate::infra::config_file`]. This module therefore creates no
+//! configuration table and reads no configuration value.
 //!
 //! The schema lives in [`crate::infra::storage_schema`] so the data model
 //! stays readable as a whole; this file stays focused as a thin aggregator
 //! that re-exports the public surface and declares focused child modules.
 
-mod config;
 mod connection;
-mod credentials;
-mod forgejo_config;
-mod gitlab_config;
-mod global_settings;
+mod notifications;
 
 pub use connection::Storage;
-pub use credentials::CredentialIdentity;
-pub use global_settings::{GlobalSettingSummary, NotificationRecord};
+pub use notifications::NotificationRecord;
 
 pub(crate) use crate::infra::storage_schema::{
     PROVIDER_FORGEJO, PROVIDER_GITLAB, PROVIDER_REDMINE,

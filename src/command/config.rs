@@ -94,6 +94,14 @@ fn parse_config_for(args: &[String], origin: ConfigOrigin) -> Result<Command, St
         Some("set") => parse_config_set(&args[1..], origin),
         Some("clear") => parse_config_clear(&args[1..], origin),
         Some("provider") => parse_config_provider(&args[1..], origin),
+        Some("migrate") => {
+            if origin == ConfigOrigin::TopLevel {
+                return Err("`config migrate` is a human-operator migration: run \
+                     `phasegent admin config migrate --from-sqlite <PATH>`"
+                    .to_owned());
+            }
+            parse_config_migrate(&args[1..])
+        }
         Some(other) => Err(format!("unknown config command '{other}'")),
         None => Err("config requires a subcommand (show, set, clear, or provider)".to_owned()),
     }
@@ -107,6 +115,7 @@ fn config_detail_help(origin: ConfigOrigin, subcommand: &str, rest: &[String]) -
     match subcommand {
         "show" => HelpTopic::ConfigCommand("show".to_owned()),
         "set" | "clear" => HelpTopic::AdminConfigCommand(subcommand.to_owned()),
+        "migrate" => HelpTopic::AdminConfigCommand("migrate".to_owned()),
         "provider" => match rest.first().map(String::as_str) {
             Some("get") => HelpTopic::ConfigProviderCommand("get".to_owned()),
             Some("set") => HelpTopic::AdminConfigProviderCommand("set".to_owned()),
@@ -247,6 +256,69 @@ fn parse_config_clear(args: &[String], origin: ConfigOrigin) -> Result<Command, 
     Ok(Command::ConfigClear {
         setting: canonical,
         target_role,
+    })
+}
+
+/// Parse `admin config migrate --from-sqlite <PATH> [--from-toml <PATH>]`.
+/// Both paths must be absolute so the operator names exactly one source
+/// database and one overlay file.
+fn parse_config_migrate(args: &[String]) -> Result<Command, String> {
+    if args.is_empty() {
+        return Err("config migrate requires --from-sqlite <ABSOLUTE PATH>".to_owned());
+    }
+    let mut from_sqlite: Option<String> = None;
+    let mut from_toml: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let token = &args[index];
+        if token == "--help" || token == "-h" {
+            return Ok(Command::Help(HelpTopic::AdminConfigCommand(
+                "migrate".to_owned(),
+            )));
+        }
+        if let Some(value) = split_inline(token, "--from-sqlite") {
+            if from_sqlite.is_some() {
+                return Err("duplicate --from-sqlite for config migrate".to_owned());
+            }
+            from_sqlite = Some(value.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(value) = split_inline(token, "--from-toml") {
+            if from_toml.is_some() {
+                return Err("duplicate --from-toml for config migrate".to_owned());
+            }
+            from_toml = Some(value.to_owned());
+            index += 1;
+            continue;
+        }
+        match token.as_str() {
+            "--from-sqlite" => {
+                if from_sqlite.is_some() {
+                    return Err("duplicate --from-sqlite for config migrate".to_owned());
+                }
+                let value = required_value(args, index, "--from-sqlite")?;
+                from_sqlite = Some(value.to_owned());
+                index += 2;
+            }
+            "--from-toml" => {
+                if from_toml.is_some() {
+                    return Err("duplicate --from-toml for config migrate".to_owned());
+                }
+                let value = required_value(args, index, "--from-toml")?;
+                from_toml = Some(value.to_owned());
+                index += 2;
+            }
+            other => {
+                return Err(format!("unknown option '{other}' for config migrate"));
+            }
+        }
+    }
+    let from_sqlite = from_sqlite
+        .ok_or_else(|| "config migrate requires --from-sqlite <ABSOLUTE PATH>".to_owned())?;
+    Ok(Command::ConfigMigrate {
+        from_sqlite,
+        from_toml,
     })
 }
 

@@ -2,10 +2,9 @@
 //!
 //! The index has two mutually exclusive backends: a local SQLite file
 //! (`phasegent-index.sqlite3`, default) and a shared PostgreSQL database.
-//! Credentials, provider config, and timers remain in SQLite; only the
-//! index tables live in PostgreSQL. Selection is URL-driven: a non-empty
-//! `PHASEGENT_INDEX_PG_URL` from the environment or persisted global
-//! setting selects PostgreSQL, while an absent or blank URL selects
+//! Selection is URL-driven: a non-empty `PHASEGENT_INDEX_PG_URL` from
+//! the environment or the persisted configuration setting selects
+//! PostgreSQL, while an absent or blank URL selects
 //! SQLite (env overrides persisted, same precedence as other globals).
 //! The legacy `PHASEGENT_INDEX_BACKEND` setting is ignored for selection
 //! and kept only for compatibility (readable/clearable). A configured
@@ -14,9 +13,9 @@
 //! error and never falls back to SQLite. No error, snapshot, or debug
 //! output ever prints the URL.
 
+use crate::infra::config_file::runtime;
 use crate::infra::issue_index::SqliteIssueIndex;
 use crate::infra::issue_index_postgres::PostgresIssueIndex;
-use crate::infra::storage::Storage;
 use crate::providers::index::IssueIndexStore;
 use async_trait::async_trait;
 
@@ -41,26 +40,17 @@ pub enum IssueIndexBackend {
 }
 
 impl IssueIndexBackend {
-    /// Open the configured backend. Reads `Storage` from the standard
-    /// location (honouring `PHASEGENT_DB_PATH` for tests) and then
-    /// delegates to `open_with_storage`.
+    /// Open the configured backend. The backend is selected from the
+    /// persisted configuration; the business database is not consulted.
     pub async fn open() -> Result<Self, String> {
-        let storage = Storage::open()?;
-        Self::open_with_storage(&storage).await
-    }
-
-    /// Testable opener that takes an explicit `Storage` handle so tests
-    /// can drive the selector against an isolated temp database without
-    /// relying on the global `PHASEGENT_DB_PATH`.
-    pub async fn open_with_storage(storage: &Storage) -> Result<Self, String> {
-        let kind = resolve_index_backend(storage)?;
+        let kind = resolve_index_backend()?;
         match kind {
             IndexBackendKind::Sqlite => {
                 let sqlite = SqliteIssueIndex::open()?;
                 Ok(Self::Sqlite(sqlite))
             }
             IndexBackendKind::Postgres => {
-                let url = resolve_pg_url(storage)?.ok_or_else(|| {
+                let url = resolve_pg_url()?.ok_or_else(|| {
                     "postgres index backend requires PHASEGENT_INDEX_PG_URL; use admin config set index-pg-url --stdin".to_owned()
                 })?;
                 // The URL itself is never echoed in the error.
@@ -77,8 +67,8 @@ impl IssueIndexBackend {
     /// `!Send` future and is avoided by keeping automatic search callers
     /// sync and confined to this bridge.
     #[allow(dead_code)]
-    pub fn open_blocking_with_storage(storage: &Storage) -> Result<Self, String> {
-        block_on(Self::open_with_storage(storage))
+    pub fn open_blocking() -> Result<Self, String> {
+        block_on(Self::open())
     }
 }
 
@@ -124,34 +114,35 @@ impl IssueIndexStore for IssueIndexBackend {
 /// environment variable and persisted setting are intentionally ignored
 /// so they can never force a different backend or make selection
 /// ambiguous; they remain readable/clearable only for compatibility.
-pub fn resolve_index_backend(storage: &Storage) -> Result<IndexBackendKind, String> {
-    let url = resolve_pg_url(storage)?;
+pub fn resolve_index_backend() -> Result<IndexBackendKind, String> {
+    let url = resolve_pg_url()?;
     match url {
         Some(value) if !value.trim().is_empty() => Ok(IndexBackendKind::Postgres),
         _ => Ok(IndexBackendKind::Sqlite),
     }
 }
 
-/// Resolve the PostgreSQL URL via env override then persistent storage.
+/// Resolve the PostgreSQL URL via env override then the persisted
+/// configuration setting.
 /// Returns `None` when unset or blank; a blank environment value is
 /// treated as unset so resolution falls back to the persisted setting,
 /// matching the local credentials/config boundary. Persisted blanks are
-/// already normalised to `None` by `Storage::load_global_setting`.
+/// already normalised to `None` by the configuration reader.
 /// The caller decides whether `None` is an error (postgres backend
 /// requires it) or acceptable (sqlite backend).
-pub fn resolve_pg_url(storage: &Storage) -> Result<Option<String>, String> {
+pub fn resolve_pg_url() -> Result<Option<String>, String> {
     if let Some(env) = read_env_trimmed("PHASEGENT_INDEX_PG_URL")? {
         if env.trim().is_empty() {
             return Ok(None);
         }
         return Ok(Some(env));
     }
-    storage.load_global_setting("PHASEGENT_INDEX_PG_URL")
+    runtime::load_global_setting("PHASEGENT_INDEX_PG_URL")
 }
 
 /// Helper used by `resolve_index_backend` / `resolve_pg_url` so every
 /// `VarError` other than `NotPresent` surfaces instead of being silently
-/// swallowed by the SQLite fallback.
+/// swallowed by the persisted-configuration fallback.
 fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
     match std::env::var(name) {
         Ok(value) => {

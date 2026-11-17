@@ -1,4 +1,4 @@
-use crate::infra::storage::Storage;
+use crate::infra::config_file::runtime;
 use crate::policy::{CallerContext, Role};
 use serde_json::Value;
 
@@ -12,11 +12,7 @@ use super::{ConfigClearOutcome, is_role_scoped_setting};
 /// PostgreSQL. An ordinary Operator clears through the admin scope or a
 /// human-selected target storage role; a managed session without a role fails
 /// closed for role-scoped clears.
-pub fn clear_setting(
-    role: Option<Role>,
-    canonical: &str,
-    storage: &Storage,
-) -> Result<Value, String> {
+pub fn clear_setting(role: Option<Role>, canonical: &str) -> Result<Value, String> {
     let effective = if is_role_scoped_setting(canonical) {
         match CallerContext::from_role(role) {
             CallerContext::Operator => Some(Role::Admin),
@@ -30,7 +26,7 @@ pub fn clear_setting(
     } else {
         role
     };
-    let cleared = persist_clear_value(effective, canonical, storage)?;
+    let cleared = persist_clear_value(effective, canonical)?;
     let outcome = ConfigClearOutcome {
         setting: canonical.to_owned(),
         role: effective.map(|r| r.as_str().to_owned()),
@@ -39,11 +35,7 @@ pub fn clear_setting(
     serde_json::to_value(outcome).map_err(|e| format!("could not encode clear outcome: {e}"))
 }
 
-fn persist_clear_value(
-    role: Option<Role>,
-    canonical: &str,
-    storage: &Storage,
-) -> Result<bool, String> {
+fn persist_clear_value(role: Option<Role>, canonical: &str) -> Result<bool, String> {
     match canonical {
         "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY"
         | "PHASEGENT_REDMINE_REPOSITORY_URL"
@@ -70,12 +62,12 @@ fn persist_clear_value(
         | "PHASEGENT_NOTIFY_EMAIL_FROM"
         | "PHASEGENT_NOTIFY_EMAIL_TO"
         | "PHASEGENT_NOTIFY_EMAIL_REPLY_TO" => {
-            let cleared = storage.delete_global_setting(canonical)?;
+            let cleared = runtime::delete_global_setting(canonical)?;
             Ok(cleared)
         }
         "PHASEGENT_PROVIDER" => {
             let role = role.expect("role required");
-            let current = storage.load_role_config(role)?;
+            let current = runtime::load_role_config(role)?;
             if current
                 .as_ref()
                 .and_then(|c| c.provider.as_deref())
@@ -85,31 +77,31 @@ fn persist_clear_value(
             } else {
                 let mut cfg = current.unwrap_or_default();
                 cfg.provider = None;
-                storage.save_role_config(role, &cfg)?;
+                runtime::save_role_config(role, &cfg)?;
                 Ok(true)
             }
         }
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");
-            let current = storage.load_redmine_config(role)?;
+            let current = runtime::load_redmine_config(role)?;
             if current.as_ref().and_then(|c| c.close_status_id).is_none() {
                 Ok(false)
             } else {
                 let mut cfg = current.unwrap_or_default();
                 cfg.close_status_id = None;
-                storage.save_redmine_config(role, &cfg)?;
+                runtime::save_redmine_config(role, &cfg)?;
                 Ok(true)
             }
         }
         "PHASEGENT_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");
-            let current = storage.load_redmine_config(role)?;
+            let current = runtime::load_redmine_config(role)?;
             if current.as_ref().and_then(|c| c.close_status_id).is_none() {
                 Ok(false)
             } else {
                 let mut cfg = current.unwrap_or_default();
                 cfg.close_status_id = None;
-                storage.save_redmine_config(role, &cfg)?;
+                runtime::save_redmine_config(role, &cfg)?;
                 Ok(true)
             }
         }

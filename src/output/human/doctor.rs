@@ -15,8 +15,8 @@ pub(crate) fn render(value: &Value, context: &OutputContext) -> String {
     let mut healthy: Vec<(String, String)> = Vec::new();
     let mut warnings: Vec<(String, String)> = Vec::new();
 
-    if let Some(path) = value.get("database_path").and_then(Value::as_str) {
-        healthy.push(("database".to_owned(), path.to_owned()));
+    if let Some(path) = value.get("config_path").and_then(Value::as_str) {
+        healthy.push(("configuration file".to_owned(), path.to_owned()));
     }
     match value.get("global_default_provider").and_then(Value::as_str) {
         Some(provider) => healthy.push(("default provider".to_owned(), provider.to_owned())),

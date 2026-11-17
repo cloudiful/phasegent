@@ -1,5 +1,4 @@
 use crate::auth;
-use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 use crate::providers::redmine::http::RedmineHttp;
@@ -62,17 +61,16 @@ impl FromStr for ProviderKind {
 ///   2. `PHASEGENT_PROVIDER` environment variable (one-process override).
 ///   3. `PHASEGENT_DEFAULT_PROVIDER` environment variable (one-process
 ///      override for the persistent default).
-///   4. TOML `default_provider` in `phasegent.toml` (human-editable
-///      overlay; `PHASEGENT_CONFIG_PATH` isolates the path in tests).
-///   5. Persisted `PHASEGENT_DEFAULT_PROVIDER` in the `global_setting`
-///      table (machine-wide default that survives across processes).
-///   6. Role-scoped `role_config.provider` as returned by
-///      `auth::load_config` (effective TOML-over-SQLite per role).
-///   7. Redmine fallback.
+///   4. The persisted `PHASEGENT_DEFAULT_PROVIDER` in the JSONC
+///      configuration file (machine-wide default that survives across
+///      processes).
+///   5. The role-scoped `provider` in the configuration file, as returned
+///      by `auth::load_config`.
+///   6. Redmine fallback.
 ///
 /// An unknown explicit or configured name errors here, before any network
 /// access, instead of falling back. The resolver is read-only: it never
-/// persists anything and never writes TOML.
+/// persists anything and never writes the configuration file.
 pub fn resolve_kind(
     role: Role,
     explicit: Option<ProviderKind>,
@@ -93,46 +91,17 @@ pub fn resolve_kind(
                 .map_err(|error: String| PhasegentError::config(error));
         }
     }
-    // TOML overlay sits between env and SQLite. A malformed/secret TOML
-    // fails here instead of falling back so misconfiguration is visible.
-    if let Some(overlay) =
-        crate::infra::config_overlay::load_overlay().map_err(PhasegentError::config)?
-        && let Some(value) = overlay.default_provider_value()
+    // The persisted machine-wide default lives in the configuration file.
+    if let Some(value) =
+        crate::infra::config_file::runtime::load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
+            .map_err(PhasegentError::config)?
+        && !value.trim().is_empty()
     {
         return value
             .parse()
             .map_err(|error: String| PhasegentError::config(error));
     }
-    // Admission-time resolution uses an existing-file read-only store: no
-    // creation, schema, migrations, or credential access. Missing DB/table or
-    // an older missing column means the persisted step is absent.
-    let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-    if let Some(storage) = storage.as_ref()
-        && storage
-            .table_exists("global_setting")
-            .map_err(PhasegentError::config)?
-    {
-        if !storage
-            .table_has_column("global_setting", "name")
-            .map_err(PhasegentError::config)?
-            || !storage
-                .table_has_column("global_setting", "value")
-                .map_err(PhasegentError::config)?
-        {
-            // A genuinely older store without the required columns means the
-            // persisted step is absent.
-        } else if let Some(value) = storage
-            .load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
-            .map_err(PhasegentError::config)?
-            && !value.trim().is_empty()
-        {
-            return value
-                .parse()
-                .map_err(|error: String| PhasegentError::config(error));
-        }
-    }
-    let stored =
-        auth::load_config_if_present(role, storage.as_ref()).map_err(PhasegentError::config)?;
+    let stored = auth::load_config(role).map_err(PhasegentError::config)?;
     stored
         .and_then(|config| config.provider)
         .map_or(Ok(ProviderKind::Redmine), |provider| {
@@ -171,20 +140,19 @@ impl RedmineConfig {
     ///
     /// The REST base resolves from the one canonical global address via
     /// [`auth::redmine_api_base`]: explicit `--api-base` > env
-    /// (`PHASEGENT_REDMINE_API_BASE` / `PHASEGENT_API_BASE`) > TOML
-    /// `redmine_api_base` > persisted global setting > bounded legacy
-    /// role migration. No role-scoped address row is consulted for the
-    /// base. The close-status id stays role-scoped (explicit >
+    /// (`PHASEGENT_REDMINE_API_BASE` / `PHASEGENT_API_BASE`) > the
+    /// persisted global setting > bounded legacy role migration. No
+    /// role-scoped address entry is consulted for the base. The
+    /// close-status id stays role-scoped (explicit >
     /// `PHASEGENT_REDMINE_CLOSE_STATUS_ID` / `PHASEGENT_CLOSE_STATUS_ID`
-    /// > TOML/SQLite role value).
+    /// > the persisted role value).
     pub fn resolve(
         role: Role,
         api_base: Option<&str>,
         project_id: Option<&str>,
         close_status_id: Option<&str>,
     ) -> Result<Self, PhasegentError> {
-        let storage = Storage::open().map_err(PhasegentError::config)?;
-        let stored = auth::load_redmine_config(role, &storage).map_err(PhasegentError::config)?;
+        let stored = auth::load_redmine_config(role).map_err(PhasegentError::config)?;
         let explicit_base = api_base.map(str::to_owned);
         let explicit_project = project_id.map(str::to_owned);
         let explicit_close = close_status_id
@@ -194,7 +162,7 @@ impl RedmineConfig {
 
         let base = match explicit_base {
             Some(value) => value,
-            None => auth::redmine_api_base(&storage)
+            None => auth::redmine_api_base()
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     PhasegentError::config(
@@ -234,20 +202,18 @@ impl RedmineConfig {
     /// The read-only resolution used by admission and by the prune pass.
     ///
     /// It resolves the same address and close-status precedence as
-    /// [`Self::resolve`], but over an already existing store: no schema
-    /// creation, no migration and no credential write. A legacy role address
-    /// is read, never migrated.
-    pub fn resolve_with_storage(
-        storage: &Storage,
+    /// [`Self::resolve`], but never migrates a legacy role address into
+    /// the global setting.
+    pub fn resolve_read_only(
         role: Role,
         api_base: Option<&str>,
         project_id: Option<&str>,
         close_status_id: Option<&str>,
     ) -> Result<Self, PhasegentError> {
-        let stored = auth::load_redmine_config(role, storage).map_err(PhasegentError::config)?;
+        let stored = auth::load_redmine_config(role).map_err(PhasegentError::config)?;
         let base = match api_base {
             Some(value) => value.to_owned(),
-            None => auth::redmine_api_base_read_only(storage)
+            None => auth::redmine_api_base_read_only()
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     PhasegentError::config(
@@ -321,8 +287,7 @@ pub struct RedmineProvider {
 
 impl RedmineProvider {
     pub fn for_role(role: Role, config: RedmineConfig) -> Result<Self, PhasegentError> {
-        let storage = Storage::open().map_err(PhasegentError::config)?;
-        let api_key = auth::redmine_api_key(role, &storage).map_err(PhasegentError::auth)?;
+        let api_key = auth::redmine_api_key(role).map_err(PhasegentError::auth)?;
         Self::new(config, api_key)
     }
 

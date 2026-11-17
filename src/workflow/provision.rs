@@ -8,7 +8,8 @@
 
 use super::provision_user::provision_role_user;
 use crate::auth;
-use crate::infra::storage::{PROVIDER_REDMINE, Storage};
+use crate::infra::config_file::runtime;
+use crate::infra::storage::PROVIDER_REDMINE;
 use crate::policy::Role;
 use crate::providers::RedmineProvider;
 use crate::providers::api::PhasegentError;
@@ -27,9 +28,9 @@ pub(super) struct ProvisionedRole {
 ///
 /// Order follows [`provisioned_roles`] so membership reconciliation stays
 /// deterministic. Each role reuses its persisted identity when both the
-/// `role_redmine_user` row and the `role_credential` row are present;
-/// otherwise the deterministic login is looked up before creating so
-/// reruns and legacy databases never create duplicates.
+/// provisioned identity and the credential are present; otherwise the
+/// deterministic login is looked up before creating so reruns never create
+/// duplicates.
 ///
 /// Every newly provisioned identity is checked against the ones already
 /// accepted here, so a collision aborts the run before any membership
@@ -37,7 +38,6 @@ pub(super) struct ProvisionedRole {
 pub(super) fn provision_agent_users(
     admin: &RedmineProvider,
 ) -> Result<Vec<ProvisionedRole>, PhasegentError> {
-    let storage = crate::infra::storage::Storage::open().map_err(PhasegentError::config)?;
     let roles = provisioned_roles();
     let mut provisioned: Vec<ProvisionedRole> = Vec::with_capacity(roles.len());
     for role in roles {
@@ -47,23 +47,22 @@ pub(super) fn provision_agent_users(
                 role.as_str()
             ))
         })?;
-        let user = provision_role_user(admin, &storage, role, &metadata)?;
+        let user = provision_role_user(admin, role, &metadata)?;
         ensure_distinct(&provisioned, role, &user)?;
         provisioned.push(ProvisionedRole { role, user });
     }
     Ok(provisioned)
 }
 
-/// Read the cached identity used by preview when both persisted identity and
-/// credential rows are valid, without returning or exposing the credential.
+/// Read the cached identity used by preview when both the persisted
+/// identity and the credential are valid, without returning or exposing the
+/// credential.
 pub(super) fn persisted_role_identity(
     role: Role,
-    storage: &Storage,
 ) -> Result<Option<RedmineCurrentUser>, PhasegentError> {
-    let persisted_user = auth::load_redmine_user(role, storage).map_err(PhasegentError::config)?;
-    let persisted_key = storage
-        .load_credential(role, PROVIDER_REDMINE)
-        .map_err(PhasegentError::config)?;
+    let persisted_user = auth::load_redmine_user(role).map_err(PhasegentError::config)?;
+    let persisted_key =
+        runtime::load_credential(role, PROVIDER_REDMINE).map_err(PhasegentError::config)?;
     if let (Some((user_id, login)), Some(api_key)) = (persisted_user, persisted_key)
         && user_id > 0
         && !login.trim().is_empty()

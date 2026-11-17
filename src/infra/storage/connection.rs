@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 pub struct Storage {
     pub(crate) connection: Connection,
-    pub(crate) path: PathBuf,
 }
 
 impl Storage {
@@ -53,7 +52,7 @@ impl Storage {
         let connection =
             Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(|error| format!("could not open phasegent database read-only: {error}"))?;
-        Ok(Some(Self { connection, path }))
+        Ok(Some(Self { connection }))
     }
 
     pub(crate) fn table_exists(&self, table: &str) -> Result<bool, String> {
@@ -93,10 +92,7 @@ impl Storage {
         }
         let connection = sqlite_file::open_private_connection(path, "phasegent")?;
         Self::initialise(&connection)?;
-        Ok(Self {
-            connection,
-            path: path.to_path_buf(),
-        })
+        Ok(Self { connection })
     }
 
     fn initialise(connection: &Connection) -> Result<(), String> {
@@ -138,29 +134,6 @@ impl Storage {
                         return Err(format!(
                             "could not migrate column {table}.{column}: {error}"
                         ));
-                    }
-                }
-            }
-            // Clear the legacy Redmine project_id value. The column remains
-            // for non-destructive, compatibility-safe migration, but the value
-            // must be inert. The update is idempotent and runs inside the same
-            // IMMEDIATE transaction that protects the column migrations.
-            //
-            // The GitLab project_id is deliberately left untouched: it belongs
-            // to a legacy role row that the new provider must preserve without
-            // rewriting, and no current GitLab path infers a project from it.
-            for (table, column) in [("role_redmine_config", "project_id")] {
-                if column_exists(connection, table, column)? {
-                    let statement =
-                        format!("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL");
-                    // UPDATE never fails on empty table; ignore duplicate-column
-                    // noise and propagate any real error.
-                    if let Err(error) = connection.execute(&statement, []) {
-                        let message = error.to_string();
-                        if message.contains("no such column") || message.contains("no such table") {
-                            continue;
-                        }
-                        return Err(format!("could not clear legacy {table}.{column}: {error}"));
                     }
                 }
             }
@@ -208,12 +181,6 @@ impl Storage {
                 Err(error)
             }
         }
-    }
-
-    /// Absolute filesystem path of the database. Useful for `config show`
-    /// and tests that want to assert directory layout.
-    pub fn db_path(&self) -> &Path {
-        &self.path
     }
 }
 

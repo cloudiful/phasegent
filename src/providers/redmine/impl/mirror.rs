@@ -69,13 +69,11 @@ pub(crate) fn mirror_identifier(project_id: u64, owner: &str, repo: &str) -> Str
 }
 
 /// Shared bearer-key resolver for mirror plugin reads (issue 394 P2
-/// dedup). Opens [`Storage`] once and maps a missing key to the
-/// actionable config error so the three mirror call sites share one
-/// open instead of three duplicate blocks.
+/// dedup). Reads the persisted configuration once and maps a missing key
+/// to the actionable config error so the three mirror call sites share
+/// one resolver instead of three duplicate blocks.
 fn mirror_bearer_key() -> Result<String, PhasegentError> {
-    let storage = crate::infra::storage::Storage::open().map_err(PhasegentError::config)?;
-    let bearer_key =
-        crate::auth::redmine_git_mirror_api_key(&storage).map_err(PhasegentError::config)?;
+    let bearer_key = crate::auth::redmine_git_mirror_api_key().map_err(PhasegentError::config)?;
     bearer_key.ok_or_else(|| {
         PhasegentError::config(
             "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY is not set; \

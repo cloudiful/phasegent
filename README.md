@@ -61,10 +61,10 @@ stay role-scoped.
 
 `workflow bootstrap` provisions one Redmine service user per agent role —
 orchestrator, executor, reviewer, and explore — reads each one's API key
-through the admin API, stores the keys in SQLite, and reconciles their direct
-project memberships (Maintainer, Developer, Reporter, Reporter). It is
-idempotent: rerunning it reuses every identity it already holds and creates
-only the accounts that are missing.
+through the admin API, stores the keys in the configuration file, and
+reconciles their direct project memberships (Maintainer, Developer, Reporter,
+Reporter). It is idempotent: rerunning it reuses every identity it already
+holds and creates only the accounts that are missing.
 
 `admin workflow bootstrap --all-projects` reconciles those four users on every
 existing Redmine project instead of the current repository's project. It needs
@@ -74,12 +74,28 @@ preserving roles already attached. Add `--dry-run` for a read-only preview that
 plans the same outcome without creating users, fetching user API keys, or
 writing memberships or settings. Both modes print a complete JSON report and exit `0`
 when every project is ready, `1` on any blocked, warned, or errored project.
-The modes may still open the local SQLite store, which can create the schema or
-database file when it is absent.
+The modes may still open the local SQLite business store, which can create the
+schema or database file when it is absent.
 
 Optional native Git hooks: run `phasegent hooks install` in a checkout. See
 [Git hooks](docs/git-hooks.md) for message handling, fixed comment markers, and
 safe update/recovery instructions.
+
+## Configuration
+
+All configuration and all credentials live in one JSONC file, `phasegent.jsonc`
+in the OS configuration directory (`~/.config/phasegent/phasegent.jsonc` on
+Linux); `PHASEGENT_CONFIG_PATH` overrides the location with an absolute path.
+The effective value of every field is CLI flags > `PHASEGENT_*` environment >
+the configuration file > built-in defaults. The file stores credentials in
+plaintext and is protected by the filesystem: on Unix the directory is `0700`
+and the file `0600`, on Windows the protection is the inherited user-profile
+ACL. SQLite keeps business state only. See
+[configuration file](docs/config-file.md).
+
+An installation that still keeps its configuration in SQLite migrates once, by
+hand, with `phasegent admin config migrate`; the operator runbook is in
+[config migration](docs/config-migration.md).
 
 ## Common Commands
 
@@ -136,7 +152,7 @@ an issue, to adopt an existing number with `issue bind`, or for any number that
 carries no durable task, and store the role token with `admin auth setup
 --provider forgejo --repository owner/repo --api-base INSTANCE_ROOT
 --target-role <role>` (omit `--target-role` to store the Admin row). A Forgejo
-default configured through the environment, TOML, the persisted machine-wide
+default configured through the environment, the persisted machine-wide
 default or stored role configuration is selected by the shared precedence chain
 (which ends with the Redmine fallback), so it needs no explicit `--provider`; it
 names the repository by explicit `--repository`, else the current checkout's

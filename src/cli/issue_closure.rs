@@ -31,6 +31,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::infra::config_file::runtime;
 use crate::infra::storage::Storage;
 use crate::lifecycle::cleanup::closure::{DirectoryAssociation, DirectoryIssueClosure};
 use crate::policy::Role;
@@ -1328,11 +1329,7 @@ fn scoped_instance(
                     ),
                 ));
             }
-            let storage = Storage::open_existing_read_only()
-                .map_err(|error| format!("the local store is not available: {error}"))?
-                .ok_or_else(|| "the local store is not initialized".to_owned())?;
-            let trusted = crate::providers::config::RedmineConfig::resolve_with_storage(
-                &storage,
+            let trusted = crate::providers::config::RedmineConfig::resolve_read_only(
                 role,
                 None,
                 Some(project),
@@ -1352,11 +1349,7 @@ fn scoped_instance(
             Ok(trusted.api_base)
         }
         "forgejo" => {
-            let storage = Storage::open_existing_read_only()
-                .map_err(|error| format!("the local store is not available: {error}"))?
-                .ok_or_else(|| "the local store is not initialized".to_owned())?;
-            let stored = storage
-                .load_forgejo_config(role)
+            let stored = runtime::load_forgejo_config(role)
                 .map_err(|error| format!("could not read the Forgejo role instance: {error}"))?
                 .ok_or_else(|| {
                     LookupError::new(
@@ -1394,11 +1387,7 @@ fn scoped_instance(
             Ok(trusted.api_base().to_owned())
         }
         "gitlab" => {
-            let storage = Storage::open_existing_read_only()
-                .map_err(|error| format!("the local store is not available: {error}"))?
-                .ok_or_else(|| "the local store is not initialized".to_owned())?;
-            let stored = storage
-                .load_gitlab_config(role)
+            let stored = runtime::load_gitlab_config(role)
                 .map_err(|error| format!("could not read the GitLab role instance: {error}"))?
                 .ok_or_else(|| {
                     LookupError::new(
@@ -1466,35 +1455,26 @@ fn scoped_provider(
     let instance = scoped_instance(role, repo_path, provider, project, context)?;
     match provider {
         "redmine" => {
-            let storage = Storage::open_existing_read_only()
-                .map_err(|error| format!("the local store is not available: {error}"))?
-                .ok_or_else(|| "the local store is not initialized".to_owned())?;
-            let config = crate::providers::config::RedmineConfig::resolve_with_storage(
-                &storage,
+            let config = crate::providers::config::RedmineConfig::resolve_read_only(
                 role,
                 Some(&instance),
                 Some(project),
                 None,
             )
             .map_err(|error| bounded_error(&error.json()))?;
-            let api_key = crate::auth::redmine_api_key_checked(role, &storage).map_err(
-                |error| match error {
+            let api_key =
+                crate::auth::redmine_api_key_checked(role).map_err(|error| match error {
                     crate::auth::RedmineKeyError::Missing(message) => {
                         LookupError::new(LookupFailure::MissingConfiguration, message)
                     }
                     crate::auth::RedmineKeyError::Storage(message) => LookupError::from(message),
-                },
-            )?;
+                })?;
             crate::providers::config::RedmineProvider::new(config, api_key)
                 .map(ProviderDispatcher::Redmine)
                 .map_err(provider_lookup_error)
         }
         "forgejo" => {
-            let storage = Storage::open_existing_read_only()
-                .map_err(|error| format!("the local store is not available: {error}"))?
-                .ok_or_else(|| "the local store is not initialized".to_owned())?;
-            let token = storage
-                .load_credential(role, "forgejo")
+            let token = runtime::load_credential(role, "forgejo")
                 .map_err(|error| format!("could not read the Forgejo role credential: {error}"))?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| {
@@ -1510,11 +1490,7 @@ fn scoped_provider(
                 .map_err(provider_lookup_error)
         }
         "gitlab" => {
-            let storage = Storage::open_existing_read_only()
-                .map_err(|error| format!("the local store is not available: {error}"))?
-                .ok_or_else(|| "the local store is not initialized".to_owned())?;
-            let token = storage
-                .load_credential(role, "gitlab")
+            let token = runtime::load_credential(role, "gitlab")
                 .map_err(|error| format!("could not read the GitLab role credential: {error}"))?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| {

@@ -62,8 +62,7 @@ pub(super) fn resolve_mirror_url(
     bootstrap_repository: &str,
     explicit_repository: bool,
 ) -> Result<String, String> {
-    let storage = crate::infra::storage::Storage::open()?;
-    let env_url = auth::redmine_repository_url_override(&storage)?;
+    let env_url = auth::redmine_repository_url_override()?;
     if let Some(env_url) = env_url {
         return Ok(env_url);
     }

@@ -1,4 +1,4 @@
-use crate::infra::storage::Storage;
+use crate::infra::config_file::runtime;
 use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 use crate::remote::OriginRepositoryEvidence;
@@ -36,31 +36,16 @@ impl ForgejoConfig {
         })
     }
 
-    /// Resolve the trusted instance and the per-operation repository without
-    /// creating or migrating storage. The role row supplies the trusted
-    /// instance and the outside-Git repository default; the current origin is
+    /// Resolve the trusted instance and the per-operation repository from
+    /// the configuration file. The role entry supplies the trusted instance
+    /// and the outside-Git repository default; the current origin is
     /// evidence only and never selects the instance or the endpoint.
     pub fn resolve(
         role: Role,
         api_base: Option<&str>,
         repository: Option<&str>,
     ) -> Result<Self, PhasegentError> {
-        let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-        match storage.as_ref() {
-            Some(storage) => Self::resolve_with_storage(storage, role, api_base, repository),
-            None => Self::select(api_base, repository, None, repository_evidence(repository)?),
-        }
-    }
-
-    /// The test-facing storage variant of [`Self::resolve`]: the same
-    /// instance/repository selection over a supplied store. Reads only.
-    pub(super) fn resolve_with_storage(
-        storage: &Storage,
-        role: Role,
-        api_base: Option<&str>,
-        repository: Option<&str>,
-    ) -> Result<Self, PhasegentError> {
-        let stored = stored_config(storage, role)?;
+        let stored = stored_config(role)?;
         Self::select(
             api_base,
             repository,
@@ -132,27 +117,10 @@ impl ForgejoConfig {
     }
 }
 
-/// The role's stored trusted instance and repository, if the existing store
-/// already has the required table and columns. Missing or older schemas are
-/// absence, never an excuse to migrate during selection.
-fn stored_config(
-    storage: &Storage,
-    role: Role,
-) -> Result<Option<(String, String)>, PhasegentError> {
-    if !storage
-        .table_exists("role_forgejo_config")
-        .map_err(PhasegentError::config)?
-        || !storage
-            .table_has_column("role_forgejo_config", "api_base")
-            .map_err(PhasegentError::config)?
-        || !storage
-            .table_has_column("role_forgejo_config", "repository")
-            .map_err(PhasegentError::config)?
-    {
-        return Ok(None);
-    }
-    Ok(storage
-        .load_forgejo_config(role)
+/// The role's stored trusted instance and repository. A missing entry is
+/// absence, never an excuse to create one during selection.
+fn stored_config(role: Role) -> Result<Option<(String, String)>, PhasegentError> {
+    Ok(runtime::load_forgejo_config(role)
         .map_err(PhasegentError::config)?
         .map(|config| (config.api_base, config.repository)))
 }

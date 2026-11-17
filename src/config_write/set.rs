@@ -1,4 +1,4 @@
-use crate::infra::storage::Storage;
+use crate::infra::config_file::runtime;
 use crate::policy::{CallerContext, Role};
 use crate::providers::config::ProviderKind;
 use serde_json::Value;
@@ -30,13 +30,12 @@ fn resolve_write_role(role: Option<Role>, canonical: &str) -> Result<Option<Role
 /// Persist a setting value that has already been sourced (from
 /// positional arg, stdin content, or interactive prompt). The caller
 /// has already decided the source; this helper only validates the
-/// trimmed value and writes to SQLite. Secret values are never
-/// echoed in errors.
+/// trimmed value and writes to the configuration file. Secret values are
+/// never echoed in errors.
 pub fn set_setting_value(
     role: Option<Role>,
     canonical: &str,
     raw_value: &str,
-    storage: &Storage,
 ) -> Result<Value, String> {
     let trimmed = raw_value.trim();
     if trimmed.is_empty() {
@@ -48,7 +47,7 @@ pub fn set_setting_value(
         ));
     }
     let effective = resolve_write_role(role, canonical)?;
-    persist_set_value(effective, canonical, trimmed, storage)?;
+    persist_set_value(effective, canonical, trimmed)?;
     let outcome = ConfigSetOutcome {
         setting: canonical.to_owned(),
         role: effective.map(|r| r.as_str().to_owned()),
@@ -63,14 +62,13 @@ pub fn set_setting_stdin_content(
     role: Option<Role>,
     canonical: &str,
     content: &str,
-    storage: &Storage,
 ) -> Result<Value, String> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return Err(format!("value for '{canonical}' cannot be empty"));
     }
     let effective = resolve_write_role(role, canonical)?;
-    persist_set_value(effective, canonical, trimmed, storage)?;
+    persist_set_value(effective, canonical, trimmed)?;
     let outcome = ConfigSetOutcome {
         setting: canonical.to_owned(),
         role: effective.map(|r| r.as_str().to_owned()),
@@ -88,7 +86,6 @@ pub fn dispatch_set(
     canonical: &str,
     value: Option<&str>,
     use_stdin: bool,
-    storage: &Storage,
 ) -> Result<Value, String> {
     if is_secret_setting(canonical) {
         if value.is_some() && !allows_direct_secret_value(canonical) {
@@ -104,9 +101,9 @@ pub fn dispatch_set(
             if content.trim().is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            set_setting_stdin_content(role, canonical, &content, storage)
+            set_setting_stdin_content(role, canonical, &content)
         } else if let Some(raw) = value {
-            set_setting_value(role, canonical, raw, storage)
+            set_setting_value(role, canonical, raw)
         } else {
             let content = prompt_secret(canonical)?;
             let trimmed = content.trim();
@@ -114,7 +111,7 @@ pub fn dispatch_set(
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
             let effective = resolve_write_role(role, canonical)?;
-            persist_set_value(effective, canonical, trimmed, storage)?;
+            persist_set_value(effective, canonical, trimmed)?;
             let outcome = ConfigSetOutcome {
                 setting: canonical.to_owned(),
                 role: effective.map(|r| r.as_str().to_owned()),
@@ -132,7 +129,7 @@ pub fn dispatch_set(
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            set_setting_value(role, canonical, &trimmed, storage)
+            set_setting_value(role, canonical, &trimmed)
         } else {
             let raw = value
                 .ok_or_else(|| format!("config set {canonical} requires a value or --stdin"))?;
@@ -140,17 +137,12 @@ pub fn dispatch_set(
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            set_setting_value(role, canonical, trimmed, storage)
+            set_setting_value(role, canonical, trimmed)
         }
     }
 }
 
-fn persist_set_value(
-    role: Option<Role>,
-    canonical: &str,
-    value: &str,
-    storage: &Storage,
-) -> Result<(), String> {
+fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     match canonical {
         "PHASEGENT_PROVIDER" => {
@@ -158,13 +150,13 @@ fn persist_set_value(
             let kind: ProviderKind = trimmed
                 .parse()
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
-            storage.update_provider(role, kind.as_str())?;
+            runtime::update_provider(role, kind.as_str())?;
         }
         "PHASEGENT_REDMINE_API_BASE" => {
             // Canonical global Redmine REST address (non-secret). No role is
             // required and no role-scoped address row is written.
             validate_http_base_url(canonical, trimmed)?;
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");
@@ -174,7 +166,7 @@ fn persist_set_value(
             if parsed == 0 {
                 return Err(format!("{canonical} must be greater than zero"));
             }
-            update_redmine_config_field(storage, role, |c| {
+            update_redmine_config_field(role, |c| {
                 c.close_status_id = Some(parsed);
             })?;
         }
@@ -186,7 +178,7 @@ fn persist_set_value(
             if parsed == 0 {
                 return Err(format!("{canonical} must be greater than zero"));
             }
-            update_redmine_config_field(storage, role, |c| {
+            update_redmine_config_field(role, |c| {
                 c.close_status_id = Some(parsed);
             })?;
         }
@@ -194,19 +186,19 @@ fn persist_set_value(
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_REDMINE_REPOSITORY_URL" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_DEFAULT_PROVIDER" => {
             let kind: ProviderKind = trimmed
                 .parse()
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
-            storage.save_global_setting(canonical, kind.as_str())?;
+            runtime::save_global_setting(canonical, kind.as_str())?;
         }
         // Legacy compatibility only: validated and persisted so existing
         // scripts keep working, but ignored for backend selection (URL
@@ -218,19 +210,19 @@ fn persist_set_value(
                     "invalid PHASEGENT_INDEX_BACKEND '{trimmed}'; expected sqlite or postgres"
                 ));
             }
-            storage.save_global_setting(canonical, &lower)?;
+            runtime::save_global_setting(canonical, &lower)?;
         }
         "PHASEGENT_INDEX_PG_URL" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_ENABLED" => {
             let normalised = crate::config_write::parse_bool_literal(trimmed).ok_or_else(|| {
                 format!("invalid {canonical} '{trimmed}'; expected true or false")
             })?;
-            storage.save_global_setting(canonical, if normalised { "true" } else { "false" })?;
+            runtime::save_global_setting(canonical, if normalised { "true" } else { "false" })?;
         }
         "PHASEGENT_NOTIFY_CHANNEL" => {
             let lower = trimmed.to_ascii_lowercase();
@@ -239,15 +231,15 @@ fn persist_set_value(
                     "invalid PHASEGENT_NOTIFY_CHANNEL '{trimmed}'; expected ntfy, webhook, dingtalk, or email"
                 ));
             }
-            storage.save_global_setting(canonical, &lower)?;
+            runtime::save_global_setting(canonical, &lower)?;
         }
         "PHASEGENT_NOTIFY_NTFY_BASE_URL" => {
             validate_http_base_url(canonical, trimmed)?;
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_NTFY_TOPIC" => {
             validate_ntfy_topic(trimmed)?;
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_NTFY_TOKEN"
         | "PHASEGENT_NOTIFY_WEBHOOK_TOKEN"
@@ -259,15 +251,15 @@ fn persist_set_value(
             if trimmed.chars().count() > 8192 {
                 return Err(format!("value for '{canonical}' is too long"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_WEBHOOK_URL" => {
             validate_webhook_url(canonical, trimmed)?;
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL" => {
             validate_webhook_url(canonical, trimmed)?;
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS" => {
             if trimmed.is_empty() {
@@ -276,7 +268,7 @@ fn persist_set_value(
             if trimmed.chars().count() > 1024 {
                 return Err(format!("value for '{canonical}' is too long"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE" => {
             let lower = trimmed.to_ascii_lowercase();
@@ -285,7 +277,7 @@ fn persist_set_value(
                     "invalid {canonical} '{trimmed}'; expected text or markdown"
                 ));
             }
-            storage.save_global_setting(canonical, &lower)?;
+            runtime::save_global_setting(canonical, &lower)?;
         }
         "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST" => {
             if trimmed.is_empty() {
@@ -294,7 +286,7 @@ fn persist_set_value(
             if trimmed.chars().any(char::is_control) || trimmed.contains(char::is_whitespace) {
                 return Err(format!("value for '{canonical}' must be a bare hostname"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT" => {
             let port: u16 = trimmed
@@ -303,7 +295,7 @@ fn persist_set_value(
             if port == 0 {
                 return Err(format!("{canonical} must be greater than zero"));
             }
-            storage.save_global_setting(canonical, &port.to_string())?;
+            runtime::save_global_setting(canonical, &port.to_string())?;
         }
         "PHASEGENT_NOTIFY_EMAIL_TLS" => {
             let lower = trimmed.to_ascii_lowercase();
@@ -312,7 +304,7 @@ fn persist_set_value(
                     "invalid {canonical} '{trimmed}'; expected auto, implicit, starttls, or plain"
                 ));
             }
-            storage.save_global_setting(canonical, &lower)?;
+            runtime::save_global_setting(canonical, &lower)?;
         }
         "PHASEGENT_NOTIFY_EMAIL_USERNAME" => {
             if trimmed.is_empty() {
@@ -326,7 +318,7 @@ fn persist_set_value(
             if trimmed.chars().count() > 2048 {
                 return Err(format!("value for '{canonical}' is too long"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         "PHASEGENT_NOTIFY_EMAIL_FROM"
         | "PHASEGENT_NOTIFY_EMAIL_TO"
@@ -340,7 +332,7 @@ fn persist_set_value(
             if trimmed.chars().count() > 2048 {
                 return Err(format!("value for '{canonical}' is too long"));
             }
-            storage.save_global_setting(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
         }
         _ => return Err(format!("unknown setting '{canonical}'")),
     }

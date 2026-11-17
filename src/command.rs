@@ -125,6 +125,15 @@ pub enum Command {
         value: ProviderKind,
     },
     ConfigProviderClear,
+    /// Human-operator migration of the legacy SQLite/TOML configuration
+    /// into the JSONC configuration file. The source database is named
+    /// explicitly; the destination uses the configuration resolver.
+    ConfigMigrate {
+        /// Absolute path of the legacy phasegent database.
+        from_sqlite: String,
+        /// Absolute path of an explicit legacy TOML overlay.
+        from_toml: Option<String>,
+    },
     Issue(IssueCommand),
     Comment(CommentCommand),
     /// Structured agent records: a CLI-owned versioned envelope over the

@@ -16,6 +16,7 @@ mod hooks;
 pub(crate) mod issue;
 pub(crate) mod issue_branches;
 pub(crate) mod issue_closure;
+pub(crate) mod migrate_config;
 mod notify;
 pub(crate) mod plugin;
 mod project;
@@ -129,11 +130,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         Command::ConfigShow => {
             // The CLI re-uses `invocation.role` so a verified agent role
             // gets a single-role view, and `phasegent config show` (no
-            // role) returns the global snapshot. Open the SQLite
-            // database once so any structured failure surfaces
-            // through the same path as the config facade.
-            let result = open_storage()
-                .and_then(|storage| crate::config::show_json(invocation.role, &storage));
+            // role) returns the global snapshot. The configuration file
+            // is the only source; the business database stays closed.
+            let result = crate::config::show_json(invocation.role);
             match result {
                 Ok(value) => print_json(&value),
                 Err(message) => {
@@ -152,9 +151,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                     Ok(role) => role,
                     Err(code) => return code,
                 };
-            let result = open_storage().and_then(|storage| {
-                crate::config::set_json(write_role, &setting, value.as_deref(), stdin, &storage)
-            });
+            let result = crate::config::set_json(write_role, &setting, value.as_deref(), stdin);
             match result {
                 Ok(outcome) => print_json(&outcome),
                 Err(message) => {
@@ -171,8 +168,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                     Ok(role) => role,
                     Err(code) => return code,
                 };
-            let result = open_storage()
-                .and_then(|storage| crate::config::clear_json(write_role, &setting, &storage));
+            let result = crate::config::clear_json(write_role, &setting);
             match result {
                 Ok(outcome) => print_json(&outcome),
                 Err(message) => {
@@ -181,7 +177,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
         }
         Command::ConfigProviderGet => {
-            let result = open_storage().and_then(|storage| crate::config::provider_get(&storage));
+            let result = crate::config::provider_get();
             match result {
                 Ok(value) => print_json(&value),
                 Err(message) => {
@@ -190,8 +186,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
         }
         Command::ConfigProviderSet { value } => {
-            let result = open_storage()
-                .and_then(|storage| crate::config::provider_set(value.as_str(), &storage));
+            let result = crate::config::provider_set(value.as_str());
             match result {
                 Ok(outcome) => print_json(&outcome),
                 Err(message) => {
@@ -200,7 +195,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             }
         }
         Command::ConfigProviderClear => {
-            let result = open_storage().and_then(|storage| crate::config::provider_clear(&storage));
+            let result = crate::config::provider_clear();
             match result {
                 Ok(value) => print_json(&value),
                 Err(message) => {
@@ -208,6 +203,10 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
                 }
             }
         }
+        Command::ConfigMigrate {
+            from_sqlite,
+            from_toml,
+        } => migrate_config::execute_migrate(&from_sqlite, from_toml.as_deref()),
         // Local branch context commands resolve their durable link
         // scope locally (no provider construction, no network); a flow
         // with no resolvable scope fails closed instead of writing.
@@ -360,6 +359,7 @@ fn shows_progress(command: &Command) -> bool {
         | Command::ConfigProviderGet
         | Command::ConfigProviderSet { .. }
         | Command::ConfigProviderClear
+        | Command::ConfigMigrate { .. }
         | Command::Hooks(_)
         | Command::Plugin(_)
         | Command::Skill(_)

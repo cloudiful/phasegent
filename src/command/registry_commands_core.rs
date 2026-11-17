@@ -58,6 +58,12 @@ pub(super) const CORE: &[CommandSpec] = &[
                         RoleAccess::AdminOnly,
                         "admin config clear",
                     ),
+                    leaf_op(
+                        "migrate",
+                        "Migrate the legacy SQLite/TOML configuration into the JSONC file",
+                        RoleAccess::AdminOnly,
+                        "admin config migrate",
+                    ),
                     group(
                         "provider",
                         "Machine-wide default provider",

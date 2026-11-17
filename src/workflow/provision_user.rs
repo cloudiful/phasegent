@@ -1,7 +1,7 @@
 //! Per-role identity, API key, and persistence flow for one agent role.
 
 use crate::auth;
-use crate::infra::storage::Storage;
+use crate::infra::config_file::runtime;
 use crate::policy::Role;
 use crate::providers::RedmineProvider;
 use crate::providers::api::PhasegentError;
@@ -18,11 +18,10 @@ use crate::providers::redmine::model::{RedmineCurrentUser, RoleProvisioningMetad
 /// creation uses Redmine password generation.
 pub(super) fn provision_role_user(
     admin: &RedmineProvider,
-    storage: &Storage,
     role: Role,
     metadata: &RoleProvisioningMetadata,
 ) -> Result<RedmineCurrentUser, PhasegentError> {
-    if let Some(user) = persisted_identity(role, storage)? {
+    if let Some(user) = persisted_identity(role)? {
         return Ok(user);
     }
     if let Some(existing) = admin.find_user_by_login(metadata.login).map_err(|error| {
@@ -33,7 +32,7 @@ pub(super) fn provision_role_user(
             describe(&error)
         ))
     })? {
-        return adopt_existing_user(admin, storage, role, existing);
+        return adopt_existing_user(admin, role, existing);
     }
 
     let created = match admin.create_service_user(
@@ -58,7 +57,7 @@ pub(super) fn provision_role_user(
                     metadata.login
                 ))
             })?;
-            return adopt_existing_user(admin, storage, role, existing);
+            return adopt_existing_user(admin, role, existing);
         }
         Err(error) => {
             return Err(PhasegentError::config(format!(
@@ -70,10 +69,8 @@ pub(super) fn provision_role_user(
         }
     };
     let api_key = read_api_key(admin, role, created.id)?;
-    auth::save_redmine_user(role, created.id, &created.login, storage)
-        .map_err(PhasegentError::config)?;
-    storage
-        .save_credential(role, crate::infra::storage::PROVIDER_REDMINE, &api_key)
+    auth::save_redmine_user(role, created.id, &created.login).map_err(PhasegentError::config)?;
+    runtime::save_credential(role, crate::infra::storage::PROVIDER_REDMINE, &api_key)
         .map_err(PhasegentError::config)?;
     Ok(RedmineCurrentUser {
         id: created.id,
@@ -86,17 +83,12 @@ pub(super) fn provision_role_user(
 
 /// Reuse the identity already persisted for `role`.
 ///
-/// Both the non-secret `role_redmine_user` row and a non-blank
-/// `role_credential` row are required, so a half-written or legacy record
-/// falls through to the admin lookup-and-create path instead of silently
-/// reusing a stale identity.
-fn persisted_identity(
-    role: Role,
-    storage: &Storage,
-) -> Result<Option<RedmineCurrentUser>, PhasegentError> {
-    let persisted_user = auth::load_redmine_user(role, storage).map_err(PhasegentError::config)?;
-    let persisted_key = storage
-        .load_credential(role, crate::infra::storage::PROVIDER_REDMINE)
+/// Both the non-secret provisioned identity and a non-blank credential are
+/// required, so a half-written or legacy record falls through to the admin
+/// lookup-and-create path instead of silently reusing a stale identity.
+fn persisted_identity(role: Role) -> Result<Option<RedmineCurrentUser>, PhasegentError> {
+    let persisted_user = auth::load_redmine_user(role).map_err(PhasegentError::config)?;
+    let persisted_key = runtime::load_credential(role, crate::infra::storage::PROVIDER_REDMINE)
         .map_err(PhasegentError::config)?;
     if let (Some((user_id, login)), Some(api_key)) = (persisted_user, persisted_key)
         && user_id > 0
@@ -117,15 +109,12 @@ fn persisted_identity(
 /// Read the API key of an already existing user and persist the pairing.
 fn adopt_existing_user(
     admin: &RedmineProvider,
-    storage: &Storage,
     role: Role,
     existing: crate::providers::redmine::model::RedmineUser,
 ) -> Result<RedmineCurrentUser, PhasegentError> {
     let api_key = read_api_key(admin, role, existing.id)?;
-    auth::save_redmine_user(role, existing.id, &existing.login, storage)
-        .map_err(PhasegentError::config)?;
-    storage
-        .save_credential(role, crate::infra::storage::PROVIDER_REDMINE, &api_key)
+    auth::save_redmine_user(role, existing.id, &existing.login).map_err(PhasegentError::config)?;
+    runtime::save_credential(role, crate::infra::storage::PROVIDER_REDMINE, &api_key)
         .map_err(PhasegentError::config)?;
     Ok(RedmineCurrentUser {
         id: existing.id,

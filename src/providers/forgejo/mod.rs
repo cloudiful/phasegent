@@ -10,7 +10,6 @@ mod status;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 pub use config::ForgejoConfig;
@@ -46,17 +45,11 @@ impl ForgejoProvider {
     }
 
     pub fn for_role(config: ForgejoConfig, role: Role) -> Result<Self, PhasegentError> {
-        let storage = Storage::open().map_err(PhasegentError::config)?;
-        Self::with_storage(config, role, &storage)
+        Self::with_storage(config, role)
     }
 
-    fn with_storage(
-        config: ForgejoConfig,
-        role: Role,
-        storage: &Storage,
-    ) -> Result<Self, PhasegentError> {
-        let token = storage
-            .load_credential(role, "forgejo")
+    fn with_storage(config: ForgejoConfig, role: Role) -> Result<Self, PhasegentError> {
+        let token = crate::infra::config_file::runtime::load_credential(role, "forgejo")
             .map_err(|_| PhasegentError::auth("could not load Forgejo role credential"))?
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| PhasegentError::auth("Forgejo role credential is not configured"))?;

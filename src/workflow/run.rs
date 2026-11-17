@@ -115,14 +115,12 @@ fn persist_role_settings(
     config: &RedmineConfig,
     bootstrap: &RedmineBootstrap,
 ) -> Result<(), PhasegentError> {
-    let storage = crate::infra::storage::Storage::open().map_err(PhasegentError::config)?;
     for entry in provisioned {
         auth::persist_redmine_bootstrap(
             entry.role,
             Some(config.api_base.clone()),
             bootstrap.project.id,
             bootstrap.close_status.id,
-            &storage,
         )
         .map_err(PhasegentError::config)?;
     }
@@ -132,7 +130,6 @@ fn persist_role_settings(
             Some(config.api_base.clone()),
             bootstrap.project.id,
             bootstrap.close_status.id,
-            &storage,
         )
         .map_err(PhasegentError::config)?;
     }
