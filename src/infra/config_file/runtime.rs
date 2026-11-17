@@ -17,7 +17,7 @@
 use super::file::ConfigFileStore;
 use super::model::{
     ConfigFile, ForgejoRoleConfig, GitlabRoleConfig, RedmineRoleConfig, RedmineUser,
-    RoleLegacyConfig,
+    RoleLegacyConfig, SettingValue,
 };
 use crate::auth::{RedmineStoredConfig, StoredConfig};
 use crate::policy::Role;
@@ -47,27 +47,6 @@ pub fn credential_fingerprint(secret: &str) -> Option<String> {
         return None;
     }
     Some(chars[chars.len() - 4..].iter().collect())
-}
-
-/// Metadata about a single global setting. The full secret value never
-/// leaves this module through this struct; only the length is exposed,
-/// which keeps `config show` redacted while still surfacing
-/// "configured/empty/missing" semantics to operators.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GlobalSettingSummary {
-    pub name: &'static str,
-    pub present: bool,
-    pub length: usize,
-}
-
-impl GlobalSettingSummary {
-    pub(crate) fn missing(name: &'static str) -> Self {
-        Self {
-            name,
-            present: false,
-            length: 0,
-        }
-    }
 }
 
 /// Provider-owned Forgejo settings and their provenance.
@@ -111,53 +90,44 @@ fn now_epoch_seconds() -> i64 {
         .unwrap_or(0)
 }
 
-/// Read the stored value of a global setting. Returns `Ok(None)` when
-/// the setting was never written or holds only whitespace, so callers
-/// can keep the env-over-file precedence uniform.
-pub fn load_global_setting(name: &str) -> Result<Option<String>, String> {
-    let model = read_model()?;
-    Ok(model
-        .get_setting(name)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned))
+/// Read one machine-wide setting in its typed form. Returns `Ok(None)`
+/// when the setting was never written.
+pub fn load_setting(path: &str) -> Result<Option<SettingValue>, String> {
+    Ok(read_model()?.setting(path))
 }
 
-/// Persist a global setting. The value is trimmed and validated against
-/// the canonical setting list; a rejected value never reaches the file.
-pub fn save_global_setting(name: &str, value: &str) -> Result<(), String> {
-    store()?.update(|document| document.set_setting(name, value))?;
+/// Read one machine-wide setting in the flat text form. Returns
+/// `Ok(None)` when the setting was never written, so callers can keep
+/// the env-over-file precedence uniform.
+///
+/// A configuration file this build cannot read is an error here: the
+/// resolution must never degrade into "not configured", because that
+/// would silently change the effective provider and could route a write
+/// to a different provider than the file names.
+pub fn load_global_setting(path: &str) -> Result<Option<String>, String> {
+    Ok(read_model()?.setting(path).map(|value| value.to_text()))
+}
+
+/// Persist one machine-wide setting. The flat text form is parsed into
+/// the typed value the path declares, so the file keeps its JSON type.
+/// A rejected value never reaches the file.
+pub fn save_global_setting(path: &str, value: &str) -> Result<(), String> {
+    let setting = super::setting_path::global_setting(path)
+        .ok_or_else(|| "unknown configuration setting".to_owned())?;
+    let typed = super::model::parse_setting_value(setting.kind, value)?;
+    store()?.update(|document| document.set_setting(path, &typed))?;
     Ok(())
 }
 
-/// Remove a global setting. Returns `true` when a value was actually
-/// removed so callers can distinguish a real clear from a no-op.
-pub fn delete_global_setting(name: &str) -> Result<bool, String> {
+/// Remove one machine-wide setting. Returns `true` when a value was
+/// actually removed so callers can distinguish a real clear from a no-op.
+pub fn delete_global_setting(path: &str) -> Result<bool, String> {
     let mut cleared = false;
     store()?.update(|document| {
-        cleared = document.clear_setting(name)?;
+        cleared = document.clear_setting(path)?;
         Ok(())
     })?;
     Ok(cleared)
-}
-
-/// Summarise the canonical set of global settings. The struct never
-/// carries the full secret value; `config show` consumes the summaries
-/// to render redacted metadata.
-pub fn summarise_global_settings() -> Result<Vec<GlobalSettingSummary>, String> {
-    let model = read_model()?;
-    let mut summaries = Vec::new();
-    for &name in crate::infra::storage_schema::GLOBAL_SETTING_NAMES {
-        summaries.push(match model.get_setting(name) {
-            Some(value) => GlobalSettingSummary {
-                name,
-                present: true,
-                length: value.chars().count(),
-            },
-            None => GlobalSettingSummary::missing(name),
-        });
-    }
-    Ok(summaries)
 }
 
 /// Set only the role-scoped provider preference, leaving the other
@@ -170,22 +140,28 @@ pub fn update_provider(role: Role, provider: &str) -> Result<(), String> {
 /// Load the role-level configuration: the provider preference plus the
 /// inert legacy `api_base`/`repository` values. Returns `None` when the
 /// role carries no configuration at all.
+///
+/// A configuration file this build cannot read is an error here: the
+/// role-scoped provider is a provider selection, and reporting it as
+/// absent would silently change the effective provider.
 pub fn load_role_config(role: Role) -> Result<Option<StoredConfig>, String> {
-    let model = read_model()?;
-    let Some(entry) = model.role(role) else {
-        return Ok(None);
-    };
+    Ok(role_config_of(&read_model()?, role))
+}
+
+/// The role-level configuration carried by a parsed model.
+fn role_config_of(model: &ConfigFile, role: Role) -> Option<StoredConfig> {
+    let entry = model.role(role)?;
     if entry.provider.is_none()
         && entry.legacy.api_base.is_none()
         && entry.legacy.repository.is_none()
     {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(StoredConfig {
+    Some(StoredConfig {
         provider: entry.provider.clone(),
         api_base: entry.legacy.api_base.clone(),
         repository: entry.legacy.repository.clone(),
-    }))
+    })
 }
 
 /// Upsert the role-level configuration.

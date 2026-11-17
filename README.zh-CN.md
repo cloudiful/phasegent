@@ -50,8 +50,8 @@ phasegent --provider redmine admin workflow bootstrap \
 ```
 
 Redmine REST 地址是机器级的：`auth setup --api-base` 与
-`admin config set redmine-api-base <URL>` 保存所有 role 共用的同一个地址，
-`config show` 只在 `global_settings` 中报告一次。credential、已开通的身份、
+`admin config set redmine.apiBase <URL>` 保存所有 role 共用的同一个地址，
+`config show` 只在 `redmine` 段中报告一次。credential、已开通的身份、
 provider 选择以及 Redmine close-status id 仍是 role 级。
 
 `workflow bootstrap` 为每个 agent role 开通一个 Redmine 服务账号——
@@ -84,6 +84,9 @@ credential，由文件系统保护：Unix 下目录为 `0700`、文件为 `0600`
 仍把配置存在 SQLite 中的安装需要由人工执行一次
 `phasegent admin config migrate` 完成迁移，操作手册见
 [配置迁移](docs/config-migration.md)。
+
+仍使用上一个 schema 版本的配置文件会被运行时拒绝，需要由人工执行一次
+`phasegent admin config upgrade` 完成升级，同一本手册有说明。
 
 ## 常用命令
 

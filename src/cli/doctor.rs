@@ -61,17 +61,15 @@ pub(crate) fn build_report() -> Result<DoctorReport, String> {
     ] {
         roles.push(config_snapshot::snapshot_role(role)?);
     }
-    let global_default_provider = match runtime::load_global_setting("PHASEGENT_DEFAULT_PROVIDER")?
-    {
-        Some(raw) => Some(
-            raw.parse::<crate::providers::config::ProviderKind>()
-                .map_err(|error| {
-                    format!("persisted PHASEGENT_DEFAULT_PROVIDER is invalid: {error}")
-                })?
-                .as_str(),
-        ),
-        None => None,
-    };
+    let global_default_provider =
+        match runtime::load_global_setting(crate::infra::config_file::setting_path::PROVIDER)? {
+            Some(raw) => Some(
+                raw.parse::<crate::providers::config::ProviderKind>()
+                    .map_err(|error| format!("persisted provider is invalid: {error}"))?
+                    .as_str(),
+            ),
+            None => None,
+        };
     let backend = crate::infra::issue_index_backend::resolve_index_backend()?;
     let index = match backend {
         crate::infra::issue_index_backend::IndexBackendKind::Sqlite => {

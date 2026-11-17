@@ -422,6 +422,7 @@ pub fn view_for(command: &Command) -> HumanView {
         | Command::ConfigProviderSet { .. }
         | Command::ConfigProviderClear
         | Command::ConfigMigrate { .. }
+        | Command::ConfigUpgrade
         | Command::Issue(_)
         | Command::Comment(_)
         | Command::Record(_)
@@ -484,6 +485,7 @@ pub fn label_for(command: &Command) -> &'static str {
         Command::ConfigProviderSet { .. } => "config provider set",
         Command::ConfigProviderClear => "config provider clear",
         Command::ConfigMigrate { .. } => "admin config migrate",
+        Command::ConfigUpgrade => "admin config upgrade",
         Command::Doctor => "doctor",
         Command::Notify(_) => "notify",
     }

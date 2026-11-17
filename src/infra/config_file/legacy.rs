@@ -134,10 +134,21 @@ impl ConfigFile {
 /// themselves never appear in an error.
 fn verify_fidelity(rows: &LegacyConfigRows, file: &ConfigFile) -> Result<(), String> {
     for row in &rows.global_settings {
-        let expected = row.value.as_deref().unwrap_or_default();
-        if file.get_setting(&row.name) != Some(expected) {
+        if is_ignored_global_setting(&row.name) {
+            continue;
+        }
+        let raw = row.value.as_deref().unwrap_or_default();
+        let setting =
+            crate::infra::config_file::setting_path::global_setting_by_legacy_name(&row.name)
+                .ok_or_else(|| "unknown global setting".to_owned())?;
+        let expected = if setting.kind == crate::infra::config_file::SettingKind::Text {
+            crate::infra::config_file::SettingValue::Text(raw.to_owned())
+        } else {
+            typed_global_value(&row.name, raw)?.1
+        };
+        if file.setting(setting.dotted) != Some(expected) {
             return Err(
-                "the migrated configuration does not carry a persisted global setting verbatim; \
+                "the migrated configuration does not carry a persisted global setting; \
                  refusing to migrate it"
                     .to_owned(),
             );
@@ -276,6 +287,12 @@ fn apply_global_settings(
         if seen.insert(row.name.clone(), ()).is_some() {
             return Err("duplicate global setting row".to_owned());
         }
+        if is_ignored_global_setting(&row.name) {
+            // The legacy index-backend selector was always inert: the
+            // presence of the PostgreSQL URL selects the backend. It has
+            // no destination in the typed tree and is dropped on purpose.
+            continue;
+        }
         if !crate::infra::config_file::is_known_setting(&row.name) {
             return Err(
                 "the source holds a global setting the configuration model does not know; \
@@ -299,14 +316,68 @@ fn apply_global_settings(
             );
         }
     }
-    // The value is stored exactly as it was persisted: the model has no
-    // representation for a trimmed value, so trimming it here would
-    // change a persisted setting.
+    // The value is mapped into its typed destination: a boolean stays a
+    // boolean, a port stays a number, a list stays an array. A value the
+    // typed tree cannot represent is a refusal, never a silent change.
     for row in rows {
+        if is_ignored_global_setting(&row.name) {
+            continue;
+        }
         let value = row.value.as_deref().unwrap_or_default();
-        file.set_setting_raw(&row.name, value)?;
+        let (path, typed) = typed_global_value(&row.name, value)?;
+        file.set_setting(path, typed)?;
     }
     Ok(())
+}
+
+/// The legacy settings that have no destination in the typed tree.
+///
+/// The index-backend selector was inert: the presence of the PostgreSQL
+/// URL selects the backend, so the persisted value never changed anything.
+fn is_ignored_global_setting(name: &str) -> bool {
+    name == "PHASEGENT_INDEX_BACKEND"
+}
+
+/// Map a persisted flat setting onto its typed destination.
+///
+/// The value is converted into the type the destination declares, so a
+/// persisted `"1"` becomes the boolean `true` and a persisted
+/// `"587,25"` becomes the list `["587", "25"]`. A value the typed tree
+/// cannot represent is refused. The value is never echoed back.
+fn typed_global_value(
+    name: &str,
+    raw: &str,
+) -> Result<(&'static str, crate::infra::config_file::SettingValue), String> {
+    let Some(setting) =
+        crate::infra::config_file::setting_path::global_setting_by_legacy_name(name)
+    else {
+        return Err(
+            "the source holds a global setting the configuration model does not know; \
+             refusing to migrate it"
+                .to_owned(),
+        );
+    };
+    use crate::infra::config_file::{SettingKind, SettingValue, parse_setting_value};
+    let value = match setting.kind {
+        SettingKind::Text if !raw.trim().is_empty() => Ok(SettingValue::Text(raw.to_owned())),
+        SettingKind::Choice(_)
+            if matches!(
+                name,
+                "PHASEGENT_NOTIFY_CHANNEL"
+                    | "PHASEGENT_NOTIFY_EMAIL_TLS"
+                    | "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE"
+            ) =>
+        {
+            parse_setting_value(setting.kind, &raw.trim().to_ascii_lowercase())
+        }
+        _ => parse_setting_value(setting.kind, raw),
+    }
+    .map_err(|_| {
+        "the source holds a global setting value the typed configuration cannot represent; \
+         refusing to migrate it"
+            .to_owned()
+    })?;
+    Ok((setting.dotted, value))
 }
 
 fn apply_role_configs(file: &mut ConfigFile, rows: &[LegacyRoleConfigRow]) -> Result<(), String> {
@@ -481,21 +552,30 @@ fn apply_toml_overlay(file: &mut ConfigFile, overlay: LegacyTomlOverlay) -> Resu
         let provider = value
             .parse::<ProviderKind>()
             .map_err(|_| "TOML default_provider is invalid".to_owned())?;
-        file.set_setting("PHASEGENT_DEFAULT_PROVIDER", provider.as_str())?;
+        file.set_setting(
+            crate::infra::config_file::setting_path::PROVIDER,
+            crate::infra::config_file::SettingValue::Text(provider.as_str().to_owned()),
+        )?;
     }
     if let Some(value) = overlay.redmine_api_base.as_deref() {
         refuse_empty_overlay_value(value, "redmine_api_base")?;
-        file.set_setting("PHASEGENT_REDMINE_API_BASE", value)?;
+        file.set_setting(
+            crate::infra::config_file::setting_path::REDMINE_API_BASE,
+            crate::infra::config_file::SettingValue::Text(value.to_owned()),
+        )?;
     }
     if let Some(value) = overlay.redmine_repository_url.as_deref() {
         refuse_empty_overlay_value(value, "redmine_repository_url")?;
-        file.set_setting("PHASEGENT_REDMINE_REPOSITORY_URL", value)?;
+        file.set_setting(
+            crate::infra::config_file::setting_path::REDMINE_REPOSITORY_URL,
+            crate::infra::config_file::SettingValue::Text(value.to_owned()),
+        )?;
     }
     if let Some(value) = overlay.index_backend.as_deref() {
         refuse_empty_overlay_value(value, "index_backend")?;
-        // The legacy overlay lowercased the backend literal, and that
-        // documented behaviour is kept.
-        file.set_setting("PHASEGENT_INDEX_BACKEND", &value.to_ascii_lowercase())?;
+        // The legacy backend selector was inert: the presence of the
+        // PostgreSQL URL selects the backend. It has no destination in the
+        // typed tree, so the overlay value is dropped on purpose.
     }
     for (name, role_overlay) in overlay.roles {
         let role = role_from_name(&name)?;
@@ -549,6 +629,7 @@ fn role_from_name(name: &str) -> Result<Role, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::config_file::SettingValue;
 
     fn complete_rows() -> LegacyConfigRows {
         LegacyConfigRows {
@@ -617,11 +698,20 @@ mod tests {
         let file = ConfigFile::from_legacy(complete_rows()).unwrap();
 
         assert_eq!(
-            file.get_setting("PHASEGENT_DEFAULT_PROVIDER"),
-            Some("redmine")
+            file.version,
+            crate::infra::config_file::SCHEMA_VERSION,
+            "the importer writes the current schema version"
         );
-        assert_eq!(file.get_setting("PHASEGENT_INDEX_BACKEND"), Some("sqlite"));
-        assert_eq!(file.get_setting("PHASEGENT_NOTIFY_NTFY_TOPIC"), None);
+        assert_eq!(
+            file.setting("provider"),
+            Some(SettingValue::Text("redmine".to_owned()))
+        );
+        assert_eq!(
+            file.setting("index.postgres.url"),
+            None,
+            "the inert index backend selector has no destination"
+        );
+        assert_eq!(file.setting("notifications.ntfy.topic"), None);
 
         let executor = file.role(Role::Executor).unwrap();
         assert_eq!(executor.provider.as_deref(), Some("forgejo"));
@@ -689,20 +779,25 @@ mod tests {
         let file = ConfigFile::from_legacy(rows).unwrap();
 
         assert_eq!(
-            file.get_setting("PHASEGENT_DEFAULT_PROVIDER"),
-            Some("forgejo")
+            file.setting("provider"),
+            Some(SettingValue::Text("forgejo".to_owned()))
         );
         assert_eq!(
-            file.get_setting("PHASEGENT_REDMINE_API_BASE"),
-            Some("https://toml-redmine.example")
+            file.setting("redmine.apiBase"),
+            Some(SettingValue::Text(
+                "https://toml-redmine.example".to_owned()
+            ))
         );
         assert_eq!(
-            file.get_setting("PHASEGENT_REDMINE_REPOSITORY_URL"),
-            Some("ssh://git@example/owner/repo.git")
+            file.setting("redmine.repositoryUrl"),
+            Some(SettingValue::Text(
+                "ssh://git@example/owner/repo.git".to_owned()
+            ))
         );
         assert_eq!(
-            file.get_setting("PHASEGENT_INDEX_BACKEND"),
-            Some("postgres")
+            file.setting("index.postgres.url"),
+            None,
+            "the inert index backend selector has no destination"
         );
 
         let executor = file.role(Role::Executor).unwrap();
@@ -820,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn a_persisted_global_setting_keeps_its_surrounding_whitespace() {
+    fn a_persisted_global_setting_maps_onto_its_typed_destination() {
         let mut rows = complete_rows();
         rows.global_settings[0].value = Some(" redmine ".to_owned());
         rows.global_settings.push(LegacyGlobalSettingRow {
@@ -831,12 +926,62 @@ mod tests {
         let file = ConfigFile::from_legacy(rows).expect("the raw value must map");
 
         assert_eq!(
-            file.get_setting("PHASEGENT_DEFAULT_PROVIDER"),
-            Some(" redmine ")
+            file.setting("provider"),
+            Some(SettingValue::Text("redmine".to_owned())),
+            "the typed mapping drops the surrounding whitespace"
         );
         assert_eq!(
-            file.get_setting("PHASEGENT_NOTIFY_NTFY_TOPIC"),
-            Some(" topic ")
+            file.setting("notifications.ntfy.topic"),
+            Some(SettingValue::Text(" topic ".to_owned()))
+        );
+    }
+
+    #[test]
+    fn legacy_choices_are_case_insensitive_and_text_fidelity_is_checked_against_source() {
+        let mut rows = complete_rows();
+        for (name, value) in [
+            ("PHASEGENT_NOTIFY_CHANNEL", "EMAIL"),
+            ("PHASEGENT_NOTIFY_EMAIL_TLS", "STARTTLS"),
+            ("PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE", "MARKDOWN"),
+            ("PHASEGENT_INDEX_PG_URL", "  postgres://example/db  "),
+        ] {
+            rows.global_settings.push(LegacyGlobalSettingRow {
+                name: name.into(),
+                value: Some(value.into()),
+            });
+        }
+        let mut file = ConfigFile::from_legacy(rows.clone()).unwrap();
+        assert_eq!(
+            file.setting("notifications.channel"),
+            Some(SettingValue::Text("email".into()))
+        );
+        assert_eq!(
+            file.setting("notifications.email.smtp.tls"),
+            Some(SettingValue::Text("starttls".into()))
+        );
+        assert_eq!(
+            file.setting("notifications.dingtalk.messageType"),
+            Some(SettingValue::Text("markdown".into()))
+        );
+        file.set_setting(
+            "index.postgres.url",
+            SettingValue::Text("postgres://example/db".into()),
+        )
+        .unwrap();
+        assert!(verify_fidelity(&rows, &file).is_err());
+    }
+
+    #[test]
+    fn legacy_global_provider_remains_case_sensitive() {
+        let mut rows = complete_rows();
+        rows.global_settings[0].value = Some("REDMINE".into());
+        assert!(ConfigFile::from_legacy(rows).is_err());
+        assert!(typed_global_value("PHASEGENT_DEFAULT_PROVIDER", "REDMINE").is_err());
+        assert_eq!(
+            typed_global_value("PHASEGENT_DEFAULT_PROVIDER", " redmine ")
+                .unwrap()
+                .1,
+            SettingValue::Text("redmine".into())
         );
     }
 

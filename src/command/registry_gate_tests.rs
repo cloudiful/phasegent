@@ -32,6 +32,7 @@ const EXPECTED_HUMAN_ONLY: &[&str] = &[
     "admin config provider clear",
     "admin config provider set",
     "admin config set",
+    "admin config upgrade",
     "admin workflow",
     "admin workflow bootstrap",
     "auth",

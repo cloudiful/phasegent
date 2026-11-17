@@ -16,9 +16,19 @@
 //!
 //! ```jsonc
 //! {
-//!   "version": 1,
-//!   "settings": {
-//!     "PHASEGENT_DEFAULT_PROVIDER": "redmine"
+//!   "version": 2,
+//!   "provider": "redmine",
+//!   "redmine": {
+//!     "apiBase": "https://redmine.example",
+//!     "repositoryUrl": "https://git.example/owner/repo.git",
+//!     "gitMirror": { "apiKey": "plaintext-secret" }
+//!   },
+//!   "index": { "postgres": { "url": "postgres://user@host/db" } },
+//!   "notifications": {
+//!     "enabled": true,
+//!     "channel": "ntfy",
+//!     "ntfy": { "baseUrl": "https://ntfy.example", "topic": "phasegent", "token": "plaintext-secret" },
+//!     "email": { "smtp": { "host": "smtp.example", "port": 587, "tls": "starttls" }, "to": ["ops@example.com"] }
 //!   },
 //!   "roles": {
 //!     "executor": {
@@ -36,26 +46,31 @@
 //! }
 //! ```
 //!
-//! `settings` is keyed by the canonical `PHASEGENT_*` global setting names.
-//! `roles` is keyed by the exact role names and each entry mirrors the seven
-//! legacy configuration tables: `role_config` (`provider` plus inert `legacy`
+//! The machine-wide settings live in the typed hierarchy above; the file
+//! carries no flat settings map and no environment-style name. `roles` is
+//! keyed by the exact role names and each entry mirrors the seven legacy
+//! configuration tables: `role_config` (`provider` plus inert `legacy`
 //! columns), `role_redmine_config`, `role_forgejo_config`,
 //! `role_gitlab_config`, `role_credential`, and `role_redmine_user`.
-//! `global_setting` is the `settings` map. The credential fingerprint is
-//! derived from the stored value instead of being persisted, so it cannot
-//! drift from the secret.
+//! The credential fingerprint is derived from the stored value instead of
+//! being persisted, so it cannot drift from the secret.
 
 mod file;
 mod jsonc;
 mod legacy;
 mod model;
 pub mod runtime;
+pub mod setting_path;
 
 pub use file::{ConfigFileStore, ConfigLock};
 pub use jsonc::ConfigDocument;
+pub(crate) use jsonc::{check_duplicate_keys, parse_root};
 pub use legacy::{
     LegacyConfigRows, LegacyCredentialRow, LegacyForgejoConfigRow, LegacyGitlabConfigRow,
     LegacyGlobalSettingRow, LegacyRedmineConfigRow, LegacyRedmineUserRow, LegacyRoleConfigRow,
     LegacyTomlOverlay, LegacyTomlRole,
 };
-pub use model::{ConfigFile, SCHEMA_VERSION, is_known_setting};
+pub use model::{
+    ConfigFile, RoleConfig, SCHEMA_VERSION, SettingKind, SettingValue, is_known_setting,
+    parse_setting_value,
+};

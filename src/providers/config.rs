@@ -3,6 +3,7 @@ use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 use crate::providers::redmine::http::RedmineHttp;
 use crate::remote;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 /// The tracking providers phasegent supports.
@@ -10,7 +11,8 @@ use std::str::FromStr;
 /// `Redmine` is the fallback; `Local` is the credential-free SQLite store;
 /// `Forgejo` and `GitLab` are self-hosted HTTP instances. Any other name is
 /// rejected before a provider is resolved.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     #[default]
     Redmine,
@@ -92,9 +94,14 @@ pub fn resolve_kind(
         }
     }
     // The persisted machine-wide default lives in the configuration file.
-    if let Some(value) =
-        crate::infra::config_file::runtime::load_global_setting("PHASEGENT_DEFAULT_PROVIDER")
-            .map_err(PhasegentError::config)?
+    // The file is read strictly: a configuration this build cannot read is
+    // an error, never an absent default. Reporting it as absent would
+    // silently change the effective provider and could route a write to a
+    // provider the file never named.
+    if let Some(value) = crate::infra::config_file::runtime::load_global_setting(
+        crate::infra::config_file::setting_path::PROVIDER,
+    )
+    .map_err(PhasegentError::config)?
         && !value.trim().is_empty()
     {
         return value

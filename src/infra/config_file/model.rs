@@ -1,19 +1,107 @@
-use crate::infra::storage_schema::GLOBAL_SETTING_NAMES;
+//! The typed schema-v2 configuration model.
+//!
+//! The configuration file carries a hierarchy of typed values: a machine-wide
+//! `provider`, a `redmine` section, an `index` section, a `notifications`
+//! section, and the per-role entries. Every value keeps its JSON type: a
+//! boolean stays a boolean, a port stays a number, a recipient list stays an
+//! array. There is no flat settings map and no environment name in the file.
+//!
+//! Absent values stay absent. A section that carries nothing is the same as
+//! a missing section, so the file never gains a default it did not hold.
+
+use crate::notifications::config::NotifyChannel;
 use crate::policy::Role;
 use crate::providers::config::ProviderKind;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const ROLE_NAMES: &[&str] = &["admin", "orchestrator", "executor", "reviewer", "explore"];
 pub const CREDENTIAL_PROVIDERS: &[&str] = &["redmine", "forgejo", "gitlab"];
+
+/// The value kinds the configuration tree carries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingKind {
+    /// A non-empty string.
+    Text,
+    /// A boolean.
+    Bool,
+    /// A TCP port between 1 and 65535.
+    Port,
+    /// A list of non-empty strings.
+    List,
+    /// A string from a fixed set of literals.
+    Choice(&'static [&'static str]),
+}
+
+/// One configuration value in its typed form.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettingValue {
+    Text(String),
+    Bool(bool),
+    Port(u16),
+    List(Vec<String>),
+}
+
+impl SettingValue {
+    /// The textual form the flat setting interface uses. The
+    /// configuration file itself never stores this form; it is the
+    /// compatibility shape the environment overrides and the historical
+    /// CLI aliases speak.
+    pub fn to_text(&self) -> String {
+        match self {
+            Self::Text(value) => value.clone(),
+            Self::Bool(value) => value.to_string(),
+            Self::Port(value) => value.to_string(),
+            Self::List(values) => values.join(","),
+        }
+    }
+
+    /// The JSON shape of the value, used by the snapshot so a typed value
+    /// stays typed on the way out.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::Text(value) => serde_json::Value::String(value.clone()),
+            Self::Bool(value) => serde_json::Value::Bool(*value),
+            Self::Port(value) => serde_json::Value::from(*value),
+            Self::List(values) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| serde_json::Value::String(value.clone()))
+                    .collect(),
+            ),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ConfigFile {
     pub version: u32,
-    #[serde(default)]
-    pub settings: BTreeMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
+    pub provider: Option<ProviderKind>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub redmine: Option<RedmineSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub index: Option<IndexSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub notifications: Option<NotificationSettings>,
     #[serde(default)]
     pub roles: BTreeMap<String, RoleConfig>,
 }
@@ -22,28 +110,362 @@ impl Default for ConfigFile {
     fn default() -> Self {
         Self {
             version: SCHEMA_VERSION,
-            settings: BTreeMap::new(),
+            provider: None,
+            redmine: None,
+            index: None,
+            notifications: None,
             roles: BTreeMap::new(),
         }
     }
 }
 
+/// The machine-wide Redmine section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RedmineSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub api_base: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub repository_url: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub git_mirror: Option<GitMirrorSettings>,
+}
+
+/// The Redmine git-mirror section. It carries the mirror bearer key.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GitMirrorSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub api_key: Option<String>,
+}
+
+/// The issue-index section. The PostgreSQL URL decides the backend: its
+/// presence selects PostgreSQL, its absence selects SQLite.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct IndexSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub postgres: Option<PostgresSettings>,
+}
+
+/// The PostgreSQL index settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PostgresSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub url: Option<String>,
+}
+
+/// The agent-notification section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotificationSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
+    pub enabled: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
+    pub channel: Option<NotifyChannel>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub ntfy: Option<NtfySettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub webhook: Option<WebhookSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub dingtalk: Option<DingtalkSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub email: Option<EmailSettings>,
+}
+
+/// The ntfy notification settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NtfySettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub base_url: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub topic: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub token: Option<String>,
+}
+
+/// The webhook notification settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WebhookSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub url: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub token: Option<String>,
+}
+
+/// The DingTalk notification settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DingtalkSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub webhook_url: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub secret: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "de_list"
+    )]
+    pub keywords: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
+    pub message_type: Option<DingtalkMessageType>,
+}
+
+/// The DingTalk message type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DingtalkMessageType {
+    Text,
+    Markdown,
+}
+
+/// The e-mail notification settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EmailSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_section"
+    )]
+    pub smtp: Option<SmtpSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub username: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub password: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub from: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "de_list"
+    )]
+    pub to: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub reply_to: Option<String>,
+}
+
+/// The SMTP transport settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SmtpSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_text"
+    )]
+    pub host: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_port"
+    )]
+    pub port: Option<u16>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
+    pub tls: Option<SmtpTls>,
+}
+
+/// The SMTP transport security mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    Auto,
+    Implicit,
+    Starttls,
+    Plain,
+}
+
+fn de_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+fn de_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let port = u16::deserialize(deserializer)?;
+    validate_value(SettingKind::Port, &SettingValue::Port(port))
+        .map_err(serde::de::Error::custom)?;
+    Ok(Some(port))
+}
+
+fn de_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<String>::deserialize(deserializer)?;
+    validate_value(SettingKind::List, &SettingValue::List(values.clone()))
+        .map_err(serde::de::Error::custom)?;
+    Ok(values)
+}
+
+/// Deserialize a text field. A present value must be a string and must not
+/// be empty: the configuration never stores a null or an empty string where
+/// a value belongs.
+fn de_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.trim().is_empty() {
+        return Err(serde::de::Error::custom("value cannot be empty"));
+    }
+    Ok(Some(value))
+}
+
+/// Deserialize a nested section. A section that carries nothing is the same
+/// as a missing section.
+fn de_section<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default + PartialEq,
+{
+    let value = T::deserialize(deserializer)?;
+    Ok(if value == T::default() {
+        None
+    } else {
+        Some(value)
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct RoleConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "RoleLegacyConfig::is_empty")]
     pub legacy: RoleLegacyConfig,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub redmine: Option<RedmineRoleConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub forgejo: Option<ForgejoRoleConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub gitlab: Option<GitlabRoleConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub credentials: BTreeMap<String, CredentialEntry>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub redmine_user: Option<RedmineUser>,
 }
 
@@ -52,9 +474,15 @@ pub struct RoleConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct RoleLegacyConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub api_base: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub repository: Option<String>,
 }
 
@@ -67,11 +495,20 @@ impl RoleLegacyConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct RedmineRoleConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub api_base: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub close_status_id: Option<u64>,
 }
 
@@ -87,15 +524,30 @@ pub struct ForgejoRoleConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct GitlabRoleConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub api_base: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub project_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub repository: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub updated_at: Option<i64>,
 }
 
@@ -103,7 +555,11 @@ pub struct GitlabRoleConfig {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CredentialEntry {
     pub value: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_present"
+    )]
     pub updated_at: Option<i64>,
 }
 
@@ -119,32 +575,50 @@ impl ConfigFile {
         Self::default()
     }
 
-    pub fn get_setting(&self, name: &str) -> Option<&str> {
-        self.settings.get(name).map(String::as_str)
+    /// Read one machine-wide setting in its typed form.
+    pub fn setting(&self, path: &str) -> Option<SettingValue> {
+        let setting = super::setting_path::global_setting(path)?;
+        let document = serde_json::to_value(self).ok()?;
+        let mut current = &document;
+        for segment in setting.segments {
+            current = current.get(segment)?;
+        }
+        value_from_json(setting.kind, current)
     }
 
-    pub fn set_setting(&mut self, name: &str, value: &str) -> Result<(), String> {
-        let trimmed = validate_setting(name, value)?;
-        self.settings.insert(name.to_owned(), trimmed);
+    /// Store one machine-wide setting. The value is validated against the
+    /// kind the path declares, so an out-of-range port or an unknown
+    /// literal never reaches the file.
+    pub fn set_setting(&mut self, path: &str, value: SettingValue) -> Result<(), String> {
+        let setting = super::setting_path::global_setting(path)
+            .ok_or_else(|| "unknown configuration setting".to_owned())?;
+        validate_value(setting.kind, &value)?;
+        let mut document = serde_json::to_value(&*self)
+            .map_err(|_| "could not read the configuration".to_owned())?;
+        set_json_path(&mut document, setting.segments, &value)?;
+        let model: ConfigFile = serde_json::from_value(document)
+            .map_err(|_| "the value is not valid for this configuration field".to_owned())?;
+        *self = model;
         Ok(())
     }
 
-    /// Store a global setting exactly as it was persisted.
-    ///
-    /// The migration importer uses this to carry a persisted value over
-    /// byte for byte: `set_setting` normalises the value it stores, so a
-    /// value with surrounding whitespace would be changed on the way in.
-    /// The value is validated exactly like a normal write — the name must
-    /// be known and the value must not be empty — but the stored value
-    /// keeps every byte of the original.
-    pub fn set_setting_raw(&mut self, name: &str, value: &str) -> Result<(), String> {
-        validate_setting_value(name, value)?;
-        self.settings.insert(name.to_owned(), value.to_owned());
-        Ok(())
-    }
-
-    pub fn clear_setting(&mut self, name: &str) -> bool {
-        self.settings.remove(name).is_some()
+    /// Remove one machine-wide setting. Returns `true` when a value was
+    /// actually removed.
+    pub fn clear_setting(&mut self, path: &str) -> bool {
+        let Some(setting) = super::setting_path::global_setting(path) else {
+            return false;
+        };
+        let Ok(mut document) = serde_json::to_value(&*self) else {
+            return false;
+        };
+        if !remove_json_path(&mut document, setting.segments) {
+            return false;
+        }
+        let Ok(model) = serde_json::from_value::<ConfigFile>(document) else {
+            return false;
+        };
+        *self = model;
+        true
     }
 
     pub fn role(&self, role: Role) -> Option<&RoleConfig> {
@@ -299,13 +773,23 @@ impl ConfigFile {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.version != SCHEMA_VERSION {
+            if self.version == 1 {
+                return Err(
+                    "the configuration file uses schema version 1; a human operator must \
+                     upgrade it with `phasegent admin config upgrade` before phasegent \
+                     reads or writes it"
+                        .to_owned(),
+                );
+            }
             return Err(format!(
                 "unsupported configuration version {}; expected {}",
                 self.version, SCHEMA_VERSION
             ));
         }
-        for (name, value) in &self.settings {
-            validate_setting(name, value)?;
+        for setting in super::setting_path::GLOBAL_SETTINGS {
+            if let Some(value) = self.setting(setting.dotted) {
+                validate_value(setting.kind, &value)?;
+            }
         }
         for (name, role) in &self.roles {
             if !ROLE_NAMES.contains(&name.as_str()) {
@@ -317,88 +801,168 @@ impl ConfigFile {
     }
 }
 
-/// Validate a setting.
-///
-/// The setting name comes from an untrusted file, so it is never echoed
-/// back: a name can be an accidentally pasted secret.
-/// Whether a setting name is one of the canonical global setting names.
+/// Whether a flat setting name is one of the canonical machine-wide names.
 ///
 /// The name is not echoed back by any caller: a name that comes from a
 /// file can be an accidentally pasted secret.
 pub fn is_known_setting(name: &str) -> bool {
-    GLOBAL_SETTING_NAMES.contains(&name)
+    crate::infra::storage_schema::GLOBAL_SETTING_NAMES.contains(&name)
 }
 
-fn validate_setting(name: &str, value: &str) -> Result<String, String> {
-    validate_setting_value(name, value)?;
-    Ok(value.trim().to_owned())
+/// Validate a typed value against the kind its path declares.
+fn validate_value(kind: SettingKind, value: &SettingValue) -> Result<(), String> {
+    match (kind, value) {
+        (SettingKind::Text, SettingValue::Text(text)) => {
+            if text.trim().is_empty() {
+                return Err("value cannot be empty".to_owned());
+            }
+            Ok(())
+        }
+        (SettingKind::Bool, SettingValue::Bool(_)) => Ok(()),
+        (SettingKind::Port, SettingValue::Port(port)) => {
+            if *port == 0 {
+                return Err("the port must be greater than zero".to_owned());
+            }
+            Ok(())
+        }
+        (SettingKind::List, SettingValue::List(values)) => {
+            if values.is_empty() {
+                return Err("the list cannot be empty".to_owned());
+            }
+            if values.iter().any(|value| value.trim().is_empty()) {
+                return Err("a list entry cannot be empty".to_owned());
+            }
+            Ok(())
+        }
+        (SettingKind::Choice(allowed), SettingValue::Text(text)) => {
+            if allowed.contains(&text.as_str()) {
+                Ok(())
+            } else {
+                Err("the value is not one of the allowed literals".to_owned())
+            }
+        }
+        _ => Err("the value does not match the type of this configuration field".to_owned()),
+    }
 }
 
-/// Check a setting value without changing it.
+/// Parse the flat text form of a value into its typed form.
 ///
-/// The check is the same one the normalising setter applies, so a value
-/// that is stored verbatim is exactly as valid as a value that is stored
-/// normalised.
-fn validate_setting_value(name: &str, value: &str) -> Result<(), String> {
-    if !GLOBAL_SETTING_NAMES.contains(&name) {
-        return Err("unknown configuration setting".to_owned());
-    }
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(format!("value for '{name}' cannot be empty"));
-    }
-    match name {
-        "PHASEGENT_DEFAULT_PROVIDER" => {
-            trimmed
-                .parse::<ProviderKind>()
-                .map_err(|_| format!("invalid value for '{name}'"))?;
-        }
-        "PHASEGENT_INDEX_BACKEND" => {
-            let lower = trimmed.to_ascii_lowercase();
-            if lower != "sqlite" && lower != "postgres" {
-                return Err(format!(
-                    "invalid value for '{name}'; expected sqlite or postgres"
-                ));
+/// The flat text form is the shape the environment overrides and the
+/// historical CLI aliases use. The value never appears in an error.
+pub fn parse_setting_value(kind: SettingKind, raw: &str) -> Result<SettingValue, String> {
+    let trimmed = raw.trim();
+    match kind {
+        SettingKind::Text => {
+            if trimmed.is_empty() {
+                return Err("the value cannot be empty".to_owned());
             }
+            Ok(SettingValue::Text(trimmed.to_owned()))
         }
-        "PHASEGENT_NOTIFY_ENABLED" => {
-            if crate::config_write::parse_bool_literal(trimmed).is_none() {
-                return Err(format!(
-                    "invalid value for '{name}'; expected true or false"
-                ));
-            }
-        }
-        "PHASEGENT_NOTIFY_CHANNEL" => {
-            crate::notifications::config::NotifyChannel::parse(trimmed)
-                .map_err(|_| format!("invalid value for '{name}'"))?;
-        }
-        "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE" => {
-            let lower = trimmed.to_ascii_lowercase();
-            if lower != "text" && lower != "markdown" {
-                return Err(format!(
-                    "invalid value for '{name}'; expected text or markdown"
-                ));
-            }
-        }
-        "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT" => {
-            let port = trimmed
-                .parse::<u16>()
-                .map_err(|_| format!("invalid value for '{name}'; expected 1-65535"))?;
+        SettingKind::Bool => crate::config_write::parse_bool_literal(trimmed)
+            .map(SettingValue::Bool)
+            .ok_or_else(|| "invalid boolean value; expected true or false".to_owned()),
+        SettingKind::Port => {
+            let port: u16 = trimmed
+                .parse()
+                .map_err(|_| "the port must be a number between 1 and 65535".to_owned())?;
             if port == 0 {
-                return Err(format!("{name} must be greater than zero"));
+                return Err("the port must be greater than zero".to_owned());
+            }
+            Ok(SettingValue::Port(port))
+        }
+        SettingKind::List => {
+            let values: Vec<String> = trimmed
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if values.is_empty() {
+                return Err("the list cannot be empty".to_owned());
+            }
+            Ok(SettingValue::List(values))
+        }
+        SettingKind::Choice(allowed) => {
+            if allowed.contains(&trimmed) {
+                Ok(SettingValue::Text(trimmed.to_owned()))
+            } else {
+                Err(format!(
+                    "invalid value; expected one of {}",
+                    allowed.join(", ")
+                ))
             }
         }
-        "PHASEGENT_NOTIFY_EMAIL_TLS" => {
-            let lower = trimmed.to_ascii_lowercase();
-            if !matches!(lower.as_str(), "auto" | "implicit" | "starttls" | "plain") {
-                return Err(format!(
-                    "invalid value for '{name}'; expected auto, implicit, starttls, or plain"
-                ));
-            }
-        }
-        _ => {}
     }
+}
+
+/// Read a typed value out of its JSON shape.
+fn value_from_json(kind: SettingKind, value: &serde_json::Value) -> Option<SettingValue> {
+    match kind {
+        SettingKind::Text | SettingKind::Choice(_) => {
+            Some(SettingValue::Text(value.as_str()?.to_owned()))
+        }
+        SettingKind::Bool => Some(SettingValue::Bool(value.as_bool()?)),
+        SettingKind::Port => Some(SettingValue::Port(u16::try_from(value.as_u64()?).ok()?)),
+        SettingKind::List => Some(SettingValue::List(
+            value
+                .as_array()?
+                .iter()
+                .map(|entry| entry.as_str().map(str::to_owned))
+                .collect::<Option<Vec<String>>>()?,
+        )),
+    }
+}
+
+/// Write a typed value into the JSON shape at `segments`, creating the
+/// missing intermediate objects.
+fn set_json_path(
+    document: &mut serde_json::Value,
+    segments: &[&str],
+    value: &SettingValue,
+) -> Result<(), String> {
+    let (last, parents) = segments
+        .split_last()
+        .ok_or_else(|| "the configuration path is empty".to_owned())?;
+    let mut current = document;
+    for segment in parents {
+        let object = current
+            .as_object_mut()
+            .ok_or_else(|| "the configuration path is not an object".to_owned())?;
+        let entry = object
+            .entry((*segment).to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !entry.is_object() {
+            *entry = serde_json::Value::Object(serde_json::Map::new());
+        }
+        current = entry;
+    }
+    let object = current
+        .as_object_mut()
+        .ok_or_else(|| "the configuration path is not an object".to_owned())?;
+    object.insert((*last).to_owned(), value.to_json());
     Ok(())
+}
+
+/// Remove the value at `segments`. Returns `true` when a value was
+/// removed.
+fn remove_json_path(document: &mut serde_json::Value, segments: &[&str]) -> bool {
+    let Some((last, parents)) = segments.split_last() else {
+        return false;
+    };
+    let mut current = document;
+    for segment in parents {
+        let Some(next) = current.get_mut(*segment) else {
+            return false;
+        };
+        if !next.is_object() {
+            return false;
+        }
+        current = next;
+    }
+    let Some(object) = current.as_object_mut() else {
+        return false;
+    };
+    object.remove(*last).is_some()
 }
 
 impl RoleConfig {

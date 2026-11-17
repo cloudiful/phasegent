@@ -152,12 +152,6 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
             runtime::update_provider(role, kind.as_str())?;
         }
-        "PHASEGENT_REDMINE_API_BASE" => {
-            // Canonical global Redmine REST address (non-secret). No role is
-            // required and no role-scoped address row is written.
-            validate_http_base_url(canonical, trimmed)?;
-            runtime::save_global_setting(canonical, trimmed)?;
-        }
         "PHASEGENT_REDMINE_CLOSE_STATUS_ID" => {
             let role = role.expect("role required");
             let parsed = trimmed
@@ -182,69 +176,63 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
                 c.close_status_id = Some(parsed);
             })?;
         }
-        "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY" => {
+        "redmine.apiBase" => {
+            // Canonical global Redmine REST address (non-secret). No role is
+            // required and no role-scoped address row is written.
+            validate_http_base_url(canonical, trimmed)?;
+            runtime::save_global_setting(canonical, trimmed)?;
+        }
+        "redmine.repositoryUrl" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_REDMINE_REPOSITORY_URL" => {
+        "redmine.gitMirror.apiKey" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_DEFAULT_PROVIDER" => {
+        "provider" => {
             let kind: ProviderKind = trimmed
                 .parse()
                 .map_err(|e: String| format!("invalid provider '{trimmed}': {e}"))?;
             runtime::save_global_setting(canonical, kind.as_str())?;
         }
-        // Legacy compatibility only: validated and persisted so existing
-        // scripts keep working, but ignored for backend selection (URL
-        // presence alone selects PostgreSQL; absence selects SQLite).
-        "PHASEGENT_INDEX_BACKEND" => {
-            let lower = trimmed.to_ascii_lowercase();
-            if lower != "sqlite" && lower != "postgres" {
-                return Err(format!(
-                    "invalid PHASEGENT_INDEX_BACKEND '{trimmed}'; expected sqlite or postgres"
-                ));
-            }
-            runtime::save_global_setting(canonical, &lower)?;
-        }
-        "PHASEGENT_INDEX_PG_URL" => {
+        "index.postgres.url" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_ENABLED" => {
+        "notifications.enabled" => {
             let normalised = crate::config_write::parse_bool_literal(trimmed).ok_or_else(|| {
                 format!("invalid {canonical} '{trimmed}'; expected true or false")
             })?;
             runtime::save_global_setting(canonical, if normalised { "true" } else { "false" })?;
         }
-        "PHASEGENT_NOTIFY_CHANNEL" => {
+        "notifications.channel" => {
             let lower = trimmed.to_ascii_lowercase();
             if !matches!(lower.as_str(), "ntfy" | "webhook" | "dingtalk" | "email") {
                 return Err(format!(
-                    "invalid PHASEGENT_NOTIFY_CHANNEL '{trimmed}'; expected ntfy, webhook, dingtalk, or email"
+                    "invalid {canonical} '{trimmed}'; expected ntfy, webhook, dingtalk, or email"
                 ));
             }
             runtime::save_global_setting(canonical, &lower)?;
         }
-        "PHASEGENT_NOTIFY_NTFY_BASE_URL" => {
+        "notifications.ntfy.baseUrl" => {
             validate_http_base_url(canonical, trimmed)?;
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_NTFY_TOPIC" => {
+        "notifications.ntfy.topic" => {
             validate_ntfy_topic(trimmed)?;
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_NTFY_TOKEN"
-        | "PHASEGENT_NOTIFY_WEBHOOK_TOKEN"
-        | "PHASEGENT_NOTIFY_DINGTALK_SECRET"
-        | "PHASEGENT_NOTIFY_EMAIL_PASSWORD" => {
+        "notifications.ntfy.token"
+        | "notifications.webhook.token"
+        | "notifications.dingtalk.secret"
+        | "notifications.email.password" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
@@ -253,15 +241,15 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_WEBHOOK_URL" => {
+        "notifications.webhook.url" => {
             validate_webhook_url(canonical, trimmed)?;
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL" => {
+        "notifications.dingtalk.webhookUrl" => {
             validate_webhook_url(canonical, trimmed)?;
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS" => {
+        "notifications.dingtalk.keywords" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
@@ -270,7 +258,7 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE" => {
+        "notifications.dingtalk.messageType" => {
             let lower = trimmed.to_ascii_lowercase();
             if lower != "text" && lower != "markdown" {
                 return Err(format!(
@@ -279,7 +267,7 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, &lower)?;
         }
-        "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST" => {
+        "notifications.email.smtp.host" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
@@ -288,7 +276,7 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT" => {
+        "notifications.email.smtp.port" => {
             let port: u16 = trimmed
                 .parse()
                 .map_err(|_| format!("could not parse {canonical} '{trimmed}': must be 1-65535"))?;
@@ -297,7 +285,7 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, &port.to_string())?;
         }
-        "PHASEGENT_NOTIFY_EMAIL_TLS" => {
+        "notifications.email.smtp.tls" => {
             let lower = trimmed.to_ascii_lowercase();
             if !matches!(lower.as_str(), "auto" | "implicit" | "starttls" | "plain") {
                 return Err(format!(
@@ -306,7 +294,7 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, &lower)?;
         }
-        "PHASEGENT_NOTIFY_EMAIL_USERNAME" => {
+        "notifications.email.username" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
@@ -320,9 +308,7 @@ fn persist_set_value(role: Option<Role>, canonical: &str, value: &str) -> Result
             }
             runtime::save_global_setting(canonical, trimmed)?;
         }
-        "PHASEGENT_NOTIFY_EMAIL_FROM"
-        | "PHASEGENT_NOTIFY_EMAIL_TO"
-        | "PHASEGENT_NOTIFY_EMAIL_REPLY_TO" => {
+        "notifications.email.from" | "notifications.email.to" | "notifications.email.replyTo" => {
             if trimmed.is_empty() {
                 return Err(format!("value for '{canonical}' cannot be empty"));
             }
@@ -397,17 +383,17 @@ fn validate_webhook_url(canonical: &str, value: &str) -> Result<(), String> {
 /// bounded length. The value becomes a single path segment.
 fn validate_ntfy_topic(value: &str) -> Result<(), String> {
     if value.is_empty() {
-        return Err("value for 'PHASEGENT_NOTIFY_NTFY_TOPIC' cannot be empty".to_owned());
+        return Err("value for 'notifications.ntfy.topic' cannot be empty".to_owned());
     }
     if value.chars().count() > 256 {
-        return Err("value for 'PHASEGENT_NOTIFY_NTFY_TOPIC' is too long".to_owned());
+        return Err("value for 'notifications.ntfy.topic' is too long".to_owned());
     }
     if value
         .chars()
         .any(|c| c.is_control() || c.is_whitespace() || c == '/')
     {
         return Err(
-            "value for 'PHASEGENT_NOTIFY_NTFY_TOPIC' must not contain whitespace or '/'".to_owned(),
+            "value for 'notifications.ntfy.topic' must not contain whitespace or '/'".to_owned(),
         );
     }
     Ok(())

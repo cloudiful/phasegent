@@ -6,12 +6,9 @@ use super::{ConfigClearOutcome, is_role_scoped_setting};
 
 /// Clear a setting. For global settings the row is deleted;
 /// for role-scoped the field is nulled. Returns whether a
-/// value was actually removed. The legacy `PHASEGENT_INDEX_BACKEND`
-/// remains clearable for compatibility but clearing it never changes
-/// backend selection; only `PHASEGENT_INDEX_PG_URL` presence selects
-/// PostgreSQL. An ordinary Operator clears through the admin scope or a
-/// human-selected target storage role; a managed session without a role fails
-/// closed for role-scoped clears.
+/// value was actually removed. An ordinary Operator clears through the
+/// admin scope or a human-selected target storage role; a managed session
+/// without a role fails closed for role-scoped clears.
 pub fn clear_setting(role: Option<Role>, canonical: &str) -> Result<Value, String> {
     let effective = if is_role_scoped_setting(canonical) {
         match CallerContext::from_role(role) {
@@ -37,31 +34,30 @@ pub fn clear_setting(role: Option<Role>, canonical: &str) -> Result<Value, Strin
 
 fn persist_clear_value(role: Option<Role>, canonical: &str) -> Result<bool, String> {
     match canonical {
-        "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY"
-        | "PHASEGENT_REDMINE_REPOSITORY_URL"
-        | "PHASEGENT_REDMINE_API_BASE"
-        | "PHASEGENT_DEFAULT_PROVIDER"
-        | "PHASEGENT_INDEX_BACKEND"
-        | "PHASEGENT_INDEX_PG_URL"
-        | "PHASEGENT_NOTIFY_ENABLED"
-        | "PHASEGENT_NOTIFY_CHANNEL"
-        | "PHASEGENT_NOTIFY_NTFY_BASE_URL"
-        | "PHASEGENT_NOTIFY_NTFY_TOPIC"
-        | "PHASEGENT_NOTIFY_NTFY_TOKEN"
-        | "PHASEGENT_NOTIFY_WEBHOOK_URL"
-        | "PHASEGENT_NOTIFY_WEBHOOK_TOKEN"
-        | "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL"
-        | "PHASEGENT_NOTIFY_DINGTALK_SECRET"
-        | "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS"
-        | "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE"
-        | "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST"
-        | "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT"
-        | "PHASEGENT_NOTIFY_EMAIL_TLS"
-        | "PHASEGENT_NOTIFY_EMAIL_USERNAME"
-        | "PHASEGENT_NOTIFY_EMAIL_PASSWORD"
-        | "PHASEGENT_NOTIFY_EMAIL_FROM"
-        | "PHASEGENT_NOTIFY_EMAIL_TO"
-        | "PHASEGENT_NOTIFY_EMAIL_REPLY_TO" => {
+        "redmine.apiBase"
+        | "redmine.repositoryUrl"
+        | "redmine.gitMirror.apiKey"
+        | "provider"
+        | "index.postgres.url"
+        | "notifications.enabled"
+        | "notifications.channel"
+        | "notifications.ntfy.baseUrl"
+        | "notifications.ntfy.topic"
+        | "notifications.ntfy.token"
+        | "notifications.webhook.url"
+        | "notifications.webhook.token"
+        | "notifications.dingtalk.webhookUrl"
+        | "notifications.dingtalk.secret"
+        | "notifications.dingtalk.keywords"
+        | "notifications.dingtalk.messageType"
+        | "notifications.email.smtp.host"
+        | "notifications.email.smtp.port"
+        | "notifications.email.smtp.tls"
+        | "notifications.email.username"
+        | "notifications.email.password"
+        | "notifications.email.from"
+        | "notifications.email.to"
+        | "notifications.email.replyTo" => {
             let cleared = runtime::delete_global_setting(canonical)?;
             Ok(cleared)
         }

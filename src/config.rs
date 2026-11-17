@@ -52,11 +52,11 @@ pub struct ProviderGetOutcome {
 }
 
 pub fn provider_get() -> Result<ProviderGetOutcome, String> {
-    match runtime::load_global_setting("PHASEGENT_DEFAULT_PROVIDER")? {
+    match runtime::load_global_setting(crate::infra::config_file::setting_path::PROVIDER)? {
         Some(value) => {
-            let kind: ProviderKind = value.parse().map_err(|error| {
-                format!("persisted PHASEGENT_DEFAULT_PROVIDER is invalid: {error}")
-            })?;
+            let kind: ProviderKind = value
+                .parse()
+                .map_err(|error| format!("persisted provider is invalid: {error}"))?;
             Ok(ProviderGetOutcome {
                 provider: Some(kind.as_str()),
             })
@@ -69,7 +69,10 @@ pub fn provider_set(value: &str) -> Result<ProviderGetOutcome, String> {
     let kind: ProviderKind = value
         .parse()
         .map_err(|error| format!("invalid provider '{value}': {error}"))?;
-    runtime::save_global_setting("PHASEGENT_DEFAULT_PROVIDER", kind.as_str())?;
+    runtime::save_global_setting(
+        crate::infra::config_file::setting_path::PROVIDER,
+        kind.as_str(),
+    )?;
     Ok(ProviderGetOutcome {
         provider: Some(kind.as_str()),
     })
@@ -81,6 +84,7 @@ pub struct ProviderClearOutcome {
 }
 
 pub fn provider_clear() -> Result<ProviderClearOutcome, String> {
-    let cleared = runtime::delete_global_setting("PHASEGENT_DEFAULT_PROVIDER")?;
+    let cleared =
+        runtime::delete_global_setting(crate::infra::config_file::setting_path::PROVIDER)?;
     Ok(ProviderClearOutcome { cleared })
 }

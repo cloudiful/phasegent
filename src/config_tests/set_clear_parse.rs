@@ -7,12 +7,9 @@ fn config_set_parses_canonical_and_kebab_alias() {
     // Project-id aliases were removed; they are asserted as rejected in
     // the dedicated regression test below.
     let cases = [
-        (
-            "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-            "redmine-git-mirror-api-key",
-        ),
-        ("PHASEGENT_DEFAULT_PROVIDER", "default-provider"),
-        ("PHASEGENT_REDMINE_API_BASE", "redmine-api-base"),
+        ("redmine.gitMirror.apiKey", "redmine-git-mirror-api-key"),
+        ("provider", "default-provider"),
+        ("redmine.apiBase", "redmine-api-base"),
         (
             "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
             "redmine-close-status-id",
@@ -97,7 +94,7 @@ fn config_set_global_without_role_parses() {
         command::parse_with_role_env(&args, None).expect("global set without a role must parse");
     match invocation.command {
         Command::ConfigSet { setting, stdin, .. } => {
-            assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY");
+            assert_eq!(setting, "redmine.gitMirror.apiKey");
             assert!(stdin);
         }
         other => panic!("expected ConfigSet global without role, got {other:?}"),
@@ -116,7 +113,7 @@ fn config_set_global_without_role_parses() {
         .expect("global set url without a role must parse");
     match invocation.command {
         Command::ConfigSet { setting, .. } => {
-            assert_eq!(setting, "PHASEGENT_REDMINE_REPOSITORY_URL")
+            assert_eq!(setting, "redmine.repositoryUrl")
         }
         other => panic!("got {other:?}"),
     }
@@ -134,7 +131,7 @@ fn config_set_global_without_role_parses() {
     let invocation = command::parse_with_role_env(&args, None)
         .expect("global redmine api base without a role must parse");
     match invocation.command {
-        Command::ConfigSet { setting, .. } => assert_eq!(setting, "PHASEGENT_REDMINE_API_BASE"),
+        Command::ConfigSet { setting, .. } => assert_eq!(setting, "redmine.apiBase"),
         other => panic!("got {other:?}"),
     }
 }
@@ -214,7 +211,7 @@ fn config_clear_command_parsing() {
         command::parse_with_role_env(&args, None).expect("clear global without role must parse");
     match inv.command {
         Command::ConfigClear { setting, .. } => {
-            assert_eq!(setting, "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")
+            assert_eq!(setting, "redmine.gitMirror.apiKey")
         }
         other => panic!("got {other:?}"),
     }

@@ -37,39 +37,65 @@ Per field, the effective value is:
 3. the configuration file,
 4. the built-in default.
 
-Environment variables are runtime-only overrides. They are never written into
-the file and never ingested by the migration importer.
+Environment variables are runtime-only overrides. They keep their
+`PHASEGENT_*` names, they are never written into the file, and they are never
+ingested by the migration importer. The file itself never stores an
+environment-style name.
 
 The provider resolver follows the same chain, concretely:
 
 1. explicit `--provider`,
 2. `PHASEGENT_PROVIDER` (environment),
 3. `PHASEGENT_DEFAULT_PROVIDER` (environment),
-4. the persisted `PHASEGENT_DEFAULT_PROVIDER` in the file,
+4. the persisted `provider` in the file,
 5. the role-scoped `provider` in the file,
 6. the Redmine fallback.
 
-The Redmine REST address is machine-wide: it is one value in `settings`
-(`PHASEGENT_REDMINE_API_BASE`) shared by every role, never a per-role address.
+A configuration file this build cannot read is an error, never an absent
+value: the resolver never degrades a file it cannot interpret into "not
+configured", because that would silently change the effective provider.
+
+The Redmine REST address is machine-wide: it is one value
+(`redmine.apiBase`) shared by every role, never a per-role address.
 Credentials, provisioned identities, provider selection, and the Redmine
 close-status id stay role-scoped.
 
 ## Schema
 
-The document is versioned (`version: 1`). Comments and trailing commas are
-accepted; every other JSON5 extension is rejected. Unknown top-level fields,
-unknown role names, unknown settings, unknown credential providers, duplicate
-keys, a wrong `version`, and malformed types are refused with an error that
-never echoes a value.
+The document is versioned (`version: 2`). It is a hierarchy of typed values:
+a boolean stays a boolean, a port stays a number, and a recipient list stays
+an array. Comments and trailing commas are accepted; every other JSON5
+extension is rejected. Unknown fields, unknown role names, unknown settings,
+unknown credential providers, duplicate keys, a wrong `version`, and malformed
+types are refused with an error that never echoes a value.
+
+An optional value stays absent. A section that carries nothing is the same as
+a missing section, so the file never gains a default it did not hold.
 
 ```jsonc
 {
-  // Bumped only by a schema change; 1 is the current version.
-  "version": 1,
-  "settings": {
-    "PHASEGENT_DEFAULT_PROVIDER": "forgejo",
-    "PHASEGENT_REDMINE_API_BASE": "https://redmine.example.invalid",
-    "PHASEGENT_NOTIFY_ENABLED": "true"
+  // Bumped only by a schema change; 2 is the current version.
+  "version": 2,
+  "provider": "forgejo",
+  "redmine": {
+    "apiBase": "https://redmine.example.invalid",
+    "repositoryUrl": "https://git.example.invalid/owner/repository.git",
+    "gitMirror": { "apiKey": "EXAMPLE-TOKEN-NOT-A-REAL-SECRET" }
+  },
+  "index": {
+    "postgres": { "url": "postgres://user:password@db.example.invalid/phasegent" }
+  },
+  "notifications": {
+    "enabled": true,
+    "channel": "email",
+    "email": {
+      "smtp": { "host": "smtp.example.invalid", "port": 587, "tls": "starttls" },
+      "username": "phasegent",
+      "password": "EXAMPLE-PASSWORD-NOT-A-REAL-SECRET",
+      "from": "phasegent@example.invalid",
+      "to": ["ops@example.invalid", "oncall@example.invalid"],
+      "replyTo": "phasegent@example.invalid"
+    }
   },
   "roles": {
     "executor": {
@@ -105,12 +131,31 @@ Field reference:
 
 | Path | Meaning |
 | --- | --- |
-| `version` | Schema version; only `1` is accepted. |
-| `settings` | Machine-wide settings keyed by the canonical `PHASEGENT_*` names. |
-| `settings.PHASEGENT_REDMINE_API_BASE` | The one Redmine REST address every role shares. |
-| `settings.PHASEGENT_DEFAULT_PROVIDER` | The machine-wide default provider. |
-| `settings.PHASEGENT_INDEX_PG_URL` | Secret; its presence selects the PostgreSQL issue index, its absence SQLite. |
-| `settings.PHASEGENT_INDEX_BACKEND` | Legacy literal, ignored for selection, kept for compatibility. |
+| `version` | Schema version; only `2` is accepted. |
+| `provider` | The machine-wide default provider: `redmine`, `local`, `forgejo`, or `gitlab`. |
+| `redmine.apiBase` | The one Redmine REST address every role shares. |
+| `redmine.repositoryUrl` | The Redmine repository URL override. |
+| `redmine.gitMirror.apiKey` | Secret; the bearer key of the git-mirror plugin. |
+| `index.postgres.url` | Secret; its presence selects the PostgreSQL issue index, its absence SQLite. |
+| `notifications.enabled` | Boolean; whether agent notifications are enabled. |
+| `notifications.channel` | The selected channel: `ntfy`, `webhook`, `dingtalk`, or `email`. |
+| `notifications.ntfy.baseUrl` | The ntfy server base URL. |
+| `notifications.ntfy.topic` | The ntfy topic. |
+| `notifications.ntfy.token` | Secret; the ntfy token. |
+| `notifications.webhook.url` | The webhook URL. |
+| `notifications.webhook.token` | Secret; the webhook token. |
+| `notifications.dingtalk.webhookUrl` | The DingTalk webhook URL. |
+| `notifications.dingtalk.secret` | Secret; the DingTalk signing secret. |
+| `notifications.dingtalk.keywords` | Array of strings; the DingTalk keywords. |
+| `notifications.dingtalk.messageType` | `text` or `markdown`. |
+| `notifications.email.smtp.host` | The SMTP host name. |
+| `notifications.email.smtp.port` | Number, 1-65535; the SMTP port. |
+| `notifications.email.smtp.tls` | `auto`, `implicit`, `starttls`, or `plain`. |
+| `notifications.email.username` | The SMTP user name. |
+| `notifications.email.password` | Secret; the SMTP password. |
+| `notifications.email.from` | The sender address. |
+| `notifications.email.to` | Array of strings; the recipient addresses. |
+| `notifications.email.replyTo` | The reply-to address. |
 | `roles` | One entry per role name: `admin`, `orchestrator`, `executor`, `reviewer`, `explore`. |
 | `roles.<role>.provider` | The role-scoped provider preference. |
 | `roles.<role>.redmine` | `closeStatusId` is the live role-scoped value; `apiBase` and `projectId` are retained legacy fields. |
@@ -126,6 +171,51 @@ way. They are preserved so a migration never loses a value; the runtime does
 not resolve a provider, an address, or a project from them. The migration
 carries them over exactly as they were persisted, and a persisted value it
 cannot represent exactly is refused instead of being changed.
+
+The old `PHASEGENT_INDEX_BACKEND` selector was always inert - the presence of
+the PostgreSQL URL selects the backend - and it is no longer part of the
+supported configuration.
+
+## Writing settings
+
+`phasegent admin config set` and `phasegent admin config clear` name a
+machine-wide setting by its dotted path inside the tree above:
+
+```sh
+phasegent admin config set redmine.apiBase https://redmine.example.invalid
+phasegent admin config set notifications.email.smtp.port 587
+phasegent admin config set notifications.email.to ops@example.invalid,oncall@example.invalid
+phasegent admin config set notifications.enabled true
+```
+
+The historical names stay accepted as aliases, so an existing script keeps
+working: `PHASEGENT_REDMINE_API_BASE`, `redmine-api-base`, `notify-enabled`,
+and the other kebab-case forms all resolve to the same setting. The file
+itself never stores one of them.
+
+Two names carry a scope, and the scope is never guessed:
+
+| Name | Scope |
+| --- | --- |
+| `provider` (also `PHASEGENT_DEFAULT_PROVIDER`, `default-provider`) | The machine-wide default provider. |
+| `PHASEGENT_PROVIDER` | The role-scoped provider preference of one role. |
+
+`--target-role` selects the role-scoped entry and is rejected for a
+machine-wide setting, so a script that used it for the provider fails loudly
+instead of silently writing the machine-wide default. A role-scoped write
+without `--target-role` uses the admin scope for an ordinary operator.
+
+The role-scoped settings are `PHASEGENT_PROVIDER`,
+`PHASEGENT_REDMINE_CLOSE_STATUS_ID`, and `PHASEGENT_CLOSE_STATUS_ID`.
+
+Secrets are write-only: `redmine.gitMirror.apiKey`, `index.postgres.url`,
+`notifications.ntfy.token`, `notifications.webhook.token`,
+`notifications.dingtalk.secret`, and `notifications.email.password` are never
+accepted as a direct value on the command line. Use `--stdin` or the secure
+interactive prompt. The one exception is `notifications.email.password`,
+which also accepts a direct value because SMTP providers hand it out as a
+pasteable API token; that value then appears in shell history and process
+listings, so pass `--stdin` when that exposure matters.
 
 ## Secrets and file permissions
 
@@ -145,8 +235,8 @@ file. The replacement renames the prepared file over the live one on every
 platform, so the live configuration is never removed before its replacement
 exists. A concurrent external edit detected before the rename is refused
 rather than overwritten. `admin config set`, `admin config
-clear`, `admin config provider set|clear`, and `admin auth setup` all write
-this file and nothing else.
+clear`, `admin config provider set|clear`, `admin config upgrade`, and
+`admin auth setup` all write this file and nothing else.
 
 The lock is the sidecar file `phasegent.jsonc.lock` next to the configuration
 file; it is created with mode `0600` on Unix.
@@ -172,14 +262,16 @@ written to SQLite.
 
 Reading the configuration (`config show`, `config provider get`, `doctor`) is
 open to every role. Writing it (`admin config set`, `admin config clear`,
-`admin config provider set|clear`, `admin auth setup`,
-`admin workflow bootstrap`, `admin config migrate`) is a human-operator
-surface: a verified agent role is denied before the command runs, and a
-managed session without a verified role fails closed. See
+`admin config provider set|clear`, `admin config upgrade`, `admin auth
+setup`, `admin workflow bootstrap`, `admin config migrate`) is a
+human-operator surface: a verified agent role is denied before the command
+runs, and a managed session without a verified role fails closed. See
 [cli-caller-context.md](cli-caller-context.md).
 
 ## Migrating an older installation
 
-An installation that still stores its configuration in SQLite migrates once,
-by hand, with `phasegent admin config migrate`. The runbook is in
-[config-migration.md](config-migration.md).
+A file that still uses schema version 1 is refused by the runtime: no read and
+no write adapts it silently. The operator upgrades it once, by hand, with
+`phasegent admin config upgrade`. An installation that still stores its
+configuration in SQLite migrates once, with `phasegent admin config migrate`.
+Both runbooks are in [config-migration.md](config-migration.md).

@@ -711,11 +711,28 @@ fn the_configuration_view_stays_redacted() {
                 "redmine_credential": {"present": false},
             },
         ],
-        "global_settings": [
-            {"name": "PHASEGENT_REDMINE_API_BASE", "present": true, "sanitized_value": "https://redmine.example.com"},
-            {"name": "PHASEGENT_REDMINE_API_KEY", "present": false},
-        ],
-        "global_default_provider": null,
+        "provider": null,
+        "redmine": {
+            "apiBase": {"present": true, "sanitized_value": "https://redmine.example.com"},
+            "repositoryUrl": {"present": false},
+            "gitMirror": {"apiKey": {"present": false}},
+        },
+        "index": {"postgres": {"url": {"present": false}}},
+        "notifications": {
+            "enabled": {"present": false},
+            "channel": {"present": false},
+            "ntfy": {"baseUrl": {"present": false}, "topic": {"present": false}, "token": {"present": false}},
+            "webhook": {"url": {"present": false}, "token": {"present": false}},
+            "dingtalk": {"webhookUrl": {"present": false}, "secret": {"present": false}, "keywords": {"present": false}, "messageType": {"present": false}},
+            "email": {
+                "smtp": {"host": {"present": false}, "port": {"present": false}, "tls": {"present": false}},
+                "username": {"present": false},
+                "password": {"present": false},
+                "from": {"present": false},
+                "to": {"present": false},
+                "replyTo": {"present": false},
+            },
+        },
     });
     let text = render_view(HumanView::Config, &value, 80);
     assert!(
@@ -723,15 +740,14 @@ fn the_configuration_view_stays_redacted() {
         "got: {text}"
     );
     assert!(text.contains("Default provider: (unset)"), "got: {text}");
-    assert!(text.contains("Global settings:"), "got: {text}");
+    assert!(text.contains("Redmine:"), "got: {text}");
     assert!(
         text.contains("present (https://redmine.example.com)"),
         "got: {text}"
     );
-    assert!(
-        text.contains("PHASEGENT_REDMINE_API_KEY: missing"),
-        "got: {text}"
-    );
+    assert!(text.contains("gitMirror.apiKey: missing"), "got: {text}");
+    assert!(text.contains("Notifications:"), "got: {text}");
+    assert!(text.contains("email.smtp.port: missing"), "got: {text}");
     assert!(text.contains("Roles:"), "got: {text}");
     assert!(text.contains("admin: provider redmine"), "got: {text}");
     assert!(text.contains("credential present"), "got: {text}");
@@ -971,11 +987,22 @@ fn a_wrapped_title_cannot_impersonate_a_field() {
 fn a_shipped_config_label_stacks_instead_of_overflowing() {
     let value = json!({
         "config_path": "/home/operator/.config/phasegent/phasegent.jsonc",
-        "global_default_provider": null,
-        "global_settings": [{
-            "name": "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
-            "present": false,
-        }],
+        "provider": null,
+        "notifications": {
+            "enabled": {"present": false},
+            "channel": {"present": false},
+            "ntfy": {"baseUrl": {"present": false}, "topic": {"present": false}, "token": {"present": false}},
+            "webhook": {"url": {"present": false}, "token": {"present": false}},
+            "dingtalk": {"webhookUrl": {"present": false}, "secret": {"present": false}, "keywords": {"present": false}, "messageType": {"present": false}},
+            "email": {
+                "smtp": {"host": {"present": false}, "port": {"present": false}, "tls": {"present": false}},
+                "username": {"present": false},
+                "password": {"present": false},
+                "from": {"present": false},
+                "to": {"present": false},
+                "replyTo": {"present": false},
+            },
+        },
         "roles": [],
     });
     let compact = |text: &str| text.replace(['\n', ' '], "");
@@ -988,7 +1015,7 @@ fn a_shipped_config_label_stacks_instead_of_overflowing() {
             );
         }
         assert!(
-            compact(&text).contains("PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL:"),
+            compact(&text).contains("dingtalk.webhookUrl:"),
             "width {width}: the full setting name survives\n{text}"
         );
         assert!(
@@ -1066,11 +1093,22 @@ fn headings_and_prune_rows_fit_the_width_without_truncation() {
     });
     let config = json!({
         "config_path": "/home/operator/.config/phasegent/phasegent.jsonc",
-        "global_default_provider": null,
-        "global_settings": [{
-            "name": "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
-            "present": false,
-        }],
+        "provider": null,
+        "notifications": {
+            "enabled": {"present": false},
+            "channel": {"present": false},
+            "ntfy": {"baseUrl": {"present": false}, "topic": {"present": false}, "token": {"present": false}},
+            "webhook": {"url": {"present": false}, "token": {"present": false}},
+            "dingtalk": {"webhookUrl": {"present": false}, "secret": {"present": false}, "keywords": {"present": false}, "messageType": {"present": false}},
+            "email": {
+                "smtp": {"host": {"present": false}, "port": {"present": false}, "tls": {"present": false}},
+                "username": {"present": false},
+                "password": {"present": false},
+                "from": {"present": false},
+                "to": {"present": false},
+                "replyTo": {"present": false},
+            },
+        },
         "roles": [{
             "role": "admin",
             "provider": null,

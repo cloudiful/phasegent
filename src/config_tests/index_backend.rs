@@ -1,7 +1,10 @@
 use crate::command::{self, Command};
 
 #[test]
-fn index_backend_alias_and_validation() {
+fn the_inert_index_backend_is_gone_and_the_postgres_url_has_a_path() {
+    // The legacy backend selector was always inert: the presence of the
+    // PostgreSQL URL selects the backend. It is no longer part of the
+    // supported configuration, so no alias may resolve to it.
     for alias in [
         "PHASEGENT_INDEX_BACKEND",
         "index-backend",
@@ -9,43 +12,29 @@ fn index_backend_alias_and_validation() {
         "index_backend",
         "PHASEGENT_index_backend",
     ] {
-        let canonical = crate::config_write::canonical_setting_name(alias)
-            .unwrap_or_else(|| panic!("alias {alias} must resolve"));
-        assert_eq!(canonical, "PHASEGENT_INDEX_BACKEND");
+        assert!(
+            crate::config_write::canonical_setting_name(alias).is_none(),
+            "alias {alias} must not resolve"
+        );
     }
     for alias in [
         "PHASEGENT_INDEX_PG_URL",
         "index-pg-url",
         "INDEX_PG_URL",
         "index_pg_url",
+        "index.postgres.url",
     ] {
         let canonical = crate::config_write::canonical_setting_name(alias)
             .unwrap_or_else(|| panic!("alias {alias} must resolve"));
-        assert_eq!(canonical, "PHASEGENT_INDEX_PG_URL");
+        assert_eq!(canonical, "index.postgres.url");
     }
-    assert!(crate::config_write::is_global_setting(
-        "PHASEGENT_INDEX_BACKEND"
-    ));
-    assert!(crate::config_write::is_global_setting(
-        "PHASEGENT_INDEX_PG_URL"
-    ));
-    assert!(!crate::config_write::is_secret_setting(
-        "PHASEGENT_INDEX_BACKEND"
-    ));
-    assert!(crate::config_write::is_secret_setting(
-        "PHASEGENT_INDEX_PG_URL"
-    ));
+    assert!(
+        !crate::config_write::is_global_setting("PHASEGENT_INDEX_BACKEND"),
+        "the removed setting is not a global setting"
+    );
+    assert!(crate::config_write::is_global_setting("index.postgres.url"));
+    assert!(crate::config_write::is_secret_setting("index.postgres.url"));
 
-    let args = ["admin", "config", "set", "index-backend", "postgres"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let inv = command::parse_with_role_env(&args, None)
-        .expect("index-backend set without role must parse");
-    match inv.command {
-        Command::ConfigSet { setting, .. } => assert_eq!(setting, "PHASEGENT_INDEX_BACKEND"),
-        other => panic!("unexpected {other:?}"),
-    }
     let args = ["admin", "config", "set", "index-pg-url", "--stdin"]
         .into_iter()
         .map(str::to_owned)
@@ -54,7 +43,7 @@ fn index_backend_alias_and_validation() {
         .expect("index-pg-url --stdin without role must parse");
     match inv.command {
         Command::ConfigSet { setting, stdin, .. } => {
-            assert_eq!(setting, "PHASEGENT_INDEX_PG_URL");
+            assert_eq!(setting, "index.postgres.url");
             assert!(stdin);
         }
         other => panic!("unexpected {other:?}"),
@@ -76,6 +65,13 @@ fn index_backend_alias_and_validation() {
         !err.contains("postgres://example"),
         "error must not echo secret"
     );
+    let args = ["admin", "config", "set", "index-backend", "postgres"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let err = command::parse_with_role_env(&args, None)
+        .expect_err("the removed setting must be rejected");
+    assert!(err.contains("unknown config setting"), "got: {err}");
 }
 
 #[test]

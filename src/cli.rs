@@ -10,6 +10,7 @@ use serde::Serialize;
 
 pub(crate) mod branch;
 mod comment;
+pub(crate) mod config_upgrade;
 pub(crate) mod doctor;
 mod help;
 mod hooks;
@@ -207,6 +208,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
             from_sqlite,
             from_toml,
         } => migrate_config::execute_migrate(&from_sqlite, from_toml.as_deref()),
+        Command::ConfigUpgrade => config_upgrade::execute_config_upgrade(),
         // Local branch context commands resolve their durable link
         // scope locally (no provider construction, no network); a flow
         // with no resolvable scope fails closed instead of writing.
@@ -360,6 +362,7 @@ fn shows_progress(command: &Command) -> bool {
         | Command::ConfigProviderSet { .. }
         | Command::ConfigProviderClear
         | Command::ConfigMigrate { .. }
+        | Command::ConfigUpgrade
         | Command::Hooks(_)
         | Command::Plugin(_)
         | Command::Skill(_)

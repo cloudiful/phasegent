@@ -283,11 +283,17 @@ mod tests {
     #[test]
     fn a_changed_destination_is_told_apart_from_an_identical_one() {
         let mut file = ConfigFile::new();
-        file.set_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
-            .unwrap();
+        file.set_setting(
+            "provider",
+            crate::infra::config_file::SettingValue::Text("forgejo".to_owned()),
+        )
+        .unwrap();
         let mut other = file.clone();
         other
-            .set_setting("PHASEGENT_DEFAULT_PROVIDER", "gitlab")
+            .set_setting(
+                "provider",
+                crate::infra::config_file::SettingValue::Text("gitlab".to_owned()),
+            )
             .unwrap();
         assert_ne!(file, other, "a changed value must not compare equal");
         assert_eq!(file, file.clone(), "an identical value compares equal");
@@ -296,8 +302,11 @@ mod tests {
     #[test]
     fn the_migrated_document_is_valid_jsonc_that_round_trips() {
         let mut file = ConfigFile::new();
-        file.set_setting("PHASEGENT_DEFAULT_PROVIDER", "forgejo")
-            .unwrap();
+        file.set_setting(
+            "provider",
+            crate::infra::config_file::SettingValue::Text("forgejo".to_owned()),
+        )
+        .unwrap();
         let text = serde_json::to_string_pretty(&file).unwrap();
         let document = ConfigDocument::parse(&text).unwrap();
         assert_eq!(document.model(), &file);

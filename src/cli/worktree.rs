@@ -134,6 +134,19 @@ pub(crate) fn execute_worktree_scoped(
         };
         return super::managed_denial(operation);
     }
+    let credential = caller
+        .credential_role()
+        .expect("authorized caller has a credential");
+    // The command-level role gate fires here, before any provider
+    // resolution, any storage access, and any credential read. A denied
+    // command therefore never reads the configuration file, never resolves
+    // a provider, and never opens a store: the denial cannot be changed by
+    // the state of the configuration.
+    if let Some(operation) = worktree_operation(&command)
+        && !worktree_authorized(caller, operation)
+    {
+        return permission_error(credential, operation);
+    }
     // Issue 552 Phase 2: `acquire` / `list` / `prune` run one
     // reconciliation pass for the repository they operate on (`--repo`
     // when supplied, otherwise the current directory) first. The pass
@@ -142,9 +155,6 @@ pub(crate) fn execute_worktree_scoped(
     // (Operator shares it; like `issue sync` and the mutating worktree
     // subcommands), so a read-only role can never trigger a registry write or
     // a removal by inspecting directories.
-    let credential = caller
-        .credential_role()
-        .expect("authorized caller has a credential");
     // A malformed raw close-status or provider selection is refused for
     // bound and legacy numbers alike, before the task resolution, the
     // complete raw-context validation, the taxi reconciliation or any registry
@@ -198,48 +208,28 @@ pub(crate) fn execute_worktree_scoped(
             format,
             isolate,
             no_sync: _,
-        } => {
-            if !caller.is_orchestrator_authorized() {
-                return permission_error(credential, "worktree acquire");
-            }
-            acquire::execute_acquire_scoped(
-                issue,
-                session.as_deref(),
-                &format,
-                isolate,
-                base.as_deref(),
-                sync_setup.as_ref(),
-                context,
-                &runner,
-                acquire_task.as_ref(),
-            )
-        }
-        WorktreeCommand::Status { issue, page } => {
-            if !caller.is_worktree_read_authorized() {
-                return permission_error(credential, "worktree status");
-            }
-            query::execute_status_page(issue, page)
-        }
+        } => acquire::execute_acquire_scoped(
+            issue,
+            session.as_deref(),
+            &format,
+            isolate,
+            base.as_deref(),
+            sync_setup.as_ref(),
+            context,
+            &runner,
+            acquire_task.as_ref(),
+        ),
+        WorktreeCommand::Status { issue, page } => query::execute_status_page(issue, page),
         WorktreeCommand::List {
             repo,
             no_sync: _,
             page,
-        } => {
-            if !caller.is_worktree_read_authorized() {
-                return permission_error(credential, "worktree list");
-            }
-            query::execute_list_page(repo.as_deref(), sync_setup.as_ref(), &runner, page)
-        }
+        } => query::execute_list_page(repo.as_deref(), sync_setup.as_ref(), &runner, page),
         WorktreeCommand::Probe {
             path,
             issue,
             session,
-        } => {
-            if !caller.is_worktree_read_authorized() {
-                return permission_error(credential, "worktree probe");
-            }
-            probe::execute_probe(path.as_deref(), issue, session.as_deref())
-        }
+        } => probe::execute_probe(path.as_deref(), issue, session.as_deref()),
         WorktreeCommand::Prune {
             repo,
             // Accepted compatibility no-op: removal is the default now, driven
@@ -249,25 +239,42 @@ pub(crate) fn execute_worktree_scoped(
             format,
             verbose,
             no_sync: _,
-        } => {
-            if !caller.is_orchestrator_authorized() {
-                return permission_error(credential, "worktree prune");
-            }
-            prune::execute_prune(
-                repo.as_deref(),
-                dry_run,
-                &format,
-                verbose,
-                credential,
-                context,
-            )
-        }
+        } => prune::execute_prune(
+            repo.as_deref(),
+            dry_run,
+            &format,
+            verbose,
+            credential,
+            context,
+        ),
     }
 }
 
 #[allow(dead_code)]
 fn is_read_role(role: Role) -> bool {
     matches!(role, Role::Orchestrator | Role::Executor | Role::Reviewer)
+}
+
+/// The permission operation of one worktree subcommand.
+///
+/// The mapping is the single source of the denial envelope, so the early
+/// gate and the command dispatch can never name a different operation.
+fn worktree_operation(command: &WorktreeCommand) -> Option<&'static str> {
+    Some(match command {
+        WorktreeCommand::Acquire { .. } => "worktree acquire",
+        WorktreeCommand::Status { .. } => "worktree status",
+        WorktreeCommand::List { .. } => "worktree list",
+        WorktreeCommand::Probe { .. } => "worktree probe",
+        WorktreeCommand::Prune { .. } => "worktree prune",
+    })
+}
+
+/// Whether the caller may run the subcommand behind `operation`.
+fn worktree_authorized(caller: CallerContext, operation: &str) -> bool {
+    match operation {
+        "worktree acquire" | "worktree prune" => caller.is_orchestrator_authorized(),
+        _ => caller.is_worktree_read_authorized(),
+    }
 }
 
 /// Shared structured `permission` envelope for command-level role gates.

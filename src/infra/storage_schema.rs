@@ -162,10 +162,6 @@ pub(crate) const GLOBAL_REDMINE_API_BASE: &str = "PHASEGENT_REDMINE_API_BASE";
 /// environment variable name so `config set` persists it
 /// without a translation table.
 pub(crate) const GLOBAL_DEFAULT_PROVIDER: &str = "PHASEGENT_DEFAULT_PROVIDER";
-/// Legacy issue index backend selector, kept for compatibility only:
-/// backend selection is driven by the PostgreSQL URL presence. The
-/// string doubles as the environment variable name.
-pub(crate) const GLOBAL_INDEX_BACKEND: &str = "PHASEGENT_INDEX_BACKEND";
 /// PostgreSQL connection URL for the shared issue index. Stored as a
 /// secret global setting and never echoed in snapshots or errors.
 pub(crate) const GLOBAL_INDEX_PG_URL: &str = "PHASEGENT_INDEX_PG_URL";
@@ -200,15 +196,16 @@ pub(crate) const GLOBAL_NOTIFY_EMAIL_TO: &str = "PHASEGENT_NOTIFY_EMAIL_TO";
 pub(crate) const GLOBAL_NOTIFY_EMAIL_REPLY_TO: &str = "PHASEGENT_NOTIFY_EMAIL_REPLY_TO";
 
 /// All global setting names the resolver layer currently recognises.
-/// Listed in one place so `config show` can iterate over the canonical
-/// set without relying on string constants scattered across modules,
-/// and so the JSONC document only accepts known settings.
+/// Listed in one place so the migration importer can validate a
+/// persisted name against the canonical set without relying on string
+/// constants scattered across modules. The names double as the
+/// environment override names; the configuration file itself stores the
+/// typed hierarchy, never these names.
 pub(crate) const GLOBAL_SETTING_NAMES: &[&str] = &[
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY,
     GLOBAL_REDMINE_REPOSITORY_URL,
     GLOBAL_REDMINE_API_BASE,
     GLOBAL_DEFAULT_PROVIDER,
-    GLOBAL_INDEX_BACKEND,
     GLOBAL_INDEX_PG_URL,
     GLOBAL_NOTIFY_ENABLED,
     GLOBAL_NOTIFY_CHANNEL,

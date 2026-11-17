@@ -1,15 +1,21 @@
 //! Explicit `config set` / `config clear` persistence helpers.
 //!
-//! The module owns the canonical setting map, validation, and
-//! storage persistence for the explicit CLI configuration surface
-//! that replaced `config import-env`. Environment variables remain
+//! The module owns the canonical setting registry, validation, and
+//! storage persistence for the explicit CLI configuration surface that
+//! replaced `config import-env`. Environment variables remain
 //! runtime-only overrides in `crate::auth` and `crate::providers::config`;
 //! this module only touches the JSONC configuration file.
 //!
-//! Secret handling: `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` is never
-//! accepted as a positional or option value. The CLI dispatch rejects
-//! direct values before this module persists anything; the module
-//! itself never echoes secret values in errors or JSON.
+//! A setting is named by its path inside the typed configuration tree
+//! (`redmine.apiBase`, `notifications.email.smtp.port`). The historical
+//! flat names (`PHASEGENT_REDMINE_API_BASE`) and their kebab-case forms
+//! stay accepted as aliases so existing scripts keep working. The file
+//! itself never stores a flat name.
+//!
+//! Secret handling: the Redmine git-mirror key and the other write-only
+//! values are never accepted as a positional or option value. The CLI
+//! dispatch rejects direct values before this module persists anything;
+//! the module itself never echoes secret values in errors or JSON.
 //!
 //! Global settings are machine-wide and usable without a role;
 //! role-scoped settings require a role and operate on the per-role
@@ -22,124 +28,82 @@ mod set;
 pub use clear::clear_setting;
 pub use set::dispatch_set;
 
+use crate::infra::config_file::setting_path::{
+    GLOBAL_SETTINGS, GlobalSetting, ROLE_SCOPED_SETTINGS,
+};
 use serde::Serialize;
-
-/// All canonical setting names the explicit surface understands.
-/// The strings double as the canonical environment variable names
-/// so `config show` and the resolver can share the same literals.
-/// `PHASEGENT_REDMINE_API_BASE` is the canonical global Redmine REST
-/// address (a global setting, not role-scoped). Project-id aliases,
-/// the legacy provider-specific aliases, and the ambiguous
-/// `PHASEGENT_PROJECT_ID` are intentionally absent and rejected as
-/// unknown settings. `PHASEGENT_INDEX_BACKEND` remains only
-/// for compatibility: backend selection is URL-driven
-/// (`PHASEGENT_INDEX_PG_URL` presence selects PostgreSQL) and the legacy
-/// backend value is ignored for selection.
-pub(crate) const ALL_CANONICAL: &[&str] = &[
-    "PHASEGENT_PROVIDER",
-    "PHASEGENT_REDMINE_API_BASE",
-    "PHASEGENT_REDMINE_CLOSE_STATUS_ID",
-    "PHASEGENT_CLOSE_STATUS_ID",
-    "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-    "PHASEGENT_REDMINE_REPOSITORY_URL",
-    "PHASEGENT_DEFAULT_PROVIDER",
-    "PHASEGENT_INDEX_BACKEND",
-    "PHASEGENT_INDEX_PG_URL",
-    "PHASEGENT_NOTIFY_ENABLED",
-    "PHASEGENT_NOTIFY_CHANNEL",
-    "PHASEGENT_NOTIFY_NTFY_BASE_URL",
-    "PHASEGENT_NOTIFY_NTFY_TOPIC",
-    "PHASEGENT_NOTIFY_NTFY_TOKEN",
-    "PHASEGENT_NOTIFY_WEBHOOK_URL",
-    "PHASEGENT_NOTIFY_WEBHOOK_TOKEN",
-    "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
-    "PHASEGENT_NOTIFY_DINGTALK_SECRET",
-    "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS",
-    "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE",
-    "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST",
-    "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT",
-    "PHASEGENT_NOTIFY_EMAIL_TLS",
-    "PHASEGENT_NOTIFY_EMAIL_USERNAME",
-    "PHASEGENT_NOTIFY_EMAIL_PASSWORD",
-    "PHASEGENT_NOTIFY_EMAIL_FROM",
-    "PHASEGENT_NOTIFY_EMAIL_TO",
-    "PHASEGENT_NOTIFY_EMAIL_REPLY_TO",
-];
-
-const GLOBAL_SETTINGS: &[&str] = &[
-    "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-    "PHASEGENT_REDMINE_REPOSITORY_URL",
-    "PHASEGENT_REDMINE_API_BASE",
-    "PHASEGENT_DEFAULT_PROVIDER",
-    "PHASEGENT_INDEX_BACKEND",
-    "PHASEGENT_INDEX_PG_URL",
-    "PHASEGENT_NOTIFY_ENABLED",
-    "PHASEGENT_NOTIFY_CHANNEL",
-    "PHASEGENT_NOTIFY_NTFY_BASE_URL",
-    "PHASEGENT_NOTIFY_NTFY_TOPIC",
-    "PHASEGENT_NOTIFY_NTFY_TOKEN",
-    "PHASEGENT_NOTIFY_WEBHOOK_URL",
-    "PHASEGENT_NOTIFY_WEBHOOK_TOKEN",
-    "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
-    "PHASEGENT_NOTIFY_DINGTALK_SECRET",
-    "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS",
-    "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE",
-    "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST",
-    "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT",
-    "PHASEGENT_NOTIFY_EMAIL_TLS",
-    "PHASEGENT_NOTIFY_EMAIL_USERNAME",
-    "PHASEGENT_NOTIFY_EMAIL_PASSWORD",
-    "PHASEGENT_NOTIFY_EMAIL_FROM",
-    "PHASEGENT_NOTIFY_EMAIL_TO",
-    "PHASEGENT_NOTIFY_EMAIL_REPLY_TO",
-];
-
-const SECRET_SETTINGS: &[&str] = &[
-    "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY",
-    "PHASEGENT_INDEX_PG_URL",
-    "PHASEGENT_NOTIFY_NTFY_TOKEN",
-    "PHASEGENT_NOTIFY_WEBHOOK_TOKEN",
-    "PHASEGENT_NOTIFY_DINGTALK_SECRET",
-    "PHASEGENT_NOTIFY_EMAIL_PASSWORD",
-];
 
 /// Resolve a user-supplied setting name to its canonical form.
 ///
-/// Accepts both the canonical `PHASEGENT_*` names and concise
-/// kebab-case aliases (e.g. `redmine-git-mirror-api-key`,
-/// `api-base`, `default-provider`). Matching is case-insensitive
-/// and hyphen/underscore agnostic, with an optional `PHASEGENT_`
-/// prefix for the short forms.
+/// The canonical form of a machine-wide setting is its path inside the
+/// typed configuration tree. The canonical form of a role-scoped setting
+/// is its flat name, because it has no machine-wide path. Matching is
+/// case-insensitive and accepts the dotted path, the historical
+/// `PHASEGENT_*` name, and the concise kebab-case aliases.
 pub fn canonical_setting_name(input: &str) -> Option<&'static str> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
-    for &canonical in ALL_CANONICAL {
-        if trimmed == canonical {
+    for setting in GLOBAL_SETTINGS {
+        if trimmed == setting.dotted || trimmed == setting.legacy_name {
+            return Some(setting.dotted);
+        }
+    }
+    for canonical in ROLE_SCOPED_SETTINGS {
+        if trimmed == *canonical {
             return Some(canonical);
         }
     }
-    let upper = trimmed.to_ascii_uppercase().replace('-', "_");
-    for &canonical in ALL_CANONICAL {
-        if upper == canonical {
+    let lowered = trimmed.to_ascii_lowercase();
+    for setting in GLOBAL_SETTINGS {
+        if aliases(setting).contains(&lowered) {
+            return Some(setting.dotted);
+        }
+    }
+    for canonical in ROLE_SCOPED_SETTINGS {
+        let lowered_canonical = canonical.to_ascii_lowercase();
+        let without_prefix = lowered_canonical
+            .strip_prefix("phasegent_")
+            .unwrap_or(lowered_canonical.as_str());
+        if lowered == lowered_canonical
+            || lowered == without_prefix
+            || lowered == without_prefix.replace('_', "-")
+        {
             return Some(canonical);
         }
     }
-    let with_prefix = format!("PHASEGENT_{upper}");
-    ALL_CANONICAL
-        .iter()
-        .find(|&&canonical| with_prefix == canonical)
-        .copied()
-        .map(|v| v as _)
+    None
+}
+
+/// The accepted aliases of one machine-wide setting.
+fn aliases(setting: &GlobalSetting) -> Vec<String> {
+    let legacy = setting.legacy_name.to_ascii_lowercase();
+    let without_prefix = legacy
+        .strip_prefix("phasegent_")
+        .unwrap_or(legacy.as_str())
+        .to_owned();
+    vec![
+        setting.dotted.to_ascii_lowercase(),
+        setting.dotted.replace('.', "-").to_ascii_lowercase(),
+        legacy.clone(),
+        without_prefix.clone(),
+        without_prefix.replace('_', "-"),
+    ]
 }
 
 pub fn is_global_setting(name: &str) -> bool {
-    GLOBAL_SETTINGS.contains(&name)
+    GLOBAL_SETTINGS.iter().any(|setting| setting.dotted == name)
 }
 
 pub fn is_secret_setting(name: &str) -> bool {
-    SECRET_SETTINGS.contains(&name)
+    GLOBAL_SETTINGS
+        .iter()
+        .any(|setting| setting.dotted == name && setting.is_secret())
+}
+
+pub fn is_role_scoped_setting(name: &str) -> bool {
+    !is_global_setting(name)
 }
 
 /// Secret settings whose value may be supplied directly on the command
@@ -148,11 +112,10 @@ pub fn is_secret_setting(name: &str) -> bool {
 /// password, so a direct value is the supported flow. Every other secret
 /// keeps the `--stdin`/prompt-only source policy.
 pub fn allows_direct_secret_value(name: &str) -> bool {
-    matches!(name, "PHASEGENT_NOTIFY_EMAIL_PASSWORD")
-}
-
-pub fn is_role_scoped_setting(name: &str) -> bool {
-    !is_global_setting(name)
+    matches!(
+        name,
+        crate::infra::config_file::setting_path::NOTIFY_EMAIL_PASSWORD
+    )
 }
 
 /// Parse a boolean setting literal with the synonyms the per-setting

@@ -102,6 +102,14 @@ fn parse_config_for(args: &[String], origin: ConfigOrigin) -> Result<Command, St
             }
             parse_config_migrate(&args[1..])
         }
+        Some("upgrade") => {
+            if origin == ConfigOrigin::TopLevel {
+                return Err("`config upgrade` is a human-operator upgrade: run \
+                     `phasegent admin config upgrade`"
+                    .to_owned());
+            }
+            parse_config_upgrade(&args[1..])
+        }
         Some(other) => Err(format!("unknown config command '{other}'")),
         None => Err("config requires a subcommand (show, set, clear, or provider)".to_owned()),
     }
@@ -116,6 +124,7 @@ fn config_detail_help(origin: ConfigOrigin, subcommand: &str, rest: &[String]) -
         "show" => HelpTopic::ConfigCommand("show".to_owned()),
         "set" | "clear" => HelpTopic::AdminConfigCommand(subcommand.to_owned()),
         "migrate" => HelpTopic::AdminConfigCommand("migrate".to_owned()),
+        "upgrade" => HelpTopic::AdminConfigCommand("upgrade".to_owned()),
         "provider" => match rest.first().map(String::as_str) {
             Some("get") => HelpTopic::ConfigProviderCommand("get".to_owned()),
             Some("set") => HelpTopic::AdminConfigProviderCommand("set".to_owned()),
@@ -320,6 +329,24 @@ fn parse_config_migrate(args: &[String]) -> Result<Command, String> {
         from_sqlite,
         from_toml,
     })
+}
+
+/// Parse `admin config upgrade`. The command takes no options: the file it
+/// upgrades is the resolved configuration file, and the operator runs it
+/// once per installation.
+fn parse_config_upgrade(args: &[String]) -> Result<Command, String> {
+    if args
+        .first()
+        .is_some_and(|value| value == "--help" || value == "-h")
+    {
+        return Ok(Command::Help(HelpTopic::AdminConfigCommand(
+            "upgrade".to_owned(),
+        )));
+    }
+    if let Some(token) = args.first() {
+        return Err(format!("unknown option '{token}' for config upgrade"));
+    }
+    Ok(Command::ConfigUpgrade)
 }
 
 fn parse_target_role(value: &str) -> Result<Role, String> {

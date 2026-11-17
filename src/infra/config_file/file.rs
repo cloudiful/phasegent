@@ -131,6 +131,22 @@ impl ConfigFileStore {
         write_atomic(&self.path, None, document.as_str())
     }
 
+    /// Replace the configuration file with `content` while the caller holds
+    /// the lock.
+    ///
+    /// The current bytes must be exactly `expected`; a file that changed in
+    /// the meantime is refused instead of overwritten. The replacement is
+    /// atomic and private: the prepared temporary file is created with
+    /// owner-only permissions and renamed over the live file, so the live
+    /// configuration is never missing between the write and the rename.
+    ///
+    /// The explicit upgrader uses this to replace a version-1 document: the
+    /// ordinary read-modify-write path parses the current file first, and a
+    /// version-1 file is refused by the runtime on purpose.
+    pub fn replace_locked(&self, expected: &[u8], content: &str) -> Result<(), String> {
+        write_atomic(&self.path, Some(expected), content)
+    }
+
     /// Locked read-modify-write. The closure mutates the CST-backed document;
     /// the result is written atomically and the lock is held until the rename
     /// and parent sync finish.

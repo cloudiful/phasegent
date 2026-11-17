@@ -134,6 +134,10 @@ pub enum Command {
         /// Absolute path of an explicit legacy TOML overlay.
         from_toml: Option<String>,
     },
+    /// Human-operator upgrade of a version-1 configuration file to the
+    /// typed schema version 2. The runtime never upgrades a file on its
+    /// own: it refuses a version-1 file with this instruction.
+    ConfigUpgrade,
     Issue(IssueCommand),
     Comment(CommentCommand),
     /// Structured agent records: a CLI-owned versioned envelope over the

@@ -6,8 +6,8 @@
 //! the environment or the persisted configuration setting selects
 //! PostgreSQL, while an absent or blank URL selects
 //! SQLite (env overrides persisted, same precedence as other globals).
-//! The legacy `PHASEGENT_INDEX_BACKEND` setting is ignored for selection
-//! and kept only for compatibility (readable/clearable). A configured
+//! The old `PHASEGENT_INDEX_BACKEND` selector was always inert and is
+//! no longer part of the supported configuration. A configured
 //! PostgreSQL URL that is malformed, unreachable, migration-incompatible,
 //! or used without the `postgres` feature fails with a structured config
 //! error and never falls back to SQLite. No error, snapshot, or debug
@@ -20,9 +20,9 @@ use crate::providers::index::IssueIndexStore;
 use async_trait::async_trait;
 
 /// Backend kind selected from the PostgreSQL URL presence.
-/// The legacy `PHASEGENT_INDEX_BACKEND` literal (`sqlite`/`postgres`) is
-/// no longer consulted; this enum only reports which backend the URL
-/// presence resolved to.
+/// The old backend selector literal (`sqlite`/`postgres`) is no longer
+/// consulted; this enum only reports which backend the URL presence
+/// resolved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexBackendKind {
     Sqlite,
@@ -110,10 +110,9 @@ impl IssueIndexStore for IssueIndexBackend {
 /// Resolve the index backend kind from the PostgreSQL URL presence.
 /// A non-empty `PHASEGENT_INDEX_PG_URL` from the environment (highest
 /// precedence) or persisted global setting selects PostgreSQL; an absent
-/// or blank URL selects SQLite. The legacy `PHASEGENT_INDEX_BACKEND`
-/// environment variable and persisted setting are intentionally ignored
-/// so they can never force a different backend or make selection
-/// ambiguous; they remain readable/clearable only for compatibility.
+/// or blank URL selects SQLite. The old backend selector is not part of
+/// the supported configuration, so it can never force a different
+/// backend or make selection ambiguous.
 pub fn resolve_index_backend() -> Result<IndexBackendKind, String> {
     let url = resolve_pg_url()?;
     match url {
@@ -137,7 +136,7 @@ pub fn resolve_pg_url() -> Result<Option<String>, String> {
         }
         return Ok(Some(env));
     }
-    runtime::load_global_setting("PHASEGENT_INDEX_PG_URL")
+    runtime::load_global_setting(crate::infra::config_file::setting_path::INDEX_PG_URL)
 }
 
 /// Helper used by `resolve_index_backend` / `resolve_pg_url` so every

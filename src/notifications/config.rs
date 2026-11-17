@@ -8,11 +8,13 @@
 //! `notify-dingtalk` / `notify-email` feature.
 
 use crate::infra::config_file::runtime;
+use serde::{Deserialize, Serialize};
 
 /// Supported delivery channels. The literal doubles as the stored
-/// `PHASEGENT_NOTIFY_CHANNEL` value and the `channel` column in
+/// `notifications.channel` value and the `channel` column in
 /// `notification_deliveries`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum NotifyChannel {
     Ntfy,
     Webhook,
@@ -120,7 +122,10 @@ pub fn resolve_email_tls(mode: Option<&str>, port: Option<u16>) -> EmailTlsSelec
 /// Returns `Ok(None)` when notifications are disabled or unconfigured
 /// so callers stay silent and preserve existing CLI behaviour.
 pub fn load() -> Result<Option<NotifyConfig>, String> {
-    let enabled_raw = resolve_field("PHASEGENT_NOTIFY_ENABLED")?;
+    let enabled_raw = resolve_field(
+        "PHASEGENT_NOTIFY_ENABLED",
+        crate::infra::config_file::setting_path::NOTIFY_ENABLED,
+    )?;
     let enabled = match enabled_raw.as_deref() {
         None => false,
         Some(raw) => parse_enabled(raw)?,
@@ -128,53 +133,91 @@ pub fn load() -> Result<Option<NotifyConfig>, String> {
     if !enabled {
         return Ok(None);
     }
-    let channel_raw = resolve_field("PHASEGENT_NOTIFY_CHANNEL")?
-        .ok_or_else(|| {
-            "notifications are enabled but PHASEGENT_NOTIFY_CHANNEL is not set; use admin config set notify-channel <ntfy|webhook|dingtalk|email>".to_owned()
-        })?;
+    let channel_raw = resolve_field(
+        "PHASEGENT_NOTIFY_CHANNEL",
+        crate::infra::config_file::setting_path::NOTIFY_CHANNEL,
+    )?
+    .ok_or_else(|| {
+        "notifications are enabled but notifications.channel is not set; use admin config set notifications.channel <ntfy|webhook|dingtalk|email>".to_owned()
+    })?;
     let channel = NotifyChannel::parse(&channel_raw)?;
     let mut config = NotifyConfig {
         enabled: true,
         channel,
-        ntfy_base_url: resolve_field("PHASEGENT_NOTIFY_NTFY_BASE_URL")?,
-        ntfy_topic: resolve_field("PHASEGENT_NOTIFY_NTFY_TOPIC")?,
-        ntfy_token: resolve_field("PHASEGENT_NOTIFY_NTFY_TOKEN")?,
-        webhook_url: resolve_field("PHASEGENT_NOTIFY_WEBHOOK_URL")?,
-        webhook_token: resolve_field("PHASEGENT_NOTIFY_WEBHOOK_TOKEN")?,
-        dingtalk_webhook_url: resolve_field("PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL")?,
-        dingtalk_secret: resolve_field("PHASEGENT_NOTIFY_DINGTALK_SECRET")?,
-        dingtalk_keywords: resolve_field("PHASEGENT_NOTIFY_DINGTALK_KEYWORDS")?
-            .map(|raw| {
-                raw.split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        dingtalk_msg_type: resolve_field("PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE")?
-            .unwrap_or_else(|| "text".to_owned()),
-        email_smtp_host: resolve_field("PHASEGENT_NOTIFY_EMAIL_SMTP_HOST")?,
-        email_smtp_port: match resolve_field("PHASEGENT_NOTIFY_EMAIL_SMTP_PORT")? {
+        ntfy_base_url: resolve_field(
+            "PHASEGENT_NOTIFY_NTFY_BASE_URL",
+            crate::infra::config_file::setting_path::NOTIFY_NTFY_BASE_URL,
+        )?,
+        ntfy_topic: resolve_field(
+            "PHASEGENT_NOTIFY_NTFY_TOPIC",
+            crate::infra::config_file::setting_path::NOTIFY_NTFY_TOPIC,
+        )?,
+        ntfy_token: resolve_field(
+            "PHASEGENT_NOTIFY_NTFY_TOKEN",
+            crate::infra::config_file::setting_path::NOTIFY_NTFY_TOKEN,
+        )?,
+        webhook_url: resolve_field(
+            "PHASEGENT_NOTIFY_WEBHOOK_URL",
+            crate::infra::config_file::setting_path::NOTIFY_WEBHOOK_URL,
+        )?,
+        webhook_token: resolve_field(
+            "PHASEGENT_NOTIFY_WEBHOOK_TOKEN",
+            crate::infra::config_file::setting_path::NOTIFY_WEBHOOK_TOKEN,
+        )?,
+        dingtalk_webhook_url: resolve_field(
+            "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
+            crate::infra::config_file::setting_path::NOTIFY_DINGTALK_WEBHOOK_URL,
+        )?,
+        dingtalk_secret: resolve_field(
+            "PHASEGENT_NOTIFY_DINGTALK_SECRET",
+            crate::infra::config_file::setting_path::NOTIFY_DINGTALK_SECRET,
+        )?,
+        dingtalk_keywords: resolve_list_field(
+            "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS",
+            crate::infra::config_file::setting_path::NOTIFY_DINGTALK_KEYWORDS,
+        )?,
+        dingtalk_msg_type: resolve_field(
+            "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE",
+            crate::infra::config_file::setting_path::NOTIFY_DINGTALK_MESSAGE_TYPE,
+        )?
+        .unwrap_or_else(|| "text".to_owned()),
+        email_smtp_host: resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_SMTP_HOST,
+        )?,
+        email_smtp_port: match resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_SMTP_PORT,
+        )? {
             Some(raw) => Some(raw.parse::<u16>().map_err(|_| {
                 format!("PHASEGENT_NOTIFY_EMAIL_SMTP_PORT '{raw}' must be 1-65535")
             })?),
             None => None,
         },
-        email_tls: resolve_field("PHASEGENT_NOTIFY_EMAIL_TLS")?,
-        email_username: resolve_field("PHASEGENT_NOTIFY_EMAIL_USERNAME")?,
-        email_password: resolve_field("PHASEGENT_NOTIFY_EMAIL_PASSWORD")?,
-        email_from: resolve_field("PHASEGENT_NOTIFY_EMAIL_FROM")?,
-        email_to: resolve_field("PHASEGENT_NOTIFY_EMAIL_TO")?
-            .map(|raw| {
-                raw.split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        email_reply_to: resolve_field("PHASEGENT_NOTIFY_EMAIL_REPLY_TO")?,
+        email_tls: resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_TLS",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_SMTP_TLS,
+        )?,
+        email_username: resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_USERNAME",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_USERNAME,
+        )?,
+        email_password: resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_PASSWORD",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_PASSWORD,
+        )?,
+        email_from: resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_FROM",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_FROM,
+        )?,
+        email_to: resolve_list_field(
+            "PHASEGENT_NOTIFY_EMAIL_TO",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_TO,
+        )?,
+        email_reply_to: resolve_field(
+            "PHASEGENT_NOTIFY_EMAIL_REPLY_TO",
+            crate::infra::config_file::setting_path::NOTIFY_EMAIL_REPLY_TO,
+        )?,
     };
     // Normalise optional dingtalk/email literals without echoing values.
     config.dingtalk_msg_type = config.dingtalk_msg_type.trim().to_ascii_lowercase();
@@ -285,11 +328,43 @@ fn validate_for_channel(config: &NotifyConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_field(name: &str) -> Result<Option<String>, String> {
-    if let Some(env) = read_env_trimmed(name)? {
+/// Resolve one field: the environment variable wins, the configuration
+/// file fills the gap. The environment variable keeps its flat name; the
+/// file holds the typed value at its path inside the configuration tree.
+fn resolve_field(env_name: &str, path: &str) -> Result<Option<String>, String> {
+    if let Some(env) = read_env_trimmed(env_name)? {
         return Ok(Some(env));
     }
-    runtime::load_global_setting(name)
+    runtime::load_global_setting(path)
+}
+
+fn resolve_list_field(env_name: &str, path: &str) -> Result<Vec<String>, String> {
+    let env = read_env_trimmed(env_name)?;
+    let file = if env.is_some() {
+        None
+    } else {
+        runtime::load_setting(path)?
+    };
+    resolve_list_value(env.as_deref(), file)
+}
+
+fn resolve_list_value(
+    env: Option<&str>,
+    file: Option<crate::infra::config_file::SettingValue>,
+) -> Result<Vec<String>, String> {
+    if let Some(raw) = env.filter(|value| !value.trim().is_empty()) {
+        return Ok(raw
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect());
+    }
+    match file {
+        Some(crate::infra::config_file::SettingValue::List(values)) => Ok(values),
+        None => Ok(Vec::new()),
+        Some(_) => Err("the configuration list has an invalid type".to_owned()),
+    }
 }
 
 fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
@@ -310,6 +385,32 @@ fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_file_lists_keep_boundaries_and_env_lists_override_them() {
+        use crate::infra::config_file::{ConfigDocument, SettingValue, setting_path};
+        let document = ConfigDocument::parse(r#"{"version":2,"notifications":{"dingtalk":{"keywords":["build,deploy","ship"]},"email":{"to":["person,tag@example.test","other@example.test"]}}}"#).unwrap();
+        for (path, expected) in [
+            (
+                setting_path::NOTIFY_DINGTALK_KEYWORDS,
+                vec!["build,deploy", "ship"],
+            ),
+            (
+                setting_path::NOTIFY_EMAIL_TO,
+                vec!["person,tag@example.test", "other@example.test"],
+            ),
+        ] {
+            let file = document.model().setting(path);
+            assert_eq!(resolve_list_value(None, file.clone()).unwrap(), expected);
+            assert_eq!(
+                resolve_list_value(Some(" env-one, env-two,, "), file.clone()).unwrap(),
+                vec!["env-one", "env-two"]
+            );
+            assert_eq!(resolve_list_value(Some("  "), file).unwrap(), expected);
+        }
+        assert!(resolve_list_value(None, Some(SettingValue::Text("not a list".into()))).is_err());
+        assert!(resolve_list_value(None, None).unwrap().is_empty());
+    }
 
     #[test]
     fn channel_parses_all_literals() {
