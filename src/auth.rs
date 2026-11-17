@@ -1,5 +1,6 @@
+use crate::infra::config_file::runtime;
 use crate::infra::storage::{
-    GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_REDMINE, Storage,
+    GLOBAL_REDMINE_GIT_MIRROR_API_KEY, GLOBAL_REDMINE_REPOSITORY_URL, PROVIDER_REDMINE,
 };
 // `PROVIDER_LOCAL` is imported from `storage_schema` directly because the
 // `storage` aggregator re-export lists only the non-local provider constants.
@@ -28,9 +29,10 @@ pub struct RedmineStoredConfig {
     #[serde(default)]
     pub api_base: Option<String>,
     /// Legacy Redmine project identifier. Preserved for backward-compatible
-    /// JSON and SQLite decoding; no longer persisted or read—resolution
-    /// uses only explicit `--project-id`. The SQLite column remains for
-    /// non-destructive migration but values are ignored and cleared on open.
+    /// decoding and for a lossless migration; it is never resolved from and
+    /// never written back — resolution uses only explicit `--project-id`.
+    /// The migrated value is kept in the configuration file so nothing is
+    /// lost, and the runtime ignores it.
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -73,8 +75,7 @@ pub fn setup_provider(
         // and `config show` report `local` while redmine rows stay intact.
         // `api_base`/`read_stdin` are inert: there is nowhere to persist a
         // base URL and nothing to read from stdin.
-        let storage = Storage::open()?;
-        storage.update_provider(role, PROVIDER_LOCAL)?;
+        runtime::update_provider(role, PROVIDER_LOCAL)?;
         return Ok(serde_json::json!({
             "configured": true,
             "role": role.as_str(),
@@ -94,8 +95,7 @@ pub fn setup_provider(
         if credential.trim().is_empty() {
             return Err("Forgejo token cannot be empty".to_owned());
         }
-        let storage = Storage::open()?;
-        storage.save_forgejo_auth(
+        runtime::save_forgejo_auth(
             role,
             config.api_base(),
             config.repository(),
@@ -118,8 +118,7 @@ pub fn setup_provider(
         if credential.trim().is_empty() {
             return Err("GitLab token cannot be empty".to_owned());
         }
-        let storage = Storage::open()?;
-        storage.save_gitlab_auth(
+        runtime::save_gitlab_auth(
             role,
             config.api_base(),
             config.repository(),
@@ -138,9 +137,8 @@ pub fn setup_provider(
         return Err("Redmine API key cannot be empty".to_owned());
     }
 
-    let storage = Storage::open()?;
-    storage.save_credential(role, provider, &credential)?;
-    save_redmine_config(&storage, role, api_base, close_status_id)?;
+    runtime::save_credential(role, provider, &credential)?;
+    save_redmine_config(role, api_base, close_status_id)?;
 
     Ok(serde_json::json!({
         "configured": true,
@@ -188,77 +186,19 @@ fn read_credential(label: &str, read_stdin: bool) -> Result<String, String> {
     }
 }
 
-pub fn load_config(role: Role, storage: &Storage) -> Result<Option<StoredConfig>, String> {
-    load_config_if_present(role, Some(storage))
+/// Load the role-scoped configuration: the provider preference plus the
+/// inert legacy `api_base`/`repository` values. The JSONC configuration
+/// file is the only source; the business database is never opened.
+pub fn load_config(role: Role) -> Result<Option<StoredConfig>, String> {
+    runtime::load_role_config(role)
 }
 
-/// The admission-time form: a missing or older store yields no persisted
-/// base, while the TOML role overlay still applies. Never opens or migrates.
-pub fn load_config_if_present(
-    role: Role,
-    storage: Option<&Storage>,
-) -> Result<Option<StoredConfig>, String> {
-    // Effective role config: TOML overlays legacy SQLite so direct file
-    // edits affect the same resolver paths used by normal commands.
-    // Precedence for the provider field is TOML > SQLite; callers apply
-    // explicit CLI > env before this stored-effective value. Credentials
-    // never consult TOML. Overlay parse/secret errors propagate instead of
-    // falling back so malformed TOML cannot be silently ignored.
-    let base = match storage {
-        Some(storage)
-            if storage.table_exists("role_config")?
-                && storage.table_has_column("role_config", "role")?
-                && storage.table_has_column("role_config", "provider")?
-                && storage.table_has_column("role_config", "api_base")?
-                && storage.table_has_column("role_config", "repository")? =>
-        {
-            storage.load_role_config(role)?
-        }
-        _ => None,
-    };
-    let overlay = crate::infra::config_overlay::load_overlay()?;
-    let Some(overlay) = overlay else {
-        return Ok(base);
-    };
-    let Some(role_overlay) = overlay.role_overlay(role) else {
-        return Ok(base);
-    };
-    let mut merged = base.clone().unwrap_or_default();
-    let mut present = base.is_some();
-    if let Some(value) = &role_overlay.provider {
-        merged.provider = Some(value.clone());
-        present = true;
-    }
-    if present { Ok(Some(merged)) } else { Ok(None) }
-}
-
-pub fn load_redmine_config(
-    role: Role,
-    storage: &Storage,
-) -> Result<Option<RedmineStoredConfig>, String> {
-    // Effective legacy Redmine config: TOML > SQLite, same contract as
-    // above. The `api_base` field is a legacy read/migration input only:
-    // runtime address resolution goes through [`redmine_api_base`], and new
-    // writes never populate it. `close_status_id` stays role-scoped.
-    let base = storage.load_redmine_config(role)?;
-    let overlay = crate::infra::config_overlay::load_overlay()?;
-    let Some(overlay) = overlay else {
-        return Ok(base);
-    };
-    let Some(role_overlay) = overlay.role_overlay(role) else {
-        return Ok(base);
-    };
-    let mut merged = base.clone().unwrap_or_default();
-    let mut present = base.is_some();
-    if let Some(value) = &role_overlay.redmine_api_base {
-        merged.api_base = Some(value.clone());
-        present = true;
-    }
-    if let Some(value) = role_overlay.redmine_close_status_id {
-        merged.close_status_id = Some(value);
-        present = true;
-    }
-    if present { Ok(Some(merged)) } else { Ok(None) }
+/// Load the Redmine-specific configuration of a role. The `api_base`
+/// field is a legacy read/migration input only: runtime address
+/// resolution goes through [`redmine_api_base`], and new writes never
+/// populate it. `close_status_id` stays role-scoped.
+pub fn load_redmine_config(role: Role) -> Result<Option<RedmineStoredConfig>, String> {
+    runtime::load_redmine_config(role)
 }
 
 /// Roles scanned by the bounded legacy Redmine address migration.
@@ -278,61 +218,52 @@ const REDMINE_ROLES: [Role; 5] = [
 ///      runtime override).
 ///   2. `PHASEGENT_API_BASE` environment variable (generic runtime
 ///      compatibility alias).
-///   3. TOML top-level `redmine_api_base`.
-///   4. Persisted `global_setting` row `PHASEGENT_REDMINE_API_BASE`.
-///   5. Bounded legacy migration: when no canonical value exists yet,
-///      the effective per-role addresses (`role_redmine_config.api_base`
-///      overlaid by `[roles.<role>] redmine_api_base`, which is what
-///      [`load_redmine_config`] returns) are normalised. A single
-///      distinct address is migrated into the global setting and
-///      returned; distinct addresses fail closed so no role, first
-///      value, or credential-derived value is ever chosen.
+///   3. The persisted `PHASEGENT_REDMINE_API_BASE` setting in the JSONC
+///      configuration file.
+///   4. Bounded legacy migration: when no canonical value exists yet,
+///      the effective per-role addresses (the role-scoped Redmine
+///      configuration, which is what [`load_redmine_config`] returns) are
+///      normalised. A single distinct address is migrated into the global
+///      setting and returned; distinct addresses fail closed so no role,
+///      first value, or credential-derived value is ever chosen.
 ///
 /// The address is non-secret. Credentials, identities, provider
 /// selection, close-status ids, and the mirror bearer key keep their
 /// independent paths and are never consulted here. Environment and CLI
 /// values are runtime overrides only and are never persisted; only the
-/// legacy migration writes the global row.
-pub fn redmine_api_base(storage: &Storage) -> Result<Option<String>, String> {
-    redmine_api_base_with_legacy(storage, true)
+/// legacy migration writes the global setting.
+pub fn redmine_api_base() -> Result<Option<String>, String> {
+    redmine_api_base_with_legacy(true)
 }
 
 /// Non-mutating variant for admission and routing: identical precedence
-/// (env, TOML, persisted global setting, legacy role lookup) but a legacy
+/// (env, persisted global setting, legacy role lookup) but a legacy
 /// value is returned without migrating the role config.
-pub fn redmine_api_base_read_only(storage: &Storage) -> Result<Option<String>, String> {
-    redmine_api_base_with_legacy(storage, false)
+pub fn redmine_api_base_read_only() -> Result<Option<String>, String> {
+    redmine_api_base_with_legacy(false)
 }
 
-fn redmine_api_base_with_legacy(
-    storage: &Storage,
-    persist_legacy: bool,
-) -> Result<Option<String>, String> {
+fn redmine_api_base_with_legacy(persist_legacy: bool) -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_API_BASE")? {
         return Ok(Some(value));
     }
     if let Some(value) = read_env_trimmed("PHASEGENT_API_BASE")? {
         return Ok(Some(value));
     }
-    if let Some(value) = crate::infra::config_overlay::load_overlay()?
-        .and_then(|overlay| overlay.redmine_api_base_value().map(str::to_owned))
-    {
+    if let Some(value) = runtime::load_global_setting(GLOBAL_REDMINE_API_BASE)? {
         return Ok(Some(value));
     }
-    if let Some(value) = storage.load_global_setting(GLOBAL_REDMINE_API_BASE)? {
-        return Ok(Some(value));
-    }
-    legacy_redmine_api_base(storage, persist_legacy)
+    legacy_redmine_api_base(persist_legacy)
 }
 
 /// Resolve the single legacy per-role Redmine address (or fail closed when
 /// the legacy values conflict). `persist` writes the canonical global row on
 /// the mutating path; the read-only routing path leaves role config intact.
-fn legacy_redmine_api_base(storage: &Storage, persist: bool) -> Result<Option<String>, String> {
+fn legacy_redmine_api_base(persist: bool) -> Result<Option<String>, String> {
     let mut distinct: Vec<String> = Vec::new();
     let mut roles_with_values: Vec<&'static str> = Vec::new();
     for role in REDMINE_ROLES {
-        let Some(config) = load_redmine_config(role, storage)? else {
+        let Some(config) = load_redmine_config(role)? else {
             continue;
         };
         let Some(raw) = config.api_base.as_deref() else {
@@ -369,7 +300,7 @@ fn legacy_redmine_api_base(storage: &Storage, persist: bool) -> Result<Option<St
         1 => {
             let value = distinct.pop().expect("one distinct legacy address");
             if persist {
-                storage.save_global_setting(GLOBAL_REDMINE_API_BASE, &value)?;
+                runtime::save_global_setting(GLOBAL_REDMINE_API_BASE, &value)?;
             }
             Ok(Some(value))
         }
@@ -386,25 +317,19 @@ pub fn persist_redmine_bootstrap(
     api_base: Option<String>,
     project_id: u64,
     close_status_id: u64,
-    storage: &Storage,
 ) -> Result<(), String> {
-    storage.persist_redmine_bootstrap(role, api_base, project_id, close_status_id)
+    runtime::persist_redmine_bootstrap(role, api_base, project_id, close_status_id)
 }
 
-pub fn load_redmine_user(role: Role, storage: &Storage) -> Result<Option<(u64, String)>, String> {
-    storage.load_redmine_user(role)
+pub fn load_redmine_user(role: Role) -> Result<Option<(u64, String)>, String> {
+    runtime::load_redmine_user(role)
 }
 
 /// Persist the admin-provisioned Redmine identity for `role`. The API key
-/// itself stays in `role_credential`; this row only carries the non-secret
-/// identity so reruns can reuse without re-listing users.
-pub fn save_redmine_user(
-    role: Role,
-    user_id: u64,
-    login: &str,
-    storage: &Storage,
-) -> Result<(), String> {
-    storage.save_redmine_user(role, user_id, login)
+/// itself stays in the credential map; this entry only carries the
+/// non-secret identity so reruns can reuse without re-listing users.
+pub fn save_redmine_user(role: Role, user_id: u64, login: &str) -> Result<(), String> {
+    runtime::save_redmine_user(role, user_id, login)
 }
 
 pub(crate) enum RedmineKeyError {
@@ -421,12 +346,8 @@ impl RedmineKeyError {
     }
 }
 
-pub(crate) fn redmine_api_key_checked(
-    role: Role,
-    storage: &Storage,
-) -> Result<String, RedmineKeyError> {
-    let value = storage
-        .load_credential(role, PROVIDER_REDMINE)
+pub(crate) fn redmine_api_key_checked(role: Role) -> Result<String, RedmineKeyError> {
+    let value = runtime::load_credential(role, PROVIDER_REDMINE)
         .map_err(RedmineKeyError::Storage)?
         .ok_or(RedmineKeyError::Missing(
             "could not read Redmine API key: missing",
@@ -437,15 +358,15 @@ pub(crate) fn redmine_api_key_checked(
     Ok(value)
 }
 
-pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> {
-    redmine_api_key_checked(role, storage).map_err(RedmineKeyError::message)
+pub fn redmine_api_key(role: Role) -> Result<String, String> {
+    redmine_api_key_checked(role).map_err(RedmineKeyError::message)
 }
 
 /// Resolve the `redmine_git_mirror` plugin bearer key at use time.
 ///
 /// Precedence is `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` (environment)
-/// → SQLite `global_setting` row → absent. Operators persist the value
-/// to SQLite via `phasegent config set redmine-git-mirror-api-key --stdin`
+/// → the persisted configuration setting → absent. Operators persist the
+/// value via `phasegent admin config set redmine-git-mirror-api-key --stdin`
 /// (or the secure interactive prompt) so a long-lived deployment does
 /// not have to ship the key in every shell that runs `workflow bootstrap`.
 /// The environment variable still wins for one-off rotations because the
@@ -455,59 +376,43 @@ pub fn redmine_api_key(role: Role, storage: &Storage) -> Result<String, String> 
 /// string so callers can decide whether registration is optional or
 /// required. Returning `Ok(Some)` only when the value is a non-empty
 /// trimmed string keeps the value out of error messages, JSON output,
-/// and test fixtures. The caller supplies the [`Storage`] handle so
-/// production code can call [`Storage::open`] while tests can drive
-/// the resolver against an isolated temp database.
-pub fn redmine_git_mirror_api_key(storage: &Storage) -> Result<Option<String>, String> {
+/// and test fixtures.
+pub fn redmine_git_mirror_api_key() -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_GIT_MIRROR_API_KEY")? {
         return Ok(Some(value));
     }
-    storage
-        .load_global_setting(GLOBAL_REDMINE_GIT_MIRROR_API_KEY)
-        .map_err(|error| {
-            format!(
-                "could not read persisted Redmine git mirror key from SQLite: {error}; \
-                 set PHASEGENT_REDMINE_GIT_MIRROR_API_KEY in the environment"
-            )
-        })
+    runtime::load_global_setting(GLOBAL_REDMINE_GIT_MIRROR_API_KEY).map_err(|error| {
+        format!(
+            "could not read the persisted Redmine git mirror key from the configuration file: {error}; \
+             set PHASEGENT_REDMINE_GIT_MIRROR_API_KEY in the environment"
+        )
+    })
 }
 
 /// Optional override for the repository URL passed to the mirror plugin.
 ///
 /// Precedence is `PHASEGENT_REDMINE_REPOSITORY_URL` (environment) →
-/// TOML `redmine_repository_url` → SQLite `global_setting` row → absent.
-/// Persisting the URL is done with `phasegent config set
-/// redmine-repository-url <URL>` (or `PHASEGENT_REDMINE_REPOSITORY_URL`)
-/// so a long-lived deployment does not have to ship the URL in every
-/// shell that runs `workflow bootstrap`. Direct TOML edits affect this
-/// same resolver path; no new command is required. The overlay is
-/// read-only: `config set`/`clear` continue to touch SQLite only, so a
-/// TOML value shadows a SQLite value until the TOML (or env) is removed.
-/// The environment variable still wins so ad-hoc runs can override both
-/// file and persisted values without rewriting either. The caller
-/// supplies the [`Storage`] handle so production code can call
-/// [`Storage::open`] while tests can drive the resolver against an
-/// isolated temp database.
-pub fn redmine_repository_url_override(storage: &Storage) -> Result<Option<String>, String> {
+/// the persisted configuration setting → absent. Persisting the URL is
+/// done with `phasegent admin config set redmine-repository-url <URL>`
+/// (or `PHASEGENT_REDMINE_REPOSITORY_URL`) so a long-lived deployment
+/// does not have to ship the URL in every shell that runs
+/// `workflow bootstrap`. The environment variable still wins so ad-hoc
+/// runs can override the persisted value without rewriting it.
+pub fn redmine_repository_url_override() -> Result<Option<String>, String> {
     if let Some(value) = read_env_trimmed("PHASEGENT_REDMINE_REPOSITORY_URL")? {
         return Ok(Some(value));
     }
-    if let Some(overlay) = crate::infra::config_overlay::load_overlay()?
-        && let Some(value) = overlay.redmine_repository_url_value()
-    {
-        return Ok(Some(value.to_owned()));
-    }
-    storage
-        .load_global_setting(GLOBAL_REDMINE_REPOSITORY_URL)
-        .map_err(|error| {
-            format!("could not read persisted Redmine repository URL from SQLite: {error}")
-        })
+    runtime::load_global_setting(GLOBAL_REDMINE_REPOSITORY_URL).map_err(|error| {
+        format!(
+            "could not read the persisted Redmine repository URL from the configuration file: {error}"
+        )
+    })
 }
 
 /// Read an environment variable and return its non-empty trimmed value
 /// as `Some`. Surfaces every `VarError` other than `NotPresent` so a
 /// true environment read error is not silently swallowed by the
-/// SQLite fallback.
+/// persisted-configuration fallback.
 fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
     let value = match std::env::var(name) {
         Ok(value) => value,
@@ -524,7 +429,6 @@ fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {
 /// flipped to `redmine`. Exposed `pub(crate)` so focused config regression
 /// tests can drive the exact write path without a credential prompt.
 pub(crate) fn save_redmine_config(
-    storage: &Storage,
     role: Role,
     api_base: Option<String>,
     close_status_id: Option<String>,
@@ -532,28 +436,28 @@ pub(crate) fn save_redmine_config(
     if let Some(value) = api_base {
         // The canonical Redmine REST address is global and non-secret, so
         // `auth setup --provider redmine --api-base` writes the global
-        // setting instead of a role-scoped address row. Validation runs
+        // setting instead of a role-scoped address entry. Validation runs
         // before any write and never echoes the value.
         let trimmed = value.trim();
         if trimmed.is_empty() {
             return Err("Redmine API base cannot be empty".to_owned());
         }
         validate_redmine_api_base(trimmed)?;
-        storage.save_global_setting(GLOBAL_REDMINE_API_BASE, trimmed)?;
+        runtime::save_global_setting(GLOBAL_REDMINE_API_BASE, trimmed)?;
     }
     if let Some(value) = close_status_id {
         // Only the role-scoped close-status id is written here. A
-        // pre-existing legacy address row is left untouched (inert) rather
+        // pre-existing legacy address entry is left untouched (inert) rather
         // than rewritten; setup never originates a role-scoped address.
-        let mut config = storage.load_redmine_config(role)?.unwrap_or_default();
+        let mut config = runtime::load_redmine_config(role)?.unwrap_or_default();
         config.close_status_id = Some(
             value
                 .parse()
                 .map_err(|_| "Redmine close status id must be numeric".to_owned())?,
         );
-        storage.save_redmine_config(role, &config)?;
+        runtime::save_redmine_config(role, &config)?;
     }
-    storage.update_provider(role, PROVIDER_REDMINE)
+    runtime::update_provider(role, PROVIDER_REDMINE)
 }
 
 /// Validate a non-sensitive Redmine REST base before it is persisted into

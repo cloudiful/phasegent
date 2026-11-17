@@ -6,11 +6,11 @@ normalized instance. The per-operation repository is independent: use
 attest it. Store the instance root and the outside-Git repository default with
 `phasegent --provider forgejo admin auth setup --repository owner/repo --api-base INSTANCE_ROOT --target-role <role>`; the
 stored repository is a default only outside Git, never a credential
-restriction. A Forgejo default configured through the environment, TOML, the
+restriction. A Forgejo default configured through the environment, the
 persisted machine-wide default or stored role configuration is selected through
 the same precedence chain as any other provider, so it needs no explicit
 `--provider`: explicit `--provider` > `PHASEGENT_PROVIDER` >
-`PHASEGENT_DEFAULT_PROVIDER` (environment > TOML > persisted) > the role-scoped
+`PHASEGENT_DEFAULT_PROVIDER` (environment > persisted) > the role-scoped
 provider > the Redmine fallback. `INSTANCE_ROOT` is the instance address
 without a `/api/v1` suffix; the client appends that prefix itself. A number that
 already carries a durable Forgejo task routes to its stored instance and

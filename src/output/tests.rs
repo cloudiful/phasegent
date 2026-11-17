@@ -696,7 +696,7 @@ fn the_status_change_names_the_transition() {
 #[test]
 fn the_configuration_view_stays_redacted() {
     let value = json!({
-        "database_path": "/home/dev/.config/phasegent/phasegent.sqlite3",
+        "config_path": "/home/dev/.config/phasegent/phasegent.jsonc",
         "roles": [
             {
                 "role": "admin",
@@ -718,7 +718,10 @@ fn the_configuration_view_stays_redacted() {
         "global_default_provider": null,
     });
     let text = render_view(HumanView::Config, &value, 80);
-    assert!(text.contains("Database: /home/dev/.config"), "got: {text}");
+    assert!(
+        text.contains("Configuration file: /home/dev/.config"),
+        "got: {text}"
+    );
     assert!(text.contains("Default provider: (unset)"), "got: {text}");
     assert!(text.contains("Global settings:"), "got: {text}");
     assert!(
@@ -740,7 +743,7 @@ fn the_configuration_view_stays_redacted() {
 #[test]
 fn the_doctor_view_separates_healthy_checks_from_warnings() {
     let value = json!({
-        "database_path": "/home/dev/.config/phasegent/phasegent.sqlite3",
+        "config_path": "/home/dev/.config/phasegent/phasegent.jsonc",
         "roles": [
             {"role": "admin", "provider": null, "redmine_close_status_id": null, "redmine_credential": {"present": false}},
         ],
@@ -755,7 +758,7 @@ fn the_doctor_view_separates_healthy_checks_from_warnings() {
     assert!(text.contains("Roles:"), "got: {text}");
 
     let healthy = json!({
-        "database_path": "/home/dev/.config/phasegent/phasegent.sqlite3",
+        "config_path": "/home/dev/.config/phasegent/phasegent.jsonc",
         "roles": [],
         "global_default_provider": "redmine",
         "index": {"backend": "sqlite", "sqlite_path": "/home/dev/.config/phasegent/index.sqlite3", "sqlite_exists": true},
@@ -967,7 +970,7 @@ fn a_wrapped_title_cannot_impersonate_a_field() {
 #[test]
 fn a_shipped_config_label_stacks_instead_of_overflowing() {
     let value = json!({
-        "database_path": "/home/operator/.config/phasegent/phasegent.sqlite3",
+        "config_path": "/home/operator/.config/phasegent/phasegent.jsonc",
         "global_default_provider": null,
         "global_settings": [{
             "name": "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
@@ -1062,7 +1065,7 @@ fn headings_and_prune_rows_fit_the_width_without_truncation() {
         }],
     });
     let config = json!({
-        "database_path": "/home/operator/.config/phasegent/phasegent.sqlite3",
+        "config_path": "/home/operator/.config/phasegent/phasegent.jsonc",
         "global_default_provider": null,
         "global_settings": [{
             "name": "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL",
@@ -1076,7 +1079,7 @@ fn headings_and_prune_rows_fit_the_width_without_truncation() {
         }],
     });
     let doctor = json!({
-        "database_path": "/home/operator/.config/phasegent/phasegent.sqlite3",
+        "config_path": "/home/operator/.config/phasegent/phasegent.jsonc",
         "roles": [{"role": "admin", "provider": null, "redmine_close_status_id": null, "redmine_credential": {"present": false}}],
         "global_default_provider": "redmine",
         "index": {"backend": "sqlite", "sqlite_path": "/home/operator/.config/phasegent/phasegent-index.sqlite3", "sqlite_exists": false},

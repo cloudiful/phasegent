@@ -30,7 +30,7 @@ pub fn fire_notification_result(
     storage: &Storage,
     intent: &NotificationIntent,
 ) -> Result<FireOutcome, String> {
-    let config = crate::notifications::config::load(storage)?;
+    let config = crate::notifications::config::load()?;
     let Some(config) = config else {
         // Disabled or unconfigured: persist a skipped row so the
         // intent stays observable, then report not-delivered without

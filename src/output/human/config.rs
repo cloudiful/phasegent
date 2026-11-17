@@ -13,8 +13,8 @@ use crate::output::render::Lines;
 /// The curated `config show` rendering.
 pub(crate) fn render(value: &Value, context: &OutputContext) -> String {
     let mut lines = Lines::new(context);
-    if let Some(path) = value.get("database_path").and_then(Value::as_str) {
-        lines.field(0, "Database", path);
+    if let Some(path) = value.get("config_path").and_then(Value::as_str) {
+        lines.field(0, "Configuration file", path);
     }
     let provider = value
         .get("global_default_provider")

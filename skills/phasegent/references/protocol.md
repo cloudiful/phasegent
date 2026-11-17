@@ -358,7 +358,7 @@ hand, filtered by the session's role; this section records role gates and
 boundaries, never flag tables. For a numbered command the durable task layer
 resolves first: the current branch task reference, then a unique repository
 membership, then the unchanged legacy resolution (an explicit override wins,
-then the configured default — role or global setting, `phasegent.toml`, or
+then the configured default — role or global setting, the configuration file, or
 environment — with Redmine as the final fallback). A bound task is dispatched
 through its own stored instance and project; the role credential is used only
 while the configured endpoint still attests that instance, and a changed

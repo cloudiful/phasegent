@@ -4,7 +4,7 @@
 //! storage persistence for the explicit CLI configuration surface
 //! that replaced `config import-env`. Environment variables remain
 //! runtime-only overrides in `crate::auth` and `crate::providers::config`;
-//! this module only touches SQLite.
+//! this module only touches the JSONC configuration file.
 //!
 //! Secret handling: `PHASEGENT_REDMINE_GIT_MIRROR_API_KEY` is never
 //! accepted as a positional or option value. The CLI dispatch rejects
@@ -13,7 +13,7 @@
 //!
 //! Global settings are machine-wide and usable without a role;
 //! role-scoped settings require a role and operate on the per-role
-//! rows.
+//! entry in the configuration file.
 
 mod clear;
 mod common;

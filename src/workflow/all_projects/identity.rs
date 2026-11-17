@@ -20,7 +20,6 @@ pub(super) struct ResolvedIdentity {
 pub(super) fn resolve_identities(
     admin: &RedmineProvider,
 ) -> Result<Vec<ResolvedIdentity>, PhasegentError> {
-    let storage = crate::infra::storage::Storage::open().map_err(PhasegentError::config)?;
     let mut resolved: Vec<ResolvedIdentity> = Vec::new();
     for role in provisioned_roles() {
         let metadata = provisioning_metadata(role).ok_or_else(|| {
@@ -29,7 +28,7 @@ pub(super) fn resolve_identities(
                 role.as_str()
             ))
         })?;
-        let user = match persisted_role_identity(role, &storage)? {
+        let user = match persisted_role_identity(role)? {
             Some(user) => Some(user),
             None => admin
                 .find_user_by_login(metadata.login)?

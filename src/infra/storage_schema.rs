@@ -25,109 +25,18 @@ pub(crate) const PROVIDER_LOCAL: &str = "local";
 
 /// Schema for the phasegent SQLite database.
 ///
-/// The schema is intentionally split across five small tables:
-///
-/// * `role_config` stores the per-role provider preference; its legacy
-///   `api_base` and `repository` fields are inert.
-/// * `role_forgejo_config` stores provider-owned Forgejo settings and provenance.
-/// * `role_redmine_config` stores the Redmine-only fields so loading a
-///   Redmine config never has to guess whether a missing `project_id`
-///   belongs to the legacy Forgejo row or to Redmine. The `project_id`
-///   column is legacy: new code never reads or writes it and the
-///   `Storage::open` migration clears any legacy values, but the column
-///   remains for non-destructive compatibility with old databases.
-/// * `role_credential` stores per-(role, provider) credentials; the
-///   composite primary key lets the same role keep both a Forgejo token
-///   and a Redmine API key without collision.
-/// * `role_redmine_user` stores the admin-provisioned Redmine identity
-///   (`user_id`, `login`) for each agent role. Written when a
-///   deterministic service user is found or created via the admin REST
-///   API and read on reruns so provisioning is idempotent without
-///   re-listing users. Legacy databases gain the table via
-///   `CREATE TABLE IF NOT EXISTS` with no destructive migration; legacy
-///   `role_credential` rows without a mapping are reconciled by looking
-///   up the deterministic login before creating.
-/// * `global_setting` stores deployment-level secrets that are not
-///   tied to a role (for example the Redmine git mirror plugin key and
-///   its repository URL override). `config show` returns their
-///   presence and length; the resolver layer reads the value out of
-///   SQLite only when the matching environment variable is unset.
-/// * `role_gitlab_config` mirrors the Redmine split; its `project_id`
-///   column is also legacy for the same reasons.
+/// The database holds business state only: the execution ledger, the
+/// agent notification outbox, and the canonical task identity tables.
+/// Configuration and credentials live in the JSONC configuration file
+/// (`crate::infra::config_file`), so this schema creates no
+/// configuration table and reads no configuration value. Databases
+/// created by earlier versions keep their legacy configuration tables;
+/// the `admin config migrate` command is the only thing that clears
+/// them, and it never drops a table.
 ///
 /// All non-key columns are nullable so the layer can distinguish
 /// "missing" (no row) from "present but empty" (row with NULL).
 pub(crate) const SCHEMA: &str = "\
-CREATE TABLE IF NOT EXISTS role_config (
-    role TEXT PRIMARY KEY,
-    provider TEXT,
-    api_base TEXT,
-    repository TEXT
-);
-
-CREATE TABLE IF NOT EXISTS role_forgejo_config (
-    role TEXT PRIMARY KEY,
-    api_base TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    source TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS role_redmine_config (
-    role TEXT PRIMARY KEY,
-    api_base TEXT,
-    project_id TEXT,
-    close_status_id INTEGER
-);
-
--- The table mirrors the Redmine-only split so GitLab credentials and
--- configuration never collide with the existing Forgejo/Redmine rows, and
--- the resolver can distinguish a GitLab row from a missing row without
--- inspecting either legacy table. The `project_id` column is INTEGER
--- because GitLab identifiers are numeric project ids, unlike Redmine's
--- free-text identifier slug. `project_id` is legacy in both
--- role_redmine_config and role_gitlab_config: new code never reads or
--- writes the column. Storage::open clears the Redmine legacy value but
--- preserves the GitLab one, and both columns remain for non-destructive
--- compatibility.
-CREATE TABLE IF NOT EXISTS role_gitlab_config (
-    role TEXT PRIMARY KEY,
-    api_base TEXT,
-    project_id INTEGER,
-    repository TEXT,
-    source TEXT,
-    updated_at INTEGER
-);
-
--- `fingerprint` (last 4 characters, NULL for short secrets) and
--- `credential_updated_at` (epoch seconds) let `config show` and `doctor`
--- identify *which* credential is stored without ever loading the secret
--- for display. Both columns are maintained by `save_credential` and
--- backfilled on first read by `credential_summary`, so pre-existing rows
--- gain them lazily with no destructive migration.
-CREATE TABLE IF NOT EXISTS role_credential (
-    role TEXT NOT NULL,
-    provider TEXT NOT NULL,
-    credential TEXT NOT NULL,
-    fingerprint TEXT,
-    credential_updated_at INTEGER,
-    PRIMARY KEY (role, provider)
-);
-
--- One row per agent role holding the Redmine user provisioned through the
--- administrator REST API. Additive so older databases gain the table on
--- open via `CREATE TABLE IF NOT EXISTS` with no data migration.
-CREATE TABLE IF NOT EXISTS role_redmine_user (
-    role TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL CHECK (user_id > 0),
-    login TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS global_setting (
-    name TEXT PRIMARY KEY,
-    value TEXT
-);
-
 -- Execution ledger. The table is additive so databases created by earlier
 -- versions remain readable and never need a destructive migration. Rounded
 -- hours are retained for the Redmine projection, while elapsed_seconds
@@ -136,8 +45,8 @@ CREATE TABLE IF NOT EXISTS global_setting (
 -- Nullable `owner_session_id` / `owner_call_id` columns let the OpenCode
 -- plugin record which subagent invocation owns a run without growing the
 -- primary key. Existing rows keep their NULL owner; the additive MIGRATIONS
--- block below adds the columns on databases that were initialised before
--- the field existed.
+-- block below adds the columns on databases that were initialised before the
+-- field existed.
 CREATE TABLE IF NOT EXISTS execution_timer_runs (
     run_id TEXT PRIMARY KEY,
     issue_id INTEGER NOT NULL CHECK (issue_id > 0),
@@ -228,52 +137,46 @@ CREATE INDEX IF NOT EXISTS task_repo_memberships_task_idx
 /// `ALTER TABLE ADD COLUMN` would otherwise error on a database that was
 /// initialised with the new schema already present.
 pub(crate) const MIGRATIONS: &[(&str, &str, &str)] = &[
-    ("role_credential", "fingerprint", "TEXT"),
-    ("role_credential", "credential_updated_at", "INTEGER"),
     ("execution_timer_runs", "owner_session_id", "TEXT"),
     ("execution_timer_runs", "owner_call_id", "TEXT"),
     ("execution_timer_runs", "projection_token", "TEXT"),
     ("execution_timer_runs", "projection_claimed_at", "INTEGER"),
-    ("role_gitlab_config", "repository", "TEXT"),
-    ("role_gitlab_config", "source", "TEXT"),
-    ("role_gitlab_config", "updated_at", "INTEGER"),
 ];
 
-/// Names of the deployment-level settings stored in `global_setting`.
+/// Names of the deployment-level settings stored in the JSONC
+/// configuration file's `settings` map.
 /// The strings double as the canonical environment variable names so
 /// `config set` can persist them without a translation table.
 pub(crate) const GLOBAL_REDMINE_GIT_MIRROR_API_KEY: &str = "PHASEGENT_REDMINE_GIT_MIRROR_API_KEY";
 pub(crate) const GLOBAL_REDMINE_REPOSITORY_URL: &str = "PHASEGENT_REDMINE_REPOSITORY_URL";
 /// Canonical, non-secret global Redmine REST API base. Every Redmine
-/// role/provider request resolves the same address from this one row
-/// (or its TOML/env override) instead of a per-role value. The string
-/// doubles as the environment variable name.
+/// role/provider request resolves the same address from this one
+/// setting (or its environment override) instead of a per-role value.
+/// The string doubles as the environment variable name.
 pub(crate) const GLOBAL_REDMINE_API_BASE: &str = "PHASEGENT_REDMINE_API_BASE";
 /// Persistent machine-wide default provider. Acts as the fallback
 /// between `PHASEGENT_PROVIDER` (one-process override) and the
-/// role-scoped `role_config.provider` so operators can switch between
+/// role-scoped provider preference so operators can switch between
 /// an external Redmine deployment and an internal GitLab one without
-/// touching every role-scoped config row. The string doubles as the
+/// touching every role-scoped config entry. The string doubles as the
 /// environment variable name so `config set` persists it
 /// without a translation table.
 pub(crate) const GLOBAL_DEFAULT_PROVIDER: &str = "PHASEGENT_DEFAULT_PROVIDER";
-/// Issue index backend selector. When `postgres` the index lives in
-/// PostgreSQL (shared, multi-machine); default `sqlite` keeps the
-/// local `phasegent-index.sqlite3` file. The string doubles as the
-/// environment variable name.
+/// Legacy issue index backend selector, kept for compatibility only:
+/// backend selection is driven by the PostgreSQL URL presence. The
+/// string doubles as the environment variable name.
 pub(crate) const GLOBAL_INDEX_BACKEND: &str = "PHASEGENT_INDEX_BACKEND";
 /// PostgreSQL connection URL for the shared issue index. Stored as a
 /// secret global setting and never echoed in snapshots or errors.
 pub(crate) const GLOBAL_INDEX_PG_URL: &str = "PHASEGENT_INDEX_PG_URL";
 
-/// Agent notification channel configuration. One `global_setting` row
-/// per field so operators persist each value with `config set` and the
-/// resolver keeps the env-over-SQLite precedence used by every other
-/// global. Secrets (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`) are write-only:
+/// Agent notification channel configuration. One setting per field so
+/// operators persist each value with `config set` and the resolver
+/// keeps the env-over-file precedence used by every other global.
+/// Secrets (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`) are write-only:
 /// `config show` reports presence/length only and errors never echo
-/// values. Non-secret URLs are sanitised before rendering. TOML
-/// overlay does not cover notify settings; precedence is env, then
-/// SQLite. Default notifier features are ntfy plus webhook;
+/// values. Non-secret URLs are sanitised before rendering. Default
+/// notifier features are ntfy plus webhook;
 /// dingtalk/email fields are accepted always but delivery requires the
 /// matching `notify-dingtalk` / `notify-email` Cargo feature.
 pub(crate) const GLOBAL_NOTIFY_ENABLED: &str = "PHASEGENT_NOTIFY_ENABLED";
@@ -296,10 +199,10 @@ pub(crate) const GLOBAL_NOTIFY_EMAIL_FROM: &str = "PHASEGENT_NOTIFY_EMAIL_FROM";
 pub(crate) const GLOBAL_NOTIFY_EMAIL_TO: &str = "PHASEGENT_NOTIFY_EMAIL_TO";
 pub(crate) const GLOBAL_NOTIFY_EMAIL_REPLY_TO: &str = "PHASEGENT_NOTIFY_EMAIL_REPLY_TO";
 
-/// All `global_setting` row names the resolver layer currently
-/// recognises. Listed in one place so `config show` can iterate over
-/// the canonical set without relying on string constants scattered
-/// across modules.
+/// All global setting names the resolver layer currently recognises.
+/// Listed in one place so `config show` can iterate over the canonical
+/// set without relying on string constants scattered across modules,
+/// and so the JSONC document only accepts known settings.
 pub(crate) const GLOBAL_SETTING_NAMES: &[&str] = &[
     GLOBAL_REDMINE_GIT_MIRROR_API_KEY,
     GLOBAL_REDMINE_REPOSITORY_URL,

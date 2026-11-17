@@ -14,7 +14,7 @@
 //! settings) and never per role. The per-role entries keep the role-scoped
 //! Redmine close-status id and the Redmine credential presence/length.
 
-use crate::infra::storage::{GlobalSettingSummary, Storage};
+use crate::infra::config_file::runtime::{self, GlobalSettingSummary};
 use crate::policy::Role;
 use serde::Serialize;
 
@@ -82,7 +82,10 @@ fn is_zero(value: &usize) -> bool {
 /// tooling tolerates it.
 #[derive(Debug, Serialize)]
 pub struct ConfigSnapshot {
-    pub database_path: String,
+    /// Absolute path of the JSONC configuration file this snapshot was
+    /// rendered from. The configuration file is distinct from the
+    /// business database, which holds task state only.
+    pub config_path: String,
     pub roles: Vec<RoleSnapshot>,
     pub global_settings: Vec<GlobalSettingJson>,
     /// Machine-wide default provider (`PHASEGENT_DEFAULT_PROVIDER`).
@@ -97,7 +100,7 @@ pub struct ConfigSnapshot {
     pub global_default_provider: Option<&'static str>,
 }
 
-pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, String> {
+pub fn render(role: Option<Role>) -> Result<ConfigSnapshot, String> {
     let roles_iter: Box<dyn Iterator<Item = Role>> = match role {
         Some(single) => Box::new(std::iter::once(single)),
         None => Box::new(
@@ -113,16 +116,17 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
     };
     let mut roles = Vec::new();
     for entry in roles_iter {
-        roles.push(snapshot_role(storage, entry)?);
+        roles.push(snapshot_role(entry)?);
     }
-    let global_settings = snapshot_global_settings(storage)?;
+    let global_settings = snapshot_global_settings()?;
     // The machine-wide default provider is intentionally rendered
     // through `ProviderKind::from_str` so a stale row containing an
     // unknown literal surfaces as a structured config error rather
     // than being echoed verbatim. The slot is omitted from the JSON
     // when no value is persisted so callers can rely on absence to
     // mean "unset" instead of "set to an empty string".
-    let global_default_provider = match storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")? {
+    let global_default_provider = match runtime::load_global_setting("PHASEGENT_DEFAULT_PROVIDER")?
+    {
         Some(raw) => Some(
             raw.parse::<crate::providers::config::ProviderKind>()
                 .map_err(|error| {
@@ -133,18 +137,18 @@ pub fn render(storage: &Storage, role: Option<Role>) -> Result<ConfigSnapshot, S
         None => None,
     };
     Ok(ConfigSnapshot {
-        database_path: storage.db_path().display().to_string(),
+        config_path: runtime::config_path()?.display().to_string(),
         roles,
         global_settings,
         global_default_provider,
     })
 }
 
-pub(crate) fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapshot, String> {
-    let role_config = storage.load_role_config(role)?;
-    let redmine_config = storage.load_redmine_config(role)?;
-    let redmine = storage.credential_summary(role, crate::infra::storage::PROVIDER_REDMINE)?;
-    let summarize = |identity: crate::infra::storage::CredentialIdentity| CredentialSummary {
+pub(crate) fn snapshot_role(role: Role) -> Result<RoleSnapshot, String> {
+    let role_config = runtime::load_role_config(role)?;
+    let redmine_config = runtime::load_redmine_config(role)?;
+    let redmine = runtime::credential_summary(role, crate::infra::storage::PROVIDER_REDMINE)?;
+    let summarize = |identity: runtime::CredentialIdentity| CredentialSummary {
         present: identity.present,
         length: identity.length,
         fingerprint: identity.fingerprint,
@@ -160,19 +164,16 @@ pub(crate) fn snapshot_role(storage: &Storage, role: Role) -> Result<RoleSnapsho
     })
 }
 
-fn snapshot_global_settings(storage: &Storage) -> Result<Vec<GlobalSettingJson>, String> {
-    let summaries = storage.summarise_global_settings()?;
+fn snapshot_global_settings() -> Result<Vec<GlobalSettingJson>, String> {
+    let summaries = runtime::summarise_global_settings()?;
     let mut entries = Vec::with_capacity(summaries.len());
     for summary in summaries {
-        entries.push(global_setting_to_json(storage, summary)?);
+        entries.push(global_setting_to_json(summary)?);
     }
     Ok(entries)
 }
 
-fn global_setting_to_json(
-    storage: &Storage,
-    summary: GlobalSettingSummary,
-) -> Result<GlobalSettingJson, String> {
+fn global_setting_to_json(summary: GlobalSettingSummary) -> Result<GlobalSettingJson, String> {
     // The sanitised URL is rendered for the repository URL override, the
     // canonical global Redmine API base, and the notify webhook-style URLs
     // because they are the non-secret global settings whose values contain
@@ -191,9 +192,7 @@ fn global_setting_to_json(
             | "PHASEGENT_NOTIFY_WEBHOOK_URL"
             | "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL"
     ) {
-        storage
-            .load_global_setting(summary.name)?
-            .map(|value| sanitize_url(&value))
+        runtime::load_global_setting(summary.name)?.map(|value| sanitize_url(&value))
     } else {
         None
     };
@@ -208,7 +207,7 @@ fn global_setting_to_json(
     // backend selection (URL presence alone selects) and never causes
     // `config show` to fail.
     let value = if summary.name == "PHASEGENT_DEFAULT_PROVIDER" {
-        match storage.load_global_setting(summary.name)? {
+        match runtime::load_global_setting(summary.name)? {
             Some(raw) => Some(
                 raw.parse::<crate::providers::config::ProviderKind>()
                     .map_err(|error| {
@@ -224,7 +223,7 @@ fn global_setting_to_json(
         // snapshots stay compatible; unknown/legacy values surface as
         // absent `value` (presence/length still report the row) rather
         // than failing `config show`.
-        match storage.load_global_setting(summary.name)? {
+        match runtime::load_global_setting(summary.name)? {
             Some(raw) => {
                 let lower = raw.trim().to_ascii_lowercase();
                 // The JSON value slot is `Option<&'static str>`, so only static literals can be returned.

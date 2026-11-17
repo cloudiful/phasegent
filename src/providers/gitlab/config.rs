@@ -1,4 +1,4 @@
-use crate::infra::storage::Storage;
+use crate::infra::config_file::runtime;
 use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 use crate::remote::GitlabOriginEvidence;
@@ -34,26 +34,13 @@ impl GitlabConfig {
     }
 
     /// Resolve the trusted instance and the per-operation project path from
-    /// an existing store only. It never creates, migrates, or writes.
+    /// the configuration file. It never creates, migrates, or writes.
     pub fn resolve(
         role: Role,
         api_base: Option<&str>,
         repository: Option<&str>,
     ) -> Result<Self, PhasegentError> {
-        let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-        match storage.as_ref() {
-            Some(storage) => Self::resolve_with_storage(storage, role, api_base, repository),
-            None => Self::select(api_base, repository, None, repository_evidence(repository)?),
-        }
-    }
-
-    pub(super) fn resolve_with_storage(
-        storage: &Storage,
-        role: Role,
-        api_base: Option<&str>,
-        repository: Option<&str>,
-    ) -> Result<Self, PhasegentError> {
-        let stored = stored_config(storage, role)?;
+        let stored = stored_config(role)?;
         Self::select(
             api_base,
             repository,
@@ -142,24 +129,8 @@ pub(super) struct GitlabStoredConfig {
     pub repository: Option<String>,
 }
 
-fn stored_config(
-    storage: &Storage,
-    role: Role,
-) -> Result<Option<GitlabStoredConfig>, PhasegentError> {
-    if !storage
-        .table_exists("role_gitlab_config")
-        .map_err(PhasegentError::config)?
-        || !storage
-            .table_has_column("role_gitlab_config", "api_base")
-            .map_err(PhasegentError::config)?
-        || !storage
-            .table_has_column("role_gitlab_config", "repository")
-            .map_err(PhasegentError::config)?
-    {
-        return Ok(None);
-    }
-    Ok(storage
-        .load_gitlab_config(role)
+fn stored_config(role: Role) -> Result<Option<GitlabStoredConfig>, PhasegentError> {
+    Ok(runtime::load_gitlab_config(role)
         .map_err(PhasegentError::config)?
         .map(|config| GitlabStoredConfig {
             api_base: config.api_base,

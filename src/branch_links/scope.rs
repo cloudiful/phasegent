@@ -121,11 +121,7 @@ fn select_provider_literal(
 }
 
 fn stored_provider(role: Role) -> Result<Option<String>, String> {
-    let storage = match crate::infra::storage::Storage::open() {
-        Ok(storage) => storage,
-        Err(_) => return Ok(None),
-    };
-    let config = crate::auth::load_config(role, &storage).map_err(|error| {
+    let config = crate::auth::load_config(role).map_err(|error| {
         format!("cannot scope branch link: could not read stored config: {error}")
     })?;
     Ok(config

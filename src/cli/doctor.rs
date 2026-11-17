@@ -8,6 +8,7 @@
 //! state, with nothing it must not see. No role required.
 
 use crate::config_snapshot::{self, RoleSnapshot};
+use crate::infra::config_file::runtime;
 use crate::policy::Role;
 use serde::Serialize;
 
@@ -32,7 +33,9 @@ pub struct IndexStatus {
 /// tolerates it.
 #[derive(Debug, Serialize)]
 pub struct DoctorReport {
-    pub database_path: String,
+    /// Absolute path of the JSONC configuration file. The business
+    /// database holds task state only and is not opened here.
+    pub config_path: String,
     pub roles: Vec<RoleSnapshot>,
     pub global_default_provider: Option<&'static str>,
     pub index: IndexStatus,
@@ -48,7 +51,6 @@ pub(crate) fn execute_doctor() -> i32 {
 }
 
 pub(crate) fn build_report() -> Result<DoctorReport, String> {
-    let storage = super::open_storage()?;
     let mut roles = Vec::new();
     for role in [
         Role::Admin,
@@ -57,9 +59,10 @@ pub(crate) fn build_report() -> Result<DoctorReport, String> {
         Role::Reviewer,
         Role::Explore,
     ] {
-        roles.push(config_snapshot::snapshot_role(&storage, role)?);
+        roles.push(config_snapshot::snapshot_role(role)?);
     }
-    let global_default_provider = match storage.load_global_setting("PHASEGENT_DEFAULT_PROVIDER")? {
+    let global_default_provider = match runtime::load_global_setting("PHASEGENT_DEFAULT_PROVIDER")?
+    {
         Some(raw) => Some(
             raw.parse::<crate::providers::config::ProviderKind>()
                 .map_err(|error| {
@@ -69,7 +72,7 @@ pub(crate) fn build_report() -> Result<DoctorReport, String> {
         ),
         None => None,
     };
-    let backend = crate::infra::issue_index_backend::resolve_index_backend(&storage)?;
+    let backend = crate::infra::issue_index_backend::resolve_index_backend()?;
     let index = match backend {
         crate::infra::issue_index_backend::IndexBackendKind::Sqlite => {
             // Mirror `SqliteIssueIndex::open` path selection without
@@ -88,7 +91,7 @@ pub(crate) fn build_report() -> Result<DoctorReport, String> {
             }
         }
         crate::infra::issue_index_backend::IndexBackendKind::Postgres => {
-            let url = crate::infra::issue_index_backend::resolve_pg_url(&storage)?;
+            let url = crate::infra::issue_index_backend::resolve_pg_url()?;
             IndexStatus {
                 backend: "postgres",
                 sqlite_path: None,
@@ -99,7 +102,7 @@ pub(crate) fn build_report() -> Result<DoctorReport, String> {
         }
     };
     Ok(DoctorReport {
-        database_path: storage.db_path().display().to_string(),
+        config_path: runtime::config_path()?.display().to_string(),
         roles,
         global_default_provider,
         index,

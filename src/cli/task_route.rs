@@ -12,6 +12,7 @@ use crate::branch_links::store::LinkParams;
 use crate::branch_links::{IssueKey, checkout_root, read_origin_url, resolve_repo_key};
 use crate::cli::provider_context::ProviderContext;
 use crate::git_runner::ProcessGitRunner;
+use crate::infra::config_file::runtime;
 use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::api::PhasegentError;
@@ -180,7 +181,7 @@ pub(crate) fn resolve_timer_route(issue: u64) -> Result<TimerTaskRoute, Phasegen
         "local" => Ok(TimerTaskRoute::Local),
         "redmine" => {
             if let Some(trusted) =
-                crate::auth::redmine_api_base_read_only(&storage).map_err(PhasegentError::config)?
+                crate::auth::redmine_api_base_read_only().map_err(PhasegentError::config)?
             {
                 let normalized =
                     normalize_instance(ProviderKind::Redmine, &trusted, key.project())?;
@@ -560,15 +561,7 @@ fn pinned_provider(
     let key = binding.key();
     match key.provider() {
         "forgejo" => {
-            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let stored = storage
-                .as_ref()
-                .ok_or_else(|| {
-                    BindingProviderError::MissingConfiguration(config_error(
-                        "Forgejo role configuration is not present",
-                    ))
-                })?
-                .load_forgejo_config(role)
+            let stored = runtime::load_forgejo_config(role)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     BindingProviderError::MissingConfiguration(config_error(
@@ -585,10 +578,7 @@ fn pinned_provider(
                     key.project()
                 ))));
             }
-            let token = storage
-                .as_ref()
-                .unwrap()
-                .load_credential(role, "forgejo")
+            let token = runtime::load_credential(role, "forgejo")
                 .map_err(PhasegentError::auth)?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| {
@@ -602,14 +592,7 @@ fn pinned_provider(
                 .map_err(Into::into)
         }
         "gitlab" => {
-            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let storage = storage.as_ref().ok_or_else(|| {
-                BindingProviderError::MissingConfiguration(config_error(
-                    "GitLab role configuration is not present",
-                ))
-            })?;
-            let stored = storage
-                .load_gitlab_config(role)
+            let stored = runtime::load_gitlab_config(role)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     BindingProviderError::MissingConfiguration(config_error(
@@ -636,8 +619,7 @@ fn pinned_provider(
                     key.project()
                 ))));
             }
-            let token = storage
-                .load_credential(role, "gitlab")
+            let token = runtime::load_credential(role, "gitlab")
                 .map_err(PhasegentError::auth)?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| {
@@ -651,13 +633,7 @@ fn pinned_provider(
                 .map_err(Into::into)
         }
         "redmine" => {
-            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let storage = storage.as_ref().ok_or_else(|| {
-                BindingProviderError::MissingConfiguration(config_error(
-                    "Redmine role configuration is not present",
-                ))
-            })?;
-            let trusted = crate::auth::redmine_api_base_read_only(storage)
+            let trusted = crate::auth::redmine_api_base_read_only()
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     BindingProviderError::MissingConfiguration(config_error(
@@ -678,7 +654,7 @@ fn pinned_provider(
                         .parse::<u64>()
                         .map_err(|_| config_error("Redmine close status id must be numeric"))?,
                 ),
-                None => crate::auth::load_redmine_config(role, storage)
+                None => crate::auth::load_redmine_config(role)
                     .map_err(PhasegentError::config)?
                     .and_then(|config| config.close_status_id),
             };
@@ -688,18 +664,14 @@ fn pinned_provider(
                 );
             }
             let api_key =
-                crate::auth::redmine_api_key_checked(role, storage).map_err(
-                    |error| match error {
-                        crate::auth::RedmineKeyError::Missing(message) => {
-                            BindingProviderError::MissingConfiguration(PhasegentError::auth(
-                                message,
-                            ))
-                        }
-                        crate::auth::RedmineKeyError::Storage(message) => {
-                            BindingProviderError::Other(PhasegentError::auth(message))
-                        }
-                    },
-                )?;
+                crate::auth::redmine_api_key_checked(role).map_err(|error| match error {
+                    crate::auth::RedmineKeyError::Missing(message) => {
+                        BindingProviderError::MissingConfiguration(PhasegentError::auth(message))
+                    }
+                    crate::auth::RedmineKeyError::Storage(message) => {
+                        BindingProviderError::Other(PhasegentError::auth(message))
+                    }
+                })?;
             let config = RedmineConfig {
                 api_base: key.instance().to_owned(),
                 project_id: Some(key.project().to_owned()),
@@ -814,11 +786,7 @@ pub(crate) fn preflight_explicit_issue(
                 context.api_base.as_deref(),
                 context.repository.as_deref(),
             )?;
-            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let stored = storage
-                .as_ref()
-                .ok_or_else(|| config_error("Forgejo role configuration is not present"))?
-                .load_forgejo_config(role)
+            let stored = runtime::load_forgejo_config(role)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     config_error(
@@ -838,10 +806,7 @@ pub(crate) fn preflight_explicit_issue(
                      refusing to send it",
                 ));
             }
-            let token = storage
-                .as_ref()
-                .unwrap()
-                .load_credential(role, "forgejo")
+            let token = runtime::load_credential(role, "forgejo")
                 .map_err(PhasegentError::auth)?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| PhasegentError::auth("Forgejo role credential is not configured"))?;
@@ -854,12 +819,7 @@ pub(crate) fn preflight_explicit_issue(
                 context.api_base.as_deref(),
                 context.repository.as_deref(),
             )?;
-            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let storage = storage
-                .as_ref()
-                .ok_or_else(|| config_error("GitLab role configuration is not present"))?;
-            let stored = storage
-                .load_gitlab_config(role)
+            let stored = runtime::load_gitlab_config(role)
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     config_error(
@@ -881,8 +841,7 @@ pub(crate) fn preflight_explicit_issue(
                      refusing to send it",
                 ));
             }
-            let token = storage
-                .load_credential(role, "gitlab")
+            let token = runtime::load_credential(role, "gitlab")
                 .map_err(PhasegentError::auth)?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| PhasegentError::auth("GitLab role credential is not configured"))?;
@@ -896,11 +855,7 @@ pub(crate) fn preflight_explicit_issue(
                      resolved uniquely",
                 )
             })?;
-            let storage = Storage::open_existing_read_only().map_err(PhasegentError::config)?;
-            let storage = storage
-                .as_ref()
-                .ok_or_else(|| config_error("Redmine role configuration is not present"))?;
-            let trusted = crate::auth::redmine_api_base_read_only(storage)
+            let trusted = crate::auth::redmine_api_base_read_only()
                 .map_err(PhasegentError::config)?
                 .ok_or_else(|| {
                     config_error("Redmine API base is not configured for credential provenance")
@@ -934,8 +889,7 @@ pub(crate) fn preflight_explicit_issue(
                     "Redmine close status id must be greater than zero",
                 ));
             }
-            let api_key =
-                crate::auth::redmine_api_key(role, storage).map_err(PhasegentError::auth)?;
+            let api_key = crate::auth::redmine_api_key(role).map_err(PhasegentError::auth)?;
             let config = RedmineConfig {
                 api_base,
                 project_id: Some(project.to_owned()),

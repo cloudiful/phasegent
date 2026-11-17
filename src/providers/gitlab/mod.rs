@@ -13,7 +13,6 @@ mod contract_tests;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use crate::infra::storage::Storage;
 use crate::policy::Role;
 use crate::providers::api::PhasegentError;
 pub use config::GitlabConfig;
@@ -52,17 +51,11 @@ impl GitlabProvider {
     }
 
     pub fn for_role(config: GitlabConfig, role: Role) -> Result<Self, PhasegentError> {
-        let storage = Storage::open().map_err(PhasegentError::config)?;
-        Self::with_storage(config, role, &storage)
+        Self::with_storage(config, role)
     }
 
-    fn with_storage(
-        config: GitlabConfig,
-        role: Role,
-        storage: &Storage,
-    ) -> Result<Self, PhasegentError> {
-        let token = storage
-            .load_credential(role, "gitlab")
+    fn with_storage(config: GitlabConfig, role: Role) -> Result<Self, PhasegentError> {
+        let token = crate::infra::config_file::runtime::load_credential(role, "gitlab")
             .map_err(|_| PhasegentError::auth("could not load GitLab role credential"))?
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| PhasegentError::auth("GitLab role credential is not configured"))?;

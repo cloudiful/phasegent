@@ -1,13 +1,13 @@
 //! Channel configuration for agent notifications.
 //!
-//! One `global_setting` row per field, resolved env-over-SQLite like
-//! every other global. Secrets are write-only: they are read for
+//! One persisted setting per field, resolved env-over-file like every
+//! other global. Secrets are write-only: they are read for
 //! delivery but never rendered in snapshots or errors. Default Cargo
 //! features cover ntfy plus webhook; dingtalk/email settings are
 //! accepted always but delivery requires the matching
 //! `notify-dingtalk` / `notify-email` feature.
 
-use crate::infra::storage::Storage;
+use crate::infra::config_file::runtime;
 
 /// Supported delivery channels. The literal doubles as the stored
 /// `PHASEGENT_NOTIFY_CHANNEL` value and the `channel` column in
@@ -115,11 +115,12 @@ pub fn resolve_email_tls(mode: Option<&str>, port: Option<u16>) -> EmailTlsSelec
     }
 }
 
-/// Load the effective notify config: env wins, SQLite fills gaps.
+/// Load the effective notify config: env wins, the configuration file fills
+/// gaps.
 /// Returns `Ok(None)` when notifications are disabled or unconfigured
 /// so callers stay silent and preserve existing CLI behaviour.
-pub fn load(storage: &Storage) -> Result<Option<NotifyConfig>, String> {
-    let enabled_raw = resolve_field(storage, "PHASEGENT_NOTIFY_ENABLED")?;
+pub fn load() -> Result<Option<NotifyConfig>, String> {
+    let enabled_raw = resolve_field("PHASEGENT_NOTIFY_ENABLED")?;
     let enabled = match enabled_raw.as_deref() {
         None => false,
         Some(raw) => parse_enabled(raw)?,
@@ -127,7 +128,7 @@ pub fn load(storage: &Storage) -> Result<Option<NotifyConfig>, String> {
     if !enabled {
         return Ok(None);
     }
-    let channel_raw = resolve_field(storage, "PHASEGENT_NOTIFY_CHANNEL")?
+    let channel_raw = resolve_field("PHASEGENT_NOTIFY_CHANNEL")?
         .ok_or_else(|| {
             "notifications are enabled but PHASEGENT_NOTIFY_CHANNEL is not set; use admin config set notify-channel <ntfy|webhook|dingtalk|email>".to_owned()
         })?;
@@ -135,14 +136,14 @@ pub fn load(storage: &Storage) -> Result<Option<NotifyConfig>, String> {
     let mut config = NotifyConfig {
         enabled: true,
         channel,
-        ntfy_base_url: resolve_field(storage, "PHASEGENT_NOTIFY_NTFY_BASE_URL")?,
-        ntfy_topic: resolve_field(storage, "PHASEGENT_NOTIFY_NTFY_TOPIC")?,
-        ntfy_token: resolve_field(storage, "PHASEGENT_NOTIFY_NTFY_TOKEN")?,
-        webhook_url: resolve_field(storage, "PHASEGENT_NOTIFY_WEBHOOK_URL")?,
-        webhook_token: resolve_field(storage, "PHASEGENT_NOTIFY_WEBHOOK_TOKEN")?,
-        dingtalk_webhook_url: resolve_field(storage, "PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL")?,
-        dingtalk_secret: resolve_field(storage, "PHASEGENT_NOTIFY_DINGTALK_SECRET")?,
-        dingtalk_keywords: resolve_field(storage, "PHASEGENT_NOTIFY_DINGTALK_KEYWORDS")?
+        ntfy_base_url: resolve_field("PHASEGENT_NOTIFY_NTFY_BASE_URL")?,
+        ntfy_topic: resolve_field("PHASEGENT_NOTIFY_NTFY_TOPIC")?,
+        ntfy_token: resolve_field("PHASEGENT_NOTIFY_NTFY_TOKEN")?,
+        webhook_url: resolve_field("PHASEGENT_NOTIFY_WEBHOOK_URL")?,
+        webhook_token: resolve_field("PHASEGENT_NOTIFY_WEBHOOK_TOKEN")?,
+        dingtalk_webhook_url: resolve_field("PHASEGENT_NOTIFY_DINGTALK_WEBHOOK_URL")?,
+        dingtalk_secret: resolve_field("PHASEGENT_NOTIFY_DINGTALK_SECRET")?,
+        dingtalk_keywords: resolve_field("PHASEGENT_NOTIFY_DINGTALK_KEYWORDS")?
             .map(|raw| {
                 raw.split(',')
                     .map(str::trim)
@@ -151,20 +152,20 @@ pub fn load(storage: &Storage) -> Result<Option<NotifyConfig>, String> {
                     .collect()
             })
             .unwrap_or_default(),
-        dingtalk_msg_type: resolve_field(storage, "PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE")?
+        dingtalk_msg_type: resolve_field("PHASEGENT_NOTIFY_DINGTALK_MSG_TYPE")?
             .unwrap_or_else(|| "text".to_owned()),
-        email_smtp_host: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_SMTP_HOST")?,
-        email_smtp_port: match resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_SMTP_PORT")? {
+        email_smtp_host: resolve_field("PHASEGENT_NOTIFY_EMAIL_SMTP_HOST")?,
+        email_smtp_port: match resolve_field("PHASEGENT_NOTIFY_EMAIL_SMTP_PORT")? {
             Some(raw) => Some(raw.parse::<u16>().map_err(|_| {
                 format!("PHASEGENT_NOTIFY_EMAIL_SMTP_PORT '{raw}' must be 1-65535")
             })?),
             None => None,
         },
-        email_tls: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_TLS")?,
-        email_username: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_USERNAME")?,
-        email_password: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_PASSWORD")?,
-        email_from: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_FROM")?,
-        email_to: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_TO")?
+        email_tls: resolve_field("PHASEGENT_NOTIFY_EMAIL_TLS")?,
+        email_username: resolve_field("PHASEGENT_NOTIFY_EMAIL_USERNAME")?,
+        email_password: resolve_field("PHASEGENT_NOTIFY_EMAIL_PASSWORD")?,
+        email_from: resolve_field("PHASEGENT_NOTIFY_EMAIL_FROM")?,
+        email_to: resolve_field("PHASEGENT_NOTIFY_EMAIL_TO")?
             .map(|raw| {
                 raw.split(',')
                     .map(str::trim)
@@ -173,7 +174,7 @@ pub fn load(storage: &Storage) -> Result<Option<NotifyConfig>, String> {
                     .collect()
             })
             .unwrap_or_default(),
-        email_reply_to: resolve_field(storage, "PHASEGENT_NOTIFY_EMAIL_REPLY_TO")?,
+        email_reply_to: resolve_field("PHASEGENT_NOTIFY_EMAIL_REPLY_TO")?,
     };
     // Normalise optional dingtalk/email literals without echoing values.
     config.dingtalk_msg_type = config.dingtalk_msg_type.trim().to_ascii_lowercase();
@@ -284,11 +285,11 @@ fn validate_for_channel(config: &NotifyConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_field(storage: &Storage, name: &str) -> Result<Option<String>, String> {
+fn resolve_field(name: &str) -> Result<Option<String>, String> {
     if let Some(env) = read_env_trimmed(name)? {
         return Ok(Some(env));
     }
-    storage.load_global_setting(name)
+    runtime::load_global_setting(name)
 }
 
 fn read_env_trimmed(name: &str) -> Result<Option<String>, String> {

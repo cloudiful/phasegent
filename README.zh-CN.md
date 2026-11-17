@@ -56,7 +56,7 @@ provider 选择以及 Redmine close-status id 仍是 role 级。
 
 `workflow bootstrap` 为每个 agent role 开通一个 Redmine 服务账号——
 orchestrator、executor、reviewer 和 explore——通过 admin API 读取各自的
-API key，把 key 存入 SQLite，并协调它们的直接 project membership
+API key，把 key 存入配置文件，并协调它们的直接 project membership
 （Maintainer、Developer、Reporter、Reporter）。该命令是幂等的：重复执行会
 复用已持有的全部身份，只创建缺失的账号。
 
@@ -67,9 +67,23 @@ membership，同时保留已附加的其他 role。加上 `--dry-run` 得到只�
 规划相同的目标结果，但不创建账号、不通过 API 获取用户 API key、不写入
 membership 或 settings。两种模式都会打印完整 JSON report，并在所有 project 就绪时退出
 `0`，任一 project blocked、warning 或 error 时退出 `1`。两种模式仍可能打开
-本地 SQLite store，当 schema 或数据库文件缺失时会创建它。
+本地 SQLite 业务 store，当 schema 或数据库文件缺失时会创建它。
 
 可选原生 Git hooks：在仓库中运行 `phasegent hooks install`。消息处理、固定注释标记及安全更新/恢复说明见 [Git hooks](docs/git-hooks.md)。
+
+## 配置
+
+全部配置与 credential 存放在同一个 JSONC 文件中：OS 配置目录下的
+`phasegent.jsonc`（Linux 为 `~/.config/phasegent/phasegent.jsonc`），
+`PHASEGENT_CONFIG_PATH` 可用绝对路径覆盖该位置。每个字段的生效顺序是
+CLI 参数 > `PHASEGENT_*` 环境变量 > 配置文件 > 内置默认值。文件以明文保存
+credential，由文件系统保护：Unix 下目录为 `0700`、文件为 `0600`，Windows 下
+依赖用户 profile 的 ACL 继承。SQLite 只保留业务状态。详见
+[配置文件](docs/config-file.md)。
+
+仍把配置存在 SQLite 中的安装需要由人工执行一次
+`phasegent admin config migrate` 完成迁移，操作手册见
+[配置迁移](docs/config-migration.md)。
 
 ## 常用命令
 
@@ -120,7 +134,7 @@ Forgejo 与其他 provider 一样通过统一配置选择：创建 issue、用 `
 或操作任何没有持久 task 的编号时，使用
 `--provider forgejo --repository owner/repo --api-base INSTANCE_ROOT`，并通过
 `admin auth setup --provider forgejo --repository owner/repo --api-base INSTANCE_ROOT --target-role <role>`
-保存该 role 的 token（省略 `--target-role` 则写入 Admin 行）。通过环境变量、TOML、已保存的机器级默认值或 role 配置设定的 Forgejo
+保存该 role 的 token（省略 `--target-role` 则写入 Admin 行）。通过环境变量、已保存的机器级默认值或 role 配置设定的 Forgejo
 默认值会走同一套选择优先级（最终回退到 Redmine），因此无需显式 `--provider`；仓库依次由显式
 `--repository`、当前 checkout 中能证明受信实例的 origin、Git 之外的已保存默认值确定。
 `INSTANCE_ROOT` 是不带 `/api/v1` 后缀的受信实例地址，客户端会自行追加该前缀；

@@ -60,7 +60,7 @@ tree.
 ```console
 $ phasegent --output text doctor
 Healthy:
- database: ~/.config/phasegent/phasegent.sqlite3
+ configuration file: ~/.config/phasegent/phasegent.jsonc
 
 Warnings:
  default provider: not set
@@ -106,7 +106,7 @@ serialization only and never changes which rows are selected.
 
 ```console
 $ phasegent --output json doctor
-{"database_path":"...","roles":[{"role":"admin","provider":null,...}],"global_default_provider":null,"index":{"backend":"sqlite",...}}
+{"config_path":"...","roles":[{"role":"admin","provider":null,...}],"global_default_provider":null,"index":{"backend":"sqlite",...}}
 ```
 
 ```console

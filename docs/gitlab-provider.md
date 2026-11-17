@@ -5,11 +5,11 @@ normalized instance. Store the instance root and the outside-Git project
 default with
 `phasegent --provider gitlab admin auth setup --repository namespace[/subgroup]/project --api-base INSTANCE_ROOT --target-role <role>`.
 The stored repository is a default only outside Git, never a credential
-restriction. A GitLab default configured through the environment, TOML, the
+restriction. A GitLab default configured through the environment, the
 persisted machine-wide default or stored role configuration is selected through
 the same precedence chain as any other provider, so it needs no explicit
 `--provider`: explicit `--provider` > `PHASEGENT_PROVIDER` >
-`PHASEGENT_DEFAULT_PROVIDER` (environment > TOML > persisted) > the role-scoped
+`PHASEGENT_DEFAULT_PROVIDER` (environment > persisted) > the role-scoped
 provider > the Redmine fallback.
 
 `INSTANCE_ROOT` is the instance address without a `/api/v4` suffix; the client
