@@ -28,6 +28,20 @@ open a new terminal to use `phasegent`. Uninstall it from Windows Settings > App
 > Installed apps. Your user configuration and credentials are kept. Windows may
 warn that the MSI is unsigned.
 
+### Local Integration Freshness
+
+Inside OpenCode, `phasegent` compares the locally installed OpenCode plugin and
+the `phasegent` skill with the artifacts this build embeds, and prints one
+warning on stderr when a copy is missing, outdated, or only partly installed.
+The comparison is local and read-only: it never installs or upgrades anything,
+never looks up the latest release on the internet, and never reports what
+OpenCode has loaded. The warning names the scope only, never a path, and the
+help, `--version`, `plugin`, and `skill install` commands stay quiet. Refresh a
+copy in the scope the warning names: `phasegent plugin install` for the global
+scope and `phasegent plugin install --project` for the current project, and
+likewise `phasegent skill install` or `phasegent skill install --project`. When
+no copy exists at all, installing in either scope is enough.
+
 ## Quick Start
 
 Configure a credential for each role that will use the CLI. Credentials are

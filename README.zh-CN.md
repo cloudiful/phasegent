@@ -25,6 +25,17 @@ Windows x64 用户可安装对应版本的
 `phasegent`。可在 Windows 设置 > 应用 > 已安装的应用中卸载。用户配置与 credential
 会保留。由于 MSI 未签名，Windows 可能显示安全警告。
 
+### 本地集成新鲜度
+
+在 OpenCode 内，`phasegent` 会把本机已安装的 OpenCode 插件和 `phasegent` skill
+与当前构建内嵌的产物做比较；当副本缺失、过期或安装不完整时，它在 stderr 上打印
+一条警告。该比较只读且完全本地：它不安装也不升级任何东西，不查询互联网上的最新
+版本，也不报告 OpenCode 实际加载了哪一份。警告只说明作用域，不含路径；help、
+`--version`、`plugin` 和 `skill install` 命令保持安静。请在警告指出的作用域内刷新副本：
+全局作用域用 `phasegent plugin install`，当前项目用 `phasegent plugin install --project`；
+skill 同理，分别为 `phasegent skill install` 和 `phasegent skill install --project`。
+若完全没有副本，任选一个作用域安装即可。
+
 ## 快速开始
 
 为需要使用 CLI 的每个 role 配置 credential。credential 通过安全提示或 stdin

@@ -27,9 +27,22 @@ pub const FOREIGN_BACKUP_SUFFIX: &str = ".phasegent-orig";
 
 const MANAGED_MARKER_CONTENT: &str = "phasegent managed skill directory\n";
 
-struct BundledFile {
-    relative: &'static str,
-    content: &'static str,
+/// One bundled skill file: its path relative to the skill directory and its
+/// content.
+pub(crate) struct BundledFile {
+    pub(crate) relative: &'static str,
+    pub(crate) content: &'static str,
+}
+
+/// The bundled skill files, compared with an installed copy by the freshness
+/// check.
+pub(crate) fn bundled_files() -> &'static [BundledFile] {
+    BUNDLED_FILES
+}
+
+/// The managed marker bytes of an installed skill directory.
+pub(crate) fn managed_marker_bytes() -> &'static [u8] {
+    MANAGED_MARKER_CONTENT.as_bytes()
 }
 
 const BUNDLED_FILES: &[BundledFile] = &[

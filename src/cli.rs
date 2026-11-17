@@ -14,6 +14,7 @@ pub(crate) mod config_upgrade;
 pub(crate) mod doctor;
 mod help;
 mod hooks;
+pub(crate) mod integration_warning;
 pub(crate) mod issue;
 pub(crate) mod issue_branches;
 pub(crate) mod issue_closure;
@@ -47,7 +48,14 @@ pub fn run(args: impl IntoIterator<Item = String>) -> i32 {
         Ok(command::ParseOutcome::Permission { role, operation }) => {
             permission_denial(role, operation)
         }
-        Err(message) => usage_error(&message),
+        Err(message) => {
+            // The denial is reported unchanged; the freshness warning only
+            // adds a note next to it.
+            if command::is_managed_without_role_denial(&message) {
+                integration_warning::warn_for_denied_command();
+            }
+            usage_error(&message)
+        }
     }
 }
 
@@ -68,6 +76,9 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         context.view = crate::output::context::view_for(&invocation.command);
         context.label = crate::output::context::label_for(&invocation.command).to_owned();
     });
+    // The freshness warning runs before any business or configuration work
+    // and never changes the command outcome.
+    integration_warning::warn_unless_suppressed(&invocation.command);
     // The progress surface starts only for the command groups that may take
     // a while. The credential, the stdin, the help, and the version surfaces
     // never animate, and the guard clears the ticker when the command ends.
