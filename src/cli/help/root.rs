@@ -39,7 +39,7 @@ const ROOT_GROUPS: &[(&str, &[&str])] = &[
         "Configuration and operations",
         &["admin", "config", "notify"],
     ),
-    ("Meta", &["doctor", "hooks", "plugin", "skill"]),
+    ("Meta", &["doctor", "logs", "hooks", "plugin", "skill"]),
 ];
 
 /// The root overview names in print order.

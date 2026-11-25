@@ -214,6 +214,15 @@ pub(crate) fn finalize_family_with(
     if hosted.is_empty() {
         return FamilyOutcome::Vacant;
     }
+    // The verification pass never moves a session and never accepts a
+    // present occupant, so a hosted session settles the directory here: the
+    // lineage traversal below would only serve a move this pass may not
+    // request. The listing, the own-root answers, the contradiction check and
+    // the running check above still decide the reason.
+    if mode == CleanupMode::Verify {
+        let ids: Vec<String> = hosted.iter().map(|(id, _)| id.clone()).collect();
+        return FamilyOutcome::Keep(hosted_reason(&ids));
+    }
     // Every occupant must be proven to belong to the family before anything
     // may be moved.
     let mut movable: Vec<String> = Vec::with_capacity(hosted.len());
@@ -232,12 +241,6 @@ pub(crate) fn finalize_family_with(
             ));
         }
         movable.push(id.clone());
-    }
-    // A revalidation pass reads current occupancy and running state, keeps
-    // whenever any session is still hosted, and never moves anything.
-    if mode == CleanupMode::Verify {
-        let ids: Vec<String> = hosted.iter().map(|(id, _)| id.clone()).collect();
-        return FamilyOutcome::Keep(hosted_reason(&ids));
     }
     // The reconciliation pass never moves a session: a directory that still
     // hosts one of ours waits for a later pass.

@@ -44,6 +44,7 @@ pub(crate) fn command_path(command: &Command) -> Option<Vec<&'static str>> {
         Command::Timer(command) => &["timer", timer_name(command)],
         Command::Worktree(command) => &["worktree", worktree_name(command)],
         Command::Notify(NotifyCommand::Send { .. }) => &["notify", "send"],
+        Command::Logs(_) => &["logs"],
     };
     Some(path.to_vec())
 }

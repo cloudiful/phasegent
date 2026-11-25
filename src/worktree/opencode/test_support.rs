@@ -34,6 +34,10 @@ pub(crate) struct FakeOpenCodeApi {
     repeat_cursor: RefCell<Option<String>>,
     moves: RefCell<Vec<(String, String)>>,
     list_calls: RefCell<usize>,
+    session_calls: RefCell<usize>,
+    active_calls: RefCell<usize>,
+    /// The ids the host reports as currently running.
+    running: RefCell<Vec<String>>,
 }
 
 impl FakeOpenCodeApi {
@@ -47,6 +51,9 @@ impl FakeOpenCodeApi {
             repeat_cursor: RefCell::new(None),
             moves: RefCell::new(Vec::new()),
             list_calls: RefCell::new(0),
+            session_calls: RefCell::new(0),
+            active_calls: RefCell::new(0),
+            running: RefCell::new(Vec::new()),
         }
     }
 
@@ -67,6 +74,23 @@ impl FakeOpenCodeApi {
     /// is exactly the standalone/private-instance uncertainty.
     pub(crate) fn with_unknown_session(self, id: &str) -> Self {
         self.unknown.borrow_mut().push(id.to_owned());
+        self
+    }
+
+    /// A host that reports `id` as currently running and hosted in
+    /// `directory`.
+    pub(crate) fn with_running_session(self, id: &str, directory: &Path) -> Self {
+        let session = self.with_session(id, directory);
+        session.running.borrow_mut().push(id.to_owned());
+        session
+    }
+
+    /// The parent `id` descends from. The lineage traversal reads the parent
+    /// from the host, so a scripted parent makes that read observable.
+    pub(crate) fn with_parent(self, id: &str, parent: &str) -> Self {
+        if let Some(session) = self.reality.borrow_mut().get_mut(id) {
+            session.parent_id = Some(parent.to_owned());
+        }
         self
     }
 
@@ -94,6 +118,16 @@ impl FakeOpenCodeApi {
     pub(crate) fn list_calls(&self) -> usize {
         *self.list_calls.borrow()
     }
+
+    /// How many single-session reads the host served.
+    pub(crate) fn session_calls(&self) -> usize {
+        *self.session_calls.borrow()
+    }
+
+    /// How many running-session queries the host served.
+    pub(crate) fn active_calls(&self) -> usize {
+        *self.active_calls.borrow()
+    }
 }
 
 fn error(kind: &str) -> ApiError {
@@ -102,6 +136,7 @@ fn error(kind: &str) -> ApiError {
 
 impl OpenCodeApi for FakeOpenCodeApi {
     fn session(&self, id: &str) -> Result<LocatedSession, ApiError> {
+        *self.session_calls.borrow_mut() += 1;
         if *self.fail_session.borrow() {
             return Err(error("session.get"));
         }
@@ -151,7 +186,8 @@ impl OpenCodeApi for FakeOpenCodeApi {
     }
 
     fn active_sessions(&self) -> Result<Vec<String>, ApiError> {
-        Ok(Vec::new())
+        *self.active_calls.borrow_mut() += 1;
+        Ok(self.running.borrow().clone())
     }
 }
 

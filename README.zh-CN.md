@@ -288,7 +288,12 @@ task、分支关联和 Git 历史保留。扫描复用一次运行中会话快�
 选择：人类终端上为简洁的按目录统计文本，管道或 `--json` 时为机器聚合结果；`--verbose`
 增加有界的逐目录行。机器聚合结果还带有本次调用的计时：整体墙钟时间、各流水线阶段，
 以及嵌套的 closure 与 host 调用；两族计时相互重叠，不应相加，简洁文本只保留 elapsed
-一行。交互式终端上的进度行不显示目录路径，并在结果前清除。被透明
+一行。交互式终端上的进度行不显示目录路径，并在结果前清除。每次普通 prune 运行还会留下一份有界、私有的诊断日志，只含类型化元数据：不含路径、
+会话或 issue 标识、凭据、URL、请求/响应正文与原始错误文本。`phasegent logs
+[--run ID] [--limit N] [--path]` 以只读方式读回该日志：不准备配置、不使用 provider
+或凭据、不打开注册表，也不写入任何内容。日志只是诊断证据，绝不是授权来源：没有任何
+保护逻辑会读取它，也没有任何日志行可以为移除提供授权。
+被透明
 `timeout`、`env` 或 `command` 包裹的调用仍会获得受管 agent role。详见
 [docs/worktree-maintenance.md](docs/worktree-maintenance.md) 与
 [docs/opencode-api-lifecycle.md](docs/opencode-api-lifecycle.md)。

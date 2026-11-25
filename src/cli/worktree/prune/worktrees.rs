@@ -41,6 +41,10 @@ use super::active_guard;
 use super::timing::{self, TimingStats};
 use crate::cli::issue_closure::{IssueClosure, IssueStateSource, TaskScopeRef};
 
+#[cfg(test)]
+#[path = "tests_p1.rs"]
+mod tests_p1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PruneMode {
     Report,
@@ -245,14 +249,23 @@ fn classify_absent_only(record: &DirectoryRecord) -> DirectoryCandidate {
     }
 }
 
-fn classify(
+/// The outcome of the local half of a classification.
+enum LocalClassification {
+    /// The local guards clear the directory; the host and closure evidence
+    /// may still decide it.
+    Eligible(DirectoryCandidate),
+    /// A local guard keeps the directory.
+    Kept(DirectoryCandidate),
+}
+
+/// The local, Git-only half of a classification: the path probe, the
+/// main-checkout exclusion, and the local Git guards. It reads neither the
+/// host nor the provider.
+fn classify_local(
     runner: &dyn WorktreeRunner,
-    api: &dyn OpenCodeApi,
     scope: &PruneScope<'_>,
-    source: &dyn IssueStateSource,
     record: &DirectoryRecord,
-    snapshot: &std::cell::OnceCell<Result<active_guard::RunningSnapshot, String>>,
-) -> DirectoryCandidate {
+) -> LocalClassification {
     let canonical = canonical_or_self(Path::new(&record.worktree_path));
     let mut candidate = DirectoryCandidate {
         canonical_path: canonical.clone(),
@@ -269,44 +282,94 @@ fn classify(
     match path_absent(Path::new(&record.worktree_path)) {
         Ok(true) => {
             candidate.disposition = PruneDisposition::MissingDirectory;
-            return candidate;
+            return LocalClassification::Kept(candidate);
         }
         Ok(false) => {}
         Err(reason) => {
             candidate.reason_code = Some("path_probe_error");
             candidate.disposition = PruneDisposition::SkippedProtected(reason);
-            return candidate;
+            return LocalClassification::Kept(candidate);
         }
     }
     if same_path(&canonical, scope.repo_path) {
         candidate.reason_code = Some("main_checkout");
         candidate.disposition =
             PruneDisposition::SkippedProtected("the main checkout is never removed".to_owned());
-        return candidate;
+        return LocalClassification::Kept(candidate);
     }
     match local_guard(runner, scope.identity, &canonical) {
         Err((code, reason)) => {
             candidate.reason_code = Some(code);
             candidate.disposition = PruneDisposition::SkippedProtected(reason);
-            return candidate;
+            LocalClassification::Kept(candidate)
         }
-        Ok(cache) => candidate.cache = cache,
-    }
-    match snapshot.get_or_init(|| active_guard::RunningSnapshot::capture(api)) {
-        Err(_) => {
-            candidate.reason_code = Some("host_lookup_error");
-            candidate.disposition =
-                PruneDisposition::SkippedProtected("running-session lookup failed".to_owned());
-            return candidate;
-        }
-        Ok(snapshot) => {
-            if let Some(reason) = snapshot.keep_reason(&canonical) {
-                candidate.reason_code = Some("running_session");
-                candidate.disposition = PruneDisposition::SkippedProtected(reason);
-                return candidate;
-            }
+        Ok(cache) => {
+            candidate.cache = cache;
+            LocalClassification::Eligible(candidate)
         }
     }
+}
+
+/// The scan's full classification: the local guards, the shared running
+/// occupancy prefilter, and the closure evidence, in that order.
+fn classify(
+    runner: &dyn WorktreeRunner,
+    api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    source: &dyn IssueStateSource,
+    record: &DirectoryRecord,
+    snapshot: &std::cell::OnceCell<Result<active_guard::RunningSnapshot, String>>,
+) -> DirectoryCandidate {
+    let mut candidate = match classify_local(runner, scope, record) {
+        LocalClassification::Kept(candidate) => return candidate,
+        LocalClassification::Eligible(candidate) => candidate,
+    };
+    let occupancy = match snapshot.get_or_init(|| active_guard::RunningSnapshot::capture(api)) {
+        Err(_) => Some((
+            "host_lookup_error",
+            "running-session lookup failed".to_owned(),
+        )),
+        Ok(snapshot) => snapshot
+            .keep_reason(&candidate.canonical_path)
+            .map(|reason| ("running_session", reason)),
+    };
+    if let Some((code, reason)) = occupancy {
+        candidate.reason_code = Some(code);
+        candidate.disposition = PruneDisposition::SkippedProtected(reason);
+        return candidate;
+    }
+    apply_closure(&mut candidate, scope, source, record);
+    candidate
+}
+
+/// The local and closure classification without the scan's occupancy
+/// prefilter.
+///
+/// The post-move verification uses it: the mandatory fresh family
+/// verification that follows reads the current running state itself, so an
+/// earlier snapshot here would only repeat that read. The local guards and
+/// the closure evidence are unchanged.
+fn classify_local_closure(
+    runner: &dyn WorktreeRunner,
+    scope: &PruneScope<'_>,
+    source: &dyn IssueStateSource,
+    record: &DirectoryRecord,
+) -> DirectoryCandidate {
+    let mut candidate = match classify_local(runner, scope, record) {
+        LocalClassification::Kept(candidate) => return candidate,
+        LocalClassification::Eligible(candidate) => candidate,
+    };
+    apply_closure(&mut candidate, scope, source, record);
+    candidate
+}
+
+/// The closure evidence for one candidate, applied to its classification.
+fn apply_closure(
+    candidate: &mut DirectoryCandidate,
+    scope: &PruneScope<'_>,
+    source: &dyn IssueStateSource,
+    record: &DirectoryRecord,
+) {
     match closure_of(source, scope, record) {
         IssueClosure::Closed => candidate.disposition = PruneDisposition::Removable,
         IssueClosure::Keep(_) => unreachable!("closure lookup failures are normalized"),
@@ -323,7 +386,6 @@ fn classify(
             candidate.disposition = PruneDisposition::SkippedIssue(reason);
         }
     }
-    candidate
 }
 
 pub(super) fn path_absent(path: &Path) -> Result<bool, String> {
@@ -368,6 +430,12 @@ fn local_guard(
     }
 }
 
+/// The closure evidence for one candidate.
+///
+/// The first task or legacy issue that is not provably closed decides the
+/// candidate, so a later association is never read once an earlier one keeps
+/// the directory. Every association is still read when all of them are
+/// closed: only then is the candidate eligible.
 fn closure_of(
     source: &dyn IssueStateSource,
     scope: &PruneScope<'_>,
@@ -378,15 +446,13 @@ fn closure_of(
             "the directory has no associated issue to prove closed".to_owned(),
         );
     }
-    let mut keep: Vec<IssueClosure> = Vec::new();
     for task in &record.tasks {
         let instance = task.instance.as_deref().unwrap_or_default();
         if instance.is_empty() || task.provider.is_none() || task.project.is_none() {
-            keep.push(IssueClosure::Unattributed(format!(
+            return IssueClosure::Unattributed(format!(
                 "issue {} durable task identity is incomplete",
                 task.issue
-            )));
-            continue;
+            ));
         }
         let verdict = source.own_task_closure(
             scope.repo_path,
@@ -399,7 +465,7 @@ fn closure_of(
             task.issue,
         );
         if !verdict.is_closed() {
-            keep.push(verdict.safe_lookup_failure());
+            return verdict.safe_lookup_failure();
         }
     }
     for issue in &record.legacy_issues {
@@ -427,10 +493,10 @@ fn closure_of(
                 }
             };
         if !verdict.is_closed() {
-            keep.push(verdict.safe_lookup_failure());
+            return verdict.safe_lookup_failure();
         }
     }
-    keep.into_iter().next().unwrap_or(IssueClosure::Closed)
+    IssueClosure::Closed
 }
 
 #[allow(dead_code)]
@@ -577,6 +643,9 @@ pub(super) fn prune_pass_with_snapshot_timed(
         stages(PruneStage::Verifying {
             candidate: index + 1,
         });
+        // The candidate ordinal is a number: the log says which candidate of
+        // the run it is looking at, never where that candidate lives.
+        timing.set_candidate(index as u64 + 1);
         let action = apply_candidate(
             storage,
             runner,
@@ -590,12 +659,29 @@ pub(super) fn prune_pass_with_snapshot_timed(
             index + 1,
             timing,
         );
+        timing.candidate_result(diag_outcome(&action.result), action.reason_code);
+        timing.clear_candidate();
         stages(PruneStage::Applied {
             outcome: classify_outcome(&action),
         });
         actions.push(action);
     }
     summarize(actions, total, mode)
+}
+
+/// The categorical outcome of one candidate. Only the fixed outcome codes
+/// reach the diagnostic log; a result outside the vocabulary is reported as
+/// the neutral `ok` code instead of being echoed.
+fn diag_outcome(result: &str) -> &'static str {
+    match result {
+        "pruned" => "pruned",
+        "prunable" => "prunable",
+        "absent" => "absent",
+        "skipped_protected" => "skipped_protected",
+        "skipped_issue" => "skipped_issue",
+        "failed" => "failed",
+        _ => "ok",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1088,30 +1174,39 @@ fn post_move_recheck(
             )
         })?;
     source.invalidate(scope.repo_path, &fresh_record.issue_numbers());
-    let classified = classify(
-        runner,
-        api,
-        &fresh_scope,
-        source,
-        fresh_record,
-        &std::cell::OnceCell::new(),
-    );
+    let classified = classify_local_closure(runner, &fresh_scope, source, fresh_record);
     match &classified.disposition {
         PruneDisposition::Removable => {}
         _ => return Err(classification_rejection(&classified)),
     }
     let associated = associated_sessions(&classified);
+    verify_family_after_move(api, scope, candidate, &associated)?;
+    Ok(classified.cache)
+}
+
+/// The mandatory fresh family verification after the moves.
+///
+/// It reads the current occupancy and running state and never moves a
+/// session: a directory that still hosts one of the family's sessions, or
+/// one a running session occupies, is kept. The evidence is always read
+/// afresh here; no earlier assessment is carried into it.
+fn verify_family_after_move(
+    api: &dyn OpenCodeApi,
+    scope: &PruneScope<'_>,
+    candidate: &DirectoryCandidate,
+    associated: &[String],
+) -> Result<(), Rejection> {
     if let FamilyOutcome::Keep(reason) = sessions::finalize_family(
         api,
         CleanupMode::Verify,
         scope.target,
         &candidate.canonical_path,
-        &associated,
+        associated,
         None,
     ) {
         return Err(Rejection::new("session_family", reason));
     }
-    Ok(classified.cache)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

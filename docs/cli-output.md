@@ -133,6 +133,25 @@ In `json` mode stderr carries only the structured diagnostics that already
 existed. The transient progress line never appears, and no cursor control or
 ANSI sequence reaches either stream.
 
+### The diagnostic log view
+
+`phasegent logs` returns one document with the resolved log directory, the fixed
+retention limits, the matching typed events, the number of lines skipped as
+malformed, and the busy status:
+
+```console
+$ phasegent --output json logs --limit 2
+{"directory":"...","retention":{"max_file_bytes":2097152,"files":5,"max_total_bytes":10485760,"retention_days":14,"daily_rollover":true,"active_file":"prune.jsonl","archives":4,"lock_file":"prune.log.lock"},"run":null,"limit":2,"entries":[{"schema_version":1,"run_id":"...","seq":0,"ts_ms":0,"elapsed_ms":0.0,"command":"worktree_prune","mode":"remove","kind":"run_start"}],"skipped_malformed":0,"skipped_files":0,"busy":false}
+```
+
+The events are typed metadata only: no path, no session or issue identifier, no
+credential, no URL, no request or response body, and no raw error text. A
+malformed line is counted and never echoed. A busy writer lock yields empty
+entries and `busy: true` instead of a wait, and no log at all is an empty
+success. The command writes nothing: it creates no directory, no file and no
+lock, and it is never logged itself. See
+[worktree maintenance](worktree-maintenance.md#diagnostic-log).
+
 ## Paged output
 
 Supported collection commands return `{items,page,limit,total_count,has_more}`

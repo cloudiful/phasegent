@@ -547,3 +547,71 @@ fn host_marker_selects_the_same_managed_missing_gate() {
         crate::policy::CallerContext::Agent(crate::policy::Role::Explore)
     );
 }
+
+/// The `logs` command is a utility: it parses for every caller, it takes
+/// only its own three flags, and its bounds are enforced at parse time.
+#[test]
+fn the_logs_command_parses_its_bounded_flags() {
+    let invocation = parse_with_caller_env(&args(&["logs"]), None, false)
+        .expect("the bare logs command must parse");
+    assert!(matches!(
+        invocation.command,
+        Command::Logs(crate::command::LogsCommand {
+            run: None,
+            limit: None,
+            path: false
+        })
+    ));
+
+    let invocation = parse_with_caller_env(
+        &args(&["logs", "--run", "run-1", "--limit", "10"]),
+        None,
+        false,
+    )
+    .expect("the bounded logs command must parse");
+    assert!(matches!(
+        invocation.command,
+        Command::Logs(crate::command::LogsCommand {
+            run: Some(ref run),
+            limit: Some(10),
+            path: false
+        }) if run == "run-1"
+    ));
+
+    let invocation = parse_with_caller_env(&args(&["logs", "--path"]), None, false)
+        .expect("the path form must parse");
+    assert!(matches!(
+        invocation.command,
+        Command::Logs(crate::command::LogsCommand { path: true, .. })
+    ));
+}
+
+/// The parser rejects an unknown flag, a duplicate flag, an out-of-range
+/// limit, an unsafe run identifier, and the exclusive `--path` combination.
+#[test]
+fn the_logs_command_rejects_unsafe_and_conflicting_flags() {
+    for argv in [
+        &["logs", "--unknown"][..],
+        &["logs", "--limit", "0"][..],
+        &["logs", "--limit", "501"][..],
+        &["logs", "--limit", "ten"][..],
+        &["logs", "--run", "run 1"][..],
+        &["logs", "--run", "../etc/passwd"][..],
+        &["logs", "--path", "--limit", "10"][..],
+        &["logs", "--path", "--run", "run-1"][..],
+        &["logs", "--limit", "10", "--limit", "20"][..],
+        &["logs", "--run", "a", "--run", "b"][..],
+    ] {
+        let error = parse_with_caller_env(&args(argv), None, false)
+            .expect_err("an invalid logs invocation must be rejected");
+        assert!(!error.is_empty(), "argv {argv:?} must carry a reason");
+    }
+}
+
+/// The managed utility allowlist keeps the read-only log view available
+/// without a verified role.
+#[test]
+fn the_logs_command_stays_available_for_a_managed_session_without_a_role() {
+    parse_with_caller_env(&args(&["logs"]), None, true)
+        .expect("the managed utility logs command must parse");
+}

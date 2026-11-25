@@ -218,6 +218,65 @@ fn an_empty_identity_yields_no_target_rather_than_a_guessed_directory() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn the_verification_pass_keeps_an_occupied_descendant_without_reading_its_lineage() {
+    // The verification never moves a session and never accepts a present
+    // occupant, so the hosted set settles the directory before the lineage
+    // traversal that only serves a move.
+    let api = FakeOpenCodeApi::empty()
+        .with_session("ses_other", Path::new("/tmp/pg-p1-main"))
+        .with_session("ses_child", &candidate())
+        .with_parent("ses_child", "ses_other");
+    let verdict = finalize_family(
+        &api,
+        CleanupMode::Verify,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_root".to_owned()],
+        None,
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("a hosted occupant must keep the candidate, got {verdict:?}");
+    };
+    assert!(reason.contains("still hosted here"), "got: {reason}");
+    assert_eq!(
+        api.session_calls(),
+        1,
+        "the verification locates the family root and traverses no lineage"
+    );
+}
+
+#[test]
+fn the_removal_pass_still_proves_the_lineage_of_an_occupant() {
+    // Every other mode keeps its own semantics: a removal may still move the
+    // family, so it must still prove that an occupant belongs to it.
+    let api = FakeOpenCodeApi::empty()
+        .with_session("ses_other", Path::new("/tmp/pg-p1-main"))
+        .with_session("ses_child", &candidate())
+        .with_parent("ses_child", "ses_other");
+    let verdict = finalize_family(
+        &api,
+        CleanupMode::Prune,
+        &fixed(main_checkout()),
+        &candidate(),
+        &["ses_root".to_owned()],
+        None,
+    );
+    let FamilyOutcome::Keep(reason) = verdict else {
+        panic!("a foreign occupant must keep the candidate, got {verdict:?}");
+    };
+    assert!(
+        reason.contains("not associated with this repository"),
+        "got: {reason}"
+    );
+    assert_eq!(
+        api.session_calls(),
+        2,
+        "the removal pass still reads the occupant's lineage"
+    );
+    assert!(api.moves().is_empty());
+}
+
+#[test]
 fn a_pure_cli_candidate_without_a_host_occupant_is_vacant_on_every_destructive_mode() {
     for mode in [
         CleanupMode::Close,

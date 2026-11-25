@@ -63,9 +63,9 @@ mod tests {
         assert_eq!(
             names,
             [
-                "doctor", "admin", "auth", "config", "issue", "comment", "project", "status",
-                "version", "relation", "timer", "workflow", "record", "worktree", "hooks",
-                "plugin", "skill", "notify",
+                "doctor", "logs", "admin", "auth", "config", "issue", "comment", "project",
+                "status", "version", "relation", "timer", "workflow", "record", "worktree",
+                "hooks", "plugin", "skill", "notify",
             ]
         );
     }
