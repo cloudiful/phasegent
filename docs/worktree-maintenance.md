@@ -126,8 +126,11 @@ listing still names it, which is contradictory evidence and keeps. Only the
 connected service is covered; no whole-machine inventory is claimed.
 
 The `--dryrun` preview runs the same occupancy and lineage reads and reports the
-same blockers and move eligibility without moving, deleting or writing anything,
-and without creating a store, schema or operation lock. Local Git guards run
+same blockers and move eligibility without moving or deleting a worktree and
+without writing any business state: it creates no store, no schema, no
+operation lock, and no registry row. The one write a preview performs is the
+bounded diagnostic log file, which is separate operational state and is
+described under "Diagnostic log" below. Local Git guards run
 before host reads, so a main checkout, a directory nested in the main checkout,
 or a dirty path requires no host access. Main checkout paths and their
 subdirectories are excluded from candidate and kept totals. A subdirectory of a
@@ -193,6 +196,68 @@ never decide a removal.
 Progress is a human affordance only: one stderr line is redrawn in
 place, never carries a directory path, counts completed repositories and
 directories, and is cleared before the result.
+
+## Diagnostic log
+
+Every ordinary prune run leaves a bounded, private diagnostic log by default. No
+debug flag, environment variable or configuration switch is involved, and the log
+is written for a dry run as well: a preview writes only diagnostic files, never
+a registry row, a schema, an operation lock, or a directory.
+
+The log is operational state. It lives in the platform state directory when the
+platform has one and in the local application data directory otherwise:
+
+- Linux: `~/.local/state/phasegent/logs` (`XDG_STATE_HOME` is honoured);
+- macOS: `~/Library/Application Support/com.Cloud1ful.phasegent/logs`;
+- Windows: `%LOCALAPPDATA%\Cloud1ful\phasegent\data\logs`.
+
+The directory is owner-only (0700) and every file in it is owner-only (0600). It
+holds the active NDJSON file `prune.jsonl`, the archives `prune.jsonl.1` to
+`prune.jsonl.4` (`.1` is the newest), and the stable advisory lock file
+`prune.log.lock`, which is never renamed and never unlinked.
+
+Each file is at most 2 MiB, including the event that fills it, so the whole set
+stays within 10 MiB. The active file rolls over when the next complete event
+would exceed the cap or when it was last written on an earlier UTC day; a
+future timestamp never forces a rollover. Under the lock, a writer deletes the
+owned files older than 14 days by modification time when it starts, so there is
+no timer and no service; the age check saturates, and a future timestamp is
+never treated as ancient. The sweep considers only the six owned names: an
+unrelated file, a symbolic link and a non-regular file are never written,
+rotated or deleted.
+
+The events are typed and metadata-only. Every event carries the schema version,
+a per-run identifier, the event sequence, the wall-clock timestamp, the elapsed
+time, the command, the mode, the numeric repository and candidate ordinals, and
+categorical names drawn from fixed vocabularies: the event kind, the pipeline
+stage, the boundary operation, the outcome code and the reason code. A run
+boundary is a `run_start` and a `run_end`; a start without its matching end is
+the queryable evidence of an interrupted or in-flight run, and a failure after
+the start still ends with a typed `run_end`. A run never carries a path, a
+session or issue identifier, a credential, a URL, a request or response body, or
+a raw error text.
+
+Logging is best effort and never an authority. A busy lock, an unwritable
+directory or a failed append drops the event and reports one bounded warning
+for the run; the cleanup itself is never affected, and the log never authorizes
+a removal and is never read by a guard. The `worktree prune` output document is
+unchanged by the logging.
+
+`phasegent logs` reads the log back. It prepares no configuration, resolves no
+provider, uses no credential, opens no registry, and writes nothing: it creates
+no directory, no file and no lock. `phasegent logs --path` reports the resolved
+directory and the fixed retention limits without reading anything.
+`phasegent logs --run ID` returns the events of exactly that run, and
+`phasegent logs --limit N` returns at most N events (1..500, default 50), the
+newest matching ones in chronological order. The envelope carries the directory,
+the retention limits, the entries, the number of lines skipped as malformed and
+the busy status. A malformed line is counted and never echoed, and a busy lock
+yields empty entries and `busy: true` instead of a wait. No log at all is an
+empty success.
+
+The log is diagnostic evidence, not a benchmark: it records what a run did and
+how long its measured stages took, and it makes no wall-clock performance
+claim.
 
 See `phasegent --help worktree prune` for the preview and action flags, and
 [explicit pagination](cli-pagination.md) for read collection limits.

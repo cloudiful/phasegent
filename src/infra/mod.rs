@@ -1,4 +1,5 @@
 pub mod config_file;
+pub(crate) mod diag_log;
 pub mod http_client;
 pub mod issue_index;
 pub mod issue_index_backend;

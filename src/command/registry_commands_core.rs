@@ -16,6 +16,11 @@ pub(super) const CORE: &[CommandSpec] = &[
         "Read-only self-check: credential presence, index backend, masked PG URL (no role needed)",
         RoleAccess::Open,
     ),
+    leaf(
+        "logs",
+        "Read-only view of the bounded diagnostic log that `worktree prune` leaves by default",
+        RoleAccess::Open,
+    ),
     group(
         "admin",
         "Human-operator provisioning: auth setup, config writes, workflow bootstrap (AI roles must never invoke)",

@@ -361,6 +361,13 @@ the pass — the wall clock, the pipeline stages and the nested closure and host
 calls — which overlap instead of adding up; the compact text keeps the elapsed
 line only. On an interactive terminal a progress spinner shows the scan
 and per-removal checks, never a directory path, and is cleared before the result.
+Every ordinary prune run also leaves a bounded, private diagnostic log with typed
+metadata only — no path, no session or issue identifier, no credential, no URL,
+no request or response body, no raw error text. `phasegent logs [--run ID]
+[--limit N] [--path]` reads it back read-only: it prepares no configuration,
+uses no provider or credential, opens no registry, and writes nothing. The log
+is diagnostic evidence, never an authority: no guard reads it and no log line
+authorizes a removal.
 Invocations wrapped in a transparent `timeout`, `env` or `command` still receive
 the managed agent role. See
 [docs/worktree-maintenance.md](docs/worktree-maintenance.md) and

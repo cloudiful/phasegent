@@ -8,7 +8,9 @@
 //!   skipping the ones it cannot verify with a bounded reason instead of
 //!   guessing. `--repo PATH` restricts the pass to one verified checkout.
 //! * Removal is the default; `--dryrun`/`--dry-run` is the read-only preview
-//!   that mutates nothing and creates no lock file.
+//!   that moves and deletes nothing and creates no store, schema, operation
+//!   lock, or registry row. The only write it performs is the bounded
+//!   diagnostic log file, which is separate operational state.
 //! * The output format follows the global `--output auto|text|json`
 //!   selection.
 //!
@@ -21,11 +23,13 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::cli::{print_json, structured_error};
+use crate::infra::diag_log::{self, DiagLogger, EventKind, RunCounts};
 use crate::infra::storage::Storage;
 use crate::lifecycle::cleanup::TargetResolver;
 use crate::lifecycle::cleanup::wait::{MoveBudget, MovePolicy};
@@ -40,6 +44,10 @@ use super::{config_error, open_storage, storage_error};
 mod active_guard;
 mod timing;
 mod worktrees;
+
+#[cfg(test)]
+#[path = "prune/tests_logging.rs"]
+mod tests_logging;
 
 #[allow(unused_imports)]
 pub(crate) use crate::cli::issue_closure::{
@@ -210,7 +218,37 @@ pub(super) fn execute_prune(
     }
     let source = configured_source_prune(role, context.clone());
     let api = ProcessOpenCodeApi::new();
-    execute_prune_with_source_verbose(repo, dry_run, format, verbose, &source, &api, &stderr_note)
+    // The diagnostic logger is opened before the scope is read, so a run that
+    // fails early still leaves its boundary. It is best effort: a missing or
+    // unwritable log directory costs the events, never the cleanup.
+    let logger = diag_log::DiagLogger::open(diag_mode(dry_run), diag_warning).map(Rc::new);
+    if let Some(logger) = &logger {
+        logger.event(EventKind::RunStart).write();
+    }
+    execute_prune_pass(
+        repo,
+        dry_run,
+        format,
+        verbose,
+        &source,
+        &api,
+        &stderr_note,
+        logger,
+    )
+}
+
+/// The diagnostic mode of one pass.
+fn diag_mode(dry_run: bool) -> &'static str {
+    if dry_run {
+        diag_log::MODE_DRY_RUN
+    } else {
+        diag_log::MODE_REMOVE
+    }
+}
+
+/// The one bounded warning a run reports when the log could not be written.
+fn diag_warning(message: &str) {
+    crate::cli::report_local_warnings("worktree prune", Some(message.to_owned()));
 }
 
 #[allow(dead_code)]
@@ -236,18 +274,40 @@ pub(crate) fn execute_prune_with_source_verbose(
     api: &dyn crate::worktree::opencode::OpenCodeApi,
     progress: &dyn Fn(&str),
 ) -> i32 {
+    execute_prune_pass(repo, dry_run, format, verbose, source, api, progress, None)
+}
+
+/// The pass itself. The optional logger belongs to the caller: the ordinary
+/// command execution opts in, the unit tests and the other callers do not.
+#[allow(clippy::too_many_arguments)]
+fn execute_prune_pass(
+    repo: Option<&str>,
+    dry_run: bool,
+    format: &str,
+    verbose: bool,
+    source: &dyn IssueStateSource,
+    api: &dyn crate::worktree::opencode::OpenCodeApi,
+    progress: &dyn Fn(&str),
+    logger: Option<Rc<DiagLogger>>,
+) -> i32 {
     let started = Instant::now();
     let move_budget = MoveBudget::new();
     // The timing sink belongs to this invocation alone: no global, no shared
     // state, and nothing that outlives the pass.
-    let timing = TimingStats::new();
+    let timing = match &logger {
+        Some(logger) => TimingStats::with_logger(Rc::clone(logger)),
+        None => TimingStats::new(),
+    };
 
     // An explicit `--repo` is validated as usable before the store is opened.
     let runner = ProcessWorktreeRunner::new();
     let explicit_scope = match repo {
         Some(raw) => match resolve_explicit_scope(raw, &runner) {
             Ok(scope) => Some(scope),
-            Err(code) => return code,
+            Err(code) => {
+                finish_run(&logger, &timing, "error", None);
+                return code;
+            }
         },
         None => None,
     };
@@ -255,16 +315,29 @@ pub(crate) fn execute_prune_with_source_verbose(
     let storage = match open_pass_storage(dry_run) {
         Ok(Some(storage)) => storage,
         Ok(None) => {
-            return emit_prune(&empty_aggregate(dry_run, &timing), format, verbose, started);
+            let aggregate = empty_aggregate(dry_run, &timing);
+            finish_run(
+                &logger,
+                &timing,
+                "ok",
+                Some(diag_counts(&aggregate.totals, 0)),
+            );
+            return emit_prune(&aggregate, format, verbose, started);
         }
-        Err(message) => return config_error(&message),
+        Err(message) => {
+            finish_run(&logger, &timing, "error", None);
+            return config_error(&message);
+        }
     };
 
     let scopes = match explicit_scope {
         Some(scope) => vec![scope],
         None => match resolve_scopes(&storage, &runner) {
             Ok(scopes) => scopes,
-            Err(code) => return code,
+            Err(code) => {
+                finish_run(&logger, &timing, "error", None);
+                return code;
+            }
         },
     };
 
@@ -295,7 +368,12 @@ pub(crate) fn execute_prune_with_source_verbose(
         failed: 0,
     };
     let scan_snapshot = std::cell::OnceCell::new();
-    for scope in scopes {
+    let mut scanned_total = 0usize;
+    for (repo_index, scope) in scopes.into_iter().enumerate() {
+        // The repository ordinal is a number, never an identity: the log
+        // names which repository of the run it is looking at, and nothing
+        // about where that repository lives.
+        timing.set_repo(repo_index as u64 + 1);
         let (identity, path, skipped_reason) = match scope {
             Scope::Skipped { identity, reason } => {
                 let path = Path::new(&identity)
@@ -373,6 +451,7 @@ pub(crate) fn execute_prune_with_source_verbose(
         tally.set_stage(TallyStage::Complete);
         progress(&tally.render(mode));
         totals.repositories += 1;
+        scanned_total += worktree_summary.scanned;
         totals.removed += worktree_summary.removed;
         totals.eligible += worktree_summary.eligible;
         totals.absent += worktree_summary.absent;
@@ -387,18 +466,52 @@ pub(crate) fn execute_prune_with_source_verbose(
         });
     }
 
-    emit_prune(
-        &PruneAggregate {
-            dry_run,
-            remove: !dry_run,
-            repos: outcomes,
-            totals,
-            timings: timing.report(),
-        },
-        format,
-        verbose,
-        started,
-    )
+    let aggregate = PruneAggregate {
+        dry_run,
+        remove: !dry_run,
+        repos: outcomes,
+        totals,
+        timings: timing.report(),
+    };
+    finish_run(
+        &logger,
+        &timing,
+        "ok",
+        Some(diag_counts(&aggregate.totals, scanned_total)),
+    );
+    emit_prune(&aggregate, format, verbose, started)
+}
+
+/// Write the end of one run. The event carries the safe aggregate counts and
+/// the measured timings, never a path, an identity or a raw error.
+fn finish_run(
+    logger: &Option<Rc<DiagLogger>>,
+    timing: &TimingStats,
+    outcome: &'static str,
+    counts: Option<RunCounts>,
+) {
+    let Some(logger) = logger else {
+        return;
+    };
+    let mut event = logger.event(EventKind::RunEnd).outcome(outcome);
+    event = event.timings(timing.diag_timings());
+    if let Some(counts) = counts {
+        event = event.counts(counts);
+    }
+    event.write();
+}
+
+/// The aggregate counts of one pass, in the diagnostic event shape.
+fn diag_counts(totals: &PruneTotals, scanned: usize) -> RunCounts {
+    RunCounts {
+        scanned: scanned as u64,
+        removed: totals.removed as u64,
+        eligible: totals.eligible as u64,
+        absent: totals.absent as u64,
+        kept_protected: totals.kept_protected as u64,
+        kept_issue: totals.kept_issue as u64,
+        failed: totals.failed as u64,
+    }
 }
 
 fn empty_aggregate(dry_run: bool, timing: &TimingStats) -> PruneAggregate {

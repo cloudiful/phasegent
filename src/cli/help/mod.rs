@@ -10,6 +10,7 @@ pub mod config;
 pub mod doctor;
 pub mod hooks;
 pub mod issue;
+pub mod logs;
 pub mod notify;
 pub mod plugin;
 pub mod project;
@@ -35,6 +36,7 @@ use config::{
 use doctor::print_doctor_help;
 use hooks::{print_hooks_command_help, print_hooks_help};
 use issue::{print_issue_command_help, print_issue_help};
+use logs::print_logs_help;
 use notify::{print_notify_command_help, print_notify_help};
 use plugin::{print_plugin_command_help, print_plugin_help};
 use project::{print_project_command_help, print_project_help};
@@ -107,6 +109,7 @@ fn topic_registry_path(topic: &HelpTopic) -> Option<Vec<&str>> {
         HelpTopic::NotifyCommand(command) => vec!["notify", command.as_str()],
         HelpTopic::Worktree => vec!["worktree"],
         HelpTopic::WorktreeCommand(command) => vec!["worktree", command.as_str()],
+        HelpTopic::Logs => vec!["logs"],
     })
 }
 
@@ -168,5 +171,6 @@ pub(crate) fn print_help(role: Option<Role>, provider: Option<ProviderKind>, top
         HelpTopic::NotifyCommand(command) => print_notify_command_help(role, &command),
         HelpTopic::Worktree => print_worktree_help(role),
         HelpTopic::WorktreeCommand(command) => print_worktree_command_help(role, &command),
+        HelpTopic::Logs => print_logs_help(),
     }
 }

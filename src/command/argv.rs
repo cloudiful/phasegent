@@ -2,8 +2,8 @@ use super::global_options::with_global_option_hint;
 use super::parse_helpers::{required_value, split_inline};
 use super::{
     Command, HelpTopic, Invocation, IssueCommand, WorktreeCommand, admin, auth, comment, config,
-    help_topic, hooks, issue, notify, plugin, project, record, registry, relation, skill, status,
-    timer, version, workflow, worktree,
+    help_topic, hooks, issue, logs, notify, plugin, project, record, registry, relation, skill,
+    status, timer, version, workflow, worktree,
 };
 use crate::output::context::{OutputMode, OutputOptions, OutputSelection};
 use crate::policy::{CallerContext, Role};
@@ -369,6 +369,7 @@ pub(crate) fn parse_outcome_for_caller(
         | Command::Hooks(_)
         | Command::Plugin(_)
         | Command::Skill(_)
+        | Command::Logs(_)
         | Command::Issue(
             IssueCommand::Bind { .. } | IssueCommand::Unbind { .. } | IssueCommand::StatusBranch,
         ) => true,
@@ -526,6 +527,7 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, String> {
         "plugin" => plugin::parse_plugin(rest)?,
         "skill" => skill::parse_skill(rest)?,
         "notify" => notify::parse_notify(rest)?,
+        "logs" => logs::parse_logs(rest)?,
         value => return Err(format!("unknown command '{value}'")),
     })
 }

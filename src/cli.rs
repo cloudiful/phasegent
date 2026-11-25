@@ -18,6 +18,7 @@ pub(crate) mod integration_warning;
 pub(crate) mod issue;
 pub(crate) mod issue_branches;
 pub(crate) mod issue_closure;
+mod logs;
 pub(crate) mod migrate_config;
 mod notify;
 pub(crate) mod plugin;
@@ -369,6 +370,7 @@ fn execute(invocation: crate::command::Invocation) -> i32 {
         Command::Worktree(command) => {
             worktree::execute_worktree_scoped(invocation.caller, &provider_invocation, command)
         }
+        Command::Logs(command) => logs::execute_logs(&command),
     }
 }
 
@@ -429,6 +431,7 @@ fn shows_progress(command: &Command) -> bool {
         | Command::Plugin(_)
         | Command::Skill(_)
         | Command::Notify(_)
+        | Command::Logs(_)
         | Command::Doctor
         | Command::Worktree(_) => false,
     }

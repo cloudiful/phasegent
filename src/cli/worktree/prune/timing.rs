@@ -34,11 +34,13 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::cli::issue_closure::{IssueClosure, IssueStateSource, TaskScopeRef};
+use crate::infra::diag_log::{DiagLogger, EventKind, RunTimingEntry, RunTimings};
 use crate::worktree::opencode::{ApiError, ListRequest, LocatedSession, OpenCodeApi, SessionPage};
 
 /// The per-scope registry read.
@@ -106,6 +108,10 @@ pub(crate) struct TimingStats {
     started: Instant,
     stages: RefCell<BTreeMap<&'static str, Accumulator>>,
     operations: RefCell<BTreeMap<&'static str, Accumulator>>,
+    /// The optional diagnostic logger of this run. The unit and default
+    /// constructors leave it absent, so a test or a non-prune call never
+    /// writes a diagnostic file.
+    logger: Option<Rc<DiagLogger>>,
 }
 
 impl TimingStats {
@@ -114,6 +120,17 @@ impl TimingStats {
             started: Instant::now(),
             stages: RefCell::new(BTreeMap::new()),
             operations: RefCell::new(BTreeMap::new()),
+            logger: None,
+        }
+    }
+
+    /// The measurement sink of a run that also writes diagnostic events.
+    pub(crate) fn with_logger(logger: Rc<DiagLogger>) -> Self {
+        Self {
+            started: Instant::now(),
+            stages: RefCell::new(BTreeMap::new()),
+            operations: RefCell::new(BTreeMap::new()),
+            logger: Some(logger),
         }
     }
 
@@ -121,8 +138,10 @@ impl TimingStats {
     /// fails: a failing stage is part of the pass.
     pub(crate) fn measure_stage<T>(&self, stage: &'static str, call: impl FnOnce() -> T) -> T {
         let started = Instant::now();
+        self.log_stage(EventKind::StageStart, stage, None);
         let outcome = call();
         record(self.stages.borrow_mut(), stage, started.elapsed());
+        self.log_stage(EventKind::StageEnd, stage, Some(millis(started.elapsed())));
         outcome
     }
 
@@ -133,8 +152,14 @@ impl TimingStats {
         call: impl FnOnce() -> T,
     ) -> T {
         let started = Instant::now();
+        self.log_operation(EventKind::OperationStart, operation, None);
         let outcome = call();
         record(self.operations.borrow_mut(), operation, started.elapsed());
+        self.log_operation(
+            EventKind::OperationEnd,
+            operation,
+            Some(millis(started.elapsed())),
+        );
         outcome
     }
 
@@ -164,6 +189,111 @@ impl TimingStats {
                 })
                 .collect(),
         }
+    }
+
+    /// The measured report in the diagnostic event shape. It carries names,
+    /// counts and durations only, never a path or an identity.
+    pub(crate) fn diag_timings(&self) -> RunTimings {
+        let report = self.report();
+        RunTimings {
+            total_ms: report.total_ms,
+            stages: report
+                .stages
+                .into_iter()
+                .map(|(name, entry)| {
+                    (
+                        name,
+                        RunTimingEntry {
+                            calls: entry.calls,
+                            duration_ms: entry.duration_ms,
+                        },
+                    )
+                })
+                .collect(),
+            operations: report
+                .operations
+                .into_iter()
+                .map(|(name, entry)| {
+                    (
+                        name,
+                        RunTimingEntry {
+                            calls: entry.calls,
+                            duration_ms: entry.duration_ms,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The number of measured calls of one stage or operation.
+    pub(crate) fn calls_of(&self, name: &str) -> u64 {
+        let stages = self.stages.borrow();
+        let operations = self.operations.borrow();
+        stages
+            .get(name)
+            .or_else(|| operations.get(name))
+            .map(|accumulator| accumulator.calls)
+            .unwrap_or(0)
+    }
+
+    /// Name the repository ordinal the run is working on.
+    pub(crate) fn set_repo(&self, ordinal: u64) {
+        if let Some(logger) = &self.logger {
+            logger.set_repo(ordinal);
+        }
+    }
+
+    /// Name the candidate ordinal the run is working on.
+    pub(crate) fn set_candidate(&self, ordinal: u64) {
+        if let Some(logger) = &self.logger {
+            logger.set_candidate(ordinal);
+        }
+    }
+
+    /// Clear the candidate ordinal.
+    pub(crate) fn clear_candidate(&self) {
+        if let Some(logger) = &self.logger {
+            logger.clear_candidate();
+        }
+    }
+
+    /// Record the decided outcome of one candidate. Only the categorical
+    /// outcome and the safe reason code are written; the candidate's path,
+    /// branch and identity never reach the log.
+    pub(crate) fn candidate_result(&self, outcome: &'static str, reason: Option<&'static str>) {
+        let Some(logger) = &self.logger else {
+            return;
+        };
+        let mut event = logger.event(EventKind::CandidateResult).outcome(outcome);
+        if let Some(reason) = reason {
+            event = event.reason(reason);
+        }
+        event.write();
+    }
+
+    /// Write one stage event of this run.
+    fn log_stage(&self, kind: EventKind, stage: &'static str, duration: Option<f64>) {
+        let Some(logger) = &self.logger else {
+            return;
+        };
+        let mut event = logger.event(kind).stage(stage);
+        if let Some(duration) = duration {
+            event = event.duration_ms(duration).calls(self.calls_of(stage));
+        }
+        event.write();
+    }
+
+    /// Write one boundary-operation event of this run.
+    fn log_operation(&self, kind: EventKind, operation: &'static str, duration: Option<f64>) {
+        let Some(logger) = &self.logger else {
+            return;
+        };
+        let mut event = logger.event(kind).operation(operation);
+        if let Some(duration) = duration {
+            event = event.duration_ms(duration).calls(self.calls_of(operation));
+        }
+        event.write();
     }
 }
 

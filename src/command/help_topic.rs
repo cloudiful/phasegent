@@ -149,6 +149,10 @@ pub(crate) fn help_topic(
             Some("send") => Ok(HelpTopic::NotifyCommand("send".to_owned())),
             Some(value) => Err(format!("unknown notify help topic '{value}'")),
         },
+        "logs" => match subcommand {
+            None => Ok(HelpTopic::Logs),
+            Some(value) => Err(format!("unknown logs help topic '{value}'")),
+        },
         "worktree" => match subcommand {
             None => Ok(HelpTopic::Worktree),
             Some(value) if ["acquire", "status", "list", "probe", "prune"].contains(&value) => {

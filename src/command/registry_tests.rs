@@ -374,3 +374,35 @@ fn caller_context_gates_operator_agent_and_managed_paths() {
 
 #[path = "registry_gate_tests.rs"]
 mod gate;
+
+/// The read-only log view is a registered utility: it is visible for every
+/// role, it accepts a session without a role, and its path resolves like
+/// every other registered command.
+#[test]
+fn the_log_view_is_a_registered_role_open_utility() {
+    let spec = find(&["logs"]).expect("the log view is registered");
+    assert_eq!(
+        spec.access,
+        RoleAccess::Open,
+        "the log view stays role-open"
+    );
+    assert_eq!(spec.provider_scope, ProviderScope::Any);
+    for role in ALL_ROLES {
+        assert!(
+            spec.allows_role(*role),
+            "the log view stays available to {role}"
+        );
+    }
+    assert!(
+        spec.visible_for(None),
+        "the log view stays visible without a role"
+    );
+    assert_eq!(
+        crate::command::command_registry_path(&Command::Logs(crate::command::LogsCommand {
+            run: None,
+            limit: None,
+            path: false,
+        })),
+        Some(vec!["logs"])
+    );
+}

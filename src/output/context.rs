@@ -434,7 +434,8 @@ pub fn view_for(command: &Command) -> HumanView {
         | Command::Skill(_)
         | Command::Relation(_)
         | Command::Timer(_)
-        | Command::Notify(_) => HumanView::Generic,
+        | Command::Notify(_)
+        | Command::Logs(_) => HumanView::Generic,
     }
 }
 
@@ -488,5 +489,6 @@ pub fn label_for(command: &Command) -> &'static str {
         Command::ConfigUpgrade => "admin config upgrade",
         Command::Doctor => "doctor",
         Command::Notify(_) => "notify",
+        Command::Logs(_) => "logs",
     }
 }

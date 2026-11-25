@@ -14,6 +14,7 @@ mod hooks;
 mod issue;
 mod issue_args;
 mod local_args;
+mod logs;
 mod notify;
 mod parse_helpers;
 mod plugin;
@@ -53,6 +54,8 @@ pub(crate) use argv::{parse_outcome_with_caller_env, parse_with_caller_env};
 pub(crate) use global_options::prescan_presentation;
 pub use issue_args::{AssigneeOption, BranchOption, IssueCommand, PlanningOptions};
 pub use local_args::{NotifyCommand, PluginCommand, SkillCommand};
+pub(crate) use logs::DEFAULT_LIMIT;
+pub use logs::LogsCommand;
 pub(crate) use parse_helpers::{has_flag, optional_option};
 pub use provider_args::{
     CommentCommand, ProjectCommand, RelationCommand, StatusCommand, TimerCommand, VersionCommand,
@@ -173,6 +176,10 @@ pub enum Command {
     /// channel; there are no automatic triggers and no post-success
     /// side effects. Requires a role.
     Notify(NotifyCommand),
+    /// The bounded, read-only view of the diagnostic log that
+    /// `worktree prune` leaves by default. It prepares no configuration,
+    /// resolves no provider, uses no credential, and opens no registry.
+    Logs(LogsCommand),
 }
 
 #[derive(Debug)]
@@ -220,6 +227,7 @@ pub enum HelpTopic {
     TimerCommand(String),
     Worktree,
     WorktreeCommand(String),
+    Logs,
 }
 
 pub(crate) fn prepare_at_admission(invocation: &Invocation) -> bool {

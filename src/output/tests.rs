@@ -1460,3 +1460,25 @@ fn prune_kept_reasons_use_structured_categories() {
         "got: {text}"
     );
 }
+
+/// The read-only log view carries its own label and the generic rendering:
+/// the envelope is a plain document, so no curated view applies.
+#[test]
+fn the_log_view_carries_its_label_and_the_generic_rendering() {
+    use crate::command::{Command, LogsCommand};
+    let command = Command::Logs(LogsCommand {
+        run: None,
+        limit: None,
+        path: false,
+    });
+    assert_eq!(
+        super::context::label_for(&command),
+        "logs",
+        "the log view names itself"
+    );
+    assert_eq!(
+        super::context::view_for(&command),
+        HumanView::Generic,
+        "the log envelope uses the generic rendering"
+    );
+}
